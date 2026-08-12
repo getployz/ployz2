@@ -81,7 +81,7 @@ under the deviation rule in the verification section.
 | --- | --- |
 | Cluster membership | Remote `machine init`, `machine add`, `machine rm`, list, rename, update, RTT, and machine logs; provisioning, reset/no-reset behavior, fallback entry creation, and Caddy/DNS bootstrap options. |
 | Local contexts | Create and mutate Ployz configuration, choose a current context, show/list/use contexts, edit ordered connections interactively, honor direct connection and context overrides, and fall back to the local daemon socket where applicable. |
-| Services | `run`, Compose `deploy`, build, list, container list, inspect, scale, start, stop, remove, exec, merged logs, and local proxy; keep grouped and convenient root-level entry points where they remain in Ployz's declared command tree. |
+| Services | `run`, Compose `deploy`, build, list, container list, inspect, scale, start, stop, remove, exec, merged logs, and local proxy; keep grouped and convenient root-level entry points where they remain in Ployz's declared command tree. Scaling to zero remains unsupported. |
 | Images | List images and push a local image directly to all or selected machines, including platform selection. |
 | Volumes | Create, list, inspect, and remove machine-local Docker volumes with machine selection, driver options, labels, force, quiet, and confirmation behavior. |
 | Ingress | Deploy and inspect Caddy configuration and logs; preserve generated Caddyfile and JSON behavior, host ports, HTTPS, and certificate handling through Caddy. |
@@ -399,7 +399,9 @@ The highest-risk boundaries to retain include:
 - no consistency check between an existing Service ID and a supplied Service
   Name during container creation;
 - partial replicated rows and unreachable Machines may be omitted from current
-  views;
+  views — incomplete replicated data must stay tolerable and must never be
+  presented as authoritative completeness, but the current behavior of silently
+  omitting those rows is explicitly *not* frozen and may be changed;
 - placement ignores image-platform support, local image presence for
   `pull_policy: never`, and memory reservation;
 - mutable Docker resource changes are classified but recreated rather than
