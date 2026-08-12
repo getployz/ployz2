@@ -4,7 +4,7 @@
 
 **Baseline:** `psviderski/uncloud` `main` at `b7e224a1eff98813b1d1a32034d977be24be994e`. Frozen. Every upstream link in this brief is pinned to it.
 
-**Status:** binding. It consolidates map issue [#1](https://github.com/getployz/ployz2/issues/1) and the closed decisions [#2](https://github.com/getployz/ployz2/issues/2)–[#11](https://github.com/getployz/ployz2/issues/11). Where those disagree, this brief states which one wins. Where they left a hole, §12 says so — it does not quietly fill it.
+**Status:** binding. Approved through [Draft and approve the reconstruction brief]. It consolidates [Reconstruct Uncloud in Rust without adding machinery] and the ten preceding research and product decisions. Where those disagree, this brief states which one wins. Where they left a hole, §12 links the follow-up decision rather than quietly filling it.
 
 **When sources disagree**, authority runs: explicit decisions on the map → stated Uncloud architectural intent → observable product and CLI semantics → documented behaviour → current implementation detail. Implementation detail loses.
 
@@ -14,7 +14,7 @@
 
 Ployz deploys Docker containers across a handful of your own Linux machines and gives you HTTPS, internal DNS, and a CLI, without a control plane.
 
-You run `ployz machine init` against a remote host over SSH. It installs Docker and `ployzd`, creates a cluster, allocates that machine an IPv4 `/24`, reserves a public domain from a hosted DNS service, and deploys Caddy. You run `ployz machine add` for each further host: same provisioning, a WireGuard peering, a new `/24`, another Caddy. Every machine now runs the same daemon, holds a full replica of cluster state, and can serve as the CLI's entry point. There is no leader and no manager node.
+You run `ployz machine init` against a remote host over SSH. It installs Docker and `ployzd`, creates a cluster, allocates that machine an IPv4 `/24`, reserves a public domain from a hosted DNS service, and deploys Caddy. You run `ployz machine add` for each further host: same provisioning, a WireGuard peering, a new `/24`, another Caddy. Every machine now runs the same daemon, maintains a local eventually convergent replica of cluster observations, and can serve as the CLI's entry point. There is no leader and no manager node.
 
 You then `ployz run IMAGE` or `ployz deploy` from a Compose file. The CLI reads a snapshot of the cluster through one entry machine, computes a finite ordered plan, shows it to you, and executes it by calling target machines directly. Containers get real bridge IPs routed untranslated over the mesh. Caddy picks up new HTTP upstreams from replicated state and issues certificates. Internal DNS resolves `<service>.internal` to healthy container IPs.
 
@@ -22,7 +22,7 @@ Nothing continues after the command returns. There is no controller, no reconcil
 
 That is not an unfinished product. It is the product. Uncloud's [design note](https://github.com/psviderski/uncloud/blob/b7e224a1eff98813b1d1a32034d977be24be994e/misc/design.md#L99-L122) chose imperative operations because their failures are predictable, and chose availability over agreement because the target cluster is small and low-churn. Ployz keeps that bet.
 
-**Ployz differs from Uncloud in identity, not behaviour.** Binary `ployz`, daemon `ployzd`, env `PLOYZ_*`, config `~/.config/ployz/config.yaml`, socket `/run/ployz/ployz.sock`, bridge network `ployz`, Unix group `ployz`, labels and injected variables under `ployz`. No Uncloud-compatible aliases, no config migration, no wire or storage interop with any Uncloud cluster. (#7)
+**Ployz differs from Uncloud in identity, not behaviour.** Binary `ployz`, daemon `ployzd`, env `PLOYZ_*`, config `~/.config/ployz/config.yaml`, socket `/run/ployz/ployz.sock`, bridge network `ployz`, Unix group `ployz`, labels and injected variables under `ployz`. No Uncloud-compatible aliases, no config migration, no wire or storage interop with any Uncloud cluster. ([Choose the preserved, changed, and excluded product surface])
 
 ---
 
@@ -38,19 +38,19 @@ Forbidden as incidental reconstruction work, at every layer, without a new expli
 
 consensus · quorum · leader election · fencing tokens · leases · reservations · distributed locks · cross-machine transactions · general rollback · desired-state reconciliation · background repair loops · rescheduling · relocation · rebalancing · draining · automatic winner selection among duplicates · relays · hole-punch coordination · centralized IPAM · topology controllers · ACLs · security groups · a second overlay · a `doctor`/diagnostics command.
 
-The last one is worth naming: the model deliberately keeps duplicate names, subnets, addresses, keys, and allocations *representable*. Surfacing them is a future effort. (#1 Out of scope)
+The last one is worth naming: the model deliberately keeps duplicate names, subnets, addresses, keys, and allocations *representable*. Surfacing them is a future effort. ([Reconstruct Uncloud in Rust without adding machinery], Out of scope)
 
 ### R3 — Preserve the weakness by outcome, not by transcription
 
 You are not copying Go. You are reproducing what an operator can observe. "Uncloud does it in this order with these goroutines" is not a constraint. "A failed deploy leaves its completed prefix in place and nothing rolls it back" is.
 
-Not frozen: timers, intervals, backoff values, iteration order, map order, error-aggregation mechanics, internal sequencing, which entry wins an ambiguous overwrite, the exact current behaviour of silently omitting partially-replicated rows. (#9)
+Not frozen: timers, intervals, backoff values, iteration order, map order, error-aggregation mechanics, internal sequencing, which entry wins an ambiguous overwrite, the exact current behaviour of silently omitting partially-replicated rows. ([Freeze architectural invariants and preserved weaknesses])
 
 Frozen: which operations executed, what persisted after a failure, and what did *not* happen.
 
 ### R4 — Types expose uncertainty; they never promise
 
-Strong Rust types are the point of this project — `#9` permits them and `#8` requires several. But a type may only make an existing distinction legible. The moment a type causes a new refusal, a new global check, or a new repair, it has changed the architecture.
+Strong Rust types are the point of this project — [Freeze architectural invariants and preserved weaknesses] permits them and [Define the Rust ubiquitous language and state model] requires several. But a type may only make an existing distinction legible. The moment a type causes a new refusal, a new global check, or a new repair, it has changed the architecture.
 
 Allowed: rejecting the same invalid input earlier and more locally. Example — upstream accepts a `--network` narrower than `/24` at the CLI and only fails later during machine registration; Ployz may reject it at parse time, because it is the same input being rejected for the same reason.
 
@@ -81,9 +81,9 @@ These are the mistakes a competent Rust developer will make *because* they are c
 | A `OnceCell`/singleton allocator for subnets or addresses | Becomes centralized IPAM | Allocation is a locally computed candidate from a stale snapshot, recomputed each time |
 | A typestate machine over Machine or Container lifecycle | Machines and containers change outside your process | Plain validated value types plus snapshot enums |
 | `#[serde(deny_unknown_fields)]` on a Docker or store boundary | Docker and the store evolve independently | Keep an explicit unknown/raw variant. `Container Runtime Observation` requires one |
-| A `tokio::spawn` loop that watches state and "fixes" it | That is a reconciler | Only three background loops exist; see §4 |
+| A `tokio::spawn` loop that watches state and "fixes" it | That is a reconciler | Background work is limited to the observer, publisher, projection, and network-maintenance responsibilities in §4 |
 | `Arc<Mutex<ClusterState>>` shared across a command | Implies one coherent view | A Deploy captures one snapshot and works from it. The snapshot is advisory and goes stale |
-| Generic traits with one implementor | `/ponytail` R1 | One rolling strategy exists. One `DeploymentOperation` enum. `Connector` is the sole permitted single-purpose trait, and only because a WireGuard variant is planned (#10) |
+| Generic traits with one implementor | `/ponytail` R1 | One rolling strategy exists. One `DeploymentOperation` enum. `Connector` is the sole permitted single-purpose trait, and only because a WireGuard variant is planned by [Choose technology bindings and owned-code boundaries] |
 
 ---
 
@@ -91,7 +91,7 @@ These are the mistakes a competent Rust developer will make *because* they are c
 
 `CONTEXT.md` holds the glossary. This section holds the semantics the glossary compresses.
 
-### Three authorities, not one
+### Authority is layered, not global
 
 | Rank | Authority | For |
 |---|---|---|
@@ -174,22 +174,23 @@ The CLI stores a set of contexts; each context is an ordered list of connections
 Once connected to an entry Machine, a request carries routing metadata: run here, run on one named target, or fan out to a locally resolved set (`*`, names, or IDs). The entry daemon proxies the rest. Everything downstream is entry-relative:
 
 - The entry's replicated view decides who `*` includes. A Machine that has not replicated to the entry is not in the fan-out.
-- Name and ID share one lookup namespace. A duplicate name, or a name equal to some Machine ID, overwrites one entry by iteration order. Preserve the ambiguity; do not preserve which one wins (#11 tolerance 4).
+- Name and ID share one lookup namespace. A duplicate name, or a name equal to some Machine ID, overwrites one entry by iteration order. Preserve the ambiguity; do not preserve which one wins ([Define the executable parity contract], tolerance 4).
 - A stale row can be selected and then fail to connect.
 - Liveness is the entry's judgement. The responder always reports itself `Up`.
 - A fan-out returns successes and per-target failures together. That is a Partial Result, not a transaction failure.
 
 You cannot command across a partition boundary. You can fully administer the reachable side. Both sides can return different Machine sets, different liveness, and different Service observations at the same time — simultaneously, correctly.
 
-### The only background loops
+### Allowed background activity
 
-Exactly three, per Machine. If you are adding a fourth, you are adding a reconciler.
+Background activity is limited to narrow observation, publication, projection, and network-maintenance responsibilities. Adding a loop whose job is to drive observations toward a desired state is adding a reconciler.
 
-1. **Machine self-publisher.** Checks its own row at startup, on trigger, and roughly every minute; republishes only when the replicated row is missing or differs. This is why an unreset removed Machine can resurrect its own row after reconnecting.
-2. **Docker observer.** Watches Docker events plus a ~30s fallback rescan. Upserts redacted observations of local managed containers, deletes rows for containers no longer present locally. Redaction strips environment values before they reach the store.
-3. **Projection subscribers.** Internal DNS and the Caddy config controller subscribe to replicated container rows and rebuild their outputs.
+- **Machine self-publisher.** Checks its own row at startup, on trigger, and roughly every minute; republishes only when the replicated row is missing or differs. This is why an unreset removed Machine can resurrect its own row after reconnecting.
+- **Docker observer.** Watches Docker events plus a ~30s fallback rescan. Upserts redacted observations of local managed containers, deletes rows for containers no longer present locally. Redaction strips environment values before they reach the store.
+- **Projection subscribers.** Internal DNS and the Caddy config controller subscribe to replicated container rows and rebuild their outputs.
+- **Network maintenance.** WireGuard peer and observer-local endpoint selection update connectivity as described in §5. Corrosion's own replication and membership loops remain inside its pinned container.
 
-None of them touch containers. None of them repair anything.
+These responsibilities do not reschedule, relocate, or repair containers.
 
 ### Store semantics
 
@@ -197,7 +198,7 @@ Corrosion is an eventually-consistent SQLite with gossip, CRDT conflict handling
 
 The replicated schema holds cluster key-value data, Machine rows, and container rows. Primary keys cover only row identity. **Machine names, Service IDs, and Service Names have indexes, not uniqueness constraints** — the schema does not encode the domain constraints, and that is deliberate. Service ID and name are derived from container labels.
 
-Corrosion can expose a row before all its columns arrive. Upstream omits rows with empty JSON from listings, so a single local read can be structurally incomplete without erroring. Incomplete replicated data must stay tolerable and must never be presented as completeness. The exact silent-omission mechanic is not frozen (#9); the tolerance is.
+Corrosion can expose a row before all its columns arrive. Upstream omits rows with empty JSON from listings, so a single local read can be structurally incomplete without erroring. Incomplete replicated data must stay tolerable and must never be presented as completeness. The exact silent-omission mechanic is not frozen by [Freeze architectural invariants and preserved weaknesses]; the tolerance is.
 
 Conflict resolution belongs to the pinned Corrosion binary at cell granularity. Do not implement a domain-level merge, conflict object, or winner. Two rows with different IDs and the same name never conflict at the CRDT layer at all — which is exactly how a duplicate survives convergence.
 
@@ -299,7 +300,7 @@ Every Service Container gets `PLOYZ_MACHINE_ID`.
 
 **Caddy.** A `global` Ployz Service using the official `caddy` image, host ports TCP 80, TCP 443, UDP 443, persistent host directories. When no image is given, the greatest stable official `2.x.x` tag is discovered from Docker Hub, falling back to `latest`. Each daemon rebuilds its local Caddy config from healthy replicated container rows — again **without membership filtering**. Config is adapted via Caddy's admin `/adapt`; adaptation is the only validation and cannot prove the config will load. A load failure keeps the last successful config and retries on the next container change. HTTP/HTTPS only: **L4 TCP/UDP ingress through Caddy is not implemented**; host mode is the supported path, and `ployz run` cannot publish L4 ingress at all.
 
-**Managed public DNS.** Ployz continues to use the hosted service at `https://dns.uncloud.run/v1` and treats its Uncloud-branded domains as opaque values. Reserve with `POST /domains`; the daemon (not the CLI process) retains endpoint and bearer token in replicated state, **in plaintext**. Before publishing, it probes each public Caddy Machine's public IP over HTTP for a verification response containing that Machine's ID, and publishes wildcard A and AAAA only for the ones that answer. `release` deletes the local record only — the hosted release call is not implemented. Both the plaintext token and the missing release call are preserved TODOs. Machine removal does not update public DNS. Put this TODO beside the integration boundary, verbatim (#7):
+**Managed public DNS.** Ployz continues to use the hosted service at `https://dns.uncloud.run/v1` and treats its Uncloud-branded domains as opaque values. Reserve with `POST /domains`; the daemon (not the CLI process) retains endpoint and bearer token in replicated state, **in plaintext**. Before publishing, it probes each public Caddy Machine's public IP over HTTP for a verification response containing that Machine's ID, and publishes wildcard A and AAAA only for the ones that answer. `release` deletes the local record only — the hosted release call is not implemented. Both the plaintext token and the missing release call are preserved TODOs. Machine removal does not update public DNS. Put this TODO beside the integration boundary, verbatim as required by [Choose the preserved, changed, and excluded product surface]:
 
 ```rust
 // TODO: Replace dns.uncloud.run and Uncloud-branded domains with
@@ -316,7 +317,9 @@ Every Service Container gets `PLOYZ_MACHINE_ID`.
 
 ## 8. Product surface
 
-### Preserved (#7)
+### Preserved
+
+[Choose the preserved, changed, and excluded product surface] preserves:
 
 The complete documented public surface: remote cluster bootstrap and membership; local contexts with ordered connection failover; service creation and lifecycle; Compose loading with the Ployz extensions; builds and direct image push; machine-local volumes; Caddy; managed DNS; WireGuard inspection; logs; exec; proxy; version; prompts; flags; configuration behaviour; environment precedence.
 
@@ -348,18 +351,22 @@ Load via `docker compose config` (§9) and then apply the Ployz layer. The decla
 
 **Volume names:** upstream strips the Compose project prefix from volume names. `docker compose config` will emit them prefixed — strip it, or you will create differently-named volumes than the baseline.
 
-### Changed (#7, amended by #10 and #11)
+### Changed
+
+The following changes come from [Choose the preserved, changed, and excluded product surface], as amended by [Choose technology bindings and owned-code boundaries] and [Define the executable parity contract]:
 
 - Every Ployz-owned identifier renamed. No deprecated Uncloud aliases anywhere.
 - Provisioning installs Ployz-owned Rust artifacts, not the Go daemon. (Where from: see §12.)
 - The command tree is declarative Clap. Clap-native parsing, diagnostics, help, and completion are approved outcomes. **Do not build compatibility machinery to imitate Cobra.**
-- **#11 supersedes #7's "preserve command structure, aliases, hidden exec options, and completion" clause.** The Ployz tree may diverge where Ployz prefers a different shape. Every divergence gets one line in the deviation ledger (§11). Everything else in #7 stands.
-- The Docker Compose plugin becomes a client-side prerequisite for commands that load Compose (the plugin binary only — no running Docker daemon needed).
+- **[Define the executable parity contract] supersedes the "preserve command structure, aliases, hidden exec options, and completion" clause in [Choose the preserved, changed, and excluded product surface].** The Ployz tree may diverge where Ployz prefers a different shape. Every divergence gets one line in the deviation ledger (§11). Everything else in the product-surface decision stands.
+- The Docker Compose plugin becomes a client-side prerequisite for `ployz deploy` (the plugin binary only — no running Docker daemon needed). Its scope for other Compose-aware commands is decided by [Define the Docker Compose plugin prerequisite scope].
 - `ssh` becomes an explicit client-side prerequisite.
 - `ssh_go` and `ssh_cli` config fields are dropped, and with them the `ssh+go://` and `ssh+cli://` schemes. `--connect` accepts `[ssh://]user@host[:port]`, `tcp://host:port`, `unix:///path`.
 - `ployz caddy config` prints plain, without syntax highlighting.
 
-### Excluded (#7)
+### Excluded
+
+[Choose the preserved, changed, and excluded product surface] excludes:
 
 Reading or migrating Uncloud configuration · any Uncloud protocol, storage, cluster, or daemon interop · compatibility aliases for Uncloud names · native Windows and non-Linux daemon targets · the hidden documentation-generator command (the *generated pages* remain a parity oracle; the generator is not product) · a working WireGuard client connector (§9) · any diagnostic/`doctor` command.
 
@@ -453,7 +460,7 @@ Rough shape of the 151: whole files of them are migration cleanup (seven gRPC pr
 | Start-first replacement | Does not wait for Caddy to observe the new container. Single-replica blink accepted |
 | Service identity | Concurrent creation yields several Service IDs under one name. Container creation does not verify the Service Name matches the existing Service ID |
 | Store | `sync_status` records local Docker sync, not cluster freshness — a `synced` row can be stale after a crash or partition. A failed Docker list does not mark stored rows outdated |
-| Fan-out | Failed Machines in service and volume listings are warned about and omitted rather than returned as typed partial results. **The Partial Result semantics are preserved; #8 requires the typed form, so type it and keep the same accepted outcomes** |
+| Fan-out | Failed Machines in service and volume listings are warned about and omitted rather than returned as typed partial results. **The Partial Result semantics are preserved; [Define the Rust ubiquitous language and state model] requires the typed form, so type it and keep the same accepted outcomes** |
 | Placement | Ignores image platform support, `pull_policy: never` image presence, and memory reservations. Pull policies never pull from other cluster Machines |
 | Spec diffing | Mutable resource changes are classified but recreate anyway. Ingress ports live on labels, so port-only changes recreate. Unused volume definitions are unresolved |
 | Compose | `depends_on` conditions are not fully turned into ordering. Volume scheduling uses unresolved specs. Unsupported-field detection is incomplete. Unknown `x-pre_deploy` attributes are ignored |
@@ -478,7 +485,7 @@ Explicit non-implementations without TODO syntax, equally binding: local `machin
 
 ## 11. Verification
 
-Parity is proven against **artifacts**. Upstream `uc` is never executed. No Go toolchain in any developer or CI path. No captured goldens — they would freeze help text, error wording, and diagnostics that #7 explicitly freed to be Clap-native. (#11)
+Parity is proven against **artifacts**. Upstream `uc` is never executed. No Go toolchain in any developer or CI path. No captured goldens — they would freeze help text, error wording, and diagnostics that [Choose the preserved, changed, and excluded product surface] explicitly freed to be Clap-native. ([Define the executable parity contract])
 
 ### Oracles
 
@@ -543,27 +550,37 @@ A failing Layer 3 scenario is retried once; a second failure is a failure, not a
 
 Do not treat silence here as permission. Raise these; do not resolve them by writing code.
 
-**Deferred by the map, explicitly:**
+The open questions are first-class children of [Reconstruct Uncloud in Rust without adding machinery]:
 
-- **Component and crate layout.** This brief fixes the *boundaries* — two binaries (`ployz`, `ployzd`), three pinned containers, three owned subsystems, deployment logic in the CLI, six authorities in §4 — but not the crate graph. That is the next decision.
-- **Implementation ticket breakdown and dependency order.**
-- **Packaging, installation, migration, release, operational validation.** Constrained by the `rusqlite` cross-compilation cost.
-- **Policy for upstream Uncloud changes after the frozen baseline.**
+- **Workspace and code boundaries:** [Choose the Rust component and crate layout]. This brief fixes two binaries (`ployz`, `ployzd`), three pinned containers, three owned subsystems, deployment logic in the CLI, and the authority layers in §4, but not the crate graph.
+- **Artifact distribution:** [Define Ployz artifact distribution and provisioning]. [Choose the preserved, changed, and excluded product surface] requires Ployz-owned artifacts, but the artifact host, names, integrity/signing checks, and installer download contract remain undecided.
+- **Packaging and release:** [Define packaging, release, and operational validation]. Packaging formats, cross-compilation, install/upgrade/uninstall behavior, the release pipeline, migration boundaries, and operational validation remain undecided and are constrained by the `rusqlite` bundled-C cost.
+- **Wire version skew:** [Define RPC payload compatibility during Ployz version skew]. Do not assume tolerant or strict serde behavior, unknown-variant fallbacks, or version negotiation until that decision closes.
+- **Hosted DNS probe:** [Verify the hosted DNS reachability probe contract]. The Ployz-owned rename rule may affect the public Caddy verification path, but whether the hosted service constrains that path is not yet known.
+- **Command shape:** Hidden Docker-compatible `exec` flags and shell completion are deviation-ledger choices under [Define the executable parity contract], not requirements of this brief.
+- **Compose prerequisite scope:** [Define the Docker Compose plugin prerequisite scope]. Do not infer from the `deploy` decision how `build`, Compose-aware `logs`, `x-context`, or commands without Compose input behave when the plugin is absent.
+- **End-to-end coverage:** [Decide Layer 3 upstream end-to-end coverage]. The six negative-parity families are mandatory; the disposition and landing schedule of the roughly 111 upstream subtests is not yet fixed.
+- **Replicated sync status:** [Decide replicated container sync-status representation]. [Inventory deliberate omissions, TODOs, and operational boundaries] requires an explicit keep/rename/remove disposition, not an assumed field and filter.
+- **Caddy versions:** [Reconcile Caddy runtime selection with tag pinning]. Do not choose between build-time pinning and preserved runtime stable-tag discovery until that conflict is resolved.
+- **Future upstream:** [Choose the post-baseline upstream change policy]. The baseline remains frozen unless and until this decision says otherwise.
+- **Execution map:** [Draft the implementation tickets and dependency order] follows the decisions above and converts this brief into implementation-sized work.
 
-**Holes this brief found while consolidating:**
+## 13. Definition of a faithful reconstruction
 
-- **Where provisioning downloads the daemon from.** #7 says Ployz-owned Rust artifacts, not Uncloud releases. No decision names the artifact host, naming, or signing. `machine init`/`add` cannot ship until this lands.
-- **Wire-format tolerance under version skew.** #10 puts serde-encoded domain types in an opaque gRPC payload, replacing protobuf's tolerant unknown-field handling, and retires the Go protocol-version interceptors as migration cleanup. Nothing decides what a Machine does when a peer sends an enum variant or field it does not know. Default until decided: tolerant deserialization at every wire boundary — no `deny_unknown_fields`, unknown-variant fallbacks — and no version negotiation.
-- **The public reachability probe path.** The daemon probes each Caddy Machine's public IP for a branded verification path before publishing DNS records. Both ends are Ployz-owned, so #7's rename rule reads as applying. Renaming is safe *only* if the hosted DNS service never probes that path itself — unverified.
-- **Whether hidden Docker-compatible `exec` flags and shell completion survive.** #11 superseded the #7 clause that preserved them along with command structure. They are now deviation-ledger material rather than requirements. Default: keep hidden `-i`/`-t` (cheap, matches muscle memory), ship `clap_complete` completion, and ledger anything that differs.
-- **Whether Compose becomes a prerequisite beyond `deploy`.** #10 names `deploy` only, but `build`, `logs` with no arguments, and `x-context` resolution also load Compose. Default: the plugin is required wherever a Compose file is actually loaded, and its absence is never fatal for commands that do not load one.
-- **Whether Layer 3's ~111 upstream e2e subtests are in scope up front.** #11 states the definition-of-done rule for Layer 1 only. Default: apply the same rule to Layer 3 — a subsystem is not done until its e2e cases pass — with the six negative-parity scenarios as the exception, since they gate the review process rather than a subsystem.
-- **`sync_status`.** #6 says model it or remove it explicitly. It is currently observable, because list queries return only `synced` rows. Default: keep the field, keep the filter, and name the type so it reads as a local claim about Docker sync rather than cluster freshness.
-- **Caddy tag pinning.** #10 says "tag-pinned `2.x.y`", which reads as a build-time pin, while the preserved product behaviour discovers the greatest stable official `2.x.x` from Docker Hub at deploy time and falls back to `latest`. Default: preserve the runtime discovery (it is product surface) and read #10 as "a concrete `2.x.y` tag, never a bare `latest`, when discovery succeeds".
+Ployz is complete when:
+
+- the preserved product workflows operate under Ployz-owned naming on the supported platforms;
+- every approved product change and exclusion is reflected explicitly;
+- local types express identity, provenance, ambiguity, partial outcomes, and external or unknown states without implying stronger guarantees;
+- Corrosion, Docker, WireGuard, Caddy, unregistry, hosted DNS, and the selected Rust bindings meet their fixed boundaries;
+- all 151 TODO-style markers and equivalent omissions have ledger dispositions, with behavior-affecting TODOs adjacent to their Rust boundaries;
+- the three verification layers and six negative-parity families pass under the approved tolerances;
+- implementation review finds no Go-structure mirroring and no unapproved consensus, fencing, reconciliation, transaction, repair, rescheduling, rollback, security, or compatibility machinery;
+- every linked question in §12 that blocks a relevant implementation slice has been resolved rather than answered implicitly in code.
 
 ---
 
-## 13. Evidence
+## 14. Evidence
 
 `CONTEXT.md` on `main` is the binding glossary.
 
@@ -577,7 +594,7 @@ git show origin/research/distributed-state:docs/research/distributed-state-and-p
 git show origin/research/omissions-todos:docs/research/omissions-todos-and-operational-boundaries.md
 ```
 
-Decisions: map [#1](https://github.com/getployz/ployz2/issues/1) · research [#2](https://github.com/getployz/ployz2/issues/2)–[#6](https://github.com/getployz/ployz2/issues/6) · product surface [#7](https://github.com/getployz/ployz2/issues/7) · language and state model [#8](https://github.com/getployz/ployz2/issues/8) · invariants and preserved weaknesses [#9](https://github.com/getployz/ployz2/issues/9) · technology bindings [#10](https://github.com/getployz/ployz2/issues/10) · parity contract [#11](https://github.com/getployz/ployz2/issues/11).
+Decisions: [Reconstruct Uncloud in Rust without adding machinery] · [Inventory the product, CLI, and executable parity surface] · [Extract the domain model and service lifecycle semantics] · [Characterize distributed state, partitions, and contradictions] · [Map machine networking and classify technology commitments] · [Inventory deliberate omissions, TODOs, and operational boundaries] · [Choose the preserved, changed, and excluded product surface] · [Define the Rust ubiquitous language and state model] · [Freeze architectural invariants and preserved weaknesses] · [Choose technology bindings and owned-code boundaries] · [Define the executable parity contract] · [Draft and approve the reconstruction brief].
 
 Upstream, for checking a specific claim only — the research already did the extraction, do not redo it:
 `https://github.com/psviderski/uncloud/tree/b7e224a1eff98813b1d1a32034d977be24be994e`
@@ -585,3 +602,27 @@ Upstream, for checking a specific claim only — the research already did the ex
 ---
 
 *Uncloud's simplicity comes from leaving coordination to the user and local recovery to Docker. Most accidental overbuilding will start with an honest attempt to fix one of the states in §3.*
+
+[Reconstruct Uncloud in Rust without adding machinery]: https://github.com/getployz/ployz2/issues/1
+[Inventory the product, CLI, and executable parity surface]: https://github.com/getployz/ployz2/issues/2
+[Extract the domain model and service lifecycle semantics]: https://github.com/getployz/ployz2/issues/3
+[Characterize distributed state, partitions, and contradictions]: https://github.com/getployz/ployz2/issues/4
+[Map machine networking and classify technology commitments]: https://github.com/getployz/ployz2/issues/5
+[Inventory deliberate omissions, TODOs, and operational boundaries]: https://github.com/getployz/ployz2/issues/6
+[Choose the preserved, changed, and excluded product surface]: https://github.com/getployz/ployz2/issues/7
+[Define the Rust ubiquitous language and state model]: https://github.com/getployz/ployz2/issues/8
+[Freeze architectural invariants and preserved weaknesses]: https://github.com/getployz/ployz2/issues/9
+[Choose technology bindings and owned-code boundaries]: https://github.com/getployz/ployz2/issues/10
+[Define the executable parity contract]: https://github.com/getployz/ployz2/issues/11
+[Draft and approve the reconstruction brief]: https://github.com/getployz/ployz2/issues/12
+[Choose the Rust component and crate layout]: https://github.com/getployz/ployz2/issues/13
+[Define Ployz artifact distribution and provisioning]: https://github.com/getployz/ployz2/issues/14
+[Define RPC payload compatibility during Ployz version skew]: https://github.com/getployz/ployz2/issues/15
+[Verify the hosted DNS reachability probe contract]: https://github.com/getployz/ployz2/issues/16
+[Define the Docker Compose plugin prerequisite scope]: https://github.com/getployz/ployz2/issues/17
+[Decide Layer 3 upstream end-to-end coverage]: https://github.com/getployz/ployz2/issues/18
+[Decide replicated container sync-status representation]: https://github.com/getployz/ployz2/issues/19
+[Reconcile Caddy runtime selection with tag pinning]: https://github.com/getployz/ployz2/issues/20
+[Choose the post-baseline upstream change policy]: https://github.com/getployz/ployz2/issues/21
+[Draft the implementation tickets and dependency order]: https://github.com/getployz/ployz2/issues/22
+[Define packaging, release, and operational validation]: https://github.com/getployz/ployz2/issues/23
