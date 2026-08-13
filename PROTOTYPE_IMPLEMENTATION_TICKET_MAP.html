@@ -1,0 +1,791 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prototype — Ployz implementation ticket map</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17221d;
+      --muted: #607068;
+      --paper: #f5f1e8;
+      --panel: #fffdf7;
+      --line: #d7d0c2;
+      --accent: #147a5b;
+      --accent-soft: #dff1e9;
+      --blocked: #eee8dc;
+      --done: #dce9df;
+      --warn: #8a4b16;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top right, #dfece5 0, transparent 32rem),
+        var(--paper);
+      line-height: 1.48;
+    }
+
+    button { font: inherit; }
+
+    a { color: var(--accent); }
+
+    .shell {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 42px 0 80px;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 860px;
+      margin: 8px 0 12px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(2.2rem, 5vw, 4.8rem);
+      font-weight: 500;
+      line-height: .98;
+      letter-spacing: -.035em;
+    }
+
+    h2, h3, p { margin-top: 0; }
+
+    .lede {
+      max-width: 860px;
+      margin-bottom: 14px;
+      color: #3f4c45;
+      font-size: 1.08rem;
+    }
+
+    .prototype-note {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 8px 11px;
+      border: 1px solid #d5aa82;
+      border-radius: 7px;
+      color: #713b0e;
+      background: #fff2e6;
+      font-size: .88rem;
+      font-weight: 700;
+    }
+
+    .top-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr);
+      gap: 18px;
+      margin: 32px 0 22px;
+    }
+
+    .panel {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+      box-shadow: 0 12px 35px rgb(53 69 60 / 7%);
+    }
+
+    .panel h2 {
+      margin-bottom: 12px;
+      font-size: 1.05rem;
+    }
+
+    .state-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 9px;
+      margin-bottom: 16px;
+    }
+
+    .stat {
+      padding: 12px;
+      border-radius: 9px;
+      background: #f0ece3;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 1.35rem;
+    }
+
+    .stat span {
+      color: var(--muted);
+      font-size: .78rem;
+    }
+
+    .frontier-list, .gate-list, .standing-rules {
+      margin: 0;
+      padding-left: 19px;
+    }
+
+    .frontier-list li, .gate-list li, .standing-rules li { margin: 7px 0; }
+
+    .gate-list .passed { color: var(--accent); font-weight: 750; }
+
+    .gate-list .waiting { color: var(--muted); }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 22px 0;
+    }
+
+    .toolbar button, .ticket button, .guide-step {
+      padding: 8px 11px;
+      border: 1px solid #a9b5ae;
+      border-radius: 8px;
+      color: var(--ink);
+      background: white;
+      cursor: pointer;
+    }
+
+    .toolbar button:hover, .ticket button:hover:not(:disabled), .guide-step:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    button:disabled { cursor: not-allowed; opacity: .5; }
+
+    .guide-panel { margin-bottom: 24px; }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-bottom: 14px;
+    }
+
+    .tab {
+      padding: 7px 10px;
+      border: 0;
+      border-radius: 999px;
+      color: var(--muted);
+      background: #ece6da;
+      cursor: pointer;
+    }
+
+    .tab[aria-selected="true"] {
+      color: white;
+      background: var(--accent);
+    }
+
+    .guide-copy { color: var(--muted); }
+
+    .guide-steps {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .guide-step.done {
+      border-color: #8bb59e;
+      background: var(--done);
+      text-decoration: line-through;
+    }
+
+    .map-header {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 32px 0 14px;
+    }
+
+    .map-header p { margin-bottom: 0; color: var(--muted); }
+
+    .phase { margin-top: 30px; }
+
+    .phase-heading {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 12px;
+      padding-bottom: 7px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .phase-heading h2 { margin: 0; font-size: 1.2rem; }
+
+    .phase-heading span { color: var(--muted); font-size: .84rem; }
+
+    .tickets {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .ticket {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-height: 260px;
+      padding: 18px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+
+    .ticket.frontier {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    .ticket.done { background: var(--done); }
+
+    .ticket.blocked { background: var(--blocked); }
+
+    .ticket-status {
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: .72rem;
+      font-weight: 850;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .ticket.frontier .ticket-status { color: var(--accent); }
+
+    .ticket h3 { margin-bottom: 8px; font-size: 1.08rem; }
+
+    .outcome { color: #34423a; }
+
+    .meta {
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
+      color: var(--muted);
+      font-size: .86rem;
+    }
+
+    .meta p { margin-bottom: 8px; }
+
+    .meta strong { color: var(--ink); }
+
+    .verification { color: #335746; }
+
+    .ticket button { align-self: flex-start; margin-top: 5px; }
+
+    .review {
+      margin-top: 34px;
+      border-left: 5px solid var(--accent);
+    }
+
+    .review ol { padding-left: 21px; }
+
+    .review li { margin: 12px 0; }
+
+    footer {
+      margin-top: 34px;
+      color: var(--muted);
+      font-size: .85rem;
+    }
+
+    @media (max-width: 820px) {
+      .top-grid, .tickets { grid-template-columns: 1fr; }
+      .state-grid { grid-template-columns: 1fr 1fr 1fr; }
+      .shell { width: min(100% - 20px, 1180px); padding-top: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Wayfinder prototype · owner review</div>
+    <h1>Ployz implementation ticket map</h1>
+    <p class="lede">
+      This prototype answers one question: does this dependency graph turn the approved reconstruction brief into implementation-sized outcomes, with parity evidence landing at the first executable boundary rather than in a final testing wave?
+    </p>
+    <p class="lede">
+      Click any available ticket to complete it and watch the frontier move. Blocked tickets name the concrete outcomes they wait on. The graph carries execution through the first stable release because the map's Notes explicitly extend Wayfinder beyond planning.
+    </p>
+    <div class="prototype-note">PROTOTYPE — throwaway review aid. It is not the implementation backlog until the owner approves it.</div>
+
+    <section class="top-grid">
+      <div class="panel" aria-live="polite">
+        <h2>Current map state</h2>
+        <div class="state-grid">
+          <div class="stat"><strong id="done-count">0</strong><span>completed</span></div>
+          <div class="stat"><strong id="frontier-count">0</strong><span>on the frontier</span></div>
+          <div class="stat"><strong id="blocked-count">0</strong><span>blocked</span></div>
+        </div>
+        <h2>Available now</h2>
+        <ul class="frontier-list" id="frontier-list"></ul>
+      </div>
+
+      <div class="panel">
+        <h2>Verification gates</h2>
+        <ul class="gate-list" id="gate-list"></ul>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Standing constraints on every ticket</h2>
+      <ul class="standing-rules">
+        <li>One ticket must fit one implementation-agent session and end in a runnable outcome.</li>
+        <li><code>UPSTREAM_TODOS.md</code> exists before behavior is implemented; every slice closes or places its affected ledger entries.</li>
+        <li>Layer 1 and selected Layer 3 contracts land with the slice that makes them executable. No parity clean-up wave is allowed.</li>
+        <li>No upstream binary, Go toolchain, captured golden, Go package mirroring, or unapproved coordination and repair machinery.</li>
+        <li>Every new CLI-shape difference updates <code>CLI_DEVIATIONS.md</code> in the same ticket.</li>
+      </ul>
+    </section>
+
+    <div class="toolbar">
+      <button type="button" id="complete-frontier">Complete current frontier</button>
+      <button type="button" id="reset-map">Reset prototype</button>
+    </div>
+
+    <section class="panel guide-panel">
+      <h2>Guided walkthroughs</h2>
+      <div class="tabs" id="guide-tabs"></div>
+      <p class="guide-copy" id="guide-copy"></p>
+      <div class="guide-steps" id="guide-steps"></div>
+    </section>
+
+    <div class="map-header">
+      <div>
+        <div class="eyebrow">Proposed backlog</div>
+        <h2>26 outcome tickets</h2>
+      </div>
+      <p>Titles are the stable names; prototype keys stay hidden.</p>
+    </div>
+
+    <div id="ticket-map"></div>
+
+    <section class="panel review">
+      <h2>Owner decisions this prototype needs</h2>
+      <ol>
+        <li><strong>Granularity:</strong> approve 26 outcome tickets, or identify a ticket that is still larger than one agent session.</li>
+        <li><strong>Release boundary:</strong> approve making the first stable release part of this map's destination, including the public-repository precondition and Homebrew repoint.</li>
+        <li><strong>Final audit:</strong> approve one non-feature parity-closure ticket whose job is traceability and gap closure only—not deferred implementation.</li>
+      </ol>
+    </section>
+
+    <footer>
+      Sources: the approved Ployz Reconstruction Brief and the settled decisions linked from
+      <a href="https://github.com/getployz/ployz2/issues/1">Reconstruct Uncloud in Rust without adding machinery</a>.
+      The ticket being resolved is
+      <a href="https://github.com/getployz/ployz2/issues/22">Draft the implementation tickets and dependency order</a>.
+    </footer>
+  </main>
+
+  <script>
+    const ticketDefinitions = [
+      {
+        key: "workspace",
+        phase: "1 · Foundations",
+        title: "Bootstrap the four-crate workspace and fast CI gate",
+        deps: [],
+        outcome: "Create ployz-core, ployz, ployzd, and dev-only ployz-testkit with the approved dependency direction, platform boundaries, and the smallest useful build skeleton.",
+        verification: "Cargo format, lint, and workspace tests run on every pull request; macOS builds never resolve the Linux-only daemon graph."
+      },
+      {
+        key: "evidence",
+        phase: "1 · Foundations",
+        title: "Freeze the evidence, omission, and parity inventories",
+        deps: [],
+        outcome: "Add UPSTREAM_TODOS.md for all 151 markers and equivalent omissions, the 76-declaration Layer 3 disposition inventory, frozen fixture inputs, command-reference data, and an initially empty CLI_DEVIATIONS.md.",
+        verification: "Every inventory entry has a pinned source and disposition; counts are checked mechanically; no product behavior is implemented here."
+      },
+      {
+        key: "contract",
+        phase: "1 · Foundations",
+        title: "Define the shared domain and JSON RPC contract",
+        deps: ["workspace", "evidence"],
+        outcome: "Implement only the byte-for-byte shared domain values, typed Partial Results, opaque tonic envelope, serde JSON evolution rules, typed errors, and per-Machine capability description in ployz-core.",
+        verification: "Layer 1 covers validated identities, ambiguity, unknown observation variants, additive JSON fields, rejected unknown commands, capability fixtures, and payload round trips."
+      },
+      {
+        key: "cli",
+        phase: "1 · Foundations",
+        title: "Declare the complete Clap surface and command-shape gate",
+        deps: ["workspace", "evidence"],
+        outcome: "Build the behavior-free Clap tree for the complete preserved product surface, including completion and Ployz-owned environment names, with thin unimplemented handlers kept explicit.",
+        verification: "Layer 2 walks the tree in-process against all 58 frozen command-reference pages; only declared CLI_DEVIATIONS.md lines may differ."
+      },
+      {
+        key: "daemon",
+        phase: "2 · Runtime spine",
+        title: "Start ployzd with local Machine state and process lifecycle",
+        deps: ["contract"],
+        outcome: "Run the Linux daemon with durable local Machine identity and phase, Ployz paths and permissions, tonic serving, version/about/capability responses, signals, systemd notification, metrics, and reset-by-exit.",
+        verification: "Layer 1 and process smoke checks prove create/reopen/reset behavior, ownership modes, version reporting, and that no controller or background repair loop exists."
+      },
+      {
+        key: "store",
+        phase: "2 · Runtime spine",
+        title: "Run Corrosion and expose replicated observations",
+        deps: ["daemon", "evidence"],
+        outcome: "Install the replicated schema, run the pinned Corrosion container, implement its HTTP and admin-socket clients, self-publish the local Machine, read partial observations, and preserve the unbounded catch-up barrier.",
+        verification: "Integration checks cover local writes, partial rows, gaps and catch-up, duplicate indexed values, docker_sync_status filtering, and the one store-evolution TODO boundary."
+      },
+      {
+        key: "docker",
+        phase: "2 · Runtime spine",
+        title: "Observe local Docker and persist Resolved Service Specs",
+        deps: ["store", "contract"],
+        outcome: "Add bollard-backed local container primitives, machine.db through bundled rusqlite and spawn_blocking, managed-label parsing, redacted Corrosion publication, event watching, and fallback rescans.",
+        verification: "Layer 1 and Docker integration checks cover spec round trips, redaction, lifecycle/health unknowns, Hook versus Service Containers, stale observations, and local authority boundaries."
+      },
+      {
+        key: "network",
+        phase: "2 · Runtime spine",
+        title: "Build the WireGuard and Docker network plane",
+        deps: ["store", "daemon"],
+        outcome: "Create the Machine bridge, optimistic /24 allocation, deterministic Management Address, full-mesh WireGuard peers, endpoint discovery and observer-local selection, untranslated routing, and iptables rules.",
+        verification: "Layer 1 covers address math and endpoint states; namespace integration proves routed source addresses, whole-set peer rebuilds, best-effort updates, and preserved duplicate allocations."
+      },
+      {
+        key: "routing",
+        phase: "2 · Runtime spine",
+        title: "Route, proxy, and fan out Machine RPCs",
+        deps: ["contract", "daemon", "store", "network"],
+        outcome: "Implement entry-relative target resolution, direct Machine forwarding, byte-level one-to-one and framed one-to-many proxying, Machine identity injection, and success-plus-failure Partial Results.",
+        verification: "Layer 1 covers selector ambiguity and framing; integration checks prove schema-blind proxying, stale-target failure, mixed fan-out outcomes, and no all-or-nothing collection."
+      },
+      {
+        key: "connect",
+        phase: "2 · Runtime spine",
+        title: "Connect through contexts and ordered transports",
+        deps: ["cli", "contract", "routing"],
+        outcome: "Implement Ployz config and permissions, current-context operations, ordered SSH/TCP/Unix connections, direct overrides, local-socket fallback, system ssh cancellation limits, and interactive connection editing.",
+        verification: "The four semantic CLI cases plus transport integration cover precedence, serialization, failover order, malformed connections, fallback, and no legacy ssh_go or ssh_cli fields."
+      },
+      {
+        key: "artifacts",
+        phase: "3 · Early risk gates",
+        title: "Prove the six release artifacts and installer contracts",
+        deps: ["cli", "daemon", "store"],
+        outcome: "Configure pinned GoReleaser, cargo-zigbuild and Zig builds for four CLI and two daemon tarballs; add the shell installer, embedded daemon installer, matching uninstaller, and Homebrew formula inputs without publishing a release.",
+        verification: "All archive names, members and modes pass; Linux outputs are static; AMD64 and ARM64 execute bundled-SQLite create/write/reopen probes; CLI checksums exist while daemon archives remain TLS-only."
+      },
+      {
+        key: "planner",
+        phase: "3 · Early risk gates",
+        title: "Plan Deploys from observer-relative snapshots",
+        deps: ["contract", "evidence"],
+        outcome: "Implement the pure Requested Service Spec to Deploy Plan function, placement, spec comparison, update-order heuristics, hooks, sequence algebra, and exact completed/failed/unexecuted outcome shape without effects.",
+        verification: "The roughly 21 upstream deploy cases are re-expressed in Layer 1, including ambiguity, global snapshot behavior, volume constraints, partial plans, and the ban on a general scheduler."
+      },
+      {
+        key: "compose",
+        phase: "3 · Early risk gates",
+        title: "Load Compose projects and resolve Ployz extensions",
+        deps: ["cli", "connect", "planner"],
+        outcome: "Shell out to docker compose config, classify plugin absence only after load failure, parse normalized YAML, implement the warning/error split, project-prefix stripping, configs, plaintext secret resolution, and all six extensions.",
+        verification: "The roughly 33 Compose cases and syntax-only Layer 3 dispositions pass in Layer 1; deploy, build, and bare logs have the exact conditional plugin prerequisite."
+      },
+      {
+        key: "cluster",
+        phase: "4 · First real Cluster",
+        title: "Initialize and join real Machines in the Layer 3 harness",
+        deps: ["docker", "network", "routing", "connect", "artifacts"],
+        outcome: "Build the Docker-in-Docker testkit, multiarch test image and publishing job; provision a first remote Machine without Caddy, join a second, wait for the preserved catch-up barrier, and tear both down safely.",
+        verification: "Selected Cluster lifecycle contracts pass on real ployzd, Docker, Corrosion and WireGuard; merge-to-main and nightly Layer 3 gates start here with one retry only."
+      },
+      {
+        key: "machines",
+        phase: "4 · First real Cluster",
+        title: "Complete Machine administration and WireGuard inspection",
+        deps: ["cluster"],
+        outcome: "Finish add, remove, list, rename, update, RTT, Machine logs, reset/no-reset, fallback entry creation, and wg show while preserving entry-relative ambiguity and partial failure.",
+        verification: "All selected Machine Layer 3 contracts land here; partition-local mutation proves no quorum gate; duplicate Machine facts remain representable and no drain or repair appears."
+      },
+      {
+        key: "services",
+        phase: "5 · Workload slices",
+        title: "Expose observer-derived Services and direct container lifecycle",
+        deps: ["docker", "routing", "cluster"],
+        outcome: "Implement Service derivation from container observations, list/ps/inspect RPCs, zero/one/many name lookup, and target-local create/start/stop/remove primitives without inventing a persisted Service resource.",
+        verification: "Layer 1 API cases and the earliest executable Service observations prove mixed specs, incomplete Machines, Hook separation, ambiguous names, and successful siblings beside failures."
+      },
+      {
+        key: "executor",
+        phase: "5 · Workload slices",
+        title: "Execute Deploy Plans with durable partial outcomes",
+        deps: ["planner", "services"],
+        outcome: "Execute each operation in order, monitor health, retain failed new and hook containers, perform only the narrow stop-first compensation, and always return the completed prefix, failure, and unexecuted suffix.",
+        verification: "Layer 1 plus real-cluster failure scenarios prove partial persistence and no general rollback, resume, rescheduling, relocation, or autonomous replacement."
+      },
+      {
+        key: "volumes",
+        phase: "5 · Workload slices",
+        title: "Manage Machine-local Docker Volumes and placement anchors",
+        deps: ["planner", "docker", "routing", "cluster"],
+        outcome: "Implement volume create/list/inspect/remove, confirmations and selectors, plan-time volume creation, replicated/global placement rules, and distinct Bind, Docker Volume, Tmpfs, and Service Volume Reference types.",
+        verification: "Mapped unit and Layer 3 volume contracts pass; per-Machine sentinel data proves local-only storage, no replication, and exact placement anchoring."
+      },
+      {
+        key: "deploy",
+        phase: "5 · Workload slices",
+        title: "Deliver run, deploy, and scale end to end",
+        deps: ["compose", "cluster", "services", "executor", "volumes"],
+        outcome: "Wire thin CLI handlers to snapshot, plan, render, confirm, and execute run/Compose deploy/scale, with build-before-secrets ordering, all volume operations before services, pre-deploy hooks, and preserved global behavior.",
+        verification: "Every mapped service and Compose Layer 3 contract whose final dependency lands here passes; contradictory Service identities/specs survive convergence and no scale-to-zero or background reconciliation appears."
+      },
+      {
+        key: "streams",
+        phase: "5 · Workload slices",
+        title: "Stream exec, logs, Machine logs, and local proxy traffic",
+        deps: ["services", "connect", "cluster"],
+        outcome: "Implement service exec, merged service logs, Machine logs, bare Compose-aware logs, and local proxy using raw or framed streams without teaching the transport proxy domain schemas.",
+        verification: "All ten selected exec Layer 3 contracts and mapped log/proxy cases pass, including terminal modes, cancellation boundaries, identity injection, and partial stream-open failures."
+      },
+      {
+        key: "images",
+        phase: "5 · Workload slices",
+        title: "Build, list, and push images through unregistry",
+        deps: ["compose", "docker", "routing", "cluster"],
+        outcome: "Implement Compose builds and generated tags, image listing, direct selected/all-Machine push with platform selection, and the pinned unregistry sidecar plus its existing skip-with-warning conditions.",
+        verification: "The selected Compose build Layer 3 contract and image integration checks pass across AMD64/ARM64 metadata, dirty Git tags, fan-out partial results, and containerd-snapshotter skip paths."
+      },
+      {
+        key: "dns",
+        phase: "6 · Projections and ingress",
+        title: "Serve internal DNS from replicated Container observations",
+        deps: ["services", "store", "cluster"],
+        outcome: "Run authoritative internal DNS with healthy replicated Service Container A records, TTL zero, NXDOMAIN when empty, and forwarding for other queries, deliberately without Machine membership filtering.",
+        verification: "Selected internal-DNS Layer 3 contracts cover answers, health, forwarding and stale membership-blind records; no AAAA/SRV/TXT cache or virtual IP is added."
+      },
+      {
+        key: "caddy",
+        phase: "6 · Projections and ingress",
+        title: "Generate, apply, and operate the Caddyfile path",
+        deps: ["deploy", "dns"],
+        outcome: "Implement only Caddyfile generation, x-caddy validation, runtime stable 2.x.y discovery with latest fallback, deploy/config/logs, /.ployz-verify precedence, asynchronous projection, and last-known-good reload behavior.",
+        verification: "The Caddyfile oracle and selected Layer 3 ingress contracts pass; no JSON generator exists; stale membership-blind upstreams and possible single-replica propagation interruption are asserted."
+      },
+      {
+        key: "managed_dns",
+        phase: "6 · Projections and ingress",
+        title: "Manage hosted DNS reservations and reachable ingress records",
+        deps: ["machines", "caddy"],
+        outcome: "Implement reserve/show/local-only release against dns.uncloud.run, plaintext token storage, public-IP reachability probing at /.ployz-verify, wildcard updates, and silent removal of unreachable Machines.",
+        verification: "Client/daemon integration uses a fake hosted service plus real Caddy Machines; partial survivors and empty-survivor failure pass without live production DNS mutation or a service-side release call."
+      },
+      {
+        key: "parity",
+        phase: "7 · Closure",
+        title: "Close product and parity traceability",
+        deps: ["machines", "deploy", "streams", "images", "dns", "caddy", "managed_dns", "artifacts", "evidence"],
+        outcome: "Audit the finished reconstruction against every public workflow, settled decision, TODO disposition, CLI reference, selected upstream behavior, and mandatory negative family; close only concrete gaps discovered by that audit.",
+        verification: "All 151 ledger entries are placed or explicitly not applicable; all 76 Layer 3 declarations are disposed, all 60 selected behaviors and six additive negative families pass, and Layer 1/2/3 plus artifact smoke are green."
+      },
+      {
+        key: "release",
+        phase: "7 · Closure",
+        title: "Publish the first stable Ployz reconstruction release",
+        deps: ["parity"],
+        outcome: "With owner participation, make getployz/ployz2 public, choose and push the first SemVer tag, publish the six verified archives and four CLI checksums, and repoint getployz/homebrew-ployz as the documented clean break.",
+        verification: "Anonymous CLI and daemon installs succeed on supported architectures; machine init fetches the released daemon; Homebrew installs the released CLI; no nightly release channel or compatibility migration is introduced."
+      }
+    ];
+
+    const gates = [
+      { title: "Contract gate", requires: ["contract", "cli"], proof: "Shared types and Layer 2 shape are stable enough for parallel implementation." },
+      { title: "Cross-build gate", requires: ["artifacts"], proof: "Bundled SQLite and every target archive work before the product grows around them." },
+      { title: "Cluster spine gate", requires: ["cluster"], proof: "Real one- and two-Machine Clusters initialize, join, converge, and tear down." },
+      { title: "Machine parity gate", requires: ["machines"], proof: "Administration works through partitions without stronger coordination." },
+      { title: "Deploy parity gate", requires: ["deploy"], proof: "The primary workload path and its partial-failure semantics run end to end." },
+      { title: "Product gate", requires: ["managed_dns", "streams", "images"], proof: "Every preserved command family has a real implementation slice." },
+      { title: "Faithful reconstruction gate", requires: ["parity"], proof: "All traceability inventories and verification layers are closed." },
+      { title: "Distribution gate", requires: ["release"], proof: "The clean-break stable release is publicly installable." }
+    ];
+
+    const walkthroughs = [
+      {
+        title: "First real Cluster",
+        copy: "Walk the shortest dependency path to a provisioned two-Machine Cluster. The pure planner can proceed in parallel but does not gate this milestone.",
+        steps: ["workspace", "evidence", "contract", "cli", "daemon", "store", "docker", "network", "routing", "connect", "artifacts", "cluster"]
+      },
+      {
+        title: "First real Deploy",
+        copy: "Continue from the Cluster spine through the pure plan, Compose boundary, Service observation, executor, Volumes, and the first complete run/deploy/scale path.",
+        steps: ["planner", "compose", "services", "executor", "volumes", "deploy"]
+      },
+      {
+        title: "Projection safety",
+        copy: "Follow replicated Container observations into internal DNS, then the single Caddyfile path, then the hosted DNS reachability filter.",
+        steps: ["dns", "caddy", "machines", "managed_dns"]
+      },
+      {
+        title: "Release closure",
+        copy: "The last path is intentionally short: close all product slices, run one traceability audit, then perform the human-visible stable release.",
+        steps: ["machines", "deploy", "streams", "images", "dns", "caddy", "managed_dns", "parity", "release"]
+      }
+    ];
+
+    const TicketMap = (() => {
+      const definitions = new Map(ticketDefinitions.map(ticket => [ticket.key, ticket]));
+      let completed = new Set();
+
+      const missing = key => definitions.get(key).deps.filter(dep => !completed.has(dep));
+      const frontier = () => ticketDefinitions.filter(ticket => !completed.has(ticket.key) && missing(ticket.key).length === 0);
+      const blocked = () => ticketDefinitions.filter(ticket => !completed.has(ticket.key) && missing(ticket.key).length > 0);
+      const dependentsOf = key => ticketDefinitions.filter(ticket => ticket.deps.includes(key)).map(ticket => ticket.key);
+
+      function removeWithDependents(key) {
+        completed.delete(key);
+        dependentsOf(key).forEach(removeWithDependents);
+      }
+
+      return {
+        complete(key) {
+          if (missing(key).length === 0) completed.add(key);
+        },
+        toggle(key) {
+          if (completed.has(key)) removeWithDependents(key);
+          else if (missing(key).length === 0) completed.add(key);
+        },
+        reset() { completed = new Set(); },
+        completeFrontier() { frontier().forEach(ticket => completed.add(ticket.key)); },
+        snapshot() {
+          return {
+            completed: new Set(completed),
+            frontier: frontier(),
+            blocked: blocked(),
+            missing
+          };
+        }
+      };
+    })();
+
+    let activeWalkthrough = 0;
+
+    function ticketTitle(key) {
+      return ticketDefinitions.find(ticket => ticket.key === key).title;
+    }
+
+    function renderState(state) {
+      document.querySelector("#done-count").textContent = state.completed.size;
+      document.querySelector("#frontier-count").textContent = state.frontier.length;
+      document.querySelector("#blocked-count").textContent = state.blocked.length;
+
+      const frontierList = document.querySelector("#frontier-list");
+      frontierList.replaceChildren(...state.frontier.map(ticket => {
+        const item = document.createElement("li");
+        item.textContent = ticket.title;
+        return item;
+      }));
+
+      const gateList = document.querySelector("#gate-list");
+      gateList.replaceChildren(...gates.map(gate => {
+        const passed = gate.requires.every(key => state.completed.has(key));
+        const item = document.createElement("li");
+        item.className = passed ? "passed" : "waiting";
+        item.textContent = `${passed ? "Passed" : "Waiting"}: ${gate.title} — ${gate.proof}`;
+        return item;
+      }));
+    }
+
+    function renderTickets(state) {
+      const root = document.querySelector("#ticket-map");
+      const phases = [...new Set(ticketDefinitions.map(ticket => ticket.phase))];
+      const sections = phases.map(phase => {
+        const section = document.createElement("section");
+        section.className = "phase";
+        const phaseTickets = ticketDefinitions.filter(ticket => ticket.phase === phase);
+        section.innerHTML = `<div class="phase-heading"><h2>${phase}</h2><span>${phaseTickets.length} tickets</span></div>`;
+
+        const grid = document.createElement("div");
+        grid.className = "tickets";
+        phaseTickets.forEach(ticket => {
+          const isDone = state.completed.has(ticket.key);
+          const missing = state.missing(ticket.key);
+          const isFrontier = !isDone && missing.length === 0;
+          const card = document.createElement("article");
+          card.className = `ticket ${isDone ? "done" : isFrontier ? "frontier" : "blocked"}`;
+
+          const status = isDone ? "Completed" : isFrontier ? "Available now" : `Blocked by ${missing.length}`;
+          const dependencyText = ticket.deps.length ? ticket.deps.map(ticketTitle).join(" · ") : "None — can start immediately";
+          const blockerText = missing.length ? `<p><strong>Open blockers:</strong> ${missing.map(ticketTitle).join(" · ")}</p>` : "";
+          card.innerHTML = `
+            <div class="ticket-status">${status}</div>
+            <h3>${ticket.title}</h3>
+            <p class="outcome">${ticket.outcome}</p>
+            <div class="meta">
+              <p><strong>Depends on:</strong> ${dependencyText}</p>
+              ${blockerText}
+              <p class="verification"><strong>Checkpoint:</strong> ${ticket.verification}</p>
+            </div>
+          `;
+
+          const button = document.createElement("button");
+          button.type = "button";
+          button.disabled = !isDone && !isFrontier;
+          button.textContent = isDone ? "Reopen this path" : "Mark complete";
+          button.addEventListener("click", () => {
+            TicketMap.toggle(ticket.key);
+            render();
+          });
+          card.querySelector(".meta").append(button);
+          grid.append(card);
+        });
+        section.append(grid);
+        return section;
+      });
+      root.replaceChildren(...sections);
+    }
+
+    function renderWalkthroughs(state) {
+      const tabs = document.querySelector("#guide-tabs");
+      tabs.replaceChildren(...walkthroughs.map((walkthrough, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "tab";
+        button.setAttribute("aria-selected", String(index === activeWalkthrough));
+        button.textContent = walkthrough.title;
+        button.addEventListener("click", () => {
+          activeWalkthrough = index;
+          render();
+        });
+        return button;
+      }));
+
+      const walkthrough = walkthroughs[activeWalkthrough];
+      document.querySelector("#guide-copy").textContent = walkthrough.copy;
+      const steps = walkthrough.steps.map(key => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `guide-step ${state.completed.has(key) ? "done" : ""}`;
+        button.disabled = !state.completed.has(key) && state.missing(key).length > 0;
+        button.textContent = ticketTitle(key);
+        button.addEventListener("click", () => {
+          TicketMap.toggle(key);
+          render();
+        });
+        return button;
+      });
+      document.querySelector("#guide-steps").replaceChildren(...steps);
+    }
+
+    function render() {
+      const state = TicketMap.snapshot();
+      renderState(state);
+      renderTickets(state);
+      renderWalkthroughs(state);
+    }
+
+    document.querySelector("#complete-frontier").addEventListener("click", () => {
+      TicketMap.completeFrontier();
+      render();
+    });
+    document.querySelector("#reset-map").addEventListener("click", () => {
+      TicketMap.reset();
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
