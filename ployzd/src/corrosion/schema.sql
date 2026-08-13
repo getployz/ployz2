@@ -21,7 +21,6 @@ CREATE TABLE containers
     machine_id         TEXT      NOT NULL DEFAULT '',
     service_id         TEXT AS (json_extract(container, '$.service_id')),
     service_name       TEXT AS (json_extract(container, '$.service_name')),
-    docker_sync_status TEXT      NOT NULL DEFAULT '',
     updated_at         TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
 );
 
