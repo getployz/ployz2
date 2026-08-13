@@ -7,4 +7,4 @@ All files below are verbatim inputs from [`psviderski/uncloud@b7e224a1eff98813b1
 - `layer3.tsv` inventories every exact `t.Run` declaration and the 60 selected / 16 not-ported disposition fixed by [Decide Layer 3 upstream end-to-end coverage](https://github.com/getployz/ployz2/issues/18).
 - `SHA256SUMS` freezes the copied bytes.
 
-Run `scripts/check-evidence-inventories.sh` to verify counts, pinned sources, dispositions, the empty CLI deviation ledger, and copied-file checksums.
+Run `scripts/check-evidence-inventories.sh` to verify counts, pinned sources, dispositions, the CLI deviation-ledger format, and copied-file checksums.
