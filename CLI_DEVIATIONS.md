@@ -2,3 +2,4 @@
 - `plain-caddy-config` — Drop `ployz caddy config --no-color`; Ployz emits plain Caddy configuration and has no coloured mode to disable.
 - `native-completion` — Add `ployz completion <SHELL>`; completion is preserved through Clap's native shell generators rather than Cobra's hidden protocol.
 - `local-machine-init-stub` — Make `ployz machine init [DESTINATION]` syntactically optional so the preserved local-initialisation path reaches its explicit not-implemented handler.
+- `no-nightly-daemon-channel` — Reject `--version nightly`; Ployz has stable `latest` and explicit-version daemon installs only.
