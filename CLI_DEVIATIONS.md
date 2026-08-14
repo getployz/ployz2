@@ -6,3 +6,4 @@
 - `compose-plugin-scope` — Probe the client-side Docker Compose plugin only for `deploy`, `build`, and bare `logs`; explicit-service `logs` and unrelated commands have no global Compose preflight.
 - `compose-prerequisite-errors` — Report command-specific Ployz prerequisite errors when the Docker CLI or Compose plugin is unavailable, without requiring a reachable Docker daemon.
 - `compose-diagnostics-source` — Preserve a failed `docker compose config` diagnostic unchanged when the subsequent plugin-version probe succeeds.
+- `volume-remove-auto-confirm-env` — Let `ployz volume rm --yes` read `PLOYZ_AUTO_CONFIRM`, preserving the configured auto-confirm path required by the Volume workflow.
