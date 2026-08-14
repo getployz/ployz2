@@ -7,3 +7,4 @@
 - `compose-prerequisite-errors` — Report command-specific Ployz prerequisite errors when the Docker CLI or Compose plugin is unavailable, without requiring a reachable Docker daemon.
 - `compose-diagnostics-source` — Preserve a failed `docker compose config` diagnostic unchanged when the subsequent plugin-version probe succeeds.
 - `volume-remove-auto-confirm-env` — Let `ployz volume rm --yes` read `PLOYZ_AUTO_CONFIRM`, preserving the configured auto-confirm path required by the Volume workflow.
+- `direct-push-reference-boundary` — Reject digest and port-qualified-registry references for direct image push: Docker cannot push a digest or nest a registry-port colon below the temporary loopback registry without changing the reference. Build resolution remains exact, and external `--push-registry` delivery remains supported.
