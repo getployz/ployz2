@@ -1,0 +1,14 @@
+services:
+  service-no-build:
+    image: portainer/pause:3.9
+
+  service-first:
+    image: 127.0.0.1:${TEST_REGISTRY_PORT}/service-first
+    build:
+      context: service-first-dir/
+
+  service-second:
+    image: 127.0.0.1:${TEST_REGISTRY_PORT}/service-second:version2
+    build:
+      context: service-second-dir/
+      dockerfile: Dockerfile.alt
