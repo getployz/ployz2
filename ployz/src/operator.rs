@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::{BinaryHeap, HashSet},
     future::Future,
@@ -10,16 +11,16 @@ use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerLogsRequest, ContainerObservation, ExecConfig,
     ExecOptions, ExecRequestFrame, HealthObservation, ListMachinesRequest, LogEntry, LogStream,
-    LogsOptions, MachineLogService, MachineLogsRequest, MachineObservation, MachineSelector,
-    MembershipObservation, OpaquePayload, ServiceObservation, op, resolve_machine_selectors,
-    select_service,
+    LogsOptions, MachineId, MachineLogService, MachineLogsRequest, MachineName, MachineObservation,
+    MachineSelector, MembershipObservation, OpaquePayload, ServiceObservation, StreamProtocolError,
+    op, resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tonic::Streaming;
 
-use crate::connect::{Client, TransportError};
+use crate::connect::{Client, ConnectError, TransportError};
 
 pub const DEFAULT_EXEC_COMMAND: &[&str] = &[
     "sh",
@@ -30,7 +31,17 @@ pub const DEFAULT_EXEC_COMMAND: &[&str] = &[
 const LOG_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const LOG_STALL_CHECK: Duration = Duration::from_secs(1);
 
-pub type LogSource = Pin<Box<dyn Stream<Item = Result<LogEntry, String>> + Send>>;
+#[derive(Debug, Error)]
+pub enum LogError {
+    #[error("{0}")]
+    Transport(#[from] tonic::Status),
+    #[error("{0}")]
+    Protocol(#[from] StreamProtocolError),
+    #[error("{0}")]
+    Message(Cow<'static, str>),
+}
+
+pub type LogSource = Pin<Box<dyn Stream<Item = Result<LogEntry, LogError>> + Send>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceArg {
@@ -67,26 +78,65 @@ pub enum ContainerSelectorError {
 
 #[derive(Debug, Error)]
 pub enum OperatorError {
-    #[error("{0}")]
-    Message(String),
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
+    #[error(transparent)]
+    Selector(#[from] ployz_core::ServiceSelectorError),
+    #[error(transparent)]
+    MachineSelector(#[from] ployz_core::MachineSelectorError),
+    #[error(transparent)]
+    Value(#[from] ployz_core::ValueError),
     #[error(transparent)]
     Container(#[from] ContainerSelectorError),
     #[error("Machine RPC failed: {0}")]
     Rpc(TransportError),
     #[error("stream protocol failed: {0}")]
-    Protocol(#[from] ployz_core::StreamProtocolError),
-}
-
-impl From<String> for OperatorError {
-    fn from(message: String) -> Self {
-        Self::Message(message)
-    }
-}
-
-impl From<&str> for OperatorError {
-    fn from(message: &str) -> Self {
-        Self::Message(message.to_owned())
-    }
+    Protocol(#[from] StreamProtocolError),
+    #[error(transparent)]
+    Codec(#[from] ployz_core::CodecError),
+    #[error("exec request stream closed")]
+    StreamClosed,
+    #[error("cannot attach a terminal exec to non-terminal stdin; use -T")]
+    TtyRequiresStdin,
+    #[error("invalid Service log selector {0:?}")]
+    InvalidServiceSelector(String),
+    #[error("invalid log tail {0:?}: expected a non-negative integer or all")]
+    InvalidTail(String),
+    #[error("invalid proxy port: expected [LOCAL_PORT:]REMOTE_PORT")]
+    InvalidProxyPort,
+    #[error("invalid local port {0:?}: expected 0-65535")]
+    InvalidLocalPort(String),
+    #[error("invalid remote port {0:?}: expected 1-65535")]
+    InvalidRemotePort(String),
+    #[error("no running healthy regular container found for Service")]
+    NoHealthyContainer,
+    #[error("no containers for Service {service:?} found on the selected Machines")]
+    NoContainersOnMachines { service: String },
+    #[error("none of the selected Services exist in the Cluster")]
+    NoSelectedServices,
+    #[error("no Machines found")]
+    NoMachines,
+    #[error("selected Machine disappeared from the snapshot")]
+    SnapshotStale,
+    #[error("unsupported Machine log service {service:?}; {expected}")]
+    UnsupportedLogService {
+        service: String,
+        expected: &'static str,
+    },
+    #[error("open logs for Container {container_id} on Machine {machine_id}: {source}")]
+    OpenContainerLogs {
+        container_id: ContainerId,
+        machine_id: MachineId,
+        #[source]
+        source: Box<OperatorError>,
+    },
+    #[error("open {service} logs on Machine {machine_name}: {source}")]
+    OpenMachineLogs {
+        service: MachineLogService,
+        machine_name: MachineName,
+        #[source]
+        source: Box<OperatorError>,
+    },
 }
 
 impl From<tonic::Status> for OperatorError {
@@ -105,7 +155,7 @@ pub fn exec_options(command: Vec<String>, mode: ExecMode) -> Result<ExecOptions,
     // TODO(UT-039): preserve the Compose-style stdout-driven TTY rule.
     let tty = !mode.detach && mode.stdout_terminal && !mode.no_tty;
     if tty && !mode.stdin_terminal {
-        return Err("cannot attach a terminal exec to non-terminal stdin; use -T".into());
+        return Err(OperatorError::TtyRequiresStdin);
     }
     Ok(ExecOptions {
         command: if command.is_empty() {
@@ -201,7 +251,7 @@ pub fn parse_service_args(values: &[String]) -> Result<Vec<ServiceArg>, Operator
                 (service, Some(container))
             });
         if service.is_empty() || container.is_some_and(str::is_empty) {
-            return Err(format!("invalid Service log selector {value:?}").into());
+            return Err(OperatorError::InvalidServiceSelector(value.to_owned()));
         }
         if let Some(existing) = parsed.iter_mut().find(|arg| arg.service == service) {
             match container {
@@ -231,9 +281,7 @@ pub fn parse_tail(value: &str) -> Result<i32, OperatorError> {
         .parse::<i32>()
         .ok()
         .filter(|tail| *tail >= 0)
-        .ok_or_else(|| {
-            format!("invalid log tail {value:?}: expected a non-negative integer or all").into()
-        })
+        .ok_or_else(|| OperatorError::InvalidTail(value.to_owned()))
 }
 
 #[must_use]
@@ -244,16 +292,16 @@ pub fn service_logs_use_compose(explicit: &[String]) -> bool {
 pub fn parse_proxy_ports(value: &str) -> Result<ProxyPorts, OperatorError> {
     let (local, remote) = value.split_once(':').map_or(("0", value), |parts| parts);
     if remote.contains(':') {
-        return Err("invalid proxy port: expected [LOCAL_PORT:]REMOTE_PORT".into());
+        return Err(OperatorError::InvalidProxyPort);
     }
     let local = local
         .parse::<u16>()
-        .map_err(|_| format!("invalid local port {local:?}: expected 0-65535"))?;
+        .map_err(|_| OperatorError::InvalidLocalPort(local.to_owned()))?;
     let remote = remote
         .parse::<u16>()
         .ok()
         .filter(|port| *port > 0)
-        .ok_or_else(|| format!("invalid remote port {remote:?}: expected 1-65535"))?;
+        .ok_or_else(|| OperatorError::InvalidRemotePort(remote.to_owned()))?;
     Ok(ProxyPorts { local, remote })
 }
 
@@ -272,7 +320,7 @@ pub fn select_proxy_container(
                     }
                 )
         })
-        .ok_or_else(|| "no running healthy regular container found for Service".into())
+        .ok_or(OperatorError::NoHealthyContainer)
 }
 
 pub struct ExecSession {
@@ -297,12 +345,8 @@ impl Client {
         container_selector: Option<&str>,
         options: ExecOptions,
     ) -> Result<ExecSession, OperatorError> {
-        let live = self
-            .live_services()
-            .await
-            .map_err(|error| OperatorError::Message(error.to_string()))?;
-        let service = select_service(&live.services, service_selector)
-            .map_err(|error| OperatorError::Message(error.to_string()))?;
+        let live = self.live_services().await?;
+        let service = select_service(&live.services, service_selector)?;
         let container = select_exec_container(service, container_selector)?;
         let machine_id = container.machine_id.clone();
         let config = ExecRequestFrame::Config(ExecConfig {
@@ -314,7 +358,7 @@ impl Client {
         sender
             .send(config)
             .await
-            .map_err(|_| OperatorError::Message("exec request stream closed".into()))?;
+            .map_err(|_| OperatorError::StreamClosed)?;
         let output = self
             .exec_stream(
                 &MachineSelector::from(&machine_id),
@@ -337,18 +381,14 @@ impl Client {
     ) -> Result<ServiceLogInputs, OperatorError> {
         let machines = self
             .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .map_err(|error| OperatorError::Message(error.to_string()))?
+            .await?
             .machines;
         let selected_machines = select_machines(&machines, machine_selectors)?;
         let machine_ids = selected_machines
             .iter()
             .map(|machine| machine.machine.id.clone())
             .collect::<HashSet<_>>();
-        let live = self
-            .live_services()
-            .await
-            .map_err(|error| OperatorError::Message(error.to_string()))?;
+        let live = self.live_services().await?;
         let mut inputs = Vec::new();
         let mut skipped_services = Vec::new();
         for arg in args {
@@ -358,7 +398,7 @@ impl Client {
                     skipped_services.push(arg.service.clone());
                     continue;
                 }
-                Err(error) => return Err(error.to_string().into()),
+                Err(error) => return Err(error.into()),
             };
             let containers = select_log_containers(service, &arg.containers)?;
             let containers = containers
@@ -366,19 +406,16 @@ impl Client {
                 .filter(|container| machine_ids.contains(&container.machine_id))
                 .collect::<Vec<_>>();
             if containers.is_empty() {
-                return Err(format!(
-                    "no containers for Service {:?} found on the selected Machines",
-                    arg.service
-                )
-                .into());
+                return Err(OperatorError::NoContainersOnMachines {
+                    service: arg.service.clone(),
+                });
             }
             for container in containers {
                 let request = op::ContainerLogs::into_request(ContainerLogsRequest {
                     container_id: container.container_id.clone(),
                     options: options.clone(),
                 })
-                .encode()
-                .map_err(|error| OperatorError::Message(error.to_string()))?;
+                .encode()?;
                 let identity = format!("{}/{}", arg.service, container.display_name);
                 let target = MachineSelector::from(&container.machine_id);
                 // TODO(UT-082): earlier Container log streams intentionally survive until the
@@ -390,16 +427,16 @@ impl Client {
                 })
                 .await
                 {
-                    return Err(format!(
-                        "open logs for Container {} on Machine {}: {error}",
-                        container.container_id, container.machine_id
-                    )
-                    .into());
+                    return Err(OperatorError::OpenContainerLogs {
+                        container_id: container.container_id.clone(),
+                        machine_id: container.machine_id,
+                        source: Box::new(error.into()),
+                    });
                 }
             }
         }
         if inputs.is_empty() {
-            return Err("none of the selected Services exist in the Cluster".into());
+            return Err(OperatorError::NoSelectedServices);
         }
         Ok(ServiceLogInputs {
             inputs,
@@ -421,17 +458,17 @@ impl Client {
                 .iter()
                 .map(|service| {
                     service.parse::<MachineLogService>().map_err(|expected| {
-                        OperatorError::Message(format!(
-                            "unsupported Machine log service {service:?}; {expected}"
-                        ))
+                        OperatorError::UnsupportedLogService {
+                            service: service.clone(),
+                            expected,
+                        }
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
         let machines = self
             .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .map_err(|error| OperatorError::Message(error.to_string()))?
+            .await?
             .machines;
         let machines = select_machines(&machines, machine_selectors)?;
         let mut inputs = Vec::new();
@@ -441,8 +478,7 @@ impl Client {
                     service,
                     options: options.clone(),
                 })
-                .encode()
-                .map_err(|error| OperatorError::Message(error.to_string()))?;
+                .encode()?;
                 let identity = format!("{service}@{}", machine.machine.name);
                 let target = MachineSelector::from(&machine.machine.id);
                 // TODO(UT-083): earlier Machine log streams intentionally survive until the
@@ -454,11 +490,11 @@ impl Client {
                 })
                 .await
                 {
-                    return Err(format!(
-                        "open {service} logs on Machine {}: {error}",
-                        machine.machine.name
-                    )
-                    .into());
+                    return Err(OperatorError::OpenMachineLogs {
+                        service,
+                        machine_name: machine.machine.name.clone(),
+                        source: Box::new(error.into()),
+                    });
                 }
             }
         }
@@ -471,8 +507,8 @@ fn stream_input(identity: String, stream: Streaming<OpaquePayload>) -> LogInput 
         identity,
         stream: Box::pin(stream.map(|result| {
             result
-                .map_err(|error| error.to_string())
-                .and_then(|payload| LogEntry::decode(&payload).map_err(|error| error.to_string()))
+                .map_err(LogError::from)
+                .and_then(|payload| LogEntry::decode(&payload).map_err(LogError::from))
         })),
     }
 }
@@ -548,35 +584,33 @@ fn select_machines<'a>(
         .collect::<Vec<_>>();
     if selectors.is_empty() {
         if eligible.is_empty() {
-            return Err("no Machines found".into());
+            return Err(OperatorError::NoMachines);
         }
         return Ok(eligible);
     }
     let selectors = selectors
         .iter()
         .map(|selector| MachineSelector::parse(selector.clone()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| OperatorError::Message(error.to_string()))?;
+        .collect::<Result<Vec<_>, _>>()?;
     let visible = eligible
         .iter()
         .map(|observation| observation.machine.clone())
         .collect::<Vec<_>>();
-    resolve_machine_selectors(&visible, &selectors)
-        .map_err(|error| OperatorError::Message(error.to_string()))?
+    resolve_machine_selectors(&visible, &selectors)?
         .into_iter()
         .map(|machine| {
             eligible
                 .iter()
                 .copied()
                 .find(|observation| observation.machine.id == machine.id)
-                .ok_or_else(|| "selected Machine disappeared from the snapshot".into())
+                .ok_or(OperatorError::SnapshotStale)
         })
         .collect()
 }
 
 struct LogEvent {
     index: usize,
-    entry: Option<Result<LogEntry, String>>,
+    entry: Option<Result<LogEntry, LogError>>,
 }
 
 struct LogState {

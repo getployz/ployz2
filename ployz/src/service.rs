@@ -87,7 +87,7 @@ impl Client {
             match joined {
                 Ok(Ok(success)) => result.successes.push(success),
                 Ok(Err(failure)) => result.failures.push(failure),
-                Err(error) => return Err(ConnectError::Attempt(error.to_string())),
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(derive_live_services(result))

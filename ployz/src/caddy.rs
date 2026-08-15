@@ -8,19 +8,28 @@ use ployz_core::{
     ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
 };
 use semver::Version;
+use thiserror::Error;
 
 pub const SERVICE_NAME: &str = "caddy";
 pub const DATA_PATH: &str = "/var/lib/ployz/caddy";
 pub const RUNTIME_PATH: &str = "/run/ployz/caddy";
 
-pub async fn latest_image() -> Result<String, String> {
-    let reference: Reference = "docker.io/library/caddy:latest"
-        .parse()
-        .map_err(|error| format!("parse Caddy image reference: {error}"))?;
+#[derive(Debug, Error)]
+pub enum CaddyImageError {
+    #[error("parse Caddy image reference: {0}")]
+    Reference(String),
+    #[error("list Docker Hub Caddy tags: {0}")]
+    ListTags(String),
+}
+
+pub async fn latest_image() -> Result<String, CaddyImageError> {
+    let reference = "docker.io/library/caddy:latest"
+        .parse::<Reference>()
+        .map_err(|error| CaddyImageError::Reference(error.to_string()))?;
     let response = Client::default()
         .list_tags(&reference, &RegistryAuth::Anonymous, None, None)
         .await
-        .map_err(|error| format!("list Docker Hub Caddy tags: {error}"))?;
+        .map_err(|error| CaddyImageError::ListTags(error.to_string()))?;
     Ok(select_image(&response.tags))
 }
 

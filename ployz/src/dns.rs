@@ -126,7 +126,7 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
             })?;
         let machine = details.machine.ok_or_else(|| Error::Inspect {
             machine_id,
-            source: ConnectError::Attempt("inspect response omitted Machine details".into()),
+            source: ConnectError::MissingMachineDetails,
         })?;
         if machine.public_ip.is_some() {
             machines.push(machine);

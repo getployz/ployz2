@@ -5,6 +5,15 @@ use ployz_core::{
     MachineObservation, MachineSuccess, PartialResult, RpcError, RpcErrorCode,
 };
 use serde::Serialize;
+use thiserror::Error;
+
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum AssignmentError {
+    #[error("expected KEY=VALUE, got {0:?}")]
+    MissingDelimiter(String),
+    #[error("assignment key cannot be empty")]
+    EmptyKey,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct MachineVolume {
@@ -52,15 +61,15 @@ pub fn machine_volumes(
 
 pub fn parse_assignments<'a>(
     values: impl IntoIterator<Item = &'a str>,
-) -> Result<BTreeMap<String, String>, String> {
+) -> Result<BTreeMap<String, String>, AssignmentError> {
     values
         .into_iter()
         .map(|value| {
             let (key, value) = value
                 .split_once('=')
-                .ok_or_else(|| format!("expected KEY=VALUE, got {value:?}"))?;
+                .ok_or_else(|| AssignmentError::MissingDelimiter(value.to_owned()))?;
             if key.is_empty() {
-                return Err("assignment key cannot be empty".into());
+                return Err(AssignmentError::EmptyKey);
             }
             Ok((key.into(), value.into()))
         })

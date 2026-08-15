@@ -529,22 +529,37 @@ fn required_label<'a>(
         .ok_or(Error::MissingLabel(name))
 }
 
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct InspectState {
+    #[serde(default)]
+    status: String,
+    exit_code: Option<i64>,
+    health: Option<InspectHealth>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct InspectHealth {
+    status: Option<String>,
+}
+
 fn runtime_observation(state: Option<&serde_json::Value>) -> ContainerRuntimeObservation {
     let Some(state) = state else {
         return ContainerRuntimeObservation::Unknown {
             raw: json!({ "state": null }),
         };
     };
-    let status = state
-        .get("Status")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let health = state
-        .get("Health")
-        .and_then(|health| health.get("Status"))
-        .and_then(serde_json::Value::as_str);
-    let exit_code = state.get("ExitCode").and_then(serde_json::Value::as_i64);
-    runtime_from_parts_with_raw(status, exit_code, health, state)
+    let parsed = InspectState::deserialize(state).unwrap_or_default();
+    runtime_from_parts_with_raw(
+        &parsed.status,
+        parsed.exit_code,
+        parsed
+            .health
+            .as_ref()
+            .and_then(|health| health.status.as_deref()),
+        state,
+    )
 }
 
 fn effective_healthcheck(config: Option<&RawContainerConfig>) -> Option<HealthcheckSpec> {

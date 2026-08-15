@@ -100,7 +100,7 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
                 }),
                 Err(error) => result.failures.push(MachineFailure {
                     machine_id: id,
-                    error: error.to_string(),
+                    error,
                 }),
             }
         }
@@ -125,7 +125,9 @@ fn wg_rtt_line(rtt: Option<&RttStatistics>) -> Option<String> {
 }
 
 #[must_use]
-fn format_rtt_table(result: &PartialResult<Vec<RttObservation>, String>) -> String {
+fn format_rtt_table(
+    result: &PartialResult<Vec<RttObservation>, crate::connect::ConnectError>,
+) -> String {
     let mut table = String::from("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n");
     for success in &result.successes {
         for observation in &success.value {
@@ -144,7 +146,7 @@ fn format_rtt_table(result: &PartialResult<Vec<RttObservation>, String>) -> Stri
     table
 }
 
-fn print_rtts(result: &PartialResult<Vec<RttObservation>, String>) {
+fn print_rtts(result: &PartialResult<Vec<RttObservation>, crate::connect::ConnectError>) {
     print!("{}", format_rtt_table(result));
     for failure in &result.failures {
         eprintln!(

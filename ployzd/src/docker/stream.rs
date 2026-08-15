@@ -16,7 +16,7 @@ use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tonic::{Status, Streaming};
 
 use super::{LocalDocker, MachineSpecStore, docker_error};
-use crate::logs::{LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space};
+use crate::logs::{JournalError, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space};
 
 impl LocalDocker {
     pub async fn exec(&self, mut requests: Streaming<OpaquePayload>) -> Result<RpcStream, Status> {
@@ -175,7 +175,7 @@ impl LocalDocker {
         let stream = self.client.logs(container, Some(options)).map(|entry| {
             entry
                 .map(parse_log_output)
-                .map_err(|error| error.to_string())
+                .map_err(|error| JournalError::Docker(error.to_string()))
         });
         Ok(Box::pin(stream))
     }

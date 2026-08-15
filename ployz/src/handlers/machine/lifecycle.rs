@@ -155,7 +155,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     if !matches.get_flag("no-install") {
-        crate::provisioning::provision(matches).map_err(Error::usage)?;
+        crate::provisioning::provision(matches)?;
     }
 
     let (assigned, caddy_settings) = runtime()?.block_on(async {
@@ -314,7 +314,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     if !matches.get_flag("no-install") {
-        crate::provisioning::provision(matches).map_err(Error::usage)?;
+        crate::provisioning::provision(matches)?;
     }
 
     let (machine, connection) = runtime()?.block_on(async {
@@ -371,7 +371,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 println!("Reserved Cluster domain: {domain}");
             }
             if want_caddy {
-                let image = crate::caddy::latest_image().await.map_err(Error::usage)?;
+                let image = crate::caddy::latest_image().await?;
                 let requested = crate::caddy::service_spec(image, Vec::new(), None);
                 crate::handlers::deploy::deploy_requested(&mut ready, &requested).await?;
                 if want_dns {
@@ -664,8 +664,10 @@ mod tests {
                 &LocalMachinePhase::Participating,
                 &visible,
                 &assigned.public_key,
-            ),
-            Err(Error::usage("Machine already belongs to this Cluster"))
+            )
+            .unwrap_err()
+            .to_string(),
+            "Machine already belongs to this Cluster",
         );
         assert!(
             cluster_membership_conflict(

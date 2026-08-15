@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     future::Future,
     io,
     path::{Path, PathBuf},
@@ -14,8 +15,8 @@ use ployz_core::{
     CodecError, DockerVolume, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
     ListImagesRequest, ListVolumesRequest, MachineFailure, MachineImages, MachineName,
     MachineObservation, MachineRpcClient, MachineSelector, MachineSuccess, OpaquePayload,
-    PartialResult, Rpc, RpcError, RpcErrorCode, RpcResponseBody, apply_many_targets,
-    apply_one_target, op,
+    PartialResult, RoutingMetadataError, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
+    apply_many_targets, apply_one_target, op,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -54,6 +55,7 @@ pub type BoxProxyStream = Box<dyn ProxyStream>;
 
 // TODO(UT-018, UT-019): a future client-side WireGuard connector must honour
 // cancellation and try each visible Machine; this reconstruction keeps it excluded.
+// Object-safe for `Arc<dyn Connector>` in Client; native async fn is not dyn-safe.
 #[tonic::async_trait]
 pub trait Connector: Send + Sync {
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError>;
@@ -112,7 +114,7 @@ impl Connector for SystemConnector {
             Transport::Unix(_) => TcpStream::connect(address)
                 .await
                 .map(|stream| Box::new(stream) as BoxProxyStream)
-                .map_err(|error| ConnectError::Attempt(error.to_string())),
+                .map_err(ConnectError::from),
             Transport::Ssh {
                 destination,
                 key_file,
@@ -122,19 +124,18 @@ impl Connector for SystemConnector {
                 args.extend(["-W".into(), address.into(), destination.target().into()]);
                 spawn_ssh(&self.ssh_program, &args)
                     .map(|stream| Box::new(stream) as BoxProxyStream)
-                    .map_err(|error| ConnectError::Attempt(error.to_string()))
+                    .map_err(ConnectError::from)
             }
         }
     }
 }
 
 async fn connect_endpoint(target: String) -> Result<Channel, ConnectError> {
-    Endpoint::from_shared(target)
-        .map_err(|error| ConnectError::Attempt(error.to_string()))?
+    Endpoint::from_shared(target)?
         .connect_timeout(Duration::from_secs(5))
         .connect()
         .await
-        .map_err(|error| ConnectError::Attempt(error.to_string()))
+        .map_err(ConnectError::from)
 }
 
 async fn connect_ssh(
@@ -151,13 +152,12 @@ async fn connect_ssh(
         .args(&probe_args)
         .kill_on_drop(true)
         .status()
-        .await
-        .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+        .await?;
     if !status.success() {
-        return Err(ConnectError::Attempt(format!(
-            "SSH probe to {} exited with {status}",
-            destination.target()
-        )));
+        return Err(ConnectError::SshProbe {
+            target: destination.target().to_owned(),
+            status,
+        });
     }
     let args = ssh_args(destination, key_file, control_path.as_deref());
     let program = program.to_owned();
@@ -169,7 +169,7 @@ async fn connect_ssh(
             async move { spawn_ssh(&program, &args).map(TokioIo::new) }
         }))
         .await
-        .map_err(|error| ConnectError::Attempt(error.to_string()))
+        .map_err(ConnectError::from)
 }
 
 fn ssh_args(
@@ -422,7 +422,7 @@ impl Client {
         let mut grpc = tonic::client::Grpc::new(self.channel.clone());
         grpc.ready()
             .await
-            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+            .map_err(|error| ConnectError::Attempt(error.to_string().into()))?;
         let response = grpc
             .unary(
                 target_request(payload, target),
@@ -496,12 +496,11 @@ impl Client {
                 .map(MachineSelector::parse)
                 .collect::<Result<Vec<_>, _>>()?
         };
-        apply_many_targets(request.metadata_mut(), &selectors)
-            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+        apply_many_targets(request.metadata_mut(), &selectors)?;
         let mut grpc = tonic::client::Grpc::new(self.channel.clone());
         grpc.ready()
             .await
-            .map_err(|error| ConnectError::Attempt(error.to_string()))?;
+            .map_err(|error| ConnectError::Attempt(error.to_string().into()))?;
         let response = grpc
             .server_streaming(
                 request,
@@ -566,6 +565,10 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
         error @ (ConnectError::Attempt(_)
+        | ConnectError::MissingMachineDetails
+        | ConnectError::SshProbe { .. }
+        | ConnectError::Routing(_)
+        | ConnectError::Join(_)
         | ConnectError::ProxyUnsupported(_)
         | ConnectError::UnsupportedNetwork(_)
         | ConnectError::Config(_)
@@ -605,9 +608,11 @@ async fn apply_timeout<T>(
 
 fn is_unary_retryable(error: &ConnectError) -> bool {
     match error {
-        ConnectError::Attempt(_) => true,
+        ConnectError::Attempt(_) | ConnectError::SshProbe { .. } | ConnectError::Join(_) => true,
         ConnectError::Rpc(error) => error.is_retryable(),
         ConnectError::Remote(_)
+        | ConnectError::MissingMachineDetails
+        | ConnectError::Routing(_)
         | ConnectError::ProxyUnsupported(_)
         | ConnectError::UnsupportedNetwork(_)
         | ConnectError::Config(_)
@@ -732,7 +737,18 @@ pub async fn connect(
 #[derive(Debug, Error)]
 pub enum ConnectError {
     #[error("connection attempt failed: {0}")]
-    Attempt(String),
+    Attempt(Cow<'static, str>),
+    #[error("connection attempt failed: inspect response omitted Machine details")]
+    MissingMachineDetails,
+    #[error("connection attempt failed: SSH probe to {target} exited with {status}")]
+    SshProbe {
+        target: String,
+        status: std::process::ExitStatus,
+    },
+    #[error("connection attempt failed: {0}")]
+    Routing(#[from] RoutingMetadataError),
+    #[error("connection attempt failed: {0}")]
+    Join(#[from] tokio::task::JoinError),
     #[error("proxy dialing is unsupported over {0}")]
     ProxyUnsupported(String),
     #[error("proxy dialing does not support network {0:?}")]
@@ -762,6 +778,18 @@ pub enum ConnectError {
     Framing(#[from] FramingError),
     #[error("Machine RPC identity failed: {0}")]
     Value(#[from] ployz_core::ValueError),
+}
+
+impl From<io::Error> for ConnectError {
+    fn from(error: io::Error) -> Self {
+        Self::Attempt(error.to_string().into())
+    }
+}
+
+impl From<tonic::transport::Error> for ConnectError {
+    fn from(error: tonic::transport::Error) -> Self {
+        Self::Attempt(error.to_string().into())
+    }
 }
 
 impl From<tonic::Status> for ConnectError {
