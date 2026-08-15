@@ -1,6 +1,6 @@
 # Managed ZFS Volume (proposal)
 
-Default pool fills that Machine’s backing FS minus `min(10GiB, 30%)`. Quota is a packing claim: deploy refuses if it would not fit with the other claims on that Machine.
+Default pool is that Machine’s backing FS minus headroom (formula still open: `min(100GiB, 30%)` vs `max`). Sparse vdev. Usage is best-effort. Deploy only checks packing claims.
 
 ## Cluster vs Machine
 
@@ -9,7 +9,7 @@ The CLI talks to a Cluster **entry**. The pool lives on a **Machine**. Same spli
 | | Cluster (entry / observation) | Machine (the resource) |
 |---|---|---|
 | Pool | There is none. Do not store “ZFS-enabled.” | `CreateZfsPool` on one target. `--machine` required when more than one Machine exists (prompt if omitted, like `volume create`). |
-| Pool / `--size` | There is none at Cluster scope. | Default: that Machine’s backing FS minus headroom `min(10GiB, 30% of FS total)`, capped by **available**. `--size` / `--from` override. Vdev is `fallocate`d so the headroom is real. |
+| Pool / `--size` | There is none at Cluster scope. | Default: backing FS minus headroom, capped by **available**. Sparse vdev (`truncate`, not `fallocate`). `--size` / `--from` override. |
 | List | Fan-out Live Observation. Partial Result. | Each row is `{Machine ID, pool, volumes}`. |
 | Deploy planning | Walks the observation. Pins like Named volumes. | Allocatable is computed per Machine. Never summed. |
 | Named volume `data` + `x-zfs: 10G` | Compose is cluster-entry input. | Dataset is created on the pinned Machine. |
@@ -25,10 +25,9 @@ Fan-out create (`--machines *`) is a later CLI sugar: N machine creates, still N
 | Send/recv | Out of scope. No transfer, no portable volume ID. |
 | Snapshots | Out of this cut. |
 | Pool | Machine command `ployz zfs pool create --machine …`. Not a cluster pool. Not created on first `x-zfs` deploy. `machine init` is out of scope. |
-| Backing | File-backed vdev (`fallocate`) or `--from POOL`. Mutually exclusive. Never auto-pick. |
-| Pool size default | Omit `--size`: `pool = available - min(10GiB, 0.30 × FS total)`. Fail if `pool <= 0`. `--size 100G` / `--size 80%` still override. `--from` has no `--size`. 30% is of that filesystem’s **total**, headroom is the **smaller** of 10GiB and 30%. |
-| Quota packing | Deploy-time only. `sum(declared quotas on that Machine) + Q ≤ pool_bytes`. Cluster entry observes, one Machine commits. No cluster sum. No `refreservation`. Used-bytes monitoring is later. |
-| Host headroom | Real only because the vdev is `fallocate`d. Sparse would eat the 10GiB/30% and starve Docker. |
+| Backing | Sparse file vdev (`truncate`) or `--from POOL`. No `fallocate`. Usage is best-effort: Docker and ZFS compete for host blocks. |
+| Pool size default | Omit `--size`: `pool = available - headroom`. Fail if `pool <= 0`. Headroom formula still open (see scenarios). `--size` / `--from` override. |
+| Quota packing | Deploy-time only. `sum(declared quotas on that Machine) + Q ≤ pool_bytes`. No `refquota`. No `refreservation`. Writes are best-effort until the host or pool `ENOSPC`s. |
 | Cluster flag | None. ZFS is Live Observation on each Machine (`Ready` / `PoolMissing` / …). Not stored in the replicated store. |
 | Privilege | Privileged `ployzd` on ZFS Machines. No helper. No sudo-from-unprivileged. |
 | Identity | `{Machine ID, ManagedZfsVolumeName}` |
@@ -67,16 +66,28 @@ ployz zfs pool create --machine db-1 --from tank
 
 Same targeting as `ployz volume create`: one Machine. Multi-machine and no `--machine` → prompt.
 
-Default size on the backing FS that will hold the vdev (`/var/lib/ployz/zfs/`):
+Default size on the backing FS that will hold the vdev (`/var/lib/ployz/zfs/`). Sparse `truncate`, not `fallocate`. Headroom is a planning number, not reserved host blocks.
 
 ```
-headroom = min(10GiB, 0.30 × fs_total)
+headroom = min(100GiB, 0.30 × fs_total)   # recommended; max(100GiB, 30%) also shown
 pool     = fs_available - headroom
 fail if pool <= 0
-fallocate(vdev, pool)     # headroom stays usable by Docker/OS
+truncate(vdev, pool)
 ```
 
-Examples: 1 TiB disk, 900 GiB free → headroom 10GiB → pool 890GiB. 20 GiB disk, 18 GiB free → headroom min(10GiB, 6GiB)=6GiB → pool 12GiB.
+| Disk | 30% | min(10GiB, 30%) pool | min(100GiB, 30%) pool | max(100GiB, 30%) pool |
+|---|---:|---:|---:|---:|
+| 20G | 6G | 14G | 14G | FAIL |
+| 40G | 12G | 30G | 28G | FAIL |
+| 80G | 24G | 70G | 56G | FAIL |
+| 160G | 48G | 150G | 112G | 60G |
+| 256G | 77G | 246G | 179G | 156G |
+| 512G | 154G | 502G | 412G | 358G |
+| 1T | 307G | 1014G | 924G | 717G |
+| 2T | 614G | ~2T | 1.9T | 1.4T |
+| 4T | 1.2T | ~4T | 3.9T | 2.8T |
+
+Assumes empty disk (`available ≈ total`). `min(10GiB, 30%)` leaves only 10G for Docker on anything ≥40G. `max(100GiB, 30%)` cannot create a pool on disks under 100G. `min(100GiB, 30%)` uses 30% on small VPSs and 100G on big boxes.
 
 `--from` is `zpool get` plus `tank/ployz` on **that** Machine. Re-running create against an existing Ployz pool on that Machine is a conflict. `machine init` does not call this.
 
@@ -118,7 +129,7 @@ commit
 
 Among Machines that fit: shuffle then first. One service, two volumes: both claims must fit on that one Machine. Two services that do not share a volume may land on different Machines.
 
-No `refreservation`. Used-bytes monitoring is later. A noisy volume can still fill the pool until ZFS `ENOSPC`s everyone sharing it — unless we also set `refquota` (open).
+No `refreservation`. No `refquota`. Used-bytes monitoring is later. A noisy volume can fill the host.
 
 Global still means N datasets (Q on each eligible Machine), not one Q split.
 
@@ -128,7 +139,7 @@ Global still means N datasets (Q on each eligible Machine), not one Q split.
 |---|---|---|
 | `CreateZfsPool` | `invoke` | Operator only. `--size` or `--from`. Fails if a Ployz pool already exists. |
 | `ListManagedZfsVolumes` | `call` | Deploy Snapshot + CLI. Returns capability, pool observation, volumes. |
-| `EnsureManagedZfsVolume` | `invoke` | Create the dataset. Persist the declared quota (see open: `refquota` vs property). |
+| `EnsureManagedZfsVolume` | `invoke` | Create the dataset. Persist the declared quota as a user property for the next Deploy’s packing math. |
 | `RemoveManagedZfsVolume` | `invoke` | Destroy the dataset. Not a Deploy operation. Not compensation. |
 
 Capabilities: `ployz.zfs.pool.create.v1`, `ployz.zfs.list.v1`, `ployz.zfs.ensure.v1`, `ployz.zfs.remove.v1`.
@@ -148,7 +159,7 @@ Observe reports: `Ready | ToolsMissing | PrivilegeMissing | PoolMissing | Nested
 | Snapshot field | `volumes` | `managed_zfs` |
 | Deploy op | `CreateVolume` | `EnsureManagedZfsVolume` |
 | Container mount | Docker `volume` | Docker `bind` of a daemon-owned path |
-| Quota | none | required `refquota` |
+| Quota | none | packing claim, deploy-time only |
 | Backing | Docker | Machine ZFS Pool (operator-created) |
 
 The Resolved Service Spec keeps `VolumeSource::ManagedZfs`. Do not rewrite it to `Bind`.
@@ -174,8 +185,8 @@ ZFS needs `/dev/zfs`. `ployzd` on a ZFS Machine runs privileged enough to do tha
 | Rewrite spec to Bind after Ensure | Recreate loop on the next Deploy. |
 | Cluster-scoped volume ID | A Cluster is not authoritative. Send/recv is out of scope. |
 | Hidden pool on first Ensure | Operator runs `pool create`. Default size is the headroom formula, not “whatever fits.” |
-| Sparse vdev | Headroom would be fake. `fallocate`. |
-| `--size 100%` with no headroom | Starves Docker/OS. Default leaves `min(10GiB, 30%)`. |
+| Sparse vdev | ~~rejected~~. Usage is best-effort. Docker and ZFS share host blocks. |
+| `fallocate` | Operator said no allocate. Headroom is not held. |
 | Cluster-wide quota | Fit is `sum(claims on that Machine)`. Never summed across Machines. |
 | Runtime write policing as the product | Deploy refuses a claim that does not fit. Monitoring later for used-bytes. |
 | Send/recv / snapshot RPCs | Out of scope. |
@@ -186,7 +197,6 @@ ZFS needs `/dev/zfs`. `ployzd` on a ZFS Machine runs privileged enough to do tha
 | Live percentage (pool or quota tracks disk forever) | Resolve `--size 80%` once to bytes. ZFS caps are byte sizes. |
 | Volume `x-zfs: 20%` | Out of this cut. Volume quota is `10G`. |
 | Stored “ZFS-enabled cluster” | Cluster truth. Observe each Machine. |
-| Cluster-wide quota | A Managed ZFS Volume is machine-local. Global means N datasets. |
 | Cluster zpool / optional `--machine` | Same bug as treating `volume create` as cluster-wide. Create targets one Machine. |
 | Fan-out `pool create` on every Machine | Later sugar. Still N machine pools, not one cluster pool. |
 | Default `--overcommit 120%` | Replaced: packing is 100% of that Machine’s pool. |
@@ -204,20 +214,14 @@ This Ployz design is original. Snapshots/send/recv matching the author’s “re
 
 ## Open questions
 
-Headroom default and deploy-time packing do not close these. `fallocate` is locked (otherwise the 10GiB/30% is fake).
+❓ **Q1** - **Headroom**: `min(100GiB, 30%)` (30% on small disks, 100G on big) or `max(100GiB, 30%)` (fails under 100G, leaves 307G on a 1T box)?
 
-❓ **Q1** - **Wrong problem?**: Quota/pin v1, or are we still pretending this helps when `db-1` dies?
+➡️ `min(100GiB, 30%)`. `max` kills typical VPSs.
 
-➡️ Quota/pin is v1. Recover is a different module.
-
-❓ **Q2** - **Persist the 10G claim how?**: ZFS `refquota` (runtime cap + observe) vs a user property (packing only; postgres can write until the pool `ENOSPC`s everyone)?
-
-➡️ `refquota`. Deploy-time fit is the product. `refquota` is how the claim is stored and observed. Without it, `x-zfs: 10G` is a brochure number.
-
-❓ **Q3** - **Two compose projects, both `data:`**: one dataset or two?
+❓ **Q2** - Two compose projects both named `data`: one dataset or two?
 
 ➡️ Two. `{Machine ID, project_key}`.
 
-❓ **Q4** - **Reboot**: who `zpool import`s the file-backed pool?
+❓ **Q3** - Who imports the file-backed pool after reboot?
 
-➡️ Privileged `ployzd` on start. Failed import → not a bind of an empty dir.
+➡️ `ployzd` on start.
