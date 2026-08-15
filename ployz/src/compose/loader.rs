@@ -134,23 +134,10 @@ fn config_output(
     override_file: Option<&TemporaryComposeFile>,
     args: &[&str],
 ) -> Result<Output, ComposeError> {
-    const ATTEMPTS: u32 = 5;
-    for attempt in 0..ATTEMPTS {
-        match compose_command(docker, options, override_file)?
-            .arg("config")
-            .args(args)
-            .output()
-        {
-            Ok(output) => return Ok(output),
-            Err(error)
-                if error.kind() == io::ErrorKind::ExecutableFileBusy && attempt + 1 < ATTEMPTS =>
-            {
-                thread::sleep(Duration::from_millis(10 << attempt));
-            }
-            Err(error) => return Err(classify_spawn_failure(docker, options, error)),
-        }
-    }
-    unreachable!("last attempt returns")
+    let mut command = compose_command(docker, options, override_file)?;
+    command.arg("config").args(args);
+    retry_executable_busy(|| command.output())
+        .map_err(|error| classify_spawn_failure(docker, options, error))
 }
 
 fn parse_project(output: &Output) -> Result<RawProject, ComposeError> {
@@ -328,18 +315,15 @@ fn compose_version(
 }
 
 fn retry_executable_busy<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
-    const ATTEMPTS: u32 = 5;
-    for attempt in 0..ATTEMPTS {
+    for attempt in 0..4 {
         match op() {
-            Err(error)
-                if error.kind() == io::ErrorKind::ExecutableFileBusy && attempt + 1 < ATTEMPTS =>
-            {
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
                 thread::sleep(Duration::from_millis(10 << attempt));
             }
             other => return other,
         }
     }
-    unreachable!("last attempt returns")
+    op()
 }
 
 fn classify_spawn_failure(
