@@ -420,9 +420,7 @@ impl Client {
         target: Option<&MachineSelector>,
     ) -> Result<T::Response, ConnectError> {
         let mut grpc = tonic::client::Grpc::new(self.channel.clone());
-        grpc.ready()
-            .await
-            .map_err(|error| ConnectError::Attempt(error.to_string().into()))?;
+        grpc.ready().await?;
         let response = grpc
             .unary(
                 target_request(payload, target),
@@ -498,9 +496,7 @@ impl Client {
         };
         apply_many_targets(request.metadata_mut(), &selectors)?;
         let mut grpc = tonic::client::Grpc::new(self.channel.clone());
-        grpc.ready()
-            .await
-            .map_err(|error| ConnectError::Attempt(error.to_string().into()))?;
+        grpc.ready().await?;
         let response = grpc
             .server_streaming(
                 request,
@@ -565,6 +561,8 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
         error @ (ConnectError::Attempt(_)
+        | ConnectError::Io(_)
+        | ConnectError::Dial(_)
         | ConnectError::MissingMachineDetails
         | ConnectError::SshProbe { .. }
         | ConnectError::Routing(_)
@@ -608,7 +606,11 @@ async fn apply_timeout<T>(
 
 fn is_unary_retryable(error: &ConnectError) -> bool {
     match error {
-        ConnectError::Attempt(_) | ConnectError::SshProbe { .. } | ConnectError::Join(_) => true,
+        ConnectError::Attempt(_)
+        | ConnectError::Io(_)
+        | ConnectError::Dial(_)
+        | ConnectError::SshProbe { .. }
+        | ConnectError::Join(_) => true,
         ConnectError::Rpc(error) => error.is_retryable(),
         ConnectError::Remote(_)
         | ConnectError::MissingMachineDetails
@@ -738,6 +740,10 @@ pub async fn connect(
 pub enum ConnectError {
     #[error("connection attempt failed: {0}")]
     Attempt(Cow<'static, str>),
+    #[error("connection attempt failed: {0}")]
+    Io(#[from] io::Error),
+    #[error("connection attempt failed: {0}")]
+    Dial(#[from] tonic::transport::Error),
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
     #[error("connection attempt failed: SSH probe to {target} exited with {status}")]
@@ -778,18 +784,6 @@ pub enum ConnectError {
     Framing(#[from] FramingError),
     #[error("Machine RPC identity failed: {0}")]
     Value(#[from] ployz_core::ValueError),
-}
-
-impl From<io::Error> for ConnectError {
-    fn from(error: io::Error) -> Self {
-        Self::Attempt(error.to_string().into())
-    }
-}
-
-impl From<tonic::transport::Error> for ConnectError {
-    fn from(error: tonic::transport::Error) -> Self {
-        Self::Attempt(error.to_string().into())
-    }
 }
 
 impl From<tonic::Status> for ConnectError {

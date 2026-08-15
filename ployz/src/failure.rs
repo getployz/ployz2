@@ -206,6 +206,8 @@ impl From<ConnectError> for Failure {
             ConnectError::Value(error) => error.into(),
             ConnectError::Config(error) => error.into(),
             ConnectError::Attempt(_)
+            | ConnectError::Io(_)
+            | ConnectError::Dial(_)
             | ConnectError::MissingMachineDetails
             | ConnectError::SshProbe { .. }
             | ConnectError::Routing(_)

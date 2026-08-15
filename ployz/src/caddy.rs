@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, num::NonZeroU16};
 
-use oci_client::{Client, Reference, secrets::RegistryAuth};
+use oci_client::{
+    Client, ParseError, Reference, errors::OciDistributionError, secrets::RegistryAuth,
+};
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerPath, ContainerResources, HostBind, MachinePath,
     MachineSelector, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
@@ -17,19 +19,16 @@ pub const RUNTIME_PATH: &str = "/run/ployz/caddy";
 #[derive(Debug, Error)]
 pub enum CaddyImageError {
     #[error("parse Caddy image reference: {0}")]
-    Reference(String),
+    Reference(#[from] ParseError),
     #[error("list Docker Hub Caddy tags: {0}")]
-    ListTags(String),
+    ListTags(#[from] OciDistributionError),
 }
 
 pub async fn latest_image() -> Result<String, CaddyImageError> {
-    let reference = "docker.io/library/caddy:latest"
-        .parse::<Reference>()
-        .map_err(|error| CaddyImageError::Reference(error.to_string()))?;
+    let reference = "docker.io/library/caddy:latest".parse::<Reference>()?;
     let response = Client::default()
         .list_tags(&reference, &RegistryAuth::Anonymous, None, None)
-        .await
-        .map_err(|error| CaddyImageError::ListTags(error.to_string()))?;
+        .await?;
     Ok(select_image(&response.tags))
 }
 

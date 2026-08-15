@@ -42,7 +42,10 @@ fn select_machine(
 fn is_target_unreachable(error: &ConnectError) -> bool {
     matches!(
         error,
-        ConnectError::Attempt(_) | ConnectError::AllFailed { .. }
+        ConnectError::Attempt(_)
+            | ConnectError::Io(_)
+            | ConnectError::Dial(_)
+            | ConnectError::AllFailed { .. }
     ) || matches!(
         error,
         ConnectError::Rpc(error) if error.is_unavailable()
