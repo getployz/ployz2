@@ -1,6 +1,6 @@
 # Managed ZFS Volume (proposal)
 
-Quota packing is 100% per Machine. The Cluster entry observes who has room, then commits on one Machine. No reservation. Monitoring is later.
+Default pool fills that Machine’s backing FS minus `min(10GiB, 30%)`. Quota is a packing claim: deploy refuses if it would not fit with the other claims on that Machine.
 
 ## Cluster vs Machine
 
@@ -9,7 +9,7 @@ The CLI talks to a Cluster **entry**. The pool lives on a **Machine**. Same spli
 | | Cluster (entry / observation) | Machine (the resource) |
 |---|---|---|
 | Pool | There is none. Do not store “ZFS-enabled.” | `CreateZfsPool` on one target. `--machine` required when more than one Machine exists (prompt if omitted, like `volume create`). |
-| Overcommit / `--size 80%` | Not a cluster policy. `--size 80%` is **that** Machine’s pool file. Quota packing is 100% of **that** pool. Not 100% of the host disk. |
+| Pool / `--size` | There is none at Cluster scope. | Default: that Machine’s backing FS minus headroom `min(10GiB, 30% of FS total)`, capped by **available**. `--size` / `--from` override. Vdev is `fallocate`d so the headroom is real. |
 | List | Fan-out Live Observation. Partial Result. | Each row is `{Machine ID, pool, volumes}`. |
 | Deploy planning | Walks the observation. Pins like Named volumes. | Allocatable is computed per Machine. Never summed. |
 | Named volume `data` + `x-zfs: 10G` | Compose is cluster-entry input. | Dataset is created on the pinned Machine. |
@@ -25,15 +25,15 @@ Fan-out create (`--machines *`) is a later CLI sugar: N machine creates, still N
 | Send/recv | Out of scope. No transfer, no portable volume ID. |
 | Snapshots | Out of this cut. |
 | Pool | Machine command `ployz zfs pool create --machine …`. Not a cluster pool. Not created on first `x-zfs` deploy. `machine init` is out of scope. |
-| Backing | `--size` (file-backed sparse vdev) or `--from POOL` (adopt imported zpool). Mutually exclusive. Never auto-pick. |
-| Pool size | `--size 100G` or `--size 80%`. `%` is of **available** space on the backing filesystem, resolved once to a sparse vdev byte size. `--from` has no `--size`. Volume quota is not a percentage. |
-| Overcommit | Default **100%**. `allocatable = pool_bytes`. Planner observes every Machine, drops any that cannot fit Q, commits `Ensure` on one Machine that can. No `refreservation`. Used-bytes / noisy-neighbor is a later monitoring module. `--overcommit` remains an override, not the default story. |
-| Not host 100% | `--size 100%` of the backing FS would leave nothing for Docker images, logs, or the OS. Pool size and quota packing are different 100%s. |
+| Backing | File-backed vdev (`fallocate`) or `--from POOL`. Mutually exclusive. Never auto-pick. |
+| Pool size default | Omit `--size`: `pool = available - min(10GiB, 0.30 × FS total)`. Fail if `pool <= 0`. `--size 100G` / `--size 80%` still override. `--from` has no `--size`. 30% is of that filesystem’s **total**, headroom is the **smaller** of 10GiB and 30%. |
+| Quota packing | Deploy-time only. `sum(declared quotas on that Machine) + Q ≤ pool_bytes`. Cluster entry observes, one Machine commits. No cluster sum. No `refreservation`. Used-bytes monitoring is later. |
+| Host headroom | Real only because the vdev is `fallocate`d. Sparse would eat the 10GiB/30% and starve Docker. |
 | Cluster flag | None. ZFS is Live Observation on each Machine (`Ready` / `PoolMissing` / …). Not stored in the replicated store. |
 | Privilege | Privileged `ployzd` on ZFS Machines. No helper. No sudo-from-unprivileged. |
 | Identity | `{Machine ID, ManagedZfsVolumeName}` |
 | Compose | Top-level named volume `data:` plus `x-zfs: 10G`. Service still mounts `data:/path`. |
-| Quota | Required. YAML `quota` / `10G` is ZFS `refquota`. The kernel returns `ENOSPC`. Ployz does not police writes. |
+| Quota | Required packing claim (`x-zfs: 10G`). Planner enforces fit against **that Machine’s other claims**. Not a cluster quota. |
 | Not a Docker Volume | Same compose shape as a named volume. Distinct identity, RPC, and snapshot field. Not `VolumeSource::Named`. |
 | Consume | Daemon bind-mounts the dataset. Spec stays `VolumeSource::ManagedZfs`. |
 
@@ -57,19 +57,28 @@ A Machine without a Machine ZFS Pool is ineligible for `ManagedZfs` placement. T
 
 ## Operator pool command
 
-Deploy does not pick a size and does not create a sparse vdev.
+Deploy does not pick a size. Omit `--size` to use the headroom default.
 
 ```
+ployz zfs pool create --machine db-1
 ployz zfs pool create --machine db-1 --size 100G
-ployz zfs pool create --machine db-1 --size 80%
 ployz zfs pool create --machine db-1 --from tank
 ```
 
-Same targeting as `ployz volume create`: one Machine. Multi-machine and no `--machine` → prompt. There is no cluster-wide create. Omit `--overcommit` → **100%**.
+Same targeting as `ployz volume create`: one Machine. Multi-machine and no `--machine` → prompt.
 
-`--size` and `--from` are mutually exclusive. `--from` is `zpool get` plus a parent dataset `tank/ployz` on **that** Machine. `--size 80%` is resolved once on **that** Machine (`statvfs` available × 0.8 → sparse vdev bytes). Re-running create against an existing Ployz pool on that Machine is a conflict. `machine init` does not call this.
+Default size on the backing FS that will hold the vdev (`/var/lib/ployz/zfs/`):
 
-Volume Ensure then creates `pool/ployz/vol/<name>` with `refquota`.
+```
+headroom = min(10GiB, 0.30 × fs_total)
+pool     = fs_available - headroom
+fail if pool <= 0
+fallocate(vdev, pool)     # headroom stays usable by Docker/OS
+```
+
+Examples: 1 TiB disk, 900 GiB free → headroom 10GiB → pool 890GiB. 20 GiB disk, 18 GiB free → headroom min(10GiB, 6GiB)=6GiB → pool 12GiB.
+
+`--from` is `zpool get` plus `tank/ployz` on **that** Machine. Re-running create against an existing Ployz pool on that Machine is a conflict. `machine init` does not call this.
 
 ## What happens on one deploy
 
@@ -85,41 +94,33 @@ compose x-zfs
          daemon bind-mounts the dataset
 ```
 
-Always-Ensure for the dataset. Quota converges in place. A quota-only change does not recreate containers.
+Always-Ensure for the dataset. Raising the packing claim is a planner check, then Ensure. A claim-only change does not recreate containers.
 
-## Planning (100% packing, commit per Machine)
+## Planning (deploy-time fit, commit per Machine)
 
-The Cluster entry **observes**. Each Machine **commits**. There is no cluster quota and no cluster pool.
+The Cluster entry **observes**. Each Machine **commits**. Enforcement is: this Deploy’s Q must fit next to the **declared quotas already on that Machine**. Ployz does not police writes at runtime.
 
 ```
 fan-out observe
-    → each Machine: Ready?, pool_bytes, existing {name, refquota}
-    → allocatable = pool_bytes          # 100%. No 120%.
-    → used_alloc = sum(existing refquotas)
+    → each Machine: Ready?, pool_bytes, existing {name, declared_quota}
 
 eligible for a new volume with quota Q
-    → Ready and (used_alloc + Q) ≤ allocatable
+    → Ready and sum(declared_quota) + Q ≤ pool_bytes
 
 eligible for an existing name
     → pin to the Machine that already has it
-    → raising Q: (used_alloc - old_Q + new_Q) ≤ allocatable
-    → do not move it to a emptier Machine (send/recv is out)
+    → raising Q: sum(others) + new_Q ≤ pool_bytes
+    → do not move it to a emptier Machine
 
 commit
     → EnsureManagedZfsVolume on the chosen Machine only
 ```
 
-Among Machines that fit, keep today’s shuffle then first. Do not bin-pack “most free space.” A missing replicated volume still lands on one Machine; all replicas pin there.
+Among Machines that fit: shuffle then first. One service, two volumes: both claims must fit on that one Machine. Two services that do not share a volume may land on different Machines.
 
-One service with two Managed ZFS Volumes: **both** quotas must fit on that one Machine. Two services that do not share a volume may land on different Machines.
+No `refreservation`. Used-bytes monitoring is later. A noisy volume can still fill the pool until ZFS `ENOSPC`s everyone sharing it — unless we also set `refquota` (open).
 
-No `refreservation`. 10G is a cap, not a held slice. A noisy volume can fill the pool; ZFS `ENOSPC`s. Used-bytes monitoring is a later module, not this cut.
-
-`x-machines` still intersects. A Machine with no pool or no room is ineligible, not a cluster-wide failure.
-
-Do not persist “this Cluster is ZFS-enabled.”
-
-Global still means N datasets (Q on each eligible Machine), not one Q split. Shared `data` across services is one dataset, one Q, intersection of eligible sets.
+Global still means N datasets (Q on each eligible Machine), not one Q split.
 
 ## RPC
 
@@ -127,7 +128,7 @@ Global still means N datasets (Q on each eligible Machine), not one Q split. Sha
 |---|---|---|
 | `CreateZfsPool` | `invoke` | Operator only. `--size` or `--from`. Fails if a Ployz pool already exists. |
 | `ListManagedZfsVolumes` | `call` | Deploy Snapshot + CLI. Returns capability, pool observation, volumes. |
-| `EnsureManagedZfsVolume` | `invoke` | Create or set `refquota`. Fails with `PoolMissing` if the operator never created a pool. |
+| `EnsureManagedZfsVolume` | `invoke` | Create the dataset. Persist the declared quota (see open: `refquota` vs property). |
 | `RemoveManagedZfsVolume` | `invoke` | Destroy the dataset. Not a Deploy operation. Not compensation. |
 
 Capabilities: `ployz.zfs.pool.create.v1`, `ployz.zfs.list.v1`, `ployz.zfs.ensure.v1`, `ployz.zfs.remove.v1`.
@@ -162,7 +163,7 @@ ZFS needs `/dev/zfs`. `ployzd` on a ZFS Machine runs privileged enough to do tha
 2. Four catalog rows + in-memory adapter. Planner pin + allocatable check + always-Ensure + skip `PoolMissing`.
 3. Daemon `LocalManagedZfs` + `FakeZfsPlane` (create pool, refuse nested, `PoolMissing`).
 4. `CreateContainer` bind arm. One Linux test gated on `/usr/sbin/zfs`.
-5. CLI `ployz zfs pool create --machine`. Same targeting as `volume create`. No cluster pool. No `machine init` flag.
+5. CLI `ployz zfs pool create --machine` with headroom default. No `machine init` flag.
 
 ## Rejected
 
@@ -172,7 +173,11 @@ ZFS needs `/dev/zfs`. `ployzd` on a ZFS Machine runs privileged enough to do tha
 | Reuse `VolumeSource::Bind` | Convert does not know the Machine path. Planner ignores Bind. |
 | Rewrite spec to Bind after Ensure | Recreate loop on the next Deploy. |
 | Cluster-scoped volume ID | A Cluster is not authoritative. Send/recv is out of scope. |
-| Hidden pool on first Ensure | Operator owns size and backing. Deploy must not invent a 100 GiB file. |
+| Hidden pool on first Ensure | Operator runs `pool create`. Default size is the headroom formula, not “whatever fits.” |
+| Sparse vdev | Headroom would be fake. `fallocate`. |
+| `--size 100%` with no headroom | Starves Docker/OS. Default leaves `min(10GiB, 30%)`. |
+| Cluster-wide quota | Fit is `sum(claims on that Machine)`. Never summed across Machines. |
+| Runtime write policing as the product | Deploy refuses a claim that does not fit. Monitoring later for used-bytes. |
 | Send/recv / snapshot RPCs | Out of scope. |
 | Unprivileged daemon + helper | Second privilege story. Privileged `ployzd` instead. |
 | ZFS `quota` (includes snapshots) | One snapshot would steal the app's write budget. Use `refquota`. |
@@ -185,8 +190,7 @@ ZFS needs `/dev/zfs`. `ployzd` on a ZFS Machine runs privileged enough to do tha
 | Cluster zpool / optional `--machine` | Same bug as treating `volume create` as cluster-wide. Create targets one Machine. |
 | Fan-out `pool create` on every Machine | Later sugar. Still N machine pools, not one cluster pool. |
 | Default `--overcommit 120%` | Replaced: packing is 100% of that Machine’s pool. |
-| `--size 100%` of the host disk as default | Starves Docker/OS. Pool size is operator `--size`. Quota packing is 100% of the pool, not of the disk. |
-| `refreservation` in v1 | 10G would be a held slice. User: cap now, monitor used later. |
+| `refreservation` in v1 | 10G would be a held slice. User: packing claim now, monitor used later. |
 | Move an existing volume to a emptier Machine | Send/recv is out. Pin stays. |
 | Cluster bin-pack (most-free / knapsack) | Shuffle then first fit, like today’s volume planner. |
 
@@ -200,15 +204,15 @@ This Ployz design is original. Snapshots/send/recv matching the author’s “re
 
 ## Open questions
 
-100% packing does not close these.
+Headroom default and deploy-time packing do not close these. `fallocate` is locked (otherwise the 10GiB/30% is fake).
 
 ❓ **Q1** - **Wrong problem?**: Quota/pin v1, or are we still pretending this helps when `db-1` dies?
 
-➡️ Quota/pin is v1. Recover is a different module. One honest sentence in the design.
+➡️ Quota/pin is v1. Recover is a different module.
 
-❓ **Q2** - **Host reservation**: 100% quota packing on a **sparse** file still lets the host `ENOSPC` while ZFS thinks the pool has room. `fallocate` the vdev to `--size`, or leave it sparse and wait for monitoring?
+❓ **Q2** - **Persist the 10G claim how?**: ZFS `refquota` (runtime cap + observe) vs a user property (packing only; postgres can write until the pool `ENOSPC`s everyone)?
 
-➡️ `fallocate`. Otherwise “100% of the pool” is 100% of a number that is not held on disk.
+➡️ `refquota`. Deploy-time fit is the product. `refquota` is how the claim is stored and observed. Without it, `x-zfs: 10G` is a brochure number.
 
 ❓ **Q3** - **Two compose projects, both `data:`**: one dataset or two?
 
