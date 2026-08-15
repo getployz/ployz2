@@ -1,8 +1,6 @@
 # Managed ZFS Volume (proposal)
 
-Frontier is empty. `machine init` is out of scope. `--from` stays because it is the easy backing path.
-
-A Managed ZFS Volume is a machine-local ZFS dataset with a required quota. It is not a Docker Volume, not a Bind Mount, and not a cluster volume. A Machine ZFS Pool is operator-provisioned. Deploy never creates the pool.
+`machine init` is out of scope. `--from` stays. Compose `data` is a named volume with a quota; ZFS enforces that quota. Pool `--size` as a percentage is the open cut.
 
 ## Settled
 
@@ -14,7 +12,9 @@ A Managed ZFS Volume is a machine-local ZFS dataset with a required quota. It is
 | Backing | `--size` (file-backed sparse vdev) or `--from POOL` (adopt imported zpool). Mutually exclusive. Never auto-pick. |
 | Privilege | Privileged `ployzd` on ZFS Machines. No helper. No sudo-from-unprivileged. |
 | Identity | `{Machine ID, ManagedZfsVolumeName}` |
-| Compose | `x-zfs: 10G` (YAML `quota` = ZFS `refquota`) |
+| Compose | Top-level named volume `data:` plus `x-zfs: 10G`. Service still mounts `data:/path`. |
+| Quota | Required. YAML `quota` / `10G` is ZFS `refquota`. The kernel returns `ENOSPC`. Ployz does not police writes. |
+| Not a Docker Volume | Same compose shape as a named volume. Distinct identity, RPC, and snapshot field. Not `VolumeSource::Named`. |
 | Consume | Daemon bind-mounts the dataset. Spec stays `VolumeSource::ManagedZfs`. |
 
 ## What the user writes
@@ -31,7 +31,7 @@ volumes:
     x-zfs: 10G
 ```
 
-`ployz deploy` does not grow new flags. `x-zfs` cannot sit next to `driver`, `driver_opts`, or `external`.
+This is a compose named volume (`data`), not a bind. `ployz deploy` does not grow new flags. `x-zfs` cannot sit next to `driver`, `driver_opts`, or `external`.
 
 A Machine without a Machine ZFS Pool is ineligible for `ManagedZfs` placement. That is a Partial Result, not a cluster failure.
 
@@ -41,10 +41,11 @@ Deploy does not pick a size and does not create a sparse vdev.
 
 ```
 ployz zfs pool create --size 100G [--machine db-1]
+ployz zfs pool create --size 80% [--machine db-1]   # if percentage is accepted
 ployz zfs pool create --from tank [--machine db-1]
 ```
 
-`--size` and `--from` are mutually exclusive. `--from` is `zpool get` plus a parent dataset `tank/ployz` — no vdev inventing, no pool picking. Re-running create against an existing Ployz pool is a conflict, not an ensure. `machine init` does not call this.
+`--size` and `--from` are mutually exclusive. `--from` is `zpool get` plus a parent dataset `tank/ployz` — no vdev inventing, no pool picking. A percentage, if accepted, is resolved once at create time to a byte vdev size (not a live fraction). Re-running create against an existing Ployz pool is a conflict, not an ensure. `machine init` does not call this.
 
 Volume Ensure then creates `pool/ployz/vol/<name>` with `refquota`.
 
@@ -121,3 +122,10 @@ ZFS needs `/dev/zfs`. `ployzd` on a ZFS Machine runs privileged enough to do tha
 | ZFS `quota` (includes snapshots) | One snapshot would steal the app's write budget. Use `refquota`. |
 | `machine init` creates the pool | Out of scope. Operator runs `ployz zfs pool create`. |
 | Auto-pick an imported zpool | Operator passes `--from`. Guessing is the hard part; naming is not. |
+| Live percentage (quota tracks disk forever) | Resolve once to bytes. ZFS `refquota` is a byte cap. |
+
+## Open questions
+
+❓ **Q1** - **Percentage**: What may be a percentage?
+
+➡️ Pool `--size 80%` only, meaning 80% of **available** space on the backing filesystem, resolved once to a sparse vdev byte size. Volume quota stays `10G`. `--from` ignores `--size`. Volume `x-zfs: 20%` is later sugar.
