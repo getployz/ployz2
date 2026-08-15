@@ -1,16 +1,11 @@
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
 use ployz_core::{
-    ContainerAction, ContainerCreated, ContainerId, ContainerKind, CreateContainerRequest,
-    CreateVolumeRequest, InspectContainerRequest, ListContainersRequest, ListMachinesRequest,
-    LiveServices, MachineFailure, MachineId, MachineObservation, MachineSelector, MachineSuccess,
-    MembershipObservation, PartialResult, RemoveContainerRequest, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, ServiceSelectorError, StartContainerRequest, StopContainerRequest,
-    derive_live_services, op, select_service,
+    ContainerAction, ContainerId, CreateVolumeRequest, ListContainersRequest, MachineFailure,
+    MachineId, MachineSelector, MachineSuccess, PartialResult, RemoveContainerRequest, RpcError,
+    RpcErrorCode, ServiceSelectorError, StartContainerRequest, StopContainerRequest, op,
 };
-use serde_json::Value;
 use thiserror::Error;
-use tokio::task::JoinSet;
 
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 
@@ -48,190 +43,7 @@ pub(crate) async fn create_volume_on_machine(
         .map(|_| ())
 }
 
-impl Client {
-    pub async fn live_services(&mut self) -> Result<LiveServices<RpcError>, ConnectError> {
-        let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await?;
-        self.live_services_from(&machines.machines).await
-    }
-
-    pub(crate) async fn live_services_from(
-        &self,
-        machines: &[MachineObservation],
-    ) -> Result<LiveServices<RpcError>, ConnectError> {
-        let mut tasks = JoinSet::new();
-        let mut omissions = Vec::new();
-        for machine in machines {
-            // TODO(UT-102): the entry Machine's observer-relative Membership Observation is the
-            // current trust boundary; it can be stale and is not an authority or freshness proof.
-            match machine.membership {
-                MembershipObservation::Up | MembershipObservation::Suspect => {
-                    tasks.spawn(list_on_machine(self.clone(), machine.machine.id.clone()));
-                }
-                MembershipObservation::Down
-                | MembershipObservation::Unknown
-                | MembershipObservation::Unrecognized(_) => {
-                    omissions.push(machine.machine.id.clone());
-                }
-            }
-        }
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions,
-        };
-        // TODO(UT-015, UT-017): retain target failures and omissions beside successful container
-        // observations; an entry-relative answer remains partial evidence.
-        while let Some(joined) = tasks.join_next().await {
-            match joined {
-                Ok(Ok(success)) => result.successes.push(success),
-                Ok(Err(failure)) => result.failures.push(failure),
-                Err(error) => return Err(ConnectError::Attempt(error.to_string())),
-            }
-        }
-        Ok(derive_live_services(result))
-    }
-
-    pub async fn inspect_container(
-        &self,
-        machine_id: MachineId,
-        container_id: ContainerId,
-    ) -> Result<ployz_core::ContainerObservation, RpcError> {
-        self.invoke::<op::InspectContainer>(
-            InspectContainerRequest { container_id },
-            &MachineSelector::from(&machine_id),
-            Some(TARGET_RPC_TIMEOUT),
-        )
-        .await
-        .map(|details| details.container)
-    }
-
-    pub async fn create_container(
-        &self,
-        machine_id: MachineId,
-        kind: ContainerKind,
-        resolved_spec: ResolvedServiceSpec,
-    ) -> Result<ContainerCreated, RpcError> {
-        self.invoke::<op::CreateContainer>(
-            CreateContainerRequest {
-                kind,
-                resolved_spec,
-            },
-            &MachineSelector::from(&machine_id),
-            None,
-        )
-        .await
-    }
-
-    pub async fn change_container(
-        &self,
-        machine_id: MachineId,
-        container_id: ContainerId,
-        action: ContainerAction,
-        signal: Option<String>,
-        grace_period_seconds: Option<i32>,
-    ) -> Result<(), RpcError> {
-        change_container_rpc(
-            self,
-            &machine_id,
-            &container_id,
-            action,
-            signal,
-            grace_period_seconds,
-        )
-        .await
-    }
-
-    pub(crate) async fn remove_container(
-        &self,
-        machine_id: MachineId,
-        container_id: ContainerId,
-    ) -> Result<(), RpcError> {
-        remove_container_rpc(self, &machine_id, &container_id).await
-    }
-
-    pub async fn change_service(
-        &mut self,
-        selector: &str,
-        action: ContainerAction,
-        signal: Option<String>,
-        grace_period_seconds: Option<i32>,
-    ) -> Result<LifecycleResult, ServiceClientError> {
-        let live = self.live_services().await?;
-        let outcomes = self
-            .change_observed_service(
-                select_service(&live.services, selector)?,
-                action,
-                signal,
-                grace_period_seconds,
-            )
-            .await;
-        Ok(LifecycleResult {
-            observations: live.containers,
-            outcomes,
-        })
-    }
-
-    pub async fn change_observed_service(
-        &self,
-        service: &ployz_core::ServiceObservation,
-        action: ContainerAction,
-        signal: Option<String>,
-        grace_period_seconds: Option<i32>,
-    ) -> PartialResult<ContainerId, ContainerOperationFailure> {
-        let mut tasks = JoinSet::new();
-        let mut task_targets = HashMap::new();
-        for container in service.containers_for(action) {
-            let machine_id = container.machine_id.clone();
-            let container_id = container.container_id.clone();
-            let handle = tasks.spawn(change_on_machine(
-                self.clone(),
-                machine_id.clone(),
-                container_id.clone(),
-                action,
-                signal.clone(),
-                grace_period_seconds,
-            ));
-            task_targets.insert(handle.id(), (machine_id, container_id));
-        }
-        let mut outcomes = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        };
-        while let Some(joined) = tasks.join_next_with_id().await {
-            match joined {
-                Ok((id, Ok(success))) => {
-                    task_targets.remove(&id);
-                    outcomes.successes.push(success);
-                }
-                Ok((id, Err(failure))) => {
-                    task_targets.remove(&id);
-                    outcomes.failures.push(failure);
-                }
-                Err(error) => {
-                    if let Some((machine_id, container_id)) = task_targets.remove(&error.id()) {
-                        outcomes.failures.push(MachineFailure {
-                            machine_id,
-                            error: ContainerOperationFailure {
-                                container_id,
-                                error: RpcError {
-                                    code: RpcErrorCode::Unavailable,
-                                    message: error.to_string(),
-                                    details: Value::Null,
-                                },
-                            },
-                        });
-                    }
-                }
-            }
-        }
-        outcomes
-    }
-}
-
-async fn list_on_machine(
+pub(crate) async fn list_on_machine(
     client: Client,
     machine_id: MachineId,
 ) -> Result<MachineSuccess<Vec<ployz_core::ContainerObservation>>, MachineFailure<RpcError>> {
@@ -249,7 +61,7 @@ async fn list_on_machine(
         .map_err(|error| MachineFailure { machine_id, error })
 }
 
-async fn change_on_machine(
+pub(crate) async fn change_on_machine(
     client: Client,
     machine_id: MachineId,
     container_id: ContainerId,
@@ -281,7 +93,7 @@ async fn change_on_machine(
     }
 }
 
-async fn change_container_rpc(
+pub(crate) async fn change_container_rpc(
     client: &Client,
     machine_id: &MachineId,
     container_id: &ContainerId,
@@ -323,7 +135,7 @@ async fn change_container_rpc(
     }
 }
 
-async fn remove_container_rpc(
+pub(crate) async fn remove_container_rpc(
     client: &Client,
     machine_id: &MachineId,
     container_id: &ContainerId,
@@ -364,6 +176,8 @@ fn accept_stop_result(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
     #[test]
