@@ -35,27 +35,22 @@ pub enum Error {
 #[error("no publicly reachable Caddy Machines found")]
 pub struct NoReachableMachines;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error(
+    "cluster domain must be reserved to generate hostname for ingress port: {container_port}/{}",
+    protocol_label(protocol)
+)]
 pub struct DomainRequired {
     pub container_port: u16,
     pub protocol: HttpProtocol,
 }
 
-impl std::fmt::Display for DomainRequired {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "cluster domain must be reserved to generate hostname for ingress port: {}/{}",
-            self.container_port,
-            match self.protocol {
-                HttpProtocol::Http => "http",
-                HttpProtocol::Https => "https",
-            }
-        )
+fn protocol_label(protocol: &HttpProtocol) -> &'static str {
+    match protocol {
+        HttpProtocol::Http => "http",
+        HttpProtocol::Https => "https",
     }
 }
-
-impl std::error::Error for DomainRequired {}
 
 impl Client {
     pub async fn reserve_domain(&mut self, endpoint: String) -> Result<String, ConnectError> {
