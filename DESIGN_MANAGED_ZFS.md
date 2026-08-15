@@ -214,9 +214,9 @@ This Ployz design is original. Snapshots/send/recv matching the author’s “re
 
 ## Open questions
 
-❓ **Q1** - **Headroom**: `min(100GiB, 30%)` (30% on small disks, 100G on big) or `max(100GiB, 30%)` (fails under 100G, leaves 307G on a 1T box)?
+❓ **Q1** - **Headroom + 30G min**: A `min(100,30%)` / B `min(100,20%)` / C `min(100,max(8,10%))` / E piecewise. All refuse under 30G.
 
-➡️ `min(100GiB, 30%)`. `max` kills typical VPSs.
+➡️ **C** plus 30G min. Nicest to small: ~8G for Docker, rest is pool. 20G machines cannot host a file-backed pool honestly.
 
 ❓ **Q2** - Two compose projects both named `data`: one dataset or two?
 
