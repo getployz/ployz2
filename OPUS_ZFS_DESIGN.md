@@ -6,8 +6,8 @@ Design only. No implementation. Target Machines: Ubuntu and Debian, systemd, Doc
 
 1. A human writes `data:` with `x-quota: 10G` in compose, deploys, and gets a bounded volume. On a ZFS Machine that is a dataset with `refquota=10G`; on a Machine without ZFS it is a preallocated 10G ext4 image. The compose file does not know which.
 2. The bounded volume is handed to Docker as an ordinary named volume bound to its mountpoint. Everything that already works — placement pinning, `ployz volume ls`, `docker inspect` — keeps working untouched.
-3. The pool is machine-local and lives on preallocated files on whatever filesystem the Machine already has. No dedicated disk. The default claims a modest slice, not the disk; `ployz storage pool grow` is a normal, online, boring command.
-4. Docker's data-root moves onto the same pool with its own quota. So *everything that grows* is inside one budget, and nothing can eat the host filesystem.
+3. The pool is machine-local and lives on preallocated files on whatever filesystem the Machine already has. No dedicated disk. `machine init` and `machine add` create it by default, before Docker's first start; the default claims a modest slice, not the disk, and `ployz storage pool grow` is a normal, online, boring command.
+4. Docker's data-root lives inside the same pool with its own quota — pointed there at install time, not migrated later. So *everything that grows* is inside one budget, and nothing can eat the host filesystem.
 5. Quotas are enforced at runtime by the filesystem, never by deploy-time packing arithmetic. Sentry filling its quota breaks Sentry.
 
 Domain terms: **Managed Volume** for the bounded volume, **Machine Pool** for the machine-local storage budget, **Storage Backend** for the per-Machine choice between ZFS and preallocated images. `CONTEXT.md` currently reserves the narrower *Managed ZFS Volume*; that entry wants widening when this lands, and this document does not edit it. None of these are Cluster state.
@@ -52,7 +52,7 @@ Same targeting as `volume create --machine`: one Machine per mutation, fan-out f
 
 ```
 ployz storage pool create --machine m1 [--size 100G] [--from tank] [--path DIR]
-                                       [--backend auto|zfs|file] [--adopt-docker]
+                                       [--backend auto|zfs|ext4] [--adopt-docker]
 ployz storage pool grow   --machine m1 --size 200G
 ployz storage ls          [--machine m1 ...]
 ployz storage quota set   data=20G --machine m1
@@ -60,13 +60,15 @@ ployz storage quota set   docker=48G --machine m1
 ployz storage rm          data --machine m1 [--yes]
 ```
 
+`pool create` is the path for a Machine that already exists. New Machines get their pool from `machine init` instead, before Docker's first start — see the next section.
+
 `ployz storage ls`:
 
 ```
 MACHINE	BACKEND	POOL	BACKING	SIZE	USED	FREE	COMMITTED
 m1	zfs	ployz	file:/var/lib/ployz-storage/pool.img	100G	15G	85G	50G
 m2	zfs	tank	adopted	1.8T	400G	1.4T	120G
-m3	file	-	dir:/var/lib/ployz-storage	60G	34G	26G	34G
+m3	ext4	-	dir:/var/lib/ployz-storage	60G	34G	26G	34G
 
 MACHINE	VOLUME	QUOTA	USED
 m1	data	10G	2.3G
@@ -74,9 +76,80 @@ m1	sentry-data	40G	38G
 m1	<docker>	40G	12G
 ```
 
-`COMMITTED` above `SIZE` is legal and printed on the ZFS backend, not blocked: that is thin provisioning working as intended. On the file backend `COMMITTED` equals `USED` by construction, because every quota is a preallocated image — the same column, a different truth, and the operator can see which from the `BACKEND` column.
+`COMMITTED` above `SIZE` is legal and printed on the ZFS backend, not blocked: that is thin provisioning working as intended. On the ext4 backend `COMMITTED` equals `USED` by construction, because every quota is a preallocated image — the same column, a different truth, and the operator can see which from the `BACKEND` column.
 
 `ployz volume ls` output does not change. Managed Volumes appear there as the Docker Volumes they are.
+
+## Storage belongs to `machine init`, not to a later migration
+
+**`machine init` and `machine add` set up managed storage by default, before Docker's first start.** `ployz storage pool create` stays exactly as specified above, and becomes what it should have been all along: the path for Machines that skipped it.
+
+The reason is `scripts/install.sh`. `install_docker` is the function that creates the data-root and starts `dockerd`, and it runs over an SSH session the operator opened on a Machine that has nothing on it. That is the only moment in a Machine's life when pointing Docker at a bounded data-root costs nothing — no stop, no copy, no downtime, no risk of a half-migrated `/var/lib/docker`. Every later moment costs all four. A design that puts storage after init has chosen the expensive path as its default.
+
+### 1. Opt-in, and the default is on
+
+`provisioning_flags` in `ployz/src/cli/mod.rs` is shared by `machine_init` and `machine_add`, so both get this for one edit, exactly as they share `--no-caddy`, `--no-install`, and `--version`.
+
+```
+ployz machine init  root@host [--storage auto|zfs|ext4|none] [--storage-size 100G]
+ployz machine add   root@host [--storage auto|zfs|ext4|none] [--storage-size 100G]
+```
+
+Default `auto`, meaning **on**. Off-by-default would mean the ordinary Machine is the unbounded one and the good outcome requires knowing a flag exists, which is the opposite of the product. On-by-default is safe here and nowhere else: the disk is empty, Docker does not exist yet, and the operator is watching a command that is already installing Docker.
+
+The opt-out is `--storage none` rather than a `--no-storage` sibling of `--no-caddy`, because the choice carries a value anyway and one flag beats two.
+
+**When the Machine cannot host a pool, init does not fail.** Under 8 GiB usable, no loop devices, an unsupported filesystem: init prints one line, continues, and the Machine simply has no pool. This is the single place in the design that degrades rather than refuses, and it earns the exception because nothing is deployed yet — no app is silently unbounded, and the operator learns before they write a compose file. Deploy still refuses `x-quota` on that Machine afterwards.
+
+### 2. The operator names the backend at init. Nothing downstream does.
+
+Earlier this document said the client never names a backend. The precise rule, which init clarifies rather than breaks:
+
+> The backend is named exactly twice in the product — `--storage` at init and `--backend` on `storage pool create` — and both times it is the same act: choosing the shape of one Machine's disk. `EnsureManagedVolume`, compose, and every Deploy stay backend-blind forever.
+
+Init is the moment the operator is already choosing that shape, so hiding it there would be coyness, not simplicity. `auto` remains the default and the probe remains the normal path; `zfs` and `ext4` are for operators who know what their fleet is.
+
+### 3. The pool is created by the install script, before `dockerd`
+
+`ployzd` cannot do it. Its systemd unit is `After=network-online.target docker.service` — the daemon exists *because* Docker does. Creating the pool from an RPC after `ployzd` is up would always be a live-data-root migration, which is the thing this path exists to avoid.
+
+So `main()` in `scripts/install.sh` gains one step and one reordering:
+
+```
+verify_system
+install_prerequisites
+create_user_and_directories
+install_binaries          ← moves ahead of Docker; it only downloads and installs files
+install_storage           ← new: packages, then `ployzd storage init`
+install_docker            ← daemon.json data-root now points into the pool
+install_systemd
+```
+
+**`install_storage` contains no storage logic.** It installs packages if asked, then runs the binary it just installed: `ployzd storage init --backend auto --size auto`. Pool creation exists once, in Rust, shared with `EnsureStoragePool`; the shell only sequences it. Same binary, a subcommand alongside `ployzd version` and `ployzd dial-stdio` — no helper binary.
+
+The operator's choice reaches the script the way `PLOYZ_VERSION` and `PLOYZ_GROUP_ADD_USER` already do: `install_command` in `ployz/src/provisioning.rs` prefixes environment variables onto the piped `bash`. `PLOYZ_STORAGE` and `PLOYZ_STORAGE_SIZE` join them, with the same shell quoting and the same defaults-in-the-script pattern the file already uses.
+
+Two consequences worth stating:
+
+- **`install_docker` returns early when `dockerd` already exists** and does not write `daemon.json` today. That behaviour is exactly right and stays: `install_storage` still creates the pool, because a pool is only a file and some datasets, but Docker is pointed into it **only when the installer is also the thing creating Docker**. A pre-existing Docker keeps its data-root and gets the adoption line instead. This is what "no copy of a live data-root on this path" means mechanically.
+- **Mounting at every subsequent boot is a separate, tiny unit**, `ployz-storage.service`, running `ployzd storage mount` with `Before=docker.service` and `RequiredBy=docker.service`. `ployzd` itself stays `After=docker.service` where it belongs. Docker must never start before the datasets and images are mounted, and `ployzd` is the wrong unit for that job because it is downstream of Docker by design.
+
+### 4. The installer may `apt install` ZFS. The daemon may not.
+
+The split is not about the packages, it is about who is watching. `install.sh` already runs `apt-get install curl ca-certificates` and pipes `get.docker.com` to `sh`, as root, in a terminal the operator is looking at, on a Machine with no workload. Adding `zfsutils-linux` there is strictly less invasive than what it already does. The daemon installing a kernel module is the same command with none of those properties: no terminal, no attention, possibly a DKMS compile, on a Machine currently running someone's Sentry.
+
+The policy, one line: **`auto` may install binary packages and will never trigger a compile.**
+
+- Ubuntu: `zfsutils-linux` plus `linux-modules-extra-$(uname -r)` are binary packages, so `auto` installs them and Ubuntu Machines get ZFS by default.
+- Debian: ZFS means `contrib` and a `zfs-dkms` build wanting headers, time, and RAM a small VPS may not have. `auto` declines and picks `ext4`. `--storage zfs` says "compile it", and fails loudly rather than quietly falling back if the module will not load.
+
+`ployz storage pool create` after the fact installs nothing at all. By then the Machine has a workload, and the operator gets the one `apt` line to run themselves.
+
+### 5. `--no-install`, and Machines that skipped it
+
+`--no-install` skips `provision` entirely, which means it skips storage too. That is the correct reading of the flag: it says the operator manages this Machine's software. Init then prints one line — this Machine has no managed storage; `ployz storage pool create --machine <name>` when you are ready, and expect it to stop Docker and move the data-root.
+
+For every Machine that skipped the opt-in, by flag or by age, `ployz storage pool create` is unchanged: same command, same defaults, same `--adopt-docker`. Because both paths run the same `EnsureStoragePool` code, running it on a Machine that already has a pool is a no-op that reports what is there. The two paths are the same act at two prices: free before Docker exists, one stop-and-copy afterwards.
 
 ## RPC
 
@@ -98,7 +171,7 @@ ployz.storage.inspect.v1
 ployz.storage.volume.remove.v1
 ```
 
-**The capability names do not mention the backend, and neither does any request.** Which backend a Machine uses is an observation it reports, not a dialect the client speaks. That is the whole reason the non-ZFS story below costs the client nothing: a Machine that gains ZFS later starts reporting `backend: zfs` and no compose file, RPC, or CLI invocation changes.
+**No capability name mentions the backend, and only `EnsureStoragePool` may carry it — as an optional preference, because creating a pool is the act of choosing one.** Everywhere else the backend is an observation a Machine reports, not a dialect the client speaks. That is why the non-ZFS story costs the client nothing: a Machine that gains ZFS later starts reporting `backend: zfs`, and no compose file, no `EnsureManagedVolume`, and no Deploy changes.
 
 `call` vs `invoke`:
 
@@ -127,7 +200,7 @@ EnsureManagedVolume
         │
         ├─ backend zfs ──► zfs create ployz/volumes/data, refquota=10G
         │
-        └─ backend file ─► fallocate 10G volumes/data.img, mkfs.ext4, mount -o loop
+        └─ backend ext4 ─► fallocate 10G volumes/data.img, mkfs.ext4, mount -o loop
         │
         ▼
    mountpoint /var/lib/ployz-storage/volumes/data
@@ -144,7 +217,7 @@ EnsureManagedVolume
 
 The Docker Volume is the handle; the dataset or image is the storage; `refquota` or the image size is the bound. This is why the design is small: the existing planner already pins a Service to a Machine that has a named volume of that name (`volume_matches` treats a spec with no explicit driver as matching any observed driver), so placement, `volume ls`, and the whole Docker Volume vocabulary come free. The labels make a plain `ListVolumes` observation enough to see that a volume is managed and what its quota is.
 
-One hazard both backends share: if Docker starts a container before the daemon has mounted the dataset or image, the container writes into the bare mountpoint directory and the data silently goes somewhere else. Two mitigations, both invisible: the daemon orders itself `Before=docker.service`, and an unmounted mountpoint is left mode `0500` and root-owned so a container that beats the mount fails loudly instead of diverging.
+One hazard both backends share: if Docker starts a container before the dataset or image is mounted, the container writes into the bare mountpoint directory and the data silently goes somewhere else. Two mitigations, both invisible: the `ployz-storage.service` oneshot mounts everything `Before=docker.service` (`ployzd` itself cannot do this — it is `After=docker.service`), and an unmounted mountpoint is left mode `0500` and root-owned so anything that beats the mount fails loudly instead of diverging.
 
 ## Deploy path
 
@@ -155,7 +228,7 @@ Client-orchestrated as always: snapshot → plan → RPCs. Partial results are n
 3. **Plan.** Placement pinning is unchanged. Creation emits `DeployOperation::EnsureManagedVolume { machine_id, name, quota }` instead of `CreateVolume`, in the same position — before container create.
 4. **Preflight refusals**, all decided from that one snapshot:
    - target Machine advertises no `ployz.storage.volume.ensure.v1` → refuse, name the fix (`ployz storage pool create --machine m2`). Never silently degrade to an unbounded Docker Volume.
-   - new volume whose quota exceeds the pool's *free* space → refuse. A guaranteed runtime ENOSPC caught while a human is watching. On the file backend this is not merely a good idea: free space is the allocation budget, so the refusal is the enforcement.
+   - new volume whose quota exceeds the pool's *free* space → refuse. A guaranteed runtime ENOSPC caught while a human is watching. On the ext4 backend this is not merely a good idea: free space is the allocation budget, so the refusal is the enforcement.
    - existing volume whose requested quota is below current `used` → refuse, print the used size. Setting `refquota` under `used` is legal in ZFS and instantly wedges the app's writes; shrinking an ext4 image needs it offline.
 5. **Execute.** `invoke` per target. A failure on m2 leaves m1's completed prefix in place and lands in the Deploy Outcome. **A failed deploy never destroys a volume.** The unexecuted suffix is a suffix, not a rollback.
 
@@ -172,7 +245,7 @@ pool    = min(usable, max(100 GiB, 0.25 × usable))
 refuse if usable < 8 GiB
 ```
 
-Two rules, one number: **take everything usable up to 100 GiB, and a quarter of it above that.** Small Machines get all the space that exists, because splitting 18 GiB into "pool" and "spare" is a lie told to nobody's benefit. Large Machines get a starter slice that is obviously enough to begin and obviously not the disk. The number means "the size of the pool file" on the ZFS backend and "the allocation budget for volume images" on the file backend.
+Two rules, one number: **take everything usable up to 100 GiB, and a quarter of it above that.** Small Machines get all the space that exists, because splitting 18 GiB into "pool" and "spare" is a lie told to nobody's benefit. Large Machines get a starter slice that is obviously enough to begin and obviously not the disk. The number means "the size of the pool file" on the ZFS backend and "the allocation budget for volume images" on the ext4 backend.
 
 `reserve` is what the host filesystem keeps for the OS, the ployz state dir, journald, and the operator's ability to breathe. It is a percentage on small disks because 10 GiB of 32 GiB matters, and a flat cap on large disks because nobody needs 800 GiB of headroom on a 4 TB box. It only ever binds on the small end now, which is the right place for it to bind.
 
@@ -190,7 +263,7 @@ Scenarios, assuming ~4 GiB already used by OS and Docker:
 
 Two adjustments to the default, both automatic:
 
-- **Adopting Docker raises the floor.** If `--adopt-docker` will run, the default becomes `max(default, 3 × current data-root usage)`, and pool create refuses when that exceeds `usable`. A 256 GiB Machine carrying 60 GiB of images cannot start with a 100 GiB pool whose Docker dataset is capped at 40 GiB — it would refuse the migration it was told to perform.
+- **Adopting an existing Docker raises the floor.** On the recovery path only — at init there is no data-root yet — the default becomes `max(default, 3 × current data-root usage)`, and pool create refuses when that exceeds `usable`. A 256 GiB Machine carrying 60 GiB of images cannot start with a 100 GiB pool whose Docker dataset is capped at 40 GiB; it would refuse the migration it was told to perform.
 - **Docker's share.** The Docker dataset gets 40% of the pool, floored at 8 GiB, capped at 64 GiB, and never more than half the pool. `ployz storage quota set docker=...` overrides it and is the same RPC as any other quota change.
 
 Inside the pool, the ZFS backend holds back a hidden `refreservation` nobody sees: `clamp(0.10 × pool, 1 GiB, 32 GiB)`. A ZFS pool at 100% is miserable to recover — you cannot always free space without writing. This guarantees there is always room to delete, resize, or grow, and `ployz storage ls` reports it inside `USED`, never as a knob.
@@ -199,13 +272,13 @@ Inside the pool, the ZFS backend holds back a hidden `refreservation` nobody see
 
 `ployz storage pool grow --machine m1 --size 200G` takes an **absolute new size**, not a delta, matching how quotas are set everywhere else in the product. It refuses to shrink, and it refuses to exceed `free − reserve` recomputed from live `statfs` at that moment rather than from whatever was true at create time.
 
-Growing is online and unremarkable: extend the file, then expand the vdev (ZFS) or refresh the loop device and `resize2fs` (file backend). No unmount, no container restart, no Docker restart, no downtime. On the ext4 and xfs root filesystems that Ubuntu and Debian actually ship, `fallocate` is an extent operation, so both create and grow are effectively instant regardless of size.
+Growing is online and unremarkable: extend the file, then expand the vdev (ZFS) or refresh the loop device and `resize2fs` (ext4 backend). No unmount, no container restart, no Docker restart, no downtime. On the ext4 and xfs root filesystems that Ubuntu and Debian actually ship, `fallocate` is an extent operation, so both create and grow are effectively instant regardless of size.
 
 Three deliberate properties:
 
 1. **Growth is safe later because Docker moved into the pool.** After adoption, host filesystem usage is nearly static — OS, journald, ployz state. The space left behind at create time is still there months later, which is precisely what makes a conservative default honest rather than a trap.
 2. **Growth is never automatic.** An auto-grow rule is a reconciliation loop, and Ployz does not have those. What it has instead: every message that growing would fix prints the exact command with the number already filled in, and `ployz storage ls` warns at 80% pool usage.
-3. **Growing the pool and growing a quota are different acts, and on ZFS they feel different.** Raising a `refquota` is instant metadata against shared free space; raising a quota on the file backend allocates immediately and can be refused for want of budget. Same command, and `ployz storage ls` already showed the operator which world they are in.
+3. **Growing the pool and growing a quota are different acts, and on ZFS they feel different.** Raising a `refquota` is instant metadata against shared free space; raising a quota on the ext4 backend allocates immediately and can be refused for want of budget. Same command, and `ployz storage ls` already showed the operator which world they are in.
 
 ## Preallocation: settled, and here is why, for the record
 
@@ -245,17 +318,17 @@ Placement cannot depend on aggregate free space, because there is no Cluster tru
 | Postgres steady growth | Same mechanism; `ployz storage ls` shows `USED` against `QUOTA` before it bites. |
 | Build cache runs away | Build cache is not a compose volume. It is inside the Docker quota, so it breaks builds and nothing else. |
 | Two projects both named `data` | They share one volume, because they already share one Docker Volume today — the Docker Volume namespace is flat and machine-local. The later deploy's quota wins, unless it would drop below `used`, which is refused. Ployz does not invent a namespace to paper over a collision it already has. |
-| Five apps × 10G on an 18G pool | On ZFS: allowed, reported as `COMMITTED 50G / SIZE 18G`. The pool fills only if they actually grow, and the hidden reservation keeps recovery possible. On the file backend: the sixth 10G volume is refused at deploy time, because the budget is real. |
+| Five apps × 10G on an 18G pool | On ZFS: allowed, reported as `COMMITTED 50G / SIZE 18G`. The pool fills only if they actually grow, and the hidden reservation keeps recovery possible. On the ext4 backend: the sixth 10G volume is refused at deploy time, because the budget is real. |
 
 ## Machines that cannot run ZFS
 
-**Yes, they get quotas. The mechanism is a preallocated ext4 image per volume, mounted over a loop device — the same `fallocate` trick as the pool file, applied one level down.** This is the `file` backend, and it is chosen automatically.
+**Yes, they get quotas. The mechanism is a preallocated ext4 image per volume, mounted over a loop device — the same `fallocate` trick as the pool file, applied one level down.** This is the `ext4` backend, and it is what `--storage auto` picks whenever ZFS is not available without a compile.
 
 Why not the obvious alternatives, briefly, so nobody re-proposes them: **XFS project quotas** would be ideal, but Ubuntu and Debian install on ext4, and you do not get to pick the root filesystem of a VPS after the fact. **ext4 project quotas** exist and are the right shape, but enabling them needs `tune2fs -O project,quota` on an *unmounted* filesystem plus a mount-option change — a reboot into rescue on the Machine's root filesystem, which is not a thing a deploy tool may ask for. **Loop-mounted images need nothing installed**: `losetup` is util-linux, `mkfs.ext4` is e2fsprogs, both present on every Ubuntu and Debian install that can run Docker. No package, no DKMS build, no kernel headers, no reboot.
 
 That last point is the whole argument. Getting ZFS onto a Debian Machine means contrib plus a `zfs-dkms` compile that wants headers, time, and RAM that a small VPS may not have; on Ubuntu it means `zfsutils-linux` plus a `linux-modules-extra-$(uname -r)` that some cloud kernels ship without. **The daemon probes and picks; it never installs a kernel module on the operator's behalf**, and when the operator asks for `--backend zfs` on a Machine that lacks it, the refusal prints the one `apt` line for that distribution and stops.
 
-What the file backend bounds, and what it does not:
+What the ext4 backend bounds, and what it does not:
 
 | | File backend |
 | --- | --- |
@@ -268,7 +341,7 @@ What the file backend bounds, and what it does not:
 | Snapshots, send/recv, compression | **None.** A Machine on this backend cannot participate in the future snapshot story. |
 | Inode exhaustion | **Possible.** A volume with millions of tiny files can hit ENOSPC on inodes before bytes. `mkfs.ext4` gets a bytes-per-inode setting tuned for the size, and that is as far as this cut goes. |
 
-One honest asymmetry. On the ZFS backend the pool file is preallocated in full, so nothing can ever race the datasets for host blocks. On the file backend only the *allocated* images are preallocated — the unclaimed remainder of the budget is ordinary host free space. The consequence is mild and lands in the right place: an existing volume can never lose blocks it already owns, and if something outside Ployz eats the host filesystem, the failure is a later `fallocate` refusing to create a *new* volume. A clean refusal at create time, not a suspended pool and not a corrupted one.
+One honest asymmetry. On the ZFS backend the pool file is preallocated in full, so nothing can ever race the datasets for host blocks. On the ext4 backend only the *allocated* images are preallocated — the unclaimed remainder of the budget is ordinary host free space. The consequence is mild and lands in the right place: an existing volume can never lose blocks it already owns, and if something outside Ployz eats the host filesystem, the failure is a later `fallocate` refusing to create a *new* volume. A clean refusal at create time, not a suspended pool and not a corrupted one.
 
 It fits the product shape without bending it: compose still says `x-quota: 10G`, the volume is still handed to Docker as a named volume bound to a mountpoint, placement still pins, enforcement is still runtime ENOSPC, and `ployz storage ls` still prints `QUOTA` against `USED`. The client cannot tell, and neither can the compose file. The pool is still a pool — on this backend it is a directory plus a budget rather than shared free space, which is why `COMMITTED` equals `USED` there and why the deploy-time "quota exceeds free space" refusal becomes strict instead of advisory. Guardrail: one loop device per Managed Volume, and the daemon refuses past 64 of them on a Machine, because past that the operator has a design problem that more loop devices will not fix.
 
@@ -285,7 +358,7 @@ What the operator gets on those Machines instead:
 ## Where everything that grows lives
 
 ```
-ZFS backend                                   file backend
+ZFS backend                                   ext4 backend
 ployz              (file vdev, or --from)     /var/lib/ployz-storage/
 └── ployz/         canmount=off               ├── volumes/<name>.img   ext4, size from compose
     ├── volumes/<name>   refquota             ├── docker.img           ext4, 40% of budget
@@ -297,11 +370,13 @@ Two quotas an operator ever thinks about: the per-volume one they wrote in compo
 
 **Docker data-root inside the pool** is what makes this one storage story rather than two, and it works identically on both backends. It captures, in one bounded place: images (Ployz pushes a new image to the Machine on every deploy and nothing prunes them — this is the second-largest grower after app data), container writable layers, container json-file logs, any future on-Machine build cache, and Docker named volumes that nobody annotated with `x-quota`. That last one matters: **an unannotated `data:` volume is still incapable of taking the Machine down**, because it lives inside the Docker quota.
 
-Adoption is guarded, because moving a live data-root is invasive:
+On a Machine initialised with `--storage`, none of this is a migration: `install.sh` writes `data-root` into the pool before `dockerd` has ever run, and there is nothing to copy. **Adoption is the recovery path**, for Machines that skipped the opt-in, predate it, or were installed with `--no-install`. It is guarded, because moving a live data-root is invasive:
 
 - `--adopt-docker` defaults to on when the data-root is near-empty or has no containers. Then pool create moves it: stop Docker, create the dataset or image, copy, rewrite `data-root` in `/etc/docker/daemon.json`, start Docker, leave the old directory renamed for the operator to delete.
 - Otherwise pool create completes without adopting and prints exactly one line: `Docker data stays on the host filesystem. Run ployz storage pool create --machine m1 --adopt-docker after stopping services to move it.` Re-running later does the migration. Idempotent either way.
 - The copy needs no transient host space: the destination is already allocated, and the old directory is only released afterwards, so adoption *returns* space to the host filesystem. That ordering is what lets a conservative default coexist with a fat existing data-root, provided the pool was sized against it as described above.
+
+Docker runs its containerd snapshotter on overlayfs in both cases. On the ZFS backend that is overlayfs on top of a dataset, which ZFS 2.x supports and which Ubuntu 22.04+ and Debian 12 ship; the legacy `zfs` graph driver is not used and not wanted.
 
 Not on the pool, deliberately:
 
@@ -313,24 +388,24 @@ Storage lives under `/var/lib/ployz-storage/` — the pool file, the volume imag
 
 ## What I hide
 
-1. **Which backend a Machine uses.** Probed, reported in `ployz storage ls`, never asked about. A Machine that gains ZFS later changes one column and nothing else.
+1. **Which backend a Machine uses**, after the one moment the operator may name it. Probed at init, reported in `ployz storage ls`, never asked about again. A Machine that gains ZFS later changes one column and nothing else.
 2. The pool name, dataset and image paths, mountpoints, loop devices, and every `zfs` / `zpool` / `losetup` / `resize2fs` invocation. The client sends a name and a number.
 3. `refquota` vs `quota`, `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posixacl`, `ashift=12`, ext4 bytes-per-inode. Chosen once, correctly, for small machines.
 4. The reserved dataset, and the Docker named-volume handle bound to the mountpoint. Humans see a volume called `data`.
-5. Importing the pool and re-attaching loop devices at daemon start, plus the `Before=docker.service` ordering and the mode-`0500` unmounted mountpoint that keep Docker from writing underneath a volume that is not mounted yet.
+5. That `install.sh` gained a step, that `data-root` was written into the pool before `dockerd` first ran, and that a `ployz-storage.service` oneshot mounts everything `Before=docker.service` on each boot. The operator typed `ployz machine init` and got a Machine.
 
 ## What I refuse
 
 1. Anything cluster-wide: cluster zpool, "ZFS-enabled cluster" flag, replicated volumes, PVs. Machine-local only.
 2. `driver: zfs` in compose, and any compose key that names a filesystem. The human writes a bound; the Machine picks how.
 3. Sparse pool files, and silent sparse fallback.
-4. Installing kernel modules from the daemon, automatic pool growth, dedup, `sync=disabled`, and arbitrary filesystem property passthrough from compose. `recordsize` is a real Postgres win and a named future knob, not a knob today.
+4. Installing packages *from the daemon* — the SSH installer may, because the operator is watching and the Machine is empty; `ployzd` never may. Also refused: DKMS compiles under `--storage auto`, automatic pool growth, dedup, `sync=disabled`, and arbitrary filesystem property passthrough from compose. `recordsize` is a real Postgres win and a named future knob, not a knob today.
 5. Shrinking a quota below `used`; shrinking a pool; destroying a pool over RPC (`zpool destroy` plus `rm` is an operator's own decision, not one API call away); putting daemon state inside the pool; falling back to an unbounded Docker Volume when the Machine cannot enforce a quota — on those Machines the compose file says `x-quota: none` or the deploy refuses.
 
 ## How the deferred parts would fit
 
-Out of this cut, and the design does not pay for them, but the shape leaves room: one dataset per volume with `refquota` (not `quota`) is exactly the substrate snapshots want, so `ployz storage snap` is a dataset operation with no model changes. Moving a volume to another Machine is `zfs send` into the target's `ployz/volumes/<name>`, then letting the existing placement pin follow the volume — the planner already pins a Service to the Machine that has the named volume, so "move the data" and "move the Service" are the same act. Both are ZFS-backend-only, which is the honest reason ZFS stays preferred rather than merely tolerated: the file backend buys enforcement everywhere, and nothing beyond it.
+Out of this cut, and the design does not pay for them, but the shape leaves room: one dataset per volume with `refquota` (not `quota`) is exactly the substrate snapshots want, so `ployz storage snap` is a dataset operation with no model changes. Moving a volume to another Machine is `zfs send` into the target's `ployz/volumes/<name>`, then letting the existing placement pin follow the volume — the planner already pins a Service to the Machine that has the named volume, so "move the data" and "move the Service" are the same act. Both are ZFS-backend-only, which is the honest reason ZFS stays preferred rather than merely tolerated: the ext4 backend buys enforcement everywhere, and nothing beyond it.
 
 ## Next
 
-Read this, then argue with exactly one section: the default-size formula, the file backend for non-ZFS Machines, or Docker data-root adoption. Those are the three decisions that are expensive to change later. `fallocate` is settled.
+Read this, then argue with exactly one section: storage on by default at `machine init`, the default-size formula, or `auto` installing ZFS binary packages on Ubuntu. Those are the three decisions that are expensive to change later. `fallocate`, the ext4 backend, and `x-quota` are settled.
