@@ -206,7 +206,16 @@ impl From<ConnectError> for Failure {
             ConnectError::Context(error) => error.into(),
             ConnectError::Connection(error) => error.into(),
             ConnectError::Value(error) => error.into(),
-            other => Self::usage(other.to_string()),
+            other @ (ConnectError::Attempt(_)
+            | ConnectError::ProxyUnsupported(_)
+            | ConnectError::UnsupportedNetwork(_)
+            | ConnectError::Config(_)
+            | ConnectError::Path { .. }
+            | ConnectError::AllFailed { .. }
+            | ConnectError::Rpc(_)
+            | ConnectError::Codec(_)
+            | ConnectError::Remote(_)
+            | ConnectError::Framing(_)) => Self::usage(other.to_string()),
         }
     }
 }
@@ -264,7 +273,9 @@ impl From<OperatorError> for Failure {
         match error {
             OperatorError::Container(error) => error.into(),
             OperatorError::Protocol(error) => error.into(),
-            other => Self::usage(other.to_string()),
+            other @ (OperatorError::Message(_) | OperatorError::Rpc(_)) => {
+                Self::usage(other.to_string())
+            }
         }
     }
 }
@@ -274,7 +285,9 @@ impl From<DnsError> for Failure {
         match error {
             DnsError::Connect(error) => error.into(),
             DnsError::NoReachableMachines(error) => error.into(),
-            other => Self::usage(other.to_string()),
+            other @ (DnsError::Inspect { .. } | DnsError::Http(_)) => {
+                Self::usage(other.to_string())
+            }
         }
     }
 }

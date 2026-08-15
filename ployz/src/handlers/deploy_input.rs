@@ -137,7 +137,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         placement: Placement {
             machines: string_values(matches, "machine")
                 .into_iter()
-                .map(|value| MachineSelector::parse(value))
+                .map(MachineSelector::parse)
                 .collect::<Result<_, _>>()?,
         },
         ports,

@@ -139,7 +139,7 @@ fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Re
 fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
     let name = matches
         .get_one::<String>("name")
-        .map(|name| MachineName::parse(name))
+        .map(MachineName::parse)
         .transpose()?;
     let public_ip = match matches.get_one::<String>("public-ip").map(String::as_str) {
         None => PublicIpUpdate::Keep,

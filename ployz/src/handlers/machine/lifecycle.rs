@@ -149,7 +149,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     )?;
     let requested_name = matches
         .get_one::<String>("name")
-        .map(|name| MachineName::parse(name))
+        .map(MachineName::parse)
         .transpose()?;
     let token_request = token_request(matches)?;
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
@@ -303,7 +303,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     )?;
     let requested_name = matches
         .get_one::<String>("name")
-        .map(|name| MachineName::parse(name))
+        .map(MachineName::parse)
         .transpose()?;
     let token_request = token_request(matches)?;
     let cluster_network = matches
