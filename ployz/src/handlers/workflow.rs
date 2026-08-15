@@ -15,7 +15,7 @@ use crate::{
     connect::Client,
     deploy::{
         DeployOperation, DeployOutcome, DeploySnapshot, ExecutionError, FailedOperation,
-        ObservedDockerVolume, PlanOptions, ReplacementOperation, execute_operations, plan_deploy,
+        PlanOptions, ReplacementOperation, execute_operations, plan_deploy,
     },
 };
 
@@ -213,7 +213,10 @@ impl WorkflowIo for RemoteWorkflow<'_> {
         &mut self,
         machines: Option<Vec<ployz_core::MachineObservation>>,
     ) -> Result<DeploySnapshot, Error> {
-        snapshot(self.client, machines).await
+        self.client
+            .deploy_snapshot(machines)
+            .await
+            .map_err(|error| error.to_string().into())
     }
 
     fn render(&mut self, operations: &[DeployOperation]) {
@@ -368,60 +371,6 @@ async fn confirm_and_execute(
     }
     io.record(WorkflowStage::Execute);
     Ok(Some(io.execute(operations).await))
-}
-
-async fn snapshot(
-    client: &mut Client,
-    machines: Option<Vec<ployz_core::MachineObservation>>,
-) -> Result<DeploySnapshot, Error> {
-    let machines = match machines {
-        Some(machines) => machines,
-        None => client
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .map(|list| list.machines)
-            .map_err(|error| error.to_string())?,
-    };
-    let live = client
-        .live_services_from(&machines)
-        .await
-        .map_err(|error| error.to_string())?;
-    report_partial("container", &live.containers);
-    let containers = live
-        .containers
-        .successes
-        .into_iter()
-        .flat_map(|success| success.value)
-        .collect();
-    let volumes = client.list_volumes(&machines).await;
-    report_partial("volume", &volumes);
-    let volumes = volumes
-        .successes
-        .into_iter()
-        .flat_map(|success| success.value)
-        .map(|volume| ObservedDockerVolume {
-            id: volume.id,
-            driver: volume.driver,
-            options: volume.options,
-        })
-        .collect();
-    Ok(DeploySnapshot {
-        machines,
-        containers,
-        volumes,
-    })
-}
-
-fn report_partial<T>(kind: &str, result: &ployz_core::PartialResult<T, ployz_core::RpcError>) {
-    for failure in &result.failures {
-        eprintln!(
-            "WARNING: {kind} observation failed on {}: {}",
-            failure.machine_id, failure.error.message
-        );
-    }
-    for machine in &result.omissions {
-        eprintln!("WARNING: {kind} observation omitted {machine}");
-    }
 }
 
 fn render(operations: &[DeployOperation], connection: &crate::context::Connection) {
