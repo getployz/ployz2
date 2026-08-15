@@ -1,6 +1,6 @@
 # Managed ZFS Volume (proposal)
 
-Cluster vs Machine was conflated. There is no cluster zpool. Pool create is a Machine command. List/deploy observe fans out. Default overcommit is still open.
+Frontier is empty. Pool create is a Machine command. Default overcommit is 120%.
 
 ## Cluster vs Machine
 
@@ -27,7 +27,7 @@ Fan-out create (`--machines *`) is a later CLI sugar: N machine creates, still N
 | Pool | Machine command `ployz zfs pool create --machine …`. Not a cluster pool. Not created on first `x-zfs` deploy. `machine init` is out of scope. |
 | Backing | `--size` (file-backed sparse vdev) or `--from POOL` (adopt imported zpool). Mutually exclusive. Never auto-pick. |
 | Pool size | `--size 100G` or `--size 80%`. `%` is of **available** space on the backing filesystem, resolved once to a sparse vdev byte size. `--from` has no `--size`. Volume quota is not a percentage. |
-| Overcommit | Pool property, not a cluster property. `allocatable = pool_bytes × ratio`. Planner drops a Machine when a new or raised `refquota` would exceed allocatable. ZFS still returns `ENOSPC` if used hits the pool. |
+| Overcommit | Pool property on **that** Machine. Default **120%**. `allocatable = pool_bytes × 1.2`. Planner drops a Machine when a new or raised `refquota` would exceed allocatable. ZFS still returns `ENOSPC` if used hits the pool. `--overcommit 200%` is an explicit extra lie. |
 | Cluster flag | None. ZFS is Live Observation on each Machine (`Ready` / `PoolMissing` / …). Not stored in the replicated store. |
 | Privilege | Privileged `ployzd` on ZFS Machines. No helper. No sudo-from-unprivileged. |
 | Identity | `{Machine ID, ManagedZfsVolumeName}` |
@@ -59,12 +59,12 @@ A Machine without a Machine ZFS Pool is ineligible for `ManagedZfs` placement. T
 Deploy does not pick a size and does not create a sparse vdev.
 
 ```
-ployz zfs pool create --machine db-1 --size 100G [--overcommit 1]
-ployz zfs pool create --machine db-1 --size 80% [--overcommit 2]
-ployz zfs pool create --machine db-1 --from tank [--overcommit 1]
+ployz zfs pool create --machine db-1 --size 100G
+ployz zfs pool create --machine db-1 --size 80% --overcommit 200%
+ployz zfs pool create --machine db-1 --from tank
 ```
 
-Same targeting as `ployz volume create`: one Machine. Multi-machine and no `--machine` → prompt. There is no cluster-wide create.
+Same targeting as `ployz volume create`: one Machine. Multi-machine and no `--machine` → prompt. There is no cluster-wide create. Omit `--overcommit` → **120%**.
 
 `--size` and `--from` are mutually exclusive. `--from` is `zpool get` plus a parent dataset `tank/ployz` on **that** Machine. `--size 80%` is resolved once on **that** Machine (`statvfs` available × 0.8 → sparse vdev bytes). Re-running create against an existing Ployz pool on that Machine is a conflict. `machine init` does not call this.
 
@@ -180,6 +180,8 @@ ZFS needs `/dev/zfs`. `ployzd` on a ZFS Machine runs privileged enough to do tha
 | Cluster-wide quota | A Managed ZFS Volume is machine-local. Global means N datasets. |
 | Cluster zpool / optional `--machine` | Same bug as treating `volume create` as cluster-wide. Create targets one Machine. |
 | Fan-out `pool create` on every Machine | Later sugar. Still N machine pools, not one cluster pool. |
+| Default `--overcommit 1` (100%) | Too tight for a sparse file-backed pool. Default is 120%. |
+| Unlimited overcommit | Planner would never refuse allocation. Not the default. |
 
 ## Uncloud (what people actually said)
 
@@ -188,9 +190,3 @@ Full notes: `evidence/uncloud-zfs-wants.md`.
 Uncloud has **no ZFS product**. One author comment ([#242](https://github.com/psviderski/uncloud/issues/242#issuecomment-3771471639), 2026-01-20): still-local volumes with snapshots, backups, restore-elsewhere; ZFS named as an example next to device mapper. Distributed storage (Gluster/Ceph) rejected. Users asked for NFS `driver_opts`, postgres backups, and not losing a volume when a machine is down. Nobody asked Uncloud for quotas, `x-zfs`, or a pool CLI.
 
 This Ployz design is original. Snapshots/send/recv matching the author’s “recover” story stay out of this cut.
-
-## Open questions
-
-❓ **Q1** - **Overcommit default**: If the operator omits `--overcommit` on **that Machine’s** pool create, what is the ratio?
-
-➡️ `1` — sum of volume `refquota`s on that Machine may not exceed that Machine’s pool bytes. `--overcommit 2` is the explicit lie. Unlimited is not the default.
