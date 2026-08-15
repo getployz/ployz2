@@ -16,7 +16,8 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use tokio::{net::UnixStream, sync::watch};
+use tokio::net::UnixStream;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     corrosion::ReplicatedStore,
@@ -115,7 +116,7 @@ pub async fn run(
     replicated: ReplicatedStore,
     config_file: PathBuf,
     admin_socket: PathBuf,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: CancellationToken,
 ) -> io::Result<()> {
     prepare_directory(
         admin_socket
@@ -153,10 +154,7 @@ pub async fn run(
         }
         tokio::select! {
             changed = changes.changed() => changed.map_err(io::Error::other)?,
-            changed = shutdown.changed() => {
-                changed.map_err(io::Error::other)?;
-                return Ok(());
-            }
+            () = shutdown.cancelled() => return Ok(()),
         }
     }
 }

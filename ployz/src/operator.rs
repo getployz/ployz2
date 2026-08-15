@@ -1,26 +1,20 @@
 use std::{
-    borrow::Cow,
-    cmp::Ordering,
-    collections::{BinaryHeap, HashSet},
-    future::Future,
-    pin::Pin,
-    time::Duration,
+    borrow::Cow, cmp::Ordering, collections::BinaryHeap, future::Future, pin::Pin, time::Duration,
 };
 
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerLogsRequest, ContainerObservation, ExecConfig,
-    ExecOptions, ExecRequestFrame, HealthObservation, ListMachinesRequest, LogEntry, LogStream,
-    LogsOptions, MachineId, MachineLogService, MachineLogsRequest, MachineName, MachineObservation,
-    MachineSelector, MembershipObservation, OpaquePayload, ServiceObservation, StreamProtocolError,
-    op, resolve_machine_selectors, select_service,
+    ContainerId, ContainerKind, ContainerObservation, ExecOptions, HealthObservation, LogEntry,
+    LogStream, MachineId, MachineLogService, MachineName, MachineObservation, MachineSelector,
+    MembershipObservation, OpaquePayload, ServiceObservation, StreamProtocolError,
+    resolve_machine_selectors,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tonic::Streaming;
 
-use crate::connect::{Client, ConnectError, TransportError};
+use crate::connect::{ConnectError, TransportError};
 
 pub const DEFAULT_EXEC_COMMAND: &[&str] = &[
     "sh",
@@ -344,171 +338,7 @@ pub struct ServiceLogInputs {
     pub skipped_services: Vec<String>,
 }
 
-impl Client {
-    pub async fn open_exec(
-        &mut self,
-        service_selector: &str,
-        container_selector: Option<&str>,
-        options: ExecOptions,
-    ) -> Result<ExecSession, OperatorError> {
-        let live = self.live_services().await?;
-        let service = select_service(&live.services, service_selector)?;
-        let container = select_exec_container(service, container_selector)?;
-        let machine_id = container.machine_id;
-        let config = ExecRequestFrame::Config(ExecConfig {
-            container_id: container.container_id,
-            options,
-        })
-        .encode()?;
-        let (sender, receiver) = mpsc::channel(32);
-        sender
-            .send(config)
-            .await
-            .map_err(|_| OperatorError::StreamClosed)?;
-        let output = self
-            .exec_stream(
-                &MachineSelector::from(&machine_id),
-                tokio_stream::wrappers::ReceiverStream::new(receiver),
-            )
-            .await?;
-        Ok(ExecSession {
-            input: sender,
-            output,
-        })
-    }
-
-    pub async fn open_service_logs(
-        &mut self,
-        args: &[ServiceArg],
-        machine_selectors: &[String],
-        options: LogsOptions,
-        compose_selection: bool,
-        cancellation: CancellationToken,
-    ) -> Result<ServiceLogInputs, OperatorError> {
-        let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await?
-            .machines;
-        let selected_machines = select_machines(&machines, machine_selectors)?;
-        let machine_ids = selected_machines
-            .iter()
-            .map(|machine| machine.machine.id)
-            .collect::<HashSet<_>>();
-        let live = self.live_services().await?;
-        let mut inputs = Vec::new();
-        let mut skipped_services = Vec::new();
-        for arg in args {
-            let service = match select_service(&live.services, &arg.service) {
-                Ok(service) => service,
-                Err(ployz_core::ServiceSelectorError::NotFound { .. }) if compose_selection => {
-                    skipped_services.push(arg.service.clone());
-                    continue;
-                }
-                Err(error) => return Err(error.into()),
-            };
-            let containers = select_log_containers(service, &arg.containers)?;
-            let containers = containers
-                .into_iter()
-                .filter(|container| machine_ids.contains(&container.machine_id))
-                .collect::<Vec<_>>();
-            if containers.is_empty() {
-                return Err(OperatorError::NoContainersOnMachines {
-                    service: arg.service.clone(),
-                });
-            }
-            for container in containers {
-                let request = op::ContainerLogs::into_request(ContainerLogsRequest {
-                    container_id: container.container_id,
-                    options: options.clone(),
-                })
-                .encode()?;
-                let identity = format!("{}/{}", arg.service, container.display_name);
-                let target = MachineSelector::from(&container.machine_id);
-                // TODO(UT-082): earlier Container log streams intentionally survive until the
-                // parent cancellation token is cancelled.
-                if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
-                    self.container_logs_stream(&target, request)
-                        .await
-                        .map(|stream| stream_input(identity, stream))
-                })
-                .await
-                {
-                    return Err(OperatorError::OpenContainerLogs {
-                        container_id: container.container_id,
-                        machine_id: container.machine_id,
-                        source: Box::new(error.into()),
-                    });
-                }
-            }
-        }
-        if inputs.is_empty() {
-            return Err(OperatorError::NoSelectedServices);
-        }
-        Ok(ServiceLogInputs {
-            inputs,
-            skipped_services,
-        })
-    }
-
-    pub async fn open_machine_logs(
-        &mut self,
-        services: &[String],
-        machine_selectors: &[String],
-        options: LogsOptions,
-        cancellation: CancellationToken,
-    ) -> Result<Vec<LogInput>, OperatorError> {
-        let services = if services.is_empty() {
-            vec![MachineLogService::Ployz]
-        } else {
-            services
-                .iter()
-                .map(|service| {
-                    service.parse::<MachineLogService>().map_err(|expected| {
-                        OperatorError::UnsupportedLogService {
-                            service: service.clone(),
-                            expected,
-                        }
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await?
-            .machines;
-        let machines = select_machines(&machines, machine_selectors)?;
-        let mut inputs = Vec::new();
-        for service in services {
-            for machine in &machines {
-                let request = op::MachineLogs::into_request(MachineLogsRequest {
-                    service,
-                    options: options.clone(),
-                })
-                .encode()?;
-                let identity = format!("{service}@{}", machine.machine.name);
-                let target = MachineSelector::from(&machine.machine.id);
-                // TODO(UT-083): earlier Machine log streams intentionally survive until the
-                // parent cancellation token is cancelled.
-                if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
-                    self.machine_logs_stream(&target, request)
-                        .await
-                        .map(|stream| stream_input(identity, stream))
-                })
-                .await
-                {
-                    return Err(OperatorError::OpenMachineLogs {
-                        service,
-                        machine_name: machine.machine.name.clone(),
-                        source: Box::new(error.into()),
-                    });
-                }
-            }
-        }
-        Ok(inputs)
-    }
-}
-
-fn stream_input(identity: String, stream: Streaming<OpaquePayload>) -> LogInput {
+pub(crate) fn stream_input(identity: String, stream: Streaming<OpaquePayload>) -> LogInput {
     LogInput {
         identity,
         stream: Box::pin(stream.map(|result| {
@@ -533,7 +363,7 @@ fn preserve_open_inputs(inputs: Vec<LogInput>, cancellation: CancellationToken) 
     }
 }
 
-async fn open_log_input(
+pub(crate) async fn open_log_input(
     inputs: &mut Vec<LogInput>,
     cancellation: &CancellationToken,
     open: impl Future<Output = Result<LogInput, TransportError>>,
@@ -550,7 +380,7 @@ async fn open_log_input(
     }
 }
 
-fn select_log_containers<'a>(
+pub(crate) fn select_log_containers<'a>(
     service: &'a ServiceObservation,
     selectors: &[String],
 ) -> Result<Vec<&'a ContainerObservation>, OperatorError> {
@@ -575,7 +405,7 @@ fn select_log_containers<'a>(
     Ok(selected)
 }
 
-fn select_machines<'a>(
+pub(crate) fn select_machines<'a>(
     machines: &'a [MachineObservation],
     selectors: &[String],
 ) -> Result<Vec<&'a MachineObservation>, OperatorError> {
