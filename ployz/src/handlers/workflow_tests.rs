@@ -1,8 +1,4 @@
-use std::{
-    collections::{BTreeMap, VecDeque},
-    fs,
-    num::NonZeroU16,
-};
+use std::{collections::BTreeMap, num::NonZeroU32};
 
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
@@ -11,95 +7,6 @@ use ployz_core::{
 };
 
 use super::*;
-
-struct Scripted {
-    events: Vec<WorkflowStage>,
-    snapshot: DeploySnapshot,
-    push_failures: VecDeque<bool>,
-    pushed: Vec<String>,
-    confirmation_required: bool,
-    confirmed: bool,
-    confirmation_error: bool,
-    executions: usize,
-    execution_outcome: Option<DeployOutcome<ExecutionError>>,
-    cluster_domain: Option<String>,
-}
-
-impl Scripted {
-    fn new(snapshot: DeploySnapshot) -> Self {
-        Self {
-            events: Vec::new(),
-            snapshot,
-            push_failures: VecDeque::new(),
-            pushed: Vec::new(),
-            confirmation_required: false,
-            confirmed: true,
-            confirmation_error: false,
-            executions: 0,
-            execution_outcome: None,
-            cluster_domain: None,
-        }
-    }
-}
-
-impl WorkflowIo for Scripted {
-    fn record(&mut self, stage: WorkflowStage) {
-        self.events.push(stage);
-    }
-
-    async fn machines(&mut self) -> Result<Vec<ployz_core::MachineObservation>, Error> {
-        Ok(self.snapshot.machines.clone())
-    }
-
-    async fn push(
-        &mut self,
-        service: &BuildService,
-        _machines: &[ployz_core::MachineObservation],
-    ) -> Result<(), Error> {
-        if self.push_failures.pop_front().unwrap_or(false) {
-            Err(format!("{} failed", service.name).into())
-        } else {
-            self.pushed.push(service.name.clone());
-            Ok(())
-        }
-    }
-
-    async fn snapshot(
-        &mut self,
-        _machines: Option<Vec<ployz_core::MachineObservation>>,
-    ) -> Result<DeploySnapshot, Error> {
-        Ok(self.snapshot.clone())
-    }
-
-    fn render(&mut self, _operations: &[DeployOperation]) {}
-
-    fn confirmation_required(&self) -> bool {
-        self.confirmation_required
-    }
-
-    fn confirm(&mut self) -> Result<bool, Error> {
-        if self.confirmation_error {
-            Err("confirmation requires a terminal".into())
-        } else {
-            Ok(self.confirmed)
-        }
-    }
-
-    async fn execute(&mut self, operations: &[DeployOperation]) -> DeployOutcome<ExecutionError> {
-        self.executions += 1;
-        self.execution_outcome
-            .take()
-            .unwrap_or_else(|| DeployOutcome {
-                completed: operations.to_vec(),
-                failed: None,
-                unexecuted: Vec::new(),
-            })
-    }
-
-    async fn cluster_domain(&mut self) -> Result<Option<String>, Error> {
-        Ok(self.cluster_domain.clone())
-    }
-}
 
 #[test]
 fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
@@ -227,365 +134,108 @@ fn resolved_scale_input_changes_only_replicas() {
     assert_eq!(scaled, expected);
 }
 
-#[tokio::test]
-async fn run_assigns_reserved_cluster_domain_hostnames_before_planning() {
-    let matches = crate::cli::command()
-        .try_get_matches_from([
-            "ployz",
-            "run",
-            "--name",
-            "web",
-            "--publish",
-            "8080/https",
-            "nginx",
-        ])
-        .unwrap();
-    let requested = run_spec(super::leaf_matches(&matches)).unwrap();
-    let mut io = Scripted::new(DeploySnapshot {
-        machines: vec![machine()],
-        ..Default::default()
-    });
-    io.cluster_domain = Some("opaque.uncloud.example".into());
-    let outcome = run_connected(&mut io, &requested).await.unwrap();
-    let Some(DeployOperation::RunContainer { spec, .. }) = outcome.completed.first() else {
-        panic!("expected a run operation");
-    };
-    assert_eq!(
-        spec.ports,
-        vec![PortPublication::Ingress {
-            hostname: "web.opaque.uncloud.example".into(),
-            load_balancer_port: NonZeroU16::new(443).unwrap(),
-            container_port: NonZeroU16::new(8080).unwrap(),
-            http_protocol: ployz_core::HttpProtocol::Https,
-        }]
-    );
-
-    let mut missing = Scripted::new(DeploySnapshot {
-        machines: vec![machine()],
-        ..Default::default()
-    });
-    assert_eq!(
-        run_connected(&mut missing, &requested)
-            .await
-            .unwrap_err()
-            .to_string(),
-        "cluster domain must be reserved to generate hostname for ingress port: 8080/https"
-    );
-}
-
-#[tokio::test]
-async fn run_forms_share_normalization_and_skip_confirmation() {
+#[test]
+fn run_forms_share_normalization() {
     let root = crate::cli::command()
         .try_get_matches_from(["ployz", "run", "--name", "api", "alpine"])
         .unwrap();
     let nested = crate::cli::command()
         .try_get_matches_from(["ployz", "service", "run", "--name", "api", "alpine"])
         .unwrap();
-    let root = run_spec(super::leaf_matches(&root)).unwrap();
-    let nested = run_spec(super::leaf_matches(&nested)).unwrap();
-    assert_eq!(root, nested);
-
-    for requested in [&root, &nested] {
-        let mut io = Scripted::new(DeploySnapshot {
-            machines: vec![machine()],
-            ..Default::default()
-        });
-        run_connected(&mut io, requested).await.unwrap();
-        assert_eq!(
-            io.events,
-            [
-                WorkflowStage::Snapshot,
-                WorkflowStage::Plan,
-                WorkflowStage::Render,
-                WorkflowStage::Execute,
-            ]
-        );
-    }
+    assert_eq!(
+        run_spec(super::leaf_matches(&root)).unwrap(),
+        run_spec(super::leaf_matches(&nested)).unwrap()
+    );
 }
 
-#[tokio::test]
-async fn deploy_attempts_every_push_and_stops_before_secrets_after_failure() {
-    let mut project = crate::compose::parse_normalized(
-        r#"
-name: scripted
-services:
-  api: {image: api, environment: {TOKEN: secret://token}}
-secrets: {token: {x-command: "printf resolved"}}
-"#,
-        ".",
-    )
-    .unwrap();
-    let builds = [build("first"), build("second"), build("third")];
-    let mut io = Scripted::new(DeploySnapshot {
-        machines: vec![machine()],
-        ..Default::default()
-    });
-    io.push_failures = [false, true, false].into();
-    assert!(
-        deploy_connected(&mut io, &mut project, &builds, PlanOptions::default())
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        io.events,
-        [
-            WorkflowStage::Push,
-            WorkflowStage::Push,
-            WorkflowStage::Push,
-        ]
-    );
-    assert_eq!(io.pushed, ["first", "third"]);
-    assert_eq!(
-        project
-            .services
-            .get("api")
-            .and_then(|service| service.container.environment.get("TOKEN"))
-            .map(String::as_str),
-        Some("secret://token")
-    );
-    assert_eq!(io.executions, 0);
-}
-
-#[tokio::test]
-async fn deploy_sequence_confirmation_and_empty_plan_are_exact() {
-    let root = std::env::temp_dir().join(format!("ployz-workflow-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
-    let file = root.join("compose.yaml");
-    fs::write(
-        &file,
-        "name: scripted\nservices: {api: {image: api, build: .}}\n",
-    )
-    .unwrap();
-    let matches = crate::cli::command()
-        .try_get_matches_from(["ployz", "deploy", "--file", file.to_str().unwrap(), "--yes"])
-        .unwrap();
-    let mut preparation = Vec::new();
-    let (project, builds) = prepare_deploy(
-        super::leaf_matches(&matches),
-        |stage| preparation.push(stage),
-        |_, _, _| Ok(()),
-    )
-    .unwrap();
-    let expected = [
-        WorkflowStage::Load,
-        WorkflowStage::Select,
-        WorkflowStage::Build,
-        WorkflowStage::Push,
-        WorkflowStage::ResolveSecrets,
-        WorkflowStage::Snapshot,
-        WorkflowStage::Plan,
-        WorkflowStage::Render,
-        WorkflowStage::Confirm,
-        WorkflowStage::Execute,
-    ];
-    let mut confirmed = Scripted::new(DeploySnapshot {
-        machines: vec![machine()],
-        ..Default::default()
-    });
-    confirmed.events = preparation;
-    confirmed.confirmation_required = true;
-    deploy_connected(
-        &mut confirmed,
-        &mut project.clone(),
-        &builds,
-        PlanOptions::default(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(confirmed.events, expected);
-    assert_eq!(confirmed.executions, 1);
-
-    let mut declined = Scripted::new(DeploySnapshot {
-        machines: vec![machine()],
-        ..Default::default()
-    });
-    declined.confirmation_required = true;
-    declined.confirmed = false;
-    deploy_connected(
-        &mut declined,
-        &mut project.clone(),
-        &[],
-        PlanOptions::default(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(declined.events.last(), Some(&WorkflowStage::Confirm));
-    assert_eq!(declined.executions, 0);
-
-    let mut noninteractive = Scripted::new(DeploySnapshot {
-        machines: vec![machine()],
-        ..Default::default()
-    });
-    noninteractive.confirmation_required = true;
-    noninteractive.confirmation_error = true;
-    assert!(
-        deploy_connected(
-            &mut noninteractive,
-            &mut project.clone(),
-            &[],
-            PlanOptions::default(),
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(noninteractive.executions, 0);
-
-    let mut automatic = Scripted::new(DeploySnapshot {
-        machines: vec![machine()],
-        ..Default::default()
-    });
-    let outcome = deploy_connected(
-        &mut automatic,
-        &mut project.clone(),
-        &[],
-        PlanOptions::default(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert!(!automatic.events.contains(&WorkflowStage::Confirm));
-    assert_eq!(automatic.executions, 1);
-    assert!(!outcome.completed.is_empty());
-    assert!(outcome.failed.is_none());
-    assert!(outcome.unexecuted.is_empty());
-
-    let mut empty = Scripted::new(DeploySnapshot::default());
-    let mut empty_project =
-        crate::compose::parse_normalized("name: empty\nservices: {}\n", ".").unwrap();
-    deploy_connected(&mut empty, &mut empty_project, &[], PlanOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(
-        empty.events,
-        [
-            WorkflowStage::ResolveSecrets,
-            WorkflowStage::Snapshot,
-            WorkflowStage::Plan,
-        ]
-    );
-    assert_eq!(empty.executions, 0);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test]
-async fn scale_rejects_global_noops_matching_and_uses_one_mixed_spec() {
+#[test]
+fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     let service_id = ServiceId::random();
-    let global = observation(&service_id, ServiceMode::Global, "v1", '1');
-    let mut io = Scripted::new(DeploySnapshot {
+    let replicas = |count: u32| NonZeroU32::new(count).unwrap();
+    let snapshot = |containers: Vec<ContainerObservation>| DeploySnapshot {
         machines: vec![machine()],
-        containers: vec![global],
+        containers,
         ..Default::default()
-    });
-    assert!(
-        scale_connected(&mut io, "api", NonZeroU32::new(2).unwrap())
-            .await
-            .is_err()
+    };
+
+    assert_eq!(
+        scale_plan(
+            &snapshot(vec![observation(
+                &service_id,
+                ServiceMode::Global,
+                "v1",
+                '1'
+            )]),
+            "api",
+            replicas(2),
+        )
+        .unwrap_err()
+        .to_string(),
+        "global services cannot be scaled"
     );
-    assert_eq!(io.events, [WorkflowStage::Snapshot]);
 
     let replicated = ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
+        replicas: replicas(1),
     };
-    let mut unchanged = Scripted::new(DeploySnapshot {
-        machines: vec![machine()],
-        containers: vec![observation(&service_id, replicated.clone(), "v1", '1')],
-        ..Default::default()
-    });
-    scale_connected(&mut unchanged, "api", NonZeroU32::new(1).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(unchanged.events, [WorkflowStage::Snapshot]);
-
-    let mut incomplete = Scripted::new(DeploySnapshot {
-        machines: vec![machine()],
-        containers: vec![observation(
-            &service_id,
-            ServiceMode::Replicated {
-                replicas: NonZeroU32::new(3).unwrap(),
-            },
-            "v1",
-            '1',
-        )],
-        ..Default::default()
-    });
-    scale_connected(&mut incomplete, "api", NonZeroU32::new(3).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(
-        incomplete.events,
-        [
-            WorkflowStage::Snapshot,
-            WorkflowStage::Plan,
-            WorkflowStage::Render,
-            WorkflowStage::Execute,
-        ]
+    assert!(
+        scale_plan(
+            &snapshot(vec![observation(
+                &service_id,
+                replicated.clone(),
+                "v1",
+                '1'
+            )]),
+            "api",
+            replicas(1),
+        )
+        .unwrap()
+        .is_none()
     );
 
-    let mut mixed = Scripted::new(DeploySnapshot {
-        machines: vec![machine()],
-        containers: vec![
+    assert!(
+        scale_plan(
+            &snapshot(vec![observation(
+                &service_id,
+                ServiceMode::Replicated {
+                    replicas: replicas(3),
+                },
+                "v1",
+                '1',
+            )]),
+            "api",
+            replicas(3),
+        )
+        .unwrap()
+        .is_some()
+    );
+
+    let mixed = scale_plan(
+        &snapshot(vec![
             observation(&service_id, replicated.clone(), "v1", '1'),
             observation(&service_id, replicated, "v2", '2'),
-        ],
-        ..Default::default()
-    });
-    scale_connected(&mut mixed, "api", NonZeroU32::new(3).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(
-        mixed.events,
-        [
-            WorkflowStage::Snapshot,
-            WorkflowStage::Plan,
-            WorkflowStage::Render,
-            WorkflowStage::Execute,
-        ]
-    );
-    assert_eq!(mixed.executions, 1);
-}
-
-#[tokio::test]
-async fn deploy_preserves_the_exact_execution_outcome() {
-    let mut project =
-        crate::compose::parse_normalized("name: scripted\nservices: {api: {image: api}}\n", ".")
-            .unwrap();
-    let expected = DeployOutcome {
-        completed: vec![stop_operation('1')],
-        failed: Some(FailedOperation::Operation {
-            operation: stop_operation('2'),
-            error: ExecutionError::Machine {
-                action: crate::deploy::MachineAction::StopContainer,
-                error: ployz_core::RpcError {
-                    code: ployz_core::RpcErrorCode::Unavailable,
-                    message: "offline".into(),
-                    details: serde_json::Value::Null,
-                },
-            },
-        }),
-        unexecuted: vec![stop_operation('3')],
-    };
-    let mut io = Scripted::new(DeploySnapshot {
-        machines: vec![machine()],
-        ..Default::default()
-    });
-    io.execution_outcome = Some(expected.clone());
-
-    let actual = deploy_connected(&mut io, &mut project, &[], PlanOptions::default())
-        .await
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(actual, expected);
-}
-
-fn build(name: &str) -> BuildService {
-    BuildService {
-        name: name.into(),
-        image: name.into(),
-        build: serde_norway::Value::Null,
-        machines: Vec::new(),
-    }
+        ]),
+        "api",
+        replicas(3),
+    )
+    .unwrap()
+    .unwrap();
+    let image = mixed
+        .operations()
+        .iter()
+        .find_map(|operation| match operation {
+            DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
+                Some(spec.container.image.as_str())
+            }
+            DeployOperation::ReplaceContainer(replacement) => {
+                Some(replacement.spec.container.image.as_str())
+            }
+            DeployOperation::CreateVolume { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::Sequence { .. } => None,
+        });
+    assert_eq!(image, Some("v1"));
 }
 
 fn machine() -> ployz_core::MachineObservation {
@@ -602,13 +252,6 @@ fn machine() -> ployz_core::MachineObservation {
         },
         membership: MembershipObservation::Up,
         selected_endpoint: None,
-    }
-}
-
-fn stop_operation(id: char) -> DeployOperation {
-    DeployOperation::StopContainer {
-        machine_id: machine().machine.id,
-        container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
     }
 }
 

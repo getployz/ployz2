@@ -14,8 +14,8 @@ use crate::{
     },
     connect::Client,
     deploy::{
-        DeployOperation, DeployOutcome, DeploySnapshot, ExecutionError, FailedOperation,
-        PlanOptions, ReplacementOperation, execute_operations, plan_deploy,
+        DeployOperation, DeployOutcome, DeployPlan, DeploySnapshot, ExecutionError,
+        FailedOperation, PlanOptions, ReplacementOperation, execute_operations, plan_deploy,
     },
 };
 
@@ -31,21 +31,13 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        let outcome = run_connected(
-            &mut RemoteWorkflow {
-                client: &mut client,
-                auto_confirm: true,
-            },
-            &requested,
-        )
-        .await?;
-        finish(outcome)
+        finish(run_connected(&mut client, &requested).await?)
     })
 }
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let (mut project, builds) = prepare_deploy(matches, |_| {}, execute_build)?;
+    let (mut project, builds) = prepare_deploy(matches, execute_build)?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -59,26 +51,15 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     );
     runtime()?.block_on(async {
         let mut client = connect_client(root, context.as_deref()).await?;
-        let outcome = deploy_connected(
-            &mut RemoteWorkflow {
-                client: &mut client,
-                auto_confirm: yes,
-            },
-            &mut project,
-            &builds,
-            options,
-        )
-        .await?;
+        let outcome = deploy_connected(&mut client, &mut project, &builds, options, yes).await?;
         outcome.map_or(Ok(()), finish)
     })
 }
 
 fn prepare_deploy(
     matches: &ArgMatches,
-    mut record: impl FnMut(WorkflowStage),
     build: impl FnOnce(&[BuildService], &BuildOptions, &LoadOptions) -> Result<(), ComposeError>,
 ) -> Result<(ComposeProject, Vec<BuildService>), Error> {
-    record(WorkflowStage::Load);
     let load = LoadOptions {
         command: "deploy".into(),
         files: string_values(matches, "file")
@@ -93,7 +74,6 @@ fn prepare_deploy(
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
     }
-    record(WorkflowStage::Select);
     let build_options = BuildOptions {
         build_args: string_values(matches, "build-arg"),
         deps: true,
@@ -102,7 +82,6 @@ fn prepare_deploy(
         services: selected.clone(),
         ..Default::default()
     };
-    record(WorkflowStage::Build);
     let mut builds = plan_build(&project, &build_options).map_err(|error| error.to_string())?;
     if matches.get_flag("no-build") {
         builds.clear();
@@ -126,139 +105,57 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        let outcome = scale_connected(
-            &mut RemoteWorkflow {
-                client: &mut client,
-                auto_confirm: yes,
-            },
-            &selector,
-            replicas,
-        )
-        .await?;
+        let outcome = scale_connected(&mut client, &selector, replicas, yes).await?;
         outcome.map_or(Ok(()), finish)
     })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WorkflowStage {
-    Load,
-    Select,
-    Build,
-    Snapshot,
-    Push,
-    ResolveSecrets,
-    Plan,
-    Render,
-    Confirm,
-    Execute,
-}
-
-trait WorkflowIo {
-    fn record(&mut self, _stage: WorkflowStage) {}
-    async fn machines(&mut self) -> Result<Vec<ployz_core::MachineObservation>, Error>;
-    async fn push(
-        &mut self,
-        service: &BuildService,
-        machines: &[ployz_core::MachineObservation],
-    ) -> Result<(), Error>;
-    async fn snapshot(
-        &mut self,
-        machines: Option<Vec<ployz_core::MachineObservation>>,
-    ) -> Result<DeploySnapshot, Error>;
-    fn render(&mut self, operations: &[DeployOperation]);
-    fn confirmation_required(&self) -> bool;
-    fn confirm(&mut self) -> Result<bool, Error>;
-    async fn execute(&mut self, operations: &[DeployOperation]) -> DeployOutcome<ExecutionError>;
-    async fn cluster_domain(&mut self) -> Result<Option<String>, Error>;
-}
-
-struct RemoteWorkflow<'a> {
-    client: &'a mut Client,
-    auto_confirm: bool,
-}
-
-impl WorkflowIo for RemoteWorkflow<'_> {
-    async fn machines(&mut self) -> Result<Vec<ployz_core::MachineObservation>, Error> {
-        self.client
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .map(|list| list.machines)
-            .map_err(|error| error.to_string().into())
-    }
-
-    async fn push(
-        &mut self,
-        service: &BuildService,
-        machines: &[ployz_core::MachineObservation],
-    ) -> Result<(), Error> {
-        let targets = push_targets(&[], &service.machines);
-        let result = crate::image::push_using_machines(
-            self.client,
-            &service.image,
-            None,
-            &targets,
-            machines,
-        )
+async fn list_machines(client: &mut Client) -> Result<Vec<ployz_core::MachineObservation>, Error> {
+    client
+        .call::<op::ListMachines>(ListMachinesRequest {}, None)
         .await
-        .map_err(|error| format!("{}: {error}", service.image))?;
-        let failures = report_push(&service.image, result);
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(failures.join("; ").into())
-        }
-    }
+        .map(|list| list.machines)
+        .map_err(|error| Error::from(error.to_string()))
+}
 
-    async fn snapshot(
-        &mut self,
-        machines: Option<Vec<ployz_core::MachineObservation>>,
-    ) -> Result<DeploySnapshot, Error> {
-        let machines = match machines {
-            Some(machines) => machines,
-            None => self.machines().await?,
-        };
-        let gathered = self
-            .client
-            .deploy_snapshot(machines)
+async fn take_snapshot(
+    client: &mut Client,
+    machines: Vec<ployz_core::MachineObservation>,
+) -> Result<DeploySnapshot, Error> {
+    let gathered = client
+        .deploy_snapshot(machines)
+        .await
+        .map_err(|error| Error::from(error.to_string()))?;
+    gathered.report_warnings();
+    Ok(gathered.snapshot)
+}
+
+async fn push_image(
+    client: &mut Client,
+    service: &BuildService,
+    machines: &[ployz_core::MachineObservation],
+) -> Result<(), Error> {
+    let targets = push_targets(&[], &service.machines);
+    let result =
+        crate::image::push_using_machines(client, &service.image, None, &targets, machines)
             .await
-            .map_err(|error| Error::from(error.to_string()))?;
-        gathered.report_warnings();
-        Ok(gathered.snapshot)
-    }
-
-    fn render(&mut self, operations: &[DeployOperation]) {
-        render(operations, self.client.connection());
-    }
-
-    fn confirmation_required(&self) -> bool {
-        !self.auto_confirm
-    }
-
-    fn confirm(&mut self) -> Result<bool, Error> {
-        confirm()
-    }
-
-    async fn execute(&mut self, operations: &[DeployOperation]) -> DeployOutcome<ExecutionError> {
-        execute_operations(operations, self.client, &CancellationToken::new()).await
-    }
-
-    async fn cluster_domain(&mut self) -> Result<Option<String>, Error> {
-        self.client
-            .domain_if_reserved()
-            .await
-            .map_err(|error| error.to_string().into())
+            .map_err(|error| format!("{}: {error}", service.image))?;
+    let failures = report_push(&service.image, result);
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; ").into())
     }
 }
 
 async fn run_connected(
-    io: &mut impl WorkflowIo,
+    client: &mut Client,
     requested: &RequestedServiceSpec,
 ) -> Result<DeployOutcome<ExecutionError>, Error> {
-    io.record(WorkflowStage::Snapshot);
-    let snapshot = io.snapshot(None).await?;
+    let machines = list_machines(client).await?;
+    let snapshot = take_snapshot(client, machines).await?;
     let mut requested = requested.clone();
-    expand_specs(std::iter::once(&mut requested), io).await?;
-    io.record(WorkflowStage::Plan);
+    expand_ingress(client, std::iter::once(&mut requested)).await?;
     let plan = plan_deploy(
         &requested,
         &snapshot,
@@ -266,53 +163,39 @@ async fn run_connected(
         plan_options(false, false),
     )
     .map_err(|error| error.to_string())?;
-    io.record(WorkflowStage::Render);
-    io.render(plan.operations());
-    io.record(WorkflowStage::Execute);
-    Ok(io.execute(plan.operations()).await)
+    render(plan.operations(), client.connection());
+    Ok(execute_operations(plan.operations(), client, &CancellationToken::new()).await)
 }
 
 pub(super) async fn deploy_requested(
     client: &mut Client,
     requested: &RequestedServiceSpec,
 ) -> Result<(), Error> {
-    finish(
-        run_connected(
-            &mut RemoteWorkflow {
-                client,
-                auto_confirm: true,
-            },
-            requested,
-        )
-        .await?,
-    )
+    finish(run_connected(client, requested).await?)
 }
 
 async fn deploy_connected(
-    io: &mut impl WorkflowIo,
+    client: &mut Client,
     project: &mut crate::compose::ComposeProject,
     builds: &[BuildService],
     options: PlanOptions,
+    auto_confirm: bool,
 ) -> Result<Option<DeployOutcome<ExecutionError>>, Error> {
-    let machines = io.machines().await?;
+    let machines = list_machines(client).await?;
     let mut failures = Vec::new();
     for service in builds {
-        io.record(WorkflowStage::Push);
-        if let Err(error) = io.push(service, &machines).await {
+        if let Err(error) = push_image(client, service, &machines).await {
             failures.push(error.to_string());
         }
     }
     if !failures.is_empty() {
         return Err(format!("image push failed: {}", failures.join("; ")).into());
     }
-    io.record(WorkflowStage::ResolveSecrets);
     project
         .resolve_secrets()
         .map_err(|error| error.to_string())?;
-    io.record(WorkflowStage::Snapshot);
-    let snapshot = io.snapshot(Some(machines)).await?;
-    expand_specs(project.services.values_mut(), io).await?;
-    io.record(WorkflowStage::Plan);
+    let snapshot = take_snapshot(client, machines).await?;
+    expand_ingress(client, project.services.values_mut()).await?;
     let compose =
         plan_compose_deploy(project, &snapshot, options).map_err(|error| error.to_string())?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
@@ -326,58 +209,68 @@ async fn deploy_connected(
         return Ok(None);
     }
     // TODO(UT-086): this is a best-effort preview over one observer-relative snapshot.
-    confirm_and_execute(io, &operations).await
+    confirm_and_execute(client, &operations, auto_confirm).await
 }
 
-async fn scale_connected(
-    io: &mut impl WorkflowIo,
+fn scale_plan(
+    snapshot: &DeploySnapshot,
     selector: &str,
     replicas: NonZeroU32,
-) -> Result<Option<DeployOutcome<ExecutionError>>, Error> {
-    io.record(WorkflowStage::Snapshot);
-    let snapshot = io.snapshot(None).await?;
+) -> Result<Option<DeployPlan>, Error> {
     let services = ployz_core::derive_services(snapshot.containers.iter().cloned());
     let service = select_service(&services, selector).map_err(|error| error.to_string())?;
     let observed_container = service
         .containers
         .first()
         .ok_or_else(|| Error::from("cannot scale a service without regular containers"))?;
-    let ServiceMode::Replicated { .. } = observed_container.resolved_spec.mode else {
-        return Err("global services cannot be scaled".into());
-    };
+    match observed_container.resolved_spec.mode {
+        ServiceMode::Replicated { .. } => {}
+        ServiceMode::Global => return Err("global services cannot be scaled".into()),
+    }
     if usize::try_from(replicas.get()) == Ok(service.containers.len()) {
-        println!("No changes.");
         return Ok(None);
     }
     // TODO(UT-046): mixed historical specs use one observed regular container; there is no chooser.
     let mut requested = requested_from_resolved(&observed_container.resolved_spec);
     requested.mode = ServiceMode::Replicated { replicas };
-    io.record(WorkflowStage::Plan);
-    let plan = plan_deploy(
+    plan_deploy(
         &requested,
-        &snapshot,
+        snapshot,
         service.service_id.clone(),
         plan_options(false, false),
     )
-    .map_err(|error| error.to_string())?;
-    confirm_and_execute(io, plan.operations()).await
+    .map(Some)
+    .map_err(|error| Error::from(error.to_string()))
+}
+
+async fn scale_connected(
+    client: &mut Client,
+    selector: &str,
+    replicas: NonZeroU32,
+    auto_confirm: bool,
+) -> Result<Option<DeployOutcome<ExecutionError>>, Error> {
+    let machines = list_machines(client).await?;
+    let snapshot = take_snapshot(client, machines).await?;
+    let Some(plan) = scale_plan(&snapshot, selector, replicas)? else {
+        println!("No changes.");
+        return Ok(None);
+    };
+    confirm_and_execute(client, plan.operations(), auto_confirm).await
 }
 
 async fn confirm_and_execute(
-    io: &mut impl WorkflowIo,
+    client: &mut Client,
     operations: &[DeployOperation],
+    auto_confirm: bool,
 ) -> Result<Option<DeployOutcome<ExecutionError>>, Error> {
-    io.record(WorkflowStage::Render);
-    io.render(operations);
-    if io.confirmation_required() {
-        io.record(WorkflowStage::Confirm);
-        if !io.confirm()? {
-            println!("Cancelled. No changes were made.");
-            return Ok(None);
-        }
+    render(operations, client.connection());
+    if !auto_confirm && !confirm()? {
+        println!("Cancelled. No changes were made.");
+        return Ok(None);
     }
-    io.record(WorkflowStage::Execute);
-    Ok(Some(io.execute(operations).await))
+    Ok(Some(
+        execute_operations(operations, client, &CancellationToken::new()).await,
+    ))
 }
 
 fn render(operations: &[DeployOperation], connection: &crate::context::Connection) {
@@ -460,15 +353,18 @@ fn operation_list(operations: &[DeployOperation]) -> String {
         .join(", ")
 }
 
-async fn expand_specs<'a>(
+async fn expand_ingress<'a>(
+    client: &mut Client,
     specs: impl IntoIterator<Item = &'a mut RequestedServiceSpec>,
-    io: &mut impl WorkflowIo,
 ) -> Result<(), Error> {
     let specs: Vec<_> = specs.into_iter().collect();
     if !specs.iter().any(|spec| needs_ingress_expansion(spec)) {
         return Ok(());
     }
-    let domain = io.cluster_domain().await?;
+    let domain = client
+        .domain_if_reserved()
+        .await
+        .map_err(|error| Error::from(error.to_string()))?;
     for spec in specs {
         crate::dns::expand_ingress_ports(spec, domain.as_deref())
             .map_err(|error| error.to_string())?;
