@@ -197,3 +197,23 @@ Full notes: `evidence/uncloud-zfs-wants.md`.
 Uncloud has **no ZFS product**. One author comment ([#242](https://github.com/psviderski/uncloud/issues/242#issuecomment-3771471639), 2026-01-20): still-local volumes with snapshots, backups, restore-elsewhere; ZFS named as an example next to device mapper. Distributed storage (Gluster/Ceph) rejected. Users asked for NFS `driver_opts`, postgres backups, and not losing a volume when a machine is down. Nobody asked Uncloud for quotas, `x-zfs`, or a pool CLI.
 
 This Ployz design is original. Snapshots/send/recv matching the author’s “recover” story stay out of this cut.
+
+## Open questions
+
+100% packing does not close these.
+
+❓ **Q1** - **Wrong problem?**: Quota/pin v1, or are we still pretending this helps when `db-1` dies?
+
+➡️ Quota/pin is v1. Recover is a different module. One honest sentence in the design.
+
+❓ **Q2** - **Host reservation**: 100% quota packing on a **sparse** file still lets the host `ENOSPC` while ZFS thinks the pool has room. `fallocate` the vdev to `--size`, or leave it sparse and wait for monitoring?
+
+➡️ `fallocate`. Otherwise “100% of the pool” is 100% of a number that is not held on disk.
+
+❓ **Q3** - **Two compose projects, both `data:`**: one dataset or two?
+
+➡️ Two. `{Machine ID, project_key}`.
+
+❓ **Q4** - **Reboot**: who `zpool import`s the file-backed pool?
+
+➡️ Privileged `ployzd` on start. Failed import → not a bind of an empty dir.
