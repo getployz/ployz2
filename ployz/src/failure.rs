@@ -208,18 +208,6 @@ impl From<std::num::ParseIntError> for Failure {
     }
 }
 
-impl From<std::num::ParseFloatError> for Failure {
-    fn from(error: std::num::ParseFloatError) -> Self {
-        Self::usage(error.to_string())
-    }
-}
-
-impl From<std::net::AddrParseError> for Failure {
-    fn from(error: std::net::AddrParseError) -> Self {
-        Self::usage(error.to_string())
-    }
-}
-
 impl From<shell_words::ParseError> for Failure {
     fn from(error: shell_words::ParseError) -> Self {
         Self::usage(error.to_string())
