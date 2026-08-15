@@ -1,6 +1,6 @@
 # Managed ZFS Volume (proposal)
 
-Frontier is empty. Pool create is a Machine command. Default overcommit is 120%.
+Quota packing is 100% per Machine. The Cluster entry observes who has room, then commits on one Machine. No reservation. Monitoring is later.
 
 ## Cluster vs Machine
 
@@ -9,7 +9,7 @@ The CLI talks to a Cluster **entry**. The pool lives on a **Machine**. Same spli
 | | Cluster (entry / observation) | Machine (the resource) |
 |---|---|---|
 | Pool | There is none. Do not store “ZFS-enabled.” | `CreateZfsPool` on one target. `--machine` required when more than one Machine exists (prompt if omitted, like `volume create`). |
-| Overcommit / `--size 80%` | Not a cluster policy. | Resolved and stored on **that** Machine’s pool. 80% of **that** Machine’s available backing FS. |
+| Overcommit / `--size 80%` | Not a cluster policy. `--size 80%` is **that** Machine’s pool file. Quota packing is 100% of **that** pool. Not 100% of the host disk. |
 | List | Fan-out Live Observation. Partial Result. | Each row is `{Machine ID, pool, volumes}`. |
 | Deploy planning | Walks the observation. Pins like Named volumes. | Allocatable is computed per Machine. Never summed. |
 | Named volume `data` + `x-zfs: 10G` | Compose is cluster-entry input. | Dataset is created on the pinned Machine. |
@@ -27,7 +27,8 @@ Fan-out create (`--machines *`) is a later CLI sugar: N machine creates, still N
 | Pool | Machine command `ployz zfs pool create --machine …`. Not a cluster pool. Not created on first `x-zfs` deploy. `machine init` is out of scope. |
 | Backing | `--size` (file-backed sparse vdev) or `--from POOL` (adopt imported zpool). Mutually exclusive. Never auto-pick. |
 | Pool size | `--size 100G` or `--size 80%`. `%` is of **available** space on the backing filesystem, resolved once to a sparse vdev byte size. `--from` has no `--size`. Volume quota is not a percentage. |
-| Overcommit | Pool property on **that** Machine. Default **120%**. `allocatable = pool_bytes × 1.2`. Planner drops a Machine when a new or raised `refquota` would exceed allocatable. ZFS still returns `ENOSPC` if used hits the pool. `--overcommit 200%` is an explicit extra lie. |
+| Overcommit | Default **100%**. `allocatable = pool_bytes`. Planner observes every Machine, drops any that cannot fit Q, commits `Ensure` on one Machine that can. No `refreservation`. Used-bytes / noisy-neighbor is a later monitoring module. `--overcommit` remains an override, not the default story. |
+| Not host 100% | `--size 100%` of the backing FS would leave nothing for Docker images, logs, or the OS. Pool size and quota packing are different 100%s. |
 | Cluster flag | None. ZFS is Live Observation on each Machine (`Ready` / `PoolMissing` / …). Not stored in the replicated store. |
 | Privilege | Privileged `ployzd` on ZFS Machines. No helper. No sudo-from-unprivileged. |
 | Identity | `{Machine ID, ManagedZfsVolumeName}` |
@@ -60,11 +61,11 @@ Deploy does not pick a size and does not create a sparse vdev.
 
 ```
 ployz zfs pool create --machine db-1 --size 100G
-ployz zfs pool create --machine db-1 --size 80% --overcommit 200%
+ployz zfs pool create --machine db-1 --size 80%
 ployz zfs pool create --machine db-1 --from tank
 ```
 
-Same targeting as `ployz volume create`: one Machine. Multi-machine and no `--machine` → prompt. There is no cluster-wide create. Omit `--overcommit` → **120%**.
+Same targeting as `ployz volume create`: one Machine. Multi-machine and no `--machine` → prompt. There is no cluster-wide create. Omit `--overcommit` → **100%**.
 
 `--size` and `--from` are mutually exclusive. `--from` is `zpool get` plus a parent dataset `tank/ployz` on **that** Machine. `--size 80%` is resolved once on **that** Machine (`statvfs` available × 0.8 → sparse vdev bytes). Re-running create against an existing Ployz pool on that Machine is a conflict. `machine init` does not call this.
 
@@ -78,7 +79,7 @@ compose x-zfs
     → VolumeSource::ManagedZfs
     → ListManagedZfsVolumes             (call, Partial Result)
     → pin like a Named volume
-         skip Machines with no pool / no privilege / no tools
+         skip Machines with no pool / no room for Q / no privilege / no tools
     → EnsureManagedZfsVolume            (invoke, always)
     → CreateContainer
          daemon bind-mounts the dataset
@@ -86,36 +87,39 @@ compose x-zfs
 
 Always-Ensure for the dataset. Quota converges in place. A quota-only change does not recreate containers.
 
-## Planning (quotas are machine-local)
+## Planning (100% packing, commit per Machine)
 
-There is no cluster quota. Each Machine has its own pool, size, overcommit, and datasets. `ListManagedZfsVolumes` is fan-out Live Observation. Failures are a Partial Result; those Machines are omitted.
+The Cluster entry **observes**. Each Machine **commits**. There is no cluster quota and no cluster pool.
 
 ```
-observe each Machine
-    → capability, pool_bytes, overcommit, existing {name, refquota}
-    → allocatable = pool_bytes × overcommit
+fan-out observe
+    → each Machine: Ready?, pool_bytes, existing {name, refquota}
+    → allocatable = pool_bytes          # 100%. No 120%.
     → used_alloc = sum(existing refquotas)
 
-eligible for a volume with quota Q
-    → Ready
-    → if name already exists here: pin here
-         Ensure may raise Q; need (used_alloc - old_Q + new_Q) ≤ allocatable
-    → if name is new: (used_alloc + Q) ≤ allocatable
-    → else drop this Machine
+eligible for a new volume with quota Q
+    → Ready and (used_alloc + Q) ≤ allocatable
+
+eligible for an existing name
+    → pin to the Machine that already has it
+    → raising Q: (used_alloc - old_Q + new_Q) ≤ allocatable
+    → do not move it to a emptier Machine (send/recv is out)
+
+commit
+    → EnsureManagedZfsVolume on the chosen Machine only
 ```
 
-Same pin rules as Named Docker volumes, on `managed_zfs` not `volumes`:
+Among Machines that fit, keep today’s shuffle then first. Do not bin-pack “most free space.” A missing replicated volume still lands on one Machine; all replicas pin there.
 
-| Mode | What happens |
-|---|---|
-| Replicated + volume missing | Pick one eligible Machine, Ensure once, pin every replica there. |
-| Replicated + volume exists | Pin to that Machine. Do not create a second `data` on another Machine. |
-| Global | Ensure `data` at quota Q on **each** eligible Machine. That is N datasets, N×Q allocated, not one Q split across the Cluster. |
-| Shared `data` across services | One dataset, one Q. Intersection of each service’s eligible set. Mixed global+replicated is rejected (`MixedVolumeModes`). |
+One service with two Managed ZFS Volumes: **both** quotas must fit on that one Machine. Two services that do not share a volume may land on different Machines.
 
-`x-machines` still intersects. A Machine with no pool is ineligible, not a cluster-wide failure.
+No `refreservation`. 10G is a cap, not a held slice. A noisy volume can fill the pool; ZFS `ENOSPC`s. Used-bytes monitoring is a later module, not this cut.
 
-Do not sum quotas across Machines. Do not persist “this Cluster is ZFS-enabled.” `DescribeContract` on a daemon that can talk to ZFS advertises the ZFS capabilities; that is per-Machine, same as Docker.
+`x-machines` still intersects. A Machine with no pool or no room is ineligible, not a cluster-wide failure.
+
+Do not persist “this Cluster is ZFS-enabled.”
+
+Global still means N datasets (Q on each eligible Machine), not one Q split. Shared `data` across services is one dataset, one Q, intersection of eligible sets.
 
 ## RPC
 
@@ -180,8 +184,11 @@ ZFS needs `/dev/zfs`. `ployzd` on a ZFS Machine runs privileged enough to do tha
 | Cluster-wide quota | A Managed ZFS Volume is machine-local. Global means N datasets. |
 | Cluster zpool / optional `--machine` | Same bug as treating `volume create` as cluster-wide. Create targets one Machine. |
 | Fan-out `pool create` on every Machine | Later sugar. Still N machine pools, not one cluster pool. |
-| Default `--overcommit 1` (100%) | Too tight for a sparse file-backed pool. Default is 120%. |
-| Unlimited overcommit | Planner would never refuse allocation. Not the default. |
+| Default `--overcommit 120%` | Replaced: packing is 100% of that Machine’s pool. |
+| `--size 100%` of the host disk as default | Starves Docker/OS. Pool size is operator `--size`. Quota packing is 100% of the pool, not of the disk. |
+| `refreservation` in v1 | 10G would be a held slice. User: cap now, monitor used later. |
+| Move an existing volume to a emptier Machine | Send/recv is out. Pin stays. |
+| Cluster bin-pack (most-free / knapsack) | Shuffle then first fit, like today’s volume planner. |
 
 ## Uncloud (what people actually said)
 
