@@ -1,6 +1,6 @@
 use std::{
     net::{IpAddr, SocketAddr},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use clap::ArgMatches;
@@ -9,56 +9,48 @@ use ployz_core::{
     MachineUpdate, PublicIpUpdate, UpdateMachineRequest, op,
 };
 
-use crate::{
-    connect::{Client, connect},
-    context::{Config, expand_home},
-};
+use crate::{connect::Client, context::Config};
 
 use super::{Error, leaf_matches, string_values};
 
 mod inspect;
 mod lifecycle;
 
+pub(super) use super::runtime;
 pub(super) use inspect::{list, rtt, wireguard_show};
 pub(super) use lifecycle::{add, init, remove};
 
 const DEFAULT_WIREGUARD_PORT: u16 = 51820;
 
-pub(super) struct ConnectionOptions {
+pub(super) struct ConnectionOptions<'a> {
+    matches: &'a ArgMatches,
     config_path: PathBuf,
-    direct: Option<String>,
-    context: Option<String>,
 }
 
-impl ConnectionOptions {
-    pub(super) fn from_matches(matches: &ArgMatches) -> Result<Self, Error> {
-        let config_path = matches
-            .get_one::<String>("ployz-config")
-            .map(Path::new)
-            .map(expand_home)
-            .ok_or_else(|| "Ployz config path is required".to_owned())?;
+impl<'a> ConnectionOptions<'a> {
+    pub(super) fn from_matches(matches: &'a ArgMatches) -> Result<Self, Error> {
         Ok(Self {
-            config_path,
-            direct: matches.get_one::<String>("connect").cloned(),
-            context: matches.get_one::<String>("context").cloned(),
+            matches,
+            config_path: super::config_path(matches)?,
         })
     }
 
     pub(super) async fn connect(&self) -> Result<Client, Error> {
-        connect(
-            &self.config_path,
-            self.direct.as_deref(),
-            self.context.as_deref(),
+        super::connect_client(
+            self.matches,
+            self.matches
+                .get_one::<String>("context")
+                .map(String::as_str),
         )
         .await
-        .map_err(|error| error.to_string().into())
     }
 
     pub(super) fn active_config(&self) -> Result<(Config, String), Error> {
         let config = self.load_config()?;
         let name = self
-            .context
-            .clone()
+            .matches
+            .get_one::<String>("context")
+            .cloned()
             .unwrap_or_else(|| config.current_context.clone());
         if name.is_empty() {
             return Err(format!(
@@ -80,10 +72,6 @@ impl ConnectionOptions {
     pub(super) fn load_or_empty_config(&self) -> Result<Config, Error> {
         Config::load_or_empty(&self.config_path).map_err(|error| error.to_string().into())
     }
-}
-
-pub(super) fn runtime() -> Result<tokio::runtime::Runtime, Error> {
-    tokio::runtime::Runtime::new().map_err(|error| error.to_string().into())
 }
 
 pub(super) async fn machine_list(client: &mut Client) -> Result<Vec<MachineObservation>, Error> {

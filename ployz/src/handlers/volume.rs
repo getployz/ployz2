@@ -1,8 +1,6 @@
 use std::{
     collections::BTreeMap,
-    future::Future,
     io::{self, IsTerminal, Write},
-    path::Path,
 };
 
 use clap::ArgMatches;
@@ -13,14 +11,13 @@ use ployz_core::{
 };
 
 use crate::{
-    connect::{Client, TARGET_RPC_TIMEOUT, connect},
-    context::expand_home,
+    connect::{Client, TARGET_RPC_TIMEOUT},
     volume::{
         MachineVolume, filter_volumes, machine_volumes, parse_assignments, remove_volumes_with,
     },
 };
 
-use super::{Error, confirm, leaf_matches, required, string_values};
+use super::{Error, confirm, leaf_matches, required, string_values, with_client};
 
 pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -31,31 +28,33 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
     let options = parse_assignments(string_values(matches, "opt").iter().map(String::as_str))?;
     let labels = parse_assignments(string_values(matches, "label").iter().map(String::as_str))?;
     let selector = matches.get_one::<String>("machine").cloned();
-    run(async move {
-        let mut client = connect_from(root).await?;
-        let machines = client
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .map_err(|error| error.to_string())?;
-        let Some(machine) = select_create_machine(&machines.machines, selector.as_deref())? else {
-            println!("Cancelled. No volume was created.");
-            return Ok(());
-        };
-        let volume = client
-            .invoke::<op::CreateVolume>(
-                CreateVolumeRequest {
-                    name,
-                    driver,
-                    options,
-                    labels,
-                },
-                &MachineSelector::from(&machine.machine.id),
-                Some(TARGET_RPC_TIMEOUT),
-            )
-            .await
-            .map_err(|error| error.message)?;
-        println!("{}\t{}", machine.machine.name, volume.volume.id.name);
-        Ok(())
+    with_client(root, |client| {
+        Box::pin(async move {
+            let machines = client
+                .call::<op::ListMachines>(ListMachinesRequest {}, None)
+                .await
+                .map_err(|error| error.to_string())?;
+            let Some(machine) = select_create_machine(&machines.machines, selector.as_deref())?
+            else {
+                println!("Cancelled. No volume was created.");
+                return Ok(());
+            };
+            let volume = client
+                .invoke::<op::CreateVolume>(
+                    CreateVolumeRequest {
+                        name,
+                        driver,
+                        options,
+                        labels,
+                    },
+                    &MachineSelector::from(&machine.machine.id),
+                    Some(TARGET_RPC_TIMEOUT),
+                )
+                .await
+                .map_err(|error| error.message)?;
+            println!("{}\t{}", machine.machine.name, volume.volume.id.name);
+            Ok(())
+        })
     })
 }
 
@@ -63,24 +62,25 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selectors = string_values(matches, "machine");
     let quiet = matches.get_flag("quiet");
-    run(async move {
-        let mut client = connect_from(root).await?;
-        let (volumes, result) = discover(&mut client, &selectors).await?;
-        if quiet {
-            for volume in &volumes {
-                println!("{}", volume.volume.id.name);
+    with_client(root, |client| {
+        Box::pin(async move {
+            let (volumes, result) = discover(client, &selectors).await?;
+            if quiet {
+                for volume in &volumes {
+                    println!("{}", volume.volume.id.name);
+                }
+            } else {
+                println!("MACHINE\tVOLUME\tDRIVER");
+                for volume in &volumes {
+                    println!(
+                        "{}\t{}\t{}",
+                        volume.machine_name, volume.volume.id.name, volume.volume.driver
+                    );
+                }
             }
-        } else {
-            println!("MACHINE\tVOLUME\tDRIVER");
-            for volume in &volumes {
-                println!(
-                    "{}\t{}\t{}",
-                    volume.machine_name, volume.volume.id.name, volume.volume.driver
-                );
-            }
-        }
-        report_failures(&result);
-        Ok(())
+            report_failures(&result);
+            Ok(())
+        })
     })
 }
 
@@ -93,41 +93,42 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         .cloned()
         .into_iter()
         .collect::<Vec<_>>();
-    run(async move {
-        let mut client = connect_from(root).await?;
-        let (volumes, result) = discover(&mut client, &selectors).await?;
-        if !result.all_targets_succeeded() {
-            return Err(failure_summary(&result).into());
-        }
-        match NameMatches::from_matches(filter_volumes(&volumes, std::slice::from_ref(&name))) {
-            NameMatches::None => Err(format!("Docker Volume {name:?} was not found").into()),
-            NameMatches::One(mut volume) => {
-                volume.volume = client
-                    .call::<op::InspectVolume>(
-                        InspectVolumeRequest {
-                            name: volume.volume.id.name.clone(),
-                        },
-                        Some(&MachineSelector::from(&volume.volume.id.machine_id)),
-                    )
-                    .await
-                    .map(|details| details.volume)
-                    .map_err(|error| error.to_string())?;
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&volume).map_err(|error| error.to_string())?
-                );
-                Ok(())
+    with_client(root, |client| {
+        Box::pin(async move {
+            let (volumes, result) = discover(client, &selectors).await?;
+            if !result.all_targets_succeeded() {
+                return Err(failure_summary(&result).into());
             }
-            NameMatches::Ambiguous(volumes) => Err(format!(
-                "Docker Volume {name:?} is ambiguous; select one Machine: {}",
-                volumes
-                    .iter()
-                    .map(|volume| volume.machine_name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-            .into()),
-        }
+            match NameMatches::from_matches(filter_volumes(&volumes, std::slice::from_ref(&name))) {
+                NameMatches::None => Err(format!("Docker Volume {name:?} was not found").into()),
+                NameMatches::One(mut volume) => {
+                    volume.volume = client
+                        .call::<op::InspectVolume>(
+                            InspectVolumeRequest {
+                                name: volume.volume.id.name.clone(),
+                            },
+                            Some(&MachineSelector::from(&volume.volume.id.machine_id)),
+                        )
+                        .await
+                        .map(|details| details.volume)
+                        .map_err(|error| error.to_string())?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&volume).map_err(|error| error.to_string())?
+                    );
+                    Ok(())
+                }
+                NameMatches::Ambiguous(volumes) => Err(format!(
+                    "Docker Volume {name:?} is ambiguous; select one Machine: {}",
+                    volumes
+                        .iter()
+                        .map(|volume| volume.machine_name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+                .into()),
+            }
+        })
     })
 }
 
@@ -142,56 +143,57 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let selectors = string_values(matches, "machine");
     let force = matches.get_flag("force");
     let yes = matches.get_flag("yes");
-    run(async move {
-        let mut client = connect_from(root).await?;
-        let (volumes, result) = discover(&mut client, &selectors).await?;
-        let volumes = filter_volumes(&volumes, &names);
-        if result.all_targets_succeeded()
-            && let Some(name) = names
-                .iter()
-                .find(|name| !volumes.iter().any(|volume| &volume.volume.id.name == *name))
-        {
-            return Err(format!("Docker Volume {name:?} was not found").into());
-        }
-        if volumes.is_empty() {
-            return Err(failure_summary(&result).into());
-        }
-        println!("The following Docker Volumes will be removed:");
-        for volume in &volumes {
-            println!("  {}/{}", volume.machine_name, volume.volume.id.name);
-        }
-        let confirmed = yes || confirm()?;
-        if !confirmed {
-            println!("Cancelled. No volumes were removed.");
-            return Ok(());
-        }
-        let removal_client = client.clone();
-        let removal = remove_volumes_with(&volumes, force, move |id, force| {
-            let client = removal_client.clone();
-            async move {
-                client
-                    .invoke::<op::RemoveVolume>(
-                        RemoveVolumeRequest {
-                            name: id.name,
-                            force,
-                        },
-                        &MachineSelector::from(&id.machine_id),
-                        Some(TARGET_RPC_TIMEOUT),
-                    )
-                    .await
-                    .map(drop)
+    with_client(root, |client| {
+        Box::pin(async move {
+            let (volumes, result) = discover(client, &selectors).await?;
+            let volumes = filter_volumes(&volumes, &names);
+            if result.all_targets_succeeded()
+                && let Some(name) = names
+                    .iter()
+                    .find(|name| !volumes.iter().any(|volume| &volume.volume.id.name == *name))
+            {
+                return Err(format!("Docker Volume {name:?} was not found").into());
+            }
+            if volumes.is_empty() {
+                return Err(failure_summary(&result).into());
+            }
+            println!("The following Docker Volumes will be removed:");
+            for volume in &volumes {
+                println!("  {}/{}", volume.machine_name, volume.volume.id.name);
+            }
+            let confirmed = yes || confirm()?;
+            if !confirmed {
+                println!("Cancelled. No volumes were removed.");
+                return Ok(());
+            }
+            let removal_client = client.clone();
+            let removal = remove_volumes_with(&volumes, force, move |id, force| {
+                let client = removal_client.clone();
+                async move {
+                    client
+                        .invoke::<op::RemoveVolume>(
+                            RemoveVolumeRequest {
+                                name: id.name,
+                                force,
+                            },
+                            &MachineSelector::from(&id.machine_id),
+                            Some(TARGET_RPC_TIMEOUT),
+                        )
+                        .await
+                        .map(drop)
+                }
+            })
+            .await;
+            report_failures(&result);
+            match (
+                (!result.all_targets_succeeded()).then(|| failure_summary(&result)),
+                (!removal.all_targets_succeeded()).then(|| failure_summary(&removal)),
+            ) {
+                (None, None) => Ok(()),
+                (Some(failure), None) | (None, Some(failure)) => Err(failure.into()),
+                (Some(discovery), Some(removal)) => Err(format!("{discovery}; {removal}").into()),
             }
         })
-        .await;
-        report_failures(&result);
-        match (
-            (!result.all_targets_succeeded()).then(|| failure_summary(&result)),
-            (!removal.all_targets_succeeded()).then(|| failure_summary(&removal)),
-        ) {
-            (None, None) => Ok(()),
-            (Some(failure), None) | (None, Some(failure)) => Err(failure.into()),
-            (Some(discovery), Some(removal)) => Err(format!("{discovery}; {removal}").into()),
-        }
     })
 }
 
@@ -215,21 +217,6 @@ async fn discover(
     )?;
     let result = client.list_volumes(&machines).await;
     Ok((machine_volumes(&machines, &result), result))
-}
-
-async fn connect_from(root: &ArgMatches) -> Result<Client, Error> {
-    let path = root
-        .get_one::<String>("ployz-config")
-        .map(Path::new)
-        .map(expand_home)
-        .ok_or_else(|| "Ployz config path is required".to_owned())?;
-    connect(
-        &path,
-        root.get_one::<String>("connect").map(String::as_str),
-        root.get_one::<String>("context").map(String::as_str),
-    )
-    .await
-    .map_err(|error| Error::from(error.to_string()))
 }
 
 fn selected_machines(
@@ -334,10 +321,4 @@ fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
         .collect::<Vec<_>>()
         .join("; ");
     format!("one or more Machines failed: {failures}")
-}
-
-fn run(future: impl Future<Output = Result<(), Error>>) -> Result<(), Error> {
-    tokio::runtime::Runtime::new()
-        .map_err(|error| error.to_string())?
-        .block_on(future)
 }

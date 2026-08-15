@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     io::{self, IsTerminal, Write},
-    path::Path,
+    path::{Path, PathBuf},
     pin::Pin,
 };
 
@@ -124,17 +124,20 @@ fn runtime() -> Result<tokio::runtime::Runtime, Error> {
         .map_err(|error| error.to_string())?)
 }
 
+fn config_path(matches: &ArgMatches) -> Result<PathBuf, Error> {
+    matches
+        .get_one::<String>("ployz-config")
+        .map(Path::new)
+        .map(crate::context::expand_home)
+        .ok_or_else(|| "Ployz config path is required".into())
+}
+
 async fn connect_client(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<crate::connect::Client, Error> {
-    let config = matches
-        .get_one::<String>("ployz-config")
-        .map(Path::new)
-        .map(crate::context::expand_home)
-        .ok_or_else(|| "Ployz config path is required".to_owned())?;
     Ok(crate::connect::connect(
-        &config,
+        &config_path(matches)?,
         matches.get_one::<String>("connect").map(String::as_str),
         context,
     )
