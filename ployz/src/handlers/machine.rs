@@ -11,12 +11,11 @@ use ployz_core::{
 
 use crate::{connect::Client, context::Config};
 
-use super::{Error, leaf_matches, string_values};
+use super::{Error, leaf_matches, string_values, with_client};
 
 mod inspect;
 mod lifecycle;
 
-pub(super) use super::{connect_client, runtime};
 pub(super) use inspect::{list, rtt, wireguard_show};
 pub(super) use lifecycle::{add, init, remove};
 
@@ -31,7 +30,9 @@ impl ConnectionOptions {
     pub(super) fn from_matches(matches: &ArgMatches) -> Result<Self, Error> {
         Ok(Self {
             config_path: super::config_path(matches)?,
-            context: matches.get_one::<String>("context").cloned(),
+            context: super::leaf_matches(matches)
+                .get_one::<String>("context")
+                .cloned(),
         })
     }
 
@@ -103,19 +104,18 @@ pub(super) fn update(root: &ArgMatches) -> Result<(), Error> {
 
 fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Result<(), Error> {
     let selector = MachineSelector::parse(selector)?;
-    let machine = runtime()?.block_on(async {
-        let mut client =
-            connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
-        client
-            .call::<op::UpdateMachine>(UpdateMachineRequest { update }, Some(&selector))
-            .await
-            .map_err(Error::from)
-    })?;
-    println!(
-        "Updated Machine {} ({})",
-        machine.machine.name, machine.machine.id
-    );
-    Ok(())
+    with_client(root, |client| {
+        Box::pin(async move {
+            let machine = client
+                .call::<op::UpdateMachine>(UpdateMachineRequest { update }, Some(&selector))
+                .await?;
+            println!(
+                "Updated Machine {} ({})",
+                machine.machine.name, machine.machine.id
+            );
+            Ok(())
+        })
+    })
 }
 
 fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
