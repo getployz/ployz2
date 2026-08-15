@@ -11,13 +11,13 @@ use ployz_core::{
     ContainerId, ContainerKind, ContainerLogsRequest, ContainerObservation, ExecConfig,
     ExecOptions, ExecRequestFrame, HealthObservation, ListMachinesRequest, LogEntry, LogStream,
     LogsOptions, MachineLogService, MachineLogsRequest, MachineObservation, MachineSelector,
-    MembershipObservation, OpaquePayload, ServiceObservation, apply_one_target, op,
-    resolve_machine_selectors, select_service,
+    MembershipObservation, OpaquePayload, ServiceObservation, op, resolve_machine_selectors,
+    select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tonic::{Request, Streaming};
+use tonic::Streaming;
 
 use crate::connect::Client;
 
@@ -309,9 +309,12 @@ impl Client {
             .send(config)
             .await
             .map_err(|_| OperatorError::Message("exec request stream closed".into()))?;
-        let mut request = Request::new(tokio_stream::wrappers::ReceiverStream::new(receiver));
-        apply_one_target(request.metadata_mut(), &MachineSelector::from(&machine_id));
-        let output = self.rpc.exec(request).await?.into_inner();
+        let output = self
+            .exec_stream(
+                &MachineSelector::from(&machine_id),
+                tokio_stream::wrappers::ReceiverStream::new(receiver),
+            )
+            .await?;
         Ok(ExecSession {
             input: sender,
             output,
@@ -370,19 +373,14 @@ impl Client {
                 })
                 .encode()
                 .map_err(|error| OperatorError::Message(error.to_string()))?;
-                let mut request = Request::new(request);
-                apply_one_target(
-                    request.metadata_mut(),
-                    &MachineSelector::from(&container.machine_id),
-                );
                 let identity = format!("{}/{}", arg.service, container.display_name);
+                let target = MachineSelector::from(&container.machine_id);
                 // TODO(UT-082): earlier Container log streams intentionally survive until the
                 // parent cancellation token is cancelled.
                 if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
-                    self.rpc
-                        .container_logs(request)
+                    self.container_logs_stream(&target, request)
                         .await
-                        .map(|response| stream_input(identity, response.into_inner()))
+                        .map(|stream| stream_input(identity, stream))
                 })
                 .await
                 {
@@ -439,19 +437,14 @@ impl Client {
                 })
                 .encode()
                 .map_err(|error| OperatorError::Message(error.to_string()))?;
-                let mut request = Request::new(request);
-                apply_one_target(
-                    request.metadata_mut(),
-                    &MachineSelector::from(&machine.machine.id),
-                );
                 let identity = format!("{service}@{}", machine.machine.name);
+                let target = MachineSelector::from(&machine.machine.id);
                 // TODO(UT-083): earlier Machine log streams intentionally survive until the
                 // parent cancellation token is cancelled.
                 if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
-                    self.rpc
-                        .machine_logs(request)
+                    self.machine_logs_stream(&target, request)
                         .await
-                        .map(|response| stream_input(identity, response.into_inner()))
+                        .map(|stream| stream_input(identity, stream))
                 })
                 .await
                 {

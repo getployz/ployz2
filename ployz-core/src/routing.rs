@@ -27,7 +27,7 @@ pub enum RoutingMetadataError {
 }
 
 pub fn apply_one_target(metadata: &mut MetadataMap, target: &MachineSelector) {
-    if target.as_str().bytes().all(|byte| byte.is_ascii_graphic()) {
+    if is_ascii_graphic(target) {
         metadata.insert(
             ONE_TARGET_HEADER,
             target.as_str().parse().expect("visible ASCII metadata"),
@@ -38,6 +38,32 @@ pub fn apply_one_target(metadata: &mut MetadataMap, target: &MachineSelector) {
             MetadataValue::from_bytes(target.as_str().as_bytes()),
         );
     }
+}
+
+pub fn apply_many_targets(
+    metadata: &mut MetadataMap,
+    targets: &[MachineSelector],
+) -> Result<(), RoutingMetadataError> {
+    if targets.iter().any(|target| !is_ascii_graphic(target)) {
+        return Err(RoutingMetadataError::InvalidTarget);
+    }
+    for target in targets {
+        metadata.append(
+            MANY_TARGETS_HEADER,
+            target.as_str().parse().expect("visible ASCII metadata"),
+        );
+    }
+    Ok(())
+}
+
+pub fn clear_routing_headers(headers: &mut tonic::codegen::http::HeaderMap) {
+    headers.remove(ONE_TARGET_HEADER);
+    headers.remove(ONE_TARGET_BINARY_HEADER);
+    headers.remove(MANY_TARGETS_HEADER);
+}
+
+fn is_ascii_graphic(target: &MachineSelector) -> bool {
+    target.as_str().bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 pub fn routing_from_metadata(
@@ -163,22 +189,53 @@ mod tests {
 
     #[test]
     fn many_targets_preserve_order() {
+        let targets = vec![
+            MachineSelector::parse("edge-1").unwrap(),
+            MachineSelector::parse("*").unwrap(),
+        ];
         let mut metadata = MetadataMap::new();
-        metadata.append(
-            MANY_TARGETS_HEADER,
-            "edge-1".parse().expect("visible ASCII metadata"),
-        );
-        metadata.append(
-            MANY_TARGETS_HEADER,
-            "edge-2".parse().expect("visible ASCII metadata"),
-        );
+        apply_many_targets(&mut metadata, &targets).unwrap();
 
         assert_eq!(
             routing_from_metadata(&metadata).unwrap(),
-            RoutingRequest::Many(vec![
-                MachineSelector::parse("edge-1").unwrap(),
-                MachineSelector::parse("edge-2").unwrap(),
-            ])
+            RoutingRequest::Many(targets)
+        );
+    }
+
+    #[test]
+    fn many_targets_reject_non_ascii() {
+        let mut metadata = MetadataMap::new();
+
+        assert_eq!(
+            apply_many_targets(
+                &mut metadata,
+                &[MachineSelector::parse("München edge").unwrap()]
+            )
+            .unwrap_err(),
+            RoutingMetadataError::InvalidTarget
+        );
+        assert!(metadata.get(MANY_TARGETS_HEADER).is_none());
+    }
+
+    #[test]
+    fn clear_routing_headers_drops_one_and_many_headers() {
+        let mut metadata = MetadataMap::new();
+        apply_one_target(
+            &mut metadata,
+            &MachineSelector::parse("München edge").unwrap(),
+        );
+        metadata.insert(
+            ONE_TARGET_HEADER,
+            "edge-1".parse().expect("visible ASCII metadata"),
+        );
+        apply_many_targets(&mut metadata, &[MachineSelector::parse("edge-2").unwrap()]).unwrap();
+        let mut headers = metadata.into_headers();
+
+        clear_routing_headers(&mut headers);
+
+        assert_eq!(
+            routing_from_metadata(&MetadataMap::from_headers(headers)).unwrap(),
+            RoutingRequest::Local
         );
     }
 

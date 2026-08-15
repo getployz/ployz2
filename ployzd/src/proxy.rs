@@ -9,9 +9,9 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full, StreamBody};
 use ployz_core::{
-    FanoutFailure, FanoutResponse, FramingError, MANY_TARGETS_HEADER, Machine, MachineId,
-    ManagementAddress, NameMatches, ONE_TARGET_BINARY_HEADER, ONE_TARGET_HEADER, grpc_frame_length,
-    grpc_frames, resolve_machine_selector, resolve_machine_selectors, routing_from_metadata,
+    FanoutFailure, FanoutResponse, FramingError, Machine, MachineId, ManagementAddress,
+    NameMatches, clear_routing_headers, grpc_frame_length, grpc_frames, resolve_machine_selector,
+    resolve_machine_selectors, routing_from_metadata,
 };
 use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
@@ -121,9 +121,7 @@ impl MachineProxy {
         mut request: http::Request<Body>,
         target: &Machine,
     ) -> http::Response<Body> {
-        request.headers_mut().remove(ONE_TARGET_HEADER);
-        request.headers_mut().remove(ONE_TARGET_BINARY_HEADER);
-        request.headers_mut().remove(MANY_TARGETS_HEADER);
+        clear_routing_headers(request.headers_mut());
         if target.id == self.local_id {
             return self.call_local(request).await;
         }
