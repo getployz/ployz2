@@ -137,7 +137,7 @@ ZFS needs `/dev/zfs`. `ployzd` on a ZFS Machine runs privileged enough to do tha
 ## How we would build it
 
 1. `VolumeSource::ManagedZfs` + `x-zfs` parse + compose tests. No daemon.
-2. Four catalog rows + in-memory adapter. Planner pin + always-Ensure + skip `PoolMissing`.
+2. Four catalog rows + in-memory adapter. Planner pin + allocatable check + always-Ensure + skip `PoolMissing`.
 3. Daemon `LocalManagedZfs` + `FakeZfsPlane` (create pool, refuse nested, `PoolMissing`).
 4. `CreateContainer` bind arm. One Linux test gated on `/usr/sbin/zfs`.
 5. CLI `ployz zfs pool create`. No `machine init` flag.
