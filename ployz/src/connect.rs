@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     io,
     path::{Path, PathBuf},
     pin::Pin,
@@ -11,9 +12,10 @@ use std::{
 use hyper_util::rt::TokioIo;
 use ployz_core::{
     CodecError, DockerVolume, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
-    ListImagesRequest, ListVolumesRequest, MachineFailure, MachineImages, MachineName,
-    MachineObservation, MachineRpcClient, MachineSelector, MachineSuccess, OpaquePayload,
-    PartialResult, Rpc, RpcError, RpcErrorCode, RpcResponseBody, op,
+    ListImagesRequest, ListVolumesRequest, MANY_TARGETS_HEADER, MachineFailure, MachineImages,
+    MachineName, MachineObservation, MachineRpcClient, MachineSelector, MachineSuccess,
+    OpaquePayload, PartialResult, Rpc, RpcError, RpcErrorCode, RpcResponseBody, apply_one_target,
+    op,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -360,8 +362,22 @@ impl Client {
         self.call_once::<T>(payload, target).await
     }
 
+    /// One-shot targeted RPC. No retry — mutating Deploy operations must not
+    /// re-issue CreateContainer after a dropped response.
+    pub(crate) async fn invoke<T: Rpc>(
+        &self,
+        request: T::Request,
+        target: &MachineSelector,
+        timeout: Option<Duration>,
+    ) -> Result<T::Response, RpcError> {
+        let payload = T::into_request(request)
+            .encode()
+            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+        apply_timeout(timeout, self.call_once::<T>(payload, Some(target))).await
+    }
+
     async fn call_once<T: Rpc>(
-        &mut self,
+        &self,
         payload: OpaquePayload,
         target: Option<&MachineSelector>,
     ) -> Result<T::Response, ConnectError> {
@@ -442,7 +458,7 @@ impl Client {
         } {
             let value = MetadataValue::try_from(target.as_str())
                 .map_err(|error| ConnectError::Attempt(error.to_string()))?;
-            request.metadata_mut().append("machines", value);
+            request.metadata_mut().append(MANY_TARGETS_HEADER, value);
         }
         let mut grpc = tonic::client::Grpc::new(self.channel.clone());
         grpc.ready()
@@ -555,6 +571,26 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     }
 }
 
+async fn apply_timeout<T>(
+    timeout: Option<Duration>,
+    future: impl Future<Output = Result<T, ConnectError>>,
+) -> Result<T, RpcError> {
+    let result = match timeout {
+        Some(timeout) => match tokio::time::timeout(timeout, future).await {
+            Ok(result) => result,
+            Err(_) => {
+                return Err(RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "target Machine RPC timed out".into(),
+                    details: Value::Null,
+                });
+            }
+        },
+        None => future.await,
+    };
+    result.map_err(rpc_error)
+}
+
 fn is_unary_retryable(error: &ConnectError) -> bool {
     match error {
         ConnectError::Attempt(_) => true,
@@ -608,21 +644,7 @@ fn target_request(
 ) -> tonic::Request<ployz_core::OpaquePayload> {
     let mut request = tonic::Request::new(payload);
     if let Some(target) = target {
-        if target
-            .as_str()
-            .bytes()
-            .all(|byte| (b'!'..=b'~').contains(&byte))
-        {
-            request.metadata_mut().insert(
-                "machine",
-                target.as_str().parse().expect("visible ASCII metadata"),
-            );
-        } else {
-            request.metadata_mut().insert_bin(
-                "machine-bin",
-                tonic::metadata::MetadataValue::from_bytes(target.as_str().as_bytes()),
-            );
-        }
+        apply_one_target(request.metadata_mut(), target);
     }
     request
 }
@@ -748,6 +770,19 @@ mod tests {
 
     use super::*;
     use crate::context::SshDestination;
+
+    #[tokio::test]
+    async fn target_timeout_becomes_a_typed_partial_failure() {
+        let error = apply_timeout(
+            Some(Duration::from_millis(1)),
+            std::future::pending::<Result<(), ConnectError>>(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(error.message, "target Machine RPC timed out");
+    }
 
     #[test]
     fn non_ascii_machine_targets_use_binary_metadata() {
