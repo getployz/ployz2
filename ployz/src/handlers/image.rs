@@ -17,6 +17,7 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
             .await
             .map_err(Error::from)
     })?;
+    println!("MACHINE\tCONTAINERD\tID\tREPOSITORY:TAG\tCREATED\tSIZE\tCONTAINERS\tPLATFORMS");
     for success in result.successes {
         for image in success.value.images.images {
             let tags = if image.repo_tags.is_empty() {

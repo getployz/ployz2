@@ -784,11 +784,6 @@ pub struct TransportError {
 
 impl TransportError {
     #[must_use]
-    pub fn code(&self) -> RpcErrorCode {
-        self.code.clone()
-    }
-
-    #[must_use]
     pub fn message(&self) -> &str {
         &self.message
     }

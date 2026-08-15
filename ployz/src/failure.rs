@@ -17,7 +17,7 @@ use crate::{
 };
 
 /// CLI command outcome. `Display` is product stderr. `Exit` is silent.
-#[derive(Debug, Error)]
+#[derive(Debug, Eq, Error, PartialEq)]
 pub enum Failure {
     #[error("{0}")]
     Command(Cause),
@@ -25,7 +25,7 @@ pub enum Failure {
     Exit(u8),
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Eq, Error, PartialEq)]
 pub enum Cause {
     #[error("{0}")]
     Usage(Cow<'static, str>),
@@ -79,42 +79,6 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
         }
     }
 }
-
-impl PartialEq for Failure {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Exit(left), Self::Exit(right)) => left == right,
-            (Self::Command(left), Self::Command(right)) => left == right,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for Failure {}
-
-impl PartialEq for Cause {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Usage(left), Self::Usage(right)) => left == right,
-            (Self::Value(left), Self::Value(right)) => left == right,
-            (Self::Context(left), Self::Context(right)) => left == right,
-            (Self::Connection(left), Self::Connection(right)) => left == right,
-            (Self::MachineSelector(left), Self::MachineSelector(right)) => left == right,
-            (Self::ServiceSelector(left), Self::ServiceSelector(right)) => left == right,
-            (Self::ContainerSelector(left), Self::ContainerSelector(right)) => left == right,
-            (Self::Plan(left), Self::Plan(right)) => left == right,
-            (Self::Compose(left), Self::Compose(right)) => left == right,
-            (Self::ComposePlan(left), Self::ComposePlan(right)) => left == right,
-            (Self::MachineUpdate(left), Self::MachineUpdate(right)) => left == right,
-            (Self::DomainRequired(left), Self::DomainRequired(right)) => left == right,
-            (Self::NoReachableMachines(left), Self::NoReachableMachines(right)) => left == right,
-            (Self::Protocol(left), Self::Protocol(right)) => left == right,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for Cause {}
 
 impl From<Cause> for Failure {
     fn from(cause: Cause) -> Self {
