@@ -1,8 +1,20 @@
 # Managed ZFS Volume (proposal)
 
-Not accepted. Do not add these terms to `CONTEXT.md` until the three questions at the end are settled.
+Settled cuts are below. Two questions at the end still block the pool command shape.
 
-A Managed ZFS Volume is a machine-local ZFS dataset with a required quota. It is not a Docker Volume, not a Bind Mount, and not a cluster volume.
+A Managed ZFS Volume is a machine-local ZFS dataset with a required quota. It is not a Docker Volume, not a Bind Mount, and not a cluster volume. A Machine ZFS Pool is operator-provisioned. Deploy never creates the pool.
+
+## Settled
+
+| Cut | Decision |
+|---|---|
+| Send/recv | Out of scope. No transfer, no portable volume ID. |
+| Snapshots | Out of this cut. |
+| Pool | Operator command. Not created on first `x-zfs` deploy. Init may call that same command. |
+| Privilege | Privileged `ployzd` on ZFS Machines. No helper. No sudo-from-unprivileged. |
+| Identity | `{Machine ID, ManagedZfsVolumeName}` |
+| Compose | `x-zfs: 10G` (YAML `quota` = ZFS `refquota`) |
+| Consume | Daemon bind-mounts the dataset. Spec stays `VolumeSource::ManagedZfs`. |
 
 ## What the user writes
 
@@ -20,45 +32,52 @@ volumes:
 
 `ployz deploy` does not grow new flags. `x-zfs` cannot sit next to `driver`, `driver_opts`, or `external`.
 
-Object form is optional later:
+A Machine without a Machine ZFS Pool is ineligible for `ManagedZfs` placement. That is a Partial Result, not a cluster failure.
 
-```yaml
-volumes:
-  data:
-    x-zfs:
-      quota: 50G
-      compression: lz4
+## Operator pool command
+
+Deploy does not pick a size and does not create a sparse vdev.
+
+```
+ployz zfs pool create --size 100G [--machine db-1]
 ```
 
-`quota` in YAML means ZFS `refquota` (live data only). Snapshots must not steal the app's write budget.
+`machine init` may invoke this same RPC (see open questions). Re-running create against an existing pool is a conflict, not an ensure.
+
+Volume Ensure then creates `pool/ployz/vol/<name>` with `refquota`.
 
 ## What happens on one deploy
 
 ```
+operator: CreateZfsPool                 (once per Machine, not Deploy)
 compose x-zfs
     → VolumeSource::ManagedZfs
-    → observe every Machine          (call, Partial Result)
-    → plan: pin like a Named volume
-    → EnsureManagedZfsVolume         (invoke, always)
+    → ListManagedZfsVolumes             (call, Partial Result)
+    → pin like a Named volume
+         skip Machines with no pool / no privilege / no tools
+    → EnsureManagedZfsVolume            (invoke, always)
     → CreateContainer
          daemon bind-mounts the dataset
 ```
 
-Always-Ensure. The planner does not skip create because a dataset already exists. Quota converges in place. A quota-only change does not recreate containers.
+Always-Ensure for the dataset. Quota converges in place. A quota-only change does not recreate containers.
 
-## RPC (three rows)
+## RPC
 
 | RPC | Primitive | Why |
 |---|---|---|
-| `ListManagedZfsVolumes` | `call` | Deploy Snapshot + CLI list. Returns capability, backing, volumes (id, quota, used, mountpoint). |
-| `EnsureManagedZfsVolume` | `invoke` | Create or set `refquota`. Idempotent. |
+| `CreateZfsPool` | `invoke` | Operator (and optional init). Size or adopt. Fails if a Ployz pool already exists. |
+| `ListManagedZfsVolumes` | `call` | Deploy Snapshot + CLI. Returns capability, pool observation, volumes. |
+| `EnsureManagedZfsVolume` | `invoke` | Create or set `refquota`. Fails with `PoolMissing` if the operator never created a pool. |
 | `RemoveManagedZfsVolume` | `invoke` | Destroy the dataset. Not a Deploy operation. Not compensation. |
 
-Capabilities: `ployz.zfs.list.v1`, `ployz.zfs.ensure.v1`, `ployz.zfs.remove.v1`.
+Capabilities: `ployz.zfs.pool.create.v1`, `ployz.zfs.list.v1`, `ployz.zfs.ensure.v1`, `ployz.zfs.remove.v1`.
 
-Do not add pool RPCs. Do not reuse `CreateVolume`. A Managed ZFS Volume must never appear in `VolumeList`.
+No send/recv RPCs. No snapshot RPCs. No `CreateVolume` reuse. A Managed ZFS Volume must never appear in `VolumeList`.
 
-`Inspect` is a client filter of `List` on one Machine. No fourth row.
+`Inspect` of a volume is a client filter of `List` on one Machine.
+
+Observe reports: `Ready | ToolsMissing | PrivilegeMissing | PoolMissing | NestedZfsBlocked`. Nested ZFS: creating a file vdev on an existing ZFS dataset is refused.
 
 ## Domain
 
@@ -70,54 +89,41 @@ Do not add pool RPCs. Do not reuse `CreateVolume`. A Managed ZFS Volume must nev
 | Deploy op | `CreateVolume` | `EnsureManagedZfsVolume` |
 | Container mount | Docker `volume` | Docker `bind` of a daemon-owned path |
 | Quota | none | required `refquota` |
+| Backing | Docker | Machine ZFS Pool (operator-created) |
 
-The Resolved Service Spec keeps `VolumeSource::ManagedZfs`. The daemon looks up name → mountpoint at `CreateContainer`. Do not rewrite the spec to `Bind` — next Deploy would see compose `ManagedZfs` vs live `Bind` and recreate forever.
-
-`Service Volume Reference` (`data`) is still only the name inside one Service spec.
-
-## Pool (hidden, failures visible)
-
-Not a dedicated disk. One of:
-
-1. An imported pool that already has `…/ployz` → use it.
-2. Exactly one writable imported pool → create `pool/ployz/vol/<name>`.
-3. Several imported pools, none already `ployz` → `AmbiguousPool`. Do not guess.
-4. Zero imported pools → one file-backed pool (`ployz`) on a sparse vdev under `/var/lib/ployz/zfs/`.
-5. Target dir is already ZFS, or inventory failed → **stop**. Never fall through to a file vdev on ZFS. That is nested ZFS.
-
-Callers must see: `Ready | ToolsMissing | PrivilegeMissing | NestedZfsBlocked | AmbiguousPool`. A Machine that is not `Ready` is ineligible. That is a Partial Result, not a cluster failure.
-
-Overcommit is allowed. Volume `refquota` is not pool size. File-backed ceiling is a daemon default (100 GiB sparse) until someone asks for a pool-size knob.
+The Resolved Service Spec keeps `VolumeSource::ManagedZfs`. Do not rewrite it to `Bind`.
 
 ## Privilege
 
-ZFS needs `/dev/zfs` (typically root or a targeted capability). The daemon does not sudo. `observe` reports `PrivilegeMissing` with the verb that failed. Planner excludes that Machine.
+ZFS needs `/dev/zfs`. `ployzd` on a ZFS Machine runs privileged enough to do that. `observe` still reports `PrivilegeMissing` if it cannot (wrong install). Planner excludes that Machine.
 
 ## How we would build it
 
-1. `VolumeSource::ManagedZfs` + `x-zfs` parse + compose tests. No daemon yet.
-2. Three catalog rows + in-memory adapter. Planner pin + always-Ensure. Deploy tests with the fake.
-3. Daemon `LocalManagedZfs` + `FakeZfsPlane` (policy: existing pool vs file vdev vs refuse nested).
-4. `CreateContainer` bind arm. One Linux integration test gated on `/usr/sbin/zfs`.
-5. Later, not this cut: CLI `ployz storage`, snapshots, send/recv migrate.
-
-v1 is compose + ensure + quota + pin. Snapshots and machine-to-machine transfer are the north star, not the first interface.
+1. `VolumeSource::ManagedZfs` + `x-zfs` parse + compose tests. No daemon.
+2. Four catalog rows + in-memory adapter. Planner pin + always-Ensure + skip `PoolMissing`.
+3. Daemon `LocalManagedZfs` + `FakeZfsPlane` (create pool, refuse nested, `PoolMissing`).
+4. `CreateContainer` bind arm. One Linux test gated on `/usr/sbin/zfs`.
+5. CLI `ployz zfs pool create`. Optional `machine init` flag that calls the same RPC.
 
 ## Rejected
 
 | Shape | Why |
 |---|---|
 | `driver: zfs` / Docker plugin | Collapses Managed ZFS Volume into Docker Volume. |
-| Reuse `VolumeSource::Bind` | Convert does not know the Machine path. Planner ignores Bind → wrong Machine. |
+| Reuse `VolumeSource::Bind` | Convert does not know the Machine path. Planner ignores Bind. |
 | Rewrite spec to Bind after Ensure | Recreate loop on the next Deploy. |
-| Cluster-scoped volume ID | A Cluster is not authoritative. Transfer later copies one machine-local volume to another. |
-| Pool / snapshot / send RPCs in v1 | Shallow `zfs(8)` wrapper. Grow the interface when a caller exists. |
-| ZFS `quota` (includes snapshots) | One snapshot steals the app's write budget. Use `refquota`. |
+| Cluster-scoped volume ID | A Cluster is not authoritative. Send/recv is out of scope. |
+| Hidden pool on first Ensure | Operator owns size and backing. Deploy must not invent a 100 GiB file. |
+| Send/recv / snapshot RPCs | Out of scope. |
+| Unprivileged daemon + helper | Second privilege story. Privileged `ployzd` instead. |
+| ZFS `quota` (includes snapshots) | One snapshot would steal the app's write budget. Use `refquota`. |
 
 ## Open questions
 
-Answer these before `CONTEXT.md` or an ADR.
+❓ **Q1** - **Init default**: Does `machine init` create a Machine ZFS Pool unless told not to, only when `--zfs-size` is passed, or never (operator runs `ployz zfs pool create` later)?
 
-1. **v1 scope** — compose+ensure+quota only, or snapshots+transfer in the first cut?
-2. **Pool size** — hidden 100 GiB sparse default, or an operator-visible knob?
-3. **Daemon privilege** — require a privileged `ployzd` on ZFS Machines, or a small helper binary?
+➡️ Opt-in `--zfs-size`. ZFS tools and privilege are often absent. A silent pool on every init would fail or surprise. The flag calls `CreateZfsPool`. No `--no-zfs` default-on path.
+
+❓ **Q2** - **Backing**: File-backed sparse vdev only (`--size`), or also adopt an existing imported zpool (`--from tank`)?
+
+➡️ Both. `--size` is the “volume on any filesystem” path. `--from` is the “Machine already has ZFS” path. Mutually exclusive. Never auto-pick a pool.
