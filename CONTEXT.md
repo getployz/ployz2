@@ -10,7 +10,7 @@ _Avoid_: Uncloud, Ployz2
 
 **Cluster**:
 The product-level mesh as observed from one entry machine. A Cluster is not a globally authoritative entity or complete view.
-_Avoid_: Cluster truth, authoritative cluster state
+_Avoid_: Cluster truth, authoritative cluster state, ZFS-enabled cluster
 
 **Machine**:
 A durable participant identity in a Cluster. Its local lifecycle and its membership as observed by another Machine are separate facts.
@@ -94,7 +94,7 @@ _Avoid_: Docker Volume, cluster volume, Bind Mount, Tmpfs Mount
 
 **Machine ZFS Pool**:
 An operator-provisioned ZFS pool on one Machine. It is the backing for that Machine's Managed ZFS Volumes.
-_Avoid_: Cluster pool, dedicated disk, auto-created pool
+_Avoid_: Cluster pool, dedicated disk, auto-created pool, ZFS-enabled cluster
 
 **Service Volume Reference**:
 A name used within one Service specification to refer to storage. It is not the Docker Volume name, the Managed ZFS Volume name, or a machine-independent storage identity.
