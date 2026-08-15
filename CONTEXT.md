@@ -89,11 +89,11 @@ A machine-local Docker storage resource and possible placement anchor. Its name 
 _Avoid_: Cluster volume, replicated volume, CSI volume
 
 **Managed Volume**:
-A Docker Volume on a Machine Pool. It can enforce a quota. It is not a different mount kind.
+A Docker Volume on a Machine Pool. It may have a quota. It is not a different mount kind.
 _Avoid_: cluster volume, Bind Mount, Tmpfs Mount, Managed ZFS Volume, storage class, CSI volume
 
 **Machine Pool**:
-An operator-provisioned storage budget on one Machine. It is the backing for that Machine's Managed Volumes.
+An operator-provisioned storage budget on one Machine that Docker's data-root lives on. Quotas on its Docker Volumes are optional.
 _Avoid_: Cluster pool, dedicated disk, auto-created pool, Machine ZFS Pool, ZFS-enabled cluster
 
 **Service Volume Reference**:
