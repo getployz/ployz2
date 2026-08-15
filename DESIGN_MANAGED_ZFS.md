@@ -75,19 +75,19 @@ fail if pool <= 0
 truncate(vdev, pool)
 ```
 
-| Disk | 30% | min(10GiB, 30%) pool | min(100GiB, 30%) pool | max(100GiB, 30%) pool |
+| Disk | A `min(100,30%)` | B `min(100,20%)` | C `min(100,max(8,10%))` | E `<64G→8G` else `min(100,25%)` |
 |---|---:|---:|---:|---:|
-| 20G | 6G | 14G | 14G | FAIL |
-| 40G | 12G | 30G | 28G | FAIL |
-| 80G | 24G | 70G | 56G | FAIL |
-| 160G | 48G | 150G | 112G | 60G |
-| 256G | 77G | 246G | 179G | 156G |
-| 512G | 154G | 502G | 412G | 358G |
-| 1T | 307G | 1014G | 924G | 717G |
-| 2T | 614G | ~2T | 1.9T | 1.4T |
-| 4T | 1.2T | ~4T | 3.9T | 2.8T |
+| 20G | FAIL if 30G min | FAIL | FAIL | FAIL |
+| 32G | 22G | 26G | **24G** | 24G |
+| 40G | 28G | 32G | **32G** | 32G |
+| 64G | 45G | 51G | **56G** | 48G |
+| 80G | 56G | 64G | **72G** | 60G |
+| 128G | 90G | 102G | **115G** | 96G |
+| 256G | 179G | 205G | **230G** | 192G |
+| 512G | 412G | 412G | **461G** | 412G |
+| 1T+ | 924G / 1.9T / 3.9T | same 100G cap | same 100G cap | same 100G cap |
 
-Assumes empty disk (`available ≈ total`). `min(10GiB, 30%)` leaves only 10G for Docker on anything ≥40G. `max(100GiB, 30%)` cannot create a pool on disks under 100G. `min(100GiB, 30%)` uses 30% on small VPSs and 100G on big boxes.
+30G min disk: 20G machines cannot get a pool. Headroom on 32–80G is 6–24G depending on formula (see Q1).
 
 `--from` is `zpool get` plus `tank/ployz` on **that** Machine. Re-running create against an existing Ployz pool on that Machine is a conflict. `machine init` does not call this.
 
