@@ -36,8 +36,8 @@ impl ConnectionOptions {
         })
     }
 
-    pub(super) async fn connect(&self, matches: &ArgMatches) -> Result<Client, Error> {
-        super::connect_client(matches, self.context.as_deref()).await
+    pub(super) fn context(&self) -> Option<&str> {
+        self.context.as_deref()
     }
 
     pub(super) fn active_config(&self) -> Result<(Config, String), Error> {
