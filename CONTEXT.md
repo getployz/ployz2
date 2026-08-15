@@ -85,20 +85,20 @@ The evidence produced by executing a Deploy Plan: its completed prefix, any fail
 _Avoid_: Bare deployment error, transaction result
 
 **Docker Volume**:
-A machine-local Docker storage resource and possible placement anchor. Its name is meaningful only together with its Machine and is distinct from a Managed Volume.
-_Avoid_: Cluster volume, replicated volume, Managed Volume
+A machine-local Docker storage resource and possible placement anchor. Its name is meaningful only together with its Machine.
+_Avoid_: Cluster volume, replicated volume, CSI volume
 
 **Managed Volume**:
-A machine-local bounded storage resource with a required quota and a possible placement anchor. Its name is meaningful only together with its Machine.
-_Avoid_: Docker Volume, cluster volume, Bind Mount, Tmpfs Mount, Managed ZFS Volume
+A Docker Volume on a Machine Pool. It can enforce a quota. It is not a different mount kind.
+_Avoid_: cluster volume, Bind Mount, Tmpfs Mount, Managed ZFS Volume, storage class, CSI volume
 
 **Machine Pool**:
 An operator-provisioned storage budget on one Machine. It is the backing for that Machine's Managed Volumes.
 _Avoid_: Cluster pool, dedicated disk, auto-created pool, Machine ZFS Pool, ZFS-enabled cluster
 
 **Service Volume Reference**:
-A name used within one Service specification to refer to storage. It is not the Docker Volume name, the Managed Volume name, or a machine-independent storage identity.
-_Avoid_: Docker Volume name, Managed Volume name, cluster volume ID
+A name used within one Service specification to refer to storage. It is not the Docker Volume name or a machine-independent storage identity.
+_Avoid_: Docker Volume name, cluster volume ID
 
 **Bind Mount**:
 A container mount whose source is a path on its Machine. It is distinct from a Docker Volume, a Managed Volume, and tmpfs.
