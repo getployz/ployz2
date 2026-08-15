@@ -10,9 +10,9 @@ use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerLogsRequest, ContainerObservation, ExecConfig,
     ExecOptions, ExecRequestFrame, HealthObservation, ListMachinesRequest, LogEntry, LogStream,
-    LogsOptions, MachineId, MachineLogService, MachineLogsRequest, MachineObservation,
-    MachineSelector, MembershipObservation, OpaquePayload, ServiceObservation, apply_one_target,
-    op, resolve_machine_selectors, select_service,
+    LogsOptions, MachineLogService, MachineLogsRequest, MachineObservation, MachineSelector,
+    MembershipObservation, OpaquePayload, ServiceObservation, apply_one_target, op,
+    resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -310,7 +310,7 @@ impl Client {
             .await
             .map_err(|_| OperatorError::Message("exec request stream closed".into()))?;
         let mut request = Request::new(tokio_stream::wrappers::ReceiverStream::new(receiver));
-        route_to(&machine_id, &mut request);
+        apply_one_target(request.metadata_mut(), &MachineSelector::from(&machine_id));
         let output = self.rpc.exec(request).await?.into_inner();
         Ok(ExecSession {
             input: sender,
@@ -371,7 +371,10 @@ impl Client {
                 .encode()
                 .map_err(|error| OperatorError::Message(error.to_string()))?;
                 let mut request = Request::new(request);
-                route_to(&container.machine_id, &mut request);
+                apply_one_target(
+                    request.metadata_mut(),
+                    &MachineSelector::from(&container.machine_id),
+                );
                 let identity = format!("{}/{}", arg.service, container.display_name);
                 // TODO(UT-082): earlier Container log streams intentionally survive until the
                 // parent cancellation token is cancelled.
@@ -437,7 +440,10 @@ impl Client {
                 .encode()
                 .map_err(|error| OperatorError::Message(error.to_string()))?;
                 let mut request = Request::new(request);
-                route_to(&machine.machine.id, &mut request);
+                apply_one_target(
+                    request.metadata_mut(),
+                    &MachineSelector::from(&machine.machine.id),
+                );
                 let identity = format!("{service}@{}", machine.machine.name);
                 // TODO(UT-083): earlier Machine log streams intentionally survive until the
                 // parent cancellation token is cancelled.
@@ -567,10 +573,6 @@ fn select_machines<'a>(
                 .ok_or_else(|| "selected Machine disappeared from the snapshot".into())
         })
         .collect()
-}
-
-fn route_to<T>(machine_id: &MachineId, request: &mut Request<T>) {
-    apply_one_target(request.metadata_mut(), &MachineSelector::from(machine_id));
 }
 
 struct LogEvent {

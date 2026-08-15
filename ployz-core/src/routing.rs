@@ -27,11 +27,7 @@ pub enum RoutingMetadataError {
 }
 
 pub fn apply_one_target(metadata: &mut MetadataMap, target: &MachineSelector) {
-    if target
-        .as_str()
-        .bytes()
-        .all(|byte| (b'!'..=b'~').contains(&byte))
-    {
+    if target.as_str().bytes().all(|byte| byte.is_ascii_graphic()) {
         metadata.insert(
             ONE_TARGET_HEADER,
             target.as_str().parse().expect("visible ASCII metadata"),

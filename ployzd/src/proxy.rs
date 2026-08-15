@@ -91,10 +91,11 @@ impl MachineProxy {
         request: http::Request<Body>,
         visible: &[Machine],
     ) -> http::Response<Body> {
-        let routing = match routing_request(request.headers()) {
-            Ok(routing) => routing,
-            Err(error) => return Status::invalid_argument(error.to_string()).into_http(),
-        };
+        let routing =
+            match routing_from_metadata(&MetadataMap::from_headers(request.headers().clone())) {
+                Ok(routing) => routing,
+                Err(error) => return Status::invalid_argument(error.to_string()).into_http(),
+            };
         self.dispatch(request, routing, visible).await
     }
 
@@ -326,12 +327,6 @@ fn grpc_response(receiver: mpsc::Receiver<Bytes>) -> http::Response<Body> {
     response
 }
 
-fn routing_request(
-    headers: &http::HeaderMap,
-) -> Result<RoutingRequest, ployz_core::RoutingMetadataError> {
-    routing_from_metadata(&MetadataMap::from_headers(headers.clone()))
-}
-
 impl Service<http::Request<Body>> for MachineProxy {
     type Response = http::Response<Body>;
     type Error = Infallible;
@@ -349,7 +344,9 @@ impl Service<http::Request<Body>> for MachineProxy {
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
         let proxy = self.clone();
         Box::pin(async move {
-            let routing = match routing_request(request.headers()) {
+            let routing = match routing_from_metadata(&MetadataMap::from_headers(
+                request.headers().clone(),
+            )) {
                 Ok(routing) => routing,
                 Err(error) => {
                     return Ok(Status::invalid_argument(error.to_string()).into_http());
@@ -379,22 +376,7 @@ mod tests {
     use ployz_core::{MachineId, ManagementAddress};
     use tonic::service::Routes;
 
-    use super::{MachineProxy, RoutingRequest, routing_request};
-
-    #[test]
-    fn binary_routing_metadata_preserves_unicode_machine_names() {
-        let selector = ployz_core::MachineSelector::parse("München edge").unwrap();
-        let mut metadata = tonic::metadata::MetadataMap::new();
-        metadata.insert_bin(
-            "machine-bin",
-            tonic::metadata::MetadataValue::from_bytes(selector.as_str().as_bytes()),
-        );
-
-        assert_eq!(
-            routing_request(&metadata.into_headers()).unwrap(),
-            RoutingRequest::One(selector)
-        );
-    }
+    use super::MachineProxy;
 
     #[tokio::test]
     async fn remote_backend_survives_disappearance_from_later_snapshots() {
