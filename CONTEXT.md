@@ -93,7 +93,7 @@ A Docker Volume on a Machine Pool. It may have a quota. It is not a different mo
 _Avoid_: cluster volume, Bind Mount, Tmpfs Mount, Managed ZFS Volume, storage class, CSI volume
 
 **Machine Pool**:
-An operator-provisioned storage budget on one Machine that Docker's data-root lives on. Quotas on its Docker Volumes are optional.
+An operator-provisioned storage budget on one Machine. Docker Volumes may live on it. Docker's data-root does not, unless the operator also opts into that.
 _Avoid_: Cluster pool, dedicated disk, auto-created pool, Machine ZFS Pool, ZFS-enabled cluster
 
 **Service Volume Reference**:
