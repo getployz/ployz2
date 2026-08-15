@@ -338,7 +338,7 @@ impl Client {
                 .await
             {
                 Ok(response) => return Ok(response),
-                Err(error) if is_unary_retryable(&error) => {
+                Err(error) if error.is_retryable() => {
                     let Some(delay) = delays.next() else {
                         return Err(error);
                     };
@@ -604,30 +604,6 @@ async fn apply_timeout<T>(
     result.map_err(rpc_error)
 }
 
-fn is_unary_retryable(error: &ConnectError) -> bool {
-    match error {
-        ConnectError::Attempt(_)
-        | ConnectError::Io(_)
-        | ConnectError::Dial(_)
-        | ConnectError::SshProbe { .. }
-        | ConnectError::Join(_) => true,
-        ConnectError::Rpc(error) => error.is_retryable(),
-        ConnectError::Remote(_)
-        | ConnectError::MissingMachineDetails
-        | ConnectError::Routing(_)
-        | ConnectError::ProxyUnsupported(_)
-        | ConnectError::UnsupportedNetwork(_)
-        | ConnectError::Config(_)
-        | ConnectError::Connection(_)
-        | ConnectError::Context(_)
-        | ConnectError::Path { .. }
-        | ConnectError::AllFailed { .. }
-        | ConnectError::Codec(_)
-        | ConnectError::Framing(_)
-        | ConnectError::Value(_) => false,
-    }
-}
-
 fn decode_fanout_failure(failure: FanoutFailure) -> RpcError {
     let code = match tonic::Code::from_i32(i32::try_from(failure.code).unwrap_or(i32::MAX)) {
         tonic::Code::InvalidArgument | tonic::Code::OutOfRange => RpcErrorCode::InvalidArgument,
@@ -789,6 +765,39 @@ pub enum ConnectError {
 impl From<tonic::Status> for ConnectError {
     fn from(status: tonic::Status) -> Self {
         Self::Rpc(TransportError::from(status))
+    }
+}
+
+impl ConnectError {
+    pub(crate) fn is_retryable(&self) -> bool {
+        match self {
+            Self::Attempt(_)
+            | Self::Io(_)
+            | Self::Dial(_)
+            | Self::SshProbe { .. }
+            | Self::Join(_) => true,
+            Self::Rpc(error) => error.is_retryable(),
+            Self::Remote(_)
+            | Self::MissingMachineDetails
+            | Self::Routing(_)
+            | Self::ProxyUnsupported(_)
+            | Self::UnsupportedNetwork(_)
+            | Self::Config(_)
+            | Self::Connection(_)
+            | Self::Context(_)
+            | Self::Path { .. }
+            | Self::AllFailed { .. }
+            | Self::Codec(_)
+            | Self::Framing(_)
+            | Self::Value(_) => false,
+        }
+    }
+
+    pub(crate) fn is_unreachable(&self) -> bool {
+        matches!(
+            self,
+            Self::Attempt(_) | Self::Io(_) | Self::Dial(_) | Self::AllFailed { .. }
+        ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
     }
 }
 

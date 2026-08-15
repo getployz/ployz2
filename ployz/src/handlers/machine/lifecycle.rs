@@ -15,7 +15,7 @@ use ployz_core::{
 
 use super::{ConnectionOptions, machine_list, parse_endpoints, runtime, target};
 use crate::{
-    connect::{Client, ConnectError, SystemConnector, connect_selected_with},
+    connect::{Client, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, Context, SelectedConnections, Transport},
     handlers::{Error, leaf_matches, string_values},
 };
@@ -37,19 +37,6 @@ fn select_machine(
                 .join(", ")
         ))),
     }
-}
-
-fn is_target_unreachable(error: &ConnectError) -> bool {
-    matches!(
-        error,
-        ConnectError::Attempt(_)
-            | ConnectError::Io(_)
-            | ConnectError::Dial(_)
-            | ConnectError::AllFailed { .. }
-    ) || matches!(
-        error,
-        ConnectError::Rpc(error) if error.is_unavailable()
-    )
 }
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -101,7 +88,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                         shared_rows_removed_by_entry = true;
                     }
                 }
-                Err(error) if is_target_unreachable(&error) => {
+                Err(error) if error.is_unreachable() => {
                     eprintln!("WARNING: target is unreachable; removing shared rows: {error}");
                 }
                 Err(error) => return Err(error.into()),
@@ -578,20 +565,30 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::connect::ConnectError;
 
     #[test]
     fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {
-        assert!(is_target_unreachable(&ConnectError::Rpc(
-            crate::connect::TransportError::from(tonic::Status::unavailable("route failed"))
-        )));
-        assert!(!is_target_unreachable(&ConnectError::Rpc(
-            crate::connect::TransportError::from(tonic::Status::unimplemented("older daemon"))
-        )));
-        assert!(!is_target_unreachable(&ConnectError::Remote(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "Docker is unavailable".into(),
-            details: Value::Null,
-        })));
+        assert!(
+            ConnectError::Rpc(crate::connect::TransportError::from(
+                tonic::Status::unavailable("route failed")
+            ))
+            .is_unreachable()
+        );
+        assert!(
+            !ConnectError::Rpc(crate::connect::TransportError::from(
+                tonic::Status::unimplemented("older daemon")
+            ))
+            .is_unreachable()
+        );
+        assert!(
+            !ConnectError::Remote(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "Docker is unavailable".into(),
+                details: Value::Null,
+            })
+            .is_unreachable()
+        );
     }
 
     #[test]
