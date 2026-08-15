@@ -389,10 +389,10 @@ fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> crate::deplo
     }
 }
 
-#[path = "workflow_input.rs"]
+#[path = "deploy_input.rs"]
 mod input;
 use input::{parse_u32, requested_from_resolved, run_spec};
 
 #[cfg(test)]
-#[path = "workflow_tests.rs"]
+#[path = "deploy_tests.rs"]
 mod tests;
