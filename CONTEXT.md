@@ -88,12 +88,12 @@ _Avoid_: Bare deployment error, transaction result
 A machine-local Docker storage resource and possible placement anchor. Its name is meaningful only together with its Machine.
 _Avoid_: Cluster volume, replicated volume, CSI volume
 
-**Managed Volume**:
-A Docker Volume on a Machine Pool. It may have a quota. It is not a different mount kind.
-_Avoid_: cluster volume, Bind Mount, Tmpfs Mount, Managed ZFS Volume, storage class, CSI volume
+**Provisioned Volume**:
+A Docker Volume on a Machine Pool whose declaration includes a maximum size. Plain or provisioned kind is fixed at first create; changing the declaration does not convert existing data.
+_Avoid_: Managed Volume, Managed ZFS Volume, cluster volume, Bind Mount, Tmpfs Mount, storage class, CSI volume
 
 **Machine Pool**:
-An operator-provisioned storage budget on one Machine. Docker Volumes may live on it. Docker's data-root does not, unless the operator also opts into that.
+An operator-provisioned storage budget on one Machine. Docker Volumes and Provisioned Volumes may live on it. Docker's data-root does not, unless the operator also opts into that.
 _Avoid_: Cluster pool, dedicated disk, auto-created pool, Machine ZFS Pool, ZFS-enabled cluster
 
 **Service Volume Reference**:
@@ -101,12 +101,12 @@ A name used within one Service specification to refer to storage. It is not the 
 _Avoid_: Docker Volume name, cluster volume ID
 
 **Bind Mount**:
-A container mount whose source is a path on its Machine. It is distinct from a Docker Volume, a Managed Volume, and tmpfs.
-_Avoid_: Docker Volume, Managed Volume, cluster storage
+A container mount whose source is a path on its Machine. It is distinct from a Docker Volume, a Provisioned Volume, and tmpfs.
+_Avoid_: Docker Volume, Provisioned Volume, cluster storage
 
 **Tmpfs Mount**:
-An ephemeral memory-backed container mount. It is distinct from a Bind Mount, Docker Volume, and Managed Volume.
-_Avoid_: Docker Volume, Managed Volume, persistent volume
+An ephemeral memory-backed container mount. It is distinct from a Bind Mount, Docker Volume, and Provisioned Volume.
+_Avoid_: Docker Volume, Provisioned Volume, persistent volume
 
 **Machine Subnet**:
 The IPv4 subnet locally selected for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet after concurrent changes.
