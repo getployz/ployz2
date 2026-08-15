@@ -10,7 +10,7 @@ _Avoid_: Uncloud, Ployz2
 
 **Cluster**:
 The product-level mesh as observed from one entry machine. A Cluster is not a globally authoritative entity or complete view.
-_Avoid_: Cluster truth, authoritative cluster state
+_Avoid_: Cluster truth, authoritative cluster state, ZFS-enabled cluster
 
 **Machine**:
 A durable participant identity in a Cluster. Its local lifecycle and its membership as observed by another Machine are separate facts.
@@ -85,20 +85,28 @@ The evidence produced by executing a Deploy Plan: its completed prefix, any fail
 _Avoid_: Bare deployment error, transaction result
 
 **Docker Volume**:
-A machine-local Docker storage resource and possible placement anchor. Its name is meaningful only together with its Machine and is distinct from a future Managed ZFS Volume.
-_Avoid_: Cluster volume, replicated volume, Managed ZFS Volume
+A machine-local Docker storage resource and possible placement anchor. Its name is meaningful only together with its Machine and is distinct from a Managed Volume.
+_Avoid_: Cluster volume, replicated volume, Managed Volume
+
+**Managed Volume**:
+A machine-local bounded storage resource with a required quota and a possible placement anchor. Its name is meaningful only together with its Machine.
+_Avoid_: Docker Volume, cluster volume, Bind Mount, Tmpfs Mount, Managed ZFS Volume
+
+**Machine Pool**:
+An operator-provisioned storage budget on one Machine. It is the backing for that Machine's Managed Volumes.
+_Avoid_: Cluster pool, dedicated disk, auto-created pool, Machine ZFS Pool, ZFS-enabled cluster
 
 **Service Volume Reference**:
-A name used within one Service specification to refer to storage. It is not the Docker Volume name or a machine-independent storage identity.
-_Avoid_: Docker Volume name, cluster volume ID
+A name used within one Service specification to refer to storage. It is not the Docker Volume name, the Managed Volume name, or a machine-independent storage identity.
+_Avoid_: Docker Volume name, Managed Volume name, cluster volume ID
 
 **Bind Mount**:
-A container mount whose source is a path on its Machine. It is distinct from a Docker Volume and tmpfs.
-_Avoid_: Docker Volume, cluster storage
+A container mount whose source is a path on its Machine. It is distinct from a Docker Volume, a Managed Volume, and tmpfs.
+_Avoid_: Docker Volume, Managed Volume, cluster storage
 
 **Tmpfs Mount**:
-An ephemeral memory-backed container mount. It is distinct from a Bind Mount and Docker Volume.
-_Avoid_: Docker Volume, persistent volume
+An ephemeral memory-backed container mount. It is distinct from a Bind Mount, Docker Volume, and Managed Volume.
+_Avoid_: Docker Volume, Managed Volume, persistent volume
 
 **Machine Subnet**:
 The IPv4 subnet locally selected for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet after concurrent changes.
