@@ -170,7 +170,7 @@ async fn main() -> Result<(), Error> {
                 specs.clone(),
                 replicated,
                 Arc::clone(&store),
-                local_record.id.clone(),
+                local_record.id,
             )
         })
     });
@@ -195,7 +195,7 @@ async fn main() -> Result<(), Error> {
     .with_caddyfile(caddyfile.clone());
     let proxy = MachineProxy::new(
         Routes::new(MachineRpcServer::new(service)),
-        local_record.id.clone(),
+        local_record.id,
         MACHINE_API_PORT,
         replicated_store.clone(),
     );

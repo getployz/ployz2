@@ -24,7 +24,7 @@ use crate::{
 #[derive(Debug, Error)]
 pub enum Failure {
     #[error("{0}")]
-    Command(Cause),
+    Command(Box<Cause>),
     #[error("exit {0}")]
     Exit(u8),
 }
@@ -98,7 +98,7 @@ impl Failure {
     }
 
     pub fn usage(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::Command(Cause::Usage(message.into()))
+        Self::Command(Box::new(Cause::Usage(message.into())))
     }
 }
 
@@ -116,7 +116,7 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
 
 impl From<Cause> for Failure {
     fn from(cause: Cause) -> Self {
-        Self::Command(cause)
+        Self::Command(Box::new(cause))
     }
 }
 
@@ -205,7 +205,19 @@ impl From<ConnectError> for Failure {
             ConnectError::Connection(error) => error.into(),
             ConnectError::Value(error) => error.into(),
             ConnectError::Config(error) => error.into(),
-            other => Cause::Connect(other).into(),
+            ConnectError::Attempt(_)
+            | ConnectError::MissingMachineDetails
+            | ConnectError::SshProbe { .. }
+            | ConnectError::Routing(_)
+            | ConnectError::Join(_)
+            | ConnectError::ProxyUnsupported(_)
+            | ConnectError::UnsupportedNetwork(_)
+            | ConnectError::Path { .. }
+            | ConnectError::AllFailed { .. }
+            | ConnectError::Rpc(_)
+            | ConnectError::Codec(_)
+            | ConnectError::Remote(_)
+            | ConnectError::Framing(_) => Cause::Connect(error).into(),
         }
     }
 }
@@ -255,7 +267,23 @@ impl From<OperatorError> for Failure {
             OperatorError::Selector(error) => error.into(),
             OperatorError::MachineSelector(error) => error.into(),
             OperatorError::Value(error) => error.into(),
-            other => Cause::Operator(other).into(),
+            OperatorError::Rpc(_)
+            | OperatorError::Codec(_)
+            | OperatorError::StreamClosed
+            | OperatorError::TtyRequiresStdin
+            | OperatorError::InvalidServiceSelector(_)
+            | OperatorError::InvalidTail(_)
+            | OperatorError::InvalidProxyPort
+            | OperatorError::InvalidLocalPort(_)
+            | OperatorError::InvalidRemotePort(_)
+            | OperatorError::NoHealthyContainer
+            | OperatorError::NoContainersOnMachines { .. }
+            | OperatorError::NoSelectedServices
+            | OperatorError::NoMachines
+            | OperatorError::SnapshotStale
+            | OperatorError::UnsupportedLogService { .. }
+            | OperatorError::OpenContainerLogs { .. }
+            | OperatorError::OpenMachineLogs { .. } => Cause::Operator(error).into(),
         }
     }
 }
@@ -265,7 +293,7 @@ impl From<DnsError> for Failure {
         match error {
             DnsError::Connect(error) => error.into(),
             DnsError::NoReachableMachines(error) => error.into(),
-            other => Cause::Dns(other).into(),
+            DnsError::Inspect { .. } | DnsError::Http(_) => Cause::Dns(error).into(),
         }
     }
 }
@@ -331,14 +359,17 @@ mod tests {
     fn missing_config_stays_a_typed_context_error() {
         let failure = Failure::from(ContextError::NoConfig);
         assert!(matches!(
-            failure,
-            Failure::Command(Cause::Context(ContextError::NoConfig))
+            &failure,
+            Failure::Command(cause) if matches!(cause.as_ref(), Cause::Context(ContextError::NoConfig))
         ));
         assert_eq!(
             failure.to_string(),
             "no Ployz config or local daemon socket is available"
         );
-        assert!(!matches!(failure, Failure::Command(Cause::Usage(_))));
+        assert!(!matches!(
+            failure,
+            Failure::Command(cause) if matches!(cause.as_ref(), Cause::Usage(_))
+        ));
     }
 
     #[test]
@@ -354,7 +385,7 @@ mod tests {
     fn connect_context_errors_unwrap_to_context() {
         assert!(matches!(
             Failure::from(ConnectError::Context(ContextError::NoConfig)),
-            Failure::Command(Cause::Context(ContextError::NoConfig))
+            Failure::Command(cause) if matches!(cause.as_ref(), Cause::Context(ContextError::NoConfig))
         ));
     }
 
@@ -363,7 +394,7 @@ mod tests {
         assert!(matches!(Failure::exit(7), Failure::Exit(7)));
         assert!(!matches!(
             Failure::exit(1),
-            Failure::Command(Cause::Usage(_))
+            Failure::Command(cause) if matches!(cause.as_ref(), Cause::Usage(_))
         ));
         assert_eq!(terminate(Err(Failure::exit(3))), ExitCode::from(3));
         assert_eq!(terminate(Ok(())), ExitCode::SUCCESS);

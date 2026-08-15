@@ -856,7 +856,7 @@ web.example { reverse_proxy 10.210.1.6:8080 }"
             container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
             display_name: format!("{service_name}-{suffix}"),
             created_at_unix_nanos: 0,
-            machine_id: machine_id.clone(),
+            machine_id: *machine_id,
             service_id,
             service_name,
             kind: ContainerKind::ServiceContainer,

@@ -37,7 +37,7 @@ pub fn machine_volumes(
 ) -> Vec<MachineVolume> {
     let names = machines
         .iter()
-        .map(|machine| (machine.machine.id.clone(), machine.machine.name.clone()))
+        .map(|machine| (machine.machine.id, machine.machine.name.clone()))
         .collect::<BTreeMap<MachineId, MachineName>>();
     result
         .successes

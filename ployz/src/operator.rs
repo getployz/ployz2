@@ -34,11 +34,17 @@ const LOG_STALL_CHECK: Duration = Duration::from_secs(1);
 #[derive(Debug, Error)]
 pub enum LogError {
     #[error("{0}")]
-    Transport(#[from] tonic::Status),
+    Transport(Box<tonic::Status>),
     #[error("{0}")]
     Protocol(#[from] StreamProtocolError),
     #[error("{0}")]
     Message(Cow<'static, str>),
+}
+
+impl From<tonic::Status> for LogError {
+    fn from(status: tonic::Status) -> Self {
+        Self::Transport(Box::new(status))
+    }
 }
 
 pub type LogSource = Pin<Box<dyn Stream<Item = Result<LogEntry, LogError>> + Send>>;
@@ -216,7 +222,7 @@ fn resolve_container_selector<'a>(
                 selector: selector.to_owned(),
                 container_ids: named
                     .into_iter()
-                    .map(|container| container.container_id.clone())
+                    .map(|container| container.container_id)
                     .collect(),
             });
         }
@@ -235,7 +241,7 @@ fn resolve_container_selector<'a>(
             selector: selector.to_owned(),
             container_ids: prefixed
                 .into_iter()
-                .map(|container| container.container_id.clone())
+                .map(|container| container.container_id)
                 .collect(),
         }),
     }
@@ -348,9 +354,9 @@ impl Client {
         let live = self.live_services().await?;
         let service = select_service(&live.services, service_selector)?;
         let container = select_exec_container(service, container_selector)?;
-        let machine_id = container.machine_id.clone();
+        let machine_id = container.machine_id;
         let config = ExecRequestFrame::Config(ExecConfig {
-            container_id: container.container_id.clone(),
+            container_id: container.container_id,
             options,
         })
         .encode()?;
@@ -386,7 +392,7 @@ impl Client {
         let selected_machines = select_machines(&machines, machine_selectors)?;
         let machine_ids = selected_machines
             .iter()
-            .map(|machine| machine.machine.id.clone())
+            .map(|machine| machine.machine.id)
             .collect::<HashSet<_>>();
         let live = self.live_services().await?;
         let mut inputs = Vec::new();
@@ -412,7 +418,7 @@ impl Client {
             }
             for container in containers {
                 let request = op::ContainerLogs::into_request(ContainerLogsRequest {
-                    container_id: container.container_id.clone(),
+                    container_id: container.container_id,
                     options: options.clone(),
                 })
                 .encode()?;
@@ -428,7 +434,7 @@ impl Client {
                 .await
                 {
                     return Err(OperatorError::OpenContainerLogs {
-                        container_id: container.container_id.clone(),
+                        container_id: container.container_id,
                         machine_id: container.machine_id,
                         source: Box::new(error.into()),
                     });

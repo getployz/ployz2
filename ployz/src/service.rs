@@ -67,12 +67,12 @@ impl Client {
             // current trust boundary; it can be stale and is not an authority or freshness proof.
             match machine.membership {
                 MembershipObservation::Up | MembershipObservation::Suspect => {
-                    tasks.spawn(list_on_machine(self.clone(), machine.machine.id.clone()));
+                    tasks.spawn(list_on_machine(self.clone(), machine.machine.id));
                 }
                 MembershipObservation::Down
                 | MembershipObservation::Unknown
                 | MembershipObservation::Unrecognized(_) => {
-                    omissions.push(machine.machine.id.clone());
+                    omissions.push(machine.machine.id);
                 }
             }
         }
@@ -183,12 +183,12 @@ impl Client {
         let mut tasks = JoinSet::new();
         let mut task_targets = HashMap::new();
         for container in service.containers_for(action) {
-            let machine_id = container.machine_id.clone();
-            let container_id = container.container_id.clone();
+            let machine_id = container.machine_id;
+            let container_id = container.container_id;
             let handle = tasks.spawn(change_on_machine(
                 self.clone(),
-                machine_id.clone(),
-                container_id.clone(),
+                machine_id,
+                container_id,
                 action,
                 signal.clone(),
                 grace_period_seconds,
@@ -243,7 +243,7 @@ async fn list_on_machine(
         )
         .await
         .map(|list| MachineSuccess {
-            machine_id: machine_id.clone(),
+            machine_id,
             value: list.containers,
         })
         .map_err(|error| MachineFailure { machine_id, error })
@@ -296,7 +296,7 @@ async fn change_container_rpc(
             client
                 .invoke::<op::StopContainer>(
                     StopContainerRequest {
-                        container_id: container_id.clone(),
+                        container_id: *container_id,
                         signal,
                         grace_period_seconds,
                     },
@@ -311,7 +311,7 @@ async fn change_container_rpc(
         ContainerAction::Start => client
             .invoke::<op::StartContainer>(
                 StartContainerRequest {
-                    container_id: container_id.clone(),
+                    container_id: *container_id,
                 },
                 &target,
                 Some(TARGET_RPC_TIMEOUT),
@@ -331,7 +331,7 @@ async fn remove_container_rpc(
     client
         .invoke::<op::RemoveContainer>(
             RemoveContainerRequest {
-                container_id: container_id.clone(),
+                container_id: *container_id,
                 remove_volumes: true,
                 force: false,
             },

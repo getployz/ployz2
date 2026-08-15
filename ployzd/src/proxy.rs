@@ -56,10 +56,7 @@ pub fn resolve_route(
             NameMatches::None => Err(TargetResolutionError::NotFound(vec![selector])),
             NameMatches::Ambiguous(matches) => Err(TargetResolutionError::Ambiguous {
                 selector,
-                matches: matches
-                    .into_iter()
-                    .map(|machine| machine.id.clone())
-                    .collect(),
+                matches: matches.into_iter().map(|machine| machine.id).collect(),
             }),
         },
         RoutingRequest::Many(selectors) => {

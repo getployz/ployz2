@@ -264,7 +264,7 @@ mod tests {
         let source = machine_id('1');
         let table = format_rtt_table(&PartialResult {
             successes: vec![MachineSuccess {
-                machine_id: source.clone(),
+                machine_id: source,
                 value: vec![rtt_observation("peer-zero", 0, 0)],
             }],
             failures: Vec::new(),
@@ -293,12 +293,12 @@ mod tests {
         let target = machine_id('2');
         let table = format_rtt_table(&PartialResult {
             successes: vec![MachineSuccess {
-                machine_id: source.clone(),
+                machine_id: source,
                 value: vec![RttObservation {
                     peer_id: "peer-live".into(),
                     address: "[fdcc::2]:51001".parse().unwrap(),
                     machine: Some(MachineIdentity {
-                        id: target.clone(),
+                        id: target,
                         name: MachineName::parse("node-b").unwrap(),
                     }),
                     statistics,

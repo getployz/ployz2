@@ -126,9 +126,7 @@ impl NetworkPlane {
                     record.selected_endpoints.get(&peer.machine_id).copied(),
                     now,
                 );
-                selection
-                    .selected()
-                    .map(|_| (peer.machine_id.clone(), selection))
+                selection.selected().map(|_| (peer.machine_id, selection))
             })
             .collect();
         let mut plane = Self {
@@ -259,7 +257,7 @@ impl NetworkPlane {
         if joining {
             let known = planned
                 .iter()
-                .map(|peer| peer.machine_id.clone())
+                .map(|peer| peer.machine_id)
                 .collect::<BTreeSet<_>>();
             planned.extend(
                 self.bootstrap_peers
@@ -270,7 +268,7 @@ impl NetworkPlane {
         }
         let live_ids = planned
             .iter()
-            .map(|peer| peer.machine_id.clone())
+            .map(|peer| peer.machine_id)
             .collect::<BTreeSet<_>>();
         self.selections
             .retain(|machine_id, _| live_ids.contains(machine_id));
@@ -281,7 +279,7 @@ impl NetworkPlane {
                     selected.get(&peer.machine_id).copied(),
                     now,
                 ) {
-                    persist_selection(local, peer.machine_id.clone(), endpoint);
+                    persist_selection(local, peer.machine_id, endpoint);
                 }
             } else {
                 let persisted = selected.get(&peer.machine_id).copied();
@@ -289,9 +287,9 @@ impl NetworkPlane {
                 if persisted.is_none()
                     && let Some(endpoint) = selection.selected()
                 {
-                    persist_selection(local, peer.machine_id.clone(), endpoint);
+                    persist_selection(local, peer.machine_id, endpoint);
                 }
-                self.selections.insert(peer.machine_id.clone(), selection);
+                self.selections.insert(peer.machine_id, selection);
             }
         }
         self.apply_peers(&planned)?;
@@ -369,7 +367,7 @@ impl NetworkPlane {
                 eprintln!("failed to update WireGuard peer endpoint: {error}");
                 continue;
             }
-            persist_selection(local, peer.machine_id.clone(), endpoint);
+            persist_selection(local, peer.machine_id, endpoint);
         }
     }
 

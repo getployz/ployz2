@@ -245,7 +245,7 @@ fn selected_machines(
     let selected = resolve_machine_selectors(&visible, &selectors)?;
     let mut observations = machines
         .into_iter()
-        .map(|observation| (observation.machine.id.clone(), observation))
+        .map(|observation| (observation.machine.id, observation))
         .collect::<BTreeMap<_, _>>();
     selected
         .into_iter()

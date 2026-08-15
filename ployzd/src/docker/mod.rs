@@ -171,10 +171,10 @@ impl LocalDocker {
         let resolved_spec = specs
             .get(container_id)
             .await?
-            .ok_or_else(|| Error::SpecNotFound(container_id.clone()))?;
+            .ok_or_else(|| Error::SpecNotFound(*container_id))?;
 
         Ok(ContainerObservation {
-            container_id: container_id.clone(),
+            container_id: *container_id,
             display_name: display_name(inspected.name.as_deref()),
             created_at_unix_nanos: inspected
                 .created
@@ -182,7 +182,7 @@ impl LocalDocker {
                 .and_then(|created| chrono::DateTime::parse_from_rfc3339(created).ok())
                 .and_then(|created| created.timestamp_nanos_opt())
                 .unwrap_or_default(),
-            machine_id: machine_id.clone(),
+            machine_id: *machine_id,
             service_id: managed.service_id,
             service_name: managed.service_name,
             kind: managed.kind,
@@ -203,7 +203,7 @@ fn docker_error(container_id: &ContainerId, error: bollard::errors::Error) -> Er
     match error {
         bollard::errors::Error::DockerResponseServerError {
             status_code: 404, ..
-        } => Error::ContainerNotFound(container_id.clone()),
+        } => Error::ContainerNotFound(*container_id),
         error => Error::Docker(error),
     }
 }

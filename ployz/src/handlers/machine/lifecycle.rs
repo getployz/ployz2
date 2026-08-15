@@ -108,7 +108,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             client
                 .call::<op::RemoveMachine>(
                     RemoveMachineRequest {
-                        machine_id: selected.id.clone(),
+                        machine_id: selected.id,
                     },
                     None,
                 )
@@ -227,7 +227,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         Ok::<_, Error>((assigned, caddy_settings))
     })?;
 
-    connection = connection.with_machine_id(assigned.id.clone());
+    connection = connection.with_machine_id(assigned.id);
     config
         .contexts
         .get_mut(&context_name)
@@ -345,7 +345,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             )
             .await?
             .machine;
-        let connection = connection.with_machine_id(machine.id.clone());
+        let connection = connection.with_machine_id(machine.id);
         Ok::<_, Error>((machine, connection))
     })?;
 

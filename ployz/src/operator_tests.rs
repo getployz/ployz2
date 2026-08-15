@@ -317,11 +317,11 @@ fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
 fn observed_service() -> ServiceObservation {
     let service_id = ServiceId::parse("1".repeat(32)).unwrap();
     ServiceObservation {
-        service_id: service_id.clone(),
+        service_id,
         containers: vec![
-            container(&"a".repeat(64), "api-one", service_id.clone()),
-            container(&"b".repeat(64), "api-two", service_id.clone()),
-            container(&format!("{}c", "b".repeat(63)), "b", service_id.clone()),
+            container(&"a".repeat(64), "api-one", service_id),
+            container(&"b".repeat(64), "api-two", service_id),
+            container(&format!("{}c", "b".repeat(63)), "b", service_id),
         ],
         hook_containers: vec![],
     }
@@ -333,7 +333,7 @@ fn container(id: &str, name: &str, service_id: ServiceId) -> ContainerObservatio
         display_name: name.into(),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("2".repeat(32)).unwrap(),
-        service_id: service_id.clone(),
+        service_id,
         service_name: ServiceName::parse("api").unwrap(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {

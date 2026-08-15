@@ -445,7 +445,7 @@ impl Client {
         // UT-028: keep every target's success or typed failure instead of warning and omitting it.
         let mut requests = tokio::task::JoinSet::new();
         for (index, machine) in machines.iter().enumerate() {
-            let machine_id = machine.machine.id.clone();
+            let machine_id = machine.machine.id;
             let mut client = self.clone();
             requests.spawn(async move {
                 let target = MachineSelector::from(&machine_id);

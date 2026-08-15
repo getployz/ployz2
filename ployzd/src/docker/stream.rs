@@ -159,10 +159,10 @@ impl LocalDocker {
             origin: LogOrigin::Service {
                 service_id: observation.service_id,
                 service_name: observation.service_name,
-                container_id: observation.container_id.clone(),
+                container_id: observation.container_id,
                 hook: observation.labels.get(super::LABEL_HOOK).cloned(),
             },
-            machine_id: machine_id.clone(),
+            machine_id: *machine_id,
             machine_name: machine_name.clone(),
         };
         let source = self.raw_logs(request.container_id.as_str(), &request.options)?;
