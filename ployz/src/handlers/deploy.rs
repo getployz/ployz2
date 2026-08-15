@@ -2,15 +2,15 @@ use std::{num::NonZeroU32, time::SystemTime};
 
 use clap::ArgMatches;
 use ployz_core::{
-    ListMachinesRequest, PortPublication, RequestedServiceSpec, ServiceId, ServiceMode, op,
-    select_service,
+    ListMachinesRequest, PartialResult, PortPublication, RequestedServiceSpec, RpcError, ServiceId,
+    ServiceMode, op, select_service,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     compose::{
-        BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, execute_build,
-        load_project, plan_build, plan_compose_deploy,
+        BuildOptions, BuildService, ComposeProject, LoadOptions, execute_build, load_project,
+        plan_build, plan_compose_deploy,
     },
     connect::Client,
     deploy::{
@@ -37,7 +37,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let (mut project, builds) = prepare_deploy(matches, execute_build)?;
+    let (mut project, builds) = prepare_deploy(matches)?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -56,10 +56,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn prepare_deploy(
-    matches: &ArgMatches,
-    build: impl FnOnce(&[BuildService], &BuildOptions, &LoadOptions) -> Result<(), ComposeError>,
-) -> Result<(ComposeProject, Vec<BuildService>), Error> {
+fn prepare_deploy(matches: &ArgMatches) -> Result<(ComposeProject, Vec<BuildService>), Error> {
     let load = LoadOptions {
         command: "deploy".into(),
         files: string_values(matches, "file")
@@ -86,7 +83,7 @@ fn prepare_deploy(
     if matches.get_flag("no-build") {
         builds.clear();
     } else {
-        build(&builds, &build_options, &load).map_err(|error| error.to_string())?;
+        execute_build(&builds, &build_options, &load).map_err(|error| error.to_string())?;
     }
     let project = project
         .select_services(&selected)
@@ -126,8 +123,21 @@ async fn take_snapshot(
         .deploy_snapshot(machines)
         .await
         .map_err(|error| Error::from(error.to_string()))?;
-    gathered.report_warnings();
+    report_observation_warnings("container", &gathered.containers);
+    report_observation_warnings("volume", &gathered.volumes);
     Ok(gathered.snapshot)
+}
+
+fn report_observation_warnings<T>(kind: &str, result: &PartialResult<T, RpcError>) {
+    for failure in &result.failures {
+        eprintln!(
+            "WARNING: {kind} observation failed on {}: {}",
+            failure.machine_id, failure.error.message
+        );
+    }
+    for machine in &result.omissions {
+        eprintln!("WARNING: {kind} observation omitted {machine}");
+    }
 }
 
 async fn push_image(

@@ -10,13 +10,6 @@ pub(crate) struct DeploySnapshotGather {
     pub volumes: PartialResult<Vec<DockerVolume>, RpcError>,
 }
 
-impl DeploySnapshotGather {
-    pub(crate) fn report_warnings(&self) {
-        report_partial("container", &self.containers);
-        report_partial("volume", &self.volumes);
-    }
-}
-
 impl Client {
     /// Gather an observer-relative Deploy Snapshot from the given Machines.
     /// Container and volume fan-out failures stay in the returned Partial
@@ -58,18 +51,6 @@ fn snapshot_from_partial(
                 options: volume.options,
             })
             .collect(),
-    }
-}
-
-fn report_partial<T>(kind: &str, result: &PartialResult<T, RpcError>) {
-    for failure in &result.failures {
-        eprintln!(
-            "WARNING: {kind} observation failed on {}: {}",
-            failure.machine_id, failure.error.message
-        );
-    }
-    for machine in &result.omissions {
-        eprintln!("WARNING: {kind} observation omitted {machine}");
     }
 }
 
