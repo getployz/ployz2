@@ -13,7 +13,7 @@ use ployz_core::{
     resolve_machine_selector,
 };
 
-use super::{ConnectionOptions, machine_list, parse_endpoints, runtime, target};
+use super::{ConnectionOptions, connect_client, machine_list, parse_endpoints, runtime, target};
 use crate::{
     connect::{Client, ConnectError, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, Context, SelectedConnections, Transport},
@@ -56,7 +56,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let no_reset = matches.get_flag("no-reset");
     let yes = matches.get_flag("yes");
     runtime()?.block_on(async {
-        let mut client = options.connect().await?;
+        let mut client = connect_client(root, options.context()).await?;
         let context_name = match client.connection_source() {
             ConnectionSource::Context(name) => Some(name.clone()),
             ConnectionSource::Direct | ConnectionSource::LocalSocket => None,
@@ -159,7 +159,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     }
 
     let (assigned, caddy_settings) = runtime()?.block_on(async {
-        let mut entry = options.connect().await?;
+        let mut entry = connect_client(root, options.context()).await?;
         let visible = machine_list(&mut entry).await?;
         let caddy_settings = if deploy_caddy {
             let live = entry.live_services().await?;
@@ -241,7 +241,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         Some(
             runtime()?
                 .block_on(async {
-                    let mut entry = options.connect().await?;
+                    let mut entry = connect_client(root, options.context()).await?;
                     wait_machine_up(&mut entry, &assigned.id).await?;
                     // TODO(UT-050): preserve upstream's bounded redeploy instead of a dedicated scale.
                     let requested = crate::caddy::service_spec(image, machines, caddy_config);
@@ -258,7 +258,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     }
     if outcome.refresh_hosted_dns
         && let Err(error) = runtime()?.block_on(async {
-            let mut entry = options.connect().await?;
+            let mut entry = connect_client(root, options.context()).await?;
             crate::dns::update_records_if_reserved(&mut entry).await?;
             Ok::<_, Error>(())
         })

@@ -1,6 +1,6 @@
 use std::{
     net::{IpAddr, SocketAddr},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use clap::ArgMatches;
@@ -9,16 +9,14 @@ use ployz_core::{
     MachineUpdate, PublicIpUpdate, UpdateMachineRequest, op,
 };
 
-use crate::{
-    connect::{Client, connect},
-    context::{Config, expand_home},
-};
+use crate::{connect::Client, context::Config};
 
 use super::{Error, leaf_matches, string_values};
 
 mod inspect;
 mod lifecycle;
 
+pub(super) use super::{connect_client, runtime};
 pub(super) use inspect::{list, rtt, wireguard_show};
 pub(super) use lifecycle::{add, init, remove};
 
@@ -26,31 +24,19 @@ const DEFAULT_WIREGUARD_PORT: u16 = 51820;
 
 pub(super) struct ConnectionOptions {
     config_path: PathBuf,
-    direct: Option<String>,
     context: Option<String>,
 }
 
 impl ConnectionOptions {
     pub(super) fn from_matches(matches: &ArgMatches) -> Result<Self, Error> {
-        let config_path = matches
-            .get_one::<String>("ployz-config")
-            .map(Path::new)
-            .map(expand_home)
-            .ok_or_else(|| Error::usage("Ployz config path is required"))?;
         Ok(Self {
-            config_path,
-            direct: matches.get_one::<String>("connect").cloned(),
+            config_path: super::config_path(matches)?,
             context: matches.get_one::<String>("context").cloned(),
         })
     }
 
-    pub(super) async fn connect(&self) -> Result<Client, Error> {
-        Ok(connect(
-            &self.config_path,
-            self.direct.as_deref(),
-            self.context.as_deref(),
-        )
-        .await?)
+    pub(super) fn context(&self) -> Option<&str> {
+        self.context.as_deref()
     }
 
     pub(super) fn active_config(&self) -> Result<(Config, String), Error> {
@@ -78,10 +64,6 @@ impl ConnectionOptions {
     pub(super) fn load_or_empty_config(&self) -> Result<Config, Error> {
         Ok(Config::load_or_empty(&self.config_path)?)
     }
-}
-
-pub(super) fn runtime() -> Result<tokio::runtime::Runtime, Error> {
-    Ok(tokio::runtime::Runtime::new()?)
 }
 
 pub(super) async fn machine_list(client: &mut Client) -> Result<Vec<MachineObservation>, Error> {
@@ -120,10 +102,10 @@ pub(super) fn update(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Result<(), Error> {
-    let options = ConnectionOptions::from_matches(root)?;
     let selector = MachineSelector::parse(selector)?;
     let machine = runtime()?.block_on(async {
-        let mut client = options.connect().await?;
+        let mut client =
+            connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
         client
             .call::<op::UpdateMachine>(UpdateMachineRequest { update }, Some(&selector))
             .await

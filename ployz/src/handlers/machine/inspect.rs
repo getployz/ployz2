@@ -10,16 +10,16 @@ use ployz_core::{
 };
 use serde::Serialize;
 
-use super::{ConnectionOptions, machine_list, runtime};
+use super::{connect_client, machine_list, runtime};
 use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
-    let options = ConnectionOptions::from_matches(root)?;
     let output = leaf_matches(root)
         .get_one::<String>("output")
         .map(String::as_str);
     let machines = runtime()?.block_on(async {
-        let mut client = options.connect().await?;
+        let mut client =
+            connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
         machine_list(&mut client).await
     })?;
     if output == Some("json") {
@@ -77,9 +77,9 @@ fn gateway(network: MachineSubnet) -> Ipv4Addr {
 }
 
 pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
-    let options = ConnectionOptions::from_matches(root)?;
     let result = runtime()?.block_on(async {
-        let mut client = options.connect().await?;
+        let mut client =
+            connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
         let machines = machine_list(&mut client).await?;
         let mut result = PartialResult {
             successes: Vec::new(),
@@ -155,11 +155,11 @@ fn print_rtts(result: &PartialResult<Vec<RttObservation>, String>) {
 }
 
 pub(in crate::handlers) fn wireguard_show(root: &ArgMatches) -> Result<(), Error> {
-    let options = ConnectionOptions::from_matches(root)?;
     let selector = leaf_matches(root).get_one::<String>("machine").cloned();
     let device = runtime()?
         .block_on(async {
-            let mut client = options.connect().await?;
+            let mut client =
+                connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
             let target = selector.map(MachineSelector::parse).transpose()?;
             client
                 .call::<op::InspectWireguard>(InspectWireGuardRequest {}, target.as_ref())
