@@ -1,52 +1,57 @@
-use ployz_core::{
-    ContainerObservation, DockerVolume, ListMachinesRequest, MachineObservation, PartialResult,
-    RpcError, op,
-};
+use ployz_core::{ContainerObservation, DockerVolume, MachineObservation, PartialResult, RpcError};
 
 use crate::connect::{Client, ConnectError};
 
 use super::{DeploySnapshot, ObservedDockerVolume};
 
+pub(crate) struct DeploySnapshotGather {
+    pub snapshot: DeploySnapshot,
+    pub containers: PartialResult<Vec<ContainerObservation>, RpcError>,
+    pub volumes: PartialResult<Vec<DockerVolume>, RpcError>,
+}
+
+impl DeploySnapshotGather {
+    pub(crate) fn report_warnings(&self) {
+        report_partial("container", &self.containers);
+        report_partial("volume", &self.volumes);
+    }
+}
+
 impl Client {
-    /// Gather an observer-relative Deploy Snapshot: Machines, Service Containers,
-    /// and Docker Volumes. Container and volume fan-out failures stay as Partial
-    /// Result warnings; the snapshot keeps successful observations.
-    pub async fn deploy_snapshot(
+    /// Gather an observer-relative Deploy Snapshot from the given Machines.
+    /// Container and volume fan-out failures stay in the returned Partial
+    /// Results; the snapshot keeps successful observations.
+    pub(crate) async fn deploy_snapshot(
         &mut self,
-        machines: Option<Vec<MachineObservation>>,
-    ) -> Result<DeploySnapshot, ConnectError> {
-        let machines = match machines {
-            Some(machines) => machines,
-            None => {
-                self.call::<op::ListMachines>(ListMachinesRequest {}, None)
-                    .await?
-                    .machines
-            }
-        };
-        let live = self.live_services_from(&machines).await?;
-        report_partial("container", &live.containers);
+        machines: Vec<MachineObservation>,
+    ) -> Result<DeploySnapshotGather, ConnectError> {
+        let containers = self.live_services_from(&machines).await?.containers;
         let volumes = self.list_volumes(&machines).await;
-        report_partial("volume", &volumes);
-        Ok(snapshot_from_partial(machines, live.containers, volumes))
+        let snapshot = snapshot_from_partial(machines, &containers, &volumes);
+        Ok(DeploySnapshotGather {
+            snapshot,
+            containers,
+            volumes,
+        })
     }
 }
 
 fn snapshot_from_partial(
     machines: Vec<MachineObservation>,
-    containers: PartialResult<Vec<ContainerObservation>, RpcError>,
-    volumes: PartialResult<Vec<DockerVolume>, RpcError>,
+    containers: &PartialResult<Vec<ContainerObservation>, RpcError>,
+    volumes: &PartialResult<Vec<DockerVolume>, RpcError>,
 ) -> DeploySnapshot {
     DeploySnapshot {
         machines,
         containers: containers
             .successes
-            .into_iter()
-            .flat_map(|success| success.value)
+            .iter()
+            .flat_map(|success| success.value.iter().cloned())
             .collect(),
         volumes: volumes
             .successes
-            .into_iter()
-            .flat_map(|success| success.value)
+            .iter()
+            .flat_map(|success| success.value.iter().cloned())
             .map(|volume| ObservedDockerVolume {
                 id: volume.id,
                 driver: volume.driver,
@@ -89,31 +94,29 @@ mod tests {
         let machines = vec![machine('a'), machine('b')];
         let container = observation('1', 'a');
         let volume = docker_volume('a', "data");
-        let snapshot = snapshot_from_partial(
-            machines.clone(),
-            PartialResult {
-                successes: vec![MachineSuccess {
-                    machine_id: machine_id('a'),
-                    value: vec![container.clone()],
-                }],
-                failures: vec![MachineFailure {
-                    machine_id: machine_id('b'),
-                    error: unavailable("container listing failed"),
-                }],
-                omissions: vec![machine_id('c')],
-            },
-            PartialResult {
-                successes: vec![MachineSuccess {
-                    machine_id: machine_id('a'),
-                    value: vec![volume.clone()],
-                }],
-                failures: vec![MachineFailure {
-                    machine_id: machine_id('b'),
-                    error: unavailable("volume listing failed"),
-                }],
-                omissions: Vec::new(),
-            },
-        );
+        let containers = PartialResult {
+            successes: vec![MachineSuccess {
+                machine_id: machine_id('a'),
+                value: vec![container.clone()],
+            }],
+            failures: vec![MachineFailure {
+                machine_id: machine_id('b'),
+                error: unavailable("container listing failed"),
+            }],
+            omissions: vec![machine_id('c')],
+        };
+        let volumes = PartialResult {
+            successes: vec![MachineSuccess {
+                machine_id: machine_id('a'),
+                value: vec![volume.clone()],
+            }],
+            failures: vec![MachineFailure {
+                machine_id: machine_id('b'),
+                error: unavailable("volume listing failed"),
+            }],
+            omissions: Vec::new(),
+        };
+        let snapshot = snapshot_from_partial(machines.clone(), &containers, &volumes);
 
         assert_eq!(snapshot.machines, machines);
         assert_eq!(snapshot.containers, [container]);

@@ -213,10 +213,17 @@ impl WorkflowIo for RemoteWorkflow<'_> {
         &mut self,
         machines: Option<Vec<ployz_core::MachineObservation>>,
     ) -> Result<DeploySnapshot, Error> {
-        self.client
+        let machines = match machines {
+            Some(machines) => machines,
+            None => self.machines().await?,
+        };
+        let gathered = self
+            .client
             .deploy_snapshot(machines)
             .await
-            .map_err(|error| error.to_string().into())
+            .map_err(|error| Error::from(error.to_string()))?;
+        gathered.report_warnings();
+        Ok(gathered.snapshot)
     }
 
     fn render(&mut self, operations: &[DeployOperation]) {
