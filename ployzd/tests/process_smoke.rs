@@ -60,11 +60,7 @@ fn version_notify_socket_modes_and_signal() {
     disconnected.shutdown(Shutdown::Both).unwrap();
     thread::sleep(Duration::from_millis(20));
     assert_eq!(describe(&socket).machine_id, first.machine_id);
-    Command::new("kill")
-        .args(["-TERM", &daemon.0.id().to_string()])
-        .status()
-        .unwrap();
-    let stderr = wait_and_stderr(&mut daemon.0, "signal");
+    let stderr = terminate(&mut daemon.0);
     assert!(
         stderr.contains("started") && stderr.contains("uninitialized"),
         "start missing from journal stderr: {stderr}"
@@ -84,17 +80,17 @@ fn version_notify_socket_modes_and_signal() {
         &notify_socket,
     );
     assert_eq!(mode(&existing_parent), 0o711);
-    Command::new("kill")
-        .args(["-TERM", &daemon.0.id().to_string()])
-        .status()
-        .unwrap();
-    wait_for_success(&mut daemon.0, "existing socket parent");
+    let _ = terminate(&mut daemon.0);
+}
 
-    let join_root = TestDir::new("ployzd-process-join");
-    fs::create_dir_all(&join_root.0).unwrap();
-    let join_socket = join_root.0.join("run/ployz.sock");
-    let (mut daemon, _) = start_daemon(&join_root.0.join("data"), &join_socket, &notify_socket);
-    join(&join_socket);
+#[test]
+fn join_leaves_a_journal_line_and_records_the_restart() {
+    let root = TestDir::new("ployzd-process-join");
+    fs::create_dir_all(&root.0).unwrap();
+    let notify_socket = root.0.join("notify.sock");
+    let socket = root.0.join("run/ployz.sock");
+    let (mut daemon, _) = start_daemon(&root.0.join("data"), &socket, &notify_socket);
+    join(&socket);
     let stderr = wait_and_stderr(&mut daemon.0, "join");
     assert!(
         stderr.contains("join accepted"),
@@ -104,45 +100,52 @@ fn version_notify_socket_modes_and_signal() {
         stderr.contains("shutting down") && stderr.contains("restart requested"),
         "join restart reason missing from journal stderr: {stderr}"
     );
+}
 
-    let quiet_root = TestDir::new("ployzd-process-quiet");
-    fs::create_dir_all(&quiet_root.0).unwrap();
-    let quiet_socket = quiet_root.0.join("run/ployz.sock");
-    let (mut daemon, _) = start_daemon_with(
-        &quiet_root.0.join("data"),
-        &quiet_socket,
+#[test]
+fn verbosity_is_raised_without_editing_the_unit() {
+    let root = TestDir::new("ployzd-process-verbosity");
+    fs::create_dir_all(&root.0).unwrap();
+    let notify_socket = root.0.join("notify.sock");
+
+    let (mut quiet, _) = start_daemon_with(
+        &root.0.join("quiet-data"),
+        &root.0.join("quiet/ployz.sock"),
         &notify_socket,
         &[("PLOYZ_LOG", "error")],
         &[],
     );
-    Command::new("kill")
-        .args(["-TERM", &daemon.0.id().to_string()])
-        .status()
-        .unwrap();
-    let stderr = wait_and_stderr(&mut daemon.0, "quiet");
+    let stderr = terminate(&mut quiet.0);
     assert!(
         !stderr.contains("started"),
         "PLOYZ_LOG=error still emitted start: {stderr}"
     );
 
-    let debug_root = TestDir::new("ployzd-process-debug");
-    fs::create_dir_all(&debug_root.0).unwrap();
-    let debug_socket = debug_root.0.join("run/ployz.sock");
-    let (mut daemon, _) = start_daemon_with(
-        &debug_root.0.join("data"),
-        &debug_socket,
+    let (mut debug, _) = start_daemon_with(
+        &root.0.join("debug-data"),
+        &root.0.join("debug/ployz.sock"),
         &notify_socket,
         &[("PLOYZ_LOG", "error")],
         &["--log-level", "debug"],
     );
-    Command::new("kill")
-        .args(["-TERM", &daemon.0.id().to_string()])
-        .status()
-        .unwrap();
-    let stderr = wait_and_stderr(&mut daemon.0, "debug");
+    let stderr = terminate(&mut debug.0);
     assert!(
         stderr.contains("listening"),
         "--log-level debug missing listening line: {stderr}"
+    );
+}
+
+#[test]
+fn invalid_log_level_fails_before_start() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .args(["--log-level", "foo=notalevel"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Parse") || stderr.contains("InvalidInput"),
+        "init error missing from stderr: {stderr}"
     );
 }
 
@@ -247,8 +250,12 @@ fn metrics(address: SocketAddr) -> String {
     }
 }
 
-fn wait_for_success(child: &mut Child, stage: &str) {
-    let _ = wait_and_stderr(child, stage);
+fn terminate(child: &mut Child) -> String {
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    wait_and_stderr(child, "signal")
 }
 
 fn wait_and_stderr(child: &mut Child, stage: &str) -> String {
@@ -290,7 +297,6 @@ fn inspect(path: &Path) -> ployz_core::MachineDetails {
             .unwrap()
             .decode::<op::Inspect>()
             .unwrap()
-            .clone()
     })
 }
 

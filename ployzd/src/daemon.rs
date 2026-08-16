@@ -377,16 +377,17 @@ impl Daemon {
                 Ok(signal) => StopKind::Signal(signal),
                 Err(error) => {
                     errors.push(error.to_string());
-                    StopKind::Signal("signal")
+                    StopKind::WatchFailed("signal")
                 }
             },
             () = self.stop.cancelled() => StopKind::Stop,
-            changed = self.reset_rx.changed() => {
-                if let Err(error) = changed {
+            changed = self.reset_rx.changed() => match changed {
+                Ok(()) => StopKind::Restart,
+                Err(error) => {
                     errors.push(error.to_string());
+                    StopKind::WatchFailed("restart")
                 }
-                StopKind::Restart
-            }
+            },
         };
         notify(NotifyState::Stopping);
         let resetting = match self.store.lock() {
@@ -402,6 +403,7 @@ impl Daemon {
             StopKind::Stop => "stop requested".to_owned(),
             StopKind::Restart if resetting => "local Machine reset".to_owned(),
             StopKind::Restart => "restart requested".to_owned(),
+            StopKind::WatchFailed(what) => format!("{what} wait failed"),
         };
         tracing::info!(reason = reason.as_str(), "shutting down");
         self.shutdown.cancel();
@@ -563,6 +565,7 @@ enum StopKind {
     Signal(&'static str),
     Stop,
     Restart,
+    WatchFailed(&'static str),
 }
 
 async fn shutdown_signal() -> io::Result<&'static str> {
