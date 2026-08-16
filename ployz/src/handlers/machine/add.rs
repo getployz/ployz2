@@ -133,7 +133,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             Ok::<_, Error>(())
         })
     {
-        return Err(Error::usage(caddy_follow_on_warning(&error.to_string())));
+        return Err(error);
     }
     match outcome.follow_on_error {
         Some(error) => Err(Error::usage(error)),
@@ -189,7 +189,7 @@ impl MachineAddOutcome {
             },
             Some(Err(error)) => Self {
                 refresh_hosted_dns: false,
-                follow_on_error: Some(caddy_follow_on_warning(&error)),
+                follow_on_error: Some(caddy_follow_on_error(&error)),
             },
             None => Self {
                 refresh_hosted_dns: false,
@@ -203,10 +203,8 @@ fn added_machine_line(assigned: &Machine) -> String {
     format!("Added Machine {} ({})", assigned.name, assigned.id)
 }
 
-fn caddy_follow_on_warning(error: &str) -> String {
-    format!(
-        "WARNING: Caddy Deploy failed after adding the Machine: {error}. Run `caddy deploy` to retry."
-    )
+fn caddy_follow_on_error(error: &str) -> String {
+    format!("Caddy Deploy failed after adding the Machine: {error}. Run `caddy deploy` to retry.")
 }
 
 #[cfg(test)]

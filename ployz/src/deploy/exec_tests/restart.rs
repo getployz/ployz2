@@ -94,24 +94,55 @@ async fn inspect_lost_to_a_daemon_restart_is_waited_out() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn create_lost_to_a_daemon_restart_is_retried() {
+async fn create_unavailable_is_not_retried() {
+    let machine = machine('1');
+    let plan = plan(vec![run(&machine, spec(None, None, None), true)]);
+    let client = Scripted::new(vec![failed_unavailable(
+        Call::Create(machine, ContainerKind::ServiceContainer),
+        "transport error",
+    )]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(matches!(
+        outcome.failed,
+        Some(FailedOperation::Operation {
+            error: ExecutionError::Machine {
+                action: MachineAction::CreateContainer,
+                ..
+            },
+            ..
+        })
+    ));
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn start_unavailable_stops_waiting_when_cancelled() {
     let machine = machine('1');
     let created_id = container('a');
     let plan = plan(vec![run(&machine, spec(None, None, None), true)]);
     let client = Scripted::new(vec![
-        failed_unavailable(
-            Call::Create(machine, ContainerKind::ServiceContainer),
-            "transport error",
-        ),
         created(
             Call::Create(machine, ContainerKind::ServiceContainer),
             &created_id,
         ),
-        ok(Call::Start(machine, created_id)),
+        failed_unavailable(Call::Start(machine, created_id), "transport error"),
     ]);
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
 
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+    let outcome = execute_with(&plan, &client, &cancellation).await;
 
-    assert!(outcome.failed.is_none());
+    assert!(matches!(
+        outcome.failed,
+        Some(FailedOperation::Operation {
+            error: ExecutionError::Machine {
+                action: MachineAction::StartContainer,
+                ..
+            },
+            ..
+        })
+    ));
     client.assert_done();
 }
