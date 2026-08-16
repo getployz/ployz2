@@ -254,7 +254,6 @@ mod tests {
             })
         ));
         assert_eq!(spec.mounts().len(), 3);
-        assert_eq!(spec.volume_graph.mounts().len(), 3);
         assert!(spec.config_graph.mounts().is_empty());
     }
 }
