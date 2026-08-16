@@ -9,10 +9,10 @@ use std::{
 
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerLogsRequest, ContainerObservation, ContainerSelector,
-    ExecConfig, ExecOptions, ExecRequestFrame, FanoutSelector, HealthObservation, LogEntry,
-    LogStream, LogsOptions, MachineId, MachineLogService, MachineLogsRequest, MachineName,
-    MachineObservation, MachineTarget, MembershipObservation, OpaquePayload, ServiceObservation,
+    ContainerId, ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
+    ExecRequestFrame, FanoutSelector, HealthObservation, LogEntry, LogStream, LogsOptions,
+    MachineId, MachineLogService, MachineLogsRequest, MachineName, MachineObservation,
+    MachineTarget, MembershipObservation, OpaquePayload, ServiceContainer, ServiceObservation,
     ServiceSelector, StreamProtocolError, op, resolve_container_selector,
     resolve_machine_selectors, select_service,
 };
@@ -173,15 +173,29 @@ pub fn exec_options(command: Vec<String>, mode: ExecMode) -> Result<ExecOptions,
 pub fn select_exec_container<'a>(
     service: &'a ServiceObservation,
     selector: Option<&ContainerSelector>,
-) -> Result<&'a ContainerObservation, OperatorError> {
-    let mut regular = service
-        .containers
-        .iter()
-        .filter(|container| container.kind == ContainerKind::ServiceContainer);
-    let Some(selector) = selector else {
-        return regular.next().ok_or(OperatorError::NoRegularContainer);
-    };
-    Ok(resolve_container_selector(regular, selector)?)
+) -> Result<&'a ServiceContainer, OperatorError> {
+    match selector {
+        None => service
+            .containers
+            .first()
+            .ok_or(OperatorError::NoRegularContainer),
+        Some(selector) => {
+            let observation = resolve_container_selector(
+                service
+                    .containers
+                    .iter()
+                    .map(ServiceContainer::as_observation),
+                selector,
+            )?;
+            Ok(service
+                .containers
+                .iter()
+                .find(|container| {
+                    container.as_observation().container_id == observation.container_id
+                })
+                .expect("resolved Service Container must still be in the Service"))
+        }
+    }
 }
 
 pub fn parse_service_args(values: &[String]) -> Result<Vec<ServiceArg>, OperatorError> {
@@ -252,18 +266,17 @@ pub fn parse_proxy_ports(value: &str) -> Result<ProxyPorts, OperatorError> {
 
 pub fn select_proxy_container(
     service: &ServiceObservation,
-) -> Result<&ContainerObservation, OperatorError> {
+) -> Result<&ServiceContainer, OperatorError> {
     service
         .containers
         .iter()
         .find(|container| {
-            container.kind == ContainerKind::ServiceContainer
-                && matches!(
-                    container.runtime,
-                    ployz_core::ContainerRuntimeObservation::Running {
-                        health: HealthObservation::Healthy | HealthObservation::NotConfigured
-                    }
-                )
+            matches!(
+                container.as_observation().runtime,
+                ployz_core::ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy | HealthObservation::NotConfigured
+                }
+            )
         })
         .ok_or(OperatorError::NoHealthyContainer)
 }
@@ -291,7 +304,7 @@ pub async fn open_exec(
 ) -> Result<ExecSession, OperatorError> {
     let live = client.live_services().await?;
     let service = select_service(&live.services, service_selector)?;
-    let container = select_exec_container(service, container_selector)?;
+    let container = select_exec_container(service, container_selector)?.as_observation();
     let machine_id = container.machine_id;
     let config = ExecRequestFrame::Config(ExecConfig {
         container_id: container.container_id,
@@ -344,7 +357,7 @@ pub async fn open_service_logs(
         let containers = select_log_containers(service, &arg.containers)?;
         let containers = containers
             .into_iter()
-            .filter(|container| machine_ids.contains(&container.machine_id))
+            .filter(|container| machine_ids.contains(&container.as_observation().machine_id))
             .collect::<Vec<_>>();
         if containers.is_empty() {
             return Err(OperatorError::NoContainersOnMachines {
@@ -352,13 +365,14 @@ pub async fn open_service_logs(
             });
         }
         for container in containers {
+            let observation = container.as_observation();
             let request = op::ContainerLogs::into_request(ContainerLogsRequest {
-                container_id: container.container_id,
+                container_id: observation.container_id,
                 options: options.clone(),
             })
             .encode()?;
-            let identity = format!("{}/{}", arg.service, container.display_name);
-            let target = MachineTarget::from(&container.machine_id);
+            let identity = format!("{}/{}", arg.service, observation.display_name);
+            let target = MachineTarget::from(&observation.machine_id);
             // TODO(UT-082): earlier Container log streams intentionally survive until the
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
@@ -370,8 +384,8 @@ pub async fn open_service_logs(
             .await
             {
                 return Err(OperatorError::OpenContainerLogs {
-                    container_id: container.container_id,
-                    machine_id: container.machine_id,
+                    container_id: observation.container_id,
+                    machine_id: observation.machine_id,
                     source: Box::new(error.into()),
                 });
             }
@@ -486,22 +500,23 @@ pub(crate) async fn open_log_input(
 pub(crate) fn select_log_containers<'a>(
     service: &'a ServiceObservation,
     selectors: &[ContainerSelector],
-) -> Result<Vec<&'a ContainerObservation>, OperatorError> {
-    let all = service
-        .containers
-        .iter()
-        .chain(&service.hook_containers)
-        .collect::<Vec<_>>();
+) -> Result<Vec<ContainerRef<'a>>, OperatorError> {
+    let all = service.members().collect::<Vec<_>>();
     if selectors.is_empty() {
         return Ok(all);
     }
     let mut selected = Vec::new();
     for selector in selectors {
-        let container = resolve_container_selector(all.iter().copied(), selector)?;
-        if !selected
+        let observation =
+            resolve_container_selector(all.iter().map(|member| member.as_observation()), selector)?;
+        let container = all
             .iter()
-            .any(|selected: &&ContainerObservation| selected.container_id == container.container_id)
-        {
+            .copied()
+            .find(|member| member.as_observation().container_id == observation.container_id)
+            .expect("resolved member must still be in the Service");
+        if !selected.iter().any(|selected: &ContainerRef<'a>| {
+            selected.as_observation().container_id == container.as_observation().container_id
+        }) {
             selected.push(container);
         }
     }
