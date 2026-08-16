@@ -15,8 +15,8 @@ use crate::{
 use super::{
     DeployOperation, DeployOutcome, ExecutionError, FailedOperation, ReplacementOperation,
     pipeline::{
-        DeployPreview, ObservationWarning, PushOutcome, execute_deploy, plan_options, plan_project,
-        plan_scale, plan_spec, push_project_images,
+        DeployPreview, ObservationWarning, PushOutcome, execute_deploy, list_machines,
+        plan_options, plan_project, plan_scale, plan_spec, push_project_images,
     },
 };
 
@@ -41,7 +41,8 @@ pub(crate) async fn deploy_project(
     auto_confirm: bool,
 ) -> Result<(), Failure> {
     let options = plan_options(force_recreate, skip_health_monitor);
-    let outcome = push_project_images(client, builds).await?;
+    let machines = list_machines(client).await?;
+    let outcome = push_project_images(client, builds, &machines).await?;
     print_pushed_images(&outcome);
     if !outcome.failures.is_empty() {
         return Err(Failure::usage(format!(
@@ -49,8 +50,7 @@ pub(crate) async fn deploy_project(
             outcome.failures.join("; ")
         )));
     }
-    project.resolve_secrets()?;
-    let preview = plan_project(client, project, outcome.machines, options).await?;
+    let preview = plan_project(client, project, machines, options).await?;
     print_warnings(&preview);
     if preview.operations.is_empty() {
         println!("No changes.");

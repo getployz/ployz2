@@ -36,7 +36,6 @@ pub(super) struct DeployPreview {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PushOutcome {
-    pub machines: Vec<MachineObservation>,
     pub pushed: Vec<PushedImage>,
     pub failures: Vec<String>,
 }
@@ -98,12 +97,12 @@ pub(super) async fn plan_spec(
 pub(super) async fn push_project_images(
     client: &mut Client,
     builds: &[BuildService],
+    machines: &[MachineObservation],
 ) -> Result<PushOutcome, Failure> {
-    let machines = list_machines(client).await?;
     let mut pushed = Vec::new();
     let mut failures = Vec::new();
     for service in builds {
-        match push_image(client, service, &machines).await {
+        match push_image(client, service, machines).await {
             Ok((images, service_failures)) => {
                 pushed.extend(images);
                 failures.extend(service_failures);
@@ -111,11 +110,7 @@ pub(super) async fn push_project_images(
             Err(error) => failures.push(format!("{}: {error}", service.image)),
         }
     }
-    Ok(PushOutcome {
-        machines,
-        pushed,
-        failures,
-    })
+    Ok(PushOutcome { pushed, failures })
 }
 
 pub(super) async fn plan_project(
@@ -124,6 +119,7 @@ pub(super) async fn plan_project(
     machines: Vec<MachineObservation>,
     options: PlanOptions,
 ) -> Result<DeployPreview, Failure> {
+    project.resolve_secrets()?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     expand_ingress(client, project.services.values_mut()).await?;
     let compose = plan_compose_deploy(project, &snapshot, options)?;
@@ -220,7 +216,7 @@ fn requested_from_resolved(resolved: &ResolvedServiceSpec) -> RequestedServiceSp
     }
 }
 
-async fn list_machines(client: &mut Client) -> Result<Vec<MachineObservation>, Failure> {
+pub(super) async fn list_machines(client: &mut Client) -> Result<Vec<MachineObservation>, Failure> {
     Ok(client
         .call::<op::ListMachines>(ListMachinesRequest {}, None)
         .await?
