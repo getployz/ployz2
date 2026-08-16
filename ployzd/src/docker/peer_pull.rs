@@ -1,3 +1,5 @@
+//! Pull an image from another Machine's ingest TCP destination into local Docker.
+
 use std::net::SocketAddr;
 
 use ployz_core::ImageIngestDestination;
