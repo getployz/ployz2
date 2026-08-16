@@ -70,19 +70,6 @@ pub struct ExecMode {
     pub stdin_terminal: bool,
 }
 
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-pub enum ContainerSelectorError {
-    #[error("Service has no regular containers")]
-    NoRegularContainer,
-    #[error("Container \"{selector}\" was not found in the Service")]
-    NotFound { selector: ContainerSelector },
-    #[error("Container \"{selector}\" matches multiple containers: {container_ids:?}")]
-    Ambiguous {
-        selector: ContainerSelector,
-        container_ids: Vec<ContainerId>,
-    },
-}
-
 #[derive(Debug, Error)]
 pub enum OperatorError {
     #[error(transparent)]
@@ -94,7 +81,9 @@ pub enum OperatorError {
     #[error(transparent)]
     Value(#[from] ployz_core::ValueError),
     #[error(transparent)]
-    Container(#[from] ContainerSelectorError),
+    Container(#[from] ployz_core::ContainerSelectorError),
+    #[error("Service has no regular containers")]
+    NoRegularContainer,
     #[error("Machine RPC failed: {0}")]
     Rpc(TransportError),
     #[error("stream protocol failed: {0}")]
@@ -184,32 +173,15 @@ pub fn exec_options(command: Vec<String>, mode: ExecMode) -> Result<ExecOptions,
 pub fn select_exec_container<'a>(
     service: &'a ServiceObservation,
     selector: Option<&ContainerSelector>,
-) -> Result<&'a ContainerObservation, ContainerSelectorError> {
+) -> Result<&'a ContainerObservation, OperatorError> {
     let mut regular = service
         .containers
         .iter()
         .filter(|container| container.kind == ContainerKind::ServiceContainer);
     let Some(selector) = selector else {
-        return regular
-            .next()
-            .ok_or(ContainerSelectorError::NoRegularContainer);
+        return regular.next().ok_or(OperatorError::NoRegularContainer);
     };
-    resolve_container_selector(regular, selector).map_err(container_selector_error)
-}
-
-fn container_selector_error(error: ployz_core::ContainerSelectorError) -> ContainerSelectorError {
-    match error {
-        ployz_core::ContainerSelectorError::NotFound { selector } => {
-            ContainerSelectorError::NotFound { selector }
-        }
-        ployz_core::ContainerSelectorError::Ambiguous {
-            selector,
-            container_ids,
-        } => ContainerSelectorError::Ambiguous {
-            selector,
-            container_ids,
-        },
-    }
+    Ok(resolve_container_selector(regular, selector)?)
 }
 
 pub fn parse_service_args(values: &[String]) -> Result<Vec<ServiceArg>, OperatorError> {
@@ -525,8 +497,7 @@ pub(crate) fn select_log_containers<'a>(
     }
     let mut selected = Vec::new();
     for selector in selectors {
-        let container = resolve_container_selector(all.iter().copied(), selector)
-            .map_err(container_selector_error)?;
+        let container = resolve_container_selector(all.iter().copied(), selector)?;
         if !selected
             .iter()
             .any(|selected: &&ContainerObservation| selected.container_id == container.container_id)

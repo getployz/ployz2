@@ -52,9 +52,9 @@ impl ContainerSelector {
 #[derive(Clone, Debug, Eq, Error, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case", tag = "error")]
 pub enum ContainerSelectorError {
-    #[error("Container {selector:?} was not found")]
+    #[error("Container \"{selector}\" was not found")]
     NotFound { selector: ContainerSelector },
-    #[error("Container {selector:?} matches multiple containers: {container_ids:?}")]
+    #[error("Container \"{selector}\" matches multiple containers: {container_ids:?}")]
     Ambiguous {
         selector: ContainerSelector,
         container_ids: Vec<ContainerId>,

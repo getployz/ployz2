@@ -36,7 +36,7 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
     );
     assert!(matches!(
         select_exec_container(&service, Some(&container_selector("bb"))),
-        Err(ContainerSelectorError::Ambiguous { selector, .. })
+        Err(OperatorError::Container(ployz_core::ContainerSelectorError::Ambiguous { selector, .. }))
             if selector.as_str() == "bb"
     ));
     assert_eq!(
@@ -51,7 +51,7 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
     duplicate_names.containers.get_mut(1).unwrap().display_name = "api-one".into();
     assert!(matches!(
         select_exec_container(&duplicate_names, Some(&container_selector("api-one"))),
-        Err(ContainerSelectorError::Ambiguous { selector, .. })
+        Err(OperatorError::Container(ployz_core::ContainerSelectorError::Ambiguous { selector, .. }))
             if selector.as_str() == "api-one"
     ));
     let options = exec_options(
@@ -100,12 +100,9 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
 #[test]
 fn empty_exec_and_logs_container_selection_stay_distinct() {
     let mut service = observed_service();
-    service.hook_containers.push(container(
-        &"e".repeat(64),
-        "hook-one",
-        service.service_id,
-        ContainerKind::PreDeployHook,
-    ));
+    let mut hook = container(&"e".repeat(64), "hook-one", service.service_id);
+    hook.kind = ContainerKind::PreDeployHook;
+    service.hook_containers.push(hook);
     assert_eq!(
         select_exec_container(&service, None).unwrap().display_name,
         "api-one"
@@ -120,7 +117,7 @@ fn empty_exec_and_logs_container_selection_stay_distinct() {
     );
     assert!(matches!(
         select_exec_container(&service, Some(&container_selector("hook-one"))),
-        Err(ContainerSelectorError::NotFound { selector })
+        Err(OperatorError::Container(ployz_core::ContainerSelectorError::NotFound { selector }))
             if selector.as_str() == "hook-one"
     ));
     assert_eq!(
@@ -138,7 +135,7 @@ fn empty_exec_and_logs_container_selection_stay_distinct() {
     };
     assert!(matches!(
         select_exec_container(&hooks_only, None),
-        Err(ContainerSelectorError::NoRegularContainer)
+        Err(OperatorError::NoRegularContainer)
     ));
 }
 
@@ -418,35 +415,15 @@ fn observed_service() -> ServiceObservation {
     ServiceObservation {
         service_id,
         containers: vec![
-            container(
-                &"a".repeat(64),
-                "api-one",
-                service_id,
-                ContainerKind::ServiceContainer,
-            ),
-            container(
-                &"b".repeat(64),
-                "api-two",
-                service_id,
-                ContainerKind::ServiceContainer,
-            ),
-            container(
-                &format!("{}c", "b".repeat(63)),
-                "b",
-                service_id,
-                ContainerKind::ServiceContainer,
-            ),
+            container(&"a".repeat(64), "api-one", service_id),
+            container(&"b".repeat(64), "api-two", service_id),
+            container(&format!("{}c", "b".repeat(63)), "b", service_id),
         ],
         hook_containers: vec![],
     }
 }
 
-fn container(
-    id: &str,
-    name: &str,
-    service_id: ServiceId,
-    kind: ContainerKind,
-) -> ContainerObservation {
+fn container(id: &str, name: &str, service_id: ServiceId) -> ContainerObservation {
     ContainerObservation {
         container_id: ContainerId::parse(id).unwrap(),
         display_name: name.into(),
@@ -454,7 +431,7 @@ fn container(
         machine_id: MachineId::parse("2".repeat(32)).unwrap(),
         service_id,
         service_name: ServiceName::parse("api").unwrap(),
-        kind,
+        kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
         },
