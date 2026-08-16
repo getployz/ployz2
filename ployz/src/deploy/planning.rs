@@ -97,13 +97,13 @@ pub fn plan_services(
         .collect::<BTreeMap<_, _>>();
     let volume_uses = named_volume_uses(&services);
     reject_mixed_volume_modes(&volume_uses)?;
-    let mut snapshot = snapshot.clone();
+    let mut working = snapshot.clone();
     let mut volume_operations =
-        prepare_shared_replicated_volumes(&volume_uses, &mut snapshot, options)?;
+        prepare_shared_replicated_volumes(&volume_uses, &mut working, options)?;
     let mut service_plans = Vec::new();
     for (name, spec) in &normalized {
         let calculated =
-            plan_normalized(spec, &snapshot, ServiceId::random(), options).map_err(|source| {
+            plan_normalized(spec, &working, ServiceId::random(), options).map_err(|source| {
                 ProjectPlanError::Service {
                     service: name.clone(),
                     source,
@@ -111,7 +111,7 @@ pub fn plan_services(
             })?;
         for operation in calculated.volume_operations {
             if let DeployOperation::CreateVolume { machine_id, volume } = &operation {
-                remember_volume(&mut snapshot, machine_id, volume);
+                remember_volume(&mut working, machine_id, volume);
             }
             volume_operations.push(operation);
         }
