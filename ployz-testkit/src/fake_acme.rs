@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime},
 };
 
 use axum::{
@@ -554,7 +554,8 @@ fn sign_csr(
     if let Some(lifetime) = lifetime {
         let now = time::OffsetDateTime::now_utc();
         csr.params.not_before = now;
-        csr.params.not_after = now + time_duration(lifetime);
+        csr.params.not_after =
+            now + time::Duration::try_from(lifetime).unwrap_or(time::Duration::MAX);
     }
     let cert = csr.signed_by(issuer).expect("sign CSR");
     format!("{}{}", cert.pem(), issuer.pem())
@@ -569,21 +570,10 @@ pub fn self_signed_material(
 ) -> (String, String) {
     let key = KeyPair::generate().expect("test key");
     let mut params = CertificateParams::new(vec![hostname.to_owned()]).expect("test params");
-    params.not_before = system_time_to_offset(not_before);
-    params.not_after = system_time_to_offset(not_after);
+    params.not_before = time::OffsetDateTime::from(not_before);
+    params.not_after = time::OffsetDateTime::from(not_after);
     let cert = params.self_signed(&key).expect("test certificate");
     (cert.pem(), key.serialize_pem())
-}
-
-fn system_time_to_offset(time: SystemTime) -> time::OffsetDateTime {
-    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-    time::OffsetDateTime::from_unix_timestamp(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
-        .expect("unix timestamp")
-        + time::Duration::nanoseconds(i64::from(duration.subsec_nanos()))
-}
-
-fn time_duration(lifetime: Duration) -> time::Duration {
-    time::Duration::seconds(i64::try_from(lifetime.as_secs()).unwrap_or(i64::MAX))
 }
 
 fn jwk_thumbprint(jwk: &Value) -> String {

@@ -121,12 +121,14 @@ fn issued_material_means_nothing_to_do() {
 fn renewal_window_is_two_thirds_of_the_certificate_lifetime() {
     let day = Duration::from_secs(86_400);
     let start = UNIX_EPOCH;
-    let (long_open, long_end) = renewal_window(start, start + day * 90).unwrap();
-    assert_eq!(long_open, start + day * 60);
-    assert_eq!(long_end, start + day * 90);
-    let (short_open, short_end) = renewal_window(start, start + day * 6).unwrap();
-    assert_eq!(short_open, start + day * 4);
-    assert_eq!(short_end, start + day * 6);
+    assert_eq!(
+        renewal_window(start, start + day * 90).unwrap(),
+        start + day * 60
+    );
+    assert_eq!(
+        renewal_window(start, start + day * 6).unwrap(),
+        start + day * 4
+    );
 }
 
 #[test]
@@ -148,7 +150,7 @@ fn same_certificate_renews_at_two_thirds_for_long_and_short_lifetimes() {
         let not_before = UNIX_EPOCH;
         let not_after = not_before + lifetime;
         let row = row_with_lifetime(not_before, not_after);
-        let window = renewal_window(not_before, not_after).unwrap().0;
+        let window = renewal_window(not_before, not_after).unwrap();
         assert_eq!(
             issuance_action(
                 Some(&row),

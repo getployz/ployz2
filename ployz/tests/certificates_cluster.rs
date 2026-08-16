@@ -242,8 +242,14 @@ async fn certificate_renews_before_expiry_without_restart() {
     wait_https(&cluster, 0, "app.example.com").await;
     let issued = certificate_bodies(&cluster, 0);
 
-    wait_orders(&ca, "app.example.com", 2).await;
-    wait_until(|| certificate_bodies(&cluster, 0) != issued).await;
+    wait_until(Duration::from_secs(180), || {
+        count_orders(&ca.ordered(), "app.example.com") >= 2
+    })
+    .await;
+    wait_until(Duration::from_secs(60), || {
+        certificate_bodies(&cluster, 0) != issued
+    })
+    .await;
     wait_https(&cluster, 0, "app.example.com").await;
     assert_eq!(count_orders(&ca.ordered(), "app.example.com"), 2);
 }
@@ -285,8 +291,14 @@ async fn machines_holding_the_same_certificate_renew_once() {
     assert_eq!(count_orders(&ca.ordered(), "app.example.com"), 1);
     let issued = certificate_bodies(&cluster, 0);
 
-    wait_orders(&ca, "app.example.com", 2).await;
-    wait_until(|| certificate_bodies(&cluster, 0) != issued).await;
+    wait_until(Duration::from_secs(180), || {
+        count_orders(&ca.ordered(), "app.example.com") >= 2
+    })
+    .await;
+    wait_until(Duration::from_secs(60), || {
+        certificate_bodies(&cluster, 0) != issued
+    })
+    .await;
     wait_https(&cluster, 0, "app.example.com").await;
     wait_https(&cluster, 1, "app.example.com").await;
     tokio::time::sleep(Duration::from_secs(35)).await;
@@ -332,7 +344,10 @@ async fn failed_renewal_keeps_serving_the_existing_certificate() {
     wait_https(&cluster, 0, "app.example.com").await;
 
     ca.set_validation(validation_host(ip), 80);
-    wait_until(|| certificate_bodies(&cluster, 0) != issued).await;
+    wait_until(Duration::from_secs(180), || {
+        certificate_bodies(&cluster, 0) != issued
+    })
+    .await;
     wait_https(&cluster, 0, "app.example.com").await;
 }
 
@@ -604,21 +619,8 @@ async fn wait_config(
     }
 }
 
-async fn wait_orders(ca: &FakeCa, hostname: &str, count: usize) {
-    tokio::time::timeout(Duration::from_secs(180), async {
-        loop {
-            if count_orders(&ca.ordered(), hostname) >= count {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    .unwrap();
-}
-
-async fn wait_until(ready: impl Fn() -> bool) {
-    tokio::time::timeout(Duration::from_secs(60), async {
+async fn wait_until(timeout: Duration, ready: impl Fn() -> bool) {
+    tokio::time::timeout(timeout, async {
         loop {
             if ready() {
                 return;

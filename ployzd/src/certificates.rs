@@ -69,49 +69,65 @@ pub(crate) fn issuance_action(
     now: SystemTime,
     machine_id: &MachineId,
 ) -> IssuanceAction {
-    let delay = rank_delay(rank);
-    match row.and_then(CertificateRow::material) {
-        None => {
-            if elapsed < delay {
-                IssuanceAction::Nothing
-            } else {
-                IssuanceAction::Order
-            }
-        }
-        Some(material) => match renew_at(material, machine_id) {
-            Some(renew_at) if now >= saturating_add(renew_at, delay) => IssuanceAction::Renew,
-            _ => IssuanceAction::Nothing,
-        },
-    }
+    action_due(row, rank, elapsed, now, machine_id).0
 }
 
 fn rank_delay(rank: usize) -> Duration {
     RANK_STEP.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX))
 }
 
-/// Start of the remaining third, and expiry, from the certificate's own lifetime.
+fn action_due(
+    row: Option<&CertificateRow>,
+    rank: usize,
+    elapsed: Duration,
+    now: SystemTime,
+    machine_id: &MachineId,
+) -> (IssuanceAction, Duration) {
+    let delay = rank_delay(rank);
+    match row.and_then(CertificateRow::material) {
+        None => {
+            let wait = delay.saturating_sub(elapsed);
+            let action = if wait.is_zero() {
+                IssuanceAction::Order
+            } else {
+                IssuanceAction::Nothing
+            };
+            (action, wait)
+        }
+        Some(material) => match renew_at(material, machine_id) {
+            Some(renew_at) => {
+                let wait = saturating_add(renew_at, delay)
+                    .duration_since(now)
+                    .unwrap_or(Duration::ZERO);
+                let action = if wait.is_zero() {
+                    IssuanceAction::Renew
+                } else {
+                    IssuanceAction::Nothing
+                };
+                (action, wait)
+            }
+            None => (IssuanceAction::Nothing, RETRY_INTERVAL),
+        },
+    }
+}
+
+/// Instant two thirds of the certificate's own lifetime has elapsed.
 #[must_use]
-pub(crate) fn renewal_window(
-    not_before: SystemTime,
-    not_after: SystemTime,
-) -> Option<(SystemTime, SystemTime)> {
+pub(crate) fn renewal_window(not_before: SystemTime, not_after: SystemTime) -> Option<SystemTime> {
     let lifetime = not_after.duration_since(not_before).ok()?;
     if lifetime.is_zero() {
         return None;
     }
-    Some((
-        saturating_add(
-            not_before,
-            duration_ratio(lifetime, RENEW_AFTER_ELAPSED_NUM, RENEW_AFTER_ELAPSED_DEN),
-        ),
-        not_after,
+    Some(saturating_add(
+        not_before,
+        duration_ratio(lifetime, RENEW_AFTER_ELAPSED_NUM, RENEW_AFTER_ELAPSED_DEN),
     ))
 }
 
 fn renew_at(material: &CertificateMaterial, machine_id: &MachineId) -> Option<SystemTime> {
     let (not_before, not_after) = material_validity(material.certificate())?;
-    let (window_start, expiry) = renewal_window(not_before, not_after)?;
-    let remaining = expiry.duration_since(window_start).ok()?;
+    let window_start = renewal_window(not_before, not_after)?;
+    let remaining = not_after.duration_since(window_start).ok()?;
     Some(saturating_add(
         window_start,
         machine_jitter(machine_id, remaining),
@@ -163,28 +179,6 @@ fn saturating_add(time: SystemTime, duration: Duration) -> SystemTime {
     time.checked_add(duration).unwrap_or(time)
 }
 
-fn time_until_action(
-    row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
-    now: SystemTime,
-    machine_id: &MachineId,
-) -> Duration {
-    match issuance_action(row, rank, elapsed, now, machine_id) {
-        IssuanceAction::Order | IssuanceAction::Renew => Duration::ZERO,
-        IssuanceAction::Nothing => match row.and_then(CertificateRow::material) {
-            None => rank_delay(rank).saturating_sub(elapsed),
-            Some(material) => renew_at(material, machine_id)
-                .and_then(|renew_at| {
-                    saturating_add(renew_at, rank_delay(rank))
-                        .duration_since(now)
-                        .ok()
-                })
-                .unwrap_or(RETRY_INTERVAL),
-        },
-    }
-}
-
 fn poll_wait(
     row: Option<&CertificateRow>,
     rank: usize,
@@ -192,11 +186,9 @@ fn poll_wait(
     now: SystemTime,
     machine_id: &MachineId,
 ) -> Duration {
-    let due_in = time_until_action(row, rank, elapsed, now, machine_id);
-    if due_in.is_zero() {
-        RANK_STEP
-    } else {
-        due_in.min(RETRY_INTERVAL)
+    match action_due(row, rank, elapsed, now, machine_id) {
+        (IssuanceAction::Order | IssuanceAction::Renew, _) => RANK_STEP,
+        (IssuanceAction::Nothing, due_in) => due_in.min(RETRY_INTERVAL),
     }
 }
 
@@ -443,10 +435,16 @@ async fn obtain(
     machine_id: &MachineId,
 ) -> Result<(), Error> {
     let row = store.certificate_row(hostname).await?;
-    match issuance_action(Some(&row), rank, Duration::ZERO, SystemTime::now(), machine_id) {
-        IssuanceAction::Renew => {}
-        IssuanceAction::Nothing if row.material().is_some() => return Ok(()),
-        IssuanceAction::Nothing | IssuanceAction::Order => {}
+    if row.material().is_some()
+        && issuance_action(
+            Some(&row),
+            rank,
+            Duration::ZERO,
+            SystemTime::now(),
+            machine_id,
+        ) == IssuanceAction::Nothing
+    {
+        return Ok(());
     }
     let material = order_certificate(hostname, directory, account_dir, |challenge| {
         let store = store.clone();
