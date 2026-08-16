@@ -38,3 +38,23 @@ jobs:
       - run: bash scripts/publish-github-release.sh "${{ github.ref_name }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          repository: getployz/homebrew-ployz
+          path: homebrew-ployz
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.GITHUB_TOKEN }}
+      - run: |
+          formula=$(find dist -name 'ployz.rb' -print -quit)
+          test -n "$formula"
+          bash scripts/repoint-homebrew-tap.sh homebrew-ployz "$formula"
+          git -C homebrew-ployz add Formula/ployz.rb README.md
+          git -C homebrew-ployz add -u
+          if git -C homebrew-ployz diff --cached --quiet; then
+            echo "Homebrew tap already matches ${{ github.ref_name }}"
+            exit 0
+          fi
+          git -C homebrew-ployz \
+            -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "Release ${{ github.ref_name }} as a clean break"
+          git -C homebrew-ployz push
