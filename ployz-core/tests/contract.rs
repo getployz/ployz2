@@ -1,27 +1,26 @@
 use std::{collections::BTreeSet, net::Ipv4Addr, num::NonZeroU32};
 
 use ployz_core::{
-    CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
-    ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
+    encode_grpc_frame, grpc_frames, op, CaddyConfig, CapabilityName, CodecError, ConfigMount,
+    ConfigSpec, ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
-    CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
-    DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome, FanoutResponse,
-    FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation,
-    HttpProtocol, ImageSummary, IngressHost, IngressHostname, InspectWireGuardRequest,
-    LIST_IMAGES_CAPABILITY, ListImagesRequest, MachineFailure, MachineGateway, MachineId,
-    MachineImages, MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer,
-    MachineSelector, MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate,
-    NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement, PortPublication,
-    PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy, RESET_MACHINE_CAPABILITY,
+    CreateDomainRecordsRequest, DescribeContractRequest, DnsRecord, DnsRecordType, Domain,
+    DomainRecords, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
+    GetCaddyConfigRequest, HealthObservation, ImageSummary, InspectWireGuardRequest,
+    ListImagesRequest, MachineFailure, MachineGateway, MachineId, MachineImages, MachineName,
+    MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSelector, MachineSubnet,
+    MachineSuccess, MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PartialResult,
+    Placement, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
     RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
     ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
     RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
     ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
-    UpdateMachineRequest, UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames,
-    op,
+    UpdateMachineRequest, UpdateOrder, VolumeList, VolumeSource, CREATE_CONTAINER_CAPABILITY,
+    DESCRIBE_CONTRACT_CAPABILITY, GET_CADDY_CONFIG_CAPABILITY, LIST_IMAGES_CAPABILITY,
+    PROTOCOL_MAJOR, RESET_MACHINE_CAPABILITY,
 };
 use prost::Message;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const MACHINE_ID: &str = "0123456789abcdef0123456789abcdef";
 const OTHER_MACHINE_ID: &str = "fedcba9876543210fedcba9876543210";
@@ -114,21 +113,6 @@ fn machine_name_accepts_lowercase_dns_labels() {
 }
 
 #[test]
-fn ingress_host_rejects_empty_and_invalid_names() {
-    assert_eq!(
-        IngressHost::parse("").unwrap_err().to_string(),
-        "invalid Ingress Hostname \"\": a 1-253 character lowercase DNS hostname"
-    );
-    assert!(IngressHost::parse("Example.com").is_err());
-    assert!(IngressHost::parse("bad_host.example").is_err());
-    assert!(IngressHost::parse(".example.com").is_err());
-    assert_eq!(
-        IngressHost::parse("app.example.com").unwrap().as_str(),
-        "app.example.com"
-    );
-}
-
-#[test]
 fn machine_subnet_rejects_prefixes_that_are_not_slash_24() {
     assert_eq!(
         MachineSubnet::parse("10.210.0.0/16")
@@ -167,52 +151,6 @@ fn machine_subnet_exposes_its_gateway_and_stays_a_cidr_string() {
         serde_json::to_string(&MachineSubnet::parse("10.210.7.5/24").unwrap()).unwrap(),
         "\"10.210.7.0/24\""
     );
-}
-
-#[test]
-fn ingress_hostname_intent_is_explicit_or_assigned() {
-    assert_eq!(
-        serde_json::to_value(IngressHostname::AssignFromClusterDomain).unwrap(),
-        json!({ "kind": "assign_from_cluster_domain" })
-    );
-    assert_eq!(
-        serde_json::to_value(IngressHostname::explicit("app.example.com").unwrap()).unwrap(),
-        json!({ "kind": "explicit", "hostname": "app.example.com" })
-    );
-    assert!(
-        serde_json::from_value::<PortPublication>(json!({
-            "mode": "ingress",
-            "hostname": "",
-            "load_balancer_port": 80,
-            "container_port": 8080,
-            "http_protocol": "http"
-        }))
-        .is_err()
-    );
-    assert!(
-        serde_json::from_value::<PortPublication>(json!({
-            "mode": "ingress_transport",
-            "container_port": 53,
-            "transport_protocol": "udp"
-        }))
-        .is_err()
-    );
-    let assigned: PortPublication = serde_json::from_value(json!({
-        "mode": "ingress",
-        "hostname": { "kind": "assign_from_cluster_domain" },
-        "load_balancer_port": 80,
-        "container_port": 8080,
-        "http_protocol": "http"
-    }))
-    .unwrap();
-    assert!(matches!(
-        assigned,
-        PortPublication::Ingress {
-            hostname: IngressHostname::AssignFromClusterDomain,
-            http_protocol: HttpProtocol::Http,
-            ..
-        }
-    ));
 }
 
 #[test]
