@@ -111,7 +111,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::DescribeContract>(request)?;
         let machine_id = self.local_record()?.id;
-        let mut capabilities = advertised(ALWAYS_ADVERTISED_CAPABILITIES);
+        let mut capabilities: BTreeSet<_> = advertised(ALWAYS_ADVERTISED_CAPABILITIES).collect();
         if self.local.containers().is_some() {
             capabilities.extend(advertised(CONTAINER_CAPABILITIES));
         }
@@ -638,12 +638,11 @@ fn finish(
     }
 }
 
-fn advertised(names: &[&str]) -> BTreeSet<CapabilityName> {
+fn advertised(names: &'static [&str]) -> impl Iterator<Item = CapabilityName> {
     names
         .iter()
         .copied()
         .map(|name| CapabilityName::parse(name).expect("static capability name is valid"))
-        .collect()
 }
 
 fn unavailable(message: &str) -> RpcError {
