@@ -1,17 +1,6 @@
-use ployz_core::{
-    CreateVolumeRequest, MachineId, MachineSelector, RpcError, ServiceSelectorError, op,
-};
-use thiserror::Error;
+use ployz_core::{CreateVolumeRequest, MachineId, MachineSelector, RpcError, op};
 
-use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
-
-#[derive(Debug, Error)]
-pub enum ServiceClientError {
-    #[error(transparent)]
-    Connect(#[from] ConnectError),
-    #[error(transparent)]
-    Selector(#[from] ServiceSelectorError),
-}
+use crate::connect::{Client, TARGET_RPC_TIMEOUT};
 
 #[derive(Clone, Debug)]
 pub struct ContainerOperationFailure {

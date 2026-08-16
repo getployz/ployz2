@@ -16,7 +16,6 @@ use crate::{
     image::PushError,
     operator::{ContainerSelectorError, OperatorError},
     provisioning::ProvisionError,
-    service::ServiceClientError,
     volume::AssignmentError,
 };
 
@@ -288,15 +287,6 @@ impl From<DnsError> for Failure {
             DnsError::Connect(error) => error.into(),
             DnsError::NoReachableMachines(error) => error.into(),
             DnsError::Inspect { .. } | DnsError::Http(_) => Cause::Dns(error).into(),
-        }
-    }
-}
-
-impl From<ServiceClientError> for Failure {
-    fn from(error: ServiceClientError) -> Self {
-        match error {
-            ServiceClientError::Connect(error) => error.into(),
-            ServiceClientError::Selector(error) => error.into(),
         }
     }
 }

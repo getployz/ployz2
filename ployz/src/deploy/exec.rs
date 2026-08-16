@@ -11,7 +11,7 @@ use thiserror::Error;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::connect::{Client, TARGET_RPC_TIMEOUT};
+use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 
 use super::{
     DeployOperation, DeployOutcome, DeployPlan, ReplacementCompensation, ReplacementOperation,
@@ -216,7 +216,7 @@ impl MachineOperations for Client {
                 grace_period_seconds,
             },
             &MachineSelector::from(machine_id),
-            crate::cluster::stop_rpc_timeout(grace_period_seconds),
+            stop_rpc_timeout(grace_period_seconds),
         )
         .await
         .map(|_| ())

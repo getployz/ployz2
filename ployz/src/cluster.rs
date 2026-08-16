@@ -18,7 +18,7 @@ use crate::{
     connect::{
         BoxProxyStream, ConnectError, Connector, TARGET_RPC_TIMEOUT, TransportError,
         UNARY_RETRY_DELAYS, apply_timeout, decode_fanout_failure, is_unary_retryable, rpc_error,
-        target_request,
+        stop_rpc_timeout, target_request,
     },
     context::{Connection, ConnectionSource},
     deploy::{DeploySnapshot, ObservedDockerVolume},
@@ -596,14 +596,6 @@ async fn remove_container_rpc(
         )
         .await
         .map(|_| ())
-}
-
-pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<i32>) -> Option<Duration> {
-    match grace_period_seconds {
-        Some(seconds) if seconds < 0 => None,
-        Some(seconds) => Some(TARGET_RPC_TIMEOUT + Duration::from_secs(seconds as u64)),
-        None => None,
-    }
 }
 
 fn accept_stop_result(
