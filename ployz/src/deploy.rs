@@ -80,9 +80,12 @@ impl DeployPlan {
             .collect()
     }
 
+    fn cloned_operations(&self) -> Vec<DeployOperation> {
+        self.operations().into_iter().cloned().collect()
+    }
+
     pub fn failure_outcome<E>(&self, completed_count: usize, error: E) -> Option<DeployOutcome<E>> {
-        let operations: Vec<DeployOperation> = self.operations().into_iter().cloned().collect();
-        Self::failure_outcome_from(&operations, completed_count, error)
+        Self::failure_outcome_from(&self.cloned_operations(), completed_count, error)
     }
 
     pub(super) fn failure_outcome_from<E>(
@@ -108,9 +111,8 @@ impl DeployPlan {
         error: E,
         compensation: ReplacementCompensation<E>,
     ) -> Option<DeployOutcome<E>> {
-        let operations: Vec<DeployOperation> = self.operations().into_iter().cloned().collect();
         Self::replacement_health_failure_outcome_from(
-            &operations,
+            &self.cloned_operations(),
             completed_count,
             error,
             compensation,
@@ -142,7 +144,7 @@ impl DeployPlan {
     #[must_use]
     pub fn success_outcome<E>(&self) -> DeployOutcome<E> {
         DeployOutcome {
-            completed: self.operations().into_iter().cloned().collect(),
+            completed: self.cloned_operations(),
             failed: None,
             unexecuted: Vec::new(),
         }
