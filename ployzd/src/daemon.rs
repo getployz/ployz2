@@ -191,7 +191,8 @@ impl Daemon {
                 .map(|running| (running.store().clone(), running.admin_client())),
         )
         .with_optional_containers(containers.clone())
-        .with_caddyfile(caddyfile.clone());
+        .with_caddyfile(caddyfile.clone())
+        .with_containerd_socket(config.containerd_socket.clone());
         let proxy = MachineProxy::new(
             Routes::new(MachineRpcServer::new(service)),
             local_record.id,

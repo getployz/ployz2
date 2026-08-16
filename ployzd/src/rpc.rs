@@ -6,9 +6,10 @@ use std::{
 
 use ployz_core::{
     CaddyConfig, CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerList,
-    ContractDescription, Domain, DomainRecords, LocalMachinePhase, LogMetadata, LogOrigin,
-    MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
+    ContractDescription, Domain, DomainRecords, ImageIngestDestination, ImageIngestOpened,
+    ImageIngestReason, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
+    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    UNREGISTRY_PORT, VolumeList, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -16,7 +17,7 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
-    docker::{ContainerRuntime, Error as DockerError},
+    docker::{ContainerRuntime, Error as DockerError, detect_socket},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
 };
@@ -26,6 +27,7 @@ pub struct MachineService {
     local: LocalMachine,
     hosted_dns: crate::hosted_dns::HostedDns,
     caddyfile: Option<PathBuf>,
+    containerd_socket: Option<PathBuf>,
 }
 
 impl MachineService {
@@ -44,6 +46,7 @@ impl MachineService {
             local: LocalMachine::new(store, restart).with_cluster(cluster),
             hosted_dns: crate::hosted_dns::HostedDns::new(),
             caddyfile: None,
+            containerd_socket: None,
         }
     }
 
@@ -61,6 +64,12 @@ impl MachineService {
     #[must_use]
     pub fn with_caddyfile(mut self, path: PathBuf) -> Self {
         self.caddyfile = Some(path);
+        self
+    }
+
+    #[must_use]
+    pub fn with_containerd_socket(mut self, path: Option<PathBuf>) -> Self {
+        self.containerd_socket = path;
         self
     }
 
@@ -481,6 +490,54 @@ impl MachineRpc for MachineService {
             .await
             .map_err(|error| Status::internal(error.to_string()))?;
         respond(images)
+    }
+
+    async fn ensure_image_ingest(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        expect::<op::EnsureImageIngest>(request)?;
+        let record = self.local_record()?;
+        if record.phase != LocalMachinePhase::Participating {
+            return respond(
+                ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
+            );
+        }
+        let Some(machine) = record.machine.as_ref() else {
+            return respond(
+                ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
+            );
+        };
+        let containers = match self.containers() {
+            Ok(containers) => containers,
+            Err(_) => {
+                return respond(
+                    ImageIngestReason::DockerUnavailable.rpc_error("Docker is not available"),
+                );
+            }
+        };
+        match containers.uses_containerd_store().await {
+            Ok(true) => {}
+            Ok(false) => {
+                return respond(
+                    ImageIngestReason::UnsupportedContainerdStore
+                        .rpc_error("Docker is not using the containerd image store"),
+                );
+            }
+            Err(error) => return respond(docker_rpc_error(error)),
+        }
+        if detect_socket(self.containerd_socket.as_deref()).is_none() {
+            return respond(
+                ImageIngestReason::ContainerdSocketMissing
+                    .rpc_error("no containerd socket was detected"),
+            );
+        }
+        respond(ImageIngestOpened {
+            destination: ImageIngestDestination {
+                gateway: machine.subnet.gateway(),
+                port: UNREGISTRY_PORT,
+            },
+        })
     }
 
     async fn get_caddy_config(

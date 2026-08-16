@@ -305,6 +305,58 @@ pub struct ListImagesRequest {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EnsureImageIngestRequest {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageIngestReason {
+    NotParticipating,
+    DockerUnavailable,
+    UnsupportedContainerdStore,
+    ContainerdSocketMissing,
+    StartFailed,
+}
+
+impl ImageIngestReason {
+    #[must_use]
+    pub fn from_details(details: &Value) -> Option<Self> {
+        details
+            .get("reason")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+    }
+
+    #[must_use]
+    pub fn rpc_error(self, message: impl Into<String>) -> RpcError {
+        RpcError {
+            code: self.rpc_code(),
+            message: message.into(),
+            details: serde_json::json!({ "reason": self }),
+        }
+    }
+
+    const fn rpc_code(self) -> RpcErrorCode {
+        match self {
+            Self::UnsupportedContainerdStore => RpcErrorCode::Unsupported,
+            Self::StartFailed => RpcErrorCode::Internal,
+            Self::NotParticipating | Self::DockerUnavailable | Self::ContainerdSocketMissing => {
+                RpcErrorCode::Unavailable
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageIngestDestination {
+    pub gateway: crate::MachineGateway,
+    pub port: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageIngestOpened {
+    pub destination: ImageIngestDestination,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GetCaddyConfigRequest {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -701,6 +753,7 @@ define_responses! {
     VolumeList(VolumeList) => "volume_list";
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     MachineImages(MachineImages) => "machine_images";
+    ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
     CaddyConfig(CaddyConfig) => "caddy_config";
     Domain(Domain) => "domain";
     DomainRecords(DomainRecords) => "domain_records";

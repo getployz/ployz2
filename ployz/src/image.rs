@@ -7,8 +7,9 @@ use std::{
 
 use oci_spec::distribution::Reference;
 use ployz_core::{
-    FanoutSelector, ListMachinesRequest, Machine, MachineFailure, MachineSuccess, PartialResult,
-    UNREGISTRY_PORT, op, resolve_machine_selectors,
+    EnsureImageIngestRequest, FanoutSelector, ImageIngestReason, ListMachinesRequest, Machine,
+    MachineFailure, MachineSuccess, MachineTarget, PartialResult, RpcError, op,
+    resolve_machine_selectors,
 };
 use thiserror::Error;
 use tokio::process::{Child, Command};
@@ -54,10 +55,8 @@ pub enum PushError {
     Selector(#[from] ployz_core::MachineSelectorError),
     #[error("Cluster operation failed: {0}")]
     Cluster(#[from] crate::connect::ConnectError),
-    #[error("Cluster operation failed: check image store: {0}")]
-    CheckImageStore(crate::connect::ConnectError),
-    #[error("Cluster operation failed: {0}")]
-    ImageStore(String),
+    #[error("Cluster operation failed: image ingest: {0}")]
+    ImageIngest(RpcError),
     #[error("Cluster operation failed: reach unregistry: {0}")]
     Unregistry(crate::connect::ConnectError),
     #[error("Docker {action}: {diagnostic}")]
@@ -201,28 +200,36 @@ async fn push_to_machine(
     mode: ProxyMode,
     cancellation: &mut Cancellation,
 ) -> Result<(), PushError> {
-    let store = cancellation
-        .race(client.list_images(Some(image.into()), &[machine.id.to_string()]))
+    let opened = cancellation
+        .race(client.invoke::<op::EnsureImageIngest>(
+            EnsureImageIngestRequest {},
+            &MachineTarget::from(&machine.id),
+            None,
+        ))
         .await?
-        .map_err(PushError::CheckImageStore)?;
-    let store = store.successes.first().ok_or_else(|| {
-        PushError::ImageStore(
-            store
-                .failures
-                .first()
-                .map(|failure| failure.error.message.clone())
-                .unwrap_or_else(|| "target returned no image-store result".into()),
-        )
-    })?;
-    if !store.value.images.containerd_store {
-        return Err(PushError::UnsupportedImageStore);
-    }
-    let remote = format!("{}:{UNREGISTRY_PORT}", machine.subnet.gateway().0);
+        .map_err(ingest_error)?;
+    let remote = format!(
+        "{}:{}",
+        opened.destination.gateway.0, opened.destination.port
+    );
     cancellation
         .race(client.dial_proxy("tcp", &remote))
         .await?
         .map_err(PushError::Unregistry)?;
     PushSession::run(client, remote, mode, image, platform, cancellation).await
+}
+
+fn ingest_error(error: RpcError) -> PushError {
+    match ImageIngestReason::from_details(&error.details) {
+        Some(ImageIngestReason::UnsupportedContainerdStore) => PushError::UnsupportedImageStore,
+        Some(
+            ImageIngestReason::NotParticipating
+            | ImageIngestReason::DockerUnavailable
+            | ImageIngestReason::ContainerdSocketMissing
+            | ImageIngestReason::StartFailed,
+        )
+        | None => PushError::ImageIngest(error),
+    }
 }
 
 struct PushSession {
@@ -555,5 +562,18 @@ mod tests {
             }
             .is_cancellation()
         );
+    }
+
+    #[test]
+    fn ingest_errors_keep_unsupported_store_distinct() {
+        let unsupported = ImageIngestReason::UnsupportedContainerdStore
+            .rpc_error("Docker is not using the containerd image store");
+        assert!(matches!(
+            ingest_error(unsupported),
+            PushError::UnsupportedImageStore
+        ));
+        let missing = ImageIngestReason::ContainerdSocketMissing
+            .rpc_error("no containerd socket was detected");
+        assert!(matches!(ingest_error(missing), PushError::ImageIngest(_)));
     }
 }

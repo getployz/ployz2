@@ -5,11 +5,12 @@ use ployz_core::{
     ConfiguredHealthcheck, ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
-    DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome, FanoutResponse,
-    FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation,
-    HealthcheckCommand, HealthcheckSpec, HttpProtocol, ImageSummary, IngressHost, IngressHostname,
-    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MachineFailure,
-    MachineGateway, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
+    DnsRecordType, Domain, DomainRecords, ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest,
+    FanoutFailure, FanoutOutcome, FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY,
+    GetCaddyConfigRequest, HealthObservation, HealthcheckCommand, HealthcheckSpec, HttpProtocol,
+    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImageSummary, IngressHost,
+    IngressHostname, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest,
+    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
     MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget,
     MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
     Placement, PortPublication, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
@@ -47,6 +48,7 @@ fn response_kinds_match_the_frozen_wire_contract() {
         (ResponseKind::VolumeList, "volume_list"),
         (ResponseKind::VolumeRemoved, "volume_removed"),
         (ResponseKind::MachineImages, "machine_images"),
+        (ResponseKind::ImageIngestOpened, "image_ingest_opened"),
         (ResponseKind::CaddyConfig, "caddy_config"),
         (ResponseKind::Domain, "domain"),
         (ResponseKind::DomainRecords, "domain_records"),
@@ -445,6 +447,58 @@ fn image_list_contract_keeps_machine_local_store_and_platforms() {
         images
     );
     assert_eq!(LIST_IMAGES_CAPABILITY, "ployz.image.list.v1");
+}
+
+#[test]
+fn image_ingest_contract_returns_the_machine_gateway_destination() {
+    let request = op::EnsureImageIngest::into_request(EnsureImageIngestRequest {});
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+
+    let opened = ImageIngestOpened {
+        destination: ImageIngestDestination {
+            gateway: MachineGateway(Ipv4Addr::new(10, 210, 7, 1)),
+            port: 51500,
+        },
+    };
+    let response = RpcResponse::from(opened);
+    assert_eq!(
+        response
+            .encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode::<op::EnsureImageIngest>()
+            .unwrap(),
+        opened
+    );
+    assert_eq!(
+        ENSURE_IMAGE_INGEST_CAPABILITY,
+        "ployz.image.ingest.ensure.v1"
+    );
+    assert_eq!(opened.destination.port, ployz_core::UNREGISTRY_PORT);
+
+    let frozen = [
+        (ImageIngestReason::NotParticipating, "not_participating"),
+        (ImageIngestReason::DockerUnavailable, "docker_unavailable"),
+        (
+            ImageIngestReason::UnsupportedContainerdStore,
+            "unsupported_containerd_store",
+        ),
+        (
+            ImageIngestReason::ContainerdSocketMissing,
+            "containerd_socket_missing",
+        ),
+        (ImageIngestReason::StartFailed, "start_failed"),
+    ];
+    for (reason, wire) in frozen {
+        assert_eq!(serde_json::to_value(reason).unwrap(), json!(wire));
+        let error = reason.rpc_error("ingest unavailable");
+        assert_eq!(
+            ImageIngestReason::from_details(&error.details),
+            Some(reason)
+        );
+        assert_eq!(error.details, json!({ "reason": wire }));
+    }
 }
 
 #[test]

@@ -211,7 +211,7 @@ fn socket_inode_label(path: &Path) -> Option<String> {
     })
 }
 
-fn detect_socket(configured: Option<&Path>) -> Option<PathBuf> {
+pub fn detect_socket(configured: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = configured {
         return is_socket(path).then(|| path.to_owned());
     }
