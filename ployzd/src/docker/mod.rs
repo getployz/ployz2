@@ -560,10 +560,6 @@ pub enum Error {
     ContainerNotFound(ContainerId),
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,
-    #[error("config {0:?} referenced by a mount was not found")]
-    ConfigNotFound(String),
-    #[error("Volume {0:?} referenced by a mount was not found")]
-    VolumeNotFound(String),
     #[error("invalid bind propagation: {0}")]
     InvalidMountPropagation(String),
     #[error("container duration exceeds Docker's range")]
@@ -593,8 +589,6 @@ impl Error {
                 ..
             }) => RpcErrorCode::Conflict,
             Self::MissingPreDeployHook
-            | Self::ConfigNotFound(_)
-            | Self::VolumeNotFound(_)
             | Self::InvalidMountPropagation(_)
             | Self::DurationOverflow
             | Self::SizeOverflow
@@ -861,7 +855,7 @@ mod tests {
         }))
         .unwrap();
 
-        let mounts = docker_mounts(&spec.volumes, &spec.mounts).unwrap();
+        let mounts = docker_mounts(&spec.volume_graph).unwrap();
         let [bind_mount, named_mount, tmpfs_mount] = mounts.as_slice() else {
             panic!("expected three mounts: {mounts:?}")
         };
@@ -888,10 +882,11 @@ mod tests {
             ),
         ] {
             let mut recursive_spec = spec.clone();
+            let mut volumes = recursive_spec.volume_graph.volumes().to_vec();
+            let mounts = recursive_spec.volume_graph.mounts().to_vec();
             let ployz_core::VolumeSource::Bind {
                 recursive: setting, ..
-            } = &mut recursive_spec
-                .volumes
+            } = &mut volumes
                 .first_mut()
                 .expect("fixture has a bind volume")
                 .source
@@ -899,7 +894,9 @@ mod tests {
                 panic!("expected bind volume")
             };
             *setting = Some(recursive);
-            let translated = docker_mounts(&recursive_spec.volumes, &recursive_spec.mounts)
+            recursive_spec.volume_graph =
+                ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+            let translated = docker_mounts(&recursive_spec.volume_graph)
                 .unwrap()
                 .remove(0)
                 .bind_options
@@ -935,13 +932,36 @@ mod tests {
             Some(4096)
         );
 
-        let mut missing = spec;
-        missing.mounts.first_mut().unwrap().volume =
-            ployz_core::ServiceVolumeReference::parse("missing").unwrap();
-        assert!(matches!(
-            docker_mounts(&missing.volumes, &missing.mounts),
-            Err(Error::VolumeNotFound(reference)) if reference == "missing"
-        ));
+        let mut dangling = serde_json::to_value(&spec).unwrap();
+        *dangling
+            .get_mut("mounts")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|mounts| mounts.first_mut())
+            .and_then(|mount| mount.get_mut("volume"))
+            .expect("fixture has a mount volume") = serde_json::json!("missing");
+        assert!(
+            serde_json::from_value::<ResolvedServiceSpec>(dangling)
+                .unwrap_err()
+                .to_string()
+                .contains("undeclared Service Volume")
+        );
+
+        let missing_docker_volume: ResolvedServiceSpec =
+            serde_json::from_value(serde_json::json!({
+                "service_id": "11111111111111111111111111111111",
+                "name": "api",
+                "mode": { "mode": "replicated", "replicas": 1 },
+                "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
+                "volumes": [{"reference":"data","source":{"kind":"named","name":"missing"}}],
+                "mounts": [{"volume":"data","target":"/data"}]
+            }))
+            .unwrap();
+        let mounts = docker_mounts(&missing_docker_volume.volume_graph).unwrap();
+        let [named] = mounts.as_slice() else {
+            panic!("valid Service Volume graph still maps a named Docker Volume")
+        };
+        assert_eq!(named.typ, Some(MountType::VOLUME));
+        assert_eq!(named.source.as_deref(), Some("missing"));
     }
 
     #[test]

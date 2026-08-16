@@ -19,21 +19,13 @@ use volumes::{
     reject_mixed_volume_modes,
 };
 
-struct ValidatedSpec {
-    requested: RequestedServiceSpec,
-    volume_graph: ServiceVolumeGraph,
-}
-
 pub fn plan_deploy<'a>(
     requested: impl IntoIterator<Item = &'a RequestedServiceSpec>,
     snapshot: &DeploySnapshot,
     options: PlanOptions,
 ) -> Result<DeployPlan, PlanError> {
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
-    let requested = requested
-        .into_iter()
-        .map(normalize_and_validate)
-        .collect::<Result<Vec<_>, _>>()?;
+    let requested = requested.into_iter().map(normalize).collect::<Vec<_>>();
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::default();
@@ -44,13 +36,7 @@ pub fn plan_deploy<'a>(
     for spec in &requested {
         service_operations.extend(
             plan_one_service(spec, snapshot, &mut pins, &mut volume_creates, options).map_err(
-                |source| {
-                    service_error(
-                        name_errors_with_service,
-                        spec.requested.name.as_str(),
-                        source,
-                    )
-                },
+                |source| service_error(name_errors_with_service, spec.name.as_str(), source),
             )?,
         );
     }
@@ -60,13 +46,13 @@ pub fn plan_deploy<'a>(
 }
 
 fn plan_one_service(
-    spec: &ValidatedSpec,
+    spec: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     pins: &mut VolumePins,
     volume_creates: &mut Vec<DeployOperation>,
     options: PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
-    let requested = &spec.requested;
+    let requested = spec;
     let mut machines = eligible_machines(requested, snapshot, options);
     volume_creates.extend(plan_volume_operations(spec, snapshot, pins, &mut machines)?);
     let matching_service_ids = snapshot
@@ -144,19 +130,14 @@ fn eligible_machines<'a>(
     machines
 }
 
-fn normalize_and_validate(requested: &RequestedServiceSpec) -> Result<ValidatedSpec, PlanError> {
+fn normalize(requested: &RequestedServiceSpec) -> RequestedServiceSpec {
     let mut requested = requested.clone();
     requested.caddy_config = requested
         .caddy_config
         .take()
         .map(|config| config.trim().to_owned())
         .filter(|config| !config.is_empty());
-    let volume_graph = requested.to_volume_graph()?;
-    requested.to_config_graph()?;
-    Ok(ValidatedSpec {
-        requested,
-        volume_graph,
-    })
+    requested
 }
 
 fn shuffle<T>(values: &mut [T], mut state: u64) {
@@ -232,13 +213,13 @@ fn has_mounted_named_volume(graph: &ServiceVolumeGraph) -> bool {
 }
 
 fn plan_global(
-    spec: &ValidatedSpec,
+    spec: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     service_id: &ServiceId,
     machines: Vec<&MachineObservation>,
     options: PlanOptions,
 ) -> Vec<DeployOperation> {
-    let requested = &spec.requested;
+    let requested = spec;
     let current = service_containers(snapshot, service_id);
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
@@ -305,14 +286,14 @@ fn plan_global(
 }
 
 fn plan_replicated(
-    spec: &ValidatedSpec,
+    spec: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     service_id: &ServiceId,
     mut machines: Vec<&MachineObservation>,
     replicas: usize,
     options: PlanOptions,
 ) -> Vec<DeployOperation> {
-    let requested = &spec.requested;
+    let requested = spec;
     let current = service_containers(snapshot, service_id);
     let mut by_machine = BTreeMap::<MachineId, Vec<(usize, &ContainerObservation)>>::new();
     for (index, container) in &current {
@@ -421,8 +402,11 @@ fn is_running(container: &ContainerObservation) -> bool {
     )
 }
 
-fn determine_update_order(current: &ContainerObservation, spec: &ValidatedSpec) -> UpdateOrder {
-    let requested = &spec.requested;
+fn determine_update_order(
+    current: &ContainerObservation,
+    spec: &RequestedServiceSpec,
+) -> UpdateOrder {
+    let requested = spec;
     if let Some(order) = requested.update.order {
         return order;
     }
@@ -488,13 +472,11 @@ fn resolve(
     service_id: ServiceId,
     order: UpdateOrder,
 ) -> ResolvedServiceSpec {
-    requested
-        .to_resolved(
-            service_id,
-            ResolvedUpdateConfig {
-                order,
-                monitor_millis: requested.update.monitor_millis,
-            },
-        )
-        .expect("normalize_and_validate accepted this spec")
+    requested.to_resolved(
+        service_id,
+        ResolvedUpdateConfig {
+            order,
+            monitor_millis: requested.update.monitor_millis,
+        },
+    )
 }

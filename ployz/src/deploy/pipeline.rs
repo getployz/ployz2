@@ -177,7 +177,7 @@ fn scale_plan(
         return Ok(None);
     }
     // TODO(UT-046): mixed historical specs use one observed regular container; there is no chooser.
-    let mut requested = requested_from_resolved(&observed_container.resolved_spec)?;
+    let mut requested = requested_from_resolved(&observed_container.resolved_spec);
     requested.mode = ServiceMode::Replicated { replicas };
     Ok(Some(plan_deploy(
         [&requested],
@@ -186,10 +186,8 @@ fn scale_plan(
     )?))
 }
 
-fn requested_from_resolved(
-    resolved: &ResolvedServiceSpec,
-) -> Result<RequestedServiceSpec, super::PlanError> {
-    resolved.to_requested().map_err(Into::into)
+fn requested_from_resolved(resolved: &ResolvedServiceSpec) -> RequestedServiceSpec {
+    resolved.to_requested()
 }
 
 pub(super) async fn list_machines(client: &mut Client) -> Result<Vec<MachineObservation>, Failure> {

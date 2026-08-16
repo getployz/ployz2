@@ -205,7 +205,12 @@ volumes:
             .all(|container| container.kind == ContainerKind::PreDeployHook)
     );
     assert_eq!(
-        api_container.resolved_spec.configs.first().unwrap().content,
+        api_container
+            .resolved_spec
+            .configs()
+            .first()
+            .unwrap()
+            .content,
         b"hello\n"
     );
     assert!(matches!(
