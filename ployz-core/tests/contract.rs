@@ -2,23 +2,23 @@ use std::{collections::BTreeSet, net::Ipv4Addr, num::NonZeroU32};
 
 use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
-    ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
+    ConfiguredHealthcheck, ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
     DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome, FanoutResponse,
     FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation,
-    HttpProtocol, ImageSummary, IngressHost, IngressHostname, InspectWireGuardRequest,
-    LIST_IMAGES_CAPABILITY, ListImagesRequest, MachineFailure, MachineGateway, MachineId,
-    MachineImages, MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer,
-    MachineSelector, MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate,
-    NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement, PortPublication,
-    PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy, RESET_MACHINE_CAPABILITY,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
-    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
-    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
-    UpdateMachineRequest, UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames,
-    op,
+    HealthcheckCommand, HealthcheckSpec, HttpProtocol, ImageSummary, IngressHost, IngressHostname,
+    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MachineFailure,
+    MachineGateway, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
+    MachineRpcClient, MachineRpcServer, MachineSelector, MachineSubnet, MachineSuccess,
+    MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
+    Placement, PortPublication, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
+    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
+    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
+    VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -878,7 +878,14 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         environment: Default::default(),
         cap_add: vec!["NET_ADMIN".into()],
         cap_drop: Vec::new(),
-        healthcheck: None,
+        healthcheck: Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {
+            test: HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
+            interval_millis: Some(1_000),
+            timeout_millis: None,
+            start_period_millis: None,
+            start_interval_millis: None,
+            retries: Some(3),
+        })),
         pull_policy: PullPolicy::Missing,
         init: None,
         user: None,
@@ -991,8 +998,8 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
 macro_rules! compile_fixture {
     (
         package $package:literal
-        unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty),)+ }
-        server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
+        unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
+        server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
     ) => {
         struct CompileFixture;
         type EmptyRpcStream =
