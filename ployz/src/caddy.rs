@@ -4,8 +4,8 @@ use oci_client::{
     Client, ParseError, Reference, errors::OciDistributionError, secrets::RegistryAuth,
 };
 use ployz_core::{
-    ContainerKind, ContainerObservation, ContainerPath, ContainerResources, HostBind, MachinePath,
-    MachineTarget, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
+    ContainerPath, ContainerResources, HostBind, MachinePath, MachineTarget, Placement,
+    PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceContainer,
     ServiceContainerSpec, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
     ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
 };
@@ -51,26 +51,25 @@ pub fn select_image(tags: &[String]) -> String {
 }
 
 #[must_use]
-pub fn newest_existing_settings(
-    observations: &[ContainerObservation],
+pub fn newest_existing_settings<'a>(
+    containers: impl IntoIterator<Item = &'a ServiceContainer>,
 ) -> Option<(String, Vec<MachineTarget>, Option<String>)> {
-    observations
-        .iter()
-        .filter(|container| {
-            container.kind == ContainerKind::ServiceContainer
-                && container.service_name.as_str() == SERVICE_NAME
-        })
+    containers
+        .into_iter()
+        .filter(|container| container.as_observation().service_name.as_str() == SERVICE_NAME)
         .max_by_key(|container| {
+            let observation = container.as_observation();
             (
-                container.created_at_unix_nanos,
-                container.container_id.as_str(),
+                observation.created_at_unix_nanos,
+                observation.container_id.as_str(),
             )
         })
         .map(|container| {
+            let spec = &container.as_observation().resolved_spec;
             (
-                container.resolved_spec.container.image.clone(),
-                container.resolved_spec.placement.machines.clone(),
-                container.resolved_spec.caddy_config.clone(),
+                spec.container.image.clone(),
+                spec.placement.machines.clone(),
+                spec.caddy_config.clone(),
             )
         })
 }
@@ -94,7 +93,7 @@ pub fn service_spec(
         container_port: NonZeroU16::new(port).expect("Caddy ports are non-zero"),
         transport_protocol: protocol,
     };
-    let (volumes, mounts) = ServiceVolumeGraph::parse(
+    let volume_graph = ServiceVolumeGraph::parse(
         vec![
             ServiceVolume {
                 reference: volume.clone(),
@@ -122,8 +121,7 @@ pub fn service_spec(
             mount(&runtime, "/run/caddy"),
         ],
     )
-    .expect("static Caddy Volume graph is valid")
-    .into_parts();
+    .expect("static Caddy Volume graph is valid");
     RequestedServiceSpec {
         name: ServiceName::parse(SERVICE_NAME).expect("static Service Name is valid"),
         mode: ServiceMode::Global,
@@ -155,7 +153,6 @@ pub fn service_spec(
             resources: ContainerResources::default(),
             stop_timeout_secs: None,
             sysctls: BTreeMap::new(),
-            config_mounts: Vec::new(),
             restart: RestartPolicy::default(),
         },
         placement: Placement { machines },
@@ -164,9 +161,8 @@ pub fn service_spec(
             host_port(443, TransportProtocol::Tcp),
             host_port(443, TransportProtocol::Udp),
         ],
-        volumes,
-        mounts,
-        configs: Vec::new(),
+        volume_graph,
+        config_graph: Default::default(),
         pre_deploy: None,
         caddy_config,
         update: UpdateConfig::default(),
@@ -175,7 +171,10 @@ pub fn service_spec(
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{PortPublication, TransportProtocol};
+    use ployz_core::{
+        ContainerId, ContainerKind, ContainerObservation, MachineTarget, PortPublication,
+        ServiceContainer, TransportProtocol, service_containers,
+    };
 
     use super::*;
 
@@ -220,16 +219,21 @@ mod tests {
         newer.resolved_spec.container.image = "caddy:2.10.2".into();
         newer.resolved_spec.placement.machines = vec![MachineTarget::parse("edge").unwrap()];
         newer.resolved_spec.caddy_config = Some("{ admin off }".into());
+        let mut hook = newer.clone();
+        hook.kind = ContainerKind::PreDeployHook;
+        hook.container_id = ContainerId::parse("c".repeat(64)).unwrap();
+        hook.created_at_unix_nanos = 3;
+        hook.resolved_spec.container.image = "caddy:hook".into();
 
         assert_eq!(
-            newest_existing_settings(&[newer, older]),
+            newest_existing_settings(&service_containers([newer, older, hook])),
             Some((
                 "caddy:2.10.2".into(),
                 vec![MachineTarget::parse("edge").unwrap()],
                 Some("{ admin off }".into())
             ))
         );
-        assert_eq!(newest_existing_settings(&[]), None);
+        assert_eq!(newest_existing_settings(&[] as &[ServiceContainer]), None);
     }
 
     #[test]
@@ -256,9 +260,7 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(spec.mounts.len(), 3);
-        let volumes = spec.to_volume_graph().unwrap();
-        assert_eq!(volumes.mounts().len(), 3);
-        spec.to_config_graph().unwrap();
+        assert_eq!(spec.mounts().len(), 3);
+        assert!(spec.config_graph.mounts().is_empty());
     }
 }
