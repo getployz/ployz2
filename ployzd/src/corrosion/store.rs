@@ -833,11 +833,7 @@ mod tests {
                 .record_certificate_failure(
                     &hostname,
                     "does not resolve",
-                    IssuanceClock {
-                        failures: 1,
-                        next_attempt_at: SystemTime::UNIX_EPOCH,
-                        last_failure: IssuanceFailure::DoesNotResolve,
-                    },
+                    IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::DoesNotResolve,),
                 )
                 .await
                 .is_err()

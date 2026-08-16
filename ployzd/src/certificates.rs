@@ -18,8 +18,8 @@ use instant_acme::{
 };
 use ployz_core::{
     ContainerKind, ContainerObservation, HttpProtocol, IngressHost, IngressHostname,
-    IssuanceAction, IssuanceFailure, IssuanceInput, IssuanceSubject, Machine, PortPublication,
-    cluster_dns_verdict, issuance_action, issuance_failure_clock, issuance_refusal_reason,
+    IssuanceAction, IssuanceFailure, Machine, PortPublication, cluster_dns_verdict,
+    issuance_action, issuance_failure_clock, issuance_refusal_reason,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -147,21 +147,16 @@ async fn issue_wanted(
     let default_row = CertificateRow::default();
     for hostname in wanted {
         let row = rows.get(&hostname).unwrap_or(&default_row);
+        if row.material().is_some() {
+            continue;
+        }
         let resolved = resolve_ingress_addresses(&hostname).await;
         let verdict = cluster_dns_verdict(&resolved, &cluster);
-        match issuance_action(IssuanceInput {
-            subject: if row.material().is_some() {
-                IssuanceSubject::HasMaterial
-            } else {
-                IssuanceSubject::Missing { clock: row.clock() }
-            },
-            verdict,
-            now,
-        }) {
+        match issuance_action(row.clock(), verdict, now) {
             IssuanceAction::Nothing => {}
             IssuanceAction::Refuse(clock) => {
                 let reason =
-                    issuance_refusal_reason(&hostname, clock.last_failure, &resolved, &cluster);
+                    issuance_refusal_reason(&hostname, clock.last_failure(), &resolved, &cluster);
                 if let Err(error) = store
                     .record_certificate_failure(&hostname, reason, clock)
                     .await

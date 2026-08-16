@@ -787,11 +787,11 @@ impl CaddyAdmin for FakeAdmin {
 }
 
 fn inspect_clock() -> IssuanceClock {
-    IssuanceClock {
-        failures: 1,
-        next_attempt_at: SystemTime::UNIX_EPOCH,
-        last_failure: IssuanceFailure::ResolvesElsewhere,
-    }
+    IssuanceClock::new(
+        1,
+        SystemTime::UNIX_EPOCH,
+        IssuanceFailure::ResolvesElsewhere,
+    )
 }
 
 fn ingress(hostname: &str, port: u16, http_protocol: HttpProtocol) -> PortPublication {
