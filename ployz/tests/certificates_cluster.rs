@@ -5,8 +5,8 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerKind, GetCaddyConfigRequest, Machine, MachineTarget, ResolvedServiceSpec, ServiceId,
-    StartContainerRequest, StopContainerRequest, op,
+    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerKind, GetCaddyConfigRequest, Machine, MachineTarget,
+    ResolvedServiceSpec, ServiceId, StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 
@@ -15,15 +15,11 @@ use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
-    let mut plan = ClusterPlan::new(&format!("l3-acme-{}", process::id()), 1).unwrap();
-    plan.machines
-        .first_mut()
-        .unwrap()
-        .environment
-        .insert("PLOYZ_ACME_DIRECTORY".to_owned(), ca.directory_url());
+    let plan = ClusterPlan::new(&format!("l3-acme-{}", process::id()), 1).unwrap();
     let cluster = Cluster::create(plan).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let first = cluster.initialize_first().await.unwrap();
+    publish_certificate_policy(&cluster, &ca.directory_url());
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             if cluster
@@ -272,6 +268,16 @@ async fn wait_config(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+fn publish_certificate_policy(cluster: &Cluster, directory_url: &str) {
+    let body = serde_json::json!({ "directory_url": directory_url }).to_string();
+    let payload = serde_json::to_string(&serde_json::json!([{
+        "query": "INSERT INTO cluster (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        "params": [CERTIFICATE_POLICY_CLUSTER_KEY, body],
+    }]))
+    .unwrap();
+    corrosion_exec(cluster, "v1/transactions", &payload);
 }
 
 fn delete_certificate(cluster: &Cluster, hostname: &str) {

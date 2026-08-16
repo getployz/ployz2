@@ -7,7 +7,8 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerId, ContainerObservation, IngressHost, LocalMachinePhase, Machine, MachineId,
+    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, IngressHost,
+    LocalMachinePhase, Machine, MachineId,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -79,6 +80,7 @@ impl CertificateChallenge {
 pub struct CertificateRow {
     material: Option<CertificateMaterial>,
     challenge: Option<CertificateChallenge>,
+    last_error: Option<String>,
 }
 
 impl CertificateRow {
@@ -90,6 +92,7 @@ impl CertificateRow {
         Self {
             material,
             challenge,
+            last_error: None,
         }
     }
 
@@ -103,6 +106,11 @@ impl CertificateRow {
         self.challenge.as_ref()
     }
 
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
     fn decode(encoded: &str) -> Result<Self, Error> {
         if encoded.is_empty() {
             return Ok(Self::default());
@@ -111,6 +119,7 @@ impl CertificateRow {
         Ok(Self {
             material: CertificateMaterial::new(body.certificate, body.private_key),
             challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
+            last_error: (!body.last_error.is_empty()).then_some(body.last_error),
         })
     }
 
@@ -120,6 +129,7 @@ impl CertificateRow {
             "private_key": self.material.as_ref().map(CertificateMaterial::private_key).unwrap_or(""),
             "challenge_token": self.challenge.as_ref().map(CertificateChallenge::token).unwrap_or(""),
             "challenge_response": self.challenge.as_ref().map(CertificateChallenge::response).unwrap_or(""),
+            "last_error": self.last_error.as_deref().unwrap_or(""),
         }))?)
     }
 }
@@ -134,6 +144,8 @@ struct CertificateBody {
     challenge_token: String,
     #[serde(default)]
     challenge_response: String,
+    #[serde(default)]
+    last_error: String,
 }
 
 #[derive(Clone)]
@@ -466,6 +478,7 @@ impl ReplicatedStore {
             &CertificateRow {
                 material: Some(material.clone()),
                 challenge: None,
+                last_error: None,
             },
         )
         .await
@@ -520,9 +533,53 @@ impl ReplicatedStore {
             &CertificateRow {
                 material: row.material,
                 challenge: Some(challenge.clone()),
+                last_error: row.last_error,
             },
         )
         .await
+    }
+
+    pub async fn record_certificate_error(
+        &self,
+        hostname: &IngressHost,
+        reason: &str,
+    ) -> Result<(), Error> {
+        let row = self.certificate_row(hostname).await?;
+        if row.last_error.as_deref() == Some(reason) {
+            return Ok(());
+        }
+        self.upsert_certificate(
+            hostname,
+            &CertificateRow {
+                material: row.material,
+                challenge: row.challenge,
+                last_error: Some(reason.to_owned()),
+            },
+        )
+        .await
+    }
+
+    pub async fn certificate_policy(&self) -> Result<Option<String>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT value FROM cluster WHERE key = ?",
+                [json!(CERTIFICATE_POLICY_CLUSTER_KEY)],
+            ))
+            .await?;
+        let rows = query.rows(["value"])?;
+        let Some([value]) = rows.first() else {
+            return Ok(None);
+        };
+        match value {
+            Value::Null => Ok(None),
+            Value::String(encoded) if encoded.is_empty() => Ok(None),
+            Value::String(encoded) => Ok(Some(encoded.clone())),
+            Value::Object(_) => Ok(Some(value.to_string())),
+            Value::Bool(_) | Value::Number(_) | Value::Array(_) => {
+                Err(Error::Protocol("invalid certificate policy".into()))
+            }
+        }
     }
 
     pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {
@@ -945,13 +1002,33 @@ mod tests {
 
     #[test]
     fn certificate_material_reads_known_fields_and_ignores_the_rest() {
-        let material = super::decode_certificate_body(
-            r#"{"certificate":"CERT","private_key":"KEY","last_error":"later"}"#,
+        let row = super::CertificateRow::decode(
+            r#"{"certificate":"CERT","private_key":"KEY","last_error":"refused","future":1}"#,
         )
-        .unwrap()
         .unwrap();
+        let material = row.material.as_ref().unwrap();
         assert_eq!(material.certificate(), "CERT");
         assert_eq!(material.private_key(), "KEY");
+        assert_eq!(row.last_error(), Some("refused"));
+    }
+
+    #[test]
+    fn certificate_row_round_trips_last_error() {
+        let row = super::CertificateRow {
+            material: None,
+            challenge: None,
+            last_error: Some(
+                "certificate policy names challenge kind dns-01 which this daemon cannot perform"
+                    .into(),
+            ),
+        };
+        let encoded = row.encode().unwrap();
+        let decoded = super::CertificateRow::decode(&encoded).unwrap();
+        assert_eq!(decoded.last_error(), row.last_error());
+        assert_eq!(
+            super::CertificateRow::decode("{}").unwrap().last_error(),
+            None
+        );
     }
 
     #[test]
