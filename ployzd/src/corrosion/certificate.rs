@@ -3,7 +3,7 @@
 use std::time::SystemTime;
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use ployz_core::{ClusterDnsVerdict, IssuanceFailure};
+use ployz_core::IssuanceFailure;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -64,6 +64,7 @@ impl CertificateChallenge {
     }
 }
 
+/// Replicated certificate row for one Ingress Hostname.
 #[derive(Clone, Default, Debug, Eq, PartialEq)]
 pub struct CertificateRow {
     pub(crate) material: Option<CertificateMaterial>,
@@ -75,6 +76,7 @@ pub struct CertificateRow {
 }
 
 impl CertificateRow {
+    /// Material and challenge without a refusal clock.
     #[must_use]
     pub fn from_parts(
         material: Option<CertificateMaterial>,
@@ -91,13 +93,6 @@ impl CertificateRow {
     pub fn with_last_error(mut self, error: impl Into<String>) -> Self {
         let error = error.into();
         self.last_error = (!error.is_empty()).then_some(error);
-        self
-    }
-
-    #[must_use]
-    pub fn with_backoff(mut self, failures: u32, last_failure: Option<IssuanceFailure>) -> Self {
-        self.failures = failures;
-        self.last_failure = last_failure;
         self
     }
 
@@ -195,21 +190,17 @@ fn decode_attempt(text: &str) -> Option<SystemTime> {
 
 fn encode_failure(failure: Option<IssuanceFailure>) -> &'static str {
     match failure {
-        Some(IssuanceFailure::Resolve(ClusterDnsVerdict::DoesNotResolve)) => "does_not_resolve",
-        Some(IssuanceFailure::Resolve(ClusterDnsVerdict::ResolvesElsewhere)) => {
-            "resolves_elsewhere"
-        }
+        Some(IssuanceFailure::DoesNotResolve) => "does_not_resolve",
+        Some(IssuanceFailure::ResolvesElsewhere) => "resolves_elsewhere",
         Some(IssuanceFailure::Authority) => "authority",
-        Some(IssuanceFailure::Resolve(ClusterDnsVerdict::PointsAtCluster)) | None => "",
+        None => "",
     }
 }
 
 fn decode_failure(text: &str) -> Option<IssuanceFailure> {
     match text {
-        "does_not_resolve" => Some(IssuanceFailure::Resolve(ClusterDnsVerdict::DoesNotResolve)),
-        "resolves_elsewhere" => Some(IssuanceFailure::Resolve(
-            ClusterDnsVerdict::ResolvesElsewhere,
-        )),
+        "does_not_resolve" => Some(IssuanceFailure::DoesNotResolve),
+        "resolves_elsewhere" => Some(IssuanceFailure::ResolvesElsewhere),
         "authority" => Some(IssuanceFailure::Authority),
         _ => None,
     }
@@ -224,7 +215,7 @@ fn decode_certificate_body(encoded: &str) -> Result<Option<CertificateMaterial>,
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use ployz_core::{ClusterDnsVerdict, IssuanceFailure};
+    use ployz_core::IssuanceFailure;
 
     use super::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
@@ -281,7 +272,7 @@ mod tests {
             ),
             next_attempt_at: Some(at),
             failures: 3,
-            last_failure: Some(IssuanceFailure::Resolve(ClusterDnsVerdict::DoesNotResolve)),
+            last_failure: Some(IssuanceFailure::DoesNotResolve),
             ..CertificateRow::default()
         };
         let encoded = row.encode().unwrap();
@@ -291,7 +282,7 @@ mod tests {
         assert_eq!(decoded.failures(), 3);
         assert_eq!(
             decoded.last_failure(),
-            Some(IssuanceFailure::Resolve(ClusterDnsVerdict::DoesNotResolve))
+            Some(IssuanceFailure::DoesNotResolve)
         );
         assert_eq!(
             CertificateRow::decode(
@@ -299,7 +290,7 @@ mod tests {
             )
             .unwrap()
             .last_failure(),
-            Some(IssuanceFailure::Resolve(ClusterDnsVerdict::ResolvesElsewhere))
+            Some(IssuanceFailure::ResolvesElsewhere)
         );
         assert_eq!(
             CertificateRow::decode(r#"{"last_failure":"authority"}"#)

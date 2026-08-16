@@ -163,10 +163,7 @@ async fn issue_wanted(
                 next_attempt_at,
                 last_failure,
             } => {
-                let Some(reason) = issuance_refusal_reason(&hostname, verdict, &resolved, &cluster)
-                else {
-                    continue;
-                };
+                let reason = issuance_refusal_reason(&hostname, last_failure, &resolved, &cluster);
                 if let Err(error) = store
                     .record_certificate_failure(
                         &hostname,

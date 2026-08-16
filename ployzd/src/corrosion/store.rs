@@ -731,9 +731,10 @@ mod tests {
         collections::BTreeMap,
         net::TcpListener,
         sync::{Arc, Mutex},
+        time::SystemTime,
     };
 
-    use ployz_core::{LocalMachinePhase, Machine};
+    use ployz_core::{IngressHost, IssuanceFailure, LocalMachinePhase, Machine};
     use serde_json::json;
 
     use super::ReplicatedStore;
@@ -823,6 +824,27 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let store = ReplicatedStore::new(ApiClient::new(address, &"a".repeat(64)).unwrap());
+        let hostname = IngressHost::parse("app.example.com").unwrap();
+        assert!(
+            store
+                .record_certificate_failure(
+                    &hostname,
+                    "does not resolve",
+                    SystemTime::UNIX_EPOCH,
+                    1,
+                    IssuanceFailure::DoesNotResolve,
+                )
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

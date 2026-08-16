@@ -621,18 +621,18 @@ fn write_certificate_errors(
     output: &mut String,
     certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) {
-    let errors: Vec<_> = certificates
-        .iter()
-        .filter_map(|(hostname, row)| match (row.material(), row.last_error()) {
-            (None, Some(error)) if !error.is_empty() => Some((hostname, error)),
-            _ => None,
-        })
-        .collect();
-    if errors.is_empty() {
-        return;
-    }
-    output.push_str("\n# Skipped certificate issuance:\n");
-    for (hostname, error) in errors {
+    let mut header = false;
+    for (hostname, row) in certificates {
+        if row.material().is_some() {
+            continue;
+        }
+        let Some(error) = row.last_error().filter(|error| !error.is_empty()) else {
+            continue;
+        };
+        if !header {
+            output.push_str("\n# Skipped certificate issuance:\n");
+            header = true;
+        }
         let _ = writeln!(output, "# - {hostname}: {error}");
     }
 }
