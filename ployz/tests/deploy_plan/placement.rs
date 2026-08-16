@@ -311,6 +311,29 @@ fn missing_mounted_volume_is_created_before_replicas_on_one_machine() {
 }
 
 #[test]
+fn missing_named_volume_is_created_before_three_replicas() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(3).unwrap(),
+    });
+    add_named_volume(&mut requested, "auto_data");
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        plan.operations().first(),
+        Some(DeployOperation::CreateVolume { .. })
+    ));
+    assert_eq!(plan.operations().len(), 4);
+}
+
+#[test]
 fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
     let cases = [
         ("stateless", false, false, UpdateOrder::StartFirst),
