@@ -24,6 +24,14 @@ _Avoid_: Machine Name, hostname
 A human-facing selector for a Machine that may be ambiguous. It is not an identity or a globally unique value.
 _Avoid_: Machine ID, unique hostname
 
+**Machine Target**:
+The unresolved name-or-ID text used to target one Machine. It is not a wildcard and is not a unique identity.
+_Avoid_: Fan-out Selector, unique hostname
+
+**Fan-out Selector**:
+A selection of every visible Machine or one Machine Target. `*` is the only wildcard spelling.
+_Avoid_: Machine Target, all
+
 **Local Machine Phase**:
 A Machine's own lifecycle phase: uninitialized, joining, participating, or resetting. Joining includes catching up unless a concrete behavior requires that stage to be distinguished.
 _Avoid_: Machine state, membership state, readiness
@@ -44,9 +52,25 @@ _Avoid_: Service Name
 A human-facing selector for a Service that may resolve to several Service IDs.
 _Avoid_: Service ID, unique service name
 
+**Service Selector**:
+The unresolved name-or-ID text used to select a Service.
+_Avoid_: Service Name as identity
+
 **Service Container**:
 A managed Docker container carrying the Resolved Service Spec from its creation. It is one observed instance of a Service, not a replica identity or the canonical Service definition.
 _Avoid_: Replica, service record
+
+**Healthcheck**:
+A present probe declaration on a Service Container. It is Disabled or Configured. Absence means the image's probe is inherited or that no probe is available, not a third kind of Healthcheck.
+_Avoid_: health check flag, disabled boolean plus command
+
+**Disabled Healthcheck**:
+An explicit Healthcheck that turns probing off. It is not an absent Healthcheck.
+_Avoid_: inherited healthcheck, missing healthcheck
+
+**Configured Healthcheck**:
+A Healthcheck with a non-empty command that probes the container.
+_Avoid_: enabled healthcheck
 
 **Hook Container**:
 A managed Docker container that executes a pre-deploy hook rather than serving as an instance of the Service. Its identity and runtime observation remain distinct from those of Service Containers.
@@ -55,6 +79,10 @@ _Avoid_: Service Container, sidecar
 **Container ID**:
 The durable runtime identity of one managed Docker container. Generated container names are display values, not identities.
 _Avoid_: Container name, replica identity
+
+**Container Selector**:
+The unresolved Container ID, display name, or ID prefix used to select one Container.
+_Avoid_: Container name as identity, replica identity
 
 **Container Runtime Observation**:
 A point-in-time Docker lifecycle observation such as created, running with health, paused, restarting, exited, removing, dead, or an unknown external state. Container observations do not combine into an authoritative Service state.
@@ -113,7 +141,7 @@ An ephemeral memory-backed container mount. It is distinct from a Bind Mount, Do
 _Avoid_: Docker Volume, Provisioned Volume, persistent volume
 
 **Machine Subnet**:
-The IPv4 subnet locally selected for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet after concurrent changes.
+The IPv4 /24 subnet locally selected for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet after concurrent changes.
 _Avoid_: Reserved subnet, globally allocated subnet
 
 **Management Address**:
@@ -132,9 +160,17 @@ _Avoid_: Management Address, globally unique container address
 An observer-local, TTL-zero A answer derived from replicated healthy Service Container observations. It is not persisted and is not authoritative Cluster state even though the DNS response is authoritative for the `.internal` zone.
 _Avoid_: Service registry record, membership-filtered endpoint set
 
+**Ingress Hostname**:
+The HTTP hostname a Service publishes through ingress: assignment from the reserved hosted DNS domain, or an explicit validated hostname. An empty string is not an assignment signal.
+_Avoid_: empty hostname sentinel
+
 **Nearest DNS Selector**:
 An Internal DNS selector that orders addresses from the observing Machine's subnet before other addresses. It expresses subnet locality, not measured reachability or latency.
 _Avoid_: closest Machine, available endpoint
+
+**Machine-Service DNS Selector**:
+An Internal DNS selector that names one Machine ID together with one Service Name. It is not a Service identity.
+_Avoid_: machine-qualified service name, replica address
 
 **Advertised Endpoint**:
 An endpoint a target Machine publishes as a way peers might reach it.

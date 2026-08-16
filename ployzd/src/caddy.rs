@@ -1,7 +1,8 @@
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    HealthObservation, HttpProtocol, Machine, MachineId, PortPublication, ServiceName,
+    HealthObservation, HttpProtocol, IngressHostname, Machine, MachineId, PortPublication,
+    ServiceName,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -424,16 +425,17 @@ fn automatic_caddyfile(
         let address = container.address.expect("address was filtered above");
         for port in &container.resolved_spec.ports {
             let PortPublication::Ingress {
-                hostname,
+                hostname: IngressHostname::Explicit { hostname },
                 container_port,
                 http_protocol,
                 ..
             } = port
             else {
                 // TODO(UT-112): Caddy does not route L4 TCP/UDP ingress; host publication remains
-                // the supported path.
+                // the supported path. Assignment from the Cluster Domain is resolved before Caddy.
                 continue;
             };
+            let hostname = hostname.as_str();
             let upstream = format!("{}:{container_port}", address.0);
             match http_protocol {
                 HttpProtocol::Http => http.entry(hostname).or_default().push(upstream),
@@ -496,7 +498,7 @@ mod tests {
     use ployz_core::{
         AdvertisedEndpoint, CADDY_VERIFY_PATH, ContainerAddress, ContainerId, ContainerKind,
         ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind,
-        HttpProtocol, Machine, MachineId, MachineName, MachineSubnet, ManagementAddress,
+        HttpProtocol, IngressHostname, Machine, MachineId, MachineName, ManagementAddress,
         PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol,
         WireGuardPublicKey,
     };
@@ -574,7 +576,7 @@ https://secure.example.com {{\n\
     }
 
     #[test]
-    fn automatic_sites_omit_unaddressed_host_and_transport_ports() {
+    fn automatic_sites_omit_unaddressed_host_and_unassigned_ports() {
         let local = MachineId::parse("a".repeat(32)).unwrap();
         let ports = vec![
             PortPublication::Host {
@@ -583,10 +585,11 @@ https://secure.example.com {{\n\
                 container_port: 80.try_into().unwrap(),
                 transport_protocol: TransportProtocol::Tcp,
             },
-            PortPublication::IngressTransport {
-                load_balancer_port: Some(53.try_into().unwrap()),
-                container_port: 53.try_into().unwrap(),
-                transport_protocol: TransportProtocol::Udp,
+            PortPublication::Ingress {
+                hostname: IngressHostname::AssignFromClusterDomain,
+                load_balancer_port: 80.try_into().unwrap(),
+                container_port: 80.try_into().unwrap(),
+                http_protocol: HttpProtocol::Http,
             },
         ];
         let observations = [
@@ -598,18 +601,40 @@ https://secure.example.com {{\n\
                 vec![ingress("missing.example", 80, HttpProtocol::Http)],
             ),
             observation(8, &local, "transport", Some([10, 210, 1, 8]), ports),
+            observation(
+                9,
+                &local,
+                "web",
+                Some([10, 210, 1, 9]),
+                vec![ingress(
+                    "web.opaque.uncloud.example",
+                    8080,
+                    HttpProtocol::Http,
+                )],
+            ),
         ];
 
         let caddyfile = automatic_caddyfile(&local, "node-a", &observations, "TIMESTAMP", None);
         assert!(caddyfile.contains(CADDY_VERIFY_PATH));
         assert!(!caddyfile.contains("missing.example"));
-        assert!(!caddyfile.contains("reverse_proxy"));
+        assert!(caddyfile.contains("http://web.opaque.uncloud.example"));
+        assert!(caddyfile.contains("reverse_proxy 10.210.1.9:8080"));
         assert!(
             serde_json::from_value::<PortPublication>(json!({
                 "mode": "ingress",
-                "hostname": "invalid.example",
+                "hostname": { "kind": "explicit", "hostname": "invalid.example" },
                 "load_balancer_port": 0,
                 "container_port": 0,
+                "http_protocol": "http"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PortPublication>(json!({
+                "mode": "ingress",
+                "hostname": "",
+                "load_balancer_port": 80,
+                "container_port": 8080,
                 "http_protocol": "http"
             }))
             .is_err()
@@ -782,7 +807,7 @@ web.example { reverse_proxy 10.210.1.6:8080 }"
         let machine = Machine {
             id: MachineId::parse("a".repeat(32)).unwrap(),
             name: MachineName::parse("node-a").unwrap(),
-            subnet: MachineSubnet("10.210.1.0/24".parse().unwrap()),
+            subnet: "10.210.1.0/24".parse().unwrap(),
             management_address: ManagementAddress("fdcc::1".parse().unwrap()),
             public_key: WireGuardPublicKey([1; 32]),
             public_ip: None,
@@ -826,7 +851,7 @@ web.example { reverse_proxy 10.210.1.6:8080 }"
 
     fn ingress(hostname: &str, port: u16, http_protocol: HttpProtocol) -> PortPublication {
         PortPublication::Ingress {
-            hostname: hostname.into(),
+            hostname: IngressHostname::explicit(hostname).unwrap(),
             load_balancer_port: port.try_into().unwrap(),
             container_port: port.try_into().unwrap(),
             http_protocol,

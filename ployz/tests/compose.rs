@@ -11,8 +11,8 @@ use ployz::{
     deploy::{DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanError},
 };
 use ployz_core::{
-    HostBind, HttpProtocol, PortPublication, RestartPolicy, ServiceMode, TransportProtocol,
-    UpdateOrder, VolumeSource,
+    HostBind, HttpProtocol, IngressHostname, PortPublication, RestartPolicy, ServiceMode,
+    TransportProtocol, UpdateOrder, VolumeSource,
 };
 
 #[path = "compose/support.rs"]
@@ -163,7 +163,11 @@ configs:
         65_535
     );
     assert_eq!(
-        api.container.healthcheck.as_ref().unwrap().interval_millis,
+        api.container
+            .healthcheck
+            .as_ref()
+            .and_then(ployz_core::HealthcheckSpec::as_configured)
+            .and_then(|healthcheck| healthcheck.interval_millis),
         Some(90_000)
     );
     assert_eq!(api.container.log_driver.as_ref().unwrap().name, "local");
@@ -190,7 +194,9 @@ configs:
             load_balancer_port,
             container_port,
             http_protocol: HttpProtocol::Https,
-        } if hostname == "api.example.com" && load_balancer_port.get() == 8443 && container_port.get() == 8080
+        } if *hostname == IngressHostname::explicit("api.example.com").unwrap()
+            && load_balancer_port.get() == 8443
+            && container_port.get() == 8080
     ));
     assert!(matches!(
         api.ports.get(1).unwrap(),
@@ -230,6 +236,24 @@ configs:
         service(&project, "caddy").caddy_config.as_deref(),
         Some("app.example { reverse_proxy :80 }")
     );
+}
+
+#[test]
+fn compose_maps_disabled_and_sentinel_healthchecks() {
+    for yaml in [
+        "services: {app: {image: app, healthcheck: {disable: true}}}",
+        "services: {app: {image: app, healthcheck: {disable: true, test: [CMD, true]}}}",
+        "services: {app: {image: app, healthcheck: {test: [NONE]}}}",
+        "services: {app: {image: app, healthcheck: {test: [NONE, CMD, true]}}}",
+        "services: {app: {image: app, healthcheck: {test: NONE}}}",
+    ] {
+        let project = parse_normalized(yaml, ".").unwrap();
+        assert_eq!(
+            service(&project, "app").container.healthcheck,
+            Some(ployz_core::HealthcheckSpec::Disabled),
+            "{yaml}"
+        );
+    }
 }
 
 #[test]
@@ -311,8 +335,12 @@ secrets:
             "cpus must be numeric",
         ),
         (
-            "services: {app: {image: app, healthcheck: {interval: eventually}}}",
+            "services: {app: {image: app, healthcheck: {test: [CMD, true], interval: eventually}}}",
             "invalid duration",
+        ),
+        (
+            "services: {app: {image: app, healthcheck: {interval: 10s}}}",
+            "non-empty command",
         ),
         (
             "services: {app: {image: app, volumes: [{type: tmpfs, target: /tmp, tmpfs: {size: huge}}]}}",
@@ -357,6 +385,7 @@ services:
         .to_string()
         .contains("invalid x-caddy key")
     );
+
     let ipv6 = parse_normalized(
         "services: {app: {image: app, ports: [{target: 80, published: 8080, host_ip: '[2001:db8::]/64', mode: host}]}}",
         ".",
@@ -417,8 +446,8 @@ volumes:
     )
     .unwrap();
     assert!(matches!(
-        plan.volume_operations.as_slice(),
-        [DeployOperation::CreateVolume { volume, .. }]
+        plan.operations.as_slice(),
+        [DeployOperation::CreateVolume { volume, .. }, ..]
             if matches!(volume.source, VolumeSource::Named { external: true, .. })
     ));
 }
@@ -637,7 +666,7 @@ services:
 }
 
 #[test]
-fn compose_plan_puts_all_volume_operations_before_service_plans() {
+fn compose_plan_puts_volume_creates_before_service_operations() {
     let yaml = r#"
 name: demo
 services:
@@ -661,18 +690,18 @@ secrets: {token: {x-command: "printf resolved"}}
     let original = snapshot.clone();
     let plan = plan_compose(&project, &snapshot).unwrap();
     assert_eq!(snapshot, original);
-    assert_eq!(plan.volume_operations.len(), 1);
-    assert_eq!(plan.service_plans.len(), 2);
     assert!(matches!(
-        plan.operations().first().unwrap(),
-        DeployOperation::CreateVolume { volume, .. } if volume == &requested_volume
+        plan.operations.as_slice(),
+        [
+            DeployOperation::CreateVolume { volume, .. },
+            DeployOperation::RunHook { .. },
+            DeployOperation::RunContainer { spec: db, .. },
+            DeployOperation::RunContainer { spec: api, .. },
+        ] if volume == &requested_volume
+            && db.name.as_str() == "db"
+            && db.container.environment.get("TOKEN").map(String::as_str) == Some("resolved")
+            && api.name.as_str() == "api"
     ));
-    assert!(
-        plan.operations()
-            .iter()
-            .skip(plan.volume_operations.len())
-            .all(|operation| !matches!(operation, DeployOperation::CreateVolume { .. }))
-    );
     assert_eq!(
         service(&project, "db")
             .container
@@ -682,26 +711,6 @@ secrets: {token: {x-command: "printf resolved"}}
         Some("secret://token"),
         "planning must not mutate the unresolved project"
     );
-    assert!(plan.service_plans.iter().any(|service_plan| {
-        service_plan.operations.iter().any(|operation| {
-            matches!(
-                operation,
-                DeployOperation::RunContainer { spec, .. }
-                if spec.container.environment.get("TOKEN").map(String::as_str) == Some("resolved")
-            )
-        })
-    }));
-    assert!(matches!(
-        plan.service_plans.get(1).unwrap().operations.as_slice(),
-        [DeployOperation::RunContainer { .. }]
-    ));
-    assert!(matches!(
-        plan.service_plans.first().unwrap().operations.as_slice(),
-        [
-            DeployOperation::RunHook { .. },
-            DeployOperation::RunContainer { .. }
-        ]
-    ));
 }
 
 #[test]
@@ -748,18 +757,17 @@ volumes: {data: {name: demo_data}}
         ..Default::default()
     };
     let plan = plan_compose(&replicated, &snapshot).unwrap();
-    assert_eq!(plan.volume_operations.len(), 1);
     let Some(DeployOperation::CreateVolume {
         machine_id: anchor,
         volume,
-    }) = plan.volume_operations.first()
+    }) = plan.operations.first()
     else {
         panic!("missing Volume creation: {plan:?}")
     };
     assert_eq!(anchor, &machine('b', "two").machine.id);
-    assert!(plan.service_plans.iter().all(|service| matches!(
-        service.operations.as_slice(),
-        [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
+    assert!(plan.operations.iter().skip(1).all(|operation| matches!(
+        operation,
+        DeployOperation::RunContainer { machine_id, .. } if machine_id == anchor
     )));
 
     let VolumeSource::Named {
@@ -783,16 +791,10 @@ volumes: {data: {name: demo_data}}
         })
         .collect();
     let existing_on_both = plan_compose(&replicated, &existing_snapshot).unwrap();
-    assert!(existing_on_both.volume_operations.is_empty());
-    assert!(
-        existing_on_both
-            .service_plans
-            .iter()
-            .all(|service| matches!(
-                service.operations.as_slice(),
-                [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
-            ))
-    );
+    assert!(existing_on_both.operations.iter().all(|operation| matches!(
+        operation,
+        DeployOperation::RunContainer { machine_id, .. } if machine_id == anchor
+    )));
 
     let connected = parse_normalized(
         r#"
@@ -811,20 +813,28 @@ volumes: {a: {}, b: {}}
     )
     .unwrap();
     let connected_plan = plan_compose(&connected, &snapshot).unwrap();
-    assert_eq!(connected_plan.volume_operations.len(), 2);
+    assert_eq!(
+        connected_plan
+            .operations
+            .iter()
+            .take_while(|operation| matches!(operation, DeployOperation::CreateVolume { .. }))
+            .count(),
+        2
+    );
     assert!(
         connected_plan
-            .volume_operations
+            .operations
             .iter()
-            .all(|operation| matches!(
-                operation,
-                DeployOperation::CreateVolume { machine_id, .. } if machine_id == anchor
-            ))
+            .all(|operation| match operation {
+                DeployOperation::CreateVolume { machine_id, .. }
+                | DeployOperation::RunContainer { machine_id, .. } => machine_id == anchor,
+                other @ (DeployOperation::StopContainer { .. }
+                | DeployOperation::RemoveContainer { .. }
+                | DeployOperation::ReplaceContainer(..)
+                | DeployOperation::StopHook { .. }
+                | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
+            })
     );
-    assert!(connected_plan.service_plans.iter().all(|service| matches!(
-        service.operations.as_slice(),
-        [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
-    )));
 
     let constrained = parse_normalized(
         r#"
@@ -860,8 +870,8 @@ volumes:
     )
     .unwrap();
     assert!(matches!(
-        constrained_plan.volume_operations.as_slice(),
-        [DeployOperation::CreateVolume { machine_id, .. }] if machine_id == &existing_machine
+        constrained_plan.operations.as_slice(),
+        [DeployOperation::CreateVolume { machine_id, .. }, ..] if machine_id == &existing_machine
     ));
 
     let different_replica_counts = parse_normalized(

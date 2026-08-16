@@ -10,7 +10,6 @@ use ployz_core::{
 
 use super::{
     DeployOperation, DeployPlan, DeploySnapshot, PlanError, PlanOptions, ReplacementOperation,
-    ServicePlan,
 };
 
 mod volumes;
@@ -33,19 +32,19 @@ pub fn plan_deploy<'a>(
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::default();
-    let mut volume_operations =
+    let mut volume_creates =
         prepare_shared_replicated_volumes(&volume_uses, snapshot, &mut pins, options)?;
     let name_errors_with_service = requested.len() > 1;
     let services = derive_services(snapshot.containers.iter().cloned());
-    let mut service_plans = Vec::with_capacity(requested.len());
+    let mut service_operations = Vec::new();
     for spec in &requested {
-        service_plans.push(
+        service_operations.extend(
             plan_one_service(
                 spec,
                 snapshot,
                 &services,
                 &mut pins,
-                &mut volume_operations,
+                &mut volume_creates,
                 options,
             )
             .map_err(|source| {
@@ -53,7 +52,9 @@ pub fn plan_deploy<'a>(
             })?,
         );
     }
-    Ok(DeployPlan::new(volume_operations, service_plans))
+    let mut operations = volume_creates;
+    operations.extend(service_operations);
+    Ok(DeployPlan::new(operations))
 }
 
 fn plan_one_service(
@@ -61,11 +62,11 @@ fn plan_one_service(
     snapshot: &DeploySnapshot,
     services: &[ServiceObservation],
     pins: &mut VolumePins,
-    volume_operations: &mut Vec<DeployOperation>,
+    volume_creates: &mut Vec<DeployOperation>,
     options: PlanOptions,
-) -> Result<ServicePlan, PlanError> {
+) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, snapshot, options);
-    volume_operations.extend(plan_volume_operations(
+    volume_creates.extend(plan_volume_operations(
         requested,
         snapshot,
         pins,
@@ -87,8 +88,8 @@ fn plan_one_service(
             });
         }
     };
-    let (service_id, is_new_service, current, hooks) = match existing {
-        None => (ServiceId::random(), true, &[][..], &[][..]),
+    let (service_id, current, hooks) = match existing {
+        None => (ServiceId::random(), &[][..], &[][..]),
         Some(service) => {
             if service.members().any(|container| {
                 !same_service_mode_kind(
@@ -100,7 +101,6 @@ fn plan_one_service(
             }
             (
                 service.service_id,
-                false,
                 service.containers.as_slice(),
                 service.hook_containers.as_slice(),
             )
@@ -119,11 +119,7 @@ fn plan_one_service(
     };
     let mut operations = pre_deploy_operations(requested, hooks, &service_operations);
     operations.extend(service_operations);
-    Ok(ServicePlan {
-        service_id,
-        is_new_service,
-        operations,
-    })
+    Ok(operations)
 }
 
 fn service_error(name_errors_with_service: bool, service: &str, source: PlanError) -> PlanError {

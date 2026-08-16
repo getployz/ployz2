@@ -81,7 +81,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         },
         "ports": [{
             "mode": "ingress",
-            "hostname": "example.test",
+            "hostname": { "kind": "explicit", "hostname": "example.test" },
             "load_balancer_port": 80,
             "container_port": 8080,
             "http_protocol": "http"
@@ -367,7 +367,7 @@ async fn assert_start_first_gap(
             "placement": { "machines": [machine.id] },
             "ports": [{
                 "mode": "ingress",
-                "hostname": "switch.test",
+                "hostname": { "kind": "explicit", "hostname": "switch.test" },
                 "load_balancer_port": 80,
                 "container_port": 8081,
                 "http_protocol": "http"
@@ -458,10 +458,20 @@ async fn deploy(
     .unwrap();
     let outcome = ployz::deploy::execute_plan(&plan, client, &CancellationToken::new()).await;
     assert!(outcome.failed.is_none(), "{outcome:?}");
-    plan.service_plans
-        .first()
-        .expect("single-spec Deploy Plan")
-        .service_id
+    plan.operations
+        .iter()
+        .find_map(|operation| match operation {
+            ployz::deploy::DeployOperation::RunContainer { spec, .. }
+            | ployz::deploy::DeployOperation::RunHook { spec, .. } => Some(spec.service_id),
+            ployz::deploy::DeployOperation::ReplaceContainer(replacement) => {
+                Some(replacement.spec.service_id)
+            }
+            ployz::deploy::DeployOperation::CreateVolume { .. }
+            | ployz::deploy::DeployOperation::StopContainer { .. }
+            | ployz::deploy::DeployOperation::RemoveContainer { .. }
+            | ployz::deploy::DeployOperation::StopHook { .. } => None,
+        })
+        .expect("deployed operations carry a Service ID")
 }
 
 async fn wait_down(cluster: &Cluster, machine: &Machine) {
