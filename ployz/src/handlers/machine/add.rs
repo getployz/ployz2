@@ -129,20 +129,21 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     if let Some(warning) = &outcome.caddy_warning {
         eprintln!("{warning}");
     }
-    if outcome.refresh_hosted_dns
-        && let Err(error) = runtime()?.block_on(async {
+    let dns_error = runtime()?
+        .block_on(async {
             let mut entry = connect_client(matches, options.context()).await?;
             crate::dns::update_records_if_reserved(&mut entry).await?;
             Ok::<_, Error>(())
         })
-    {
-        eprintln!("{}", hosted_dns_follow_on_warning(&error.to_string()));
-        if outcome.follow_on_error.is_none() {
-            return Err(error);
-        }
+        .err();
+    if let Some(error) = &dns_error {
+        eprintln!("WARNING: hosted DNS refresh failed after adding the Machine: {error}.");
     }
-    match outcome.follow_on_error {
-        Some(error) => Err(Error::usage(error)),
+    if let Some(error) = outcome.follow_on_error {
+        return Err(Error::usage(error));
+    }
+    match dns_error {
+        Some(error) => Err(error),
         None => Ok(()),
     }
 }
@@ -183,26 +184,18 @@ fn cluster_membership_conflict(
 
 struct MachineAddOutcome {
     caddy_warning: Option<String>,
-    refresh_hosted_dns: bool,
     follow_on_error: Option<String>,
 }
 
 impl MachineAddOutcome {
     fn after_saved(caddy: Option<Result<(), String>>) -> Self {
         match caddy {
-            Some(Ok(())) => Self {
-                caddy_warning: None,
-                refresh_hosted_dns: true,
-                follow_on_error: None,
-            },
             Some(Err(error)) => Self {
                 caddy_warning: Some(caddy_follow_on_warning(&error)),
-                refresh_hosted_dns: true,
                 follow_on_error: Some(error),
             },
-            None => Self {
+            Some(Ok(())) | None => Self {
                 caddy_warning: None,
-                refresh_hosted_dns: true,
                 follow_on_error: None,
             },
         }
@@ -217,10 +210,6 @@ fn caddy_follow_on_warning(error: &str) -> String {
     format!(
         "WARNING: Caddy Deploy failed after adding the Machine: {error}. Run `caddy deploy` to retry."
     )
-}
-
-fn hosted_dns_follow_on_warning(error: &str) -> String {
-    format!("WARNING: hosted DNS refresh failed after adding the Machine: {error}.")
 }
 
 #[cfg(test)]
@@ -256,38 +245,6 @@ mod tests {
         assert!(
             warning.contains("deploy timed out"),
             "warning must include the follow-on failure, got {warning:?}"
-        );
-    }
-
-    #[test]
-    fn machine_add_refreshes_hosted_dns_from_membership_not_deploy() {
-        let assigned = assigned_machine("edge", 'a');
-        let succeeded = MachineAddOutcome::after_saved(Some(Ok(())));
-        assert!(
-            succeeded.refresh_hosted_dns,
-            "add must refresh hosted DNS after the Machine is a member"
-        );
-        assert!(succeeded.caddy_warning.is_none());
-        assert!(succeeded.follow_on_error.is_none());
-        assert_eq!(
-            added_machine_line(&assigned),
-            "Added Machine edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
-        );
-
-        let skipped = MachineAddOutcome::after_saved(None);
-        assert!(
-            skipped.refresh_hosted_dns,
-            "skipped Caddy Deploy must not keep a serving Machine out of hosted DNS"
-        );
-        let failed = MachineAddOutcome::after_saved(Some(Err("boom".into())));
-        assert!(
-            failed.refresh_hosted_dns,
-            "failed Caddy Deploy during add must not keep a serving Machine out of hosted DNS"
-        );
-        assert!(failed.follow_on_error.is_some());
-        assert_eq!(
-            hosted_dns_follow_on_warning("no publicly reachable Caddy Machines found"),
-            "WARNING: hosted DNS refresh failed after adding the Machine: no publicly reachable Caddy Machines found."
         );
     }
 

@@ -302,6 +302,8 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
     )
     .await
     .unwrap();
+    // Same refresh `machine add` runs after membership is saved, including when
+    // the add-time Caddy Deploy failed or was skipped.
     let before_add_refresh = record_requests(&hosted.requests()).len();
     ployz::dns::update_records_if_reserved(&mut client)
         .await
@@ -311,11 +313,10 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
         record_requests(&after_add_refresh).len(),
         before_add_refresh + 1
     );
-    let joined_label = format!("l3-{}-add.opaque.uncloud.example", process::id());
     assert_eq!(
         authoritative_wildcard_a(&after_add_refresh),
         vec![first_ip.to_string(), second_ip.to_string()],
-        "fresh label {joined_label} at the authority must include a Machine that passes the Caddy probe"
+        "last published * A at the authority must include a Machine that passes the Caddy probe"
     );
 
     let before_remove = record_requests(&after_add_refresh).len();
@@ -325,11 +326,10 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
     );
     let after_remove = hosted.requests();
     assert_eq!(record_requests(&after_remove).len(), before_remove + 1);
-    let removed_label = format!("l3-{}-rm.opaque.uncloud.example", process::id());
     assert_eq!(
         authoritative_wildcard_a(&after_remove),
         vec![first_ip.to_string()],
-        "fresh label {removed_label} at the authority must not include the removed Machine"
+        "last published * A at the authority must not include the removed Machine"
     );
 }
 
