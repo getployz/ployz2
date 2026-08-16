@@ -1,24 +1,23 @@
 use std::{
     collections::BTreeMap,
     fs,
-    net::Ipv6Addr,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use ployz::{
-    compose::{ComposeProject, parse_normalized},
-    deploy::{
-        DeployOperation, DeployPlan, DeploySnapshot, ObservedDockerVolume, PlanError, PlanOptions,
-        plan_deploy,
-    },
+    compose::parse_normalized,
+    deploy::{DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanError},
 };
 use ployz_core::{
-    AdvertisedEndpoint, HostBind, HttpProtocol, Machine, MachineId, MachineName,
-    MachineObservation, MachineSubnet, ManagementAddress, MembershipObservation, PortPublication,
-    RestartPolicy, ServiceMode, TransportProtocol, UpdateOrder, VolumeSource, WireGuardPublicKey,
+    HostBind, HttpProtocol, PortPublication, RestartPolicy, ServiceMode, TransportProtocol,
+    UpdateOrder, VolumeSource,
 };
+
+#[path = "compose/support.rs"]
+mod support;
+use support::*;
 
 #[test]
 fn normalized_surface_reaches_requested_specs() {
@@ -921,44 +920,6 @@ volumes: {data: {name: shared}}
         Err(PlanError::MixedVolumeModes { name, global, replicated })
             if name.as_str() == "shared" && global == "everywhere" && replicated == "singleton"
     ));
-}
-
-fn plan_compose(
-    project: &ComposeProject,
-    snapshot: &DeploySnapshot,
-) -> Result<DeployPlan, PlanError> {
-    let mut resolved = project.clone();
-    resolved.resolve_secrets().expect("resolve secrets");
-    plan_deploy(
-        resolved.dependency_order().expect("dependency order"),
-        snapshot,
-        PlanOptions::default(),
-    )
-}
-
-fn machine(hex: char, name: &str) -> MachineObservation {
-    MachineObservation {
-        machine: Machine {
-            id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
-            name: MachineName::parse(name).unwrap(),
-            subnet: MachineSubnet(
-                format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
-                    .parse()
-                    .unwrap(),
-            ),
-            management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
-            public_key: WireGuardPublicKey([hex as u8; 32]),
-            public_ip: None,
-            advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
-            runtime: Default::default(),
-        },
-        membership: MembershipObservation::Up,
-        selected_endpoint: None,
-    }
-}
-
-fn service<'a>(project: &'a ComposeProject, name: &str) -> &'a ployz_core::RequestedServiceSpec {
-    project.services.get(name).unwrap()
 }
 
 fn git(directory: &Path, args: &[&str]) {

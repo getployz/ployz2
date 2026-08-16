@@ -548,8 +548,7 @@ async fn execute(client: &mut ployz::connect::Client, operations: Vec<&DeployOpe
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }
-            | DeployOperation::Sequence { .. }) => {
+            | DeployOperation::RunHook { .. }) => {
                 panic!("new-deploy test received {operation:?}")
             }
         }

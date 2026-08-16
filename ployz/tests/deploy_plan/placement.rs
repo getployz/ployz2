@@ -251,8 +251,7 @@ fn placement_by_ambiguous_machine_name_keeps_every_match() {
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(..)
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }
-            | DeployOperation::Sequence { .. }) => panic!("unexpected operation: {other:?}"),
+            | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
         })
         .collect::<Vec<_>>();
     assert_eq!(targets, vec![machine_id('1'), machine_id('2')]);
@@ -359,8 +358,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::StopHook { .. }
-                | DeployOperation::RunHook { .. }
-                | DeployOperation::Sequence { .. } => None,
+                | DeployOperation::RunHook { .. } => None,
             })
             .unwrap();
         assert_eq!(order, expected, "{name}");

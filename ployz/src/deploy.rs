@@ -225,42 +225,6 @@ pub enum DeployOperation {
         spec: ResolvedServiceSpec,
         old_hook_containers: Vec<(MachineId, ContainerId)>,
     },
-    Sequence {
-        operations: Vec<DeployOperation>,
-    },
-}
-
-impl DeployOperation {
-    #[must_use]
-    pub fn operations(&self) -> &[DeployOperation] {
-        match self {
-            Self::Sequence { operations } => operations,
-            operation @ (Self::CreateVolume { .. }
-            | Self::RunContainer { .. }
-            | Self::StopContainer { .. }
-            | Self::RemoveContainer { .. }
-            | Self::ReplaceContainer(..)
-            | Self::StopHook { .. }
-            | Self::RunHook { .. }) => std::slice::from_ref(operation),
-        }
-    }
-
-    fn flatten_into(&self, flattened: &mut Vec<Self>) {
-        match self {
-            Self::Sequence { operations } => {
-                for operation in operations {
-                    operation.flatten_into(flattened);
-                }
-            }
-            operation @ (Self::CreateVolume { .. }
-            | Self::RunContainer { .. }
-            | Self::StopContainer { .. }
-            | Self::RemoveContainer { .. }
-            | Self::ReplaceContainer(..)
-            | Self::StopHook { .. }
-            | Self::RunHook { .. }) => flattened.push(operation.clone()),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

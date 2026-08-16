@@ -105,8 +105,7 @@ fn placement_seed_randomizes_equal_priority_round_robin_order() {
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(..)
             | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }
-            | DeployOperation::Sequence { .. }) => panic!("unexpected operation: {other:?}"),
+            | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
         })
         .collect::<Vec<_>>()
     };
