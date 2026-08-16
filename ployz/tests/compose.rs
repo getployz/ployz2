@@ -806,7 +806,11 @@ volumes: {a: {}, b: {}}
             .all(|operation| match operation {
                 DeployOperation::CreateVolume { machine_id, .. }
                 | DeployOperation::RunContainer { machine_id, .. } => machine_id == anchor,
-                other => panic!("unexpected operation: {other:?}"),
+                other @ (DeployOperation::StopContainer { .. }
+                | DeployOperation::RemoveContainer { .. }
+                | DeployOperation::ReplaceContainer(..)
+                | DeployOperation::StopHook { .. }
+                | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
             })
     );
 

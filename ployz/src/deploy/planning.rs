@@ -31,30 +31,31 @@ pub fn plan_deploy<'a>(
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::default();
-    let mut volume_operations =
+    let mut volume_creates =
         prepare_shared_replicated_volumes(&volume_uses, snapshot, &mut pins, options)?;
     let name_errors_with_service = requested.len() > 1;
     let mut service_operations = Vec::new();
     for spec in &requested {
         service_operations.extend(
-            plan_one_service(spec, snapshot, &mut pins, &mut volume_operations, options).map_err(
+            plan_one_service(spec, snapshot, &mut pins, &mut volume_creates, options).map_err(
                 |source| service_error(name_errors_with_service, spec.name.as_str(), source),
             )?,
         );
     }
-    volume_operations.extend(service_operations);
-    Ok(DeployPlan::new(volume_operations))
+    let mut operations = volume_creates;
+    operations.extend(service_operations);
+    Ok(DeployPlan::new(operations))
 }
 
 fn plan_one_service(
     requested: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     pins: &mut VolumePins,
-    volume_operations: &mut Vec<DeployOperation>,
+    volume_creates: &mut Vec<DeployOperation>,
     options: PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, snapshot, options);
-    volume_operations.extend(plan_volume_operations(
+    volume_creates.extend(plan_volume_operations(
         requested,
         snapshot,
         pins,

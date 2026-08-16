@@ -16,7 +16,12 @@ fn new_replicated_service_runs_the_requested_count_across_available_machines() {
         .iter()
         .map(|operation| match operation {
             DeployOperation::RunContainer { spec, .. } => spec.service_id,
-            other => panic!("unexpected operation: {other:?}"),
+            other @ (DeployOperation::CreateVolume { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::ReplaceContainer(..)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
         })
         .collect::<Vec<_>>();
     assert_eq!(service_ids.len(), 2);
