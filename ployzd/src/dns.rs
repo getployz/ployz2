@@ -144,14 +144,10 @@ impl Projection {
     fn addresses(&self, target: &Target) -> Vec<Ipv4Addr> {
         match target {
             Target::Empty => Vec::new(),
-            Target::ServiceId(id) => self
+            Target::ServiceId { id, name } => self
                 .service_ids
                 .get(id)
-                .or_else(|| {
-                    ServiceName::parse(id.as_str())
-                        .ok()
-                        .and_then(|name| self.names.get(&name))
-                })
+                .or_else(|| self.names.get(name))
                 .cloned()
                 .unwrap_or_default(),
             Target::ServiceName(name) => self.names.get(name).cloned().unwrap_or_default(),
