@@ -102,7 +102,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
 }
 
 #[test]
-fn observation_warnings_are_data_not_printed_text() {
+fn observation_warnings_keep_failures_and_omissions_distinct() {
     let result = PartialResult {
         successes: vec![MachineSuccess {
             machine_id: MachineId::parse("a".repeat(32)).unwrap(),
@@ -120,17 +120,16 @@ fn observation_warnings_are_data_not_printed_text() {
     };
 
     assert_eq!(
-        observation_warnings("container", &result),
+        observation_warnings(ObservationKind::Container, &result),
         [
-            ObservationWarning {
-                kind: "container",
+            ObservationWarning::Failed {
+                kind: ObservationKind::Container,
                 machine_id: MachineId::parse("b".repeat(32)).unwrap(),
                 message: "container listing failed".into(),
             },
-            ObservationWarning {
-                kind: "container",
+            ObservationWarning::Omitted {
+                kind: ObservationKind::Container,
                 machine_id: MachineId::parse("c".repeat(32)).unwrap(),
-                message: String::new(),
             },
         ]
     );

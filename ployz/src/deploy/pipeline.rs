@@ -4,6 +4,7 @@
 //! Plan is executed to a Deploy Outcome. This module does not print, read
 //! stdin, or exit the process.
 
+use std::fmt::{self, Display, Formatter};
 use std::num::NonZeroU32;
 use std::time::SystemTime;
 
@@ -56,11 +57,32 @@ impl From<Failure> for PlanProjectError {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ObservationKind {
+    Container,
+    Volume,
+}
+
+impl Display for ObservationKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Container => f.write_str("container"),
+            Self::Volume => f.write_str("volume"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ObservationWarning {
-    pub kind: &'static str,
-    pub machine_id: MachineId,
-    pub message: String,
+pub(super) enum ObservationWarning {
+    Failed {
+        kind: ObservationKind,
+        machine_id: MachineId,
+        message: String,
+    },
+    Omitted {
+        kind: ObservationKind,
+        machine_id: MachineId,
+    },
 }
 
 pub(super) async fn plan_spec(
@@ -206,28 +228,35 @@ async fn gather_snapshot(
     machines: Vec<MachineObservation>,
 ) -> Result<(DeploySnapshot, Vec<ObservationWarning>), Failure> {
     let gathered = client.deploy_snapshot(machines).await?;
-    let mut warnings = observation_warnings("container", &gathered.containers);
-    warnings.extend(observation_warnings("volume", &gathered.volumes));
+    let mut warnings = observation_warnings(ObservationKind::Container, &gathered.containers);
+    warnings.extend(observation_warnings(
+        ObservationKind::Volume,
+        &gathered.volumes,
+    ));
     Ok((gathered.snapshot, warnings))
 }
 
 fn observation_warnings<T>(
-    kind: &'static str,
+    kind: ObservationKind,
     result: &PartialResult<T, RpcError>,
 ) -> Vec<ObservationWarning> {
     result
         .failures
         .iter()
-        .map(|failure| ObservationWarning {
+        .map(|failure| ObservationWarning::Failed {
             kind,
             machine_id: failure.machine_id,
             message: failure.error.message.clone(),
         })
-        .chain(result.omissions.iter().map(|machine| ObservationWarning {
-            kind,
-            machine_id: *machine,
-            message: String::new(),
-        }))
+        .chain(
+            result
+                .omissions
+                .iter()
+                .map(|machine| ObservationWarning::Omitted {
+                    kind,
+                    machine_id: *machine,
+                }),
+        )
         .collect()
 }
 
