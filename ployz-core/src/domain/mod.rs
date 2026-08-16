@@ -1,10 +1,12 @@
 mod machine;
 mod observation;
+mod selector;
 mod service_graph;
 mod spec;
 
 pub use machine::*;
 pub use observation::*;
+pub use selector::*;
 pub use service_graph::*;
 pub use spec::*;
 
