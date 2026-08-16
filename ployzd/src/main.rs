@@ -164,6 +164,12 @@ async fn main() -> Result<(), Error> {
         }
         _ => None,
     };
+    let containers = match (containers, replicated_store.clone()) {
+        (Some(runtime), Some(replicated)) => {
+            Some(runtime.replicating(replicated, Arc::clone(&store)))
+        }
+        (runtime, _) => runtime,
+    };
     let shutdown = CancellationToken::new();
     let (participating, participating_rx) =
         watch::channel(local_record.phase == LocalMachinePhase::Participating);
@@ -234,17 +240,12 @@ async fn main() -> Result<(), Error> {
         }
     };
     let observer = async {
-        match (containers.clone(), replicated_store.clone()) {
-            (Some(runtime), Some(replicated)) => runtime
-                .publish_observations(
-                    replicated,
-                    Arc::clone(&store),
-                    local_record.id,
-                    shutdown.clone(),
-                )
+        match containers.clone() {
+            Some(runtime) => runtime
+                .publish_observations(shutdown.clone())
                 .await
                 .map_err(io::Error::other),
-            _ => {
+            None => {
                 shutdown.cancelled().await;
                 Ok(())
             }

@@ -621,7 +621,6 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         .await
         .unwrap();
     let docker = LocalDocker::connect().unwrap();
-    let runtime = ContainerRuntime::new(docker.clone(), specs.clone());
     let mut local = crate::machine::LocalMachineStore::open(root.0.join("machine")).unwrap();
     let machine_id = local
         .initialize(
@@ -681,23 +680,14 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         operation.put(&hook, &spec).await.unwrap();
     }
 
+    let runtime = ContainerRuntime::new(docker.clone(), specs.clone())
+        .replicating(replicated.clone(), Arc::clone(&local))
+        .with_rescan_interval(Duration::from_secs(3));
     let shutdown = CancellationToken::new();
     let task = tokio::spawn({
         let shutdown = shutdown.clone();
         let runtime = runtime.clone();
-        let replicated = replicated.clone();
-        let local = Arc::clone(&local);
-        async move {
-            runtime
-                .publish_observations_with_rescan(
-                    replicated,
-                    local,
-                    machine_id,
-                    shutdown,
-                    Duration::from_secs(3),
-                )
-                .await
-        }
+        async move { runtime.publish_observations(shutdown).await }
     });
 
     wait_for(Duration::from_secs(5), || async {
@@ -830,13 +820,16 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     let invalid_socket = root.0.join("not-docker.sock");
     fs::write(&invalid_socket, []).unwrap();
     let failed_docker = LocalDocker::connect_socket(invalid_socket.to_str().unwrap()).unwrap();
-    let failed_runtime = ContainerRuntime::new(failed_docker, specs);
-    assert!(
-        failed_runtime
-            .sync_observations(&replicated, &local, &machine_id)
-            .await
-            .is_err()
-    );
+    let failed_runtime = ContainerRuntime::new(failed_docker, specs)
+        .replicating(replicated.clone(), Arc::clone(&local));
+    let fail_shutdown = CancellationToken::new();
+    let fail_task = tokio::spawn({
+        let shutdown = fail_shutdown.clone();
+        async move { failed_runtime.publish_observations(shutdown).await }
+    });
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    fail_shutdown.cancel();
+    fail_task.await.unwrap().unwrap();
     assert_eq!(
         replicated.raw_container(&service).await.unwrap(),
         before_failure
