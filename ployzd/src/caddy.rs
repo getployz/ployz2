@@ -1,8 +1,8 @@
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    HealthObservation, HttpProtocol, IngressHostname, Machine, MachineId, PortPublication,
-    ServiceName,
+    CADDY_VERIFY_PATH, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
+    HttpProtocol, IngressHostname, Machine, MachineId, PortPublication, ServiceContainer,
+    ServiceName, service_containers,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -208,8 +208,8 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     timestamp: &str,
     admin: Option<&A>,
 ) -> String {
-    let mut output =
-        automatic_caddyfile(local_machine, machine_name, observations, timestamp, None);
+    let containers = service_containers(observations.iter().cloned());
+    let mut output = automatic_caddyfile(local_machine, machine_name, &containers, timestamp, None);
     let Some(admin) = admin else {
         output.push_str(
             "\n# User-defined Caddy configs are unavailable because Caddy's admin API is not reachable.\n\
@@ -218,24 +218,29 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         return output;
     };
 
-    let healthy = healthy_containers(local_machine, observations);
-    let eligible = eligible_containers(local_machine, observations);
+    let healthy = healthy_containers(local_machine, &containers);
+    let eligible = eligible_containers(local_machine, &containers);
     let mut skipped = Vec::new();
     if let Some(container) = healthy
         .iter()
         .copied()
         .filter(|container| {
-            container.service_name.as_str() == "caddy" && container.machine_id == *local_machine
+            let observation = container.as_observation();
+            observation.service_name.as_str() == "caddy" && observation.machine_id == *local_machine
         })
         .max_by_key(|container| creation_key(container))
-        && let Some(config) = container.resolved_spec.caddy_config.as_deref()
+        && let Some(config) = container
+            .as_observation()
+            .resolved_spec
+            .caddy_config
+            .as_deref()
     {
-        match render_custom_config(config, &container.service_name, &eligible) {
+        match render_custom_config(config, &container.as_observation().service_name, &eligible) {
             Ok(rendered) => {
                 let candidate = automatic_caddyfile(
                     local_machine,
                     machine_name,
-                    observations,
+                    &containers,
                     timestamp,
                     Some(&rendered),
                 );
@@ -252,9 +257,9 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         }
     }
 
-    let mut newest = BTreeMap::<&str, &ContainerObservation>::new();
+    let mut newest = BTreeMap::<&str, &ServiceContainer>::new();
     for container in &healthy {
-        let service = container.service_name.as_str();
+        let service = container.as_observation().service_name.as_str();
         if service == "caddy" {
             continue;
         }
@@ -268,16 +273,23 @@ async fn generate_caddyfile<A: CaddyAdmin>(
             .or_insert(container);
     }
     for (service, container) in newest {
-        let Some(config) = container.resolved_spec.caddy_config.as_deref() else {
+        let Some(config) = container
+            .as_observation()
+            .resolved_spec
+            .caddy_config
+            .as_deref()
+        else {
             continue;
         };
-        let rendered = match render_custom_config(config, &container.service_name, &eligible) {
-            Ok(rendered) => rendered,
-            Err(error) => {
-                skipped.push(format!("Service '{service}': rendering failed: {error}"));
-                continue;
-            }
-        };
+        let rendered =
+            match render_custom_config(config, &container.as_observation().service_name, &eligible)
+            {
+                Ok(rendered) => rendered,
+                Err(error) => {
+                    skipped.push(format!("Service '{service}': rendering failed: {error}"));
+                    continue;
+                }
+            };
         let fragment = format!("\n# User-defined config for Service '{service}'.\n{rendered}\n");
         let candidate = format!("{output}{fragment}");
         match admin.adapt(&candidate).await {
@@ -298,52 +310,53 @@ async fn generate_caddyfile<A: CaddyAdmin>(
 
 fn eligible_containers<'a>(
     local_machine: &MachineId,
-    observations: &'a [ContainerObservation],
-) -> Vec<&'a ContainerObservation> {
-    healthy_containers(local_machine, observations)
+    containers: &'a [ServiceContainer],
+) -> Vec<&'a ServiceContainer> {
+    healthy_containers(local_machine, containers)
         .into_iter()
-        .filter(|container| container.address.is_some())
+        .filter(|container| container.as_observation().address.is_some())
         .collect()
 }
 
 fn healthy_containers<'a>(
     local_machine: &MachineId,
-    observations: &'a [ContainerObservation],
-) -> Vec<&'a ContainerObservation> {
-    let mut containers = observations
+    containers: &'a [ServiceContainer],
+) -> Vec<&'a ServiceContainer> {
+    let mut containers = containers
         .iter()
         .filter(|container| {
-            container.kind == ContainerKind::ServiceContainer
-                && matches!(
-                    container.runtime,
-                    ContainerRuntimeObservation::Running {
-                        health: HealthObservation::Healthy | HealthObservation::NotConfigured
-                    }
-                )
+            matches!(
+                container.as_observation().runtime,
+                ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy | HealthObservation::NotConfigured
+                }
+            )
         })
         .collect::<Vec<_>>();
     containers.sort_by_key(|container| {
+        let observation = container.as_observation();
         (
-            container.machine_id != *local_machine,
-            container.service_name.as_str(),
-            container.created_at_unix_nanos,
-            container.container_id.as_str(),
+            observation.machine_id != *local_machine,
+            observation.service_name.as_str(),
+            observation.created_at_unix_nanos,
+            observation.container_id.as_str(),
         )
     });
     containers
 }
 
-fn creation_key(container: &ContainerObservation) -> (i64, &str) {
+fn creation_key(container: &ServiceContainer) -> (i64, &str) {
+    let observation = container.as_observation();
     (
-        container.created_at_unix_nanos,
-        container.container_id.as_str(),
+        observation.created_at_unix_nanos,
+        observation.container_id.as_str(),
     )
 }
 
 fn render_custom_config(
     template: &str,
     current_service: &ServiceName,
-    observations: &[&ContainerObservation],
+    containers: &[&ServiceContainer],
 ) -> Result<String, Error> {
     let mut rendered = String::new();
     let mut remaining = template;
@@ -358,12 +371,12 @@ fn render_custom_config(
         let replacement = match tokens.as_slice() {
             [name] if name == ".Name" => current_service.as_str().to_owned(),
             [helper] if helper == "upstreams" => {
-                upstreams(observations, current_service.as_str(), None)
+                upstreams(containers, current_service.as_str(), None)
             }
             [helper, argument] if helper == "upstreams" => match argument.parse::<u16>() {
-                Ok(port) => upstreams(observations, current_service.as_str(), Some(port)),
+                Ok(port) => upstreams(containers, current_service.as_str(), Some(port)),
                 Err(_) => upstreams(
-                    observations,
+                    containers,
                     if argument == ".Name" {
                         current_service.as_str()
                     } else {
@@ -381,7 +394,7 @@ fn render_custom_config(
                 let port = port
                     .parse::<u16>()
                     .map_err(|_| Error::Template(format!("invalid upstream port '{port}'")))?;
-                upstreams(observations, service, Some(port))
+                upstreams(containers, service, Some(port))
             }
             _ => {
                 return Err(Error::Template(format!(
@@ -397,11 +410,12 @@ fn render_custom_config(
     Ok(rendered)
 }
 
-fn upstreams(observations: &[&ContainerObservation], service: &str, port: Option<u16>) -> String {
-    observations
+fn upstreams(containers: &[&ServiceContainer], service: &str, port: Option<u16>) -> String {
+    containers
         .iter()
-        .filter(|container| container.service_name.as_str() == service)
-        .filter_map(|container| container.address)
+        .map(|container| container.as_observation())
+        .filter(|observation| observation.service_name.as_str() == service)
+        .filter_map(|observation| observation.address)
         .map(|address| match port {
             Some(port) => format!("{}:{port}", address.0),
             None => address.0.to_string(),
@@ -413,17 +427,18 @@ fn upstreams(observations: &[&ContainerObservation], service: &str, port: Option
 fn automatic_caddyfile(
     local_machine: &MachineId,
     machine_name: &str,
-    observations: &[ContainerObservation],
+    containers: &[ServiceContainer],
     timestamp: &str,
     global_config: Option<&str>,
 ) -> String {
-    let containers = eligible_containers(local_machine, observations);
+    let containers = eligible_containers(local_machine, containers);
 
     let mut http = BTreeMap::<&str, Vec<String>>::new();
     let mut https = BTreeMap::<&str, Vec<String>>::new();
     for container in containers {
-        let address = container.address.expect("address was filtered above");
-        for port in &container.resolved_spec.ports {
+        let observation = container.as_observation();
+        let address = observation.address.expect("address was filtered above");
+        for port in &observation.resolved_spec.ports {
             let PortPublication::Ingress {
                 hostname: IngressHostname::Explicit { hostname },
                 container_port,
@@ -500,7 +515,7 @@ mod tests {
         ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind,
         HttpProtocol, IngressHostname, Machine, MachineId, MachineName, ManagementAddress,
         PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol,
-        WireGuardPublicKey,
+        WireGuardPublicKey, service_containers,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -535,7 +550,13 @@ mod tests {
         ];
 
         assert_eq!(
-            automatic_caddyfile(&local, "node-a", &observations, "TIMESTAMP", None),
+            automatic_caddyfile(
+                &local,
+                "node-a",
+                &service_containers(observations),
+                "TIMESTAMP",
+                None,
+            ),
             format!(
                 "# Caddyfile autogenerated by Ployz on Machine 'node-a' (DO NOT EDIT): TIMESTAMP\n\
 # Automatically updated on Service or health status changes.\n\
@@ -573,6 +594,38 @@ https://secure.example.com {{\n\
 }}\n"
             )
         );
+    }
+
+    #[test]
+    fn automatic_sites_exclude_hook_containers() {
+        let local = MachineId::parse("a".repeat(32)).unwrap();
+        let observations = vec![
+            observation(
+                1,
+                &local,
+                "api",
+                Some([10, 210, 1, 2]),
+                vec![ingress("api.example", 80, HttpProtocol::Http)],
+            ),
+            hook_observation(
+                2,
+                &local,
+                "api",
+                Some([10, 210, 1, 4]),
+                vec![ingress("hook.example", 80, HttpProtocol::Http)],
+            ),
+        ];
+
+        let caddyfile = automatic_caddyfile(
+            &local,
+            "node-a",
+            &service_containers(observations),
+            "TIMESTAMP",
+            None,
+        );
+        assert!(caddyfile.contains("reverse_proxy 10.210.1.2:80"));
+        assert!(!caddyfile.contains("10.210.1.4"));
+        assert!(!caddyfile.contains("hook.example"));
     }
 
     #[test]
@@ -614,7 +667,13 @@ https://secure.example.com {{\n\
             ),
         ];
 
-        let caddyfile = automatic_caddyfile(&local, "node-a", &observations, "TIMESTAMP", None);
+        let caddyfile = automatic_caddyfile(
+            &local,
+            "node-a",
+            &service_containers(observations),
+            "TIMESTAMP",
+            None,
+        );
         assert!(caddyfile.contains(CADDY_VERIFY_PATH));
         assert!(!caddyfile.contains("missing.example"));
         assert!(caddyfile.contains("http://web.opaque.uncloud.example"));
@@ -639,6 +698,47 @@ https://secure.example.com {{\n\
             }))
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn custom_configs_exclude_hook_containers() {
+        let local = MachineId::parse("a".repeat(32)).unwrap();
+        let mut hook = custom_observation(
+            2,
+            9,
+            &local,
+            "api",
+            "hook.example { reverse_proxy {{upstreams}} }",
+            [10, 210, 1, 4],
+        );
+        hook.kind = ContainerKind::PreDeployHook;
+        let observations = vec![
+            custom_observation(
+                1,
+                1,
+                &local,
+                "api",
+                "api.example { reverse_proxy {{upstreams}} }",
+                [10, 210, 1, 2],
+            ),
+            hook,
+        ];
+
+        let caddyfile = generate_caddyfile(
+            &local,
+            "node-a",
+            &observations,
+            "TIMESTAMP",
+            Some(&FakeAdmin::default()),
+        )
+        .await;
+
+        assert!(caddyfile.contains(
+            "# User-defined config for Service 'api'.\n\
+api.example { reverse_proxy 10.210.1.2 }"
+        ));
+        assert!(!caddyfile.contains("hook.example"));
+        assert!(!caddyfile.contains("10.210.1.4"));
     }
 
     #[tokio::test]
@@ -856,6 +956,18 @@ web.example { reverse_proxy 10.210.1.6:8080 }"
             container_port: port.try_into().unwrap(),
             http_protocol,
         }
+    }
+
+    fn hook_observation(
+        suffix: u8,
+        machine_id: &MachineId,
+        service_name: &str,
+        address: Option<[u8; 4]>,
+        ports: Vec<PortPublication>,
+    ) -> ContainerObservation {
+        let mut observation = observation(suffix, machine_id, service_name, address, ports);
+        observation.kind = ContainerKind::PreDeployHook;
+        observation
     }
 
     fn observation(
