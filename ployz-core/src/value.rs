@@ -305,9 +305,76 @@ validated_string_newtype!(
 );
 
 /// One Machine's optimistic container subnet candidate.
+///
+/// A Machine Subnet is always an IPv4 `/24`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct MachineSubnet(pub Ipv4Net);
+#[serde(try_from = "String", into = "String")]
+pub struct MachineSubnet(Ipv4Net);
+
+impl MachineSubnet {
+    /// Parse an IPv4 `/24` CIDR as a Machine Subnet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when the value is not an IPv4 `/24` CIDR.
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, ValueError> {
+        let value = value.as_ref();
+        let network = value
+            .parse::<Ipv4Net>()
+            .ok()
+            .filter(|network| network.prefix_len() == 24)
+            .ok_or_else(|| ValueError::new("Machine Subnet", value, "an IPv4 /24 CIDR"))?;
+        Ok(Self(network))
+    }
+
+    /// The Machine-local gateway: the first usable address in this subnet.
+    #[must_use]
+    pub fn gateway(self) -> MachineGateway {
+        MachineGateway(Ipv4Addr::from(u32::from(self.0.network()) + 1))
+    }
+
+    /// The IPv4 network this Machine Subnet occupies.
+    #[must_use]
+    pub fn as_net(self) -> Ipv4Net {
+        self.0
+    }
+}
+
+impl fmt::Display for MachineSubnet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+impl FromStr for MachineSubnet {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<String> for MachineSubnet {
+    type Error = ValueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<Ipv4Net> for MachineSubnet {
+    type Error = ValueError;
+
+    fn try_from(network: Ipv4Net) -> Result<Self, Self::Error> {
+        Self::parse(network.to_string())
+    }
+}
+
+impl From<MachineSubnet> for String {
+    fn from(value: MachineSubnet) -> Self {
+        value.to_string()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]

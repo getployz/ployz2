@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, num::NonZeroU32};
+use std::{collections::BTreeSet, net::Ipv4Addr, num::NonZeroU32};
 
 use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
@@ -8,10 +8,10 @@ use ployz_core::{
     DnsRecordRequest, DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome,
     FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest,
     HealthObservation, ImageSummary, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
-    ListImagesRequest, MachineFailure, MachineId, MachineImages, MachineName, MachinePath,
-    MachineRpc, MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess,
-    MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
-    Placement, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
+    ListImagesRequest, MachineFailure, MachineGateway, MachineId, MachineImages, MachineName,
+    MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSelector, MachineSubnet,
+    MachineSuccess, MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR,
+    PartialResult, Placement, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
     RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
     RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
     ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
@@ -110,6 +110,41 @@ fn machine_name_accepts_lowercase_dns_labels() {
     assert_eq!(
         MachineName::parse("machine-a").unwrap().as_str(),
         "machine-a"
+    );
+}
+
+#[test]
+fn machine_subnet_rejects_prefixes_that_are_not_slash_24() {
+    assert_eq!(
+        MachineSubnet::parse("10.210.0.0/16")
+            .unwrap_err()
+            .to_string(),
+        "invalid Machine Subnet \"10.210.0.0/16\": an IPv4 /24 CIDR"
+    );
+    assert_eq!(
+        MachineSubnet::parse("10.210.7.1/32")
+            .unwrap_err()
+            .to_string(),
+        "invalid Machine Subnet \"10.210.7.1/32\": an IPv4 /24 CIDR"
+    );
+    assert_eq!(
+        MachineSubnet::parse("not-a-cidr").unwrap_err().to_string(),
+        "invalid Machine Subnet \"not-a-cidr\": an IPv4 /24 CIDR"
+    );
+    assert!(serde_json::from_str::<MachineSubnet>("\"10.210.0.0/16\"").is_err());
+}
+
+#[test]
+fn machine_subnet_exposes_its_gateway_and_stays_a_cidr_string() {
+    let subnet = MachineSubnet::parse("10.210.7.0/24").unwrap();
+    assert_eq!(
+        subnet.gateway(),
+        MachineGateway(Ipv4Addr::new(10, 210, 7, 1))
+    );
+    assert_eq!(serde_json::to_string(&subnet).unwrap(), "\"10.210.7.0/24\"");
+    assert_eq!(
+        serde_json::from_str::<MachineSubnet>("\"10.210.7.0/24\"").unwrap(),
+        subnet
     );
 }
 
