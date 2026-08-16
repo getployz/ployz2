@@ -34,12 +34,12 @@ pub enum CapabilityAdvertisement {
 }
 
 impl CapabilityAdvertisement {
-    /// Catalogued capability names in this class, in catalog order.
-    pub fn capabilities(self) -> impl Iterator<Item = &'static str> {
+    /// Capability names this class advertises, in catalog order.
+    pub fn capabilities(self) -> impl Iterator<Item = CapabilityName> {
         CATALOGUED_CAPABILITIES
             .iter()
             .filter(move |(_, class)| *class == self)
-            .map(|(name, _)| *name)
+            .map(|(name, _)| CapabilityName::parse(*name).expect("static capability name is valid"))
     }
 }
 
@@ -58,6 +58,7 @@ macro_rules! define_capabilities {
         const CATALOGUED_CAPABILITIES: &[(&str, CapabilityAdvertisement)] = &[
             $(($unary_capability, CapabilityAdvertisement::$unary_advertisement),)+
             $(($stream_capability, CapabilityAdvertisement::$stream_advertisement),)+
+            (EXEC_CONTAINER_CAPABILITY, CapabilityAdvertisement::Container),
         ];
     };
 }

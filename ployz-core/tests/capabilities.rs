@@ -67,9 +67,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
 #[test]
 fn advertised_capability_groups_match_the_frozen_catalog() {
     assert_eq!(
-        CapabilityAdvertisement::Always
-            .capabilities()
-            .collect::<Vec<_>>(),
+        names(CapabilityAdvertisement::Always),
         [
             "ployz.rpc.describe-contract.v1",
             "ployz.machine.inspect.v1",
@@ -86,10 +84,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
         ]
     );
     assert_eq!(
-        CapabilityAdvertisement::Container
-            .capabilities()
-            .chain(std::iter::once(EXEC_CONTAINER_CAPABILITY))
-            .collect::<Vec<_>>(),
+        names(CapabilityAdvertisement::Container),
         [
             "ployz.container.list.v1",
             "ployz.container.inspect.v1",
@@ -108,15 +103,11 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
         ]
     );
     assert_eq!(
-        CapabilityAdvertisement::Caddy
-            .capabilities()
-            .collect::<Vec<_>>(),
+        names(CapabilityAdvertisement::Caddy),
         ["ployz.caddy.config.v1"]
     );
     assert_eq!(
-        CapabilityAdvertisement::Cluster
-            .capabilities()
-            .collect::<Vec<_>>(),
+        names(CapabilityAdvertisement::Cluster),
         [
             "ployz.dns.reserve.v1",
             "ployz.dns.show.v1",
@@ -124,6 +115,13 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.dns.records.create.v1",
         ]
     );
+}
+
+fn names(class: CapabilityAdvertisement) -> Vec<String> {
+    class
+        .capabilities()
+        .map(|name| name.as_str().to_owned())
+        .collect()
 }
 
 #[test]
