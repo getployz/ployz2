@@ -244,9 +244,7 @@ fn socket_inode_label(path: &Path) -> Option<String> {
     })
 }
 
-/// Configured path when it is a Unix socket, otherwise the first known containerd socket.
-#[must_use]
-pub fn detect_socket(configured: Option<&Path>) -> Option<PathBuf> {
+fn detect_socket(configured: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = configured {
         return is_socket(path).then(|| path.to_owned());
     }

@@ -35,9 +35,7 @@ use observe::ObservationSink;
 
 pub(crate) use managed_service::ManagedService;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
-pub use unregistry::{
-    ImageIngestPrerequisite, RunningUnregistry, detect_socket, unregistry_matches,
-};
+pub use unregistry::{ImageIngestPrerequisite, RunningUnregistry, unregistry_matches};
 
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
