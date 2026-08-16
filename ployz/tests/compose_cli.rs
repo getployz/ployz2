@@ -396,8 +396,6 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo a$$b"]
     environment:
       LITERAL: "a$$b"
-    labels:
-      app: "a$$b"
     volumes:
       - type: volume
         source: data
