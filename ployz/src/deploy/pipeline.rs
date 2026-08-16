@@ -19,6 +19,7 @@ use crate::{
     compose::{BuildService, ComposeProject, plan_compose_deploy},
     connect::Client,
     failure::Failure,
+    image::PushError,
 };
 
 use super::{
@@ -34,7 +35,8 @@ pub(super) struct DeployPreview {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct PushReport {
+pub(super) struct PushOutcome {
+    pub machines: Vec<MachineObservation>,
     pub pushed: Vec<PushedImage>,
     pub failures: Vec<String>,
 }
@@ -43,18 +45,6 @@ pub(super) struct PushReport {
 pub(super) struct PushedImage {
     pub image: String,
     pub machine_id: MachineId,
-}
-
-#[derive(Debug)]
-pub(super) enum PlanProjectError {
-    PushFailed(PushReport),
-    Other(Failure),
-}
-
-impl From<Failure> for PlanProjectError {
-    fn from(error: Failure) -> Self {
-        Self::Other(error)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,33 +95,47 @@ pub(super) async fn plan_spec(
     })
 }
 
+pub(super) async fn push_project_images(
+    client: &mut Client,
+    builds: &[BuildService],
+) -> Result<PushOutcome, Failure> {
+    let machines = list_machines(client).await?;
+    let mut pushed = Vec::new();
+    let mut failures = Vec::new();
+    for service in builds {
+        match push_image(client, service, &machines).await {
+            Ok((images, service_failures)) => {
+                pushed.extend(images);
+                failures.extend(service_failures);
+            }
+            Err(error) => failures.push(format!("{}: {error}", service.image)),
+        }
+    }
+    Ok(PushOutcome {
+        machines,
+        pushed,
+        failures,
+    })
+}
+
 pub(super) async fn plan_project(
     client: &mut Client,
     project: &mut ComposeProject,
-    builds: &[BuildService],
+    machines: Vec<MachineObservation>,
     options: PlanOptions,
-) -> Result<(DeployPreview, PushReport), PlanProjectError> {
-    let machines = list_machines(client).await?;
-    let report = ensure_images_available(client, builds, &machines).await?;
-    if !report.failures.is_empty() {
-        return Err(PlanProjectError::PushFailed(report));
-    }
-    project.resolve_secrets().map_err(Failure::from)?;
+) -> Result<DeployPreview, Failure> {
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     expand_ingress(client, project.services.values_mut()).await?;
-    let compose = plan_compose_deploy(project, &snapshot, options).map_err(Failure::from)?;
+    let compose = plan_compose_deploy(project, &snapshot, options)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
-    Ok((
-        DeployPreview {
-            operations: compose
-                .operations()
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>(),
-            warnings,
-        },
-        report,
-    ))
+    Ok(DeployPreview {
+        operations: compose
+            .operations()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        warnings,
+    })
 }
 
 pub(super) async fn plan_scale(
@@ -197,7 +201,7 @@ fn scale_plan(
     )?))
 }
 
-pub(crate) fn requested_from_resolved(resolved: &ResolvedServiceSpec) -> RequestedServiceSpec {
+fn requested_from_resolved(resolved: &ResolvedServiceSpec) -> RequestedServiceSpec {
     RequestedServiceSpec {
         name: resolved.name.clone(),
         mode: resolved.mode.clone(),
@@ -282,41 +286,18 @@ fn needs_ingress_expansion(requested: &RequestedServiceSpec) -> bool {
         .any(|port| matches!(port, PortPublication::Ingress { .. }))
 }
 
-async fn ensure_images_available(
-    client: &mut Client,
-    builds: &[BuildService],
-    machines: &[MachineObservation],
-) -> Result<PushReport, Failure> {
-    let mut pushed = Vec::new();
-    let mut failures = Vec::new();
-    for service in builds {
-        match push_image(client, service, machines).await {
-            Ok((images, service_failures)) => {
-                pushed.extend(images);
-                if !service_failures.is_empty() {
-                    failures.push(service_failures.join("; "));
-                }
-            }
-            Err(error) => failures.push(error.to_string()),
-        }
-    }
-    Ok(PushReport { pushed, failures })
-}
-
 async fn push_image(
     client: &mut Client,
     service: &BuildService,
     machines: &[MachineObservation],
-) -> Result<(Vec<PushedImage>, Vec<String>), Failure> {
+) -> Result<(Vec<PushedImage>, Vec<String>), PushError> {
     let targets = service
         .machines
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     let result =
-        crate::image::push_using_machines(client, &service.image, None, &targets, machines)
-            .await
-            .map_err(|error| Failure::usage(format!("{}: {error}", service.image)))?;
+        crate::image::push_using_machines(client, &service.image, None, &targets, machines).await?;
     let pushed = result
         .successes
         .iter()

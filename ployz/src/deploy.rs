@@ -12,8 +12,6 @@ mod planning;
 
 pub(crate) use apply::{apply_requested, deploy_project, deploy_scale, deploy_spec};
 pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
-#[cfg(test)]
-pub(crate) use pipeline::requested_from_resolved;
 pub use planning::plan_deploy;
 pub(crate) use planning::volume_eligible_machine_ids;
 pub use ployz_core::compare_specs;

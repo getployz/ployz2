@@ -1,6 +1,4 @@
-use std::num::NonZeroU32;
-
-use ployz_core::{PortPublication, ResolvedServiceSpec, RestartPolicy, ServiceMode};
+use ployz_core::{PortPublication, RestartPolicy, ServiceMode};
 
 use super::*;
 
@@ -97,37 +95,6 @@ fn run_pulls_untagged_images_as_latest() {
     let digest = format!("alpine@sha256:{}", "0".repeat(64));
     assert_eq!(image(&digest), digest);
     assert_eq!(image("localhost:5000/foo"), "localhost:5000/foo:latest");
-}
-
-#[test]
-fn resolved_scale_input_changes_only_replicas() {
-    let requested: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
-        "name": "api",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "alpine", "pull_policy": "missing" }
-    }))
-    .unwrap();
-    let resolved = ResolvedServiceSpec {
-        service_id: ServiceId::random(),
-        name: requested.name.clone(),
-        mode: requested.mode.clone(),
-        container: requested.container.clone(),
-        placement: requested.placement.clone(),
-        ports: requested.ports.clone(),
-        volumes: requested.volumes.clone(),
-        mounts: requested.mounts.clone(),
-        configs: requested.configs.clone(),
-        pre_deploy: None,
-        caddy_config: None,
-        update: Default::default(),
-    };
-    let mut scaled = requested_from_resolved(&resolved);
-    scaled.mode = ServiceMode::Replicated {
-        replicas: NonZeroU32::new(3).unwrap(),
-    };
-    let mut expected = requested_from_resolved(&resolved);
-    expected.mode = scaled.mode.clone();
-    assert_eq!(scaled, expected);
 }
 
 #[test]

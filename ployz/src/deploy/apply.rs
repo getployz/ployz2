@@ -15,8 +15,8 @@ use crate::{
 use super::{
     DeployOperation, DeployOutcome, ExecutionError, FailedOperation, ReplacementOperation,
     pipeline::{
-        DeployPreview, ObservationWarning, PlanProjectError, PushReport, execute_deploy,
-        plan_options, plan_project, plan_scale, plan_spec,
+        DeployPreview, ObservationWarning, PushOutcome, execute_deploy, plan_options, plan_project,
+        plan_scale, plan_spec, push_project_images,
     },
 };
 
@@ -41,18 +41,16 @@ pub(crate) async fn deploy_project(
     auto_confirm: bool,
 ) -> Result<(), Failure> {
     let options = plan_options(force_recreate, skip_health_monitor);
-    let (preview, report) = match plan_project(client, project, builds, options).await {
-        Ok(planned) => planned,
-        Err(PlanProjectError::PushFailed(report)) => {
-            print_pushed_images(&report);
-            return Err(Failure::usage(format!(
-                "image push failed: {}",
-                report.failures.join("; ")
-            )));
-        }
-        Err(PlanProjectError::Other(error)) => return Err(error),
-    };
-    print_pushed_images(&report);
+    let outcome = push_project_images(client, builds).await?;
+    print_pushed_images(&outcome);
+    if !outcome.failures.is_empty() {
+        return Err(Failure::usage(format!(
+            "image push failed: {}",
+            outcome.failures.join("; ")
+        )));
+    }
+    project.resolve_secrets()?;
+    let preview = plan_project(client, project, outcome.machines, options).await?;
     print_warnings(&preview);
     if preview.operations.is_empty() {
         println!("No changes.");
@@ -90,8 +88,8 @@ async fn confirm_and_execute(
     finish(execute_deploy(client, operations).await)
 }
 
-fn print_pushed_images(report: &PushReport) {
-    for pushed in &report.pushed {
+fn print_pushed_images(outcome: &PushOutcome) {
+    for pushed in &outcome.pushed {
         println!("Pushed {} to {}", pushed.image, pushed.machine_id);
     }
 }

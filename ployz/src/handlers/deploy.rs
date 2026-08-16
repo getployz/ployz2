@@ -1,8 +1,6 @@
 use std::num::NonZeroU32;
 
 use clap::ArgMatches;
-#[cfg(test)]
-use ployz_core::{RequestedServiceSpec, ServiceId};
 
 use crate::{
     compose::{
@@ -103,9 +101,6 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
 #[path = "deploy_input.rs"]
 mod input;
 use input::{parse_u32, run_spec};
-
-#[cfg(test)]
-pub(super) use crate::deploy::requested_from_resolved;
 
 #[cfg(test)]
 #[path = "deploy_tests.rs"]
