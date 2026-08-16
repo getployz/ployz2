@@ -26,6 +26,7 @@ pub fn plan_deploy<'a>(
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     // A Deploy is a finite calculation over this supplied snapshot, never a reconciliation loop.
+    // The clone is planner-internal: later specs observe CreateVolume ops already planned.
     let mut snapshot = snapshot.clone();
     let mut volume_operations =
         prepare_shared_replicated_volumes(&volume_uses, &mut snapshot, options)?;

@@ -11,8 +11,12 @@ fn new_replicated_service_runs_the_requested_count_across_available_machines() {
 
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
-    assert!(plan.is_new_service());
     assert_eq!(plan.service_plans.len(), 1);
+    assert!(
+        plan.service_plans
+            .first()
+            .is_some_and(|service| service.is_new_service)
+    );
     assert_eq!(plan.operations().len(), 2);
     assert!(matches!(
         plan.operations(),
@@ -58,8 +62,13 @@ fn matching_running_container_is_left_untouched() {
 
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
-    assert!(!plan.is_new_service());
-    assert_eq!(plan.service_id(), current_service_id);
+    assert_eq!(plan.service_plans.len(), 1);
+    assert_eq!(
+        plan.service_plans
+            .first()
+            .map(|service| (service.service_id, service.is_new_service)),
+        Some((current_service_id, false))
+    );
     assert!(plan.operations().is_empty());
 }
 

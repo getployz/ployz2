@@ -80,16 +80,6 @@ impl DeployPlan {
     }
 
     #[must_use]
-    pub fn service_id(&self) -> ServiceId {
-        self.service_plans[0].service_id
-    }
-
-    #[must_use]
-    pub fn is_new_service(&self) -> bool {
-        self.service_plans[0].is_new_service
-    }
-
-    #[must_use]
     pub fn operations(&self) -> &[DeployOperation] {
         &self.operations
     }
@@ -122,7 +112,7 @@ impl DeployPlan {
         compensation: ReplacementCompensation<E>,
     ) -> Option<DeployOutcome<E>> {
         Self::replacement_health_failure_outcome_from(
-            &self.operations(),
+            self.operations(),
             completed_count,
             error,
             compensation,
