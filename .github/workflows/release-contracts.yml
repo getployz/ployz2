@@ -18,7 +18,6 @@ on:
       - scripts/verify-release.sh
       - scripts/pack-release.sh
       - scripts/release-artifacts-needed.sh
-      - scripts/repoint-homebrew-tap.sh
       - scripts/publish-github-release.sh
       - scripts/check-release-tag.sh
       - scripts/test-release-contracts.sh
