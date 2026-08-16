@@ -6,6 +6,7 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use bollard::{
