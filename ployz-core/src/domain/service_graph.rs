@@ -26,6 +26,8 @@ pub enum ServiceVolumeGraphError {
 }
 
 impl ServiceVolumeGraph {
+    /// Build a graph from Volume definitions and the mounts that refer to them.
+    ///
     /// # Errors
     ///
     /// Returns [`ServiceVolumeGraphError`] when two definitions share a
@@ -100,6 +102,8 @@ pub enum ServiceConfigGraphError {
 }
 
 impl ServiceConfigGraph {
+    /// Build a graph from Config definitions and the mounts that refer to them.
+    ///
     /// # Errors
     ///
     /// Returns [`ServiceConfigGraphError`] when two definitions share a name or
