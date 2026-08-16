@@ -7,7 +7,7 @@ use ployz_core::{
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     fs,
     future::Future,
@@ -70,13 +70,16 @@ impl AdminClient {
     }
 
     async fn post(&self, path: &str, content_type: &str, body: String) -> Result<String, Error> {
-        let response = self
+        let mut request = self
             .client
             .post(format!("http://localhost{path}"))
-            .header(header::CONTENT_TYPE, content_type)
-            .body(body)
-            .send()
-            .await?;
+            .header(header::CONTENT_TYPE, content_type);
+        if path == "/load" {
+            // Pin paths stay the same when only file bytes change. Caddy
+            // no-ops identical JSON unless this header forces a reload.
+            request = request.header(header::CACHE_CONTROL, "must-revalidate");
+        }
+        let response = request.body(body).send().await?;
         let status = response.status();
         let body = response.text().await?;
         if status != StatusCode::OK {
@@ -185,7 +188,7 @@ async fn reconcile<A: CaddyAdmin>(
 ) -> Result<(), Error> {
     // TODO(UT-116): keep the Caddy projection membership-blind until the membership model is
     // intentionally changed across replicated projections.
-    write_certificate_files(config_file, certificates)?;
+    let pinned = write_certificate_files(config_file, certificates)?;
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let containers = service_containers(observations.iter().cloned());
     let caddyfile = generate_caddyfile(
@@ -193,7 +196,7 @@ async fn reconcile<A: CaddyAdmin>(
         machine.name.as_str(),
         &containers,
         &timestamp,
-        certificates,
+        &pinned,
         admin,
     )
     .await;
@@ -208,12 +211,13 @@ async fn reconcile<A: CaddyAdmin>(
 fn write_certificate_files(
     config_file: &Path,
     certificates: &BTreeMap<IngressHost, CertificateMaterial>,
-) -> Result<(), Error> {
+) -> Result<BTreeSet<IngressHost>, Error> {
     let directory = config_file
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?
         .join(CERTS_DIR);
     prepare_directory(&directory)?;
+    let mut pinned = BTreeSet::new();
     for (hostname, material) in certificates {
         if !material.is_present() {
             continue;
@@ -224,8 +228,9 @@ fn write_certificate_files(
         set_ployz_group(&cert_path)?;
         atomic_write(&key_path, material.private_key().as_bytes(), 0o600)?;
         set_ployz_group(&key_path)?;
+        pinned.insert(hostname.clone());
     }
-    Ok(())
+    Ok(pinned)
 }
 
 fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
@@ -249,7 +254,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     machine_name: &str,
     containers: &[ServiceContainer],
     timestamp: &str,
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+    pinned: &BTreeSet<IngressHost>,
     admin: Option<&A>,
 ) -> String {
     let mut output = automatic_caddyfile(
@@ -258,7 +263,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         containers,
         timestamp,
         None,
-        certificates,
+        pinned,
     );
     let Some(admin) = admin else {
         output.push_str(
@@ -293,7 +298,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
                     containers,
                     timestamp,
                     Some(&rendered),
-                    certificates,
+                    pinned,
                 );
                 // TODO(UT-119): /adapt remains the only validation for custom Caddyfile
                 // candidates and may accept a configuration that /load rejects.
@@ -481,12 +486,12 @@ fn automatic_caddyfile(
     containers: &[ServiceContainer],
     timestamp: &str,
     global_config: Option<&str>,
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+    pinned: &BTreeSet<IngressHost>,
 ) -> String {
     let containers = eligible_containers(local_machine, containers);
 
-    let mut http = BTreeMap::<&str, Vec<String>>::new();
-    let mut https = BTreeMap::<&str, Vec<String>>::new();
+    let mut http = BTreeMap::<&IngressHost, Vec<String>>::new();
+    let mut https = BTreeMap::<&IngressHost, Vec<String>>::new();
     for container in containers {
         let observation = container.as_observation();
         let address = observation.address.expect("address was filtered above");
@@ -502,7 +507,6 @@ fn automatic_caddyfile(
                 // the supported path. Assignment from the Cluster Domain is resolved before Caddy.
                 continue;
             };
-            let hostname = hostname.as_str();
             let upstream = format!("{}:{container_port}", address.0);
             match http_protocol {
                 HttpProtocol::Http => http.entry(hostname).or_default().push(upstream),
@@ -545,8 +549,10 @@ http:// {{\n\
     }
     for (protocol, sites) in [("http", http), ("https", https)] {
         for (hostname, upstreams) in sites {
-            let tls = if protocol == "https" {
-                pinned_tls_line(hostname, certificates)
+            let tls = if protocol == "https" && pinned.contains(hostname) {
+                format!(
+                    "\ttls {CONTAINER_CERTS_DIR}/{hostname}.crt {CONTAINER_CERTS_DIR}/{hostname}.key\n"
+                )
             } else {
                 String::new()
             };
@@ -563,22 +569,6 @@ http:// {{\n\
         }
     }
     output
-}
-
-fn pinned_tls_line(
-    hostname: &str,
-    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
-) -> String {
-    let Ok(host) = IngressHost::parse(hostname) else {
-        return String::new();
-    };
-    let Some(material) = certificates.get(&host) else {
-        return String::new();
-    };
-    if !material.is_present() {
-        return String::new();
-    }
-    format!("\ttls {CONTAINER_CERTS_DIR}/{hostname}.crt {CONTAINER_CERTS_DIR}/{hostname}.key\n")
 }
 
 #[cfg(test)]

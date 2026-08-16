@@ -799,11 +799,19 @@ mod tests {
     }
 
     #[test]
+    fn invalid_certificate_body_is_an_error() {
+        assert!(super::decode_certificate_body("{").is_err());
+        assert!(super::decode_certificate_body("null").is_err());
+    }
+
+    #[test]
     fn empty_certificate_body_is_not_present() {
         let material: CertificateMaterial = serde_json::from_str("{}").unwrap();
         assert!(!material.is_present());
         assert_eq!(material.certificate(), "");
         assert_eq!(material.private_key(), "");
+        assert!(!super::decode_certificate_body("").unwrap().is_present());
+        assert!(!super::decode_certificate_body("{}").unwrap().is_present());
     }
 
     #[test]
