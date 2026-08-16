@@ -8,7 +8,7 @@ use std::{
 
 use oci_spec::distribution::Reference;
 use ployz_core::{
-    ListMachinesRequest, Machine, MachineFailure, MachineSelector, MachineSuccess, PartialResult,
+    FanoutSelector, ListMachinesRequest, Machine, MachineFailure, MachineSuccess, PartialResult,
     UNREGISTRY_PORT, op, resolve_machine_selectors,
 };
 use thiserror::Error;
@@ -185,14 +185,7 @@ fn select_targets(
         .iter()
         .map(|observation| observation.machine.clone())
         .collect::<Vec<_>>();
-    let selectors = if selectors.is_empty() {
-        vec![MachineSelector::parse("*").expect("wildcard selector is valid")]
-    } else {
-        selectors
-            .iter()
-            .map(MachineSelector::parse)
-            .collect::<Result<Vec<_>, _>>()?
-    };
+    let selectors = FanoutSelector::parse_list(selectors)?;
     Ok(resolve_machine_selectors(&machines, &selectors)?)
 }
 
@@ -512,7 +505,24 @@ mod tests {
                 .as_str(),
             "machine-2"
         );
-        assert_eq!(select_targets(&machines, &["all".into()]).unwrap().len(), 2);
+        assert_eq!(select_targets(&machines, &["*".into()]).unwrap().len(), 2);
+        assert!(select_targets(&machines, &["all".into()]).is_err());
+        let named_all = MachineObservation {
+            machine: Machine {
+                name: MachineName::parse("all").unwrap(),
+                ..machines[0].machine.clone()
+            },
+            ..machines[0].clone()
+        };
+        assert_eq!(
+            select_targets(&[named_all.clone(), machines[1].clone()], &["all".into()])
+                .unwrap()
+                .first()
+                .unwrap()
+                .name
+                .as_str(),
+            "all"
+        );
         assert!(select_targets(&machines, &["missing".into()]).is_err());
         assert_eq!(proxy::mode_for(false, false), ProxyMode::Native);
         assert_eq!(proxy::mode_for(false, true), ProxyMode::Rootless);

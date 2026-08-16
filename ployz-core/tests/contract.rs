@@ -9,7 +9,7 @@ use ployz_core::{
     FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation,
     ImageSummary, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest,
     MachineFailure, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
-    MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess, MachineTokenRequest,
+    MachineRpcClient, MachineRpcServer, MachineSuccess, MachineTarget, MachineTokenRequest,
     MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement,
     PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy, RESET_MACHINE_CAPABILITY,
     RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
@@ -822,7 +822,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         },
         container: container.clone(),
         placement: Placement {
-            machines: vec![MachineSelector::parse("edge").unwrap()],
+            machines: vec![MachineTarget::parse("edge").unwrap()],
         },
         ports: Vec::new(),
         volumes: vec![volume.clone()],

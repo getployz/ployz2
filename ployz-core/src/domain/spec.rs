@@ -8,7 +8,7 @@ use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MachinePath, MachineSelector,
+    BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MachinePath, MachineTarget,
     PidMode, RestartPolicy, ServiceId, ServiceName, ServiceVolumeReference,
 };
 
@@ -162,9 +162,9 @@ pub struct ConfigMount {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Placement {
-    /// Machine Names or IDs. Resolution remains observer-relative and may be ambiguous.
+    /// Machine Targets. An empty list remains every eligible Machine.
     #[serde(default)]
-    pub machines: Vec<MachineSelector>,
+    pub machines: Vec<MachineTarget>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

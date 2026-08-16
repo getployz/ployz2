@@ -6,7 +6,7 @@ use std::{
 
 use ployz_core::{
     ContainerPath, ContainerResources, DeviceMapping, DeviceReservation, HealthcheckSpec,
-    LogDriver, MachinePath, MachineSelector, Placement, PortPublication, PullPolicy,
+    LogDriver, MachinePath, MachineTarget, Placement, PortPublication, PullPolicy,
     RequestedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode, ServiceName, Ulimit,
     UpdateConfig, UpdateOrder,
 };
@@ -194,7 +194,7 @@ fn convert_service(
             .transpose()?
             .unwrap_or_default()
             .into_iter()
-            .map(|machine| MachineSelector::parse(machine).map_err(invalid))
+            .map(|machine| MachineTarget::parse(machine).map_err(invalid))
             .collect::<Result<_, _>>()?,
     };
     // TODO(UT-076): preserve the baseline gap: service-level `tmpfs` is not reinterpreted as mounts.

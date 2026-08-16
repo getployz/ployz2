@@ -354,6 +354,27 @@ impl FanoutSelector {
             Self::One(target) => target.as_str(),
         }
     }
+
+    /// Parse CLI or request target text. An empty list means every visible Machine.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any value is empty.
+    pub fn parse_list<I, S>(values: I) -> Result<Vec<Self>, ValueError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let values: Vec<_> = values.into_iter().collect();
+        if values.is_empty() {
+            Ok(vec![Self::All])
+        } else {
+            values
+                .into_iter()
+                .map(|value| Self::parse(value.as_ref()))
+                .collect()
+        }
+    }
 }
 
 impl fmt::Display for FanoutSelector {
@@ -381,6 +402,12 @@ impl TryFrom<String> for FanoutSelector {
 impl From<FanoutSelector> for String {
     fn from(value: FanoutSelector) -> Self {
         value.as_str().to_owned()
+    }
+}
+
+impl From<MachineTarget> for FanoutSelector {
+    fn from(value: MachineTarget) -> Self {
+        Self::One(value)
     }
 }
 
