@@ -10,11 +10,7 @@ mod volume;
 #[cfg(test)]
 mod integration_tests;
 
-use std::{
-    collections::HashMap,
-    net::Ipv4Addr,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, net::Ipv4Addr, path::PathBuf};
 
 use bollard::{
     Docker,
@@ -35,8 +31,7 @@ use observe::ObservationSink;
 
 pub(crate) use managed_service::ManagedService;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
-pub(crate) use unregistry::RunningUnregistry;
-pub use unregistry::{ImageIngest, ImageIngestPrerequisite, unregistry_matches};
+pub use unregistry::{ImageIngest, unregistry_matches};
 
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
@@ -149,33 +144,6 @@ impl ContainerRuntime {
     #[must_use]
     pub(crate) fn local_docker(&self) -> LocalDocker {
         self.docker.clone()
-    }
-
-    /// Start the image-ingest helper on this socket.
-    ///
-    /// # Errors
-    ///
-    /// Returns when the helper cannot be created or started.
-    pub(crate) async fn start_unregistry(
-        &self,
-        gateway: Ipv4Addr,
-        socket: PathBuf,
-    ) -> Result<RunningUnregistry, Error> {
-        self.docker.start_unregistry(gateway, socket).await
-    }
-
-    /// Store and socket gates for image ingest on this Machine.
-    ///
-    /// # Errors
-    ///
-    /// Returns when Docker info cannot be read.
-    pub async fn image_ingest_prerequisite(
-        &self,
-        configured_socket: Option<&Path>,
-    ) -> Result<ImageIngestPrerequisite, Error> {
-        self.docker
-            .image_ingest_prerequisite(configured_socket)
-            .await
     }
 
     pub async fn list_managed(

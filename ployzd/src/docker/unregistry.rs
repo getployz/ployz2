@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::network::{DOCKER_NETWORK_NAME, UNREGISTRY_PORT};
 
-use super::{ContainerRuntime, Error, LocalDocker, ManagedService};
+use super::{Error, LocalDocker, ManagedService};
 
 pub const IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 const NAME: &str = "ployz-unregistry";
@@ -35,18 +35,20 @@ const SOCKETS: &[&str] = &[
 ];
 
 /// Store and socket gates for image ingest on this Machine.
-pub enum ImageIngestPrerequisite {
+pub(crate) enum ImageIngestPrerequisite {
     Ready(PathBuf),
     UnsupportedStore,
     MissingSocket,
 }
 
 impl ImageIngestPrerequisite {
-    fn socket(self) -> Result<PathBuf, ImageIngestReason> {
+    fn socket(self) -> Result<PathBuf, RpcError> {
         match self {
             Self::Ready(socket) => Ok(socket),
-            Self::UnsupportedStore => Err(ImageIngestReason::UnsupportedContainerdStore),
-            Self::MissingSocket => Err(ImageIngestReason::ContainerdSocketMissing),
+            Self::UnsupportedStore => Err(ImageIngestReason::UnsupportedContainerdStore
+                .rpc_error("Docker is not using the containerd image store")),
+            Self::MissingSocket => Err(ImageIngestReason::ContainerdSocketMissing
+                .rpc_error("no containerd socket was detected")),
         }
     }
 }
@@ -65,6 +67,7 @@ struct StartedIngest {
 }
 
 impl ImageIngest {
+    /// Empty ingest that starts the helper on first `open`.
     #[must_use]
     pub fn new(
         configured_socket: Option<PathBuf>,
@@ -85,22 +88,21 @@ impl ImageIngest {
     ///
     /// Returns a named ingest RPC error when the Machine cannot ingest, or when
     /// the helper fails to start.
-    pub async fn open(
-        &self,
-        runtime: &ContainerRuntime,
-        gateway: MachineGateway,
-    ) -> Result<ImageIngestOpened, RpcError> {
+    pub async fn open(&self, gateway: MachineGateway) -> Result<ImageIngestOpened, RpcError> {
         let opened = ImageIngestOpened {
             destination: ImageIngestDestination {
                 gateway,
                 port: UNREGISTRY_PORT,
             },
         };
-        let socket = match runtime
+        let Some(docker) = &self.docker else {
+            return Err(ImageIngestReason::DockerUnavailable.rpc_error("Docker is not available"));
+        };
+        let socket = match docker
             .image_ingest_prerequisite(self.configured_socket.as_deref())
             .await
         {
-            Ok(prerequisite) => prerequisite.socket().map_err(ingest_skip_error)?,
+            Ok(prerequisite) => prerequisite.socket()?,
             Err(error) => {
                 return Err(ImageIngestReason::DockerUnavailable.rpc_error(error.to_string()));
             }
@@ -109,7 +111,7 @@ impl ImageIngest {
         if slot.is_some() {
             return Ok(opened);
         }
-        let running = runtime
+        let running = docker
             .start_unregistry(gateway.0, socket)
             .await
             .map_err(|error| ImageIngestReason::StartFailed.rpc_error(error.to_string()))?;
@@ -158,26 +160,13 @@ impl ImageIngest {
     }
 }
 
-fn ingest_skip_error(reason: ImageIngestReason) -> RpcError {
-    let message = match reason {
-        ImageIngestReason::UnsupportedContainerdStore => {
-            "Docker is not using the containerd image store"
-        }
-        ImageIngestReason::ContainerdSocketMissing => "no containerd socket was detected",
-        ImageIngestReason::NotParticipating => "Machine is not participating",
-        ImageIngestReason::DockerUnavailable => "Docker is not available",
-        ImageIngestReason::StartFailed => "image ingest helper failed to start",
-    };
-    reason.rpc_error(message)
-}
-
 impl LocalDocker {
     /// Whether Docker's image store and a containerd socket are ready for ingest.
     ///
     /// # Errors
     ///
     /// Returns when Docker info cannot be read.
-    pub async fn image_ingest_prerequisite(
+    pub(crate) async fn image_ingest_prerequisite(
         &self,
         configured_socket: Option<&Path>,
     ) -> Result<ImageIngestPrerequisite, Error> {
@@ -387,14 +376,18 @@ mod tests {
 
     #[test]
     fn ingest_prerequisites_map_to_named_reasons() {
-        assert!(matches!(
-            ImageIngestPrerequisite::UnsupportedStore.socket(),
-            Err(ImageIngestReason::UnsupportedContainerdStore)
-        ));
-        assert!(matches!(
-            ImageIngestPrerequisite::MissingSocket.socket(),
-            Err(ImageIngestReason::ContainerdSocketMissing)
-        ));
+        let unsupported = ImageIngestPrerequisite::UnsupportedStore
+            .socket()
+            .unwrap_err();
+        assert_eq!(
+            ImageIngestReason::from_details(&unsupported.details),
+            Some(ImageIngestReason::UnsupportedContainerdStore)
+        );
+        let missing = ImageIngestPrerequisite::MissingSocket.socket().unwrap_err();
+        assert_eq!(
+            ImageIngestReason::from_details(&missing.details),
+            Some(ImageIngestReason::ContainerdSocketMissing)
+        );
         let socket = PathBuf::from("/run/containerd/containerd.sock");
         assert_eq!(
             ImageIngestPrerequisite::Ready(socket.clone())

@@ -508,12 +508,7 @@ impl MachineRpc for MachineService {
                 ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
             );
         };
-        let Ok(containers) = self.containers() else {
-            return respond(
-                ImageIngestReason::DockerUnavailable.rpc_error("Docker is not available"),
-            );
-        };
-        match self.ingest.open(containers, machine.subnet.gateway()).await {
+        match self.ingest.open(machine.subnet.gateway()).await {
             Ok(opened) => respond(opened),
             Err(error) => respond(error),
         }
