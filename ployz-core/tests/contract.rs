@@ -1,23 +1,24 @@
-use std::{collections::BTreeSet, num::NonZeroU32};
+use std::{collections::BTreeSet, net::Ipv4Addr, num::NonZeroU32};
 
 use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
     ConfiguredHealthcheck, ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
-    DnsRecordRequest, DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome,
-    FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest,
-    HealthObservation, HealthcheckCommand, HealthcheckSpec, ImageSummary, InspectWireGuardRequest,
-    LIST_IMAGES_CAPABILITY, ListImagesRequest, MachineFailure, MachineId, MachineImages,
-    MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSelector,
-    MachineSuccess, MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR,
-    PartialResult, Placement, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
-    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
-    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
-    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
-    VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome, FanoutResponse,
+    FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation,
+    HealthcheckCommand, HealthcheckSpec, ImageSummary, InspectWireGuardRequest,
+    LIST_IMAGES_CAPABILITY, ListImagesRequest, MachineFailure, MachineGateway, MachineId,
+    MachineImages, MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer,
+    MachineSelector, MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate,
+    NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement, PreDeployHook,
+    PublicIpDiscovery, PublicIpUpdate, PullPolicy, RESET_MACHINE_CAPABILITY,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
+    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
+    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
+    UpdateMachineRequest, UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames,
+    op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -42,9 +43,8 @@ fn response_kinds_match_the_frozen_wire_contract() {
         (ResponseKind::ContainerDetails, "container_details"),
         (ResponseKind::ContainerCreated, "container_created"),
         (ResponseKind::ContainerChanged, "container_changed"),
-        (ResponseKind::VolumeCreated, "volume_created"),
+        (ResponseKind::DockerVolume, "docker_volume"),
         (ResponseKind::VolumeList, "volume_list"),
-        (ResponseKind::VolumeDetails, "volume_details"),
         (ResponseKind::VolumeRemoved, "volume_removed"),
         (ResponseKind::MachineImages, "machine_images"),
         (ResponseKind::CaddyConfig, "caddy_config"),
@@ -110,6 +110,47 @@ fn machine_name_accepts_lowercase_dns_labels() {
     assert_eq!(
         MachineName::parse("machine-a").unwrap().as_str(),
         "machine-a"
+    );
+}
+
+#[test]
+fn machine_subnet_rejects_prefixes_that_are_not_slash_24() {
+    assert_eq!(
+        MachineSubnet::parse("10.210.0.0/16")
+            .unwrap_err()
+            .to_string(),
+        "invalid Machine Subnet \"10.210.0.0/16\": an IPv4 /24 CIDR"
+    );
+    assert_eq!(
+        MachineSubnet::parse("10.210.7.1/32")
+            .unwrap_err()
+            .to_string(),
+        "invalid Machine Subnet \"10.210.7.1/32\": an IPv4 /24 CIDR"
+    );
+    assert_eq!(
+        MachineSubnet::parse("not-a-cidr").unwrap_err().to_string(),
+        "invalid Machine Subnet \"not-a-cidr\": an IPv4 /24 CIDR"
+    );
+    assert!(serde_json::from_str::<MachineSubnet>("\"10.210.0.0/16\"").is_err());
+    assert!(MachineSubnet::try_from("10.210.0.0/16".parse::<ipnet::Ipv4Net>().unwrap()).is_err());
+}
+
+#[test]
+fn machine_subnet_exposes_its_gateway_and_stays_a_cidr_string() {
+    let subnet = MachineSubnet::parse("10.210.7.0/24").unwrap();
+    assert_eq!(
+        subnet.gateway(),
+        MachineGateway(Ipv4Addr::new(10, 210, 7, 1))
+    );
+    assert_eq!(serde_json::to_string(&subnet).unwrap(), "\"10.210.7.0/24\"");
+    assert_eq!(
+        serde_json::from_str::<MachineSubnet>("\"10.210.7.0/24\"").unwrap(),
+        subnet
+    );
+    assert_eq!(MachineSubnet::parse("10.210.7.5/24").unwrap(), subnet);
+    assert_eq!(
+        serde_json::to_string(&MachineSubnet::parse("10.210.7.5/24").unwrap()).unwrap(),
+        "\"10.210.7.0/24\""
     );
 }
 
@@ -380,12 +421,12 @@ fn hosted_dns_contract_keeps_credentials_daemon_side_and_records_exact() {
     );
 
     let records = vec![
-        DnsRecordRequest {
+        DnsRecord {
             name: "*".into(),
             record_type: DnsRecordType::A,
             values: vec!["192.0.2.1".into()],
         },
-        DnsRecordRequest {
+        DnsRecord {
             name: "*".into(),
             record_type: DnsRecordType::Aaaa,
             values: vec!["2001:db8::1".into()],
@@ -696,6 +737,18 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         options: BTreeMap::from([("type".into(), "none".into())]),
         labels: BTreeMap::from([("purpose".into(), "database".into())]),
     };
+    let volume_response = RpcResponse::from(volume.clone());
+    assert_eq!(volume_response.kind(), ResponseKind::DockerVolume);
+    assert_eq!(
+        volume_response.decode::<op::CreateVolume>().unwrap(),
+        volume
+    );
+    assert_eq!(
+        RpcResponse::from(volume.clone())
+            .decode::<op::InspectVolume>()
+            .unwrap(),
+        volume
+    );
     assert_eq!(
         RpcResponse::from(VolumeList {
             volumes: vec![volume.clone()]

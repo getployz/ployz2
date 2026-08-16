@@ -5,7 +5,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use ipnet::Ipv4Net;
+use ipnet::{IpNet, Ipv4Net};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -282,10 +282,105 @@ validated_string_newtype!(
     "a non-empty Machine Name or Machine ID",
     |value| !value.is_empty()
 );
+validated_string_newtype!(
+    /// Unresolved name-or-ID text that targets one Machine. It cannot be a wildcard.
+    MachineTarget,
+    "Machine Target",
+    "a non-empty Machine identity that is not a wildcard",
+    |value| !value.is_empty() && value != "*"
+);
+validated_string_newtype!(
+    /// Unresolved name-or-ID text used to select a Service.
+    ServiceSelector,
+    "Service Selector",
+    "a non-empty Service Name or Service ID",
+    |value| !value.is_empty()
+);
+validated_string_newtype!(
+    /// Unresolved Container ID, display name, or ID prefix used to select one Container.
+    ContainerSelector,
+    "Container Selector",
+    "a non-empty Container ID, display name, or ID prefix",
+    |value| !value.is_empty()
+);
 
 impl From<&MachineId> for MachineSelector {
     fn from(value: &MachineId) -> Self {
         Self(value.to_string())
+    }
+}
+
+impl From<&MachineId> for MachineTarget {
+    fn from(value: &MachineId) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<&MachineTarget> for MachineSelector {
+    fn from(value: &MachineTarget) -> Self {
+        Self(value.as_str().to_owned())
+    }
+}
+
+/// Fan-out selection of every visible Machine or one Machine Target.
+///
+/// `*` is the only wildcard spelling.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum FanoutSelector {
+    All,
+    One(MachineTarget),
+}
+
+impl FanoutSelector {
+    /// Parse `*` as [`FanoutSelector::All`], or a Machine Target as [`FanoutSelector::One`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `value` is empty.
+    pub fn parse(value: impl Into<String>) -> Result<Self, ValueError> {
+        let value = value.into();
+        if value == "*" {
+            Ok(Self::All)
+        } else {
+            MachineTarget::parse(value).map(Self::One)
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::All => "*",
+            Self::One(target) => target.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for FanoutSelector {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for FanoutSelector {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<String> for FanoutSelector {
+    type Error = ValueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl From<FanoutSelector> for String {
+    fn from(value: FanoutSelector) -> Self {
+        value.as_str().to_owned()
     }
 }
 
@@ -305,9 +400,92 @@ validated_string_newtype!(
 );
 
 /// One Machine's optimistic container subnet candidate.
+///
+/// A Machine Subnet is always an IPv4 `/24`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct MachineSubnet(pub Ipv4Net);
+#[serde(try_from = "String", into = "String")]
+pub struct MachineSubnet(Ipv4Net);
+
+impl MachineSubnet {
+    /// Parse an IPv4 `/24` CIDR as a Machine Subnet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when the value is not an IPv4 `/24` CIDR.
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, ValueError> {
+        let value = value.as_ref();
+        let network = value
+            .parse::<Ipv4Net>()
+            .map_err(|_| ValueError::new("Machine Subnet", value, "an IPv4 /24 CIDR"))?;
+        Self::from_net(network)
+            .map_err(|_| ValueError::new("Machine Subnet", value, "an IPv4 /24 CIDR"))
+    }
+
+    fn from_net(network: Ipv4Net) -> Result<Self, ValueError> {
+        if network.prefix_len() != 24 {
+            return Err(ValueError::new(
+                "Machine Subnet",
+                network.to_string(),
+                "an IPv4 /24 CIDR",
+            ));
+        }
+        Ok(Self(network.trunc()))
+    }
+
+    /// The Machine-local gateway: the first usable address in this subnet.
+    #[must_use]
+    pub fn gateway(self) -> MachineGateway {
+        MachineGateway(Ipv4Addr::from(u32::from(self.0.network()) + 1))
+    }
+}
+
+impl fmt::Display for MachineSubnet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+impl FromStr for MachineSubnet {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<String> for MachineSubnet {
+    type Error = ValueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<Ipv4Net> for MachineSubnet {
+    type Error = ValueError;
+
+    fn try_from(network: Ipv4Net) -> Result<Self, Self::Error> {
+        Self::from_net(network)
+    }
+}
+
+impl From<MachineSubnet> for Ipv4Net {
+    fn from(value: MachineSubnet) -> Self {
+        value.0
+    }
+}
+
+impl From<MachineSubnet> for IpNet {
+    fn from(value: MachineSubnet) -> Self {
+        Self::V4(value.0)
+    }
+}
+
+impl From<MachineSubnet> for String {
+    fn from(value: MachineSubnet) -> Self {
+        value.to_string()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
