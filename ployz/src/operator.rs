@@ -590,7 +590,7 @@ pub(crate) fn select_machines<'a>(
     }
     let selectors = selectors
         .iter()
-        .map(|selector| FanoutSelector::parse(selector.clone()))
+        .map(|selector| FanoutSelector::parse(selector.as_str()))
         .collect::<Result<Vec<_>, _>>()?;
     let visible = eligible
         .iter()

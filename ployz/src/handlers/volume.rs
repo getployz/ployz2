@@ -223,7 +223,7 @@ fn selected_machines(
     }
     let selectors = selectors
         .iter()
-        .map(|selector| FanoutSelector::parse(selector.clone()))
+        .map(|selector| FanoutSelector::parse(selector.as_str()))
         .collect::<Result<Vec<_>, _>>()?;
     let visible = machines
         .iter()
@@ -251,15 +251,16 @@ fn select_create_machine(
     if let Some(selector) = selector {
         let target = MachineTarget::parse(selector)?;
         return match target.resolve(machines.iter().map(|machine| &machine.machine)) {
-            NameMatches::One(machine) => machines
-                .iter()
-                .find(|observation| observation.machine.id == machine.id)
-                .cloned()
-                .ok_or_else(|| Error::usage("selected Machine disappeared from the snapshot"))
-                .map(Some),
+            NameMatches::One(machine) => Ok(Some(
+                machines
+                    .iter()
+                    .find(|observation| observation.machine.id == machine.id)
+                    .expect("resolve returned a Machine from this snapshot")
+                    .clone(),
+            )),
             NameMatches::None => Err(Error::usage(format!("Machine {selector:?} was not found"))),
             NameMatches::Ambiguous(_) => Err(Error::usage(format!(
-                "Machine selector {selector:?} matched multiple Machines"
+                "Machine Target {selector:?} matched multiple Machines"
             ))),
         };
     }

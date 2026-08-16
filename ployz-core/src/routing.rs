@@ -95,9 +95,7 @@ pub fn routing_from_metadata(
             .map_err(|_| RoutingMetadataError::InvalidTarget);
     }
     if has_text_target {
-        let mut selectors = ascii_parsed(metadata, ONE_TARGET_HEADER, |value| {
-            MachineTarget::parse(value)
-        })?;
+        let mut selectors = ascii_parsed(metadata, ONE_TARGET_HEADER)?;
         if selectors.len() != 1 {
             return Err(RoutingMetadataError::InvalidSingleTarget);
         }
@@ -107,17 +105,15 @@ pub fn routing_from_metadata(
         Ok(RoutingRequest::Many(ascii_parsed(
             metadata,
             MANY_TARGETS_HEADER,
-            |value| FanoutSelector::parse(value),
         )?))
     } else {
         Ok(RoutingRequest::Local)
     }
 }
 
-fn ascii_parsed<T>(
+fn ascii_parsed<T: std::str::FromStr>(
     metadata: &MetadataMap,
     name: &'static str,
-    parse: impl Fn(&str) -> Result<T, crate::ValueError>,
 ) -> Result<Vec<T>, RoutingMetadataError> {
     metadata
         .get_all(name)
@@ -126,7 +122,11 @@ fn ascii_parsed<T>(
             value
                 .to_str()
                 .map_err(|_| RoutingMetadataError::InvalidTarget)
-                .and_then(|value| parse(value).map_err(|_| RoutingMetadataError::InvalidTarget))
+                .and_then(|value| {
+                    value
+                        .parse()
+                        .map_err(|_| RoutingMetadataError::InvalidTarget)
+                })
         })
         .collect()
 }
