@@ -736,13 +736,6 @@ volumes: {data: {name: demo_data}}
         panic!("missing Volume creation: {plan:?}")
     };
     assert_eq!(anchor, &machine('b', "two").machine.id);
-    assert_eq!(
-        plan.operations
-            .iter()
-            .filter(|operation| matches!(operation, DeployOperation::CreateVolume { .. }))
-            .count(),
-        1
-    );
     assert!(plan.operations.iter().skip(1).all(|operation| matches!(
         operation,
         DeployOperation::RunContainer { machine_id, .. } if machine_id == anchor

@@ -11,27 +11,14 @@ fn new_replicated_service_runs_the_requested_count_across_available_machines() {
 
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
-    let service_ids = plan
-        .operations
-        .iter()
-        .map(|operation| match operation {
-            DeployOperation::RunContainer { spec, .. } => spec.service_id,
-            other @ (DeployOperation::CreateVolume { .. }
-            | DeployOperation::StopContainer { .. }
-            | DeployOperation::RemoveContainer { .. }
-            | DeployOperation::ReplaceContainer(..)
-            | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(service_ids.len(), 2);
-    assert_eq!(service_ids.first(), service_ids.get(1));
     assert!(matches!(
         plan.operations.as_slice(),
         [
-            DeployOperation::RunContainer { machine_id: first, .. },
-            DeployOperation::RunContainer { machine_id: second, .. },
-        ] if first == &machine_id('1') && second == &machine_id('2')
+            DeployOperation::RunContainer { machine_id: first, spec: first_spec, .. },
+            DeployOperation::RunContainer { machine_id: second, spec: second_spec, .. },
+        ] if first == &machine_id('1')
+            && second == &machine_id('2')
+            && first_spec.service_id == second_spec.service_id
     ));
 }
 
