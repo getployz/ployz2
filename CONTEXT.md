@@ -173,7 +173,7 @@ The cluster-state values that steer certificate issuance: authority directory, e
 _Avoid_: ACME config, daemon certificate constants, CA settings
 
 **Cluster DNS Verdict**:
-Whether a custom Ingress Hostname's resolved addresses intersect this Cluster's Machine public addresses. It is not Caddy health, certificate readiness, or a Deploy failure.
+Whether an Ingress Hostname's resolved addresses intersect this Cluster's Machine public addresses. It is not Caddy health, certificate readiness, or a Deploy failure.
 _Avoid_: DNS health, certificate gate, reachability
 
 **Nearest DNS Selector**:
