@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
+    ContainerId, ContainerObservation, ContainerRuntimeObservation, HostBind, MachineId,
     MachineObservation, MembershipObservation, PortPublication, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
-    ServiceObservation, SpecChange, UpdateOrder, VolumeSource, compare_specs, derive_services,
+    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceObservation,
+    SpecChange, UpdateOrder, VolumeSource, compare_specs, derive_services,
     machine_matches_selector, same_service_mode_kind,
 };
 
@@ -93,30 +93,45 @@ fn plan_one_service(
     };
     if existing.is_some_and(|service| {
         service.members().any(|container| {
-            !same_service_mode_kind(&container.resolved_spec.mode, &requested.mode)
+            !same_service_mode_kind(
+                &container.as_observation().resolved_spec.mode,
+                &requested.mode,
+            )
         })
     }) {
         return Err(PlanError::ServiceModeCannotChange);
     }
 
     let current = existing
-        .map(|service| service.containers.as_slice())
-        .unwrap_or(&[]);
+        .map(|service| {
+            service
+                .containers
+                .iter()
+                .map(ployz_core::ServiceContainer::as_observation)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let hooks = existing
-        .map(|service| service.hook_containers.as_slice())
-        .unwrap_or(&[]);
+        .map(|service| {
+            service
+                .hook_containers
+                .iter()
+                .map(ployz_core::HookContainer::as_observation)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let service_operations = match requested.mode {
         ServiceMode::Replicated { replicas } => plan_replicated(
             requested,
             &service_id,
-            current,
+            &current,
             machines,
             replicas.get() as usize,
             options,
         ),
-        ServiceMode::Global => plan_global(requested, &service_id, current, machines, options),
+        ServiceMode::Global => plan_global(requested, &service_id, &current, machines, options),
     };
-    let mut operations = pre_deploy_operations(requested, hooks, &service_operations);
+    let mut operations = pre_deploy_operations(requested, &hooks, &service_operations);
     operations.extend(service_operations);
     Ok(ServicePlan {
         service_id,
@@ -215,7 +230,7 @@ fn shuffle<T>(values: &mut [T], mut state: u64) {
 
 fn pre_deploy_operations(
     requested: &RequestedServiceSpec,
-    hooks: &[HookContainer],
+    hooks: &[&ContainerObservation],
     service_operations: &[DeployOperation],
 ) -> Vec<DeployOperation> {
     if requested.pre_deploy.is_none() {
@@ -242,13 +257,11 @@ fn pre_deploy_operations(
 
     let mut operations = hooks
         .iter()
-        .filter(|container| super::is_active_runtime(&container.as_observation().runtime))
-        .map(|container| {
-            let observation = container.as_observation();
-            DeployOperation::StopHook {
-                machine_id: observation.machine_id,
-                container_id: observation.container_id,
-            }
+        .copied()
+        .filter(|container| super::is_active_runtime(&container.runtime))
+        .map(|container| DeployOperation::StopHook {
+            machine_id: container.machine_id,
+            container_id: container.container_id,
         })
         .collect::<Vec<_>>();
     operations.push(DeployOperation::RunHook {
@@ -256,10 +269,7 @@ fn pre_deploy_operations(
         spec: spec.clone(),
         old_hook_containers: hooks
             .iter()
-            .map(|container| {
-                let observation = container.as_observation();
-                (observation.machine_id, observation.container_id)
-            })
+            .map(|container| (container.machine_id, container.container_id))
             .collect(),
     });
     operations
@@ -276,7 +286,7 @@ fn has_mounted_named_volume(requested: &RequestedServiceSpec) -> bool {
 fn plan_global(
     requested: &RequestedServiceSpec,
     service_id: &ServiceId,
-    current: &[ServiceContainer],
+    current: &[&ContainerObservation],
     machines: Vec<&MachineObservation>,
     options: PlanOptions,
 ) -> Vec<DeployOperation> {
@@ -286,29 +296,28 @@ fn plan_global(
     for machine in machines {
         let on_machine = current
             .iter()
-            .filter(|container| container.as_observation().machine_id == machine.machine.id)
+            .copied()
+            .filter(|container| container.machine_id == machine.machine.id)
             .collect::<Vec<_>>();
         if let Some(kept) = on_machine
             .iter()
             .copied()
             .find(|container| is_up_to_date(container, requested, options))
         {
-            used.insert(kept.as_observation().container_id);
+            used.insert(kept.container_id);
             continue;
         }
 
         if let Some(container) = on_machine
             .iter()
             .copied()
-            .find(|container| super::is_active_runtime(&container.as_observation().runtime))
+            .find(|container| super::is_active_runtime(&container.runtime))
         {
-            let observation = container.as_observation();
-            used.insert(observation.container_id);
+            used.insert(container.container_id);
             for other in &on_machine {
-                let other_observation = other.as_observation();
-                if other_observation.container_id != observation.container_id
-                    && super::is_active_runtime(&other_observation.runtime)
-                    && other_observation.resolved_spec.ports.iter().any(|old| {
+                if other.container_id != container.container_id
+                    && super::is_active_runtime(&other.runtime)
+                    && other.resolved_spec.ports.iter().any(|old| {
                         requested
                             .ports
                             .iter()
@@ -317,14 +326,14 @@ fn plan_global(
                 {
                     operations.push(DeployOperation::StopContainer {
                         machine_id: machine.machine.id,
-                        container_id: other_observation.container_id,
+                        container_id: other.container_id,
                     });
                 }
             }
             let order = determine_update_order(container, requested);
             operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
                 machine_id: machine.machine.id,
-                old_container_id: observation.container_id,
+                old_container_id: container.container_id,
                 spec: resolve(requested, *service_id, order),
                 skip_health_monitor: options.skip_health_monitor,
             }));
@@ -348,15 +357,15 @@ fn plan_global(
 fn plan_replicated(
     requested: &RequestedServiceSpec,
     service_id: &ServiceId,
-    current: &[ServiceContainer],
+    current: &[&ContainerObservation],
     mut machines: Vec<&MachineObservation>,
     replicas: usize,
     options: PlanOptions,
 ) -> Vec<DeployOperation> {
-    let mut by_machine = BTreeMap::<MachineId, Vec<&ServiceContainer>>::new();
+    let mut by_machine = BTreeMap::<MachineId, Vec<&ContainerObservation>>::new();
     for container in current {
         by_machine
-            .entry(container.as_observation().machine_id)
+            .entry(container.machine_id)
             .or_default()
             .push(container);
     }
@@ -383,7 +392,7 @@ fn plan_replicated(
             .get_mut(&machine.machine.id)
             .and_then(Vec::pop)
             .inspect(|container| {
-                used.insert(container.as_observation().container_id);
+                used.insert(container.container_id);
             });
         match existing {
             Some(container) if is_up_to_date(container, requested, options) => {}
@@ -391,7 +400,7 @@ fn plan_replicated(
                 let order = determine_update_order(container, requested);
                 operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
                     machine_id: machine.machine.id,
-                    old_container_id: container.as_observation().container_id,
+                    old_container_id: container.container_id,
                     spec: resolve(requested, *service_id, order),
                     skip_health_monitor: options.skip_health_monitor,
                 }));
@@ -413,31 +422,29 @@ fn plan_replicated(
 
 fn remove_unused(
     operations: &mut Vec<DeployOperation>,
-    current: &[ServiceContainer],
+    current: &[&ContainerObservation],
     used: &BTreeSet<ContainerId>,
 ) {
     for container in current {
-        let observation = container.as_observation();
-        if !used.contains(&observation.container_id) {
+        if !used.contains(&container.container_id) {
             // TODO(UT-075): placement changes remove now-ineligible containers; there is no
             // deploy-time Machine filter that leaves excluded containers running.
             operations.push(DeployOperation::RemoveContainer {
-                machine_id: observation.machine_id,
-                container_id: observation.container_id,
+                machine_id: container.machine_id,
+                container_id: container.container_id,
             });
         }
     }
 }
 
 fn is_up_to_date(
-    container: &ServiceContainer,
+    container: &ContainerObservation,
     requested: &RequestedServiceSpec,
     options: PlanOptions,
 ) -> bool {
-    let observation = container.as_observation();
     !options.force_recreate
-        && is_running(&observation.runtime)
-        && compare_specs(&observation.resolved_spec, requested) == SpecChange::UpToDate
+        && is_running(&container.runtime)
+        && compare_specs(&container.resolved_spec, requested) == SpecChange::UpToDate
 }
 
 fn is_running(runtime: &ContainerRuntimeObservation) -> bool {
@@ -445,13 +452,12 @@ fn is_running(runtime: &ContainerRuntimeObservation) -> bool {
 }
 
 fn determine_update_order(
-    current: &ServiceContainer,
+    current: &ContainerObservation,
     requested: &RequestedServiceSpec,
 ) -> UpdateOrder {
     if let Some(order) = requested.update.order {
         return order;
     }
-    let current = current.as_observation();
     if current.resolved_spec.ports.iter().any(|old| {
         requested
             .ports

@@ -153,6 +153,13 @@ pub enum Container {
     Hook(HookContainer),
 }
 
+/// Borrowed role-proven view of one Service member.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContainerRef<'a> {
+    Service(&'a ServiceContainer),
+    Hook(&'a HookContainer),
+}
+
 /// Rejected conversion from a mixed Container observation to a requested role.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("cannot convert a {actual:?} Container observation to a {requested:?} view")]
@@ -201,9 +208,20 @@ impl AsRef<ContainerObservation> for HookContainer {
     }
 }
 
-impl AsRef<ContainerObservation> for ContainerObservation {
-    fn as_ref(&self) -> &Self {
-        self
+impl<'a> ContainerRef<'a> {
+    /// Borrow the mixed observation this view was proven from.
+    #[must_use]
+    pub fn as_observation(self) -> &'a ContainerObservation {
+        match self {
+            Self::Service(container) => container.as_observation(),
+            Self::Hook(container) => container.as_observation(),
+        }
+    }
+}
+
+impl AsRef<ContainerObservation> for ContainerRef<'_> {
+    fn as_ref(&self) -> &ContainerObservation {
+        self.as_observation()
     }
 }
 

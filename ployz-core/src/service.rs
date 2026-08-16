@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    Container, ContainerObservation, HookContainer, PartialResult, ServiceContainer, ServiceId,
-    ServiceName,
+    Container, ContainerObservation, ContainerRef, HookContainer, PartialResult, ServiceContainer,
+    ServiceId, ServiceName,
 };
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
@@ -24,41 +24,37 @@ impl ServiceObservation {
     pub fn service_name(&self) -> Option<&ServiceName> {
         self.members()
             .next()
-            .map(|container| &container.service_name)
+            .map(|container| &container.as_observation().service_name)
     }
 
     /// True when any member carries this Service Name.
     #[must_use]
     pub fn has_name(&self, selector: &str) -> bool {
         self.members()
-            .any(|container| container.service_name.as_str() == selector)
+            .any(|container| container.as_observation().service_name.as_str() == selector)
     }
 
-    /// Mixed observations of every role-proven member.
-    pub fn members(&self) -> impl Iterator<Item = &ContainerObservation> {
+    /// Every role-proven member of this Service.
+    pub fn members(&self) -> impl Iterator<Item = ContainerRef<'_>> {
         self.containers
             .iter()
-            .map(ServiceContainer::as_observation)
-            .chain(
-                self.hook_containers
-                    .iter()
-                    .map(HookContainer::as_observation),
-            )
+            .map(ContainerRef::Service)
+            .chain(self.hook_containers.iter().map(ContainerRef::Hook))
     }
 
     /// Service Containers for Start; both roles for Stop and Remove.
     pub fn containers_for(
         &self,
         action: ContainerAction,
-    ) -> impl Iterator<Item = &ContainerObservation> {
+    ) -> impl Iterator<Item = ContainerRef<'_>> {
         let hooks = match action {
             ContainerAction::Start => &[][..],
             ContainerAction::Stop | ContainerAction::Remove => self.hook_containers.as_slice(),
         };
         self.containers
             .iter()
-            .map(ServiceContainer::as_observation)
-            .chain(hooks.iter().map(HookContainer::as_observation))
+            .map(ContainerRef::Service)
+            .chain(hooks.iter().map(ContainerRef::Hook))
     }
 }
 
@@ -166,9 +162,9 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-        MachineFailure, MachineId, MachineSuccess, PartialResult, ResolvedServiceSpec, RpcError,
-        RpcErrorCode, ServiceContainer, ServiceId, ServiceName,
+        ContainerId, ContainerKind, ContainerObservation, ContainerRef,
+        ContainerRuntimeObservation, MachineFailure, MachineId, MachineSuccess, PartialResult,
+        ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName,
     };
 
     #[test]
@@ -446,7 +442,7 @@ mod tests {
             service
                 .containers
                 .iter()
-                .map(ServiceContainer::as_observation)
+                .map(ContainerRef::Service)
                 .collect::<Vec<_>>()
         );
         let stop = service
@@ -454,6 +450,8 @@ mod tests {
             .collect::<Vec<_>>();
         let both = service.members().collect::<Vec<_>>();
         assert_eq!(stop, both);
+        assert!(matches!(stop.first(), Some(ContainerRef::Service(_))));
+        assert!(matches!(stop.get(1), Some(ContainerRef::Hook(_))));
         assert_eq!(
             service
                 .containers_for(super::ContainerAction::Remove)

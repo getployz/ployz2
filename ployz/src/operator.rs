@@ -9,7 +9,7 @@ use std::{
 
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
-    ContainerId, ContainerLogsRequest, ContainerObservation, ExecConfig, ExecOptions,
+    ContainerId, ContainerLogsRequest, ContainerObservation, ContainerRef, ExecConfig, ExecOptions,
     ExecRequestFrame, HealthObservation, LogEntry, LogStream, LogsOptions, MachineId,
     MachineLogService, MachineLogsRequest, MachineName, MachineObservation, MachineSelector,
     MembershipObservation, OpaquePayload, ServiceContainer, ServiceObservation,
@@ -402,7 +402,7 @@ pub async fn open_service_logs(
         let containers = select_log_containers(service, &arg.containers)?;
         let containers = containers
             .into_iter()
-            .filter(|container| machine_ids.contains(&container.machine_id))
+            .filter(|container| machine_ids.contains(&container.as_observation().machine_id))
             .collect::<Vec<_>>();
         if containers.is_empty() {
             return Err(OperatorError::NoContainersOnMachines {
@@ -410,13 +410,14 @@ pub async fn open_service_logs(
             });
         }
         for container in containers {
+            let observation = container.as_observation();
             let request = op::ContainerLogs::into_request(ContainerLogsRequest {
-                container_id: container.container_id,
+                container_id: observation.container_id,
                 options: options.clone(),
             })
             .encode()?;
-            let identity = format!("{}/{}", arg.service, container.display_name);
-            let target = MachineSelector::from(&container.machine_id);
+            let identity = format!("{}/{}", arg.service, observation.display_name);
+            let target = MachineSelector::from(&observation.machine_id);
             // TODO(UT-082): earlier Container log streams intentionally survive until the
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
@@ -428,8 +429,8 @@ pub async fn open_service_logs(
             .await
             {
                 return Err(OperatorError::OpenContainerLogs {
-                    container_id: container.container_id,
-                    machine_id: container.machine_id,
+                    container_id: observation.container_id,
+                    machine_id: observation.machine_id,
                     source: Box::new(error.into()),
                 });
             }
@@ -544,7 +545,7 @@ pub(crate) async fn open_log_input(
 pub(crate) fn select_log_containers<'a>(
     service: &'a ServiceObservation,
     selectors: &[String],
-) -> Result<Vec<&'a ContainerObservation>, OperatorError> {
+) -> Result<Vec<ContainerRef<'a>>, OperatorError> {
     let all = service.members().collect::<Vec<_>>();
     if selectors.is_empty() {
         return Ok(all);
@@ -552,10 +553,9 @@ pub(crate) fn select_log_containers<'a>(
     let mut selected = Vec::new();
     for selector in selectors {
         let container = *resolve_container_selector(&all, selector)?;
-        if !selected
-            .iter()
-            .any(|selected: &&ContainerObservation| selected.container_id == container.container_id)
-        {
+        if !selected.iter().any(|selected: &ContainerRef<'a>| {
+            selected.as_observation().container_id == container.as_observation().container_id
+        }) {
             selected.push(container);
         }
     }
