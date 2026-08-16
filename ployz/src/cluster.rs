@@ -240,7 +240,14 @@ impl Client {
         let mut request = tonic::Request::new(
             op::ListImages::into_request(ListImagesRequest { reference }).encode()?,
         );
-        let selectors = FanoutSelector::parse_list(targets)?;
+        let selectors = if targets.is_empty() {
+            vec![FanoutSelector::All]
+        } else {
+            targets
+                .iter()
+                .map(|target| FanoutSelector::parse(target.as_str()))
+                .collect::<Result<Vec<_>, _>>()?
+        };
         apply_many_targets(request.metadata_mut(), &selectors)?;
         let mut grpc = tonic::client::Grpc::new(self.channel.clone());
         grpc.ready().await?;

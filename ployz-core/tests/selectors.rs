@@ -121,18 +121,6 @@ fn placement_accepts_only_machine_identities() {
         serde_json::to_value(&placement).unwrap(),
         json!({"machines": ["all"]})
     );
-    assert_eq!(
-        FanoutSelector::parse_list(Vec::<String>::new()).unwrap(),
-        [FanoutSelector::All]
-    );
-    assert_eq!(
-        FanoutSelector::parse_list(["all"]).unwrap(),
-        [FanoutSelector::One(MachineTarget::parse("all").unwrap())]
-    );
-    assert_eq!(
-        FanoutSelector::parse_list([""]).unwrap_err().to_string(),
-        "invalid Machine Target \"\": a non-empty Machine identity that is not a wildcard"
-    );
 }
 
 #[test]

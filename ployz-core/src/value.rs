@@ -348,24 +348,6 @@ impl FanoutSelector {
             Self::One(target) => target.as_str(),
         }
     }
-
-    /// Parse CLI or request target text. An empty list means every visible Machine.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any value is empty.
-    pub fn parse_list<I, S>(values: I) -> Result<Vec<Self>, ValueError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let mut values = values.into_iter().peekable();
-        if values.peek().is_none() {
-            Ok(vec![Self::All])
-        } else {
-            values.map(|value| Self::parse(value.as_ref())).collect()
-        }
-    }
 }
 
 impl fmt::Display for FanoutSelector {

@@ -185,7 +185,14 @@ fn select_targets(
         .iter()
         .map(|observation| observation.machine.clone())
         .collect::<Vec<_>>();
-    let selectors = FanoutSelector::parse_list(selectors)?;
+    let selectors = if selectors.is_empty() {
+        vec![FanoutSelector::All]
+    } else {
+        selectors
+            .iter()
+            .map(|selector| FanoutSelector::parse(selector.as_str()))
+            .collect::<Result<Vec<_>, _>>()?
+    };
     Ok(resolve_machine_selectors(&machines, &selectors)?)
 }
 
