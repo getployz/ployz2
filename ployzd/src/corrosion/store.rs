@@ -2,12 +2,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
+use chrono::{DateTime, SecondsFormat, Utc};
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerId, ContainerObservation, IngressHost, LocalMachinePhase, Machine, MachineId,
+    ClusterDnsVerdict, ContainerId, ContainerObservation, IngressHost, LocalMachinePhase, Machine,
+    MachineId,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -79,6 +81,10 @@ impl CertificateChallenge {
 pub struct CertificateRow {
     material: Option<CertificateMaterial>,
     challenge: Option<CertificateChallenge>,
+    last_error: Option<String>,
+    next_attempt_at: Option<SystemTime>,
+    failures: u32,
+    last_resolve_verdict: Option<ClusterDnsVerdict>,
 }
 
 impl CertificateRow {
@@ -90,7 +96,26 @@ impl CertificateRow {
         Self {
             material,
             challenge,
+            ..Self::default()
         }
+    }
+
+    #[must_use]
+    pub fn with_last_error(mut self, error: impl Into<String>) -> Self {
+        let error = error.into();
+        self.last_error = (!error.is_empty()).then_some(error);
+        self
+    }
+
+    #[must_use]
+    pub fn with_backoff(
+        mut self,
+        failures: u32,
+        last_resolve_verdict: Option<ClusterDnsVerdict>,
+    ) -> Self {
+        self.failures = failures;
+        self.last_resolve_verdict = last_resolve_verdict;
+        self
     }
 
     #[must_use]
@@ -103,6 +128,26 @@ impl CertificateRow {
         self.challenge.as_ref()
     }
 
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    #[must_use]
+    pub fn next_attempt_at(&self) -> Option<SystemTime> {
+        self.next_attempt_at
+    }
+
+    #[must_use]
+    pub fn failures(&self) -> u32 {
+        self.failures
+    }
+
+    #[must_use]
+    pub fn last_resolve_verdict(&self) -> Option<ClusterDnsVerdict> {
+        self.last_resolve_verdict
+    }
+
     fn decode(encoded: &str) -> Result<Self, Error> {
         if encoded.is_empty() {
             return Ok(Self::default());
@@ -111,6 +156,10 @@ impl CertificateRow {
         Ok(Self {
             material: CertificateMaterial::new(body.certificate, body.private_key),
             challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
+            last_error: (!body.last_error.is_empty()).then_some(body.last_error),
+            next_attempt_at: decode_attempt(&body.next_attempt_at),
+            failures: body.failures,
+            last_resolve_verdict: decode_resolve_verdict(&body.last_resolve_verdict),
         })
     }
 
@@ -120,6 +169,10 @@ impl CertificateRow {
             "private_key": self.material.as_ref().map(CertificateMaterial::private_key).unwrap_or(""),
             "challenge_token": self.challenge.as_ref().map(CertificateChallenge::token).unwrap_or(""),
             "challenge_response": self.challenge.as_ref().map(CertificateChallenge::response).unwrap_or(""),
+            "last_error": self.last_error.as_deref().unwrap_or(""),
+            "next_attempt_at": self.next_attempt_at.map(encode_attempt).unwrap_or_default(),
+            "failures": self.failures,
+            "last_resolve_verdict": encode_resolve_verdict(self.last_resolve_verdict),
         }))?)
     }
 }
@@ -134,6 +187,43 @@ struct CertificateBody {
     challenge_token: String,
     #[serde(default)]
     challenge_response: String,
+    #[serde(default)]
+    last_error: String,
+    #[serde(default)]
+    next_attempt_at: String,
+    #[serde(default)]
+    failures: u32,
+    #[serde(default)]
+    last_resolve_verdict: String,
+}
+
+fn encode_attempt(time: SystemTime) -> String {
+    DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn decode_attempt(text: &str) -> Option<SystemTime> {
+    if text.is_empty() {
+        return None;
+    }
+    DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|time| SystemTime::from(time.with_timezone(&Utc)))
+}
+
+fn encode_resolve_verdict(verdict: Option<ClusterDnsVerdict>) -> &'static str {
+    match verdict {
+        Some(ClusterDnsVerdict::DoesNotResolve) => "does_not_resolve",
+        Some(ClusterDnsVerdict::ResolvesElsewhere) => "resolves_elsewhere",
+        Some(ClusterDnsVerdict::PointsAtCluster) | None => "",
+    }
+}
+
+fn decode_resolve_verdict(text: &str) -> Option<ClusterDnsVerdict> {
+    match text {
+        "does_not_resolve" => Some(ClusterDnsVerdict::DoesNotResolve),
+        "resolves_elsewhere" => Some(ClusterDnsVerdict::ResolvesElsewhere),
+        _ => None,
+    }
 }
 
 #[derive(Clone)]
@@ -466,6 +556,7 @@ impl ReplicatedStore {
             &CertificateRow {
                 material: Some(material.clone()),
                 challenge: None,
+                ..CertificateRow::default()
             },
         )
         .await
@@ -518,8 +609,33 @@ impl ReplicatedStore {
         self.upsert_certificate(
             hostname,
             &CertificateRow {
-                material: row.material,
                 challenge: Some(challenge.clone()),
+                ..row
+            },
+        )
+        .await
+    }
+
+    pub async fn record_certificate_failure(
+        &self,
+        hostname: &IngressHost,
+        last_error: impl Into<String>,
+        next_attempt_at: SystemTime,
+        failures: u32,
+        last_resolve_verdict: Option<ClusterDnsVerdict>,
+    ) -> Result<(), Error> {
+        let row = self.certificate_row(hostname).await?;
+        if row.material.is_some() {
+            return Ok(());
+        }
+        self.upsert_certificate(
+            hostname,
+            &CertificateRow {
+                last_error: Some(last_error.into()),
+                next_attempt_at: Some(next_attempt_at),
+                failures,
+                last_resolve_verdict,
+                ..row
             },
         )
         .await
@@ -817,9 +933,10 @@ mod tests {
         collections::BTreeMap,
         net::TcpListener,
         sync::{Arc, Mutex},
+        time::{Duration, SystemTime},
     };
 
-    use ployz_core::{LocalMachinePhase, Machine};
+    use ployz_core::{ClusterDnsVerdict, LocalMachinePhase, Machine};
     use serde_json::json;
 
     use super::{CertificateChallenge, CertificateMaterial, ReplicatedStore};
@@ -966,6 +1083,38 @@ mod tests {
         assert_eq!(challenge.response(), "tok.thumb");
         assert_eq!(CertificateChallenge::new("", "tok.thumb"), None);
         assert_eq!(super::CertificateRow::decode("{}").unwrap().challenge, None);
+    }
+
+    #[test]
+    fn certificate_row_round_trips_refusal_clock() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let row = super::CertificateRow {
+            last_error: Some(
+                "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
+                    .into(),
+            ),
+            next_attempt_at: Some(at),
+            failures: 3,
+            last_resolve_verdict: Some(ClusterDnsVerdict::DoesNotResolve),
+            ..super::CertificateRow::default()
+        };
+        let encoded = row.encode().unwrap();
+        let decoded = super::CertificateRow::decode(&encoded).unwrap();
+        assert_eq!(decoded.last_error(), row.last_error());
+        assert_eq!(decoded.next_attempt_at(), Some(at));
+        assert_eq!(decoded.failures(), 3);
+        assert_eq!(
+            decoded.last_resolve_verdict(),
+            Some(ClusterDnsVerdict::DoesNotResolve)
+        );
+        assert_eq!(
+            super::CertificateRow::decode(
+                r#"{"certificate":"","private_key":"","last_error":"later","next_attempt_at":"2023-11-14T22:13:20Z","failures":2,"last_resolve_verdict":"resolves_elsewhere"}"#
+            )
+            .unwrap()
+            .last_resolve_verdict(),
+            Some(ClusterDnsVerdict::ResolvesElsewhere)
+        );
     }
 
     fn participating_record() -> (Machine, LocalMachineRecord) {

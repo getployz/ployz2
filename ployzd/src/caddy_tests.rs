@@ -258,6 +258,68 @@ fn pending_challenge_is_answered_on_the_http_site() {
 }
 
 #[test]
+fn last_error_is_a_skipped_certificate_comment() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
+    )];
+    let certificates = BTreeMap::from([(
+        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateRow::from_parts(None, None).with_last_error(
+            "Ingress Hostname secure.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1.",
+        ),
+    )]);
+
+    let caddyfile = automatic_caddyfile(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        None,
+        &certificates,
+    );
+
+    assert!(caddyfile.contains(
+        "# Skipped certificate issuance:\n\
+# - secure.example.com: Ingress Hostname secure.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1.\n"
+    ));
+    assert!(!caddyfile.contains("https://secure.example.com"));
+}
+
+#[test]
+fn last_error_is_omitted_once_material_exists() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
+    )];
+    let certificates = BTreeMap::from([(
+        IngressHost::parse("secure.example.com").unwrap(),
+        CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None)
+            .with_last_error("stale"),
+    )]);
+
+    let caddyfile = automatic_caddyfile(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        None,
+        &certificates,
+    );
+
+    assert!(!caddyfile.contains("Skipped certificate issuance"));
+    assert!(!caddyfile.contains("stale"));
+}
+
+#[test]
 fn automatic_sites_exclude_hook_containers() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let observations = vec![

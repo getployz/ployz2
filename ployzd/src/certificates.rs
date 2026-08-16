@@ -4,9 +4,10 @@ use std::{
     collections::BTreeSet,
     future::Future,
     io,
+    net::IpAddr,
     path::{Path, PathBuf},
     pin::Pin,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use bytes::Bytes;
@@ -16,15 +17,16 @@ use instant_acme::{
     Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use ployz_core::{
-    ContainerKind, ContainerObservation, HttpProtocol, IngressHost, IngressHostname,
-    PortPublication,
+    ClusterDnsVerdict, ContainerKind, ContainerObservation, HttpProtocol, IngressHost,
+    IngressHostname, IssuanceAction, IssuanceInput, Machine, PortPublication, cluster_dns_verdict,
+    issuance_action, issuance_backoff, issuance_refusal_reason,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{CertificateChallenge, CertificateMaterial, ReplicatedStore},
+    corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
 };
 
@@ -137,17 +139,116 @@ async fn issue_wanted(
     account_dir: &Path,
 ) -> Result<(), Error> {
     let containers = store.containers().await?;
+    let machines = store.machines().await?;
     let wanted = wanted_certificate_hosts(containers.observations.iter());
     let rows = store.certificate_state().await?;
+    let cluster = cluster_addresses(&machines.observations);
+    let now = SystemTime::now();
     for hostname in wanted {
-        if rows.get(&hostname).and_then(|row| row.material()).is_some() {
-            continue;
-        }
-        if let Err(error) = obtain(store, &hostname, directory, account_dir).await {
-            eprintln!("failed to obtain certificate for {hostname}: {error}");
+        let row = rows.get(&hostname).cloned().unwrap_or_default();
+        let resolved = resolve_ingress_addresses(&hostname).await;
+        let verdict = cluster_dns_verdict(&resolved, &cluster);
+        match issuance_action(IssuanceInput {
+            has_material: row.material().is_some(),
+            next_attempt_at: row.next_attempt_at(),
+            last_resolve_verdict: row.last_resolve_verdict(),
+            verdict,
+            now,
+        }) {
+            IssuanceAction::Nothing => {}
+            IssuanceAction::Refuse => {
+                if let Err(error) =
+                    record_refusal(store, &hostname, &row, verdict, &resolved, &cluster, now).await
+                {
+                    eprintln!("failed to record certificate refusal for {hostname}: {error}");
+                }
+            }
+            IssuanceAction::Order => {
+                if let Err(error) = obtain(store, &hostname, directory, account_dir).await {
+                    eprintln!("failed to obtain certificate for {hostname}: {error}");
+                    if let Err(record_error) =
+                        record_authority_failure(store, &hostname, &row, error.to_string(), now)
+                            .await
+                    {
+                        eprintln!(
+                            "failed to record certificate authority failure for {hostname}: {record_error}"
+                        );
+                    }
+                }
+            }
         }
     }
     Ok(())
+}
+
+fn cluster_addresses(machines: &[Machine]) -> Vec<IpAddr> {
+    machines
+        .iter()
+        .filter_map(|machine| machine.public_ip)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+async fn resolve_ingress_addresses(hostname: &IngressHost) -> Vec<IpAddr> {
+    match tokio::net::lookup_host((hostname.as_str(), 0)).await {
+        Ok(addresses) => addresses
+            .map(|address| address.ip())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+async fn record_refusal(
+    store: &ReplicatedStore,
+    hostname: &IngressHost,
+    row: &CertificateRow,
+    verdict: ClusterDnsVerdict,
+    resolved: &[IpAddr],
+    cluster: &[IpAddr],
+    now: SystemTime,
+) -> Result<(), Error> {
+    let Some(reason) = issuance_refusal_reason(hostname, resolved, cluster) else {
+        return Ok(());
+    };
+    let (failures, next_attempt_at) = next_failure_state(row, Some(verdict), now);
+    store
+        .record_certificate_failure(hostname, reason, next_attempt_at, failures, Some(verdict))
+        .await
+        .map_err(Into::into)
+}
+
+async fn record_authority_failure(
+    store: &ReplicatedStore,
+    hostname: &IngressHost,
+    row: &CertificateRow,
+    reason: String,
+    now: SystemTime,
+) -> Result<(), Error> {
+    let (failures, next_attempt_at) = next_failure_state(row, None, now);
+    store
+        .record_certificate_failure(hostname, reason, next_attempt_at, failures, None)
+        .await
+        .map_err(Into::into)
+}
+
+fn next_failure_state(
+    row: &CertificateRow,
+    resolve: Option<ClusterDnsVerdict>,
+    now: SystemTime,
+) -> (u32, SystemTime) {
+    let reset = match resolve {
+        Some(verdict) => row.last_resolve_verdict() != Some(verdict),
+        None => row.last_resolve_verdict().is_some(),
+    };
+    let failures = if reset {
+        1
+    } else {
+        row.failures().saturating_add(1)
+    };
+    (failures, now + issuance_backoff(failures))
 }
 
 async fn obtain(
@@ -351,13 +452,16 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use ployz_core::{
-        ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
+        ClusterDnsVerdict, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
         ContainerRuntimeObservation, HealthObservation, HttpProtocol, IngressHost, IngressHostname,
-        MachineId, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName,
+        MachineId, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, issuance_backoff,
     };
     use serde_json::json;
 
-    use super::{directory_from_env, order_certificate, wanted_certificate_hosts};
+    use super::{
+        directory_from_env, next_failure_state, order_certificate, wanted_certificate_hosts,
+    };
+    use crate::corrosion::CertificateRow;
 
     #[test]
     fn directory_empty_disables_issuance() {
@@ -471,6 +575,43 @@ mod tests {
             "{error}"
         );
         let _ = std::fs::remove_dir_all(account_dir);
+    }
+
+    #[test]
+    fn resolve_failure_resets_when_the_verdict_changes() {
+        let now = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let first = CertificateRow::default();
+        let (failures, next) =
+            next_failure_state(&first, Some(ClusterDnsVerdict::DoesNotResolve), now);
+        assert_eq!(failures, 1);
+        assert_eq!(next, now + issuance_backoff(1));
+
+        let repeated = CertificateRow::from_parts(None, None)
+            .with_backoff(4, Some(ClusterDnsVerdict::DoesNotResolve));
+        let (failures, next) =
+            next_failure_state(&repeated, Some(ClusterDnsVerdict::DoesNotResolve), now);
+        assert_eq!(failures, 5);
+        assert_eq!(next, now + issuance_backoff(5));
+
+        let (failures, next) =
+            next_failure_state(&repeated, Some(ClusterDnsVerdict::ResolvesElsewhere), now);
+        assert_eq!(failures, 1);
+        assert_eq!(next, now + issuance_backoff(1));
+    }
+
+    #[test]
+    fn authority_failure_keeps_backing_off_after_resolve_state() {
+        let now = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let after_resolve =
+            CertificateRow::default().with_backoff(6, Some(ClusterDnsVerdict::DoesNotResolve));
+        let (failures, next) = next_failure_state(&after_resolve, None, now);
+        assert_eq!(failures, 1);
+        assert_eq!(next, now + issuance_backoff(1));
+
+        let after_authority = CertificateRow::default().with_backoff(3, None);
+        let (failures, next) = next_failure_state(&after_authority, None, now);
+        assert_eq!(failures, 4);
+        assert_eq!(next, now + issuance_backoff(4));
     }
 
     fn host(name: &str) -> IngressHost {
