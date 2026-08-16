@@ -156,14 +156,29 @@ fn resolved_scale_input_changes_only_replicas() {
 
 #[test]
 fn deploy_warning_display_is_the_cli_line_body() {
-    let ingress = crate::dns::IngressDnsWarning {
-        hostname: ployz_core::IngressHost::parse("app.example.com").unwrap(),
-        resolved: Vec::new(),
-        cluster_addresses: vec!["192.0.2.1".parse().unwrap()],
-        mentions_certificates: true,
-    };
+    let spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
+        "name": "web",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "nginx", "pull_policy": "missing" },
+        "ports": [{
+            "mode": "ingress",
+            "hostname": { "kind": "explicit", "hostname": "app.example.com" },
+            "load_balancer_port": 443,
+            "container_port": 8080,
+            "http_protocol": "https"
+        }]
+    }))
+    .unwrap();
+    let warning =
+        crate::dns::ingress_dns_warnings([&spec], None, &["192.0.2.1".parse().unwrap()], |_| {
+            Vec::new()
+        })
+        .into_iter()
+        .map(DeployWarning::IngressHostname)
+        .next()
+        .expect("unresolved custom hostname warns");
     assert_eq!(
-        DeployWarning::IngressHostname(ingress).to_string(),
+        warning.to_string(),
         "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster."
     );
     assert_eq!(

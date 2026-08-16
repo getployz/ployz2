@@ -226,37 +226,11 @@ pub fn expand_ingress_ports(
 
 /// A custom Ingress Hostname that does not resolve into this Cluster.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IngressDnsWarning {
-    pub hostname: IngressHost,
-    pub resolved: Vec<IpAddr>,
-    pub cluster_addresses: Vec<IpAddr>,
-    pub mentions_certificates: bool,
-}
+pub struct IngressDnsWarning(String);
 
 impl Display for IngressDnsWarning {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let should = join_addresses(&self.cluster_addresses);
-        if self.resolved.is_empty() {
-            write!(
-                f,
-                "Ingress Hostname {} does not resolve; it should resolve to {should}.",
-                self.hostname
-            )?;
-        } else {
-            write!(
-                f,
-                "Ingress Hostname {} resolves to {}; it should resolve to {should}.",
-                self.hostname,
-                join_addresses(&self.resolved)
-            )?;
-        }
-        if self.mentions_certificates {
-            write!(
-                f,
-                " A certificate cannot be issued until it points at this Cluster."
-            )?;
-        }
-        Ok(())
+        f.write_str(&self.0)
     }
 }
 
@@ -271,13 +245,10 @@ fn join_addresses(addresses: &[IpAddr]) -> String {
         .join(", ")
 }
 
-/// Collect Deploy warnings for custom Ingress Hostnames that miss this Cluster.
-pub fn ingress_dns_warnings<'a>(
+fn custom_ingress_targets<'a>(
     specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
     cluster_domain: Option<&str>,
-    cluster_addresses: &[IpAddr],
-    mut resolve: impl FnMut(&IngressHost) -> Vec<IpAddr>,
-) -> Vec<IngressDnsWarning> {
+) -> BTreeMap<IngressHost, bool> {
     let mut targets = BTreeMap::new();
     for spec in specs {
         for port in &spec.ports {
@@ -295,25 +266,53 @@ pub fn ingress_dns_warnings<'a>(
             let mentions_certificates = *http_protocol == HttpProtocol::Https;
             targets
                 .entry(hostname.clone())
-                .and_modify(|mentions: &mut bool| *mentions |= mentions_certificates)
+                .and_modify(|mentions| *mentions |= mentions_certificates)
                 .or_insert(mentions_certificates);
         }
     }
     targets
+}
+
+fn miss_warning(
+    hostname: &IngressHost,
+    resolved: &[IpAddr],
+    cluster_addresses: &[IpAddr],
+    mentions_certificates: bool,
+) -> Option<IngressDnsWarning> {
+    let should = join_addresses(cluster_addresses);
+    let body = match cluster_dns_verdict(resolved, cluster_addresses) {
+        ClusterDnsVerdict::PointsAtCluster => return None,
+        ClusterDnsVerdict::DoesNotResolve => {
+            format!("Ingress Hostname {hostname} does not resolve; it should resolve to {should}.")
+        }
+        ClusterDnsVerdict::ResolvesElsewhere => format!(
+            "Ingress Hostname {hostname} resolves to {}; it should resolve to {should}.",
+            join_addresses(resolved)
+        ),
+    };
+    Some(IngressDnsWarning(if mentions_certificates {
+        format!("{body} A certificate cannot be issued until it points at this Cluster.")
+    } else {
+        body
+    }))
+}
+
+/// Collect Deploy warnings for custom Ingress Hostnames that miss this Cluster.
+pub fn ingress_dns_warnings<'a>(
+    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
+    cluster_domain: Option<&str>,
+    cluster_addresses: &[IpAddr],
+    mut resolve: impl FnMut(&IngressHost) -> Vec<IpAddr>,
+) -> Vec<IngressDnsWarning> {
+    custom_ingress_targets(specs, cluster_domain)
         .into_iter()
         .filter_map(|(hostname, mentions_certificates)| {
-            let resolved = unique_addresses(resolve(&hostname));
-            match cluster_dns_verdict(&resolved, cluster_addresses) {
-                ClusterDnsVerdict::PointsAtCluster => None,
-                ClusterDnsVerdict::DoesNotResolve | ClusterDnsVerdict::ResolvesElsewhere => {
-                    Some(IngressDnsWarning {
-                        hostname,
-                        resolved,
-                        cluster_addresses: cluster_addresses.to_vec(),
-                        mentions_certificates,
-                    })
-                }
-            }
+            miss_warning(
+                &hostname,
+                &unique_addresses(resolve(&hostname)),
+                cluster_addresses,
+                mentions_certificates,
+            )
         })
         .collect()
 }
@@ -327,11 +326,31 @@ fn unique_addresses(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
 }
 
 /// Resolve A/AAAA addresses for an Ingress Hostname. Lookup failure is an empty set.
-pub async fn resolve_ingress_addresses(hostname: &str) -> Vec<IpAddr> {
-    match tokio::net::lookup_host((hostname, 0)).await {
+pub async fn resolve_ingress_addresses(hostname: &IngressHost) -> Vec<IpAddr> {
+    match tokio::net::lookup_host((hostname.as_str(), 0)).await {
         Ok(addresses) => unique_addresses(addresses.map(|address| address.ip()).collect()),
         Err(_) => Vec::new(),
     }
+}
+
+/// Resolve custom Ingress Hostnames and warn when they miss this Cluster.
+pub async fn resolve_ingress_dns_warnings<'a>(
+    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
+    cluster_domain: Option<&str>,
+    cluster_addresses: &[IpAddr],
+) -> Vec<IngressDnsWarning> {
+    let mut warnings = Vec::new();
+    for (hostname, mentions_certificates) in custom_ingress_targets(specs, cluster_domain) {
+        if let Some(warning) = miss_warning(
+            &hostname,
+            &resolve_ingress_addresses(&hostname).await,
+            cluster_addresses,
+            mentions_certificates,
+        ) {
+            warnings.push(warning);
+        }
+    }
+    warnings
 }
 
 #[cfg(test)]
@@ -346,9 +365,8 @@ mod tests {
     };
 
     use super::{
-        DomainRequired, IngressDnsWarning, NoReachableMachines, expand_ingress_ports,
-        ingress_dns_warnings, reachability_matches, records_from_machines,
-        resolve_ingress_addresses,
+        DomainRequired, NoReachableMachines, expand_ingress_ports, ingress_dns_warnings,
+        reachability_matches, records_from_machines, resolve_ingress_addresses,
     };
 
     #[test]
@@ -558,24 +576,29 @@ mod tests {
 
     #[test]
     fn warning_display_uses_the_unpublished_address_phrase() {
-        let warning = IngressDnsWarning {
-            hostname: ployz_core::IngressHost::parse("app.example.com").unwrap(),
-            resolved: vec!["198.51.100.10".parse().unwrap()],
-            cluster_addresses: Vec::new(),
-            mentions_certificates: false,
-        };
+        let spec = requested(vec![ingress(
+            explicit("app.example.com"),
+            HttpProtocol::Http,
+        )]);
+        let warnings = ingress_dns_warnings([&spec], None, &[], |_| {
+            vec!["198.51.100.10".parse().unwrap()]
+        });
         assert_eq!(
-            warning.to_string(),
-            "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to this Cluster's Machine addresses (none are published)."
+            warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to this Cluster's Machine addresses (none are published)."
+            ]
         );
     }
 
     #[tokio::test]
     async fn invalid_tlds_resolve_to_nothing() {
         assert!(
-            resolve_ingress_addresses("no-such-host.invalid")
-                .await
-                .is_empty()
+            resolve_ingress_addresses(
+                &ployz_core::IngressHost::parse("no-such-host.invalid").unwrap()
+            )
+            .await
+            .is_empty()
         );
     }
 

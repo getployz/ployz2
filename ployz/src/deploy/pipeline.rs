@@ -4,7 +4,7 @@
 //! Plan is executed to a Deploy Outcome. This module does not print, read
 //! stdin, or exit the process.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 use std::net::IpAddr;
 use std::num::NonZeroU32;
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     compose::{BuildService, ComposeProject},
     connect::Client,
-    dns::{IngressDnsWarning, ingress_dns_warnings, resolve_ingress_addresses},
+    dns::{IngressDnsWarning, resolve_ingress_dns_warnings},
     failure::Failure,
     image::PushError,
 };
@@ -277,39 +277,10 @@ async fn hostname_warnings<'a>(
     cluster_domain: Option<&str>,
     machines: &[MachineObservation],
 ) -> Vec<DeployWarning> {
-    let cluster_addresses = machine_public_addresses(machines);
-    let specs: Vec<_> = specs.into_iter().collect();
-    let mut resolved = BTreeMap::new();
-    for hostname in custom_hostnames(specs.iter().copied(), cluster_domain) {
-        resolved.insert(
-            hostname.clone(),
-            resolve_ingress_addresses(hostname.as_str()).await,
-        );
-    }
-    ingress_dns_warnings(specs, cluster_domain, &cluster_addresses, |hostname| {
-        resolved
-            .get(hostname)
-            .cloned()
-            .expect("custom Ingress Hostname was collected before resolve")
-    })
-    .into_iter()
-    .map(DeployWarning::IngressHostname)
-    .collect()
-}
-
-fn custom_hostnames<'a>(
-    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
-    cluster_domain: Option<&str>,
-) -> BTreeSet<ployz_core::IngressHost> {
-    specs
+    resolve_ingress_dns_warnings(specs, cluster_domain, &machine_public_addresses(machines))
+        .await
         .into_iter()
-        .flat_map(|spec| &spec.ports)
-        .filter_map(|port| match port {
-            PortPublication::Ingress { hostname, .. } => {
-                ployz_core::custom_ingress_host(hostname, cluster_domain).cloned()
-            }
-            PortPublication::Host { .. } => None,
-        })
+        .map(DeployWarning::IngressHostname)
         .collect()
 }
 
