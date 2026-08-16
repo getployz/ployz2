@@ -70,7 +70,7 @@ pub struct Daemon {
     corrosion: Option<RunningCorrosion>,
     unregistry: Option<Arc<RunningUnregistry>>,
     reset_rx: watch::Receiver<bool>,
-    servers: Option<JoinHandle<io::Result<()>>>,
+    servers: JoinHandle<io::Result<()>>,
     _socket_lock: File,
 }
 
@@ -345,7 +345,7 @@ impl Daemon {
             corrosion,
             unregistry,
             reset_rx,
-            servers: Some(servers),
+            servers,
             _socket_lock: socket_lock,
         })
     }
@@ -362,10 +362,7 @@ impl Daemon {
     ///
     /// If a plane or cleanup step fails.
     pub async fn wait(mut self) -> Result<(), Error> {
-        let mut servers = self
-            .servers
-            .take()
-            .expect("wait consumes the server task once");
+        let mut servers = self.servers;
         let mut completed_servers = None;
         let trigger_error = tokio::select! {
             result = &mut servers => {
@@ -430,16 +427,6 @@ impl Daemon {
             Ok(())
         } else {
             Err(io::Error::other(errors.join("; ")).into())
-        }
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        self.stop.cancel();
-        self.shutdown.cancel();
-        if let Some(servers) = &self.servers {
-            servers.abort();
         }
     }
 }
