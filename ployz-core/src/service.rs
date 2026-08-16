@@ -3,30 +3,67 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{ContainerKind, ContainerObservation, PartialResult, ServiceId};
+use crate::{
+    Container, ContainerObservation, HookContainer, PartialResult, ServiceContainer, ServiceId,
+    ServiceName,
+};
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ServiceObservation {
     pub service_id: ServiceId,
     #[serde(default)]
-    pub containers: Vec<ContainerObservation>,
+    pub containers: Vec<ServiceContainer>,
     #[serde(default)]
-    pub hook_containers: Vec<ContainerObservation>,
+    pub hook_containers: Vec<HookContainer>,
 }
 
 impl ServiceObservation {
-    pub fn containers_for(
-        &self,
-        action: ContainerAction,
-    ) -> impl Iterator<Item = &ContainerObservation> {
+    /// Service Name carried by any member, if the observation is non-empty.
+    #[must_use]
+    pub fn service_name(&self) -> Option<&ServiceName> {
+        self.containers
+            .first()
+            .map(|container| &container.as_observation().service_name)
+            .or_else(|| {
+                self.hook_containers
+                    .first()
+                    .map(|container| &container.as_observation().service_name)
+            })
+    }
+
+    /// True when any member carries this Service Name.
+    #[must_use]
+    pub fn has_name(&self, selector: &str) -> bool {
         self.containers
             .iter()
-            .chain(&self.hook_containers)
-            .filter(move |container| {
-                action != ContainerAction::Start
-                    || container.kind == ContainerKind::ServiceContainer
-            })
+            .any(|container| container.as_observation().service_name.as_str() == selector)
+            || self
+                .hook_containers
+                .iter()
+                .any(|container| container.as_observation().service_name.as_str() == selector)
+    }
+
+    /// Every role-proven member of this Service.
+    pub fn members(&self) -> impl Iterator<Item = Container> + '_ {
+        self.containers
+            .iter()
+            .cloned()
+            .map(Container::from)
+            .chain(self.hook_containers.iter().cloned().map(Container::from))
+    }
+
+    pub fn containers_for(&self, action: ContainerAction) -> impl Iterator<Item = Container> + '_ {
+        let include_hooks = match action {
+            ContainerAction::Start => false,
+            ContainerAction::Stop | ContainerAction::Remove => true,
+        };
+        self.containers.iter().cloned().map(Container::from).chain(
+            include_hooks
+                .then_some(self.hook_containers.iter().cloned().map(Container::from))
+                .into_iter()
+                .flatten(),
+        )
     }
 }
 
@@ -68,17 +105,18 @@ pub fn derive_services(
     containers: impl IntoIterator<Item = ContainerObservation>,
 ) -> Vec<ServiceObservation> {
     let mut services = BTreeMap::<ServiceId, ServiceObservation>::new();
-    for container in containers {
-        let service = services
-            .entry(container.service_id)
-            .or_insert_with(|| ServiceObservation {
-                service_id: container.service_id,
-                containers: Vec::new(),
-                hook_containers: Vec::new(),
-            });
-        match container.kind {
-            ContainerKind::ServiceContainer => service.containers.push(container),
-            ContainerKind::PreDeployHook => service.hook_containers.push(container),
+    for observation in containers {
+        let service =
+            services
+                .entry(observation.service_id)
+                .or_insert_with(|| ServiceObservation {
+                    service_id: observation.service_id,
+                    containers: Vec::new(),
+                    hook_containers: Vec::new(),
+                });
+        match Container::from(observation) {
+            Container::Service(container) => service.containers.push(container),
+            Container::Hook(container) => service.hook_containers.push(container),
         }
     }
     services.into_values().collect()
@@ -109,13 +147,7 @@ pub fn select_service<'a>(
     }
     let matches = services
         .iter()
-        .filter(|service| {
-            service
-                .containers
-                .iter()
-                .chain(&service.hook_containers)
-                .any(|container| container.service_name.as_str() == selector)
-        })
+        .filter(|service| service.has_name(selector))
         .collect::<Vec<_>>();
     match matches.as_slice() {
         [] => Err(ServiceSelectorError::NotFound {
@@ -187,8 +219,18 @@ mod tests {
         assert_eq!(service.containers.len(), 2);
         assert_eq!(service.hook_containers.len(), 1);
         assert_ne!(
-            service.containers.first().unwrap().resolved_spec,
-            service.containers.get(1).unwrap().resolved_spec
+            service
+                .containers
+                .first()
+                .unwrap()
+                .as_observation()
+                .resolved_spec,
+            service
+                .containers
+                .get(1)
+                .unwrap()
+                .as_observation()
+                .resolved_spec
         );
         let hook_only = services
             .iter()
@@ -299,6 +341,7 @@ mod tests {
                 .containers
                 .first()
                 .unwrap()
+                .as_observation()
                 .machine_id,
             success_id
         );
@@ -307,6 +350,75 @@ mod tests {
             failed_id
         );
         assert_eq!(live.containers.omissions, vec![omitted_id]);
+    }
+
+    #[test]
+    fn derived_service_observations_reject_cross_role_collections() {
+        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let regular = observation(
+            '1',
+            &service_id,
+            "api",
+            ContainerKind::ServiceContainer,
+            "v1",
+        );
+        let hook = observation(
+            '2',
+            &service_id,
+            "api",
+            ContainerKind::PreDeployHook,
+            "hook",
+        );
+
+        assert!(
+            serde_json::from_value::<super::ServiceObservation>(json!({
+                "service_id": service_id,
+                "containers": [hook],
+                "hook_containers": []
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<super::ServiceObservation>(json!({
+                "service_id": service_id,
+                "containers": [],
+                "hook_containers": [regular]
+            }))
+            .is_err()
+        );
+
+        let derived = super::derive_services([regular, hook]).pop().unwrap();
+        let inspected = serde_json::to_value(&derived).unwrap();
+        assert_eq!(inspected.get("service_id"), Some(&json!(service_id)));
+        assert_eq!(
+            inspected.pointer("/containers/0/kind"),
+            Some(&json!("service_container"))
+        );
+        assert_eq!(
+            inspected.pointer("/hook_containers/0/kind"),
+            Some(&json!("pre_deploy_hook"))
+        );
+        for pointer in [
+            "/containers/0/container_id",
+            "/containers/0/display_name",
+            "/containers/0/machine_id",
+            "/containers/0/service_id",
+            "/containers/0/service_name",
+            "/containers/0/runtime",
+            "/containers/0/resolved_spec",
+            "/hook_containers/0/container_id",
+            "/hook_containers/0/kind",
+            "/hook_containers/0/resolved_spec",
+        ] {
+            assert!(
+                inspected.pointer(pointer).is_some(),
+                "inspect JSON missing {pointer}"
+            );
+        }
+        assert_eq!(
+            serde_json::from_value::<super::ServiceObservation>(inspected).unwrap(),
+            derived
+        );
     }
 
     #[test]
@@ -331,22 +443,27 @@ mod tests {
         .pop()
         .unwrap();
 
-        assert_eq!(
-            service
-                .containers_for(super::ContainerAction::Start)
-                .count(),
-            1
+        let start = service
+            .containers_for(super::ContainerAction::Start)
+            .collect::<Vec<_>>();
+        assert_eq!(start.len(), 1);
+        assert!(
+            start
+                .iter()
+                .all(|container| matches!(container, crate::Container::Service(_)))
         );
-        assert_eq!(
-            service.containers_for(super::ContainerAction::Stop).count(),
-            2
-        );
-        assert_eq!(
-            service
-                .containers_for(super::ContainerAction::Remove)
-                .count(),
-            2
-        );
+        let stop = service
+            .containers_for(super::ContainerAction::Stop)
+            .collect::<Vec<_>>();
+        assert_eq!(stop.len(), 2);
+        assert!(matches!(stop.first(), Some(crate::Container::Service(_))));
+        assert!(matches!(stop.get(1), Some(crate::Container::Hook(_))));
+        let remove = service
+            .containers_for(super::ContainerAction::Remove)
+            .collect::<Vec<_>>();
+        assert_eq!(remove.len(), 2);
+        assert!(matches!(remove.first(), Some(crate::Container::Service(_))));
+        assert!(matches!(remove.get(1), Some(crate::Container::Hook(_))));
 
         let changed = PartialResult {
             successes: vec![MachineSuccess {

@@ -187,6 +187,42 @@ impl HookContainer {
     }
 }
 
+impl Serialize for ServiceContainer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.observation.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ServiceContainer {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::try_from(ContainerObservation::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+impl Serialize for HookContainer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.observation.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for HookContainer {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::try_from(ContainerObservation::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
 impl Container {
     /// Borrow the mixed observation this view was proven from.
     #[must_use]
