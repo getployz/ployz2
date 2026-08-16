@@ -5,12 +5,11 @@ use std::{
 };
 
 use ployz_core::{
-    ALWAYS_ADVERTISED_CAPABILITIES, CADDY_CAPABILITIES, CLUSTER_CAPABILITIES,
-    CONTAINER_CAPABILITIES, CaddyConfig, CapabilityName, ContainerChanged, ContainerDetails,
-    ContainerList, ContractDescription, Domain, DomainRecords, LocalMachinePhase, LogMetadata,
-    LogOrigin, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeCreated, VolumeDetails, VolumeList,
-    VolumeRemoved, op,
+    CaddyConfig, CapabilityAdvertisement, CapabilityName, ContainerChanged, ContainerDetails,
+    ContainerList, ContractDescription, Domain, DomainRecords, EXEC_CONTAINER_CAPABILITY,
+    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, OpaquePayload,
+    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeCreated,
+    VolumeDetails, VolumeList, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -111,15 +110,20 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::DescribeContract>(request)?;
         let machine_id = self.local_record()?.id;
-        let mut capabilities: BTreeSet<_> = advertised(ALWAYS_ADVERTISED_CAPABILITIES).collect();
+        let mut capabilities: BTreeSet<_> =
+            advertised(CapabilityAdvertisement::Always.capabilities()).collect();
         if self.local.containers().is_some() {
-            capabilities.extend(advertised(CONTAINER_CAPABILITIES));
+            capabilities.extend(advertised(
+                CapabilityAdvertisement::Container
+                    .capabilities()
+                    .chain(std::iter::once(EXEC_CONTAINER_CAPABILITY)),
+            ));
         }
         if self.caddyfile.is_some() {
-            capabilities.extend(advertised(CADDY_CAPABILITIES));
+            capabilities.extend(advertised(CapabilityAdvertisement::Caddy.capabilities()));
         }
         if self.local.has_cluster() {
-            capabilities.extend(advertised(CLUSTER_CAPABILITIES));
+            capabilities.extend(advertised(CapabilityAdvertisement::Cluster.capabilities()));
         }
         respond(ContractDescription {
             machine_id,
@@ -638,10 +642,11 @@ fn finish(
     }
 }
 
-fn advertised(names: &'static [&str]) -> impl Iterator<Item = CapabilityName> {
+fn advertised(
+    names: impl IntoIterator<Item = &'static str>,
+) -> impl Iterator<Item = CapabilityName> {
     names
-        .iter()
-        .copied()
+        .into_iter()
         .map(|name| CapabilityName::parse(name).expect("static capability name is valid"))
 }
 

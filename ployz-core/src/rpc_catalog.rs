@@ -27,8 +27,8 @@
 /// compiler requires to be a literal).
 ///
 /// `Exec` is deliberately absent: it is bidirectionally streamed and schema-blind, so it
-/// has no request variant and is wired up by hand. Its capability is appended to the
-/// Container group next to the generated names.
+/// has no request variant and is wired up by hand. `describe_contract` appends its
+/// capability when advertising the Container class.
 #[macro_export]
 macro_rules! rpc_catalog {
     ($consumer:ident) => {

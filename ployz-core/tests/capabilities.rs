@@ -1,7 +1,6 @@
 use ployz_core::{
-    ALWAYS_ADVERTISED_CAPABILITIES, CADDY_CAPABILITIES, CLUSTER_CAPABILITIES,
-    CONTAINER_CAPABILITIES, CONTAINER_LOGS_CAPABILITY, CREATE_CONTAINER_CAPABILITY,
-    CREATE_DOMAIN_RECORDS_CAPABILITY, CREATE_VOLUME_CAPABILITY, CapabilityName,
+    CONTAINER_LOGS_CAPABILITY, CREATE_CONTAINER_CAPABILITY, CREATE_DOMAIN_RECORDS_CAPABILITY,
+    CREATE_VOLUME_CAPABILITY, CapabilityAdvertisement, CapabilityName,
     DESCRIBE_CONTRACT_CAPABILITY, EXEC_CONTAINER_CAPABILITY, GET_CADDY_CONFIG_CAPABILITY,
     GET_DOMAIN_CAPABILITY, INITIALIZE_MACHINE_CAPABILITY, INSPECT_CONTAINER_CAPABILITY,
     INSPECT_MACHINE_CAPABILITY, INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY,
@@ -68,7 +67,9 @@ fn catalogued_capabilities_keep_stable_spellings() {
 #[test]
 fn advertised_capability_groups_match_the_frozen_catalog() {
     assert_eq!(
-        ALWAYS_ADVERTISED_CAPABILITIES,
+        CapabilityAdvertisement::Always
+            .capabilities()
+            .collect::<Vec<_>>(),
         [
             "ployz.rpc.describe-contract.v1",
             "ployz.machine.inspect.v1",
@@ -85,7 +86,10 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
         ]
     );
     assert_eq!(
-        CONTAINER_CAPABILITIES,
+        CapabilityAdvertisement::Container
+            .capabilities()
+            .chain(std::iter::once(EXEC_CONTAINER_CAPABILITY))
+            .collect::<Vec<_>>(),
         [
             "ployz.container.list.v1",
             "ployz.container.inspect.v1",
@@ -103,9 +107,16 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.exec.v1",
         ]
     );
-    assert_eq!(CADDY_CAPABILITIES, ["ployz.caddy.config.v1"]);
     assert_eq!(
-        CLUSTER_CAPABILITIES,
+        CapabilityAdvertisement::Caddy
+            .capabilities()
+            .collect::<Vec<_>>(),
+        ["ployz.caddy.config.v1"]
+    );
+    assert_eq!(
+        CapabilityAdvertisement::Cluster
+            .capabilities()
+            .collect::<Vec<_>>(),
         [
             "ployz.dns.reserve.v1",
             "ployz.dns.show.v1",

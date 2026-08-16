@@ -24,56 +24,23 @@ pub use docker::*;
 pub const PROTOCOL_MAJOR: u32 = 1;
 pub const UNREGISTRY_PORT: u16 = 51500;
 
-#[derive(Clone, Copy)]
-enum CapabilityAdvertisement {
+/// When a Machine includes a catalogued capability in `describe_contract`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapabilityAdvertisement {
     Always,
     Container,
     Caddy,
     Cluster,
 }
 
-const fn same_advertisement(left: CapabilityAdvertisement, right: CapabilityAdvertisement) -> bool {
-    left as u8 == right as u8
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    reason = "const loops stay below the counted length"
-)]
-const fn count_matching(
-    entries: &[(&'static str, CapabilityAdvertisement)],
-    class: CapabilityAdvertisement,
-) -> usize {
-    let mut count = 0;
-    let mut index = 0;
-    while index < entries.len() {
-        if same_advertisement(entries[index].1, class) {
-            count += 1;
-        }
-        index += 1;
+impl CapabilityAdvertisement {
+    /// Catalogued capability names in this class, in catalog order.
+    pub fn capabilities(self) -> impl Iterator<Item = &'static str> {
+        CATALOGUED_CAPABILITIES
+            .iter()
+            .filter(move |(_, class)| *class == self)
+            .map(|(name, _)| *name)
     }
-    count
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    reason = "const loops stay below the counted length"
-)]
-const fn matching<const N: usize>(
-    entries: &[(&'static str, CapabilityAdvertisement)],
-    class: CapabilityAdvertisement,
-) -> [&'static str; N] {
-    let mut out = [""; N];
-    let mut index = 0;
-    let mut written = 0;
-    while index < entries.len() {
-        if same_advertisement(entries[index].1, class) {
-            out[written] = entries[index].0;
-            written += 1;
-        }
-        index += 1;
-    }
-    out
 }
 
 macro_rules! define_capabilities {
@@ -92,45 +59,6 @@ macro_rules! define_capabilities {
             $(($unary_capability, CapabilityAdvertisement::$unary_advertisement),)+
             $(($stream_capability, CapabilityAdvertisement::$stream_advertisement),)+
         ];
-
-        /// Capabilities every Machine advertises, regardless of local adapters.
-        pub const ALWAYS_ADVERTISED_CAPABILITIES: &[&str] = &matching::<{
-            count_matching(CATALOGUED_CAPABILITIES, CapabilityAdvertisement::Always)
-        }>(CATALOGUED_CAPABILITIES, CapabilityAdvertisement::Always);
-
-        /// Capabilities advertised when a container runtime is available.
-        ///
-        /// Includes [`EXEC_CONTAINER_CAPABILITY`], which is outside the unary catalog.
-        pub const CONTAINER_CAPABILITIES: &[&str] = &{
-            const N: usize =
-                count_matching(CATALOGUED_CAPABILITIES, CapabilityAdvertisement::Container);
-            const CATALOGUED: [&str; N] =
-                matching(CATALOGUED_CAPABILITIES, CapabilityAdvertisement::Container);
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "const loop copies the counted prefix, then appends exec"
-            )]
-            {
-                let mut out = [""; N + 1];
-                let mut index = 0;
-                while index < N {
-                    out[index] = CATALOGUED[index];
-                    index += 1;
-                }
-                out[N] = EXEC_CONTAINER_CAPABILITY;
-                out
-            }
-        };
-
-        /// Capabilities advertised when a Caddyfile is configured.
-        pub const CADDY_CAPABILITIES: &[&str] = &matching::<{
-            count_matching(CATALOGUED_CAPABILITIES, CapabilityAdvertisement::Caddy)
-        }>(CATALOGUED_CAPABILITIES, CapabilityAdvertisement::Caddy);
-
-        /// Capabilities advertised when the Machine participates in a Cluster store.
-        pub const CLUSTER_CAPABILITIES: &[&str] = &matching::<{
-            count_matching(CATALOGUED_CAPABILITIES, CapabilityAdvertisement::Cluster)
-        }>(CATALOGUED_CAPABILITIES, CapabilityAdvertisement::Cluster);
     };
 }
 
