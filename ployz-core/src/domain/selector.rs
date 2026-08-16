@@ -54,10 +54,10 @@ impl ContainerSelector {
 #[serde(rename_all = "snake_case", tag = "error")]
 pub enum ContainerSelectorError {
     #[error("Container {selector:?} was not found")]
-    NotFound { selector: String },
+    NotFound { selector: ContainerSelector },
     #[error("Container {selector:?} matches multiple containers: {container_ids:?}")]
     Ambiguous {
-        selector: String,
+        selector: ContainerSelector,
         container_ids: Vec<ContainerId>,
     },
 }
@@ -88,15 +88,7 @@ pub fn resolve_container_selector<'a>(
     match named.as_slice() {
         [container] => return Ok(container),
         [] => {}
-        _ => {
-            return Err(ContainerSelectorError::Ambiguous {
-                selector: selector.as_str().to_owned(),
-                container_ids: named
-                    .into_iter()
-                    .map(|container| container.container_id)
-                    .collect(),
-            });
-        }
+        _ => return Err(ambiguous(selector, named)),
     }
     let prefixed = containers
         .iter()
@@ -110,15 +102,22 @@ pub fn resolve_container_selector<'a>(
         .collect::<Vec<_>>();
     match prefixed.as_slice() {
         [] => Err(ContainerSelectorError::NotFound {
-            selector: selector.as_str().to_owned(),
+            selector: selector.clone(),
         }),
         [container] => Ok(*container),
-        _ => Err(ContainerSelectorError::Ambiguous {
-            selector: selector.as_str().to_owned(),
-            container_ids: prefixed
-                .into_iter()
-                .map(|container| container.container_id)
-                .collect(),
-        }),
+        _ => Err(ambiguous(selector, prefixed)),
+    }
+}
+
+fn ambiguous(
+    selector: &ContainerSelector,
+    matches: Vec<&ContainerObservation>,
+) -> ContainerSelectorError {
+    ContainerSelectorError::Ambiguous {
+        selector: selector.clone(),
+        container_ids: matches
+            .into_iter()
+            .map(|container| container.container_id)
+            .collect(),
     }
 }
