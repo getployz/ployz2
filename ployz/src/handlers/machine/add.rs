@@ -125,27 +125,22 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     } else {
         None
     };
-    let outcome = MachineAddOutcome::after_saved(caddy);
-    if let Some(warning) = &outcome.caddy_warning {
-        eprintln!("{warning}");
+    let caddy_error = caddy.and_then(Result::err);
+    if let Some(error) = &caddy_error {
+        eprintln!("{}", caddy_follow_on_warning(error));
     }
-    let dns_error = runtime()?
-        .block_on(async {
-            let mut entry = connect_client(matches, options.context()).await?;
-            crate::dns::update_records_if_reserved(&mut entry).await?;
-            Ok::<_, Error>(())
-        })
-        .err();
-    if let Some(error) = &dns_error {
+    let dns_result = runtime()?.block_on(async {
+        let mut entry = connect_client(matches, options.context()).await?;
+        crate::dns::update_records_if_reserved(&mut entry).await?;
+        Ok::<_, Error>(())
+    });
+    if let Err(error) = &dns_result {
         eprintln!("WARNING: hosted DNS refresh failed after adding the Machine: {error}.");
     }
-    if let Some(error) = outcome.follow_on_error {
+    if let Some(error) = caddy_error {
         return Err(Error::usage(error));
     }
-    match dns_error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+    dns_result
 }
 
 async fn wait_machine_up(entry: &mut Client, machine_id: &MachineId) -> Result<(), Error> {
@@ -182,26 +177,6 @@ fn cluster_membership_conflict(
     }
 }
 
-struct MachineAddOutcome {
-    caddy_warning: Option<String>,
-    follow_on_error: Option<String>,
-}
-
-impl MachineAddOutcome {
-    fn after_saved(caddy: Option<Result<(), String>>) -> Self {
-        match caddy {
-            Some(Err(error)) => Self {
-                caddy_warning: Some(caddy_follow_on_warning(&error)),
-                follow_on_error: Some(error),
-            },
-            Some(Ok(())) | None => Self {
-                caddy_warning: None,
-                follow_on_error: None,
-            },
-        }
-    }
-}
-
 fn added_machine_line(assigned: &Machine) -> String {
     format!("Added Machine {} ({})", assigned.name, assigned.id)
 }
@@ -224,20 +199,15 @@ mod tests {
     #[test]
     fn machine_add_reports_added_when_follow_on_caddy_deploy_fails() {
         let assigned = assigned_machine("edge", 'a');
-        let outcome = MachineAddOutcome::after_saved(Some(Err("deploy timed out".into())));
         assert_eq!(
             added_machine_line(&assigned),
             "Added Machine edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
         );
-        assert!(outcome.follow_on_error.is_some());
     }
 
     #[test]
     fn caddy_deploy_failure_after_add_warns_operator_to_run_caddy_deploy() {
-        let outcome = MachineAddOutcome::after_saved(Some(Err("deploy timed out".into())));
-        let warning = outcome
-            .caddy_warning
-            .expect("Caddy Deploy failure must warn the operator");
+        let warning = caddy_follow_on_warning("deploy timed out");
         assert!(
             warning.contains("`caddy deploy`"),
             "warning must tell the operator to run `caddy deploy`, got {warning:?}"
