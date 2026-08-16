@@ -144,7 +144,7 @@ fn invalid_log_level_fails_before_start() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Parse") || stderr.contains("InvalidInput"),
+        stderr.contains("error parsing level filter"),
         "init error missing from stderr: {stderr}"
     );
 }
