@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, net::Ipv4Addr, process, time::Duration};
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    HealthObservation, Machine, MachineId, MachineSelector, MembershipObservation,
+    HealthObservation, Machine, MachineId, MachineTarget, MembershipObservation,
     ResolvedServiceSpec, ServiceId, StartContainerRequest, StopContainerRequest, op,
     select_service,
 };
@@ -328,16 +328,21 @@ async fn wait_for_dns_observations(
                 && let Ok(service) = select_service(&live.services, service_id.as_str())
                 && service.containers.len() == count
                 && service.containers.iter().all(|container| {
-                    container.address.is_some()
+                    let observation = container.as_observation();
+                    observation.address.is_some()
                         && matches!(
-                            &container.runtime,
+                            &observation.runtime,
                             ContainerRuntimeObservation::Running {
                                 health: HealthObservation::Healthy
                             }
                         )
                 })
             {
-                return service.containers.clone();
+                return service
+                    .containers
+                    .iter()
+                    .map(|container| container.as_observation().clone())
+                    .collect();
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -412,7 +417,7 @@ async fn start_container(
     client
         .call::<op::StartContainer>(
             StartContainerRequest { container_id },
-            Some(&MachineSelector::from(&machine_id)),
+            Some(&MachineTarget::from(&machine_id)),
         )
         .await
         .unwrap();
@@ -430,7 +435,7 @@ async fn stop_container(
                 signal: None,
                 grace_period_seconds: None,
             },
-            Some(&MachineSelector::from(&machine_id)),
+            Some(&MachineTarget::from(&machine_id)),
         )
         .await
         .unwrap();

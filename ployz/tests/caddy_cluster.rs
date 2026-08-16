@@ -5,7 +5,7 @@ use std::{
 
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerAction, ContainerId, ContainerKind, GetCaddyConfigRequest,
-    ListMachinesRequest, Machine, MachineId, MachineSelector, MembershipObservation,
+    ListMachinesRequest, Machine, MachineId, MachineTarget, MembershipObservation,
     RequestedServiceSpec, ResolvedServiceSpec, ServiceId, StartContainerRequest,
     StopContainerRequest, op,
 };
@@ -195,7 +195,7 @@ async fn assert_failed_load_retry(
     let stable = client
         .call::<op::GetCaddyConfig>(
             GetCaddyConfigRequest {},
-            Some(&MachineSelector::from(&machine.id)),
+            Some(&MachineTarget::from(&machine.id)),
         )
         .await
         .unwrap()
@@ -231,7 +231,7 @@ async fn assert_failed_load_retry(
         client
             .call::<op::GetCaddyConfig>(
                 GetCaddyConfigRequest {},
-                Some(&MachineSelector::from(&machine.id)),
+                Some(&MachineTarget::from(&machine.id)),
             )
             .await
             .unwrap()
@@ -252,7 +252,7 @@ async fn assert_failed_load_retry(
                 signal: None,
                 grace_period_seconds: Some(0),
             },
-            Some(&MachineSelector::from(&machine.id)),
+            Some(&MachineTarget::from(&machine.id)),
         )
         .await
         .unwrap();
@@ -276,7 +276,7 @@ async fn assert_membership_blind(
     let retained = client
         .call::<op::GetCaddyConfig>(
             GetCaddyConfigRequest {},
-            Some(&MachineSelector::from(&machines[0].id)),
+            Some(&MachineTarget::from(&machines[0].id)),
         )
         .await
         .unwrap();
@@ -337,11 +337,9 @@ async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: us
         loop {
             let live = client.live_services().await.unwrap();
             if let Some(service) = live.services.iter().find(|service| {
-                service
-                    .containers
-                    .first()
-                    .is_some_and(|container| container.service_name.as_str() == name)
-                    && service.containers.len() == count
+                service.containers.first().is_some_and(|container| {
+                    container.as_observation().service_name.as_str() == name
+                }) && service.containers.len() == count
             }) {
                 return service.service_id;
             }
@@ -531,7 +529,7 @@ async fn start_container(
     client
         .call::<op::StartContainer>(
             StartContainerRequest { container_id },
-            Some(&MachineSelector::from(&machine_id)),
+            Some(&MachineTarget::from(&machine_id)),
         )
         .await
         .unwrap();
@@ -554,7 +552,7 @@ async fn change_container(
                         signal: None,
                         grace_period_seconds,
                     },
-                    Some(&MachineSelector::from(&machine_id)),
+                    Some(&MachineTarget::from(&machine_id)),
                 )
                 .await
                 .unwrap();
@@ -579,6 +577,7 @@ async fn wait_running(
             let running = service
                 .containers
                 .iter()
+                .map(|container| container.as_observation().clone())
                 .filter(|container| {
                     matches!(
                         container.runtime,
@@ -588,7 +587,6 @@ async fn wait_running(
                         }
                     )
                 })
-                .cloned()
                 .collect::<Vec<_>>();
             if running.len() == count {
                 return running;
@@ -612,7 +610,7 @@ async fn wait_config(
         match client
             .call::<op::GetCaddyConfig>(
                 GetCaddyConfigRequest {},
-                Some(&MachineSelector::from(&machine.id)),
+                Some(&MachineTarget::from(&machine.id)),
             )
             .await
         {

@@ -53,6 +53,25 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
 }
 
 #[test]
+fn planning_does_not_count_hook_containers_toward_replicated_count() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let current_service_id = service_id('a');
+    let mut hook = container('c', '1', &requested, &current_service_id);
+    hook.kind = ContainerKind::PreDeployHook;
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![container('b', '1', &requested, &current_service_id), hook],
+        ..Default::default()
+    };
+
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+
+    assert!(plan.operations.is_empty());
+}
+
+#[test]
 fn sequence_failure_keeps_completed_failed_and_unexecuted_operations_exact() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(3).unwrap(),
@@ -102,7 +121,7 @@ fn duplicate_service_names_are_reported_without_selecting_a_winner() {
 #[test]
 fn unmatched_placement_returns_no_eligible_machines() {
     let mut requested = requested(ServiceMode::Global);
-    requested.placement.machines = vec![MachineSelector::parse("missing").unwrap()];
+    requested.placement.machines = vec![MachineTarget::parse("missing").unwrap()];
 
     assert_eq!(
         plan_deploy(

@@ -9,7 +9,7 @@ use ployz::{
 };
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineSelector,
+    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget,
     RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceVolume, ServiceVolumeReference,
     StartContainerRequest, StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
@@ -464,9 +464,8 @@ async fn wait_for_service(
                     .find(|service| service.service_id == *service_id)
             {
                 let containers = service
-                    .containers
-                    .into_iter()
-                    .chain(service.hook_containers)
+                    .members()
+                    .map(|container| container.as_observation().clone())
                     .collect::<Vec<_>>();
                 if containers.len() == count {
                     return containers;
@@ -510,7 +509,7 @@ async fn start_container(client: &mut Client, machine_id: MachineId, container_i
     client
         .call::<op::StartContainer>(
             StartContainerRequest { container_id },
-            Some(&MachineSelector::from(&machine_id)),
+            Some(&MachineTarget::from(&machine_id)),
         )
         .await
         .unwrap();
@@ -524,14 +523,14 @@ async fn inspect_container(
     client
         .call::<op::InspectContainer>(
             InspectContainerRequest { container_id },
-            Some(&MachineSelector::from(&machine_id)),
+            Some(&MachineTarget::from(&machine_id)),
         )
         .await
         .map(|details| details.container)
 }
 
 async fn remove_container(client: &mut Client, machine_id: MachineId, container_id: ContainerId) {
-    let target = MachineSelector::from(&machine_id);
+    let target = MachineTarget::from(&machine_id);
     let _ = client
         .call::<op::StopContainer>(
             StopContainerRequest {
