@@ -28,7 +28,7 @@ use crate::{
     caddy,
     corrosion::{
         CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
-        RunningCorrosion, run_machine_publisher_with_restart,
+        RunningCorrosion, run_machine_publisher,
     },
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
@@ -192,11 +192,10 @@ impl Daemon {
             env!("CARGO_PKG_VERSION"),
             shutdown.clone(),
         );
-        let publisher = run_machine_publisher_with_restart(
+        let publisher = run_machine_publisher(
             replicated_store.clone(),
             Arc::clone(&store),
             participating,
-            reset,
             shutdown.clone(),
         );
         let (management_listener, gateway_listener) = machine_api_listeners
@@ -294,12 +293,18 @@ impl Daemon {
             )
             .map(|_| ())
         });
-        if let Err(error) = wait_until_socket_accepts(&socket).await {
+        if let Err(error) = wait_until_socket_accepts(&socket, Duration::from_secs(5)).await {
             shutdown.cancel();
             servers.abort();
             let _ = servers.await;
             return Err(error.into());
         }
+        tracing::info!(
+            phase = local_record.phase.as_str(),
+            version = env!("CARGO_PKG_VERSION"),
+            "started"
+        );
+        tracing::debug!(socket = %socket.display(), "listening");
         Ok(Self {
             stop: CancellationToken::new(),
             shutdown,
@@ -326,17 +331,29 @@ impl Daemon {
     pub async fn wait(mut self) -> Result<(), Error> {
         let mut servers = self.servers;
         let mut completed_servers = None;
-        let trigger_error = tokio::select! {
+        let mut errors = Vec::new();
+        let stop = tokio::select! {
             result = &mut servers => {
                 completed_servers = Some(join_servers(result));
-                None
+                StopKind::Plane
             },
-            result = shutdown_signal() => result.err().map(|error| error.to_string()),
-            () = self.stop.cancelled() => None,
-            changed = self.reset_rx.changed() => changed.err().map(|error| error.to_string()),
+            result = shutdown_signal() => match result {
+                Ok(signal) => StopKind::Signal(signal),
+                Err(error) => {
+                    errors.push(error.to_string());
+                    StopKind::WatchFailed("signal")
+                }
+            },
+            () = self.stop.cancelled() => StopKind::Stop,
+            changed = self.reset_rx.changed() => match changed {
+                Ok(()) => StopKind::Restart,
+                Err(error) => {
+                    errors.push(error.to_string());
+                    StopKind::WatchFailed("restart")
+                }
+            },
         };
         notify(NotifyState::Stopping);
-        let mut errors = trigger_error.into_iter().collect::<Vec<_>>();
         let resetting = match self.store.lock() {
             Ok(store) => store.record().phase == LocalMachinePhase::Resetting,
             Err(_) => {
@@ -344,6 +361,15 @@ impl Daemon {
                 false
             }
         };
+        let reason = match stop {
+            StopKind::Plane => "a plane exited".to_owned(),
+            StopKind::Signal(signal) => format!("received {signal}"),
+            StopKind::Stop => "stop requested".to_owned(),
+            StopKind::Restart if resetting => "local Machine reset".to_owned(),
+            StopKind::Restart => "restart requested".to_owned(),
+            StopKind::WatchFailed(what) => format!("{what} wait failed"),
+        };
+        tracing::info!(reason = reason.as_str(), "shutting down");
         self.shutdown.cancel();
         // TODO(UT-098, UT-099): preserve both API servers' unbounded graceful shutdown
         // until a timeout is explicitly chosen.
@@ -398,15 +424,43 @@ fn join_servers(result: Result<io::Result<()>, tokio::task::JoinError>) -> io::R
     }
 }
 
-async fn wait_until_socket_accepts(path: &Path) -> io::Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+fn socket_not_ready(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// Connect to the Machine API Unix socket, waiting while it is missing or refusing
+/// connections.
+///
+/// # Errors
+///
+/// Returns a human-readable I/O error when `timeout` elapses or connect fails
+/// for a reason other than the socket not being ready.
+pub async fn wait_until_socket_accepts(
+    path: &Path,
+    timeout: Duration,
+) -> io::Result<tokio::net::UnixStream> {
+    let deadline = Instant::now() + timeout;
     loop {
         match tokio::net::UnixStream::connect(path).await {
-            Ok(_) => return Ok(()),
-            Err(_) if Instant::now() < deadline => {
+            Ok(stream) => return Ok(stream),
+            Err(error) if socket_not_ready(&error) && Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            Err(error) => return Err(error),
+            Err(error) if socket_not_ready(&error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("Machine API socket did not become ready: {error}"),
+                ));
+            }
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("could not connect to the Machine API socket: {error}"),
+                ));
+            }
         }
     }
 }
@@ -496,14 +550,21 @@ async fn wait_for_participation(
     }
 }
 
-async fn shutdown_signal() -> io::Result<()> {
+enum StopKind {
+    Plane,
+    Signal(&'static str),
+    Stop,
+    Restart,
+    WatchFailed(&'static str),
+}
+
+async fn shutdown_signal() -> io::Result<&'static str> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     tokio::select! {
-        _ = interrupt.recv() => {}
-        _ = terminate.recv() => {}
+        _ = interrupt.recv() => Ok("SIGINT"),
+        _ = terminate.recv() => Ok("SIGTERM"),
     }
-    Ok(())
 }
 
 fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {
@@ -567,13 +628,17 @@ mod tests {
         path::{Path, PathBuf},
     };
 
+    use tokio::net::UnixListener;
+
     use ployz_core::{
         DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, LIST_CONTAINERS_CAPABILITY,
         MachineRpcClient, ResetRequest, op,
     };
     use tonic::transport::Endpoint;
 
-    use super::{ContainerMode, Daemon, DaemonConfig, wait_for_participation};
+    use super::{
+        ContainerMode, Daemon, DaemonConfig, wait_for_participation, wait_until_socket_accepts,
+    };
     use tokio_util::sync::CancellationToken;
 
     struct TestDir(PathBuf);
@@ -747,5 +812,35 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn socket_wait_connects_once_the_listener_appears() {
+        let root = TestDir::new("ployzd-socket-wait-ready");
+        fs::create_dir_all(&root.0).unwrap();
+        let path = root.0.join("ployz.sock");
+        let listener_path = path.clone();
+        let server = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            let listener = UnixListener::bind(&listener_path).unwrap();
+            listener.accept().await.unwrap()
+        });
+        wait_until_socket_accepts(&path, std::time::Duration::from_secs(1))
+            .await
+            .unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn socket_wait_times_out_with_a_message_not_a_debug_struct() {
+        let root = TestDir::new("ployzd-socket-wait-timeout");
+        fs::create_dir_all(&root.0).unwrap();
+        let path = root.0.join("missing.sock");
+        let error = wait_until_socket_accepts(&path, std::time::Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("did not become ready"), "{message}");
+        assert!(!message.contains("Os {"), "{message}");
     }
 }

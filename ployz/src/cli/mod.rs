@@ -36,6 +36,7 @@ pub mod env {
 #[must_use]
 pub fn command() -> Command {
     base("ployz", "Manage Ployz machines, services, and volumes")
+        .arg(switch("version", Some('V')).help("Print version"))
         .subcommand(build())
         .subcommand(caddy())
         .subcommand(ctx())
@@ -172,7 +173,11 @@ fn caddy() -> Command {
 fn ctx() -> Command {
     base("ctx", "Manage local contexts")
         .visible_alias("context")
-        .subcommand(base("connection", "Show the connection").visible_alias("conn"))
+        .subcommand(
+            base("connection", "Show or select the default connection")
+                .visible_alias("conn")
+                .arg(positional("connection", false)),
+        )
         .subcommand(base("ls", "List contexts").visible_alias("list"))
         .subcommand(base("show", "Show a context"))
         .subcommand(base("use", "Select a context").arg(positional("context-name", false)))
@@ -205,6 +210,7 @@ fn image() -> Command {
             base("ls", "List images")
                 .visible_alias("list")
                 .arg(many("machine", Some('m')))
+                .arg(value("output", Some('o')).value_parser(["json"]))
                 .arg(positional("image", false)),
         )
         .subcommand(
@@ -218,6 +224,7 @@ fn image() -> Command {
 fn images() -> Command {
     base("images", "List images")
         .arg(many("machine", Some('m')))
+        .arg(value("output", Some('o')).value_parser(["json"]))
         .arg(positional("image", false))
 }
 
@@ -471,6 +478,16 @@ fn completion() -> Command {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn root_version_flags_are_accepted() {
+        for flag in ["--version", "-V"] {
+            let matches = super::command()
+                .try_get_matches_from(["ployz", flag])
+                .unwrap();
+            assert!(matches.get_flag("version"), "{flag}");
+        }
+    }
+
     #[test]
     fn build_push_destinations_are_validated() {
         assert!(
