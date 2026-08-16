@@ -14,14 +14,10 @@ assert_contains() {
     fi
 }
 
-assert_not_contains() {
-    if grep -Fq -- "$2" "$1"; then
-        echo "$1 still contains: $2" >&2
-        exit 1
-    fi
-}
-
-assert_not_contains "$dockerfile" "FROM rust"
+if grep -Fq "FROM rust" "$dockerfile"; then
+    echo "$dockerfile still contains: FROM rust" >&2
+    exit 1
+fi
 assert_contains "$dockerfile" "FROM ubuntu:24.04"
 assert_contains "$dockerfile" "COPY ployz-testkit/prebuilt/ployz /usr/local/bin/ployz"
 assert_contains "$dockerfile" "COPY ployz-testkit/prebuilt/ployzd /usr/local/bin/ployzd"
@@ -29,8 +25,8 @@ assert_contains "$dockerfile" "COPY ployz-testkit/prebuilt/ployzd /usr/local/bin
 assert_contains "$action" "Swatinem/rust-cache@v2"
 assert_contains "$action" "shared-key: testkit-release"
 assert_contains "$action" "cargo build --locked --release --package ployz --package ployzd"
-assert_contains "$action" "ployz-testkit/prebuilt/ployz"
-assert_contains "$action" "ployz-testkit/prebuilt/ployzd"
+assert_contains "$action" "install -D target/release/ployz ployz-testkit/prebuilt/ployz"
+assert_contains "$action" "install -D target/release/ployzd ployz-testkit/prebuilt/ployzd"
 assert_contains "$action" "type=registry,ref=ghcr.io/getployz/ployz2-testkit:main"
 assert_contains "$action" "cache-to: type=inline"
 
