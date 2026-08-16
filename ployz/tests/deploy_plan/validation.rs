@@ -64,7 +64,7 @@ fn global_volume_existing_on_one_machine_is_created_on_the_other() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [
             DeployOperation::CreateVolume { machine_id: target, .. },
             DeployOperation::RunContainer { .. },
@@ -144,12 +144,21 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [
             DeployOperation::CreateVolume { .. },
             DeployOperation::RunContainer { .. }
         ]
     ));
+}
+
+#[test]
+fn empty_spec_iterator_returns_an_empty_plan() {
+    let plan = plan_deploy([], &DeploySnapshot::default(), PlanOptions::default()).unwrap();
+
+    assert!(plan.volume_operations.is_empty());
+    assert!(plan.service_plans.is_empty());
+    assert!(plan.operations().is_empty());
 }
 
 #[test]

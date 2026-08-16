@@ -57,35 +57,32 @@ pub struct ServicePlan {
 pub struct DeployPlan {
     pub volume_operations: Vec<DeployOperation>,
     pub service_plans: Vec<ServicePlan>,
-    operations: Vec<DeployOperation>,
 }
 
 impl DeployPlan {
     #[must_use]
     pub fn new(volume_operations: Vec<DeployOperation>, service_plans: Vec<ServicePlan>) -> Self {
-        let operations = volume_operations
-            .iter()
-            .cloned()
-            .chain(
-                service_plans
-                    .iter()
-                    .flat_map(|plan| plan.operations.iter().cloned()),
-            )
-            .collect();
         Self {
             volume_operations,
             service_plans,
-            operations,
         }
     }
 
     #[must_use]
-    pub fn operations(&self) -> &[DeployOperation] {
-        &self.operations
+    pub fn operations(&self) -> Vec<&DeployOperation> {
+        self.volume_operations
+            .iter()
+            .chain(
+                self.service_plans
+                    .iter()
+                    .flat_map(|plan| plan.operations.iter()),
+            )
+            .collect()
     }
 
     pub fn failure_outcome<E>(&self, completed_count: usize, error: E) -> Option<DeployOutcome<E>> {
-        Self::failure_outcome_from(self.operations(), completed_count, error)
+        let operations: Vec<DeployOperation> = self.operations().into_iter().cloned().collect();
+        Self::failure_outcome_from(&operations, completed_count, error)
     }
 
     pub(super) fn failure_outcome_from<E>(
@@ -111,8 +108,9 @@ impl DeployPlan {
         error: E,
         compensation: ReplacementCompensation<E>,
     ) -> Option<DeployOutcome<E>> {
+        let operations: Vec<DeployOperation> = self.operations().into_iter().cloned().collect();
         Self::replacement_health_failure_outcome_from(
-            self.operations(),
+            &operations,
             completed_count,
             error,
             compensation,
@@ -144,7 +142,7 @@ impl DeployPlan {
     #[must_use]
     pub fn success_outcome<E>(&self) -> DeployOutcome<E> {
         DeployOutcome {
-            completed: self.operations().to_vec(),
+            completed: self.operations().into_iter().cloned().collect(),
             failed: None,
             unexecuted: Vec::new(),
         }

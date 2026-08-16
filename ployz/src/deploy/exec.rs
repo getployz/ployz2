@@ -246,7 +246,7 @@ async fn execute_with<C: MachineOperations>(
 }
 
 async fn execute_operation_sequence<C: MachineOperations>(
-    operations: &[DeployOperation],
+    operations: impl IntoIterator<Item = &DeployOperation>,
     client: &C,
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {

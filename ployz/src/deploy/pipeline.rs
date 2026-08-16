@@ -84,7 +84,7 @@ pub(super) async fn plan_spec(
     expand_ingress(client, std::iter::once(&mut requested)).await?;
     let plan = plan_deploy([&requested], &snapshot, plan_options(false, false))?;
     Ok(DeployPreview {
-        operations: plan.operations().to_vec(),
+        operations: plan.operations().into_iter().cloned().collect(),
         warnings,
     })
 }
@@ -120,7 +120,7 @@ pub(super) async fn plan_project(
     let plan = plan_deploy(project.dependency_order()?, &snapshot, options)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
     Ok(DeployPreview {
-        operations: plan.operations().to_vec(),
+        operations: plan.operations().into_iter().cloned().collect(),
         warnings,
     })
 }
@@ -133,7 +133,7 @@ pub(super) async fn plan_scale(
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     let operations = match scale_plan(&snapshot, selector, replicas)? {
-        Some(plan) => plan.operations().to_vec(),
+        Some(plan) => plan.operations().into_iter().cloned().collect(),
         None => Vec::new(),
     };
     Ok(DeployPreview {

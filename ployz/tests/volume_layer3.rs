@@ -314,7 +314,7 @@ volumes: {data: {name: compose_data}}
     )
     .unwrap();
     assert_eq!(plan.volume_operations.len(), 1);
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     let replicated = requested(
         "replicated",
@@ -334,7 +334,7 @@ volumes: {data: {name: compose_data}}
         Some(DeployOperation::CreateVolume { .. })
     ));
     assert_eq!(plan.operations().len(), 4);
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     client
         .call::<op::CreateVolume>(
@@ -362,7 +362,7 @@ volumes: {data: {name: compose_data}}
     )
     .unwrap();
     assert!(matches!(
-        plan.operations(),
+        plan.operations().as_slice(),
         [DeployOperation::CreateVolume { machine_id, volume }, rest @ ..]
             if machine_id == &first_machine.machine.id
                 && matches!(&volume.source, VolumeSource::Named { name, .. } if name.as_str() == "multi_missing")
@@ -370,7 +370,7 @@ volumes: {data: {name: compose_data}}
                     DeployOperation::RunContainer { machine_id, .. }
                         if machine_id == &first_machine.machine.id))
     ));
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     let global = requested("global", ServiceMode::Global, &["global_data"]);
     let plan = plan_deploy(
@@ -386,7 +386,7 @@ volumes: {data: {name: compose_data}}
             .count(),
         2
     );
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     client
         .call::<op::CreateVolume>(
@@ -419,7 +419,7 @@ volumes: {data: {name: compose_data}}
             .count(),
         1
     );
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     let global_existing = requested("global-existing", ServiceMode::Global, &["global_data"]);
     let plan = plan_deploy(
@@ -433,7 +433,7 @@ volumes: {data: {name: compose_data}}
             .iter()
             .all(|operation| !matches!(operation, DeployOperation::CreateVolume { .. }))
     );
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     for (name, machine) in [
         ("intersect_a", first_machine),
@@ -468,7 +468,7 @@ volumes: {data: {name: compose_data}}
         DeployOperation::RunContainer { machine_id, .. }
             if machine_id == &first_machine.machine.id
     )));
-    execute(client, plan.operations().iter().collect()).await;
+    execute(client, plan.operations()).await;
 
     let split = requested(
         "split",
