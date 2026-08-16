@@ -402,7 +402,7 @@ impl ReplicatedStore {
         let Some([encoded]) = rows.first() else {
             return Ok(None);
         };
-        decode_certificate_body(text(encoded, "certificate body")?).map(Some)
+        decode_certificate_body(text(encoded, "certificate body")?)
     }
 
     pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {
@@ -416,10 +416,9 @@ impl ReplicatedStore {
         let mut certificates = BTreeMap::new();
         for [hostname, encoded] in query.rows(["hostname", "body"])? {
             let hostname = IngressHost::parse(text(&hostname, "certificate hostname")?)?;
-            certificates.insert(
-                hostname,
-                decode_certificate_body(text(&encoded, "certificate body")?)?,
-            );
+            if let Some(material) = decode_certificate_body(text(&encoded, "certificate body")?)? {
+                certificates.insert(hostname, material);
+            }
         }
         Ok(certificates)
     }
@@ -633,11 +632,12 @@ pub async fn run_machine_publisher(
     }
 }
 
-fn decode_certificate_body(encoded: &str) -> Result<CertificateMaterial, Error> {
-    if encoded.is_empty() {
-        return Ok(CertificateMaterial::new("", ""));
+fn decode_certificate_body(encoded: &str) -> Result<Option<CertificateMaterial>, Error> {
+    if encoded.is_empty() || encoded == "{}" {
+        return Ok(None);
     }
-    Ok(serde_json::from_str(encoded)?)
+    let material: CertificateMaterial = serde_json::from_str(encoded)?;
+    Ok(material.is_present().then_some(material))
 }
 
 fn decode_observations<T: DeserializeOwned>(
@@ -810,8 +810,8 @@ mod tests {
         assert!(!material.is_present());
         assert_eq!(material.certificate(), "");
         assert_eq!(material.private_key(), "");
-        assert!(!super::decode_certificate_body("").unwrap().is_present());
-        assert!(!super::decode_certificate_body("{}").unwrap().is_present());
+        assert_eq!(super::decode_certificate_body("").unwrap(), None);
+        assert_eq!(super::decode_certificate_body("{}").unwrap(), None);
     }
 
     #[test]

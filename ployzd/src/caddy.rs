@@ -70,16 +70,17 @@ impl AdminClient {
     }
 
     async fn post(&self, path: &str, content_type: &str, body: String) -> Result<String, Error> {
-        let mut request = self
-            .client
-            .post(format!("http://localhost{path}"))
-            .header(header::CONTENT_TYPE, content_type);
-        if path == "/load" {
-            // Pin paths stay the same when only file bytes change. Caddy
-            // no-ops identical JSON unless this header forces a reload.
-            request = request.header(header::CACHE_CONTROL, "must-revalidate");
-        }
-        let response = request.body(body).send().await?;
+        self.send(
+            self.client
+                .post(format!("http://localhost{path}"))
+                .header(header::CONTENT_TYPE, content_type)
+                .body(body),
+        )
+        .await
+    }
+
+    async fn send(&self, request: reqwest::RequestBuilder) -> Result<String, Error> {
+        let response = request.send().await?;
         let status = response.status();
         let body = response.text().await?;
         if status != StatusCode::OK {
@@ -106,8 +107,16 @@ impl CaddyAdmin for AdminClient {
     }
 
     async fn load(&self, json: &str) -> Result<(), Error> {
-        self.post("/load", "application/json", json.to_owned())
-            .await?;
+        // Pin paths stay the same when only file bytes change. Caddy
+        // no-ops identical JSON unless this header forces a reload.
+        self.send(
+            self.client
+                .post("http://localhost/load")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::CACHE_CONTROL, "must-revalidate")
+                .body(json.to_owned()),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -219,9 +228,6 @@ fn write_certificate_files(
     prepare_directory(&directory)?;
     let mut pinned = BTreeSet::new();
     for (hostname, material) in certificates {
-        if !material.is_present() {
-            continue;
-        }
         let cert_path = directory.join(format!("{hostname}.crt"));
         let key_path = directory.join(format!("{hostname}.key"));
         atomic_write(&cert_path, material.certificate().as_bytes(), 0o644)?;
@@ -547,28 +553,37 @@ http:// {{\n\
     if !http.is_empty() || !https.is_empty() {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
-    for (protocol, sites) in [("http", http), ("https", https)] {
-        for (hostname, upstreams) in sites {
-            let tls = if protocol == "https" && pinned.contains(hostname) {
+    write_sites(&mut output, "http", http, None);
+    write_sites(&mut output, "https", https, Some(pinned));
+    output
+}
+
+fn write_sites(
+    output: &mut String,
+    protocol: &str,
+    sites: BTreeMap<&IngressHost, Vec<String>>,
+    pinned: Option<&BTreeSet<IngressHost>>,
+) {
+    for (hostname, upstreams) in sites {
+        let tls = pinned
+            .filter(|pinned| pinned.contains(hostname))
+            .map(|_pinned| {
                 format!(
                     "\ttls {CONTAINER_CERTS_DIR}/{hostname}.crt {CONTAINER_CERTS_DIR}/{hostname}.key\n"
                 )
-            } else {
-                String::new()
-            };
-            let _ = write!(
-                output,
-                "\n{protocol}://{hostname} {{\n\
+            })
+            .unwrap_or_default();
+        let _ = write!(
+            output,
+            "\n{protocol}://{hostname} {{\n\
 {tls}\treverse_proxy {} {{\n\
 \t\timport common_proxy\n\
 \t}}\n\
 \tlog\n\
 }}\n",
-                upstreams.join(" ")
-            );
-        }
+            upstreams.join(" ")
+        );
     }
-    output
 }
 
 #[cfg(test)]
