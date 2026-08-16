@@ -141,22 +141,10 @@ fn config_output(
 }
 
 fn parse_project(output: &Output) -> Result<RawProject, ComposeError> {
-    serde_norway::from_slice(&unescape_compose_dollars(&output.stdout))
+    // Compose `config` re-escapes every `$` as `$$` so the YAML can be fed back
+    // into Compose. Undo that before the values become a Requested Service Spec.
+    serde_norway::from_str(&String::from_utf8_lossy(&output.stdout).replace("$$", "$"))
         .map_err(|error| ComposeError::Invalid(error.to_string()))
-}
-
-// Compose `config` re-escapes every `$` as `$$` so the YAML can be fed back
-// into Compose. Undo that before the values become a Requested Service Spec.
-fn unescape_compose_dollars(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut iter = bytes.iter();
-    while let Some(&byte) = iter.next() {
-        if byte == b'$' && iter.as_slice().first() == Some(&b'$') {
-            let _ = iter.next();
-        }
-        out.push(byte);
-    }
-    out
 }
 
 fn validate_source_forms(project: &RawProject) -> Result<(), ComposeError> {
