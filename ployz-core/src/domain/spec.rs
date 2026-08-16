@@ -608,26 +608,31 @@ impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
 }
 
 impl RequestedServiceSpec {
+    /// Service Volume definitions in this spec's graph.
     #[must_use]
     pub fn volumes(&self) -> &[ServiceVolume] {
         self.volume_graph.volumes()
     }
 
+    /// Volume mounts in this spec's graph.
     #[must_use]
     pub fn mounts(&self) -> &[ServiceMount] {
         self.volume_graph.mounts()
     }
 
+    /// Config definitions in this spec's graph.
     #[must_use]
     pub fn configs(&self) -> &[ConfigSpec] {
         self.config_graph.configs()
     }
 
+    /// Config mounts in this spec's graph.
     #[must_use]
     pub fn config_mounts(&self) -> &[ConfigMount] {
         self.config_graph.mounts()
     }
 
+    /// Copy this spec onto a Service Container after placement.
     #[must_use]
     pub fn to_resolved(
         &self,
@@ -651,26 +656,31 @@ impl RequestedServiceSpec {
 }
 
 impl ResolvedServiceSpec {
+    /// Service Volume definitions in this spec's graph.
     #[must_use]
     pub fn volumes(&self) -> &[ServiceVolume] {
         self.volume_graph.volumes()
     }
 
+    /// Volume mounts in this spec's graph.
     #[must_use]
     pub fn mounts(&self) -> &[ServiceMount] {
         self.volume_graph.mounts()
     }
 
+    /// Config definitions in this spec's graph.
     #[must_use]
     pub fn configs(&self) -> &[ConfigSpec] {
         self.config_graph.configs()
     }
 
+    /// Config mounts in this spec's graph.
     #[must_use]
     pub fn config_mounts(&self) -> &[ConfigMount] {
         self.config_graph.mounts()
     }
 
+    /// Rebuild the deploy input this resolved spec came from.
     #[must_use]
     pub fn to_requested(&self) -> RequestedServiceSpec {
         RequestedServiceSpec {

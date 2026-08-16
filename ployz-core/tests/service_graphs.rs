@@ -232,12 +232,11 @@ fn persisted_and_rpc_decoded_specs_validate_graph_invariants_on_entry() {
     );
 
     let mut dangling_config = json;
-    set_nested(
-        &mut dangling_config,
-        "container",
-        "config_mounts",
-        serde_json::json!([{"config_name":"missing"}]),
-    );
+    *dangling_config
+        .get_mut("container")
+        .and_then(|container| container.get_mut("config_mounts"))
+        .expect("serialized spec has config mounts") =
+        serde_json::json!([{"config_name":"missing"}]);
     assert_eq!(
         serde_json::from_value::<RequestedServiceSpec>(dangling_config)
             .unwrap_err()
@@ -282,18 +281,6 @@ fn clear_array(value: &mut serde_json::Value, key: &str) {
 
 fn set_field(value: &mut serde_json::Value, key: &str, replacement: serde_json::Value) {
     *value.get_mut(key).expect("serialized spec has the field") = replacement;
-}
-
-fn set_nested(
-    value: &mut serde_json::Value,
-    parent: &str,
-    key: &str,
-    replacement: serde_json::Value,
-) {
-    *value
-        .get_mut(parent)
-        .and_then(|parent| parent.get_mut(key))
-        .expect("serialized spec has the nested field") = replacement;
 }
 
 fn requested_with_graphs(

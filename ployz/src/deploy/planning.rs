@@ -46,15 +46,19 @@ pub fn plan_deploy<'a>(
 }
 
 fn plan_one_service(
-    spec: &RequestedServiceSpec,
+    requested: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     pins: &mut VolumePins,
     volume_creates: &mut Vec<DeployOperation>,
     options: PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
-    let requested = spec;
     let mut machines = eligible_machines(requested, snapshot, options);
-    volume_creates.extend(plan_volume_operations(spec, snapshot, pins, &mut machines)?);
+    volume_creates.extend(plan_volume_operations(
+        requested,
+        snapshot,
+        pins,
+        &mut machines,
+    )?);
     let matching_service_ids = snapshot
         .containers
         .iter()
@@ -82,14 +86,14 @@ fn plan_one_service(
 
     let service_operations = match requested.mode {
         ServiceMode::Replicated { replicas } => plan_replicated(
-            spec,
+            requested,
             snapshot,
             &service_id,
             machines,
             replicas.get() as usize,
             options,
         ),
-        ServiceMode::Global => plan_global(spec, snapshot, &service_id, machines, options),
+        ServiceMode::Global => plan_global(requested, snapshot, &service_id, machines, options),
     };
     let mut operations =
         pre_deploy_operations(requested, snapshot, &service_id, &service_operations);
@@ -213,13 +217,12 @@ fn has_mounted_named_volume(graph: &ServiceVolumeGraph) -> bool {
 }
 
 fn plan_global(
-    spec: &RequestedServiceSpec,
+    requested: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     service_id: &ServiceId,
     machines: Vec<&MachineObservation>,
     options: PlanOptions,
 ) -> Vec<DeployOperation> {
-    let requested = spec;
     let current = service_containers(snapshot, service_id);
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
@@ -261,7 +264,7 @@ fn plan_global(
                     });
                 }
             }
-            let order = determine_update_order(container, spec);
+            let order = determine_update_order(container, requested);
             operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
                 machine_id: machine.machine.id,
                 old_container_id: container.container_id,
@@ -286,14 +289,13 @@ fn plan_global(
 }
 
 fn plan_replicated(
-    spec: &RequestedServiceSpec,
+    requested: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     service_id: &ServiceId,
     mut machines: Vec<&MachineObservation>,
     replicas: usize,
     options: PlanOptions,
 ) -> Vec<DeployOperation> {
-    let requested = spec;
     let current = service_containers(snapshot, service_id);
     let mut by_machine = BTreeMap::<MachineId, Vec<(usize, &ContainerObservation)>>::new();
     for (index, container) in &current {
@@ -331,7 +333,7 @@ fn plan_replicated(
         match existing {
             Some(container) if is_up_to_date(container, requested, options) => {}
             Some(container) => {
-                let order = determine_update_order(container, spec);
+                let order = determine_update_order(container, requested);
                 operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
                     machine_id: machine.machine.id,
                     old_container_id: container.container_id,
@@ -404,9 +406,8 @@ fn is_running(container: &ContainerObservation) -> bool {
 
 fn determine_update_order(
     current: &ContainerObservation,
-    spec: &RequestedServiceSpec,
+    requested: &RequestedServiceSpec,
 ) -> UpdateOrder {
-    let requested = spec;
     if let Some(order) = requested.update.order {
         return order;
     }
@@ -423,7 +424,7 @@ fn determine_update_order(
             requested.mode,
             ServiceMode::Replicated { replicas } if replicas.get() == 1
         ))
-        && has_mounted_named_volume(&spec.volume_graph)
+        && has_mounted_named_volume(&requested.volume_graph)
     {
         return UpdateOrder::StopFirst;
     }

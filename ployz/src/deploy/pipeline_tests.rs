@@ -109,11 +109,11 @@ fn resolved_scale_input_changes_only_replicas() {
     }))
     .unwrap();
     let resolved = requested.to_resolved(ServiceId::random(), Default::default());
-    let mut scaled = requested_from_resolved(&resolved);
+    let mut scaled = resolved.to_requested();
     scaled.mode = ServiceMode::Replicated {
         replicas: NonZeroU32::new(3).unwrap(),
     };
-    let mut expected = requested_from_resolved(&resolved);
+    let mut expected = resolved.to_requested();
     expected.mode = scaled.mode.clone();
     assert_eq!(scaled, expected);
 }

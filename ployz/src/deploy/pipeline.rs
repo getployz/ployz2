@@ -9,8 +9,8 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    MachineId, MachineObservation, PartialResult, PortPublication, RequestedServiceSpec,
-    ResolvedServiceSpec, RpcError, ServiceMode, select_service,
+    MachineId, MachineObservation, PartialResult, PortPublication, RequestedServiceSpec, RpcError,
+    ServiceMode, select_service,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -177,17 +177,13 @@ fn scale_plan(
         return Ok(None);
     }
     // TODO(UT-046): mixed historical specs use one observed regular container; there is no chooser.
-    let mut requested = requested_from_resolved(&observed_container.resolved_spec);
+    let mut requested = observed_container.resolved_spec.to_requested();
     requested.mode = ServiceMode::Replicated { replicas };
     Ok(Some(plan_deploy(
         [&requested],
         snapshot,
         plan_options(false, false),
     )?))
-}
-
-fn requested_from_resolved(resolved: &ResolvedServiceSpec) -> RequestedServiceSpec {
-    resolved.to_requested()
 }
 
 pub(super) async fn list_machines(client: &mut Client) -> Result<Vec<MachineObservation>, Failure> {
