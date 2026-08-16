@@ -77,7 +77,13 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
         }
 
-        // TODO(UT-057): removal does not update hosted DNS or Caddy projections.
+        let outcome = MachineRemoveOutcome::after_membership_deleted();
+        if outcome.refresh_hosted_dns
+            && let Err(error) = crate::dns::update_records_if_reserved(&mut client).await
+        {
+            eprintln!("{}", hosted_dns_follow_on_warning(&error.to_string()));
+            return Err(error.into());
+        }
         if let Some(context_name) = context_name {
             let mut config = options.load_config()?;
             let context = config
@@ -96,6 +102,22 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         println!("Removed Machine {} ({})", selected.name, selected.id);
         Ok::<_, Error>(())
     })
+}
+
+struct MachineRemoveOutcome {
+    refresh_hosted_dns: bool,
+}
+
+impl MachineRemoveOutcome {
+    fn after_membership_deleted() -> Self {
+        Self {
+            refresh_hosted_dns: true,
+        }
+    }
+}
+
+fn hosted_dns_follow_on_warning(error: &str) -> String {
+    format!("WARNING: hosted DNS refresh failed after removing the Machine: {error}.")
 }
 
 fn select_machine(
@@ -122,7 +144,20 @@ mod tests {
     use ployz_core::{RpcError, RpcErrorCode};
     use serde_json::Value;
 
+    use super::*;
     use crate::connect::ConnectError;
+
+    #[test]
+    fn machine_remove_refreshes_hosted_dns_from_membership() {
+        assert!(
+            MachineRemoveOutcome::after_membership_deleted().refresh_hosted_dns,
+            "machine rm must refresh hosted DNS after the Machine is no longer a member"
+        );
+        assert_eq!(
+            hosted_dns_follow_on_warning("no publicly reachable Caddy Machines found"),
+            "WARNING: hosted DNS refresh failed after removing the Machine: no publicly reachable Caddy Machines found."
+        );
+    }
 
     #[test]
     fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {

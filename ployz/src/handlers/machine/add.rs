@@ -136,8 +136,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             Ok::<_, Error>(())
         })
     {
-        eprintln!("{}", caddy_follow_on_warning(&error.to_string()));
-        return Err(error);
+        eprintln!("{}", hosted_dns_follow_on_warning(&error.to_string()));
+        if outcome.follow_on_error.is_none() {
+            return Err(error);
+        }
     }
     match outcome.follow_on_error {
         Some(error) => Err(Error::usage(error)),
@@ -195,12 +197,12 @@ impl MachineAddOutcome {
             },
             Some(Err(error)) => Self {
                 caddy_warning: Some(caddy_follow_on_warning(&error)),
-                refresh_hosted_dns: false,
+                refresh_hosted_dns: true,
                 follow_on_error: Some(error),
             },
             None => Self {
                 caddy_warning: None,
-                refresh_hosted_dns: false,
+                refresh_hosted_dns: true,
                 follow_on_error: None,
             },
         }
@@ -215,6 +217,10 @@ fn caddy_follow_on_warning(error: &str) -> String {
     format!(
         "WARNING: Caddy Deploy failed after adding the Machine: {error}. Run `caddy deploy` to retry."
     )
+}
+
+fn hosted_dns_follow_on_warning(error: &str) -> String {
+    format!("WARNING: hosted DNS refresh failed after adding the Machine: {error}.")
 }
 
 #[cfg(test)]
@@ -254,24 +260,35 @@ mod tests {
     }
 
     #[test]
-    fn successful_add_caddy_deploy_refreshes_hosted_dns() {
+    fn machine_add_refreshes_hosted_dns_from_membership_not_deploy() {
         let assigned = assigned_machine("edge", 'a');
-        let outcome = MachineAddOutcome::after_saved(Some(Ok(())));
+        let succeeded = MachineAddOutcome::after_saved(Some(Ok(())));
         assert!(
-            outcome.refresh_hosted_dns,
-            "successful Caddy Deploy on add must refresh hosted DNS the same way caddy deploy does"
+            succeeded.refresh_hosted_dns,
+            "add must refresh hosted DNS after the Machine is a member"
         );
-        assert!(outcome.caddy_warning.is_none());
-        assert!(outcome.follow_on_error.is_none());
+        assert!(succeeded.caddy_warning.is_none());
+        assert!(succeeded.follow_on_error.is_none());
         assert_eq!(
             added_machine_line(&assigned),
             "Added Machine edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
         );
 
         let skipped = MachineAddOutcome::after_saved(None);
-        assert!(!skipped.refresh_hosted_dns);
+        assert!(
+            skipped.refresh_hosted_dns,
+            "skipped Caddy Deploy must not keep a serving Machine out of hosted DNS"
+        );
         let failed = MachineAddOutcome::after_saved(Some(Err("boom".into())));
-        assert!(!failed.refresh_hosted_dns);
+        assert!(
+            failed.refresh_hosted_dns,
+            "failed Caddy Deploy during add must not keep a serving Machine out of hosted DNS"
+        );
+        assert!(failed.follow_on_error.is_some());
+        assert_eq!(
+            hosted_dns_follow_on_warning("no publicly reachable Caddy Machines found"),
+            "WARNING: hosted DNS refresh failed after adding the Machine: no publicly reachable Caddy Machines found."
+        );
     }
 
     #[test]
