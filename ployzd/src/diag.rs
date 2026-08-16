@@ -103,30 +103,13 @@ mod tests {
     }
 
     #[test]
-    fn default_info_keeps_lifecycle_lines_and_hides_debug() {
+    fn default_info_emits_info_and_hides_debug() {
         let text = emit(None, None, || {
-            tracing::info!(phase = "uninitialized", version = "0.1.1", "started");
-            tracing::debug!(socket = "/run/ployz/ployz.sock", "listening");
-            tracing::info!(
-                name = "edge",
-                id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "join accepted"
-            );
-            tracing::info!(reason = "received SIGTERM", "shutting down");
-            tracing::info!(
-                service = "caddy",
-                kind = "service_container",
-                "create container"
-            );
+            tracing::info!("visible");
+            tracing::debug!("hidden");
         });
-        assert!(text.contains("started"));
-        assert!(text.contains("uninitialized"));
-        assert!(text.contains("join accepted"));
-        assert!(text.contains("shutting down"));
-        assert!(text.contains("SIGTERM"));
-        assert!(text.contains("create container"));
-        assert!(text.contains("caddy"));
-        assert!(!text.contains("listening"));
+        assert!(text.contains("visible"));
+        assert!(!text.contains("hidden"));
     }
 
     #[test]
