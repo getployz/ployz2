@@ -18,13 +18,20 @@ pub fn resolve_machine_selector<'a>(
     selector: &MachineSelector,
     visible: impl IntoIterator<Item = &'a Machine>,
 ) -> NameMatches<&'a Machine> {
+    resolve_machine_text(selector.as_str(), visible)
+}
+
+pub(super) fn resolve_machine_text<'a>(
+    text: &str,
+    visible: impl IntoIterator<Item = &'a Machine>,
+) -> NameMatches<&'a Machine> {
     let mut exact_id = None;
     let mut names = Vec::new();
     for machine in visible {
-        if machine.id.as_str() == selector.as_str() {
+        if machine.id.as_str() == text {
             exact_id = Some(machine);
         }
-        if machine.name.as_str() == selector.as_str() {
+        if machine.name.as_str() == text {
             names.push(machine);
         }
     }
