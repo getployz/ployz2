@@ -250,6 +250,11 @@ impl LocalMachine {
             request.advertised_endpoints,
             request.wireguard_mtu,
         )?;
+        tracing::info!(
+            name = machine.name.as_str(),
+            id = machine.id.as_str(),
+            "initialize accepted"
+        );
         self.restart.send_replace(true);
         Ok(Initialized { machine })
     }
@@ -317,12 +322,15 @@ impl LocalMachine {
     /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned
     /// and [`Error::Store`] when join is not legal in the current phase.
     pub fn join(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
+        let name = request.registration.assigned_machine.name.clone();
+        let id = request.registration.assigned_machine.id;
         self.lock_store()?.join(
             request.registration.assigned_machine,
             request.registration.visible_peers,
             request.registration.target_versions,
             request.wireguard_mtu,
         )?;
+        tracing::info!(name = name.as_str(), id = id.as_str(), "join accepted");
         self.restart.send_replace(true);
         Ok(JoinAccepted {})
     }

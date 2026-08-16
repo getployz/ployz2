@@ -503,6 +503,7 @@ pub async fn run_machine_publisher_with_restart(
                     .map_err(io::Error::other)?
             };
             if completed {
+                tracing::info!("catch-up complete; restarting");
                 participating.send_replace(true);
                 restart.send_replace(true);
             }

@@ -335,6 +335,12 @@ impl Daemon {
             let _ = servers.await;
             return Err(error.into());
         }
+        tracing::info!(
+            phase = local_record.phase.as_str(),
+            version = env!("CARGO_PKG_VERSION"),
+            "started"
+        );
+        tracing::debug!(socket = %socket.display(), "listening");
         Ok(Self {
             stop: CancellationToken::new(),
             shutdown,
@@ -361,17 +367,28 @@ impl Daemon {
     pub async fn wait(mut self) -> Result<(), Error> {
         let mut servers = self.servers;
         let mut completed_servers = None;
-        let trigger_error = tokio::select! {
+        let mut errors = Vec::new();
+        let stop = tokio::select! {
             result = &mut servers => {
                 completed_servers = Some(join_servers(result));
-                None
+                StopKind::Plane
             },
-            result = shutdown_signal() => result.err().map(|error| error.to_string()),
-            () = self.stop.cancelled() => None,
-            changed = self.reset_rx.changed() => changed.err().map(|error| error.to_string()),
+            result = shutdown_signal() => match result {
+                Ok(signal) => StopKind::Signal(signal),
+                Err(error) => {
+                    errors.push(error.to_string());
+                    StopKind::Signal("signal")
+                }
+            },
+            () = self.stop.cancelled() => StopKind::Stop,
+            changed = self.reset_rx.changed() => {
+                if let Err(error) = changed {
+                    errors.push(error.to_string());
+                }
+                StopKind::Restart
+            }
         };
         notify(NotifyState::Stopping);
-        let mut errors = trigger_error.into_iter().collect::<Vec<_>>();
         let resetting = match self.store.lock() {
             Ok(store) => store.record().phase == LocalMachinePhase::Resetting,
             Err(_) => {
@@ -379,6 +396,14 @@ impl Daemon {
                 false
             }
         };
+        let reason = match stop {
+            StopKind::Plane => "a plane exited".to_owned(),
+            StopKind::Signal(signal) => format!("received {signal}"),
+            StopKind::Stop => "stop requested".to_owned(),
+            StopKind::Restart if resetting => "local Machine reset".to_owned(),
+            StopKind::Restart => "restart requested".to_owned(),
+        };
+        tracing::info!(reason = reason.as_str(), "shutting down");
         self.shutdown.cancel();
         // TODO(UT-098, UT-099): preserve both API servers' unbounded graceful shutdown
         // until a timeout is explicitly chosen.
@@ -533,14 +558,20 @@ async fn wait_for_participation(
     }
 }
 
-async fn shutdown_signal() -> io::Result<()> {
+enum StopKind {
+    Plane,
+    Signal(&'static str),
+    Stop,
+    Restart,
+}
+
+async fn shutdown_signal() -> io::Result<&'static str> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     tokio::select! {
-        _ = interrupt.recv() => {}
-        _ = terminate.recv() => {}
+        _ = interrupt.recv() => Ok("SIGINT"),
+        _ = terminate.recv() => Ok("SIGTERM"),
     }
-    Ok(())
 }
 
 fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {
