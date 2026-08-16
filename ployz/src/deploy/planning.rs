@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, HostBind, MachineId,
     MachineObservation, MembershipObservation, PortPublication, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, SpecChange, UpdateOrder,
-    VolumeSource, compare_specs, machine_matches_selector, same_service_mode_kind,
+    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceMount, ServiceVolume,
+    SpecChange, UpdateOrder, VolumeSource, compare_specs, machine_matches_selector,
+    same_service_mode_kind,
 };
 
 use super::{
@@ -146,37 +147,12 @@ fn normalize_and_validate(
         .map(|config| config.trim().to_owned())
         .filter(|config| !config.is_empty());
 
-    let mut volumes = BTreeSet::new();
-    for volume in &normalized.volumes {
-        if !volumes.insert(volume.reference.clone()) {
-            return Err(PlanError::DuplicateVolumeReference {
-                reference: volume.reference.clone(),
-            });
-        }
-    }
-    for mount in &normalized.mounts {
-        if !volumes.contains(&mount.volume) {
-            return Err(PlanError::UnknownVolumeReference {
-                reference: mount.volume.clone(),
-            });
-        }
-    }
-
-    let mut configs = BTreeSet::new();
-    for config in &normalized.configs {
-        if !configs.insert(config.name.as_str()) {
-            return Err(PlanError::DuplicateConfigName {
-                name: config.name.clone(),
-            });
-        }
-    }
-    for mount in &normalized.container.config_mounts {
-        if !configs.contains(mount.config_name.as_str()) {
-            return Err(PlanError::UnknownConfigName {
-                name: mount.config_name.clone(),
-            });
-        }
-    }
+    let (volumes, mounts) = normalized.to_volume_graph()?.into_parts();
+    let (configs, config_mounts) = normalized.to_config_graph()?.into_parts();
+    normalized.volumes = volumes;
+    normalized.mounts = mounts;
+    normalized.configs = configs;
+    normalized.container.config_mounts = config_mounts;
     Ok(normalized)
 }
 
@@ -247,10 +223,22 @@ fn pre_deploy_operations(
 
 fn has_mounted_named_volume(requested: &RequestedServiceSpec) -> bool {
     requested.mounts.iter().any(|mount| {
-        requested.volumes.iter().any(|volume| {
-            volume.reference == mount.volume && matches!(volume.source, VolumeSource::Named { .. })
-        })
+        matches!(
+            mounted_volume(requested, mount).source,
+            VolumeSource::Named { .. }
+        )
     })
+}
+
+pub(super) fn mounted_volume<'a>(
+    requested: &'a RequestedServiceSpec,
+    mount: &ServiceMount,
+) -> &'a ServiceVolume {
+    requested
+        .volumes
+        .iter()
+        .find(|volume| volume.reference == mount.volume)
+        .expect("normalize_and_validate accepted this spec")
 }
 
 fn plan_global(
@@ -505,27 +493,18 @@ fn binds_overlap(left: &HostBind, right: &HostBind) -> bool {
     }
 }
 
-#[must_use]
 fn resolve(
     requested: &RequestedServiceSpec,
     service_id: ServiceId,
     order: UpdateOrder,
 ) -> ResolvedServiceSpec {
-    ResolvedServiceSpec {
-        service_id,
-        name: requested.name.clone(),
-        mode: requested.mode.clone(),
-        container: requested.container.clone(),
-        placement: requested.placement.clone(),
-        ports: requested.ports.clone(),
-        volumes: requested.volumes.clone(),
-        mounts: requested.mounts.clone(),
-        configs: requested.configs.clone(),
-        pre_deploy: requested.pre_deploy.clone(),
-        caddy_config: requested.caddy_config.clone(),
-        update: ResolvedUpdateConfig {
-            order,
-            monitor_millis: requested.update.monitor_millis,
-        },
-    }
+    requested
+        .to_resolved(
+            service_id,
+            ResolvedUpdateConfig {
+                order,
+                monitor_millis: requested.update.monitor_millis,
+            },
+        )
+        .expect("normalize_and_validate accepted this spec")
 }

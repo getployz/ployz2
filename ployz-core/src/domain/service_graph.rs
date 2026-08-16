@@ -4,8 +4,11 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
-use super::{ConfigMount, ConfigSpec, ServiceMount, ServiceVolume};
-use crate::ServiceVolumeReference;
+use super::{
+    ConfigMount, ConfigSpec, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
+    ServiceMount, ServiceVolume, UpdateConfig,
+};
+use crate::{ServiceId, ServiceVolumeReference};
 
 /// Service Volume definitions together with the mounts that refer to them.
 ///
@@ -62,6 +65,12 @@ impl ServiceVolumeGraph {
     #[must_use]
     pub fn mounts(&self) -> &[ServiceMount] {
         &self.mounts
+    }
+
+    /// Consume the graph and return its Volume definitions and mounts.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<ServiceVolume>, Vec<ServiceMount>) {
+        (self.volumes, self.mounts)
     }
 }
 
@@ -139,6 +148,12 @@ impl ServiceConfigGraph {
     pub fn mounts(&self) -> &[ConfigMount] {
         &self.mounts
     }
+
+    /// Consume the graph and return its Config definitions and mounts.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<ConfigSpec>, Vec<ConfigMount>) {
+        (self.configs, self.mounts)
+    }
 }
 
 impl<'de> Deserialize<'de> for ServiceConfigGraph {
@@ -157,4 +172,129 @@ impl<'de> Deserialize<'de> for ServiceConfigGraph {
         let data = Data::deserialize(deserializer)?;
         Self::parse(data.configs, data.mounts).map_err(D::Error::custom)
     }
+}
+
+/// Failure to read a Service spec as validated Volume and Config graphs.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ServiceSpecGraphError {
+    #[error(transparent)]
+    Volume(#[from] ServiceVolumeGraphError),
+    #[error(transparent)]
+    Config(#[from] ServiceConfigGraphError),
+}
+
+impl RequestedServiceSpec {
+    /// Validate this spec's Volume definitions together with its mounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceVolumeGraphError`] when the parallel arrays are not a
+    /// valid Volume graph.
+    pub fn to_volume_graph(&self) -> Result<ServiceVolumeGraph, ServiceVolumeGraphError> {
+        volume_graph(&self.volumes, &self.mounts)
+    }
+
+    /// Validate this spec's Config definitions together with its mounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceConfigGraphError`] when the parallel arrays are not a
+    /// valid Config graph.
+    pub fn to_config_graph(&self) -> Result<ServiceConfigGraph, ServiceConfigGraphError> {
+        config_graph(&self.configs, &self.container.config_mounts)
+    }
+
+    /// Resolve this spec after validating its Volume and Config graphs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceSpecGraphError`] when either graph is invalid.
+    pub fn to_resolved(
+        &self,
+        service_id: ServiceId,
+        update: ResolvedUpdateConfig,
+    ) -> Result<ResolvedServiceSpec, ServiceSpecGraphError> {
+        let (volumes, mounts) = self.to_volume_graph()?.into_parts();
+        let (configs, config_mounts) = self.to_config_graph()?.into_parts();
+        let mut container = self.container.clone();
+        container.config_mounts = config_mounts;
+        Ok(ResolvedServiceSpec {
+            service_id,
+            name: self.name.clone(),
+            mode: self.mode.clone(),
+            container,
+            placement: self.placement.clone(),
+            ports: self.ports.clone(),
+            volumes,
+            mounts,
+            configs,
+            pre_deploy: self.pre_deploy.clone(),
+            caddy_config: self.caddy_config.clone(),
+            update,
+        })
+    }
+}
+
+impl ResolvedServiceSpec {
+    /// Validate this spec's Volume definitions together with its mounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceVolumeGraphError`] when the parallel arrays are not a
+    /// valid Volume graph.
+    pub fn to_volume_graph(&self) -> Result<ServiceVolumeGraph, ServiceVolumeGraphError> {
+        volume_graph(&self.volumes, &self.mounts)
+    }
+
+    /// Validate this spec's Config definitions together with its mounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceConfigGraphError`] when the parallel arrays are not a
+    /// valid Config graph.
+    pub fn to_config_graph(&self) -> Result<ServiceConfigGraph, ServiceConfigGraphError> {
+        config_graph(&self.configs, &self.container.config_mounts)
+    }
+
+    /// Rebuild a requested spec after validating this spec's graphs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceSpecGraphError`] when either graph is invalid.
+    pub fn to_requested(&self) -> Result<RequestedServiceSpec, ServiceSpecGraphError> {
+        let (volumes, mounts) = self.to_volume_graph()?.into_parts();
+        let (configs, config_mounts) = self.to_config_graph()?.into_parts();
+        let mut container = self.container.clone();
+        container.config_mounts = config_mounts;
+        Ok(RequestedServiceSpec {
+            name: self.name.clone(),
+            mode: self.mode.clone(),
+            container,
+            placement: self.placement.clone(),
+            ports: self.ports.clone(),
+            volumes,
+            mounts,
+            configs,
+            pre_deploy: self.pre_deploy.clone(),
+            caddy_config: self.caddy_config.clone(),
+            update: UpdateConfig {
+                order: Some(self.update.order),
+                monitor_millis: self.update.monitor_millis,
+            },
+        })
+    }
+}
+
+fn volume_graph(
+    volumes: &[ServiceVolume],
+    mounts: &[ServiceMount],
+) -> Result<ServiceVolumeGraph, ServiceVolumeGraphError> {
+    ServiceVolumeGraph::parse(volumes.to_vec(), mounts.to_vec())
+}
+
+fn config_graph(
+    configs: &[ConfigSpec],
+    mounts: &[ConfigMount],
+) -> Result<ServiceConfigGraph, ServiceConfigGraphError> {
+    ServiceConfigGraph::parse(configs.to_vec(), mounts.to_vec())
 }

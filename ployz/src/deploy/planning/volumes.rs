@@ -73,13 +73,7 @@ pub(super) fn named_volume_uses(
     for service in requested {
         let service_name = service.name.as_str();
         for mount in &service.mounts {
-            let Some(volume) = service
-                .volumes
-                .iter()
-                .find(|volume| volume.reference == mount.volume)
-            else {
-                continue;
-            };
+            let volume = super::mounted_volume(service, mount);
             let VolumeSource::Named { name, .. } = &volume.source else {
                 continue;
             };
@@ -361,13 +355,7 @@ fn mounted_named_volumes(
 ) -> Result<Vec<&ServiceVolume>, PlanError> {
     let mut by_docker_name = BTreeMap::<DockerVolumeName, &ServiceVolume>::new();
     for mount in &requested.mounts {
-        let Some(volume) = requested
-            .volumes
-            .iter()
-            .find(|volume| volume.reference == mount.volume)
-        else {
-            continue;
-        };
+        let volume = super::mounted_volume(requested, mount);
         let VolumeSource::Named { name, .. } = &volume.source else {
             continue;
         };
