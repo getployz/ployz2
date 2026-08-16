@@ -1,4 +1,4 @@
-//! Obtain certificates for https Ingress Hostnames.
+//! Obtain and renew certificates for https Ingress Hostnames.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -7,7 +7,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
@@ -44,7 +44,12 @@ pub(crate) const RANK_STEP: Duration = Duration::from_secs(30);
 pub(crate) enum IssuanceAction {
     Nothing,
     Order,
+    Renew,
 }
+
+/// Elapsed fraction of a certificate's own lifetime that opens the renewal window.
+const RENEW_AFTER_ELAPSED_NUM: u32 = 2;
+const RENEW_AFTER_ELAPSED_DEN: u32 = 3;
 
 /// Rank among Machine identifiers. Lowest id is 0 and may order immediately.
 #[must_use]
@@ -55,21 +60,143 @@ pub(crate) fn machine_rank<'id>(
     machines.into_iter().filter(|id| *id < this).count()
 }
 
-/// Whether this Machine should order now.
+/// Whether this Machine should order or renew now.
 #[must_use]
 pub(crate) fn issuance_action(
     row: Option<&CertificateRow>,
     rank: usize,
     elapsed: Duration,
+    now: SystemTime,
+    machine_id: &MachineId,
 ) -> IssuanceAction {
-    if row.and_then(CertificateRow::material).is_some() {
-        return IssuanceAction::Nothing;
+    let delay = rank_delay(rank);
+    match row.and_then(CertificateRow::material) {
+        None => {
+            if elapsed < delay {
+                IssuanceAction::Nothing
+            } else {
+                IssuanceAction::Order
+            }
+        }
+        Some(material) => match renew_at(material, machine_id) {
+            Some(renew_at) if now >= saturating_add(renew_at, delay) => IssuanceAction::Renew,
+            _ => IssuanceAction::Nothing,
+        },
     }
-    let delay = RANK_STEP.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX));
-    if elapsed < delay {
-        IssuanceAction::Nothing
+}
+
+fn rank_delay(rank: usize) -> Duration {
+    RANK_STEP.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX))
+}
+
+/// Start of the remaining third, and expiry, from the certificate's own lifetime.
+#[must_use]
+pub(crate) fn renewal_window(
+    not_before: SystemTime,
+    not_after: SystemTime,
+) -> Option<(SystemTime, SystemTime)> {
+    let lifetime = not_after.duration_since(not_before).ok()?;
+    if lifetime.is_zero() {
+        return None;
+    }
+    Some((
+        saturating_add(
+            not_before,
+            duration_ratio(lifetime, RENEW_AFTER_ELAPSED_NUM, RENEW_AFTER_ELAPSED_DEN),
+        ),
+        not_after,
+    ))
+}
+
+fn renew_at(material: &CertificateMaterial, machine_id: &MachineId) -> Option<SystemTime> {
+    let (not_before, not_after) = material_validity(material.certificate())?;
+    let (window_start, expiry) = renewal_window(not_before, not_after)?;
+    let remaining = expiry.duration_since(window_start).ok()?;
+    Some(saturating_add(
+        window_start,
+        machine_jitter(machine_id, remaining),
+    ))
+}
+
+/// Jitter in `[0, remaining)` from the Machine identity.
+#[must_use]
+pub(crate) fn machine_jitter(machine_id: &MachineId, remaining: Duration) -> Duration {
+    if remaining.is_zero() {
+        return Duration::ZERO;
+    }
+    let seed = machine_id
+        .as_str()
+        .as_bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    let nanos = remaining.as_nanos().saturating_mul(u128::from(seed)) / (u128::from(u64::MAX) + 1);
+    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+}
+
+fn material_validity(pem: &str) -> Option<(SystemTime, SystemTime)> {
+    let (_, pem) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).ok()?;
+    let cert = pem.parse_x509().ok()?;
+    let validity = cert.validity();
+    Some((
+        asn1_to_system(validity.not_before)?,
+        asn1_to_system(validity.not_after)?,
+    ))
+}
+
+fn asn1_to_system(time: x509_parser::time::ASN1Time) -> Option<SystemTime> {
+    let secs = time.timestamp();
+    if secs >= 0 {
+        UNIX_EPOCH.checked_add(Duration::from_secs(u64::try_from(secs).ok()?))
     } else {
-        IssuanceAction::Order
+        UNIX_EPOCH.checked_sub(Duration::from_secs(secs.unsigned_abs()))
+    }
+}
+
+fn duration_ratio(duration: Duration, numerator: u32, denominator: u32) -> Duration {
+    let nanos = duration.as_nanos().saturating_mul(u128::from(numerator)) / u128::from(denominator);
+    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+}
+
+fn saturating_add(time: SystemTime, duration: Duration) -> SystemTime {
+    time.checked_add(duration).unwrap_or(time)
+}
+
+fn time_until_action(
+    row: Option<&CertificateRow>,
+    rank: usize,
+    elapsed: Duration,
+    now: SystemTime,
+    machine_id: &MachineId,
+) -> Duration {
+    match issuance_action(row, rank, elapsed, now, machine_id) {
+        IssuanceAction::Order | IssuanceAction::Renew => Duration::ZERO,
+        IssuanceAction::Nothing => match row.and_then(CertificateRow::material) {
+            None => rank_delay(rank).saturating_sub(elapsed),
+            Some(material) => renew_at(material, machine_id)
+                .and_then(|renew_at| {
+                    saturating_add(renew_at, rank_delay(rank))
+                        .duration_since(now)
+                        .ok()
+                })
+                .unwrap_or(RETRY_INTERVAL),
+        },
+    }
+}
+
+fn poll_wait(
+    row: Option<&CertificateRow>,
+    rank: usize,
+    elapsed: Duration,
+    now: SystemTime,
+    machine_id: &MachineId,
+) -> Duration {
+    let due_in = time_until_action(row, rank, elapsed, now, machine_id);
+    if due_in.is_zero() {
+        RANK_STEP
+    } else {
+        due_in.min(RETRY_INTERVAL)
     }
 }
 
@@ -210,7 +337,7 @@ pub(crate) async fn run(
         .map_err(io::Error::other)?;
     let mut first_seen = BTreeMap::new();
     loop {
-        if let Err(error) = issue_wanted(
+        let wait = match issue_wanted(
             &store,
             &directory,
             &account_dir,
@@ -219,12 +346,11 @@ pub(crate) async fn run(
         )
         .await
         {
-            eprintln!("failed to obtain certificates: {error}");
-        }
-        let wait = if first_seen.is_empty() {
-            RETRY_INTERVAL
-        } else {
-            RANK_STEP
+            Ok(wait) => wait,
+            Err(error) => {
+                eprintln!("failed to obtain certificates: {error}");
+                RETRY_INTERVAL
+            }
         };
         tokio::select! {
             changed = changes.changed() => changed.map_err(io::Error::other)?,
@@ -240,51 +366,72 @@ async fn issue_wanted(
     account_dir: &Path,
     machine_id: &MachineId,
     first_seen: &mut BTreeMap<IngressHost, Instant>,
-) -> Result<(), Error> {
+) -> Result<Duration, Error> {
     let containers = store.containers().await?;
     let wanted = wanted_certificate_hosts(containers.observations.iter());
-    let rows = store.certificate_state().await?;
+    first_seen.retain(|hostname, _| wanted.contains(hostname));
+    if wanted.is_empty() {
+        return Ok(RETRY_INTERVAL);
+    }
+    let mut rows = store.certificate_state().await?;
     let machines = store.machines().await?;
     let rank = machine_rank(
         machine_id,
         machines.observations.iter().map(|machine| &machine.id),
     );
     let now = Instant::now();
-    first_seen.retain(|hostname, _| wanted.contains(hostname));
+    let wall = SystemTime::now();
     let mut to_order = Vec::new();
     for hostname in &wanted {
         let row = rows.get(hostname);
-        if row.and_then(CertificateRow::material).is_some() {
-            first_seen.remove(hostname);
-            continue;
-        }
-        let seen = if let Some(&seen) = first_seen.get(hostname) {
-            seen
-        } else {
-            first_seen.insert(hostname.clone(), now);
-            now
+        let elapsed = match row.and_then(CertificateRow::material) {
+            Some(_) => {
+                first_seen.remove(hostname);
+                Duration::ZERO
+            }
+            None => {
+                let seen = if let Some(&seen) = first_seen.get(hostname) {
+                    seen
+                } else {
+                    first_seen.insert(hostname.clone(), now);
+                    now
+                };
+                now.saturating_duration_since(seen)
+            }
         };
-        let elapsed = now.saturating_duration_since(seen);
-        if issuance_action(row, rank, elapsed) == IssuanceAction::Order {
-            to_order.push(hostname);
+        match issuance_action(row, rank, elapsed, wall, machine_id) {
+            IssuanceAction::Order | IssuanceAction::Renew => to_order.push(hostname),
+            IssuanceAction::Nothing => {}
         }
     }
-    if to_order.is_empty() {
-        return Ok(());
-    }
-    account(directory, account_dir).await?;
-    let results = join_all(
-        to_order
-            .iter()
-            .map(|hostname| obtain(store, hostname, directory, account_dir)),
-    )
-    .await;
-    for (hostname, result) in to_order.iter().zip(results) {
-        if let Err(error) = result {
-            eprintln!("failed to obtain certificate for {hostname}: {error}");
+    if !to_order.is_empty() {
+        account(directory, account_dir).await?;
+        let results = join_all(
+            to_order
+                .iter()
+                .map(|hostname| obtain(store, hostname, directory, account_dir, rank, machine_id)),
+        )
+        .await;
+        for (hostname, result) in to_order.iter().zip(results) {
+            if let Err(error) = result {
+                eprintln!("failed to obtain certificate for {hostname}: {error}");
+            }
         }
+        rows = store.certificate_state().await?;
     }
-    Ok(())
+    let now = Instant::now();
+    let wall = SystemTime::now();
+    Ok(wanted
+        .iter()
+        .map(|hostname| {
+            let elapsed = first_seen
+                .get(hostname)
+                .map(|seen| now.saturating_duration_since(*seen))
+                .unwrap_or(Duration::ZERO);
+            poll_wait(rows.get(hostname), rank, elapsed, wall, machine_id)
+        })
+        .min()
+        .unwrap_or(RETRY_INTERVAL))
 }
 
 async fn obtain(
@@ -292,9 +439,14 @@ async fn obtain(
     hostname: &IngressHost,
     directory: &str,
     account_dir: &Path,
+    rank: usize,
+    machine_id: &MachineId,
 ) -> Result<(), Error> {
-    if store.certificate(hostname).await?.is_some() {
-        return Ok(());
+    let row = store.certificate_row(hostname).await?;
+    match issuance_action(Some(&row), rank, Duration::ZERO, SystemTime::now(), machine_id) {
+        IssuanceAction::Renew => {}
+        IssuanceAction::Nothing if row.material().is_some() => return Ok(()),
+        IssuanceAction::Nothing | IssuanceAction::Order => {}
     }
     let material = order_certificate(hostname, directory, account_dir, |challenge| {
         let store = store.clone();
@@ -519,329 +671,5 @@ impl HttpClient for ReqwestAcmeClient {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        collections::{BTreeMap, BTreeSet},
-        net::{IpAddr, SocketAddr},
-        time::Duration,
-    };
-
-    use ployz_core::{
-        ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-        ContainerRuntimeObservation, HealthObservation, HttpProtocol, IngressHost, IngressHostname,
-        Machine, MachineId, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName,
-    };
-    use serde_json::json;
-
-    use super::{
-        IssuanceAction, RANK_STEP, caddy_challenge_ips, challenge_probe_addresses,
-        directory_from_env, issuance_action, machine_rank, order_certificate, wait_for_http01,
-        wanted_certificate_hosts,
-    };
-    use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
-
-    #[test]
-    fn directory_empty_disables_issuance() {
-        assert_eq!(directory_from_env(Some("")), None);
-        assert_eq!(
-            directory_from_env(Some("http://ca.test/directory")).as_deref(),
-            Some("http://ca.test/directory")
-        );
-        assert_eq!(
-            directory_from_env(None).as_deref(),
-            Some("https://acme-v02.api.letsencrypt.org/directory")
-        );
-    }
-
-    #[test]
-    fn wanted_hosts_are_https_ingress_only() {
-        let observations = [
-            observation(
-                1,
-                "api",
-                vec![
-                    ingress("app.example.com", HttpProtocol::Https),
-                    ingress("plain.example.com", HttpProtocol::Http),
-                    ingress("web.opaque.uncloud.example", HttpProtocol::Https),
-                ],
-            ),
-            observation(2, "www", vec![ingress_assign(HttpProtocol::Https)]),
-            {
-                let mut hook = observation(
-                    3,
-                    "api",
-                    vec![ingress("hook.example.com", HttpProtocol::Https)],
-                );
-                hook.kind = ContainerKind::PreDeployHook;
-                hook
-            },
-        ];
-
-        assert_eq!(
-            wanted_certificate_hosts(observations.iter()),
-            BTreeSet::from([host("app.example.com"), host("web.opaque.uncloud.example"),])
-        );
-        assert_eq!(
-            wanted_certificate_hosts(
-                [observation(
-                    1,
-                    "api",
-                    vec![ingress("plain.example.com", HttpProtocol::Http)]
-                )]
-                .iter()
-            ),
-            BTreeSet::new()
-        );
-        assert_eq!(
-            wanted_certificate_hosts([observation(1, "api", Vec::new())].iter()),
-            BTreeSet::new()
-        );
-    }
-
-    #[test]
-    fn lowest_machine_id_is_rank_zero() {
-        let low = MachineId::parse("a".repeat(32)).unwrap();
-        let high = MachineId::parse("f".repeat(32)).unwrap();
-        assert_eq!(machine_rank(&low, &[high, low]), 0);
-        assert_eq!(machine_rank(&high, &[low]), 1);
-        assert_eq!(machine_rank(&low, &[]), 0);
-    }
-
-    #[test]
-    fn only_rank_zero_orders_immediately() {
-        assert_eq!(RANK_STEP, Duration::from_secs(30));
-        assert_eq!(
-            issuance_action(None, 0, Duration::ZERO),
-            IssuanceAction::Order
-        );
-        assert_eq!(
-            issuance_action(None, 1, Duration::from_secs(30) - Duration::from_millis(1)),
-            IssuanceAction::Nothing
-        );
-        assert_eq!(
-            issuance_action(None, 1, Duration::from_secs(30)),
-            IssuanceAction::Order
-        );
-        assert_eq!(
-            issuance_action(None, 2, Duration::from_secs(30)),
-            IssuanceAction::Nothing
-        );
-        assert_eq!(
-            issuance_action(None, 2, Duration::from_secs(60)),
-            IssuanceAction::Order
-        );
-    }
-
-    #[test]
-    fn issued_material_means_nothing_to_do() {
-        let material = CertificateMaterial::new("CERT", "KEY").unwrap();
-        let row = CertificateRow::from_parts(Some(material), None);
-        assert_eq!(
-            issuance_action(Some(&row), 0, Duration::from_secs(60)),
-            IssuanceAction::Nothing
-        );
-    }
-
-    #[test]
-    fn probe_addresses_are_the_caddy_intersection() {
-        let caddy_ips = BTreeSet::from([ip("192.0.2.1"), ip("192.0.2.2")]);
-        assert_eq!(
-            challenge_probe_addresses(&[ip("192.0.2.2"), ip("198.51.100.10")], &caddy_ips),
-            vec![socket("192.0.2.2")]
-        );
-        assert_eq!(
-            challenge_probe_addresses(&[ip("198.51.100.10")], &caddy_ips),
-            Vec::<SocketAddr>::new()
-        );
-        assert_eq!(
-            challenge_probe_addresses(&[], &caddy_ips),
-            Vec::<SocketAddr>::new()
-        );
-    }
-
-    #[test]
-    fn caddy_challenge_ips_come_from_running_caddy_machines() {
-        let local = machine_with_endpoint("a", "192.0.2.1");
-        let remote = machine_with_endpoint("b", "192.0.2.2");
-        let mut caddy = observation(1, "caddy", Vec::new());
-        caddy.machine_id = local.id;
-        caddy.service_name = ServiceName::parse("caddy").unwrap();
-        let mut down = observation(2, "caddy", Vec::new());
-        down.machine_id = remote.id;
-        down.service_name = ServiceName::parse("caddy").unwrap();
-        down.runtime = ContainerRuntimeObservation::Exited { code: 1 };
-        assert_eq!(
-            caddy_challenge_ips(&[local, remote], &[caddy, down]),
-            BTreeSet::from([ip("192.0.2.1")])
-        );
-    }
-
-    #[tokio::test]
-    async fn challenge_must_be_answerable_on_every_probe_address() {
-        let hostname = host("app.example.com");
-        let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
-        let answers = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::from([(
-            "tok".to_owned(),
-            "tok.thumb".to_owned(),
-        )])));
-        let (first_stop, first_port) =
-            ployz_testkit::fake_acme::serve_http01(std::sync::Arc::clone(&answers));
-        let (second_stop, second_port) = ployz_testkit::fake_acme::serve_http01(answers);
-        wait_for_http01(
-            &hostname,
-            &challenge,
-            &[
-                SocketAddr::from(([127, 0, 0, 1], first_port)),
-                SocketAddr::from(([127, 0, 0, 1], second_port)),
-            ],
-        )
-        .await
-        .unwrap();
-        drop((first_stop, second_stop));
-    }
-
-    #[tokio::test]
-    async fn empty_probe_addresses_fail_without_waiting() {
-        let hostname = host("app.example.com");
-        let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
-        let error = tokio::time::timeout(
-            Duration::from_secs(1),
-            wait_for_http01(&hostname, &challenge, &[]),
-        )
-        .await
-        .unwrap()
-        .unwrap_err();
-        assert!(matches!(error, super::Error::ChallengeNotServed));
-    }
-
-    #[tokio::test]
-    async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
-        let hostname = host("app.example.com");
-        let answers = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
-        let (http01, validation_port) =
-            ployz_testkit::fake_acme::serve_http01(std::sync::Arc::clone(&answers));
-        let ca = ployz_testkit::fake_acme::FakeCa::bind("127.0.0.1:0")
-            .await
-            .unwrap();
-        ca.set_validation("127.0.0.1", validation_port);
-        let account_dir =
-            std::env::temp_dir().join(format!("ployzd-acme-{}-{}", std::process::id(), hostname));
-        let material =
-            order_certificate(&hostname, &ca.directory_url(), &account_dir, |challenge| {
-                let answers = std::sync::Arc::clone(&answers);
-                async move {
-                    answers.lock().unwrap().insert(
-                        challenge.token().to_owned(),
-                        challenge.response().to_owned(),
-                    );
-                    Ok(())
-                }
-            })
-            .await
-            .unwrap();
-
-        assert!(material.certificate().contains("BEGIN CERTIFICATE"));
-        assert!(material.private_key().contains("BEGIN"));
-        assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
-        drop(http01);
-        let _ = std::fs::remove_dir_all(account_dir);
-    }
-
-    #[tokio::test]
-    async fn order_fails_when_the_directory_is_unreachable() {
-        let hostname = host("app.example.com");
-        let account_dir = std::env::temp_dir().join(format!(
-            "ployzd-acme-unreachable-{}-{}",
-            std::process::id(),
-            hostname
-        ));
-        let error = order_certificate(
-            &hostname,
-            "http://127.0.0.1:1/directory",
-            &account_dir,
-            |_| async { Ok(()) },
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            matches!(error, super::Error::Acme(_) | super::Error::Http(_)),
-            "{error}"
-        );
-        let _ = std::fs::remove_dir_all(account_dir);
-    }
-
-    fn host(name: &str) -> IngressHost {
-        IngressHost::parse(name).unwrap()
-    }
-
-    fn ip(value: &str) -> IpAddr {
-        value.parse().unwrap()
-    }
-
-    fn socket(value: &str) -> SocketAddr {
-        SocketAddr::new(ip(value), 80)
-    }
-
-    fn machine_with_endpoint(seed: &str, address: &str) -> Machine {
-        serde_json::from_value(json!({
-            "id": seed.repeat(32),
-            "name": format!("machine-{seed}"),
-            "subnet": "10.210.1.0/24",
-            "management_address": "fdcc::1",
-            "public_key": vec![3; 32],
-            "advertised_endpoints": [format!("{address}:51000")],
-        }))
-        .unwrap()
-    }
-
-    fn ingress(hostname: &str, http_protocol: HttpProtocol) -> PortPublication {
-        PortPublication::Ingress {
-            hostname: IngressHostname::explicit(hostname).unwrap(),
-            load_balancer_port: 443.try_into().unwrap(),
-            container_port: 8080.try_into().unwrap(),
-            http_protocol,
-        }
-    }
-
-    fn ingress_assign(http_protocol: HttpProtocol) -> PortPublication {
-        PortPublication::Ingress {
-            hostname: IngressHostname::AssignFromClusterDomain,
-            load_balancer_port: 443.try_into().unwrap(),
-            container_port: 8080.try_into().unwrap(),
-            http_protocol,
-        }
-    }
-
-    fn observation(
-        suffix: u8,
-        service_name: &str,
-        ports: Vec<PortPublication>,
-    ) -> ContainerObservation {
-        let service_id = ServiceId::parse(format!("{suffix:x}").repeat(32)).unwrap();
-        let service_name = ServiceName::parse(service_name).unwrap();
-        let resolved_spec: ResolvedServiceSpec = serde_json::from_value(json!({
-            "service_id": service_id,
-            "name": service_name,
-            "mode": { "mode": "replicated", "replicas": 1 },
-            "container": { "image": "example.test/image", "pull_policy": "missing" },
-            "ports": ports,
-        }))
-        .unwrap();
-        ContainerObservation {
-            container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
-            display_name: format!("{service_name}-{suffix}"),
-            created_at_unix_nanos: 0,
-            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
-            service_id,
-            service_name,
-            kind: ContainerKind::ServiceContainer,
-            runtime: ContainerRuntimeObservation::Running {
-                health: HealthObservation::Healthy,
-            },
-            effective_healthcheck: None,
-            resolved_spec,
-            address: Some(ContainerAddress([10, 210, 1, 2].into())),
-            labels: BTreeMap::new(),
-        }
-    }
-}
+#[path = "certificates_tests.rs"]
+mod tests;
