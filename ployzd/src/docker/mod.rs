@@ -183,7 +183,6 @@ impl ContainerRuntime {
                 .await,
             container_id,
         )?;
-        let projected = project_inspect(&inspected);
         let labels = inspected
             .config
             .as_ref()
@@ -198,16 +197,16 @@ impl ContainerRuntime {
 
         Ok(ContainerObservation {
             container_id: *container_id,
-            display_name: projected.display_name,
-            created_at_unix_nanos: projected.created_at_unix_nanos,
+            display_name: display_name(inspected.name.as_deref()),
+            created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),
             machine_id: *machine_id,
             service_id: managed.service_id,
             service_name: managed.service_name,
             kind: managed.kind,
-            runtime: projected.runtime,
-            effective_healthcheck: projected.effective_healthcheck,
+            runtime: runtime_observation(inspected.state.as_ref()),
+            effective_healthcheck: effective_healthcheck(inspected.config.as_ref()),
             resolved_spec,
-            address: projected.address,
+            address: container_address(&inspected),
             labels: labels
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone()))
@@ -335,25 +334,6 @@ struct RawNetworkSettings {
 struct RawEndpointSettings {
     #[serde(rename = "IPAddress")]
     ip_address: Option<String>,
-}
-
-#[derive(Debug, PartialEq)]
-struct InspectedView {
-    display_name: String,
-    created_at_unix_nanos: i64,
-    runtime: ContainerRuntimeObservation,
-    effective_healthcheck: Option<HealthcheckSpec>,
-    address: Option<ContainerAddress>,
-}
-
-fn project_inspect(inspected: &RawContainerInspect) -> InspectedView {
-    InspectedView {
-        display_name: display_name(inspected.name.as_deref()),
-        created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),
-        runtime: runtime_observation(inspected.state.as_ref()),
-        effective_healthcheck: effective_healthcheck(inspected.config.as_ref()),
-        address: container_address(inspected),
-    }
 }
 
 fn created_at_unix_nanos(created: Option<&str>) -> i64 {
@@ -1225,14 +1205,38 @@ mod tests {
         })
     }
 
-    fn expected_typed_projection() -> InspectedView {
-        InspectedView {
-            display_name: "api-1".into(),
-            created_at_unix_nanos: 1_710_506_096_123_456_789,
-            runtime: ContainerRuntimeObservation::Running {
+    fn projected(
+        inspected: &RawContainerInspect,
+    ) -> (
+        String,
+        i64,
+        ContainerRuntimeObservation,
+        Option<HealthcheckSpec>,
+        Option<ContainerAddress>,
+    ) {
+        (
+            display_name(inspected.name.as_deref()),
+            created_at_unix_nanos(inspected.created.as_deref()),
+            runtime_observation(inspected.state.as_ref()),
+            effective_healthcheck(inspected.config.as_ref()),
+            container_address(inspected),
+        )
+    }
+
+    fn expected_typed_projection() -> (
+        String,
+        i64,
+        ContainerRuntimeObservation,
+        Option<HealthcheckSpec>,
+        Option<ContainerAddress>,
+    ) {
+        (
+            "api-1".into(),
+            1_710_506_096_123_456_789,
+            ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
             },
-            effective_healthcheck: Some(HealthcheckSpec {
+            Some(HealthcheckSpec {
                 test: vec!["CMD".into(), "true".into()],
                 interval_millis: Some(2),
                 timeout_millis: Some(2),
@@ -1241,15 +1245,15 @@ mod tests {
                 retries: Some(4),
                 disabled: false,
             }),
-            address: Some(ContainerAddress(Ipv4Addr::new(10, 210, 0, 5))),
-        }
+            Some(ContainerAddress(Ipv4Addr::new(10, 210, 0, 5))),
+        )
     }
 
     #[test]
     fn typed_inspect_projects_address_runtime_and_created_nanos() {
         let typed: ContainerInspectResponse = serde_json::from_value(inspect_json()).unwrap();
         assert_eq!(
-            project_inspect(&RawContainerInspect::from_typed(&typed).unwrap()),
+            projected(&RawContainerInspect::from_typed(&typed).unwrap()),
             expected_typed_projection()
         );
     }
@@ -1258,8 +1262,8 @@ mod tests {
     fn typed_and_raw_inspect_project_equivalent_observations() {
         let value = inspect_json();
         let typed: ContainerInspectResponse = serde_json::from_value(value.clone()).unwrap();
-        let from_typed = project_inspect(&RawContainerInspect::from_typed(&typed).unwrap());
-        let from_raw = project_inspect(&serde_json::from_value(value).unwrap());
+        let from_typed = projected(&RawContainerInspect::from_typed(&typed).unwrap());
+        let from_raw = projected(&serde_json::from_value(value).unwrap());
         assert_eq!(from_typed, from_raw);
         assert_eq!(from_raw, expected_typed_projection());
     }
@@ -1311,6 +1315,6 @@ mod tests {
             &ContainerId::parse("a".repeat(64)).unwrap(),
         )
         .unwrap();
-        assert_eq!(project_inspect(&inspected), expected_typed_projection());
+        assert_eq!(projected(&inspected), expected_typed_projection());
     }
 }
