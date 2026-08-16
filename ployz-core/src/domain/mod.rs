@@ -1,9 +1,11 @@
 mod machine;
 mod observation;
+mod service_graph;
 mod spec;
 
 pub use machine::*;
 pub use observation::*;
+pub use service_graph::*;
 pub use spec::*;
 
 use serde::{Deserialize, Serialize};
