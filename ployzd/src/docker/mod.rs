@@ -1274,15 +1274,14 @@ mod tests {
             ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
             },
-            Some(HealthcheckSpec {
-                test: vec!["CMD".into(), "true".into()],
+            Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {
+                test: HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
                 interval_millis: Some(2),
                 timeout_millis: Some(2),
                 start_period_millis: Some(301),
                 start_interval_millis: Some(4),
                 retries: Some(4),
-                disabled: false,
-            }),
+            })),
             Some(ContainerAddress(Ipv4Addr::new(10, 210, 0, 5))),
         )
     }
