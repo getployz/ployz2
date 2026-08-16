@@ -1,3 +1,9 @@
+//! The Deploy pipeline: snapshot → plan → execute.
+//!
+//! A Deploy Snapshot is gathered, a Deploy Preview is calculated, and a Deploy
+//! Plan is executed to a Deploy Outcome. This module does not print, read
+//! stdin, or exit the process.
+
 use std::num::NonZeroU32;
 use std::time::SystemTime;
 
@@ -24,8 +30,12 @@ use super::{
 pub(super) struct DeployPreview {
     pub operations: Vec<DeployOperation>,
     pub warnings: Vec<ObservationWarning>,
-    pub pushed_images: Vec<PushedImage>,
-    pub push_failures: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PushReport {
+    pub pushed: Vec<PushedImage>,
+    pub failures: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,32 +44,23 @@ pub(super) struct PushedImage {
     pub machine_id: MachineId,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ObservationKind {
-    Container,
-    Volume,
+#[derive(Debug)]
+pub(super) enum PlanProjectError {
+    PushFailed(PushReport),
+    Other(Failure),
+}
+
+impl From<Failure> for PlanProjectError {
+    fn from(error: Failure) -> Self {
+        Self::Other(error)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum ObservationWarning {
-    Failed {
-        kind: ObservationKind,
-        machine_id: MachineId,
-        message: String,
-    },
-    Omitted {
-        kind: ObservationKind,
-        machine_id: MachineId,
-    },
-}
-
-impl ObservationKind {
-    pub(super) fn as_str(self) -> &'static str {
-        match self {
-            Self::Container => "container",
-            Self::Volume => "volume",
-        }
-    }
+pub(super) struct ObservationWarning {
+    pub kind: &'static str,
+    pub machine_id: MachineId,
+    pub message: String,
 }
 
 pub(super) async fn plan_spec(
@@ -79,8 +80,6 @@ pub(super) async fn plan_spec(
     Ok(DeployPreview {
         operations: plan.operations().to_vec(),
         warnings,
-        pushed_images: Vec::new(),
-        push_failures: Vec::new(),
     })
 }
 
@@ -89,32 +88,28 @@ pub(super) async fn plan_project(
     project: &mut ComposeProject,
     builds: &[BuildService],
     options: PlanOptions,
-) -> Result<DeployPreview, Failure> {
+) -> Result<(DeployPreview, PushReport), PlanProjectError> {
     let machines = list_machines(client).await?;
-    let (pushed_images, push_failures) = ensure_images_available(client, builds, &machines).await?;
-    if !push_failures.is_empty() {
-        return Ok(DeployPreview {
-            operations: Vec::new(),
-            warnings: Vec::new(),
-            pushed_images,
-            push_failures,
-        });
+    let report = ensure_images_available(client, builds, &machines).await?;
+    if !report.failures.is_empty() {
+        return Err(PlanProjectError::PushFailed(report));
     }
-    project.resolve_secrets()?;
+    project.resolve_secrets().map_err(Failure::from)?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     expand_ingress(client, project.services.values_mut()).await?;
-    let compose = plan_compose_deploy(project, &snapshot, options)?;
+    let compose = plan_compose_deploy(project, &snapshot, options).map_err(Failure::from)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
-    Ok(DeployPreview {
-        operations: compose
-            .operations()
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>(),
-        warnings,
-        pushed_images,
-        push_failures,
-    })
+    Ok((
+        DeployPreview {
+            operations: compose
+                .operations()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            warnings,
+        },
+        report,
+    ))
 }
 
 pub(super) async fn plan_scale(
@@ -131,8 +126,6 @@ pub(super) async fn plan_scale(
     Ok(DeployPreview {
         operations,
         warnings,
-        pushed_images: Vec::new(),
-        push_failures: Vec::new(),
     })
 }
 
@@ -213,35 +206,28 @@ async fn gather_snapshot(
     machines: Vec<MachineObservation>,
 ) -> Result<(DeploySnapshot, Vec<ObservationWarning>), Failure> {
     let gathered = client.deploy_snapshot(machines).await?;
-    let mut warnings = observation_warnings(ObservationKind::Container, &gathered.containers);
-    warnings.extend(observation_warnings(
-        ObservationKind::Volume,
-        &gathered.volumes,
-    ));
+    let mut warnings = observation_warnings("container", &gathered.containers);
+    warnings.extend(observation_warnings("volume", &gathered.volumes));
     Ok((gathered.snapshot, warnings))
 }
 
 fn observation_warnings<T>(
-    kind: ObservationKind,
+    kind: &'static str,
     result: &PartialResult<T, RpcError>,
 ) -> Vec<ObservationWarning> {
     result
         .failures
         .iter()
-        .map(|failure| ObservationWarning::Failed {
+        .map(|failure| ObservationWarning {
             kind,
             machine_id: failure.machine_id,
             message: failure.error.message.clone(),
         })
-        .chain(
-            result
-                .omissions
-                .iter()
-                .map(|machine| ObservationWarning::Omitted {
-                    kind,
-                    machine_id: *machine,
-                }),
-        )
+        .chain(result.omissions.iter().map(|machine| ObservationWarning {
+            kind,
+            machine_id: *machine,
+            message: String::new(),
+        }))
         .collect()
 }
 
@@ -271,13 +257,13 @@ async fn ensure_images_available(
     client: &mut Client,
     builds: &[BuildService],
     machines: &[MachineObservation],
-) -> Result<(Vec<PushedImage>, Vec<String>), Failure> {
-    let mut pushed_images = Vec::new();
+) -> Result<PushReport, Failure> {
+    let mut pushed = Vec::new();
     let mut failures = Vec::new();
     for service in builds {
         match push_image(client, service, machines).await {
-            Ok((pushed, service_failures)) => {
-                pushed_images.extend(pushed);
+            Ok((images, service_failures)) => {
+                pushed.extend(images);
                 if !service_failures.is_empty() {
                     failures.push(service_failures.join("; "));
                 }
@@ -285,7 +271,7 @@ async fn ensure_images_available(
             Err(error) => failures.push(error.to_string()),
         }
     }
-    Ok((pushed_images, failures))
+    Ok(PushReport { pushed, failures })
 }
 
 async fn push_image(
@@ -330,5 +316,5 @@ async fn push_image(
 }
 
 #[cfg(test)]
-#[path = "core_tests.rs"]
+#[path = "pipeline_tests.rs"]
 mod tests;

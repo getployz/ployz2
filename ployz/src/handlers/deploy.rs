@@ -9,7 +9,7 @@ use crate::{
         BuildOptions, BuildService, ComposeProject, LoadOptions, execute_build, load_project,
         plan_build,
     },
-    deploy::{PlanOptions, deploy_project, deploy_scale, deploy_spec},
+    deploy::{deploy_project, deploy_scale, deploy_spec},
 };
 
 use super::{Error, connect_client, leaf_matches, required, runtime, string_values};
@@ -36,14 +36,19 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         )
         .map(str::to_owned);
     let yes = matches.get_flag("yes");
-    let options = PlanOptions {
-        force_recreate: matches.get_flag("recreate"),
-        skip_health_monitor: matches.get_flag("skip-health"),
-        ..Default::default()
-    };
+    let force_recreate = matches.get_flag("recreate");
+    let skip_health_monitor = matches.get_flag("skip-health");
     runtime()?.block_on(async {
         let mut client = connect_client(root, context.as_deref()).await?;
-        deploy_project(&mut client, &mut project, &builds, options, yes).await
+        deploy_project(
+            &mut client,
+            &mut project,
+            &builds,
+            force_recreate,
+            skip_health_monitor,
+            yes,
+        )
+        .await
     })
 }
 

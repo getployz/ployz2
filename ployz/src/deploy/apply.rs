@@ -13,11 +13,10 @@ use crate::{
 };
 
 use super::{
-    DeployOperation, DeployOutcome, ExecutionError, FailedOperation, PlanOptions,
-    ReplacementOperation,
-    core::{
-        DeployPreview, ObservationWarning, execute_deploy, plan_options, plan_project, plan_scale,
-        plan_spec,
+    DeployOperation, DeployOutcome, ExecutionError, FailedOperation, ReplacementOperation,
+    pipeline::{
+        DeployPreview, PlanProjectError, PushReport, execute_deploy, plan_options, plan_project,
+        plan_scale, plan_spec,
     },
 };
 
@@ -37,18 +36,23 @@ pub(crate) async fn deploy_project(
     client: &mut Client,
     project: &mut ComposeProject,
     builds: &[BuildService],
-    options: PlanOptions,
+    force_recreate: bool,
+    skip_health_monitor: bool,
     auto_confirm: bool,
 ) -> Result<(), Failure> {
-    let options = plan_options(options.force_recreate, options.skip_health_monitor);
-    let preview = plan_project(client, project, builds, options).await?;
-    print_pushed_images(&preview);
-    if !preview.push_failures.is_empty() {
-        return Err(Failure::usage(format!(
-            "image push failed: {}",
-            preview.push_failures.join("; ")
-        )));
-    }
+    let options = plan_options(force_recreate, skip_health_monitor);
+    let (preview, report) = match plan_project(client, project, builds, options).await {
+        Ok(planned) => planned,
+        Err(PlanProjectError::PushFailed(report)) => {
+            print_pushed_images(&report);
+            return Err(Failure::usage(format!(
+                "image push failed: {}",
+                report.failures.join("; ")
+            )));
+        }
+        Err(PlanProjectError::Other(error)) => return Err(error),
+    };
+    print_pushed_images(&report);
     print_warnings(&preview);
     if preview.operations.is_empty() {
         println!("No changes.");
@@ -86,29 +90,24 @@ async fn confirm_and_execute(
     finish(execute_deploy(client, operations).await)
 }
 
-fn print_pushed_images(preview: &DeployPreview) {
-    for pushed in &preview.pushed_images {
+fn print_pushed_images(report: &PushReport) {
+    for pushed in &report.pushed {
         println!("Pushed {} to {}", pushed.image, pushed.machine_id);
     }
 }
 
 fn print_warnings(preview: &DeployPreview) {
     for warning in &preview.warnings {
-        match warning {
-            ObservationWarning::Failed {
-                kind,
-                machine_id,
-                message,
-            } => eprintln!(
-                "WARNING: {} observation failed on {machine_id}: {message}",
-                kind.as_str()
-            ),
-            ObservationWarning::Omitted { kind, machine_id } => {
-                eprintln!(
-                    "WARNING: {} observation omitted {machine_id}",
-                    kind.as_str()
-                );
-            }
+        if warning.message.is_empty() {
+            eprintln!(
+                "WARNING: {} observation omitted {}",
+                warning.kind, warning.machine_id
+            );
+        } else {
+            eprintln!(
+                "WARNING: {} observation failed on {}: {}",
+                warning.kind, warning.machine_id, warning.message
+            );
         }
     }
 }

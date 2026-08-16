@@ -120,16 +120,17 @@ fn observation_warnings_are_data_not_printed_text() {
     };
 
     assert_eq!(
-        observation_warnings(ObservationKind::Container, &result),
+        observation_warnings("container", &result),
         [
-            ObservationWarning::Failed {
-                kind: ObservationKind::Container,
+            ObservationWarning {
+                kind: "container",
                 machine_id: MachineId::parse("b".repeat(32)).unwrap(),
                 message: "container listing failed".into(),
             },
-            ObservationWarning::Omitted {
-                kind: ObservationKind::Container,
+            ObservationWarning {
+                kind: "container",
                 machine_id: MachineId::parse("c".repeat(32)).unwrap(),
+                message: String::new(),
             },
         ]
     );
