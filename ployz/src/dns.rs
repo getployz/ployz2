@@ -180,6 +180,7 @@ pub fn expand_ingress_ports(
     cluster_domain: Option<&str>,
 ) -> Result<(), DomainRequired> {
     let domain = cluster_domain.filter(|domain| !domain.is_empty());
+    // A Service Name plus a reserved hosted domain is always a valid Ingress Hostname.
     let assigned = domain.map(|domain| {
         IngressHost::parse(format!("{}.{domain}", spec.name))
             .expect("service name and reserved cluster domain form a hostname")

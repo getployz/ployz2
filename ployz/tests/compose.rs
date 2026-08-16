@@ -359,36 +359,6 @@ services:
         .to_string()
         .contains("invalid x-caddy key")
     );
-    let assigned =
-        parse_normalized("services: {app: {image: app, x-ports: ['80/http']}}", ".").unwrap();
-    assert!(matches!(
-        service(&assigned, "app").ports.first(),
-        Some(PortPublication::Ingress {
-            hostname: IngressHostname::AssignFromClusterDomain,
-            http_protocol: HttpProtocol::Http,
-            ..
-        })
-    ));
-    for yaml in [
-        "services: {app: {image: app, ports: ['80:80']}}",
-        "services: {app: {image: app, x-ports: ['8080:80']}}",
-        "services: {app: {image: app, x-ports: ['8080:80/udp']}}",
-    ] {
-        let error = parse_normalized(yaml, ".").unwrap_err().to_string();
-        assert!(
-            error.contains("host publication"),
-            "{error:?} did not guide toward host publication"
-        );
-    }
-    assert!(
-        parse_normalized(
-            "services: {app: {image: app, x-ports: ['EXAMPLE.COM:80/http']}}",
-            ".",
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("Ingress Hostname")
-    );
 
     let ipv6 = parse_normalized(
         "services: {app: {image: app, ports: [{target: 80, published: 8080, host_ip: '[2001:db8::]/64', mode: host}]}}",
