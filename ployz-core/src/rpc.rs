@@ -22,34 +22,89 @@ mod docker;
 pub use docker::*;
 
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const DESCRIBE_CONTRACT_CAPABILITY: &str = "ployz.rpc.describe-contract.v1";
-pub const RESET_MACHINE_CAPABILITY: &str = "ployz.machine.reset.v1";
-pub const INSPECT_MACHINE_CAPABILITY: &str = "ployz.machine.inspect.v1";
-pub const MACHINE_TOKEN_CAPABILITY: &str = "ployz.machine.token.v1";
-pub const INITIALIZE_MACHINE_CAPABILITY: &str = "ployz.machine.initialize.v1";
-pub const REGISTER_MACHINE_CAPABILITY: &str = "ployz.machine.register.v1";
-pub const JOIN_MACHINE_CAPABILITY: &str = "ployz.machine.join.v1";
-pub const LIST_MACHINES_CAPABILITY: &str = "ployz.machine.list.v1";
-pub const LIST_CONTAINERS_CAPABILITY: &str = "ployz.container.list.v1";
-pub const INSPECT_CONTAINER_CAPABILITY: &str = "ployz.container.inspect.v1";
-pub const CREATE_CONTAINER_CAPABILITY: &str = "ployz.container.create.v1";
-pub const START_CONTAINER_CAPABILITY: &str = "ployz.container.start.v1";
-pub const STOP_CONTAINER_CAPABILITY: &str = "ployz.container.stop.v1";
-pub const REMOVE_CONTAINER_CAPABILITY: &str = "ployz.container.remove.v1";
-pub const EXEC_CONTAINER_CAPABILITY: &str = "ployz.container.exec.v1";
-pub const CONTAINER_LOGS_CAPABILITY: &str = "ployz.container.logs.v1";
-pub const MACHINE_LOGS_CAPABILITY: &str = "ployz.machine.logs.v1";
-pub const UPDATE_MACHINE_CAPABILITY: &str = "ployz.machine.update.v1";
-pub const REMOVE_LOCAL_MACHINE_CAPABILITY: &str = "ployz.machine.remove-local.v1";
-pub const REMOVE_MACHINE_CAPABILITY: &str = "ployz.machine.remove.v1";
-pub const INSPECT_WIREGUARD_CAPABILITY: &str = "ployz.wireguard.inspect.v1";
-pub const LIST_IMAGES_CAPABILITY: &str = "ployz.image.list.v1";
-pub const GET_CADDY_CONFIG_CAPABILITY: &str = "ployz.caddy.config.v1";
-pub const RESERVE_DOMAIN_CAPABILITY: &str = "ployz.dns.reserve.v1";
-pub const GET_DOMAIN_CAPABILITY: &str = "ployz.dns.show.v1";
-pub const RELEASE_DOMAIN_CAPABILITY: &str = "ployz.dns.release.v1";
-pub const CREATE_DOMAIN_RECORDS_CAPABILITY: &str = "ployz.dns.records.create.v1";
 pub const UNREGISTRY_PORT: u16 = 51500;
+
+macro_rules! capability_group {
+    ($want:ident [ $($extra:expr),* ]; $($name:ident $class:ident,)*) => {
+        capability_group!(@acc $want; []; $($name $class,)* @extra $($extra,)*)
+    };
+    (@acc $want:ident; [$($kept:expr),*]; $name:ident $class:ident, $($rest:tt)*) => {
+        capability_group!(@maybe $want; [$($kept),*]; $name $class; $($rest)*)
+    };
+    (@maybe Always; [$($kept:expr),*]; $name:ident Always; $($rest:tt)*) => {
+        capability_group!(@acc Always; [$($kept,)* $name]; $($rest)*)
+    };
+    (@maybe Container; [$($kept:expr),*]; $name:ident Container; $($rest:tt)*) => {
+        capability_group!(@acc Container; [$($kept,)* $name]; $($rest)*)
+    };
+    (@maybe Caddy; [$($kept:expr),*]; $name:ident Caddy; $($rest:tt)*) => {
+        capability_group!(@acc Caddy; [$($kept,)* $name]; $($rest)*)
+    };
+    (@maybe Cluster; [$($kept:expr),*]; $name:ident Cluster; $($rest:tt)*) => {
+        capability_group!(@acc Cluster; [$($kept,)* $name]; $($rest)*)
+    };
+    (@maybe $want:ident; [$($kept:expr),*]; $name:ident $class:ident; $($rest:tt)*) => {
+        capability_group!(@acc $want; [$($kept),*]; $($rest)*)
+    };
+    (@acc $want:ident; [$($kept:expr),*]; @extra $($extra:expr,)*) => {
+        &[$($kept,)* $($extra),*]
+    };
+}
+
+macro_rules! define_capabilities {
+    (
+        package $package:literal
+        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
+        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
+    ) => {
+        $(pub const $unary_capability: &str = $unary_capability_name;)+
+        $(pub const $stream_capability: &str = $stream_capability_name;)+
+
+        /// Bidirectional exec is outside the unary catalog.
+        pub const EXEC_CONTAINER_CAPABILITY: &str = "ployz.container.exec.v1";
+
+        enum CapabilityAdvertisement {
+            Always,
+            Container,
+            Caddy,
+            Cluster,
+        }
+
+        const _: &[CapabilityAdvertisement] = &[
+            $(CapabilityAdvertisement::$unary_advertisement,)+
+            $(CapabilityAdvertisement::$stream_advertisement,)+
+        ];
+
+        /// Capabilities every Machine advertises, regardless of local adapters.
+        pub const ALWAYS_ADVERTISED_CAPABILITIES: &[&str] = capability_group!(
+            Always [];
+            $($unary_capability $unary_advertisement,)+
+            $($stream_capability $stream_advertisement,)+
+        );
+        /// Capabilities advertised when a container runtime is available.
+        ///
+        /// Includes [`EXEC_CONTAINER_CAPABILITY`], which is outside the unary catalog.
+        pub const CONTAINER_CAPABILITIES: &[&str] = capability_group!(
+            Container [EXEC_CONTAINER_CAPABILITY];
+            $($unary_capability $unary_advertisement,)+
+            $($stream_capability $stream_advertisement,)+
+        );
+        /// Capabilities advertised when a Caddyfile is configured.
+        pub const CADDY_CAPABILITIES: &[&str] = capability_group!(
+            Caddy [];
+            $($unary_capability $unary_advertisement,)+
+            $($stream_capability $stream_advertisement,)+
+        );
+        /// Capabilities advertised when the Machine participates in a Cluster store.
+        pub const CLUSTER_CAPABILITIES: &[&str] = capability_group!(
+            Cluster [];
+            $($unary_capability $unary_advertisement,)+
+            $($stream_capability $stream_advertisement,)+
+        );
+    };
+}
+
+crate::rpc_catalog!(define_capabilities);
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
 #[derive(Clone, PartialEq, Message)]
@@ -348,8 +403,8 @@ pub struct InspectWireGuardRequest {}
 macro_rules! define_request_body {
     (
         package $package:literal
-        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty),)+ }
-        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
+        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
+        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
     ) => {
         /// Commands are closed and own their typed payloads.
         ///
