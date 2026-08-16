@@ -22,48 +22,43 @@ impl ServiceObservation {
     /// Service Name carried by any member, if the observation is non-empty.
     #[must_use]
     pub fn service_name(&self) -> Option<&ServiceName> {
-        self.containers
-            .first()
-            .map(|container| &container.as_observation().service_name)
-            .or_else(|| {
-                self.hook_containers
-                    .first()
-                    .map(|container| &container.as_observation().service_name)
-            })
+        self.members()
+            .next()
+            .map(|container| &container.service_name)
     }
 
     /// True when any member carries this Service Name.
     #[must_use]
     pub fn has_name(&self, selector: &str) -> bool {
-        self.containers
-            .iter()
-            .any(|container| container.as_observation().service_name.as_str() == selector)
-            || self
-                .hook_containers
-                .iter()
-                .any(|container| container.as_observation().service_name.as_str() == selector)
+        self.members()
+            .any(|container| container.service_name.as_str() == selector)
     }
 
-    /// Every role-proven member of this Service.
-    pub fn members(&self) -> impl Iterator<Item = Container> + '_ {
+    /// Mixed observations of every role-proven member.
+    pub fn members(&self) -> impl Iterator<Item = &ContainerObservation> {
         self.containers
             .iter()
-            .cloned()
-            .map(Container::from)
-            .chain(self.hook_containers.iter().cloned().map(Container::from))
+            .map(ServiceContainer::as_observation)
+            .chain(
+                self.hook_containers
+                    .iter()
+                    .map(HookContainer::as_observation),
+            )
     }
 
-    pub fn containers_for(&self, action: ContainerAction) -> impl Iterator<Item = Container> + '_ {
-        let include_hooks = match action {
-            ContainerAction::Start => false,
-            ContainerAction::Stop | ContainerAction::Remove => true,
+    /// Service Containers for Start; both roles for Stop and Remove.
+    pub fn containers_for(
+        &self,
+        action: ContainerAction,
+    ) -> impl Iterator<Item = &ContainerObservation> {
+        let hooks = match action {
+            ContainerAction::Start => &[][..],
+            ContainerAction::Stop | ContainerAction::Remove => self.hook_containers.as_slice(),
         };
-        self.containers.iter().cloned().map(Container::from).chain(
-            include_hooks
-                .then_some(self.hook_containers.iter().cloned().map(Container::from))
-                .into_iter()
-                .flatten(),
-        )
+        self.containers
+            .iter()
+            .map(ServiceContainer::as_observation)
+            .chain(hooks.iter().map(HookContainer::as_observation))
     }
 }
 
@@ -173,7 +168,7 @@ mod tests {
     use crate::{
         ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
         MachineFailure, MachineId, MachineSuccess, PartialResult, ResolvedServiceSpec, RpcError,
-        RpcErrorCode, ServiceId, ServiceName,
+        RpcErrorCode, ServiceContainer, ServiceId, ServiceName,
     };
 
     #[test]
@@ -446,24 +441,25 @@ mod tests {
         let start = service
             .containers_for(super::ContainerAction::Start)
             .collect::<Vec<_>>();
-        assert_eq!(start.len(), 1);
-        assert!(
-            start
+        assert_eq!(
+            start,
+            service
+                .containers
                 .iter()
-                .all(|container| matches!(container, crate::Container::Service(_)))
+                .map(ServiceContainer::as_observation)
+                .collect::<Vec<_>>()
         );
         let stop = service
             .containers_for(super::ContainerAction::Stop)
             .collect::<Vec<_>>();
-        assert_eq!(stop.len(), 2);
-        assert!(matches!(stop.first(), Some(crate::Container::Service(_))));
-        assert!(matches!(stop.get(1), Some(crate::Container::Hook(_))));
-        let remove = service
-            .containers_for(super::ContainerAction::Remove)
-            .collect::<Vec<_>>();
-        assert_eq!(remove.len(), 2);
-        assert!(matches!(remove.first(), Some(crate::Container::Service(_))));
-        assert!(matches!(remove.get(1), Some(crate::Container::Hook(_))));
+        let both = service.members().collect::<Vec<_>>();
+        assert_eq!(stop, both);
+        assert_eq!(
+            service
+                .containers_for(super::ContainerAction::Remove)
+                .collect::<Vec<_>>(),
+            both
+        );
 
         let changed = PartialResult {
             successes: vec![MachineSuccess {

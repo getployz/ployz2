@@ -47,7 +47,6 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
             .unwrap()
             .first()
             .unwrap()
-            .as_observation()
             .display_name,
         "b"
     );
@@ -70,12 +69,16 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
         "api-one"
     );
     assert_eq!(select_log_containers(&service, &[]).unwrap().len(), 4);
-    assert!(matches!(
+    assert_eq!(
         select_log_containers(&service, &[hook_id])
             .unwrap()
-            .as_slice(),
-        [Container::Hook(_)]
-    ));
+            .first()
+            .map(|container| container.container_id),
+        service
+            .hook_containers
+            .first()
+            .map(|container| container.as_observation().container_id)
+    );
     let hook_only = ServiceObservation {
         service_id: service.service_id,
         containers: vec![],

@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use clap::ArgMatches;
 use ployz_core::{
-    Container, ContainerAction, ContainerRuntimeObservation, HealthObservation, LiveServices,
-    RpcError, select_service,
+    ContainerAction, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
+    HookContainer, LiveServices, RpcError, ServiceContainer, ServiceObservation, select_service,
 };
 
 use super::{Error, leaf_matches, with_client};
@@ -42,11 +42,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
             let live = client.live_services().await?;
             print_observation_warning(&live);
             println!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
-            let mut containers = live
-                .services
-                .iter()
-                .flat_map(ployz_core::ServiceObservation::members)
-                .collect::<Vec<_>>();
+            let mut containers = process_members(&live.services);
             sort_processes(&mut containers, &sort);
             for container in containers {
                 let observation = container.as_observation();
@@ -54,7 +50,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                     "{}\t{}\t{}\t{}\t{:?}",
                     observation.container_id,
                     observation.service_name,
-                    process_kind(&container),
+                    process_kind(container),
                     observation.machine_id,
                     observation.runtime
                 );
@@ -64,12 +60,40 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn sort_processes(containers: &mut [Container], sort: &str) {
+#[derive(Clone, Copy)]
+enum ProcessMember<'a> {
+    Service(&'a ServiceContainer),
+    Hook(&'a HookContainer),
+}
+
+impl ProcessMember<'_> {
+    fn as_observation(&self) -> &ContainerObservation {
+        match self {
+            Self::Service(container) => container.as_observation(),
+            Self::Hook(container) => container.as_observation(),
+        }
+    }
+}
+
+fn process_members(services: &[ServiceObservation]) -> Vec<ProcessMember<'_>> {
+    services
+        .iter()
+        .flat_map(|service| {
+            service
+                .containers
+                .iter()
+                .map(ProcessMember::Service)
+                .chain(service.hook_containers.iter().map(ProcessMember::Hook))
+        })
+        .collect()
+}
+
+fn sort_processes(containers: &mut [ProcessMember<'_>], sort: &str) {
     containers.sort_by(|left, right| {
         let left_observation = left.as_observation();
         let right_observation = right.as_observation();
         let primary = match sort {
-            "health" => health_rank(left).cmp(&health_rank(right)).then_with(|| {
+            "health" => health_rank(*left).cmp(&health_rank(*right)).then_with(|| {
                 left_observation
                     .service_name
                     .as_str()
@@ -99,16 +123,16 @@ fn sort_processes(containers: &mut [Container], sort: &str) {
     });
 }
 
-fn process_kind(container: &Container) -> &'static str {
+fn process_kind(container: ProcessMember<'_>) -> &'static str {
     match container {
-        Container::Service(_) => "ServiceContainer",
-        Container::Hook(_) => "PreDeployHook",
+        ProcessMember::Service(_) => "ServiceContainer",
+        ProcessMember::Hook(_) => "PreDeployHook",
     }
 }
 
-fn health_rank(container: &Container) -> u8 {
+fn health_rank(container: ProcessMember<'_>) -> u8 {
     match container {
-        Container::Hook(container)
+        ProcessMember::Hook(container)
             if matches!(
                 container.as_observation().runtime,
                 ContainerRuntimeObservation::Exited { code: 0 }
@@ -116,8 +140,10 @@ fn health_rank(container: &Container) -> u8 {
         {
             3
         }
-        Container::Hook(container) => runtime_health_rank(&container.as_observation().runtime),
-        Container::Service(container) => runtime_health_rank(&container.as_observation().runtime),
+        ProcessMember::Hook(container) => runtime_health_rank(&container.as_observation().runtime),
+        ProcessMember::Service(container) => {
+            runtime_health_rank(&container.as_observation().runtime)
+        }
     }
 }
 
@@ -277,11 +303,15 @@ mod tests {
             ContainerRuntimeObservation::Exited { code: 0 },
         );
 
+        let beta = ServiceContainer::try_from(beta).unwrap();
+        let alpha = ServiceContainer::try_from(alpha).unwrap();
+        let gamma = ServiceContainer::try_from(gamma).unwrap();
+        let hook = HookContainer::try_from(hook).unwrap();
         let mut containers = vec![
-            Container::from(beta),
-            Container::from(alpha),
-            Container::from(gamma),
-            Container::from(hook),
+            ProcessMember::Service(&beta),
+            ProcessMember::Service(&alpha),
+            ProcessMember::Service(&gamma),
+            ProcessMember::Hook(&hook),
         ];
         sort_processes(&mut containers, "service");
         assert_eq!(names(&containers), ["alpha", "beta", "delta", "gamma"]);
@@ -329,7 +359,7 @@ mod tests {
         assert_eq!(select_services(&services, &selectors).unwrap().len(), 1);
     }
 
-    fn names(containers: &[Container]) -> Vec<&str> {
+    fn names<'a>(containers: &'a [ProcessMember<'a>]) -> Vec<&'a str> {
         containers
             .iter()
             .map(|container| container.as_observation().service_name.as_str())

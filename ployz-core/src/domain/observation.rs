@@ -133,13 +133,15 @@ pub struct ContainerObservation {
 }
 
 /// A Service Container after its role has been proven from a mixed observation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ContainerObservation", into = "ContainerObservation")]
 pub struct ServiceContainer {
     observation: ContainerObservation,
 }
 
 /// A Hook Container after its role has been proven from a mixed observation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ContainerObservation", into = "ContainerObservation")]
 pub struct HookContainer {
     observation: ContainerObservation,
 }
@@ -187,39 +189,33 @@ impl HookContainer {
     }
 }
 
-impl Serialize for ServiceContainer {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.observation.serialize(serializer)
+impl AsRef<ContainerObservation> for ServiceContainer {
+    fn as_ref(&self) -> &ContainerObservation {
+        self.as_observation()
     }
 }
 
-impl<'de> Deserialize<'de> for ServiceContainer {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Self::try_from(ContainerObservation::deserialize(deserializer)?).map_err(D::Error::custom)
+impl AsRef<ContainerObservation> for HookContainer {
+    fn as_ref(&self) -> &ContainerObservation {
+        self.as_observation()
     }
 }
 
-impl Serialize for HookContainer {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.observation.serialize(serializer)
+impl AsRef<ContainerObservation> for ContainerObservation {
+    fn as_ref(&self) -> &Self {
+        self
     }
 }
 
-impl<'de> Deserialize<'de> for HookContainer {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Self::try_from(ContainerObservation::deserialize(deserializer)?).map_err(D::Error::custom)
+impl From<ServiceContainer> for ContainerObservation {
+    fn from(container: ServiceContainer) -> Self {
+        container.into_observation()
+    }
+}
+
+impl From<HookContainer> for ContainerObservation {
+    fn from(container: HookContainer) -> Self {
+        container.into_observation()
     }
 }
 

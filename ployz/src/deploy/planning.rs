@@ -93,10 +93,7 @@ fn plan_one_service(
     };
     if existing.is_some_and(|service| {
         service.members().any(|container| {
-            !same_service_mode_kind(
-                &container.as_observation().resolved_spec.mode,
-                &requested.mode,
-            )
+            !same_service_mode_kind(&container.resolved_spec.mode, &requested.mode)
         })
     }) {
         return Err(PlanError::ServiceModeCannotChange);
@@ -385,9 +382,8 @@ fn plan_replicated(
         let existing = by_machine
             .get_mut(&machine.machine.id)
             .and_then(Vec::pop)
-            .map(|container| {
+            .inspect(|container| {
                 used.insert(container.as_observation().container_id);
-                container
             });
         match existing {
             Some(container) if is_up_to_date(container, requested, options) => {}

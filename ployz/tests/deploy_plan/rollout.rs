@@ -53,7 +53,7 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
 }
 
 #[test]
-fn planning_does_not_count_hook_containers_as_replicas() {
+fn planning_does_not_count_hook_containers_toward_replicated_count() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
