@@ -5,13 +5,14 @@ use ployz_core::{
 };
 use thiserror::Error;
 
-pub(crate) mod apply;
+mod apply;
+mod core;
 mod exec;
-mod observe;
 mod planning;
 
-pub(crate) use apply::apply_requested;
-pub(crate) use exec::execute_operations;
+pub(crate) use apply::{apply_requested, deploy_project, deploy_scale, deploy_spec};
+#[cfg(test)]
+pub(crate) use core::requested_from_resolved;
 pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
 pub use planning::plan_deploy;
 pub(crate) use planning::volume_eligible_machine_ids;
