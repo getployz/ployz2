@@ -395,24 +395,8 @@ pub async fn connect_selected_with(
 ) -> Result<Client, ConnectError> {
     let mut last_error = None;
     for connection in &selected.connections {
-        match connector.connect(connection).await {
-            Ok(channel) => {
-                let client = Client::new(
-                    channel,
-                    connection.clone(),
-                    selected.source.clone(),
-                    connector.clone(),
-                );
-                match tokio::time::timeout(Duration::from_secs(5), client.confirm_entry()).await {
-                    Ok(Ok(())) => return Ok(client),
-                    Ok(Err(error)) => last_error = Some(error),
-                    Err(_) => {
-                        last_error = Some(ConnectError::Attempt(
-                            "entry Machine did not become ready".into(),
-                        ));
-                    }
-                }
-            }
+        match connect_one(connection, &selected.source, &connector).await {
+            Ok(client) => return Ok(client),
             Err(error) => last_error = Some(error),
         }
     }
@@ -421,6 +405,22 @@ pub async fn connect_selected_with(
         attempts: selected.connections.len(),
         last: last_error.map(Box::new),
     })
+}
+
+async fn connect_one(
+    connection: &Connection,
+    source: &ConnectionSource,
+    connector: &Arc<dyn Connector>,
+) -> Result<Client, ConnectError> {
+    let channel = connector.connect(connection).await?;
+    let client = Client::new(
+        channel,
+        connection.clone(),
+        source.clone(),
+        connector.clone(),
+    );
+    client.confirm_entry().await?;
+    Ok(client)
 }
 
 pub fn resolve_connections(
