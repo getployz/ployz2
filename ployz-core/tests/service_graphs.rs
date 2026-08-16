@@ -69,6 +69,8 @@ fn legal_unused_definitions_repeated_mounts_and_volume_aliases_remain_representa
     )
     .unwrap();
 
+    assert_eq!(graph.volume_for(&first), &data);
+    assert_eq!(graph.volume_for(&alias_mount), &alias);
     assert_eq!(graph.volumes(), &[data, alias, unused]);
     assert_eq!(graph.mounts(), &[first, repeated, alias_mount]);
 

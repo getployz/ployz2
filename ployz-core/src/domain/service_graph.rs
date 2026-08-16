@@ -67,6 +67,20 @@ impl ServiceVolumeGraph {
         &self.mounts
     }
 
+    /// Volume definition for a mount that belongs to this graph.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `mount` names a reference that is not in this graph. [`parse`](Self::parse)
+    /// rejects dangling mounts, so that is a programmer bug.
+    #[must_use]
+    pub fn volume_for(&self, mount: &ServiceMount) -> &ServiceVolume {
+        self.volumes
+            .iter()
+            .find(|volume| volume.reference == mount.volume)
+            .expect("ServiceVolumeGraph::parse rejects dangling mounts")
+    }
+
     /// Consume the graph and return its Volume definitions and mounts.
     #[must_use]
     pub fn into_parts(self) -> (Vec<ServiceVolume>, Vec<ServiceMount>) {
@@ -214,20 +228,18 @@ impl RequestedServiceSpec {
         service_id: ServiceId,
         update: ResolvedUpdateConfig,
     ) -> Result<ResolvedServiceSpec, ServiceSpecGraphError> {
-        let (volumes, mounts) = self.to_volume_graph()?.into_parts();
-        let (configs, config_mounts) = self.to_config_graph()?.into_parts();
-        let mut container = self.container.clone();
-        container.config_mounts = config_mounts;
+        self.to_volume_graph()?;
+        self.to_config_graph()?;
         Ok(ResolvedServiceSpec {
             service_id,
             name: self.name.clone(),
             mode: self.mode.clone(),
-            container,
+            container: self.container.clone(),
             placement: self.placement.clone(),
             ports: self.ports.clone(),
-            volumes,
-            mounts,
-            configs,
+            volumes: self.volumes.clone(),
+            mounts: self.mounts.clone(),
+            configs: self.configs.clone(),
             pre_deploy: self.pre_deploy.clone(),
             caddy_config: self.caddy_config.clone(),
             update,
@@ -262,19 +274,17 @@ impl ResolvedServiceSpec {
     ///
     /// Returns [`ServiceSpecGraphError`] when either graph is invalid.
     pub fn to_requested(&self) -> Result<RequestedServiceSpec, ServiceSpecGraphError> {
-        let (volumes, mounts) = self.to_volume_graph()?.into_parts();
-        let (configs, config_mounts) = self.to_config_graph()?.into_parts();
-        let mut container = self.container.clone();
-        container.config_mounts = config_mounts;
+        self.to_volume_graph()?;
+        self.to_config_graph()?;
         Ok(RequestedServiceSpec {
             name: self.name.clone(),
             mode: self.mode.clone(),
-            container,
+            container: self.container.clone(),
             placement: self.placement.clone(),
             ports: self.ports.clone(),
-            volumes,
-            mounts,
-            configs,
+            volumes: self.volumes.clone(),
+            mounts: self.mounts.clone(),
+            configs: self.configs.clone(),
             pre_deploy: self.pre_deploy.clone(),
             caddy_config: self.caddy_config.clone(),
             update: UpdateConfig {

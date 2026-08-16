@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, HostBind, MachineId,
     MachineObservation, MembershipObservation, PortPublication, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceMount, ServiceVolume,
+    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceVolumeGraph,
     SpecChange, UpdateOrder, VolumeSource, compare_specs, machine_matches_selector,
     same_service_mode_kind,
 };
@@ -147,12 +147,8 @@ fn normalize_and_validate(
         .map(|config| config.trim().to_owned())
         .filter(|config| !config.is_empty());
 
-    let (volumes, mounts) = normalized.to_volume_graph()?.into_parts();
-    let (configs, config_mounts) = normalized.to_config_graph()?.into_parts();
-    normalized.volumes = volumes;
-    normalized.mounts = mounts;
-    normalized.configs = configs;
-    normalized.container.config_mounts = config_mounts;
+    normalized.to_volume_graph()?;
+    normalized.to_config_graph()?;
     Ok(normalized)
 }
 
@@ -222,22 +218,16 @@ fn pre_deploy_operations(
 }
 
 fn has_mounted_named_volume(requested: &RequestedServiceSpec) -> bool {
-    requested.mounts.iter().any(|mount| {
-        matches!(
-            mounted_volume(requested, mount).source,
-            VolumeSource::Named { .. }
-        )
-    })
+    let graph = volume_graph(requested);
+    graph
+        .mounts()
+        .iter()
+        .any(|mount| matches!(graph.volume_for(mount).source, VolumeSource::Named { .. }))
 }
 
-pub(super) fn mounted_volume<'a>(
-    requested: &'a RequestedServiceSpec,
-    mount: &ServiceMount,
-) -> &'a ServiceVolume {
+pub(super) fn volume_graph(requested: &RequestedServiceSpec) -> ServiceVolumeGraph {
     requested
-        .volumes
-        .iter()
-        .find(|volume| volume.reference == mount.volume)
+        .to_volume_graph()
         .expect("normalize_and_validate accepted this spec")
 }
 

@@ -3,9 +3,9 @@ use std::{collections::BTreeMap, fs, num::NonZeroU32};
 use clap::ArgMatches;
 use ployz_core::{
     ContainerPath, ContainerResources, DockerVolumeName, MachineSelector, Placement,
-    PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceConfigGraph,
-    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, Ulimit, UpdateConfig, VolumeSource,
+    PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceContainerSpec,
+    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, Ulimit, UpdateConfig, VolumeSource,
 };
 
 use crate::{
@@ -68,9 +68,6 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
     let (volumes, mounts) = ServiceVolumeGraph::parse(volumes, mounts)
         .map_err(|error| Error::usage(error.to_string()))?
         .into_parts();
-    let (configs, config_mounts) = ServiceConfigGraph::parse(Vec::new(), Vec::new())
-        .map_err(|error| Error::usage(error.to_string()))?
-        .into_parts();
     Ok(RequestedServiceSpec {
         name,
         mode,
@@ -118,7 +115,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
             },
             stop_timeout_secs: None,
             sysctls: BTreeMap::new(),
-            config_mounts,
+            config_mounts: Vec::new(),
             restart: RestartPolicy::No,
         },
         placement: Placement {
@@ -130,7 +127,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         ports,
         volumes,
         mounts,
-        configs,
+        configs: Vec::new(),
         pre_deploy: None,
         caddy_config,
         update: UpdateConfig::default(),

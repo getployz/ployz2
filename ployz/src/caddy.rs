@@ -6,9 +6,8 @@ use oci_client::{
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerPath, ContainerResources, HostBind, MachinePath,
     MachineSelector, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
-    ServiceConfigGraph, ServiceContainerSpec, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig,
-    VolumeSource,
+    ServiceContainerSpec, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
 };
 use semver::Version;
 use thiserror::Error;
@@ -125,9 +124,6 @@ pub fn service_spec(
     )
     .expect("static Caddy Volume graph is valid")
     .into_parts();
-    let (configs, config_mounts) = ServiceConfigGraph::parse(Vec::new(), Vec::new())
-        .expect("empty Caddy Config graph is valid")
-        .into_parts();
     RequestedServiceSpec {
         name: ServiceName::parse(SERVICE_NAME).expect("static Service Name is valid"),
         mode: ServiceMode::Global,
@@ -159,7 +155,7 @@ pub fn service_spec(
             resources: ContainerResources::default(),
             stop_timeout_secs: None,
             sysctls: BTreeMap::new(),
-            config_mounts,
+            config_mounts: Vec::new(),
             restart: RestartPolicy::default(),
         },
         placement: Placement { machines },
@@ -170,7 +166,7 @@ pub fn service_spec(
         ],
         volumes,
         mounts,
-        configs,
+        configs: Vec::new(),
         pre_deploy: None,
         caddy_config,
         update: UpdateConfig::default(),
