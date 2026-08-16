@@ -1,10 +1,21 @@
-use std::{collections::BTreeSet, process, time::Duration};
+use std::{collections::BTreeSet, fmt::Display, process, time::Duration};
 
 use ployz_core::{
     LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation, MachineUpdate,
     MembershipObservation, PublicIpUpdate, UNREGISTRY_PORT, WireGuardPublicKey,
 };
 use ployz_testkit::{Cluster, ClusterPlan, join_request};
+
+fn image_ingest_catalog(cluster: &Cluster, index: usize, gateway: impl Display) -> bool {
+    cluster
+        .shell(
+            index,
+            &format!(
+                "curl --fail --silent --connect-timeout 1 http://{gateway}:{UNREGISTRY_PORT}/v2/"
+            ),
+        )
+        .is_ok()
+}
 
 #[tokio::test]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
@@ -541,8 +552,8 @@ async fn l3_056_image_list_preserves_machine_local_placement_and_filtering() {
 
 #[tokio::test]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
-async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable() {
-    let mut plan = ClusterPlan::new(&format!("l3-unregistry-{}", process::id()), 2).unwrap();
+async fn image_ingest_opens_on_push_and_stays_reachable_from_containers() {
+    let mut plan = ClusterPlan::new(&format!("l3-ingest-{}", process::id()), 2).unwrap();
     for machine in &mut plan.machines {
         machine
             .daemon_args
@@ -557,8 +568,8 @@ async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable
     let machines = cluster.initialize_two().await.unwrap();
     let gateway = machines.first().unwrap().subnet.gateway().0;
     assert!(
-        cluster.shell(0, "docker inspect ployz-unregistry").is_err(),
-        "helper must not start until image ingest is opened"
+        !image_ingest_catalog(&cluster, 0, gateway),
+        "ingest must not listen until image ingest is opened"
     );
     cluster.docker(0, &["pull", "alpine:3.23.3"]).unwrap();
     cluster
@@ -570,6 +581,10 @@ async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable
             "ployz image push --machine machine-1 --platform linux/amd64 busybox:1.37.0",
         )
         .unwrap();
+    assert!(
+        image_ingest_catalog(&cluster, 0, gateway),
+        "push opens ingest on the Machine Gateway"
+    );
     cluster
         .docker(
             0,
@@ -631,6 +646,10 @@ async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable
     })
     .await
     .unwrap_or_else(|_| panic!("reset did not complete:\n{}", cluster.logs(0).unwrap()));
+    assert!(
+        !image_ingest_catalog(&cluster, 0, gateway),
+        "reset must stop ingest on the Machine Gateway"
+    );
 }
 
 #[tokio::test]
@@ -686,8 +705,8 @@ async fn multi_platform_direct_push_retains_success_beside_target_failure() {
 
 #[tokio::test]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
-async fn daemon_stays_ready_when_unregistry_prerequisites_are_missing() {
-    let mut disabled = ClusterPlan::new(&format!("l3-unreg-store-{}", process::id()), 2).unwrap();
+async fn daemon_stays_ready_when_image_ingest_cannot_open() {
+    let mut disabled = ClusterPlan::new(&format!("l3-ingest-store-{}", process::id()), 2).unwrap();
     for machine in &mut disabled.machines {
         machine
             .environment
@@ -695,23 +714,14 @@ async fn daemon_stays_ready_when_unregistry_prerequisites_are_missing() {
     }
     let disabled = Cluster::create(disabled).unwrap();
     let disabled_machines = disabled.initialize_two().await.unwrap();
-    let disabled_gateway = disabled_machines[0].subnet.gateway().0;
+    let disabled_gateway = disabled_machines
+        .first()
+        .expect("initialized two machines")
+        .subnet
+        .gateway()
+        .0;
     assert!(!disabled.images(0, None).await.unwrap().containerd_store);
-    assert!(
-        disabled
-            .shell(0, "docker inspect ployz-unregistry")
-            .is_err()
-    );
-    assert!(
-        disabled
-            .shell(
-                0,
-                &format!(
-                    "curl --fail --silent --connect-timeout 1 http://{disabled_gateway}:{UNREGISTRY_PORT}/v2/"
-                ),
-            )
-            .is_err()
-    );
+    assert!(!image_ingest_catalog(&disabled, 0, disabled_gateway));
     disabled
         .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
         .unwrap();
@@ -723,7 +733,7 @@ async fn daemon_stays_ready_when_unregistry_prerequisites_are_missing() {
     );
     drop(disabled);
 
-    let mut missing = ClusterPlan::new(&format!("l3-unreg-socket-{}", process::id()), 2).unwrap();
+    let mut missing = ClusterPlan::new(&format!("l3-ingest-socket-{}", process::id()), 2).unwrap();
     for machine in &mut missing.machines {
         machine.daemon_args = vec![
             "--containerd-socket".into(),
@@ -732,19 +742,14 @@ async fn daemon_stays_ready_when_unregistry_prerequisites_are_missing() {
     }
     let missing = Cluster::create(missing).unwrap();
     let missing_machines = missing.initialize_two().await.unwrap();
-    let missing_gateway = missing_machines[0].subnet.gateway().0;
+    let missing_gateway = missing_machines
+        .first()
+        .expect("initialized two machines")
+        .subnet
+        .gateway()
+        .0;
     assert!(missing.images(0, None).await.unwrap().containerd_store);
-    assert!(missing.shell(0, "docker inspect ployz-unregistry").is_err());
-    assert!(
-        missing
-            .shell(
-                0,
-                &format!(
-                    "curl --fail --silent --connect-timeout 1 http://{missing_gateway}:{UNREGISTRY_PORT}/v2/"
-                ),
-            )
-            .is_err()
-    );
+    assert!(!image_ingest_catalog(&missing, 0, missing_gateway));
     missing
         .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
         .unwrap();
