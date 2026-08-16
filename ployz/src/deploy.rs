@@ -13,7 +13,6 @@ mod planning;
 pub(crate) use apply::{apply_requested, deploy_project, deploy_scale, deploy_spec};
 pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
 pub use planning::plan_deploy;
-pub(crate) use planning::volume_eligible_machine_ids;
 pub use ployz_core::compare_specs;
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
@@ -48,16 +47,51 @@ pub struct PlanOptions {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DeployPlan {
+pub struct ServicePlan {
     pub service_id: ServiceId,
     pub is_new_service: bool,
-    pub operation: DeployOperation,
+    pub operations: Vec<DeployOperation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeployPlan {
+    pub volume_operations: Vec<DeployOperation>,
+    pub service_plans: Vec<ServicePlan>,
+    operations: Vec<DeployOperation>,
 }
 
 impl DeployPlan {
     #[must_use]
+    pub fn new(volume_operations: Vec<DeployOperation>, service_plans: Vec<ServicePlan>) -> Self {
+        let operations = volume_operations
+            .iter()
+            .cloned()
+            .chain(
+                service_plans
+                    .iter()
+                    .flat_map(|plan| plan.operations.iter().cloned()),
+            )
+            .collect();
+        Self {
+            volume_operations,
+            service_plans,
+            operations,
+        }
+    }
+
+    #[must_use]
+    pub fn service_id(&self) -> ServiceId {
+        self.service_plans[0].service_id
+    }
+
+    #[must_use]
+    pub fn is_new_service(&self) -> bool {
+        self.service_plans[0].is_new_service
+    }
+
+    #[must_use]
     pub fn operations(&self) -> &[DeployOperation] {
-        self.operation.operations()
+        &self.operations
     }
 
     pub fn failure_outcome<E>(&self, completed_count: usize, error: E) -> Option<DeployOutcome<E>> {
@@ -88,7 +122,7 @@ impl DeployPlan {
         compensation: ReplacementCompensation<E>,
     ) -> Option<DeployOutcome<E>> {
         Self::replacement_health_failure_outcome_from(
-            self.operations(),
+            &self.operations(),
             completed_count,
             error,
             compensation,
@@ -257,4 +291,18 @@ pub enum PlanError {
     UnknownConfigName { name: String },
     #[error("mounted Service Volumes disagree about Docker Volume {name}")]
     ConflictingDockerVolumeDefinitions { name: DockerVolumeName },
+    #[error("plan service '{service}': {source}")]
+    Service {
+        service: String,
+        #[source]
+        source: Box<PlanError>,
+    },
+    #[error(
+        "Docker Volume {name} cannot be shared by global service '{global}' and replicated service '{replicated}'"
+    )]
+    MixedVolumeModes {
+        name: DockerVolumeName,
+        global: String,
+        replicated: String,
+    },
 }

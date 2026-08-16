@@ -9,9 +9,8 @@ fn missing_volume_and_config_references_are_rejected_before_placement() {
     });
     assert_eq!(
         plan_deploy(
-            &missing_volume,
+            [&missing_volume],
             &DeploySnapshot::default(),
-            service_id('a'),
             PlanOptions::default(),
         ),
         Err(PlanError::UnknownVolumeReference {
@@ -32,9 +31,8 @@ fn missing_volume_and_config_references_are_rejected_before_placement() {
         });
     assert_eq!(
         plan_deploy(
-            &missing_config,
+            [&missing_config],
             &DeploySnapshot::default(),
-            service_id('a'),
             PlanOptions::default(),
         ),
         Err(PlanError::UnknownConfigName {
@@ -48,7 +46,7 @@ fn global_volume_existing_on_one_machine_is_created_on_the_other() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
             volumes: vec![ployz::deploy::ObservedDockerVolume {
@@ -61,7 +59,6 @@ fn global_volume_existing_on_one_machine_is_created_on_the_other() {
             }],
             ..Default::default()
         },
-        service_id('a'),
         PlanOptions::default(),
     )
     .unwrap();
@@ -91,9 +88,8 @@ fn placement_seed_randomizes_equal_priority_round_robin_order() {
     };
     let targets = |placement_seed| {
         plan_deploy(
-            &requested,
+            [&requested],
             &snapshot,
-            service_id('a'),
             PlanOptions {
                 placement_seed,
                 ..Default::default()
@@ -138,12 +134,11 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
     });
 
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             ..Default::default()
         },
-        service_id('a'),
         PlanOptions::default(),
     )
     .unwrap();
@@ -184,12 +179,11 @@ fn conflicting_named_volume_aliases_are_rejected() {
 
     assert_eq!(
         plan_deploy(
-            &requested,
+            [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "first")],
                 ..Default::default()
             },
-            service_id('a'),
             PlanOptions::default(),
         ),
         Err(PlanError::ConflictingDockerVolumeDefinitions {

@@ -8,8 +8,11 @@ use std::{
 };
 
 use ployz::{
-    compose::{ComposePlanError, ComposeProject, parse_normalized, plan_compose_deploy},
-    deploy::{DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanOptions},
+    compose::{ComposeProject, parse_normalized},
+    deploy::{
+        DeployOperation, DeployPlan, DeploySnapshot, ObservedDockerVolume, PlanError, PlanOptions,
+        plan_deploy,
+    },
 };
 use ployz_core::{
     AdvertisedEndpoint, HostBind, HttpProtocol, Machine, MachineId, MachineName,
@@ -406,13 +409,12 @@ volumes:
             ..
         }
     ));
-    let plan = plan_compose_deploy(
+    let plan = plan_compose(
         &project,
         &DeploySnapshot {
             machines: vec![machine('a', "one"), machine('b', "two")],
             ..Default::default()
         },
-        PlanOptions::default(),
     )
     .unwrap();
     assert!(matches!(
@@ -658,7 +660,7 @@ secrets: {token: {x-command: "printf resolved"}}
         ..Default::default()
     };
     let original = snapshot.clone();
-    let plan = plan_compose_deploy(&project, &snapshot, PlanOptions::default()).unwrap();
+    let plan = plan_compose(&project, &snapshot).unwrap();
     assert_eq!(snapshot, original);
     assert_eq!(plan.volume_operations.len(), 1);
     assert_eq!(plan.service_plans.len(), 2);
@@ -682,7 +684,7 @@ secrets: {token: {x-command: "printf resolved"}}
         "planning must not mutate the unresolved project"
     );
     assert!(plan.service_plans.iter().any(|service_plan| {
-        service_plan.operations().iter().any(|operation| {
+        service_plan.operations.iter().any(|operation| {
             matches!(
                 operation,
                 DeployOperation::RunContainer { spec, .. }
@@ -691,11 +693,11 @@ secrets: {token: {x-command: "printf resolved"}}
         })
     }));
     assert!(matches!(
-        plan.service_plans.get(1).unwrap().operations(),
+        plan.service_plans.get(1).unwrap().operations.as_slice(),
         [DeployOperation::RunContainer { .. }]
     ));
     assert!(matches!(
-        plan.service_plans.first().unwrap().operations(),
+        plan.service_plans.first().unwrap().operations.as_slice(),
         [
             DeployOperation::RunHook { .. },
             DeployOperation::RunContainer { .. }
@@ -746,7 +748,7 @@ volumes: {data: {name: demo_data}}
         machines: vec![machine('a', "one"), machine('b', "two")],
         ..Default::default()
     };
-    let plan = plan_compose_deploy(&replicated, &snapshot, PlanOptions::default()).unwrap();
+    let plan = plan_compose(&replicated, &snapshot).unwrap();
     assert_eq!(plan.volume_operations.len(), 1);
     let Some(DeployOperation::CreateVolume {
         machine_id: anchor,
@@ -757,7 +759,7 @@ volumes: {data: {name: demo_data}}
     };
     assert_eq!(anchor, &machine('b', "two").machine.id);
     assert!(plan.service_plans.iter().all(|service| matches!(
-        service.operations(),
+        service.operations.as_slice(),
         [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
     )));
 
@@ -781,15 +783,14 @@ volumes: {data: {name: demo_data}}
             options: BTreeMap::new(),
         })
         .collect();
-    let existing_on_both =
-        plan_compose_deploy(&replicated, &existing_snapshot, PlanOptions::default()).unwrap();
+    let existing_on_both = plan_compose(&replicated, &existing_snapshot).unwrap();
     assert!(existing_on_both.volume_operations.is_empty());
     assert!(
         existing_on_both
             .service_plans
             .iter()
             .all(|service| matches!(
-                service.operations(),
+                service.operations.as_slice(),
                 [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
             ))
     );
@@ -810,8 +811,7 @@ volumes: {a: {}, b: {}}
         ".",
     )
     .unwrap();
-    let connected_plan =
-        plan_compose_deploy(&connected, &snapshot, PlanOptions::default()).unwrap();
+    let connected_plan = plan_compose(&connected, &snapshot).unwrap();
     assert_eq!(connected_plan.volume_operations.len(), 2);
     assert!(
         connected_plan
@@ -823,7 +823,7 @@ volumes: {a: {}, b: {}}
             ))
     );
     assert!(connected_plan.service_plans.iter().all(|service| matches!(
-        service.operations(),
+        service.operations.as_slice(),
         [DeployOperation::RunContainer { machine_id, .. }] if machine_id == anchor
     )));
 
@@ -844,7 +844,7 @@ volumes:
     )
     .unwrap();
     let existing_machine = machine('b', "two").machine.id;
-    let constrained_plan = plan_compose_deploy(
+    let constrained_plan = plan_compose(
         &constrained,
         &DeploySnapshot {
             machines: snapshot.machines.clone(),
@@ -858,7 +858,6 @@ volumes:
             }],
             ..Default::default()
         },
-        PlanOptions::default(),
     )
     .unwrap();
     assert!(matches!(
@@ -882,9 +881,7 @@ volumes: {data: {name: shared}}
         ".",
     )
     .unwrap();
-    assert!(
-        plan_compose_deploy(&different_replica_counts, &snapshot, PlanOptions::default()).is_ok()
-    );
+    assert!(plan_compose(&different_replica_counts, &snapshot).is_ok());
 
     let disjoint = parse_normalized(
         r#"
@@ -897,11 +894,11 @@ volumes: {data: {name: shared}}
     )
     .unwrap();
     assert!(matches!(
-        plan_compose_deploy(&disjoint, &snapshot, PlanOptions::default()),
-        Err(ComposePlanError::Service {
-            source: ployz::deploy::PlanError::NoEligibleMachines,
+        plan_compose(&disjoint, &snapshot),
+        Err(PlanError::Service {
+            source,
             ..
-        })
+        }) if matches!(*source, PlanError::NoEligibleMachines)
     ));
 
     let mixed = parse_normalized(
@@ -920,10 +917,23 @@ volumes: {data: {name: shared}}
     )
     .unwrap();
     assert!(matches!(
-        plan_compose_deploy(&mixed, &snapshot, PlanOptions::default()),
-        Err(ComposePlanError::MixedVolumeModes { name, global, replicated })
+        plan_compose(&mixed, &snapshot),
+        Err(PlanError::MixedVolumeModes { name, global, replicated })
             if name.as_str() == "shared" && global == "everywhere" && replicated == "singleton"
     ));
+}
+
+fn plan_compose(
+    project: &ComposeProject,
+    snapshot: &DeploySnapshot,
+) -> Result<DeployPlan, PlanError> {
+    let mut resolved = project.clone();
+    resolved.resolve_secrets().expect("resolve secrets");
+    plan_deploy(
+        resolved.dependency_order().expect("dependency order"),
+        snapshot,
+        PlanOptions::default(),
+    )
 }
 
 fn machine(hex: char, name: &str) -> MachineObservation {

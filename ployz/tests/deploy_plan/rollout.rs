@@ -33,13 +33,7 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
         ..Default::default()
     };
 
-    let plan = plan_deploy(
-        &requested,
-        &snapshot,
-        service_id('f'),
-        PlanOptions::default(),
-    )
-    .unwrap();
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(matches!(
         plan.operations(),
@@ -64,12 +58,11 @@ fn sequence_failure_keeps_completed_failed_and_unexecuted_operations_exact() {
         replicas: NonZeroU32::new(3).unwrap(),
     });
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             ..Default::default()
         },
-        service_id('a'),
         PlanOptions::default(),
     )
     .unwrap();
@@ -104,13 +97,14 @@ fn public_outcome_counts_follow_the_shallow_operations_view() {
         machine_id,
         container_id: container_id('c'),
     };
-    let plan = DeployPlan {
-        service_id: service_id('a'),
-        is_new_service: false,
-        operation: DeployOperation::Sequence {
+    let plan = DeployPlan::new(
+        Vec::new(),
+        vec![ServicePlan {
+            service_id: service_id('a'),
+            is_new_service: false,
             operations: vec![nested.clone(), tail.clone()],
-        },
-    };
+        }],
+    );
 
     let outcome = plan.failure_outcome(1, "failed").unwrap();
 
@@ -135,12 +129,7 @@ fn duplicate_service_names_are_reported_without_selecting_a_winner() {
     };
 
     assert_eq!(
-        plan_deploy(
-            &requested,
-            &snapshot,
-            service_id('f'),
-            PlanOptions::default(),
-        ),
+        plan_deploy([&requested], &snapshot, PlanOptions::default(),),
         Err(PlanError::AmbiguousService {
             matches: vec![service_id('a'), service_id('d')],
         })
@@ -154,12 +143,11 @@ fn unmatched_placement_returns_no_eligible_machines() {
 
     assert_eq!(
         plan_deploy(
-            &requested,
+            [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "first")],
                 ..Default::default()
             },
-            service_id('a'),
             PlanOptions::default(),
         ),
         Err(PlanError::NoEligibleMachines)
@@ -171,12 +159,11 @@ fn global_missing_volume_is_created_on_every_eligible_machine_before_containers(
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
             ..Default::default()
         },
-        service_id('a'),
         PlanOptions::default(),
     )
     .unwrap();
@@ -200,13 +187,12 @@ fn force_recreate_replaces_an_otherwise_matching_container() {
     let requested = requested(ServiceMode::Global);
     let current_service_id = service_id('a');
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![container('b', '1', &requested, &current_service_id)],
             ..Default::default()
         },
-        service_id('f'),
         PlanOptions {
             force_recreate: true,
             skip_health_monitor: false,
@@ -234,13 +220,12 @@ fn no_op_plan_does_not_run_a_pre_deploy_hook() {
     });
     let current_service_id = service_id('a');
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![container('b', '1', &requested, &current_service_id)],
             ..Default::default()
         },
-        service_id('f'),
         PlanOptions::default(),
     )
     .unwrap();
@@ -256,13 +241,12 @@ fn replacement_failure_can_record_its_only_allowed_compensation() {
     current.container.image = "ghcr.io/getployz/api:old".into();
     let current_service_id = service_id('a');
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![container('b', '1', &current, &current_service_id)],
             ..Default::default()
         },
-        service_id('f'),
         PlanOptions::default(),
     )
     .unwrap();
@@ -298,13 +282,12 @@ fn stop_first_failure_can_record_that_a_stopped_old_container_was_not_restarted(
     let mut stopped = container('b', '1', &current, &service_id('a'));
     stopped.runtime = ContainerRuntimeObservation::Exited { code: 1 };
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![stopped],
             ..Default::default()
         },
-        service_id('f'),
         PlanOptions::default(),
     )
     .unwrap();
@@ -342,13 +325,12 @@ fn existing_service_mode_cannot_change() {
 
     assert_eq!(
         plan_deploy(
-            &requested,
+            [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "first")],
                 containers: vec![container('b', '1', &current, &current_service_id)],
                 ..Default::default()
             },
-            service_id('f'),
             PlanOptions::default(),
         ),
         Err(PlanError::ServiceModeCannotChange)
@@ -371,7 +353,7 @@ fn incompatible_volume_excludes_only_its_machine() {
     });
 
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
             volumes: vec![ployz::deploy::ObservedDockerVolume {
@@ -384,7 +366,6 @@ fn incompatible_volume_excludes_only_its_machine() {
             }],
             ..Default::default()
         },
-        service_id('a'),
         PlanOptions::default(),
     )
     .unwrap();
@@ -411,7 +392,7 @@ fn multi_replica_named_volume_replacement_defaults_to_start_first() {
     current.container.image = "ghcr.io/getployz/api:old".into();
     let current_service_id = service_id('a');
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![container('b', '1', &current, &current_service_id)],
@@ -424,7 +405,6 @@ fn multi_replica_named_volume_replacement_defaults_to_start_first() {
                 options: Default::default(),
             }],
         },
-        service_id('f'),
         PlanOptions::default(),
     )
     .unwrap();
@@ -448,7 +428,7 @@ fn global_replacement_stops_other_containers_with_conflicting_host_ports_first()
     let current_service_id = service_id('a');
 
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![
@@ -457,7 +437,6 @@ fn global_replacement_stops_other_containers_with_conflicting_host_ports_first()
             ],
             ..Default::default()
         },
-        service_id('f'),
         PlanOptions::default(),
     )
     .unwrap();
@@ -483,12 +462,11 @@ fn successful_outcome_has_no_failed_or_unexecuted_operation() {
         replicas: NonZeroU32::new(2).unwrap(),
     });
     let plan = plan_deploy(
-        &requested,
+        [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             ..Default::default()
         },
-        service_id('a'),
         PlanOptions::default(),
     )
     .unwrap();

@@ -1,30 +1,57 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName, HostBind,
-    MachineId, MachineObservation, MembershipObservation, PortPublication, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, ServiceMode, ServiceVolume, SpecChange,
-    UpdateOrder, VolumeSource, compare_specs, machine_matches_selector, same_service_mode_kind,
+    ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeId,
+    DockerVolumeName, HostBind, MachineId, MachineObservation, MembershipObservation,
+    PortPublication, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId,
+    ServiceMode, ServiceVolume, SpecChange, UpdateOrder, VolumeSource, compare_specs,
+    machine_matches_selector, same_service_mode_kind,
 };
 
 use super::{
     DeployOperation, DeployPlan, DeploySnapshot, ObservedDockerVolume, PlanError, PlanOptions,
-    ReplacementOperation,
+    ReplacementOperation, ServicePlan,
 };
 
-pub fn plan_deploy(
-    requested: &RequestedServiceSpec,
+pub fn plan_deploy<'a>(
+    requested: impl IntoIterator<Item = &'a RequestedServiceSpec>,
     snapshot: &DeploySnapshot,
-    new_service_id: ServiceId,
     options: PlanOptions,
 ) -> Result<DeployPlan, PlanError> {
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
-    let requested = normalize_and_validate(requested)?;
-    let requested = &requested;
+    let requested = requested
+        .into_iter()
+        .map(normalize_and_validate)
+        .collect::<Result<Vec<_>, _>>()?;
+    let volume_uses = named_volume_uses(&requested);
+    reject_mixed_volume_modes(&volume_uses)?;
     // A Deploy is a finite calculation over this supplied snapshot, never a reconciliation loop.
-    let mut machines = eligible_machines(requested, snapshot, options);
-    let mut operations = volume_operations(requested, snapshot, &mut machines)?;
+    let mut snapshot = snapshot.clone();
+    let mut volume_operations =
+        prepare_shared_replicated_volumes(&volume_uses, &mut snapshot, options)?;
+    let multi = requested.len() > 1;
+    let mut service_plans = Vec::with_capacity(requested.len());
+    for spec in &requested {
+        let (created, service_plan) = plan_one_service(spec, &snapshot, options)
+            .map_err(|source| service_error(multi, spec.name.as_str(), source))?;
+        for operation in &created {
+            if let DeployOperation::CreateVolume { machine_id, volume } = operation {
+                remember_volume(&mut snapshot, machine_id, volume);
+            }
+        }
+        volume_operations.extend(created);
+        service_plans.push(service_plan);
+    }
+    Ok(DeployPlan::new(volume_operations, service_plans))
+}
 
+fn plan_one_service(
+    requested: &RequestedServiceSpec,
+    snapshot: &DeploySnapshot,
+    options: PlanOptions,
+) -> Result<(Vec<DeployOperation>, ServicePlan), PlanError> {
+    let mut machines = eligible_machines(requested, snapshot, options);
+    let volumes = volume_operations(requested, snapshot, &mut machines)?;
     let matching_service_ids = snapshot
         .containers
         .iter()
@@ -32,7 +59,7 @@ pub fn plan_deploy(
         .map(|container| container.service_id)
         .collect::<BTreeSet<_>>();
     let (service_id, is_new_service) = match matching_service_ids.len() {
-        0 => (new_service_id, true),
+        0 => (ServiceId::random(), true),
         1 => (
             matching_service_ids
                 .into_iter()
@@ -66,33 +93,187 @@ pub fn plan_deploy(
         ),
         ServiceMode::Global => plan_global(requested, snapshot, &service_id, machines, options),
     };
-    operations.extend(pre_deploy_operations(
-        requested,
-        snapshot,
-        &service_id,
-        &service_operations,
-    ));
+    let mut operations =
+        pre_deploy_operations(requested, snapshot, &service_id, &service_operations);
     operations.extend(service_operations);
-
-    Ok(DeployPlan {
-        service_id,
-        is_new_service,
-        operation: DeployOperation::Sequence { operations },
-    })
+    Ok((
+        volumes,
+        ServicePlan {
+            service_id,
+            is_new_service,
+            operations,
+        },
+    ))
 }
 
-pub(crate) fn volume_eligible_machine_ids(
+fn volume_eligible_machine_ids(
     requested: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     options: PlanOptions,
 ) -> Result<Vec<MachineId>, PlanError> {
-    let requested = normalize_and_validate(requested)?;
-    let mut machines = eligible_machines(&requested, snapshot, options);
-    volume_constraints(&requested, snapshot, &mut machines)?;
+    let mut machines = eligible_machines(requested, snapshot, options);
+    volume_constraints(requested, snapshot, &mut machines)?;
     Ok(machines
         .into_iter()
         .map(|machine| machine.machine.id)
         .collect())
+}
+
+fn service_error(multi: bool, service: &str, source: PlanError) -> PlanError {
+    if multi {
+        PlanError::Service {
+            service: service.into(),
+            source: Box::new(source),
+        }
+    } else {
+        source
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NamedVolumeUse<'a> {
+    service_name: &'a str,
+    service: &'a RequestedServiceSpec,
+    volume: &'a ServiceVolume,
+    global: bool,
+}
+
+fn named_volume_uses(
+    requested: &[RequestedServiceSpec],
+) -> BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>> {
+    let mut uses = BTreeMap::<DockerVolumeName, Vec<NamedVolumeUse<'_>>>::new();
+    for service in requested {
+        let service_name = service.name.as_str();
+        for mount in &service.mounts {
+            let Some(volume) = service
+                .volumes
+                .iter()
+                .find(|volume| volume.reference == mount.volume)
+            else {
+                continue;
+            };
+            let VolumeSource::Named { name, .. } = &volume.source else {
+                continue;
+            };
+            let uses = uses.entry(name.clone()).or_default();
+            if !uses
+                .iter()
+                .any(|volume_use| volume_use.service_name == service_name)
+            {
+                uses.push(NamedVolumeUse {
+                    service_name,
+                    service,
+                    volume,
+                    global: matches!(service.mode, ServiceMode::Global),
+                });
+            }
+        }
+    }
+    uses
+}
+
+fn reject_mixed_volume_modes(
+    volume_uses: &BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>>,
+) -> Result<(), PlanError> {
+    for (name, uses) in volume_uses {
+        if let (Some(global), Some(replicated)) = (
+            uses.iter().find(|volume_use| volume_use.global),
+            uses.iter().find(|volume_use| !volume_use.global),
+        ) {
+            return Err(PlanError::MixedVolumeModes {
+                name: name.clone(),
+                global: global.service_name.into(),
+                replicated: replicated.service_name.into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn prepare_shared_replicated_volumes(
+    volume_uses: &BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>>,
+    snapshot: &mut DeploySnapshot,
+    options: PlanOptions,
+) -> Result<Vec<DeployOperation>, PlanError> {
+    let mut operations = Vec::new();
+    let mut remaining = volume_uses
+        .iter()
+        .filter(|(_, uses)| uses.len() > 1 && uses.iter().all(|volume_use| !volume_use.global))
+        .collect::<Vec<_>>();
+    while !remaining.is_empty() {
+        let mut component = vec![remaining.remove(0)];
+        while let Some(index) = remaining.iter().position(|(_, candidate_uses)| {
+            candidate_uses.iter().any(|candidate| {
+                component.iter().any(|(_, component_uses)| {
+                    component_uses
+                        .iter()
+                        .any(|volume_use| volume_use.service_name == candidate.service_name)
+                })
+            })
+        }) {
+            component.push(remaining.remove(index));
+        }
+        let services = component
+            .iter()
+            .flat_map(|(_, uses)| uses.iter())
+            .map(|volume_use| (volume_use.service_name, volume_use.service))
+            .collect::<BTreeMap<_, _>>();
+        let mut services = services.into_iter();
+        let (first_service_name, first_service) = services
+            .next()
+            .expect("shared Volume component has at least two services");
+        let mut eligible = volume_eligible_machine_ids(first_service, snapshot, options)
+            .map_err(|source| service_error(true, first_service_name, source))?;
+        for (service_name, service) in services {
+            let other_eligible = volume_eligible_machine_ids(service, snapshot, options)
+                .map_err(|source| service_error(true, service_name, source))?;
+            eligible.retain(|machine_id| other_eligible.contains(machine_id));
+        }
+        if eligible.is_empty() {
+            return Err(service_error(
+                true,
+                first_service_name,
+                PlanError::NoEligibleMachines,
+            ));
+        }
+        let machine_id = eligible.remove(0);
+        for (name, uses) in component {
+            snapshot
+                .volumes
+                .retain(|volume| volume.id.name != *name || volume.id.machine_id == machine_id);
+            if !snapshot
+                .volumes
+                .iter()
+                .any(|volume| volume.id.machine_id == machine_id && volume.id.name == *name)
+            {
+                let first_use = uses.first().expect("shared Volume has at least two uses");
+                remember_volume(snapshot, &machine_id, first_use.volume);
+                operations.push(DeployOperation::CreateVolume {
+                    machine_id,
+                    volume: first_use.volume.clone(),
+                });
+            }
+        }
+    }
+    Ok(operations)
+}
+
+fn remember_volume(snapshot: &mut DeploySnapshot, machine_id: &MachineId, volume: &ServiceVolume) {
+    let VolumeSource::Named { name, driver, .. } = &volume.source else {
+        return;
+    };
+    snapshot.volumes.push(ObservedDockerVolume {
+        id: DockerVolumeId {
+            machine_id: *machine_id,
+            name: name.clone(),
+        },
+        driver: driver
+            .as_ref()
+            .map_or_else(|| "local".into(), |driver| driver.name.clone()),
+        options: driver
+            .as_ref()
+            .map_or_else(Default::default, |driver| driver.options.clone()),
+    });
 }
 
 fn eligible_machines<'a>(
