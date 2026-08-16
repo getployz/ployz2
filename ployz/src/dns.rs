@@ -248,7 +248,7 @@ fn join_addresses(addresses: &[IpAddr]) -> String {
 fn custom_ingress_targets<'a>(
     specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
     cluster_domain: Option<&str>,
-) -> BTreeMap<IngressHost, bool> {
+) -> BTreeMap<&'a IngressHost, bool> {
     let mut targets = BTreeMap::new();
     for spec in specs {
         for port in &spec.ports {
@@ -265,7 +265,7 @@ fn custom_ingress_targets<'a>(
             };
             let mentions_certificates = *http_protocol == HttpProtocol::Https;
             targets
-                .entry(hostname.clone())
+                .entry(hostname)
                 .and_modify(|mentions| *mentions |= mentions_certificates)
                 .or_insert(mentions_certificates);
         }
@@ -297,19 +297,17 @@ fn miss_warning(
     }))
 }
 
-/// Collect Deploy warnings for custom Ingress Hostnames that miss this Cluster.
-pub fn ingress_dns_warnings<'a>(
-    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
-    cluster_domain: Option<&str>,
+fn warnings_from_targets(
+    targets: BTreeMap<&IngressHost, bool>,
     cluster_addresses: &[IpAddr],
     mut resolve: impl FnMut(&IngressHost) -> Vec<IpAddr>,
 ) -> Vec<IngressDnsWarning> {
-    custom_ingress_targets(specs, cluster_domain)
+    targets
         .into_iter()
         .filter_map(|(hostname, mentions_certificates)| {
             miss_warning(
-                &hostname,
-                &unique_addresses(resolve(&hostname)),
+                hostname,
+                &unique_addresses(resolve(hostname)),
                 cluster_addresses,
                 mentions_certificates,
             )
@@ -317,7 +315,21 @@ pub fn ingress_dns_warnings<'a>(
         .collect()
 }
 
-fn unique_addresses(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
+/// Collect Deploy warnings for custom Ingress Hostnames that miss this Cluster.
+pub fn ingress_dns_warnings<'a>(
+    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
+    cluster_domain: Option<&str>,
+    cluster_addresses: &[IpAddr],
+    resolve: impl FnMut(&IngressHost) -> Vec<IpAddr>,
+) -> Vec<IngressDnsWarning> {
+    warnings_from_targets(
+        custom_ingress_targets(specs, cluster_domain),
+        cluster_addresses,
+        resolve,
+    )
+}
+
+fn unique_addresses(addresses: impl IntoIterator<Item = IpAddr>) -> Vec<IpAddr> {
     addresses
         .into_iter()
         .collect::<BTreeSet<_>>()
@@ -328,7 +340,7 @@ fn unique_addresses(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
 /// Resolve A/AAAA addresses for an Ingress Hostname. Lookup failure is an empty set.
 pub async fn resolve_ingress_addresses(hostname: &IngressHost) -> Vec<IpAddr> {
     match tokio::net::lookup_host((hostname.as_str(), 0)).await {
-        Ok(addresses) => unique_addresses(addresses.map(|address| address.ip()).collect()),
+        Ok(addresses) => unique_addresses(addresses.map(|address| address.ip())),
         Err(_) => Vec::new(),
     }
 }
@@ -339,18 +351,17 @@ pub async fn resolve_ingress_dns_warnings<'a>(
     cluster_domain: Option<&str>,
     cluster_addresses: &[IpAddr],
 ) -> Vec<IngressDnsWarning> {
-    let mut warnings = Vec::new();
-    for (hostname, mentions_certificates) in custom_ingress_targets(specs, cluster_domain) {
-        if let Some(warning) = miss_warning(
-            &hostname,
-            &resolve_ingress_addresses(&hostname).await,
-            cluster_addresses,
-            mentions_certificates,
-        ) {
-            warnings.push(warning);
-        }
+    let specs: Vec<_> = specs.into_iter().collect();
+    let targets = custom_ingress_targets(specs.iter().copied(), cluster_domain);
+    let mut resolved = BTreeMap::new();
+    for hostname in targets.keys().copied() {
+        resolved.insert(hostname, resolve_ingress_addresses(hostname).await);
     }
-    warnings
+    warnings_from_targets(targets, cluster_addresses, |hostname| {
+        resolved
+            .remove(hostname)
+            .expect("custom Ingress Hostname was resolved before warning")
+    })
 }
 
 #[cfg(test)]

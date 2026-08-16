@@ -15,8 +15,8 @@ use crate::{
 use super::{
     DeployOperation, DeployOutcome, ExecutionError, FailedOperation, ReplacementOperation,
     pipeline::{
-        DeployPreview, DeployWarning, PushOutcome, execute_deploy, list_machines, plan_options,
-        plan_project, plan_scale, plan_spec, push_project_images,
+        DeployPreview, PushOutcome, execute_deploy, list_machines, plan_options, plan_project,
+        plan_scale, plan_spec, push_project_images,
     },
 };
 
@@ -96,12 +96,8 @@ fn print_pushed_images(outcome: &PushOutcome) {
 
 fn print_warnings(preview: &DeployPreview) {
     for warning in &preview.warnings {
-        eprintln!("{}", warning_line(warning));
+        eprintln!("WARNING: {warning}");
     }
-}
-
-fn warning_line(warning: &DeployWarning) -> String {
-    format!("WARNING: {warning}")
 }
 
 fn confirm() -> Result<bool, Failure> {
@@ -197,6 +193,7 @@ fn operation_list(operations: &[DeployOperation]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::pipeline::DeployWarning;
     use super::*;
     use crate::dns::ingress_dns_warnings;
 
@@ -242,7 +239,7 @@ mod tests {
             preview
                 .warnings
                 .iter()
-                .map(warning_line)
+                .map(|warning| format!("WARNING: {warning}"))
                 .collect::<Vec<_>>(),
             [
                 "WARNING: Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster.",
@@ -253,7 +250,7 @@ mod tests {
             !preview
                 .warnings
                 .iter()
-                .map(warning_line)
+                .map(|warning| format!("WARNING: {warning}"))
                 .any(|line| line.contains("plain.example.com")
                     && line.to_ascii_lowercase().contains("certificate"))
         );
