@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:1
 # Host binaries: cargo build --locked --release --package ployz --package ployzd
 # then install them to ployz-testkit/prebuilt/{ployz,ployzd}.
+# Runtime glibc must match GitHub-hosted Ubuntu 24.04 (host cargo --release).
 FROM docker:29.1.3-dind AS docker-bin
 
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl dnsmasq dnsutils docker.io iproute2 iptables openssh-client openssh-server skopeo socat sqlite3 util-linux wireguard-tools \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl dnsmasq dnsutils docker.io iproute2 iptables openssh-client openssh-server skopeo socat sqlite3 util-linux wireguard-tools \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=docker-bin /usr/local/bin/containerd /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/ctr /usr/local/bin/docker /usr/local/bin/docker-init /usr/local/bin/docker-proxy /usr/local/bin/dockerd /usr/local/bin/runc /usr/local/bin/
 RUN mkdir -p /opt/ployz/images \

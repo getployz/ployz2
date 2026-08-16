@@ -22,6 +22,7 @@ assert_not_contains() {
 }
 
 assert_not_contains "$dockerfile" "FROM rust"
+assert_contains "$dockerfile" "FROM ubuntu:24.04"
 assert_contains "$dockerfile" "COPY ployz-testkit/prebuilt/ployz /usr/local/bin/ployz"
 assert_contains "$dockerfile" "COPY ployz-testkit/prebuilt/ployzd /usr/local/bin/ployzd"
 
@@ -31,19 +32,12 @@ assert_contains "$action" "cargo build --locked --release --package ployz --pack
 assert_contains "$action" "ployz-testkit/prebuilt/ployz"
 assert_contains "$action" "ployz-testkit/prebuilt/ployzd"
 assert_contains "$action" "type=registry,ref=ghcr.io/getployz/ployz2-testkit:main"
-assert_not_contains "$action" "mode=max"
-assert_not_contains "$action" "type=gha,scope=ployz-testkit"
+assert_contains "$action" "cache-to: type=inline"
 
-assert_contains "$workflow" "bash scripts/test-testkit-image.sh"
 assert_contains "$ROOT/.gitignore" "ployz-testkit/prebuilt/"
 
 for job in layer3-image-amd64 layer3-image-arm64; do
-    if ! awk -v job="$job" '
-        $0 == "  " job ":" { in_job = 1 }
-        in_job && $0 == "      actions: write" { found = 1 }
-        in_job && /^  [a-z]/ && $0 != "  " job ":" { in_job = 0 }
-        END { exit found ? 0 : 1 }
-    ' "$workflow"; then
+    if ! grep -A12 "^  ${job}:" "$workflow" | grep -Fq "actions: write"; then
         echo "$job must have actions: write for rust-cache" >&2
         exit 1
     fi

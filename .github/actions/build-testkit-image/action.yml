@@ -36,6 +36,7 @@ runs:
         provenance: false
         tags: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-${{ inputs.arch }}
         cache-from: type=registry,ref=ghcr.io/getployz/ployz2-testkit:main
+        cache-to: type=inline
     - name: Boot the native image
       shell: bash
       env:
