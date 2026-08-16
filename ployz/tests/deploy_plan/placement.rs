@@ -397,6 +397,31 @@ fn global_named_volume_replacement_defaults_to_stop_first() {
 }
 
 #[test]
+fn two_services_sharing_a_named_volume_create_it_once() {
+    let mut first = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    first.name = ServiceName::parse("first").unwrap();
+    add_named_volume(&mut first, "data");
+    let mut second = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    second.name = ServiceName::parse("second").unwrap();
+    add_named_volume(&mut second, "data");
+    let plan = plan_deploy(
+        [&first, &second],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(plan.volume_operations.len(), 1);
+}
+
+#[test]
 fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(2).unwrap(),
