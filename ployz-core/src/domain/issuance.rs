@@ -5,7 +5,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use super::{ClusterDnsVerdict, cluster_dns_verdict};
+use super::ClusterDnsVerdict;
 use crate::IngressHost;
 
 /// Delay after the first refusal or authority failure.
@@ -14,11 +14,22 @@ pub const ISSUANCE_BACKOFF_BASE: Duration = Duration::from_secs(60);
 /// Longest delay between attempts. 4/day stays far below 5 failed validations/hour.
 pub const ISSUANCE_BACKOFF_CAP: Duration = Duration::from_secs(6 * 60 * 60);
 
+/// Which failure earned the shared backoff clock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IssuanceFailure {
+    Resolve(ClusterDnsVerdict),
+    Authority,
+}
+
 /// What the issuance loop should do for one wanted hostname.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IssuanceAction {
     Nothing,
-    Refuse,
+    Refuse {
+        failures: u32,
+        next_attempt_at: SystemTime,
+        last_failure: IssuanceFailure,
+    },
     Order,
 }
 
@@ -27,7 +38,8 @@ pub enum IssuanceAction {
 pub struct IssuanceInput {
     pub has_material: bool,
     pub next_attempt_at: Option<SystemTime>,
-    pub last_resolve_verdict: Option<ClusterDnsVerdict>,
+    pub last_failure: Option<IssuanceFailure>,
+    pub failures: u32,
     pub verdict: ClusterDnsVerdict,
     pub now: SystemTime,
 }
@@ -38,13 +50,27 @@ pub fn issuance_action(input: IssuanceInput) -> IssuanceAction {
     if input.has_material {
         return IssuanceAction::Nothing;
     }
-    if waiting(input) && !resolve_backoff_cleared(input) {
+    let waiting = input
+        .next_attempt_at
+        .is_some_and(|deadline| deadline > input.now);
+    let resolve_cleared = matches!(
+        input.last_failure,
+        Some(IssuanceFailure::Resolve(last)) if last != input.verdict
+    );
+    if waiting && !resolve_cleared {
         return IssuanceAction::Nothing;
     }
     match input.verdict {
         ClusterDnsVerdict::PointsAtCluster => IssuanceAction::Order,
-        ClusterDnsVerdict::DoesNotResolve | ClusterDnsVerdict::ResolvesElsewhere => {
-            IssuanceAction::Refuse
+        verdict @ (ClusterDnsVerdict::DoesNotResolve | ClusterDnsVerdict::ResolvesElsewhere) => {
+            let last_failure = IssuanceFailure::Resolve(verdict);
+            let (failures, next_attempt_at) =
+                issuance_failure_clock(input.failures, input.last_failure, last_failure, input.now);
+            IssuanceAction::Refuse {
+                failures,
+                next_attempt_at,
+                last_failure,
+            }
         }
     }
 }
@@ -59,36 +85,45 @@ pub fn issuance_backoff(failures: u32) -> Duration {
     Duration::from_secs(seconds.min(ISSUANCE_BACKOFF_CAP.as_secs()))
 }
 
+/// Next shared clock after a refusal or an authority failure.
+#[must_use]
+pub fn issuance_failure_clock(
+    failures: u32,
+    last_failure: Option<IssuanceFailure>,
+    new_failure: IssuanceFailure,
+    now: SystemTime,
+) -> (u32, SystemTime) {
+    let reset = match (last_failure, new_failure) {
+        (Some(IssuanceFailure::Resolve(old)), IssuanceFailure::Resolve(new)) => old != new,
+        (Some(IssuanceFailure::Resolve(_)), IssuanceFailure::Authority)
+        | (Some(IssuanceFailure::Authority), IssuanceFailure::Resolve(_))
+        | (None, _) => true,
+        (Some(IssuanceFailure::Authority), IssuanceFailure::Authority) => false,
+    };
+    let failures = if reset { 1 } else { failures.saturating_add(1) };
+    (failures, now + issuance_backoff(failures))
+}
+
 /// Why a hostname that misses this Cluster has no certificate.
 #[must_use]
 pub fn issuance_refusal_reason(
     hostname: &IngressHost,
+    verdict: ClusterDnsVerdict,
     resolved: &[IpAddr],
     cluster_addresses: &[IpAddr],
 ) -> Option<String> {
-    let should = join_addresses(cluster_addresses);
-    match cluster_dns_verdict(resolved, cluster_addresses) {
+    match verdict {
         ClusterDnsVerdict::PointsAtCluster => None,
         ClusterDnsVerdict::DoesNotResolve => Some(format!(
-            "Ingress Hostname {hostname} does not resolve; it should resolve to {should}."
+            "Ingress Hostname {hostname} does not resolve; it should resolve to {}.",
+            join_addresses(cluster_addresses)
         )),
         ClusterDnsVerdict::ResolvesElsewhere => Some(format!(
-            "Ingress Hostname {hostname} resolves to {}; it should resolve to {should}.",
-            join_addresses(resolved)
+            "Ingress Hostname {hostname} resolves to {}; it should resolve to {}.",
+            join_addresses(resolved),
+            join_addresses(cluster_addresses)
         )),
     }
-}
-
-fn waiting(input: IssuanceInput) -> bool {
-    input
-        .next_attempt_at
-        .is_some_and(|deadline| deadline > input.now)
-}
-
-fn resolve_backoff_cleared(input: IssuanceInput) -> bool {
-    input
-        .last_resolve_verdict
-        .is_some_and(|last| last != input.verdict)
 }
 
 fn join_addresses(addresses: &[IpAddr]) -> String {
@@ -110,15 +145,16 @@ mod tests {
     };
 
     use super::{
-        ISSUANCE_BACKOFF_BASE, ISSUANCE_BACKOFF_CAP, IssuanceAction, IssuanceInput,
-        issuance_action, issuance_backoff, issuance_refusal_reason,
+        ISSUANCE_BACKOFF_BASE, ISSUANCE_BACKOFF_CAP, IssuanceAction, IssuanceFailure,
+        IssuanceInput, issuance_action, issuance_backoff, issuance_failure_clock,
+        issuance_refusal_reason,
     };
     use crate::{ClusterDnsVerdict, IngressHost};
 
     #[test]
     fn empty_row_orders_when_dns_points_at_the_cluster() {
         assert_eq!(
-            issuance_action(input(false, None, None, ClusterDnsVerdict::PointsAtCluster,)),
+            issuance_action(input(false, None, None, ClusterDnsVerdict::PointsAtCluster)),
             IssuanceAction::Order
         );
     }
@@ -127,7 +163,7 @@ mod tests {
     fn empty_row_refuses_when_dns_misses_the_cluster() {
         assert_eq!(
             issuance_action(input(false, None, None, ClusterDnsVerdict::DoesNotResolve)),
-            IssuanceAction::Refuse
+            refuse(ClusterDnsVerdict::DoesNotResolve, 1)
         );
         assert_eq!(
             issuance_action(input(
@@ -136,14 +172,14 @@ mod tests {
                 None,
                 ClusterDnsVerdict::ResolvesElsewhere,
             )),
-            IssuanceAction::Refuse
+            refuse(ClusterDnsVerdict::ResolvesElsewhere, 1)
         );
     }
 
     #[test]
     fn material_is_left_alone() {
         assert_eq!(
-            issuance_action(input(true, None, None, ClusterDnsVerdict::PointsAtCluster,)),
+            issuance_action(input(true, None, None, ClusterDnsVerdict::PointsAtCluster)),
             IssuanceAction::Nothing
         );
         assert_eq!(
@@ -158,7 +194,7 @@ mod tests {
             issuance_action(input(
                 false,
                 Some(now() + Duration::from_secs(3600)),
-                None,
+                Some(IssuanceFailure::Authority),
                 ClusterDnsVerdict::PointsAtCluster,
             )),
             IssuanceAction::Nothing
@@ -167,7 +203,7 @@ mod tests {
             issuance_action(input(
                 false,
                 Some(now() + Duration::from_secs(3600)),
-                None,
+                Some(IssuanceFailure::Authority),
                 ClusterDnsVerdict::DoesNotResolve,
             )),
             IssuanceAction::Nothing
@@ -180,7 +216,7 @@ mod tests {
             issuance_action(input(
                 false,
                 Some(now() + Duration::from_secs(3600)),
-                Some(ClusterDnsVerdict::DoesNotResolve),
+                Some(IssuanceFailure::Resolve(ClusterDnsVerdict::DoesNotResolve)),
                 ClusterDnsVerdict::DoesNotResolve,
             )),
             IssuanceAction::Nothing
@@ -193,7 +229,7 @@ mod tests {
             issuance_action(input(
                 false,
                 Some(now() + Duration::from_secs(6 * 60 * 60)),
-                Some(ClusterDnsVerdict::DoesNotResolve),
+                Some(IssuanceFailure::Resolve(ClusterDnsVerdict::DoesNotResolve)),
                 ClusterDnsVerdict::PointsAtCluster,
             )),
             IssuanceAction::Order
@@ -202,7 +238,9 @@ mod tests {
             issuance_action(input(
                 false,
                 Some(now() + Duration::from_secs(6 * 60 * 60)),
-                Some(ClusterDnsVerdict::ResolvesElsewhere),
+                Some(IssuanceFailure::Resolve(
+                    ClusterDnsVerdict::ResolvesElsewhere
+                )),
                 ClusterDnsVerdict::PointsAtCluster,
             )),
             IssuanceAction::Order
@@ -215,10 +253,10 @@ mod tests {
             issuance_action(input(
                 false,
                 Some(now() + Duration::from_secs(6 * 60 * 60)),
-                Some(ClusterDnsVerdict::DoesNotResolve),
+                Some(IssuanceFailure::Resolve(ClusterDnsVerdict::DoesNotResolve)),
                 ClusterDnsVerdict::ResolvesElsewhere,
             )),
-            IssuanceAction::Refuse
+            refuse(ClusterDnsVerdict::ResolvesElsewhere, 1)
         );
     }
 
@@ -228,19 +266,22 @@ mod tests {
             issuance_action(input(
                 false,
                 Some(now() - Duration::from_secs(1)),
-                None,
+                Some(IssuanceFailure::Authority),
                 ClusterDnsVerdict::PointsAtCluster,
             )),
             IssuanceAction::Order
         );
         assert_eq!(
-            issuance_action(input(
-                false,
-                Some(now() - Duration::from_secs(1)),
-                Some(ClusterDnsVerdict::DoesNotResolve),
-                ClusterDnsVerdict::DoesNotResolve,
-            )),
-            IssuanceAction::Refuse
+            issuance_action(IssuanceInput {
+                failures: 4,
+                ..input(
+                    false,
+                    Some(now() - Duration::from_secs(1)),
+                    Some(IssuanceFailure::Resolve(ClusterDnsVerdict::DoesNotResolve)),
+                    ClusterDnsVerdict::DoesNotResolve,
+                )
+            }),
+            refuse(ClusterDnsVerdict::DoesNotResolve, 5)
         );
     }
 
@@ -259,29 +300,78 @@ mod tests {
     }
 
     #[test]
+    fn failure_clock_resets_resolve_and_keeps_authority() {
+        let resolve = IssuanceFailure::Resolve(ClusterDnsVerdict::DoesNotResolve);
+        let elsewhere = IssuanceFailure::Resolve(ClusterDnsVerdict::ResolvesElsewhere);
+        assert_eq!(
+            issuance_failure_clock(0, None, resolve, now()),
+            (1, now() + issuance_backoff(1))
+        );
+        assert_eq!(
+            issuance_failure_clock(4, Some(resolve), resolve, now()),
+            (5, now() + issuance_backoff(5))
+        );
+        assert_eq!(
+            issuance_failure_clock(4, Some(resolve), elsewhere, now()),
+            (1, now() + issuance_backoff(1))
+        );
+        assert_eq!(
+            issuance_failure_clock(6, Some(resolve), IssuanceFailure::Authority, now()),
+            (1, now() + issuance_backoff(1))
+        );
+        assert_eq!(
+            issuance_failure_clock(
+                3,
+                Some(IssuanceFailure::Authority),
+                IssuanceFailure::Authority,
+                now()
+            ),
+            (4, now() + issuance_backoff(4))
+        );
+    }
+
+    #[test]
     fn refusal_reason_names_the_hostname_and_addresses() {
         let hostname = IngressHost::parse("app.example.com").unwrap();
         let cluster = addrs(["192.0.2.1", "192.0.2.2"]);
         let elsewhere = addrs(["198.51.100.10"]);
 
         assert_eq!(
-            issuance_refusal_reason(&hostname, &[], &cluster).as_deref(),
+            issuance_refusal_reason(&hostname, ClusterDnsVerdict::DoesNotResolve, &[], &cluster)
+                .as_deref(),
             Some(
                 "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1, 192.0.2.2."
             )
         );
         assert_eq!(
-            issuance_refusal_reason(&hostname, &elsewhere, &cluster).as_deref(),
+            issuance_refusal_reason(
+                &hostname,
+                ClusterDnsVerdict::ResolvesElsewhere,
+                &elsewhere,
+                &cluster
+            )
+            .as_deref(),
             Some(
                 "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1, 192.0.2.2."
             )
         );
         assert_eq!(
-            issuance_refusal_reason(&hostname, &addrs(["192.0.2.1"]), &cluster),
+            issuance_refusal_reason(
+                &hostname,
+                ClusterDnsVerdict::PointsAtCluster,
+                &addrs(["192.0.2.1"]),
+                &cluster
+            ),
             None
         );
         assert_eq!(
-            issuance_refusal_reason(&hostname, &elsewhere, &[]).as_deref(),
+            issuance_refusal_reason(
+                &hostname,
+                ClusterDnsVerdict::ResolvesElsewhere,
+                &elsewhere,
+                &[]
+            )
+            .as_deref(),
             Some(
                 "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to this Cluster's Machine addresses (none are published)."
             )
@@ -291,15 +381,24 @@ mod tests {
     fn input(
         has_material: bool,
         next_attempt_at: Option<SystemTime>,
-        last_resolve_verdict: Option<ClusterDnsVerdict>,
+        last_failure: Option<IssuanceFailure>,
         verdict: ClusterDnsVerdict,
     ) -> IssuanceInput {
         IssuanceInput {
             has_material,
             next_attempt_at,
-            last_resolve_verdict,
+            last_failure,
+            failures: 0,
             verdict,
             now: now(),
+        }
+    }
+
+    fn refuse(verdict: ClusterDnsVerdict, failures: u32) -> IssuanceAction {
+        IssuanceAction::Refuse {
+            failures,
+            next_attempt_at: now() + issuance_backoff(failures),
+            last_failure: IssuanceFailure::Resolve(verdict),
         }
     }
 

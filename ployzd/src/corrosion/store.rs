@@ -5,226 +5,24 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use chrono::{DateTime, SecondsFormat, Utc};
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ClusterDnsVerdict, ContainerId, ContainerObservation, IngressHost, LocalMachinePhase, Machine,
+    ContainerId, ContainerObservation, IngressHost, IssuanceFailure, LocalMachinePhase, Machine,
     MachineId,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{ApiClient, Error, Statement, Subscription};
+use super::{
+    ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error, Statement,
+    Subscription,
+};
 use crate::{
     hosted_dns::Reservation,
     machine::{LocalMachineRecord, LocalMachineStore, StoreError},
 };
-
-/// Certificate and private key held in cluster state for one Ingress Hostname.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct CertificateMaterial {
-    certificate: String,
-    private_key: String,
-}
-
-impl CertificateMaterial {
-    #[must_use]
-    pub fn new(certificate: impl Into<String>, private_key: impl Into<String>) -> Option<Self> {
-        let certificate = certificate.into();
-        let private_key = private_key.into();
-        (!certificate.is_empty() && !private_key.is_empty()).then_some(Self {
-            certificate,
-            private_key,
-        })
-    }
-
-    #[must_use]
-    pub fn certificate(&self) -> &str {
-        &self.certificate
-    }
-
-    #[must_use]
-    pub fn private_key(&self) -> &str {
-        &self.private_key
-    }
-}
-
-/// HTTP-01 token and key authorization held in cluster state for one Ingress Hostname.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CertificateChallenge {
-    token: String,
-    response: String,
-}
-
-impl CertificateChallenge {
-    #[must_use]
-    pub fn new(token: impl Into<String>, response: impl Into<String>) -> Option<Self> {
-        let token = token.into();
-        let response = response.into();
-        (!token.is_empty() && !response.is_empty()).then_some(Self { token, response })
-    }
-
-    #[must_use]
-    pub fn token(&self) -> &str {
-        &self.token
-    }
-
-    #[must_use]
-    pub fn response(&self) -> &str {
-        &self.response
-    }
-}
-
-#[derive(Clone, Default, Debug, Eq, PartialEq)]
-pub struct CertificateRow {
-    material: Option<CertificateMaterial>,
-    challenge: Option<CertificateChallenge>,
-    last_error: Option<String>,
-    next_attempt_at: Option<SystemTime>,
-    failures: u32,
-    last_resolve_verdict: Option<ClusterDnsVerdict>,
-}
-
-impl CertificateRow {
-    #[must_use]
-    pub fn from_parts(
-        material: Option<CertificateMaterial>,
-        challenge: Option<CertificateChallenge>,
-    ) -> Self {
-        Self {
-            material,
-            challenge,
-            ..Self::default()
-        }
-    }
-
-    #[must_use]
-    pub fn with_last_error(mut self, error: impl Into<String>) -> Self {
-        let error = error.into();
-        self.last_error = (!error.is_empty()).then_some(error);
-        self
-    }
-
-    #[must_use]
-    pub fn with_backoff(
-        mut self,
-        failures: u32,
-        last_resolve_verdict: Option<ClusterDnsVerdict>,
-    ) -> Self {
-        self.failures = failures;
-        self.last_resolve_verdict = last_resolve_verdict;
-        self
-    }
-
-    #[must_use]
-    pub fn material(&self) -> Option<&CertificateMaterial> {
-        self.material.as_ref()
-    }
-
-    #[must_use]
-    pub fn challenge(&self) -> Option<&CertificateChallenge> {
-        self.challenge.as_ref()
-    }
-
-    #[must_use]
-    pub fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
-    }
-
-    #[must_use]
-    pub fn next_attempt_at(&self) -> Option<SystemTime> {
-        self.next_attempt_at
-    }
-
-    #[must_use]
-    pub fn failures(&self) -> u32 {
-        self.failures
-    }
-
-    #[must_use]
-    pub fn last_resolve_verdict(&self) -> Option<ClusterDnsVerdict> {
-        self.last_resolve_verdict
-    }
-
-    fn decode(encoded: &str) -> Result<Self, Error> {
-        if encoded.is_empty() {
-            return Ok(Self::default());
-        }
-        let body: CertificateBody = serde_json::from_str(encoded)?;
-        Ok(Self {
-            material: CertificateMaterial::new(body.certificate, body.private_key),
-            challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
-            last_error: (!body.last_error.is_empty()).then_some(body.last_error),
-            next_attempt_at: decode_attempt(&body.next_attempt_at),
-            failures: body.failures,
-            last_resolve_verdict: decode_resolve_verdict(&body.last_resolve_verdict),
-        })
-    }
-
-    fn encode(&self) -> Result<String, Error> {
-        Ok(serde_json::to_string(&json!({
-            "certificate": self.material.as_ref().map(CertificateMaterial::certificate).unwrap_or(""),
-            "private_key": self.material.as_ref().map(CertificateMaterial::private_key).unwrap_or(""),
-            "challenge_token": self.challenge.as_ref().map(CertificateChallenge::token).unwrap_or(""),
-            "challenge_response": self.challenge.as_ref().map(CertificateChallenge::response).unwrap_or(""),
-            "last_error": self.last_error.as_deref().unwrap_or(""),
-            "next_attempt_at": self.next_attempt_at.map(encode_attempt).unwrap_or_default(),
-            "failures": self.failures,
-            "last_resolve_verdict": encode_resolve_verdict(self.last_resolve_verdict),
-        }))?)
-    }
-}
-
-#[derive(Deserialize)]
-struct CertificateBody {
-    #[serde(default)]
-    certificate: String,
-    #[serde(default)]
-    private_key: String,
-    #[serde(default)]
-    challenge_token: String,
-    #[serde(default)]
-    challenge_response: String,
-    #[serde(default)]
-    last_error: String,
-    #[serde(default)]
-    next_attempt_at: String,
-    #[serde(default)]
-    failures: u32,
-    #[serde(default)]
-    last_resolve_verdict: String,
-}
-
-fn encode_attempt(time: SystemTime) -> String {
-    DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Secs, true)
-}
-
-fn decode_attempt(text: &str) -> Option<SystemTime> {
-    if text.is_empty() {
-        return None;
-    }
-    DateTime::parse_from_rfc3339(text)
-        .ok()
-        .map(|time| SystemTime::from(time.with_timezone(&Utc)))
-}
-
-fn encode_resolve_verdict(verdict: Option<ClusterDnsVerdict>) -> &'static str {
-    match verdict {
-        Some(ClusterDnsVerdict::DoesNotResolve) => "does_not_resolve",
-        Some(ClusterDnsVerdict::ResolvesElsewhere) => "resolves_elsewhere",
-        Some(ClusterDnsVerdict::PointsAtCluster) | None => "",
-    }
-}
-
-fn decode_resolve_verdict(text: &str) -> Option<ClusterDnsVerdict> {
-    match text {
-        "does_not_resolve" => Some(ClusterDnsVerdict::DoesNotResolve),
-        "resolves_elsewhere" => Some(ClusterDnsVerdict::ResolvesElsewhere),
-        _ => None,
-    }
-}
 
 #[derive(Clone)]
 pub struct ReplicatedStore {
@@ -616,13 +414,18 @@ impl ReplicatedStore {
         .await
     }
 
+    /// Record why a hostname has no certificate and when the Cluster may try again.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or written.
     pub async fn record_certificate_failure(
         &self,
         hostname: &IngressHost,
         last_error: impl Into<String>,
         next_attempt_at: SystemTime,
         failures: u32,
-        last_resolve_verdict: Option<ClusterDnsVerdict>,
+        last_failure: IssuanceFailure,
     ) -> Result<(), Error> {
         let row = self.certificate_row(hostname).await?;
         if row.material.is_some() {
@@ -634,7 +437,7 @@ impl ReplicatedStore {
                 last_error: Some(last_error.into()),
                 next_attempt_at: Some(next_attempt_at),
                 failures,
-                last_resolve_verdict,
+                last_failure: Some(last_failure),
                 ..row
             },
         )
@@ -878,11 +681,6 @@ pub async fn run_machine_publisher(
     }
 }
 
-#[cfg(test)]
-fn decode_certificate_body(encoded: &str) -> Result<Option<CertificateMaterial>, Error> {
-    Ok(CertificateRow::decode(encoded)?.material)
-}
-
 fn decode_observations<T: DeserializeOwned>(
     rows: Vec<[Value; 2]>,
 ) -> Result<ReplicatedObservations<T>, Error> {
@@ -933,13 +731,12 @@ mod tests {
         collections::BTreeMap,
         net::TcpListener,
         sync::{Arc, Mutex},
-        time::{Duration, SystemTime},
     };
 
-    use ployz_core::{ClusterDnsVerdict, LocalMachinePhase, Machine};
+    use ployz_core::{LocalMachinePhase, Machine};
     use serde_json::json;
 
-    use super::{CertificateChallenge, CertificateMaterial, ReplicatedStore};
+    use super::ReplicatedStore;
     use crate::corrosion::ApiClient;
     use crate::machine::{LocalMachineRecord, LocalMachineStore};
 
@@ -1040,81 +837,6 @@ mod tests {
 
         local.phase = LocalMachinePhase::Resetting;
         assert_eq!(publication.publishable_machine(&local), None);
-    }
-
-    #[test]
-    fn invalid_certificate_body_is_an_error() {
-        assert!(super::decode_certificate_body("{").is_err());
-        assert!(super::decode_certificate_body("null").is_err());
-    }
-
-    #[test]
-    fn empty_certificate_body_is_not_present() {
-        assert_eq!(CertificateMaterial::new("", ""), None);
-        assert_eq!(CertificateMaterial::new("CERT", ""), None);
-        assert_eq!(super::decode_certificate_body("").unwrap(), None);
-        assert_eq!(super::decode_certificate_body("{}").unwrap(), None);
-        assert_eq!(
-            super::decode_certificate_body(r#"{"certificate":"CERT","private_key":""}"#).unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn certificate_material_reads_known_fields_and_ignores_the_rest() {
-        let material = super::decode_certificate_body(
-            r#"{"certificate":"CERT","private_key":"KEY","last_error":"later"}"#,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(material.certificate(), "CERT");
-        assert_eq!(material.private_key(), "KEY");
-    }
-
-    #[test]
-    fn certificate_challenge_reads_from_the_row_body() {
-        let row = super::CertificateRow::decode(
-            r#"{"certificate":"","private_key":"","challenge_token":"tok","challenge_response":"tok.thumb"}"#,
-        )
-        .unwrap();
-        assert_eq!(row.material, None);
-        let challenge = row.challenge.unwrap();
-        assert_eq!(challenge.token(), "tok");
-        assert_eq!(challenge.response(), "tok.thumb");
-        assert_eq!(CertificateChallenge::new("", "tok.thumb"), None);
-        assert_eq!(super::CertificateRow::decode("{}").unwrap().challenge, None);
-    }
-
-    #[test]
-    fn certificate_row_round_trips_refusal_clock() {
-        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        let row = super::CertificateRow {
-            last_error: Some(
-                "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
-                    .into(),
-            ),
-            next_attempt_at: Some(at),
-            failures: 3,
-            last_resolve_verdict: Some(ClusterDnsVerdict::DoesNotResolve),
-            ..super::CertificateRow::default()
-        };
-        let encoded = row.encode().unwrap();
-        let decoded = super::CertificateRow::decode(&encoded).unwrap();
-        assert_eq!(decoded.last_error(), row.last_error());
-        assert_eq!(decoded.next_attempt_at(), Some(at));
-        assert_eq!(decoded.failures(), 3);
-        assert_eq!(
-            decoded.last_resolve_verdict(),
-            Some(ClusterDnsVerdict::DoesNotResolve)
-        );
-        assert_eq!(
-            super::CertificateRow::decode(
-                r#"{"certificate":"","private_key":"","last_error":"later","next_attempt_at":"2023-11-14T22:13:20Z","failures":2,"last_resolve_verdict":"resolves_elsewhere"}"#
-            )
-            .unwrap()
-            .last_resolve_verdict(),
-            Some(ClusterDnsVerdict::ResolvesElsewhere)
-        );
     }
 
     fn participating_record() -> (Machine, LocalMachineRecord) {
