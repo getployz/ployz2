@@ -177,7 +177,7 @@ fn scale_plan(
     Ok(Some(plan_deploy(
         &requested,
         snapshot,
-        service.service_id.clone(),
+        service.service_id,
         plan_options(false, false),
     )?))
 }
@@ -230,7 +230,7 @@ fn observation_warnings<T>(
         .iter()
         .map(|failure| ObservationWarning::Failed {
             kind,
-            machine_id: failure.machine_id.clone(),
+            machine_id: failure.machine_id,
             message: failure.error.message.clone(),
         })
         .chain(
@@ -239,7 +239,7 @@ fn observation_warnings<T>(
                 .iter()
                 .map(|machine| ObservationWarning::Omitted {
                     kind,
-                    machine_id: machine.clone(),
+                    machine_id: *machine,
                 }),
         )
         .collect()
@@ -307,7 +307,7 @@ async fn push_image(
         .iter()
         .map(|success| PushedImage {
             image: service.image.clone(),
-            machine_id: success.machine_id.clone(),
+            machine_id: success.machine_id,
         })
         .collect();
     let failures = result

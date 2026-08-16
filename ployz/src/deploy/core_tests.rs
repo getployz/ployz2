@@ -165,7 +165,7 @@ fn observation(
     }))
     .unwrap();
     let resolved = ResolvedServiceSpec {
-        service_id: service_id.clone(),
+        service_id: *service_id,
         name: requested.name.clone(),
         mode: requested.mode,
         container: requested.container,
@@ -183,7 +183,7 @@ fn observation(
         display_name: format!("api-{id}"),
         created_at_unix_nanos: 0,
         machine_id: machine().machine.id,
-        service_id: service_id.clone(),
+        service_id: *service_id,
         service_name: requested.name,
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
