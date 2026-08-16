@@ -29,21 +29,54 @@ const SOCKETS: &[&str] = &[
     "/var/run/docker/containerd/containerd.sock",
 ];
 
+/// Store and socket gates shared by boot-time start and `EnsureImageIngest`.
+pub enum ImageIngestPrerequisite {
+    Ready(PathBuf),
+    UnsupportedStore,
+    MissingSocket,
+}
+
 impl LocalDocker {
+    /// Whether Docker's image store and a containerd socket are ready for ingest.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker info cannot be read.
+    pub async fn image_ingest_prerequisite(
+        &self,
+        configured_socket: Option<&Path>,
+    ) -> Result<ImageIngestPrerequisite, Error> {
+        if !self.uses_containerd_store().await? {
+            return Ok(ImageIngestPrerequisite::UnsupportedStore);
+        }
+        Ok(match detect_socket(configured_socket) {
+            Some(socket) => ImageIngestPrerequisite::Ready(socket),
+            None => ImageIngestPrerequisite::MissingSocket,
+        })
+    }
+
+    /// Start the image-ingest helper when the store and socket are ready.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker info cannot be read or the helper cannot be started.
     pub async fn start_unregistry(
         &self,
         gateway: Ipv4Addr,
         configured_socket: Option<&Path>,
     ) -> Result<Option<RunningUnregistry>, Error> {
-        if !self.uses_containerd_store().await? {
-            eprintln!(
-                "WARNING: unregistry disabled: Docker is not using the containerd image store"
-            );
-            return Ok(None);
-        }
-        let Some(socket) = detect_socket(configured_socket) else {
-            eprintln!("WARNING: unregistry disabled: no containerd socket was detected");
-            return Ok(None);
+        let socket = match self.image_ingest_prerequisite(configured_socket).await? {
+            ImageIngestPrerequisite::Ready(socket) => socket,
+            ImageIngestPrerequisite::UnsupportedStore => {
+                eprintln!(
+                    "WARNING: unregistry disabled: Docker is not using the containerd image store"
+                );
+                return Ok(None);
+            }
+            ImageIngestPrerequisite::MissingSocket => {
+                eprintln!("WARNING: unregistry disabled: no containerd socket was detected");
+                return Ok(None);
+            }
         };
         let service = RunningUnregistry {
             service: ManagedService::new(self.client.clone(), NAME, IMAGE),
@@ -211,6 +244,8 @@ fn socket_inode_label(path: &Path) -> Option<String> {
     })
 }
 
+/// Configured path when it is a Unix socket, otherwise the first known containerd socket.
+#[must_use]
 pub fn detect_socket(configured: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = configured {
         return is_socket(path).then(|| path.to_owned());

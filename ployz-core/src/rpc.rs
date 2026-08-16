@@ -304,9 +304,11 @@ pub struct ListImagesRequest {
     pub reference: Option<String>,
 }
 
+/// Empty payload of the command that returns this Machine's image-ingest TCP destination.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EnsureImageIngestRequest {}
 
+/// Named failure in `RpcError.details.reason` when image ingest cannot be opened.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageIngestReason {
@@ -318,13 +320,15 @@ pub enum ImageIngestReason {
 }
 
 impl ImageIngestReason {
+    /// The `reason` field of an ingest RPC error, if it is one of the frozen names.
     #[must_use]
     pub fn from_details(details: &Value) -> Option<Self> {
         details
             .get("reason")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .and_then(|reason| Self::deserialize(reason).ok())
     }
 
+    /// An RPC error that carries this reason in `details`.
     #[must_use]
     pub fn rpc_error(self, message: impl Into<String>) -> RpcError {
         RpcError {
@@ -345,12 +349,14 @@ impl ImageIngestReason {
     }
 }
 
+/// Machine Gateway TCP bind that accepts `docker push` and peer `docker pull`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImageIngestDestination {
     pub gateway: crate::MachineGateway,
     pub port: u16,
 }
 
+/// Successful `EnsureImageIngest` payload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImageIngestOpened {
     pub destination: ImageIngestDestination,

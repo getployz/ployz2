@@ -447,6 +447,8 @@ fn image_list_contract_keeps_machine_local_store_and_platforms() {
         images
     );
     assert_eq!(LIST_IMAGES_CAPABILITY, "ployz.image.list.v1");
+    assert_eq!(request.body.command(), "list_images");
+    assert_ne!(request.body.command(), "ensure_image_ingest");
 }
 
 #[test]
@@ -475,6 +477,8 @@ fn image_ingest_contract_returns_the_machine_gateway_destination() {
         ENSURE_IMAGE_INGEST_CAPABILITY,
         "ployz.image.ingest.ensure.v1"
     );
+    assert_eq!(request.body.command(), "ensure_image_ingest");
+    assert_ne!(request.body.command(), "list_images");
     assert_eq!(opened.destination.port, ployz_core::UNREGISTRY_PORT);
 
     let frozen = [
@@ -499,6 +503,14 @@ fn image_ingest_contract_returns_the_machine_gateway_destination() {
         );
         assert_eq!(error.details, json!({ "reason": wire }));
     }
+    assert_eq!(
+        ImageIngestReason::from_details(&json!({
+            "reason": "docker_unavailable",
+            "extra": 1
+        })),
+        Some(ImageIngestReason::DockerUnavailable)
+    );
+    assert_eq!(ImageIngestReason::from_details(&Value::Null), None);
 }
 
 #[test]

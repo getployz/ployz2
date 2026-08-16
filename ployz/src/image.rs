@@ -453,9 +453,10 @@ fn not_found(output: &Output) -> bool {
 mod tests {
     use super::*;
     use ployz_core::{
-        MachineId, MachineName, MachineObservation, ManagementAddress, MembershipObservation,
-        WireGuardPublicKey,
+        EnsureImageIngestRequest, ListImagesRequest, MachineId, MachineName, MachineObservation,
+        ManagementAddress, MembershipObservation, RpcErrorCode, WireGuardPublicKey,
     };
+    use serde_json::Value;
 
     fn machine(seed: u8) -> MachineObservation {
         MachineObservation {
@@ -572,8 +573,33 @@ mod tests {
             ingest_error(unsupported),
             PushError::UnsupportedImageStore
         ));
-        let missing = ImageIngestReason::ContainerdSocketMissing
-            .rpc_error("no containerd socket was detected");
-        assert!(matches!(ingest_error(missing), PushError::ImageIngest(_)));
+        for reason in [
+            ImageIngestReason::NotParticipating,
+            ImageIngestReason::DockerUnavailable,
+            ImageIngestReason::ContainerdSocketMissing,
+            ImageIngestReason::StartFailed,
+        ] {
+            assert!(matches!(
+                ingest_error(reason.rpc_error("ingest unavailable")),
+                PushError::ImageIngest(_)
+            ));
+        }
+        assert!(matches!(
+            ingest_error(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "ingest unavailable".into(),
+                details: Value::Null,
+            }),
+            PushError::ImageIngest(_)
+        ));
+    }
+
+    #[test]
+    fn image_push_opens_ingest_instead_of_listing_images() {
+        let ingest = op::EnsureImageIngest::into_request(EnsureImageIngestRequest {});
+        let list = op::ListImages::into_request(ListImagesRequest { reference: None });
+        assert_eq!(ingest.body.command(), "ensure_image_ingest");
+        assert_eq!(list.body.command(), "list_images");
+        assert_ne!(ingest.body.command(), list.body.command());
     }
 }

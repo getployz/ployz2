@@ -17,7 +17,7 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
-    docker::{ContainerRuntime, Error as DockerError, detect_socket},
+    docker::{ContainerRuntime, Error as DockerError, ImageIngestPrerequisite},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
 };
@@ -67,6 +67,7 @@ impl MachineService {
         self
     }
 
+    /// Socket path used for ingest prerequisite detection. `None` means detect.
     #[must_use]
     pub fn with_containerd_socket(mut self, path: Option<PathBuf>) -> Self {
         self.containerd_socket = path;
@@ -498,39 +499,40 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::EnsureImageIngest>(request)?;
         let record = self.local_record()?;
-        if record.phase != LocalMachinePhase::Participating {
-            return respond(
-                ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
-            );
-        }
-        let Some(machine) = record.machine.as_ref() else {
+        let Some(machine) = record
+            .machine
+            .as_ref()
+            .filter(|_| record.phase == LocalMachinePhase::Participating)
+        else {
             return respond(
                 ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
             );
         };
-        let containers = match self.containers() {
-            Ok(containers) => containers,
-            Err(_) => {
-                return respond(
-                    ImageIngestReason::DockerUnavailable.rpc_error("Docker is not available"),
-                );
-            }
+        let Ok(containers) = self.containers() else {
+            return respond(
+                ImageIngestReason::DockerUnavailable.rpc_error("Docker is not available"),
+            );
         };
-        match containers.uses_containerd_store().await {
-            Ok(true) => {}
-            Ok(false) => {
+        match containers
+            .image_ingest_prerequisite(self.containerd_socket.as_deref())
+            .await
+        {
+            Ok(ImageIngestPrerequisite::Ready(_)) => {}
+            Ok(ImageIngestPrerequisite::UnsupportedStore) => {
                 return respond(
                     ImageIngestReason::UnsupportedContainerdStore
                         .rpc_error("Docker is not using the containerd image store"),
                 );
             }
-            Err(error) => return respond(docker_rpc_error(error)),
-        }
-        if detect_socket(self.containerd_socket.as_deref()).is_none() {
-            return respond(
-                ImageIngestReason::ContainerdSocketMissing
-                    .rpc_error("no containerd socket was detected"),
-            );
+            Ok(ImageIngestPrerequisite::MissingSocket) => {
+                return respond(
+                    ImageIngestReason::ContainerdSocketMissing
+                        .rpc_error("no containerd socket was detected"),
+                );
+            }
+            Err(error) => {
+                return respond(ImageIngestReason::DockerUnavailable.rpc_error(error.to_string()));
+            }
         }
         respond(ImageIngestOpened {
             destination: ImageIngestDestination {
