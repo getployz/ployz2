@@ -351,8 +351,7 @@ pub async fn resolve_ingress_dns_warnings<'a>(
     cluster_domain: Option<&str>,
     cluster_addresses: &[IpAddr],
 ) -> Vec<IngressDnsWarning> {
-    let specs: Vec<_> = specs.into_iter().collect();
-    let targets = custom_ingress_targets(specs.iter().copied(), cluster_domain);
+    let targets = custom_ingress_targets(specs, cluster_domain);
     let mut resolved = BTreeMap::new();
     for hostname in targets.keys().copied() {
         resolved.insert(hostname, resolve_ingress_addresses(hostname).await);
