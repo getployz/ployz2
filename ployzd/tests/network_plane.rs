@@ -57,7 +57,7 @@ fn every_machine_table_rebuild_is_a_complete_directed_mesh() {
         peer.allowed_ips,
         [
             IpNet::new(IpAddr::V6(machines[1].management_address.0), 128).unwrap(),
-            IpNet::V4(machines[1].subnet.as_net()),
+            machines[1].subnet.into(),
         ]
     );
     assert_eq!(WIREGUARD_KEEPALIVE_SECONDS, 25);

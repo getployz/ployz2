@@ -296,11 +296,7 @@ async fn updates_removes_and_inspects_machine_network_state() {
                 .iter()
                 .any(|address| address.to_string() == format!("{}/128", peer.management_address.0))
         );
-        assert!(
-            wireguard_peer
-                .allowed_ips
-                .contains(&peer.subnet.as_net().into())
-        );
+        assert!(wireguard_peer.allowed_ips.contains(&peer.subnet.into()));
     }
     let unknown = WireGuardPublicKey([9; 32]);
     cluster.inject_wireguard_peer(0, unknown).unwrap();

@@ -247,7 +247,7 @@ pub async fn run(
     )));
     let handler = Handler {
         projection: Arc::clone(&projection),
-        local_subnet: machine.subnet.as_net(),
+        local_subnet: machine.subnet.into(),
         upstreams: configured_upstreams(upstreams, gateway),
     };
     let udp = UdpSocket::bind(listen_address).await?;

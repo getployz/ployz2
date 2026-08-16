@@ -132,6 +132,7 @@ fn machine_subnet_rejects_prefixes_that_are_not_slash_24() {
         "invalid Machine Subnet \"not-a-cidr\": an IPv4 /24 CIDR"
     );
     assert!(serde_json::from_str::<MachineSubnet>("\"10.210.0.0/16\"").is_err());
+    assert!(MachineSubnet::try_from("10.210.0.0/16".parse::<ipnet::Ipv4Net>().unwrap()).is_err());
 }
 
 #[test]
@@ -145,6 +146,11 @@ fn machine_subnet_exposes_its_gateway_and_stays_a_cidr_string() {
     assert_eq!(
         serde_json::from_str::<MachineSubnet>("\"10.210.7.0/24\"").unwrap(),
         subnet
+    );
+    assert_eq!(MachineSubnet::parse("10.210.7.5/24").unwrap(), subnet);
+    assert_eq!(
+        serde_json::to_string(&MachineSubnet::parse("10.210.7.5/24").unwrap()).unwrap(),
+        "\"10.210.7.0/24\""
     );
 }
 

@@ -5,7 +5,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use ipnet::Ipv4Net;
+use ipnet::{IpNet, Ipv4Net};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -321,22 +321,26 @@ impl MachineSubnet {
         let value = value.as_ref();
         let network = value
             .parse::<Ipv4Net>()
-            .ok()
-            .filter(|network| network.prefix_len() == 24)
-            .ok_or_else(|| ValueError::new("Machine Subnet", value, "an IPv4 /24 CIDR"))?;
-        Ok(Self(network))
+            .map_err(|_| ValueError::new("Machine Subnet", value, "an IPv4 /24 CIDR"))?;
+        Self::from_net(network)
+            .map_err(|_| ValueError::new("Machine Subnet", value, "an IPv4 /24 CIDR"))
+    }
+
+    fn from_net(network: Ipv4Net) -> Result<Self, ValueError> {
+        if network.prefix_len() != 24 {
+            return Err(ValueError::new(
+                "Machine Subnet",
+                network.to_string(),
+                "an IPv4 /24 CIDR",
+            ));
+        }
+        Ok(Self(network.trunc()))
     }
 
     /// The Machine-local gateway: the first usable address in this subnet.
     #[must_use]
     pub fn gateway(self) -> MachineGateway {
         MachineGateway(Ipv4Addr::from(u32::from(self.0.network()) + 1))
-    }
-
-    /// The IPv4 network this Machine Subnet occupies.
-    #[must_use]
-    pub fn as_net(self) -> Ipv4Net {
-        self.0
     }
 }
 
@@ -366,7 +370,19 @@ impl TryFrom<Ipv4Net> for MachineSubnet {
     type Error = ValueError;
 
     fn try_from(network: Ipv4Net) -> Result<Self, Self::Error> {
-        Self::parse(network.to_string())
+        Self::from_net(network)
+    }
+}
+
+impl From<MachineSubnet> for Ipv4Net {
+    fn from(value: MachineSubnet) -> Self {
+        value.0
+    }
+}
+
+impl From<MachineSubnet> for IpNet {
+    fn from(value: MachineSubnet) -> Self {
+        Self::V4(value.0)
     }
 }
 

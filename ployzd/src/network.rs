@@ -120,12 +120,7 @@ pub fn allocate_machine_subnet(
             MachineSubnet::try_from(candidate)
                 .expect("cluster /24 candidates are valid Machine Subnets")
         })
-        .find(|candidate| {
-            claimed.iter().all(|claimed| {
-                !candidate.as_net().contains(&claimed.as_net().network())
-                    && !claimed.as_net().contains(&candidate.as_net().network())
-            })
-        })
+        .find(|candidate| !claimed.contains(candidate))
         .ok_or(NetworkError::NoFreeSubnet)
 }
 
@@ -148,7 +143,7 @@ pub fn peers_for(observer_id: &MachineId, machines: &[Machine]) -> Vec<MeshPeer>
             allowed_ips: [
                 IpNet::new(IpAddr::V6(machine.management_address.0), 128)
                     .expect("IPv6 /128 is valid"),
-                IpNet::V4(machine.subnet.as_net()),
+                machine.subnet.into(),
             ],
             advertised_endpoints: machine.advertised_endpoints.clone(),
         })
