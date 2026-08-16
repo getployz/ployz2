@@ -290,7 +290,7 @@ fn eab_key(policy: &CertificatePolicy) -> Result<Option<ExternalAccountKey>, Err
     let Some(eab) = policy.eab() else {
         return Ok(None);
     };
-    let key = eab.hmac_key_bytes().map_err(|_| Error::InvalidEab)?;
+    let key = eab.to_hmac_key_bytes().map_err(|_| Error::InvalidEab)?;
     Ok(Some(ExternalAccountKey::new(eab.kid().to_owned(), &key)))
 }
 

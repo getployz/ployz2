@@ -7,6 +7,7 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD},
 };
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::ValueError;
 
@@ -64,7 +65,7 @@ impl ExternalAccountBinding {
     /// # Errors
     ///
     /// Returns when the key is not base64.
-    pub fn hmac_key_bytes(&self) -> Result<Vec<u8>, ValueError> {
+    pub fn to_hmac_key_bytes(&self) -> Result<Vec<u8>, ValueError> {
         URL_SAFE_NO_PAD
             .decode(&self.hmac_key)
             .or_else(|_| URL_SAFE.decode(&self.hmac_key))
@@ -143,7 +144,8 @@ impl CertificatePolicy {
 }
 
 /// Why a Certificate Policy was refused instead of applied.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error("{reason}")]
 pub struct CertificatePolicyRefusal {
     reason: String,
 }
@@ -233,11 +235,7 @@ pub fn resolve_certificate_policy(
         let binding = ExternalAccountBinding::new(eab.kid, eab.hmac_key).ok_or_else(|| {
             CertificatePolicyRefusal::new("certificate policy eab is missing kid or hmac_key")
         })?;
-        if binding.hmac_key_bytes()?.is_empty() {
-            return Err(CertificatePolicyRefusal::new(
-                "certificate policy eab hmac_key is empty",
-            ));
-        }
+        binding.to_hmac_key_bytes()?;
         policy.eab = Some(binding);
     }
     if let Some(key_type) = body.key_type {
@@ -371,7 +369,7 @@ mod tests {
         let eab = policy.eab().unwrap();
         assert_eq!(eab.kid(), "kid-1");
         assert_eq!(eab.hmac_key(), "dGVzdA");
-        assert_eq!(eab.hmac_key_bytes().unwrap(), b"test");
+        assert_eq!(eab.to_hmac_key_bytes().unwrap(), b"test");
         assert_eq!(policy.key_type(), &CertificateKeyType::EcdsaP384);
         assert_eq!(policy.renew_at_lifetime_fraction(), 0.5);
         assert_eq!(policy.backoff_base(), Duration::from_secs(10));

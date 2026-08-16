@@ -571,15 +571,8 @@ impl ReplicatedStore {
         let Some([value]) = rows.first() else {
             return Ok(None);
         };
-        match value {
-            Value::Null => Ok(None),
-            Value::String(encoded) if encoded.is_empty() => Ok(None),
-            Value::String(encoded) => Ok(Some(encoded.clone())),
-            Value::Object(_) => Ok(Some(value.to_string())),
-            Value::Bool(_) | Value::Number(_) | Value::Array(_) => {
-                Err(Error::Protocol("invalid certificate policy".into()))
-            }
-        }
+        let encoded = text(value, "certificate policy")?;
+        Ok((!encoded.is_empty()).then(|| encoded.to_owned()))
     }
 
     pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {
