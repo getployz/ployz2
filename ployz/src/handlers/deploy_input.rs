@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, fs, num::NonZeroU32};
 
 use clap::ArgMatches;
 use ployz_core::{
-    ContainerPath, ContainerResources, DockerVolumeName, MachineSelector, Placement,
-    PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceContainerSpec,
-    ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference,
-    Ulimit, UpdateConfig, VolumeSource,
+    ContainerPath, ContainerResources, DockerVolumeName, MachineTarget, Placement, PortPublication,
+    PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
+    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, Ulimit,
+    UpdateConfig, VolumeSource,
 };
 
 use crate::{
@@ -56,6 +56,9 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         ));
     }
     let (volumes, mounts) = parse_volumes(&string_values(matches, "volume"))?;
+    let (volumes, mounts) = ServiceVolumeGraph::parse(volumes, mounts)
+        .map_err(|error| Error::usage(error.to_string()))?
+        .into_parts();
     Ok(RequestedServiceSpec {
         name,
         mode,
@@ -109,7 +112,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         placement: Placement {
             machines: string_values(matches, "machine")
                 .into_iter()
-                .map(MachineSelector::parse)
+                .map(MachineTarget::parse)
                 .collect::<Result<_, _>>()?,
         },
         ports,

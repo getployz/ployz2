@@ -36,6 +36,8 @@ fn run_normalizes_supported_inputs_and_rejects_l4_ingress() {
         spec.ports.first(),
         Some(PortPublication::Host { .. })
     ));
+    spec.to_volume_graph().unwrap();
+    spec.to_config_graph().unwrap();
     assert!(spec.mounts.first().is_some_and(|mount| mount.read_only));
     assert!(matches!(
         spec.volumes.get(1).map(|volume| &volume.source),
@@ -159,5 +161,29 @@ fn run_forms_share_normalization() {
     assert_eq!(
         run_spec(super::leaf_matches(&root)).unwrap(),
         run_spec(super::leaf_matches(&nested)).unwrap()
+    );
+}
+
+#[test]
+fn run_placement_rejects_star_and_keeps_all_as_identity() {
+    let command = crate::cli::command();
+    let rejected = command
+        .clone()
+        .try_get_matches_from(["ployz", "run", "--machine", "*", "alpine"])
+        .unwrap();
+    assert!(run_spec(super::leaf_matches(&rejected)).is_err());
+
+    let named_all = command
+        .try_get_matches_from(["ployz", "run", "--machine", "all", "alpine"])
+        .unwrap();
+    assert_eq!(
+        run_spec(super::leaf_matches(&named_all))
+            .unwrap()
+            .placement
+            .machines
+            .first()
+            .unwrap()
+            .as_str(),
+        "all"
     );
 }

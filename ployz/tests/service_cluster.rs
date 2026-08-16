@@ -2,7 +2,7 @@ use std::{process, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerId, ContainerKind, ContainerRuntimeObservation,
-    InspectContainerRequest, Machine, MachineId, MachineSelector, RemoveContainerRequest,
+    InspectContainerRequest, Machine, MachineId, MachineTarget, RemoveContainerRequest,
     ResolvedServiceSpec, ServiceId, StopContainerRequest, op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
@@ -314,7 +314,7 @@ async fn inspect_container(
     client
         .call::<op::InspectContainer>(
             InspectContainerRequest { container_id },
-            Some(&MachineSelector::from(&machine_id)),
+            Some(&MachineTarget::from(&machine_id)),
         )
         .await
         .unwrap()
@@ -326,7 +326,7 @@ async fn remove_container(
     machine_id: MachineId,
     container_id: ContainerId,
 ) {
-    let target = MachineSelector::from(&machine_id);
+    let target = MachineTarget::from(&machine_id);
     let _ = client
         .call::<op::StopContainer>(
             StopContainerRequest {

@@ -218,6 +218,8 @@ configs:
         Some(0o640)
     );
     assert_eq!(api.volumes.len(), 3);
+    api.to_volume_graph().unwrap();
+    api.to_config_graph().unwrap();
     assert!(api.volumes.iter().any(|volume| matches!(
         &volume.source,
         VolumeSource::Named { name, no_copy: true, subpath: Some(subpath), .. }
@@ -450,6 +452,29 @@ volumes:
         [DeployOperation::CreateVolume { volume, .. }, ..]
             if matches!(volume.source, VolumeSource::Named { external: true, .. })
     ));
+}
+
+#[test]
+fn x_machines_rejects_star_and_keeps_all_as_identity() {
+    let rejected =
+        parse_normalized("services: {api: {image: app, x-machines: [\"*\"]}}", ".").unwrap_err();
+    assert!(
+        rejected
+            .to_string()
+            .contains("a non-empty Machine identity that is not a wildcard")
+    );
+
+    let project =
+        parse_normalized("services: {api: {image: app, x-machines: [all]}}", ".").unwrap();
+    assert_eq!(
+        service(&project, "api")
+            .placement
+            .machines
+            .first()
+            .unwrap()
+            .as_str(),
+        "all"
+    );
 }
 
 #[test]

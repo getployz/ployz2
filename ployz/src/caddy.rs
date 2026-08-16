@@ -5,9 +5,9 @@ use oci_client::{
 };
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerPath, ContainerResources, HostBind, MachinePath,
-    MachineSelector, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
+    MachineTarget, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
     ServiceContainerSpec, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
+    ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
 };
 use semver::Version;
 use thiserror::Error;
@@ -53,7 +53,7 @@ pub fn select_image(tags: &[String]) -> String {
 #[must_use]
 pub fn newest_existing_settings(
     observations: &[ContainerObservation],
-) -> Option<(String, Vec<MachineSelector>, Option<String>)> {
+) -> Option<(String, Vec<MachineTarget>, Option<String>)> {
     observations
         .iter()
         .filter(|container| {
@@ -78,7 +78,7 @@ pub fn newest_existing_settings(
 #[must_use]
 pub fn service_spec(
     image: String,
-    machines: Vec<MachineSelector>,
+    machines: Vec<MachineTarget>,
     caddy_config: Option<String>,
 ) -> RequestedServiceSpec {
     let volume = ServiceVolumeReference::parse("caddy-data").expect("static volume is valid");
@@ -94,6 +94,36 @@ pub fn service_spec(
         container_port: NonZeroU16::new(port).expect("Caddy ports are non-zero"),
         transport_protocol: protocol,
     };
+    let (volumes, mounts) = ServiceVolumeGraph::parse(
+        vec![
+            ServiceVolume {
+                reference: volume.clone(),
+                source: VolumeSource::Bind {
+                    machine_path: MachinePath::parse(DATA_PATH).expect("static data path is valid"),
+                    create_machine_path: true,
+                    propagation: None,
+                    recursive: None,
+                },
+            },
+            ServiceVolume {
+                reference: runtime.clone(),
+                source: VolumeSource::Bind {
+                    machine_path: MachinePath::parse(RUNTIME_PATH)
+                        .expect("static runtime path is valid"),
+                    create_machine_path: true,
+                    propagation: None,
+                    recursive: None,
+                },
+            },
+        ],
+        vec![
+            mount(&volume, "/config"),
+            mount(&volume, "/data"),
+            mount(&runtime, "/run/caddy"),
+        ],
+    )
+    .expect("static Caddy Volume graph is valid")
+    .into_parts();
     RequestedServiceSpec {
         name: ServiceName::parse(SERVICE_NAME).expect("static Service Name is valid"),
         mode: ServiceMode::Global,
@@ -134,32 +164,8 @@ pub fn service_spec(
             host_port(443, TransportProtocol::Tcp),
             host_port(443, TransportProtocol::Udp),
         ],
-        volumes: vec![
-            ServiceVolume {
-                reference: volume.clone(),
-                source: VolumeSource::Bind {
-                    machine_path: MachinePath::parse(DATA_PATH).expect("static data path is valid"),
-                    create_machine_path: true,
-                    propagation: None,
-                    recursive: None,
-                },
-            },
-            ServiceVolume {
-                reference: runtime.clone(),
-                source: VolumeSource::Bind {
-                    machine_path: MachinePath::parse(RUNTIME_PATH)
-                        .expect("static runtime path is valid"),
-                    create_machine_path: true,
-                    propagation: None,
-                    recursive: None,
-                },
-            },
-        ],
-        mounts: vec![
-            mount(&volume, "/config"),
-            mount(&volume, "/data"),
-            mount(&runtime, "/run/caddy"),
-        ],
+        volumes,
+        mounts,
         configs: Vec::new(),
         pre_deploy: None,
         caddy_config,
@@ -212,14 +218,14 @@ mod tests {
         newer.container_id = ployz_core::ContainerId::parse("b".repeat(64)).unwrap();
         newer.created_at_unix_nanos = 2;
         newer.resolved_spec.container.image = "caddy:2.10.2".into();
-        newer.resolved_spec.placement.machines = vec![MachineSelector::parse("edge").unwrap()];
+        newer.resolved_spec.placement.machines = vec![MachineTarget::parse("edge").unwrap()];
         newer.resolved_spec.caddy_config = Some("{ admin off }".into());
 
         assert_eq!(
             newest_existing_settings(&[newer, older]),
             Some((
                 "caddy:2.10.2".into(),
-                vec![MachineSelector::parse("edge").unwrap()],
+                vec![MachineTarget::parse("edge").unwrap()],
                 Some("{ admin off }".into())
             ))
         );
@@ -251,5 +257,8 @@ mod tests {
             })
         ));
         assert_eq!(spec.mounts.len(), 3);
+        let volumes = spec.to_volume_graph().unwrap();
+        assert_eq!(volumes.mounts().len(), 3);
+        spec.to_config_graph().unwrap();
     }
 }
