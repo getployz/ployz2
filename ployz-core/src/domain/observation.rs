@@ -202,12 +202,6 @@ impl AsRef<ContainerObservation> for ServiceContainer {
     }
 }
 
-impl AsRef<ContainerObservation> for HookContainer {
-    fn as_ref(&self) -> &ContainerObservation {
-        self.as_observation()
-    }
-}
-
 impl<'a> ContainerRef<'a> {
     /// Borrow the mixed observation this view was proven from.
     #[must_use]

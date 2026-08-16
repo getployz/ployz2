@@ -107,20 +107,15 @@ fn process_kind(container: ContainerRef<'_>) -> &'static str {
 }
 
 fn health_rank(container: ContainerRef<'_>) -> u8 {
-    match container {
-        ContainerRef::Hook(container)
-            if matches!(
-                container.as_observation().runtime,
-                ContainerRuntimeObservation::Exited { code: 0 }
-            ) =>
-        {
-            3
-        }
-        ContainerRef::Hook(container) => runtime_health_rank(&container.as_observation().runtime),
-        ContainerRef::Service(container) => {
-            runtime_health_rank(&container.as_observation().runtime)
-        }
+    if let ContainerRef::Hook(container) = container
+        && matches!(
+            container.as_observation().runtime,
+            ContainerRuntimeObservation::Exited { code: 0 }
+        )
+    {
+        return 3;
     }
+    runtime_health_rank(&container.as_observation().runtime)
 }
 
 fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
