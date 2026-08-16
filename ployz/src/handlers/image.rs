@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::ArgMatches;
-use ployz_core::{ImageSummary, MachineSuccess};
+use ployz_core::MachineSuccess;
 
 use crate::cluster::MachineImagesObservation;
 
@@ -11,7 +11,7 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
     let targets = string_values(leaf, "machine");
     let reference = leaf.get_one::<String>("image").cloned();
-    let output = leaf.get_one::<String>("output").cloned();
+    let json = leaf.get_one::<String>("output").map(String::as_str) == Some("json");
     let result = runtime()?.block_on(async {
         let client = connect_client(
             matches,
@@ -23,7 +23,7 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
             .await
             .map_err(Error::from)
     })?;
-    if output.as_deref() == Some("json") {
+    if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         let now_unix_seconds = SystemTime::now()
@@ -53,7 +53,12 @@ fn format_images_table(
     );
     for success in successes {
         for image in &success.value.images.images {
-            for tag in image_tags(image) {
+            for tag in image
+                .repo_tags
+                .iter()
+                .map(String::as_str)
+                .chain(image.repo_tags.is_empty().then_some("<none>"))
+            {
                 table.push_str(&format!(
                     "{}\t{}\t{}\t{tag}\t{}\t{}\t{}\t{}\n",
                     success.value.machine_name,
@@ -68,14 +73,6 @@ fn format_images_table(
         }
     }
     table
-}
-
-fn image_tags(image: &ImageSummary) -> Vec<&str> {
-    if image.repo_tags.is_empty() {
-        vec!["<none>"]
-    } else {
-        image.repo_tags.iter().map(String::as_str).collect()
-    }
 }
 
 #[must_use]
@@ -118,14 +115,8 @@ fn format_size(bytes: i64) -> String {
         value /= 1024.0;
         unit = next;
     }
-    if unit == "B" {
-        return format!("{bytes}B");
-    }
     let rendered = format!("{value:.1}");
-    match rendered.strip_suffix(".0") {
-        Some(whole) => format!("{whole}{unit}"),
-        None => format!("{rendered}{unit}"),
-    }
+    format!("{}{unit}", rendered.strip_suffix(".0").unwrap_or(&rendered))
 }
 
 pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
@@ -197,6 +188,8 @@ mod tests {
         assert_eq!(format_size(19_191_186), "18.3MB");
         assert_eq!(format_size(0), "0B");
         assert_eq!(format_size(1024), "1KB");
+        assert_eq!(format_size(10 * 1024), "10KB");
+        assert_eq!(format_size(10 * 1024 * 1024), "10MB");
         assert_eq!(format_size(1536), "1.5KB");
         assert_eq!(format_size(-1), "-");
     }
@@ -212,6 +205,22 @@ mod tests {
         );
         assert!(!table.contains("1785339784"));
         assert!(!table.contains("19191186"));
+    }
+
+    #[test]
+    fn untagged_image_prints_none_once() {
+        let mut success = sample_image_success();
+        success
+            .value
+            .images
+            .images
+            .first_mut()
+            .expect("sample has one image")
+            .repo_tags
+            .clear();
+        let table = format_images_table(&[success], 1_785_339_784);
+        assert!(table.contains("\t<none>\t"));
+        assert_eq!(table.lines().count(), 2);
     }
 
     #[test]
