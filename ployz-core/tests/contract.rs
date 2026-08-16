@@ -1,23 +1,24 @@
-use std::{collections::BTreeSet, num::NonZeroU32};
+use std::{collections::BTreeSet, net::Ipv4Addr, num::NonZeroU32};
 
 use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
-    ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
+    ConfiguredHealthcheck, ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
     DnsRecordType, Domain, DomainRecords, FanoutFailure, FanoutOutcome, FanoutResponse,
     FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation,
-    ImageSummary, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest,
-    MachineFailure, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
-    MachineRpcClient, MachineRpcServer, MachineSelector, MachineSuccess, MachineTokenRequest,
-    MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult, Placement,
-    PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy, RESET_MACHINE_CAPABILITY,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
-    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
-    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
-    UpdateMachineRequest, UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames,
-    op,
+    HealthcheckCommand, HealthcheckSpec, HttpProtocol, ImageSummary, IngressHost, IngressHostname,
+    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MachineFailure,
+    MachineGateway, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
+    MachineRpcClient, MachineRpcServer, MachineSelector, MachineSubnet, MachineSuccess,
+    MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR, PartialResult,
+    Placement, PortPublication, PreDeployHook, PublicIpDiscovery, PublicIpUpdate, PullPolicy,
+    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
+    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
+    VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -110,6 +111,108 @@ fn machine_name_accepts_lowercase_dns_labels() {
         MachineName::parse("machine-a").unwrap().as_str(),
         "machine-a"
     );
+}
+
+#[test]
+fn ingress_host_rejects_empty_and_invalid_names() {
+    assert_eq!(
+        IngressHost::parse("").unwrap_err().to_string(),
+        "invalid Ingress Hostname \"\": a 1-253 character lowercase DNS hostname"
+    );
+    assert!(IngressHost::parse("Example.com").is_err());
+    assert!(IngressHost::parse("bad_host.example").is_err());
+    assert!(IngressHost::parse(".example.com").is_err());
+    assert_eq!(
+        IngressHost::parse("app.example.com").unwrap().as_str(),
+        "app.example.com"
+    );
+}
+
+#[test]
+fn machine_subnet_rejects_prefixes_that_are_not_slash_24() {
+    assert_eq!(
+        MachineSubnet::parse("10.210.0.0/16")
+            .unwrap_err()
+            .to_string(),
+        "invalid Machine Subnet \"10.210.0.0/16\": an IPv4 /24 CIDR"
+    );
+    assert_eq!(
+        MachineSubnet::parse("10.210.7.1/32")
+            .unwrap_err()
+            .to_string(),
+        "invalid Machine Subnet \"10.210.7.1/32\": an IPv4 /24 CIDR"
+    );
+    assert_eq!(
+        MachineSubnet::parse("not-a-cidr").unwrap_err().to_string(),
+        "invalid Machine Subnet \"not-a-cidr\": an IPv4 /24 CIDR"
+    );
+    assert!(serde_json::from_str::<MachineSubnet>("\"10.210.0.0/16\"").is_err());
+    assert!(MachineSubnet::try_from("10.210.0.0/16".parse::<ipnet::Ipv4Net>().unwrap()).is_err());
+}
+
+#[test]
+fn machine_subnet_exposes_its_gateway_and_stays_a_cidr_string() {
+    let subnet = MachineSubnet::parse("10.210.7.0/24").unwrap();
+    assert_eq!(
+        subnet.gateway(),
+        MachineGateway(Ipv4Addr::new(10, 210, 7, 1))
+    );
+    assert_eq!(serde_json::to_string(&subnet).unwrap(), "\"10.210.7.0/24\"");
+    assert_eq!(
+        serde_json::from_str::<MachineSubnet>("\"10.210.7.0/24\"").unwrap(),
+        subnet
+    );
+    assert_eq!(MachineSubnet::parse("10.210.7.5/24").unwrap(), subnet);
+    assert_eq!(
+        serde_json::to_string(&MachineSubnet::parse("10.210.7.5/24").unwrap()).unwrap(),
+        "\"10.210.7.0/24\""
+    );
+}
+
+#[test]
+fn ingress_hostname_intent_is_explicit_or_assigned() {
+    assert_eq!(
+        serde_json::to_value(IngressHostname::AssignFromClusterDomain).unwrap(),
+        json!({ "kind": "assign_from_cluster_domain" })
+    );
+    assert_eq!(
+        serde_json::to_value(IngressHostname::explicit("app.example.com").unwrap()).unwrap(),
+        json!({ "kind": "explicit", "hostname": "app.example.com" })
+    );
+    assert!(
+        serde_json::from_value::<PortPublication>(json!({
+            "mode": "ingress",
+            "hostname": "",
+            "load_balancer_port": 80,
+            "container_port": 8080,
+            "http_protocol": "http"
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<PortPublication>(json!({
+            "mode": "ingress_transport",
+            "container_port": 53,
+            "transport_protocol": "udp"
+        }))
+        .is_err()
+    );
+    let assigned: PortPublication = serde_json::from_value(json!({
+        "mode": "ingress",
+        "hostname": { "kind": "assign_from_cluster_domain" },
+        "load_balancer_port": 80,
+        "container_port": 8080,
+        "http_protocol": "http"
+    }))
+    .unwrap();
+    assert!(matches!(
+        assigned,
+        PortPublication::Ingress {
+            hostname: IngressHostname::AssignFromClusterDomain,
+            http_protocol: HttpProtocol::Http,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -775,7 +878,14 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         environment: Default::default(),
         cap_add: vec!["NET_ADMIN".into()],
         cap_drop: Vec::new(),
-        healthcheck: None,
+        healthcheck: Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {
+            test: HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
+            interval_millis: Some(1_000),
+            timeout_millis: None,
+            start_period_millis: None,
+            start_interval_millis: None,
+            retries: Some(3),
+        })),
         pull_policy: PullPolicy::Missing,
         init: None,
         user: None,
@@ -888,8 +998,8 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
 macro_rules! compile_fixture {
     (
         package $package:literal
-        unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty),)+ }
-        server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal),)+ }
+        unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
+        server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
     ) => {
         struct CompileFixture;
         type EmptyRpcStream =

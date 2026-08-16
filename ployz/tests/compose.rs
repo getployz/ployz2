@@ -11,8 +11,8 @@ use ployz::{
     deploy::{DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanError},
 };
 use ployz_core::{
-    HostBind, HttpProtocol, PortPublication, RestartPolicy, ServiceMode, TransportProtocol,
-    UpdateOrder, VolumeSource,
+    HostBind, HttpProtocol, IngressHostname, PortPublication, RestartPolicy, ServiceMode,
+    TransportProtocol, UpdateOrder, VolumeSource,
 };
 
 #[path = "compose/support.rs"]
@@ -163,7 +163,11 @@ configs:
         65_535
     );
     assert_eq!(
-        api.container.healthcheck.as_ref().unwrap().interval_millis,
+        api.container
+            .healthcheck
+            .as_ref()
+            .and_then(ployz_core::HealthcheckSpec::as_configured)
+            .and_then(|healthcheck| healthcheck.interval_millis),
         Some(90_000)
     );
     assert_eq!(api.container.log_driver.as_ref().unwrap().name, "local");
@@ -190,7 +194,9 @@ configs:
             load_balancer_port,
             container_port,
             http_protocol: HttpProtocol::Https,
-        } if hostname == "api.example.com" && load_balancer_port.get() == 8443 && container_port.get() == 8080
+        } if *hostname == IngressHostname::explicit("api.example.com").unwrap()
+            && load_balancer_port.get() == 8443
+            && container_port.get() == 8080
     ));
     assert!(matches!(
         api.ports.get(1).unwrap(),
@@ -232,6 +238,24 @@ configs:
         service(&project, "caddy").caddy_config.as_deref(),
         Some("app.example { reverse_proxy :80 }")
     );
+}
+
+#[test]
+fn compose_maps_disabled_and_sentinel_healthchecks() {
+    for yaml in [
+        "services: {app: {image: app, healthcheck: {disable: true}}}",
+        "services: {app: {image: app, healthcheck: {disable: true, test: [CMD, true]}}}",
+        "services: {app: {image: app, healthcheck: {test: [NONE]}}}",
+        "services: {app: {image: app, healthcheck: {test: [NONE, CMD, true]}}}",
+        "services: {app: {image: app, healthcheck: {test: NONE}}}",
+    ] {
+        let project = parse_normalized(yaml, ".").unwrap();
+        assert_eq!(
+            service(&project, "app").container.healthcheck,
+            Some(ployz_core::HealthcheckSpec::Disabled),
+            "{yaml}"
+        );
+    }
 }
 
 #[test]
@@ -313,8 +337,12 @@ secrets:
             "cpus must be numeric",
         ),
         (
-            "services: {app: {image: app, healthcheck: {interval: eventually}}}",
+            "services: {app: {image: app, healthcheck: {test: [CMD, true], interval: eventually}}}",
             "invalid duration",
+        ),
+        (
+            "services: {app: {image: app, healthcheck: {interval: 10s}}}",
+            "non-empty command",
         ),
         (
             "services: {app: {image: app, volumes: [{type: tmpfs, target: /tmp, tmpfs: {size: huge}}]}}",
@@ -359,6 +387,7 @@ services:
         .to_string()
         .contains("invalid x-caddy key")
     );
+
     let ipv6 = parse_normalized(
         "services: {app: {image: app, ports: [{target: 80, published: 8080, host_ip: '[2001:db8::]/64', mode: host}]}}",
         ".",
