@@ -1,9 +1,14 @@
-use std::{collections::BTreeSet, net::SocketAddr, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::{self, Display, Formatter},
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, CreateDomainRecordsRequest, DnsRecord, DnsRecordType, HttpProtocol,
-    IngressHost, IngressHostname, InspectRequest, Machine, MachineId, MachineTarget,
-    PortPublication, RequestedServiceSpec, op,
+    CADDY_VERIFY_PATH, ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, DnsRecordType,
+    HttpProtocol, IngressHost, IngressHostname, InspectRequest, Machine, MachineId, MachineTarget,
+    PortPublication, RequestedServiceSpec, cluster_dns_verdict, custom_ingress_host, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -201,7 +206,7 @@ pub fn expand_ingress_ports(
             }
             IngressHostname::Explicit { hostname: existing } => {
                 if let (Some(domain), Some(assigned)) = (domain, assigned.as_ref())
-                    && !existing.as_str().ends_with(&format!(".{domain}"))
+                    && !existing.under_cluster_domain(Some(domain))
                 {
                     extras.push(PortPublication::Ingress {
                         hostname: IngressHostname::Explicit {
@@ -219,6 +224,116 @@ pub fn expand_ingress_ports(
     Ok(())
 }
 
+/// A custom Ingress Hostname that does not resolve into this Cluster.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IngressDnsWarning {
+    pub hostname: IngressHost,
+    pub resolved: Vec<IpAddr>,
+    pub cluster_addresses: Vec<IpAddr>,
+    pub mentions_certificates: bool,
+}
+
+impl Display for IngressDnsWarning {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let should = join_addresses(&self.cluster_addresses);
+        if self.resolved.is_empty() {
+            write!(
+                f,
+                "Ingress Hostname {} does not resolve; it should resolve to {should}.",
+                self.hostname
+            )?;
+        } else {
+            write!(
+                f,
+                "Ingress Hostname {} resolves to {}; it should resolve to {should}.",
+                self.hostname,
+                join_addresses(&self.resolved)
+            )?;
+        }
+        if self.mentions_certificates {
+            write!(
+                f,
+                " A certificate cannot be issued until it points at this Cluster."
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn join_addresses(addresses: &[IpAddr]) -> String {
+    if addresses.is_empty() {
+        return "this Cluster's Machine addresses (none are published)".into();
+    }
+    addresses
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Collect Deploy warnings for custom Ingress Hostnames that miss this Cluster.
+pub fn ingress_dns_warnings<'a>(
+    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
+    cluster_domain: Option<&str>,
+    cluster_addresses: &[IpAddr],
+    mut resolve: impl FnMut(&IngressHost) -> Vec<IpAddr>,
+) -> Vec<IngressDnsWarning> {
+    let mut targets = BTreeMap::new();
+    for spec in specs {
+        for port in &spec.ports {
+            let PortPublication::Ingress {
+                hostname,
+                http_protocol,
+                ..
+            } = port
+            else {
+                continue;
+            };
+            let Some(hostname) = custom_ingress_host(hostname, cluster_domain) else {
+                continue;
+            };
+            let mentions_certificates = *http_protocol == HttpProtocol::Https;
+            targets
+                .entry(hostname.clone())
+                .and_modify(|mentions: &mut bool| *mentions |= mentions_certificates)
+                .or_insert(mentions_certificates);
+        }
+    }
+    targets
+        .into_iter()
+        .filter_map(|(hostname, mentions_certificates)| {
+            let resolved = unique_addresses(resolve(&hostname));
+            match cluster_dns_verdict(&resolved, cluster_addresses) {
+                ClusterDnsVerdict::PointsAtCluster => None,
+                ClusterDnsVerdict::DoesNotResolve | ClusterDnsVerdict::ResolvesElsewhere => {
+                    Some(IngressDnsWarning {
+                        hostname,
+                        resolved,
+                        cluster_addresses: cluster_addresses.to_vec(),
+                        mentions_certificates,
+                    })
+                }
+            }
+        })
+        .collect()
+}
+
+fn unique_addresses(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
+    addresses
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Resolve A/AAAA addresses for an Ingress Hostname. Lookup failure is an empty set.
+pub async fn resolve_ingress_addresses(hostname: &str) -> Vec<IpAddr> {
+    match tokio::net::lookup_host((hostname, 0)).await {
+        Ok(addresses) => unique_addresses(addresses.map(|address| address.ip()).collect()),
+        Err(_) => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::IpAddr;
@@ -231,8 +346,9 @@ mod tests {
     };
 
     use super::{
-        DomainRequired, NoReachableMachines, expand_ingress_ports, reachability_matches,
-        records_from_machines,
+        DomainRequired, IngressDnsWarning, NoReachableMachines, expand_ingress_ports,
+        ingress_dns_warnings, reachability_matches, records_from_machines,
+        resolve_ingress_addresses,
     };
 
     #[test]
@@ -363,6 +479,104 @@ mod tests {
             container_port: NonZeroU16::new(8080).unwrap(),
             http_protocol,
         }
+    }
+
+    #[test]
+    fn custom_hostname_warnings_name_the_addresses_and_still_leave_deploy_unblocked() {
+        let cluster = ["192.0.2.1".parse().unwrap(), "192.0.2.2".parse().unwrap()];
+        let elsewhere = vec!["198.51.100.10".parse().unwrap()];
+        let spec = requested(vec![
+            ingress(explicit("app.example.com"), HttpProtocol::Https),
+            ingress(explicit("web.opaque.uncloud.example"), HttpProtocol::Https),
+            ingress(
+                IngressHostname::AssignFromClusterDomain,
+                HttpProtocol::Https,
+            ),
+            ingress(explicit("plain.example.com"), HttpProtocol::Http),
+            PortPublication::Host {
+                bind: ployz_core::HostBind::All,
+                published_port: NonZeroU16::new(8080).unwrap(),
+                container_port: NonZeroU16::new(8080).unwrap(),
+                transport_protocol: ployz_core::TransportProtocol::Tcp,
+            },
+        ]);
+
+        let warnings = ingress_dns_warnings(
+            [&spec],
+            Some("opaque.uncloud.example"),
+            &cluster,
+            |hostname| match hostname.as_str() {
+                "app.example.com" => elsewhere.clone(),
+                "plain.example.com" => Vec::new(),
+                other => panic!("Cluster Domain hostname {other} must not be resolved"),
+            },
+        );
+
+        let lines = warnings.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            lines,
+            [
+                "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1, 192.0.2.2. A certificate cannot be issued until it points at this Cluster.",
+                "Ingress Hostname plain.example.com does not resolve; it should resolve to 192.0.2.1, 192.0.2.2.",
+            ]
+        );
+        let http = lines
+            .iter()
+            .find(|line| line.contains("plain.example.com"))
+            .expect("http hostname warning");
+        assert!(
+            !http.to_ascii_lowercase().contains("certificate"),
+            "http warnings must not mention certificates: {http}"
+        );
+    }
+
+    #[test]
+    fn pointing_at_any_cluster_address_is_enough_and_https_wins_for_one_hostname() {
+        let cluster = ["192.0.2.1".parse().unwrap()];
+        let spec = requested(vec![
+            ingress(explicit("ok.example.com"), HttpProtocol::Https),
+            ingress(explicit("mix.example.com"), HttpProtocol::Http),
+            ingress(explicit("mix.example.com"), HttpProtocol::Https),
+        ]);
+        let warnings = ingress_dns_warnings([&spec], None, &cluster, |hostname| {
+            match hostname.as_str() {
+                "ok.example.com" => vec![
+                    "198.51.100.10".parse().unwrap(),
+                    "192.0.2.1".parse().unwrap(),
+                ],
+                "mix.example.com" => Vec::new(),
+                other => panic!("unexpected {other}"),
+            }
+        });
+        assert_eq!(
+            warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "Ingress Hostname mix.example.com does not resolve; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster."
+            ]
+        );
+    }
+
+    #[test]
+    fn warning_display_uses_the_unpublished_address_phrase() {
+        let warning = IngressDnsWarning {
+            hostname: ployz_core::IngressHost::parse("app.example.com").unwrap(),
+            resolved: vec!["198.51.100.10".parse().unwrap()],
+            cluster_addresses: Vec::new(),
+            mentions_certificates: false,
+        };
+        assert_eq!(
+            warning.to_string(),
+            "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to this Cluster's Machine addresses (none are published)."
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_tlds_resolve_to_nothing() {
+        assert!(
+            resolve_ingress_addresses("no-such-host.invalid")
+                .await
+                .is_empty()
+        );
     }
 
     fn machine(seed: char, public_ip: &str) -> Machine {

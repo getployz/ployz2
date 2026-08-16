@@ -15,8 +15,8 @@ use crate::{
 use super::{
     DeployOperation, DeployOutcome, ExecutionError, FailedOperation, ReplacementOperation,
     pipeline::{
-        DeployPreview, ObservationWarning, PushOutcome, execute_deploy, list_machines,
-        plan_options, plan_project, plan_scale, plan_spec, push_project_images,
+        DeployPreview, PushOutcome, execute_deploy, list_machines, plan_options, plan_project,
+        plan_scale, plan_spec, push_project_images,
     },
 };
 
@@ -96,16 +96,7 @@ fn print_pushed_images(outcome: &PushOutcome) {
 
 fn print_warnings(preview: &DeployPreview) {
     for warning in &preview.warnings {
-        match warning {
-            ObservationWarning::Failed {
-                kind,
-                machine_id,
-                message,
-            } => eprintln!("WARNING: {kind} observation failed on {machine_id}: {message}"),
-            ObservationWarning::Omitted { kind, machine_id } => {
-                eprintln!("WARNING: {kind} observation omitted {machine_id}");
-            }
-        }
+        eprintln!("WARNING: {warning}");
     }
 }
 
