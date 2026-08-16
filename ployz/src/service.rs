@@ -1,6 +1,5 @@
 use ployz_core::{
-    CreateVolumeRequest, MachineId, MachineSelector, PartialResult, RpcError, ServiceSelectorError,
-    op,
+    CreateVolumeRequest, MachineId, MachineSelector, RpcError, ServiceSelectorError, op,
 };
 use thiserror::Error;
 
@@ -12,11 +11,6 @@ pub enum ServiceClientError {
     Connect(#[from] ConnectError),
     #[error(transparent)]
     Selector(#[from] ServiceSelectorError),
-}
-
-pub struct LifecycleResult {
-    pub observations: PartialResult<Vec<ployz_core::ContainerObservation>, RpcError>,
-    pub outcomes: PartialResult<ployz_core::ContainerId, ContainerOperationFailure>,
 }
 
 #[derive(Clone, Debug)]
