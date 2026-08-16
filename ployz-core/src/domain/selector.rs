@@ -40,10 +40,10 @@ impl ContainerSelector {
     ///
     /// Returns [`ContainerSelectorError::NotFound`] when no Container matches, or
     /// [`ContainerSelectorError::Ambiguous`] when a name or prefix matches more than one Container.
-    pub fn resolve<'a>(
+    pub fn resolve<'a, T: AsRef<ContainerObservation>>(
         &self,
-        containers: impl IntoIterator<Item = &'a ContainerObservation>,
-    ) -> Result<&'a ContainerObservation, ContainerSelectorError> {
+        containers: impl IntoIterator<Item = &'a T>,
+    ) -> Result<&'a T, ContainerSelectorError> {
         resolve_container_selector(containers, self)
     }
 }
@@ -67,22 +67,22 @@ pub enum ContainerSelectorError {
 ///
 /// Returns [`ContainerSelectorError::NotFound`] when no Container matches, or
 /// [`ContainerSelectorError::Ambiguous`] when a name or prefix matches more than one Container.
-pub fn resolve_container_selector<'a>(
-    containers: impl IntoIterator<Item = &'a ContainerObservation>,
+pub fn resolve_container_selector<'a, T: AsRef<ContainerObservation>>(
+    containers: impl IntoIterator<Item = &'a T>,
     selector: &ContainerSelector,
-) -> Result<&'a ContainerObservation, ContainerSelectorError> {
+) -> Result<&'a T, ContainerSelectorError> {
     let containers = containers.into_iter().collect::<Vec<_>>();
     if let Some(container) = containers
         .iter()
         .copied()
-        .find(|container| container.container_id.as_str() == selector.as_str())
+        .find(|container| container.as_ref().container_id.as_str() == selector.as_str())
     {
         return Ok(container);
     }
     let named = containers
         .iter()
         .copied()
-        .filter(|container| container.display_name == selector.as_str())
+        .filter(|container| container.as_ref().display_name == selector.as_str())
         .collect::<Vec<_>>();
     match named.as_slice() {
         [container] => return Ok(container),
@@ -94,6 +94,7 @@ pub fn resolve_container_selector<'a>(
         .copied()
         .filter(|container| {
             container
+                .as_ref()
                 .container_id
                 .as_str()
                 .starts_with(selector.as_str())
@@ -108,15 +109,15 @@ pub fn resolve_container_selector<'a>(
     }
 }
 
-fn ambiguous(
+fn ambiguous<T: AsRef<ContainerObservation>>(
     selector: &ContainerSelector,
-    matches: Vec<&ContainerObservation>,
+    matches: Vec<&T>,
 ) -> ContainerSelectorError {
     ContainerSelectorError::Ambiguous {
         selector: selector.clone(),
         container_ids: matches
             .into_iter()
-            .map(|container| container.container_id)
+            .map(|container| container.as_ref().container_id)
             .collect(),
     }
 }

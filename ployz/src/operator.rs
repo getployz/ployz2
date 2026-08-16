@@ -179,22 +179,10 @@ pub fn select_exec_container<'a>(
             .containers
             .first()
             .ok_or(OperatorError::NoRegularContainer),
-        Some(selector) => {
-            let observation = resolve_container_selector(
-                service
-                    .containers
-                    .iter()
-                    .map(ServiceContainer::as_observation),
-                selector,
-            )?;
-            Ok(service
-                .containers
-                .iter()
-                .find(|container| {
-                    container.as_observation().container_id == observation.container_id
-                })
-                .expect("resolved Service Container must still be in the Service"))
-        }
+        Some(selector) => Ok(resolve_container_selector(
+            service.containers.iter(),
+            selector,
+        )?),
     }
 }
 
@@ -507,13 +495,7 @@ pub(crate) fn select_log_containers<'a>(
     }
     let mut selected = Vec::new();
     for selector in selectors {
-        let observation =
-            resolve_container_selector(all.iter().map(|member| member.as_observation()), selector)?;
-        let container = all
-            .iter()
-            .copied()
-            .find(|member| member.as_observation().container_id == observation.container_id)
-            .expect("resolved member must still be in the Service");
+        let container = *resolve_container_selector(all.iter(), selector)?;
         if !selected.iter().any(|selected: &ContainerRef<'a>| {
             selected.as_observation().container_id == container.as_observation().container_id
         }) {
