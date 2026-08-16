@@ -451,6 +451,7 @@ async fn deploy(
         &snapshot,
         ServiceId::random(),
         ployz::deploy::PlanOptions::default(),
+        &ployz::deploy::VolumeClaims::default(),
     )
     .unwrap();
     let outcome = ployz::deploy::execute_plan(&plan, client, &CancellationToken::new()).await;

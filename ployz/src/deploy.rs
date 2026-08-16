@@ -12,8 +12,7 @@ mod planning;
 
 pub(crate) use apply::{apply_requested, deploy_project, deploy_scale, deploy_spec};
 pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
-pub use planning::plan_deploy;
-pub(crate) use planning::volume_eligible_machine_ids;
+pub use planning::{VolumeClaims, claim_shared_volumes, plan_deploy};
 pub use ployz_core::compare_specs;
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
@@ -51,13 +50,34 @@ pub struct PlanOptions {
 pub struct DeployPlan {
     pub service_id: ServiceId,
     pub is_new_service: bool,
-    pub operation: DeployOperation,
+    pub volume_operations: Vec<DeployOperation>,
+    pub service_operations: Vec<DeployOperation>,
+    operations: Vec<DeployOperation>,
 }
 
 impl DeployPlan {
     #[must_use]
+    pub fn new(
+        service_id: ServiceId,
+        is_new_service: bool,
+        volume_operations: Vec<DeployOperation>,
+        service_operations: Vec<DeployOperation>,
+    ) -> Self {
+        let mut operations = Vec::with_capacity(volume_operations.len() + service_operations.len());
+        operations.extend(volume_operations.iter().cloned());
+        operations.extend(service_operations.iter().cloned());
+        Self {
+            service_id,
+            is_new_service,
+            volume_operations,
+            service_operations,
+            operations,
+        }
+    }
+
+    #[must_use]
     pub fn operations(&self) -> &[DeployOperation] {
-        self.operation.operations()
+        &self.operations
     }
 
     pub fn failure_outcome<E>(&self, completed_count: usize, error: E) -> Option<DeployOutcome<E>> {

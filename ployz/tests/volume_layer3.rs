@@ -10,7 +10,8 @@ use ployz::{
     connect::{SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
     deploy::{
-        DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanError, PlanOptions, plan_deploy,
+        DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanError, PlanOptions,
+        VolumeClaims, plan_deploy,
     },
     volume::{filter_volumes, machine_volumes},
 };
@@ -328,6 +329,7 @@ volumes: {data: {name: compose_data}}
         &live_snapshot(client, machines).await,
         ServiceId::random(),
         PlanOptions::default(),
+        &VolumeClaims::default(),
     )
     .unwrap();
     assert!(matches!(
@@ -361,6 +363,7 @@ volumes: {data: {name: compose_data}}
         &live_snapshot(client, machines).await,
         ServiceId::random(),
         PlanOptions::default(),
+        &VolumeClaims::default(),
     )
     .unwrap();
     assert!(matches!(
@@ -380,6 +383,7 @@ volumes: {data: {name: compose_data}}
         &live_snapshot(client, machines).await,
         ServiceId::random(),
         PlanOptions::default(),
+        &VolumeClaims::default(),
     )
     .unwrap();
     assert_eq!(
@@ -409,6 +413,7 @@ volumes: {data: {name: compose_data}}
         &live_snapshot(client, machines).await,
         ServiceId::random(),
         PlanOptions::default(),
+        &VolumeClaims::default(),
     )
     .unwrap();
     assert!(matches!(
@@ -431,6 +436,7 @@ volumes: {data: {name: compose_data}}
         &live_snapshot(client, machines).await,
         ServiceId::random(),
         PlanOptions::default(),
+        &VolumeClaims::default(),
     )
     .unwrap();
     assert!(
@@ -472,6 +478,7 @@ volumes: {data: {name: compose_data}}
         &snapshot,
         ServiceId::random(),
         PlanOptions::default(),
+        &VolumeClaims::default(),
     )
     .unwrap();
     assert!(plan.operations().iter().all(|operation| matches!(
@@ -494,6 +501,7 @@ volumes: {data: {name: compose_data}}
             &snapshot,
             ServiceId::random(),
             PlanOptions::default(),
+            &VolumeClaims::default(),
         ),
         Err(PlanError::NoEligibleMachines)
     );

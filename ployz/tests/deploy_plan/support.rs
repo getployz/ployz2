@@ -5,8 +5,23 @@ pub(super) use std::{
 
 pub(super) use ployz::deploy::{
     DeployOperation, DeployPlan, DeploySnapshot, FailedOperation, PlanError, PlanOptions,
-    ReplacementCompensation, ReplacementOperation, RestartAttempt, compare_specs, plan_deploy,
+    ReplacementCompensation, ReplacementOperation, RestartAttempt, VolumeClaims, compare_specs,
 };
+
+pub(super) fn plan_deploy(
+    requested: &RequestedServiceSpec,
+    snapshot: &DeploySnapshot,
+    new_service_id: ServiceId,
+    options: PlanOptions,
+) -> Result<DeployPlan, PlanError> {
+    ployz::deploy::plan_deploy(
+        requested,
+        snapshot,
+        new_service_id,
+        options,
+        &VolumeClaims::default(),
+    )
+}
 pub(super) use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation, ContainerPath,
     ContainerResources, ContainerRuntimeObservation, DeviceMapping, DeviceReservation,

@@ -383,11 +383,7 @@ fn failed_hook_id(
 }
 
 fn deploy_plan(service_id: ServiceId, operations: Vec<DeployOperation>) -> DeployPlan {
-    DeployPlan {
-        service_id,
-        is_new_service: true,
-        operation: DeployOperation::Sequence { operations },
-    }
+    DeployPlan::new(service_id, true, Vec::new(), operations)
 }
 
 fn named_volume(reference: &str, name: &str) -> ServiceVolume {

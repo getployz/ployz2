@@ -104,13 +104,12 @@ fn public_outcome_counts_follow_the_shallow_operations_view() {
         machine_id,
         container_id: container_id('c'),
     };
-    let plan = DeployPlan {
-        service_id: service_id('a'),
-        is_new_service: false,
-        operation: DeployOperation::Sequence {
-            operations: vec![nested.clone(), tail.clone()],
-        },
-    };
+    let plan = DeployPlan::new(
+        service_id('a'),
+        false,
+        Vec::new(),
+        vec![nested.clone(), tail.clone()],
+    );
 
     let outcome = plan.failure_outcome(1, "failed").unwrap();
 

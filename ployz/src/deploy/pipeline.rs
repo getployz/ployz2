@@ -24,7 +24,7 @@ use crate::{
 
 use super::{
     DeployOperation, DeployOutcome, DeployPlan, DeploySnapshot, ExecutionError, PlanOptions,
-    exec::execute_operations, plan_deploy,
+    VolumeClaims, exec::execute_operations, plan_deploy,
 };
 
 /// Observer-relative plan-plus-warnings offered for confirmation before one Deploy executes.
@@ -87,6 +87,7 @@ pub(super) async fn plan_spec(
         &snapshot,
         ServiceId::random(),
         plan_options(false, false),
+        &VolumeClaims::default(),
     )?;
     Ok(DeployPreview {
         operations: plan.operations().to_vec(),
@@ -194,6 +195,7 @@ fn scale_plan(
         snapshot,
         service.service_id,
         plan_options(false, false),
+        &VolumeClaims::default(),
     )?))
 }
 

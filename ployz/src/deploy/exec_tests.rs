@@ -157,11 +157,7 @@ mod hooks;
 mod replacement;
 
 fn plan(operations: Vec<DeployOperation>) -> DeployPlan {
-    DeployPlan {
-        service_id: service_id(),
-        is_new_service: true,
-        operation: DeployOperation::Sequence { operations },
-    }
+    DeployPlan::new(service_id(), true, Vec::new(), operations)
 }
 
 fn run(
