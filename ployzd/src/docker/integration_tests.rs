@@ -681,13 +681,23 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         operation.put(&hook, &spec).await.unwrap();
     }
 
-    let observer =
-        ContainerObserver::new(runtime, replicated.clone(), Arc::clone(&local), machine_id)
-            .with_rescan_interval(Duration::from_secs(3));
     let shutdown = CancellationToken::new();
     let task = tokio::spawn({
         let shutdown = shutdown.clone();
-        async move { observer.run(shutdown).await }
+        let runtime = runtime.clone();
+        let replicated = replicated.clone();
+        let local = Arc::clone(&local);
+        async move {
+            runtime
+                .publish_observations_with_rescan(
+                    replicated,
+                    local,
+                    machine_id,
+                    shutdown,
+                    Duration::from_secs(3),
+                )
+                .await
+        }
     });
 
     wait_for(Duration::from_secs(5), || async {
@@ -820,13 +830,13 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     let invalid_socket = root.0.join("not-docker.sock");
     fs::write(&invalid_socket, []).unwrap();
     let failed_docker = LocalDocker::connect_socket(invalid_socket.to_str().unwrap()).unwrap();
-    let failed_observer = ContainerObserver::new(
-        ContainerRuntime::new(failed_docker, specs),
-        replicated.clone(),
-        local,
-        machine_id,
+    let failed_runtime = ContainerRuntime::new(failed_docker, specs);
+    assert!(
+        failed_runtime
+            .sync_observations(&replicated, &local, &machine_id)
+            .await
+            .is_err()
     );
-    assert!(failed_observer.sync_once().await.is_err());
     assert_eq!(
         replicated.raw_container(&service).await.unwrap(),
         before_failure
