@@ -1304,7 +1304,13 @@ mod tests {
     #[test]
     fn unknown_unrelated_docker_fields_use_raw_fallback() {
         let mut value = inspect_json();
-        value["HostConfig"] = json!({ "Isolation": "future-isolation" });
+        value
+            .as_object_mut()
+            .expect("inspect fixture is an object")
+            .insert(
+                "HostConfig".into(),
+                json!({ "Isolation": "future-isolation" }),
+            );
         assert!(serde_json::from_value::<ContainerInspectResponse>(value.clone()).is_err());
         let inspected = decode_raw_inspect(
             Err(bollard::errors::Error::JsonDataError {
