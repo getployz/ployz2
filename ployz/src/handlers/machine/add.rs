@@ -126,9 +126,6 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         None
     };
     let caddy_error = caddy.and_then(Result::err);
-    if let Some(error) = &caddy_error {
-        eprintln!("{}", caddy_follow_on_warning(error));
-    }
     let dns_result = runtime()?.block_on(async {
         let mut entry = connect_client(matches, options.context()).await?;
         crate::dns::update_records_if_reserved(&mut entry).await?;
@@ -138,7 +135,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         eprintln!("WARNING: hosted DNS refresh failed after adding the Machine: {error}.");
     }
     if let Some(error) = caddy_error {
-        return Err(Error::usage(error));
+        return Err(Error::usage(caddy_follow_on_error(&error)));
     }
     dns_result
 }
@@ -181,10 +178,8 @@ fn added_machine_line(assigned: &Machine) -> String {
     format!("Added Machine {} ({})", assigned.name, assigned.id)
 }
 
-fn caddy_follow_on_warning(error: &str) -> String {
-    format!(
-        "WARNING: Caddy Deploy failed after adding the Machine: {error}. Run `caddy deploy` to retry."
-    )
+fn caddy_follow_on_error(error: &str) -> String {
+    format!("Caddy Deploy failed after adding the Machine: {error}. Run `caddy deploy` to retry.")
 }
 
 #[cfg(test)]
@@ -206,15 +201,20 @@ mod tests {
     }
 
     #[test]
-    fn caddy_deploy_failure_after_add_warns_operator_to_run_caddy_deploy() {
-        let warning = caddy_follow_on_warning("deploy timed out");
+    fn caddy_deploy_failure_after_add_is_reported_once() {
+        let error = caddy_follow_on_error("deploy timed out");
         assert!(
-            warning.contains("`caddy deploy`"),
-            "warning must tell the operator to run `caddy deploy`, got {warning:?}"
+            error.contains("`caddy deploy`"),
+            "failure must tell the operator to run `caddy deploy`, got {error:?}"
         );
         assert!(
-            warning.contains("deploy timed out"),
-            "warning must include the follow-on failure, got {warning:?}"
+            error.contains("deploy timed out"),
+            "failure must include the follow-on error, got {error:?}"
+        );
+        assert_eq!(
+            error.matches("deploy timed out").count(),
+            1,
+            "failure must report the error once, got {error:?}"
         );
     }
 

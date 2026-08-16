@@ -1,4 +1,5 @@
 - `product-identity` — Rename `uc`, `--uncloud-config`, `UNCLOUD_*`, and the config path to Ployz-owned names; product identity must not expose compatibility aliases.
+- `root-version-flag` — Accept `ployz --version` and `ployz -V` on the root command so the CLI version is available without a subcommand. The frozen `uc` page dropped this flag when Uncloud replaced it with `uc version`.
 - `plain-caddy-config` — Drop `ployz caddy config --no-color`; the Machine RPC returns the owned Caddyfile as plain text and Ployz has no coloured mode to disable.
 - `native-completion` — Add `ployz completion <SHELL>`; completion is preserved through Clap's native shell generators rather than Cobra's hidden protocol.
 - `local-machine-init-stub` — Make `ployz machine init [DESTINATION]` syntactically optional so the preserved local-initialisation path reaches its explicit not-implemented handler.
@@ -9,3 +10,5 @@
 - `volume-remove-auto-confirm-env` — Let `ployz volume rm --yes` read `PLOYZ_AUTO_CONFIRM`, preserving the configured auto-confirm path required by the Volume workflow.
 - `fixed-wireguard-port` — Keep `ployz machine add --wg-port` at the daemon-supported port 51820; reject other values instead of advertising a port the WireGuard interface and firewall do not apply.
 - `direct-push-reference-boundary` — Reject digest and port-qualified-registry references for direct image push: Docker cannot push a digest or nest a registry-port colon below the temporary loopback registry without changing the reference. Build resolution remains exact, and external `--push-registry` delivery remains supported.
+- `images-json-output` — Add `-o, --output json` to `ployz images` and `ployz image ls` so consumers can still read raw `CREATED` and `SIZE` after the table becomes human-formatted.
+- `scriptable-ctx-connection` — Let `ployz ctx connection [CONNECTION]` print the current default connection when omitted, and select when given, so a scripted caller can read without a TTY.

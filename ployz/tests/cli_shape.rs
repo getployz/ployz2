@@ -78,11 +78,14 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "compose-prerequisite-errors".to_owned(),
             "direct-push-reference-boundary".to_owned(),
             "fixed-wireguard-port".to_owned(),
+            "images-json-output".to_owned(),
             "local-machine-init-stub".to_owned(),
             "native-completion".to_owned(),
             "no-nightly-daemon-channel".to_owned(),
             "plain-caddy-config".to_owned(),
             "product-identity".to_owned(),
+            "root-version-flag".to_owned(),
+            "scriptable-ctx-connection".to_owned(),
             "volume-remove-auto-confirm-env".to_owned(),
         ])
     );
@@ -136,11 +139,33 @@ fn reference_shape(
         }
     }
     finish_flag(&mut flags, current);
+    if command_path == "ployz" && deviations.contains("root-version-flag") {
+        flags.insert(
+            "version".into(),
+            Flag {
+                short: Some('V'),
+                default: None,
+                env: None,
+            },
+        );
+    }
     if command_path == "ployz caddy config" && deviations.contains("plain-caddy-config") {
         flags.remove("no-color");
     }
     if command_path == "ployz volume rm" && deviations.contains("volume-remove-auto-confirm-env") {
         flags.get_mut("yes").expect("volume rm has --yes").env = Some("PLOYZ_AUTO_CONFIRM".into());
+    }
+    if matches!(command_path.as_str(), "ployz images" | "ployz image ls")
+        && deviations.contains("images-json-output")
+    {
+        flags.insert(
+            "output".into(),
+            Flag {
+                short: Some('o'),
+                default: None,
+                env: None,
+            },
+        );
     }
     let positionals = reference_positionals(markdown, &command_path, deviations);
     (command_path, flags, positionals)
@@ -355,6 +380,15 @@ fn reference_positionals(
             .expect("machine init has a destination positional")
             .1
             .required = false;
+    }
+    if command_path == "ployz ctx connection" && deviations.contains("scriptable-ctx-connection") {
+        positionals.push((
+            "connection".into(),
+            Positional {
+                required: false,
+                multiple: false,
+            },
+        ));
     }
     positionals
         .into_iter()
