@@ -20,7 +20,7 @@ use hickory_server::{
 use ipnet::Ipv4Net;
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, HealthObservation, Machine,
-    ServiceId,
+    ServiceId, ServiceName,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -28,10 +28,11 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    corrosion::{ReplicatedStore, Subscription},
-    network::machine_gateway,
-};
+use crate::corrosion::{ReplicatedStore, Subscription};
+
+mod query;
+
+use query::{InternalQuery, MachineServiceTarget, Query, Target, parse};
 
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
@@ -49,7 +50,8 @@ enum ResponsePlan {
 
 struct Projection {
     service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
-    names: HashMap<String, Vec<Ipv4Addr>>,
+    names: HashMap<ServiceName, Vec<Ipv4Addr>>,
+    machine_services: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
 }
 
 impl Projection {
@@ -57,7 +59,8 @@ impl Projection {
         // TODO(UT-117, UT-118): keep Membership Observations out of DNS projection until a
         // product decision replaces the baseline's deliberately membership-blind behavior.
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
-        let mut names = HashMap::<String, Vec<Ipv4Addr>>::new();
+        let mut names = HashMap::<ServiceName, Vec<Ipv4Addr>>::new();
+        let mut machine_services = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
         for observation in observations {
             let service_addresses = service_ids.entry(observation.service_id).or_default();
             let healthy = matches!(
@@ -73,25 +76,39 @@ impl Projection {
                 continue;
             };
             service_addresses.push(address.0);
-            for selector in [
-                observation.service_name.to_string(),
-                format!("{}.m.{}", observation.machine_id, observation.service_name),
-            ] {
-                names.entry(selector).or_default().push(address.0);
-            }
+            names
+                .entry(observation.service_name.clone())
+                .or_default()
+                .push(address.0);
+            machine_services
+                .entry(MachineServiceTarget {
+                    machine_id: observation.machine_id,
+                    service_name: observation.service_name.clone(),
+                })
+                .or_default()
+                .push(address.0);
         }
-        Self { service_ids, names }
+        Self {
+            service_ids,
+            names,
+            machine_services,
+        }
     }
 
     fn plan(&self, name: &Name, record_type: RecordType, local_subnet: Ipv4Net) -> ResponsePlan {
-        let fqdn = name.to_utf8().to_ascii_lowercase();
-        let selector = if fqdn == "internal." {
-            ""
-        } else if let Some(selector) = fqdn.strip_suffix(".internal.") {
-            selector
-        } else {
-            return ResponsePlan::Forward;
-        };
+        match parse(name) {
+            Query::Forward => ResponsePlan::Forward,
+            Query::Internal(query) => self.plan_internal(name, record_type, local_subnet, query),
+        }
+    }
+
+    fn plan_internal(
+        &self,
+        name: &Name,
+        record_type: RecordType,
+        local_subnet: Ipv4Net,
+        query: InternalQuery,
+    ) -> ResponsePlan {
         if record_type != RecordType::A {
             // TODO(UT-110): internal records remain A-only; other types return an authoritative
             // empty NOERROR response until a product decision adds them.
@@ -100,17 +117,8 @@ impl Projection {
                 answers: Vec::new(),
             };
         }
-        let (selector, nearest) = selector
-            .strip_prefix("nearest.")
-            .map_or((selector, false), |selector| (selector, true));
-        let selector = selector.strip_prefix("rr.").unwrap_or(selector);
-        let mut addresses = ServiceId::parse(selector)
-            .ok()
-            .and_then(|id| self.service_ids.get(&id))
-            .or_else(|| self.names.get(selector))
-            .cloned()
-            .unwrap_or_default();
-        if nearest {
+        let mut addresses = self.addresses(&query.target);
+        if query.nearest {
             addresses.sort_by_key(|address| !local_subnet.contains(address));
         }
         if addresses.is_empty() {
@@ -127,6 +135,24 @@ impl Projection {
         ResponsePlan::Internal {
             code: ResponseCode::NoError,
             answers,
+        }
+    }
+
+    fn addresses(&self, target: &Target) -> Vec<Ipv4Addr> {
+        match target {
+            Target::Empty => Vec::new(),
+            Target::ServiceId { id, name } => self
+                .service_ids
+                .get(id)
+                .or_else(|| self.names.get(name))
+                .cloned()
+                .unwrap_or_default(),
+            Target::ServiceName(name) => self.names.get(name).cloned().unwrap_or_default(),
+            Target::MachineService(target) => self
+                .machine_services
+                .get(target)
+                .cloned()
+                .unwrap_or_default(),
         }
     }
 }
@@ -238,7 +264,7 @@ pub async fn run(
     upstreams: Option<Vec<SocketAddr>>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    let gateway = machine_gateway(machine.subnet).map_err(io::Error::other)?.0;
+    let gateway = machine.subnet.gateway().0;
     let listen_address = SocketAddr::new(IpAddr::V4(gateway), PORT);
     let mut changes = replicated
         .subscribe_container_changes()
@@ -250,7 +276,7 @@ pub async fn run(
     )));
     let handler = Handler {
         projection: Arc::clone(&projection),
-        local_subnet: machine.subnet.0,
+        local_subnet: machine.subnet.into(),
         upstreams: configured_upstreams(upstreams, gateway),
     };
     let udp = UdpSocket::bind(listen_address).await?;
@@ -539,6 +565,14 @@ mod tests {
             )),
             vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
         );
+        assert_eq!(
+            address_set(projection.plan(
+                &Name::from_ascii("rr.api.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+            )),
+            [Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)].into()
+        );
     }
 
     #[test]
@@ -624,6 +658,17 @@ mod tests {
         let projection = Projection::from_observations(&[]);
         let subnet = "10.210.1.0/24".parse().unwrap();
 
+        assert_eq!(
+            projection.plan(
+                &Name::from_ascii("internal.").unwrap(),
+                RecordType::A,
+                subnet,
+            ),
+            ResponsePlan::Internal {
+                code: ResponseCode::NXDomain,
+                answers: Vec::new(),
+            }
+        );
         assert_eq!(
             projection.plan(
                 &Name::from_ascii("missing.internal.").unwrap(),

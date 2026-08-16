@@ -326,7 +326,7 @@ fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        Machine, MachineId, MachineName, MachineObservation, MachineSubnet, ManagementAddress,
+        Machine, MachineId, MachineName, MachineObservation, ManagementAddress,
         MembershipObservation, WireGuardPublicKey,
     };
 
@@ -370,7 +370,7 @@ mod tests {
             machine: Machine {
                 id: MachineId::parse(format!("{seed:032x}")).unwrap(),
                 name: MachineName::parse(name).unwrap(),
-                subnet: MachineSubnet(format!("10.210.{seed}.0/24").parse().unwrap()),
+                subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
                 management_address: ManagementAddress("fd00::1".parse().unwrap()),
                 public_key: WireGuardPublicKey([seed; 32]),
                 public_ip: None,

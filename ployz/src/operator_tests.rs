@@ -340,7 +340,7 @@ fn machine_observation(seed: u8, name: &str) -> MachineObservation {
         machine: ployz_core::Machine {
             id: MachineId::parse(format!("{seed:032x}")).unwrap(),
             name: MachineName::parse(name).unwrap(),
-            subnet: ployz_core::MachineSubnet(format!("10.210.{seed}.0/24").parse().unwrap()),
+            subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
             management_address: ployz_core::ManagementAddress("fd00::1".parse().unwrap()),
             public_key: ployz_core::WireGuardPublicKey([seed; 32]),
             public_ip: None,
