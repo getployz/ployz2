@@ -6,11 +6,11 @@ use ployz_core::{
     INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY, INSPECT_VOLUME_CAPABILITY,
     INSPECT_WIREGUARD_CAPABILITY, JOIN_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
     LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY,
-    MACHINE_LOGS_CAPABILITY, MACHINE_TOKEN_CAPABILITY, REGISTER_MACHINE_CAPABILITY,
-    RELEASE_DOMAIN_CAPABILITY, REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY,
-    REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY, RESERVE_DOMAIN_CAPABILITY,
-    RESET_MACHINE_CAPABILITY, Rpc, START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, op,
+    MACHINE_LOGS_CAPABILITY, MACHINE_TOKEN_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+    REGISTER_MACHINE_CAPABILITY, RELEASE_DOMAIN_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
+    REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
+    RESERVE_DOMAIN_CAPABILITY, RESET_MACHINE_CAPABILITY, Rpc, START_CONTAINER_CAPABILITY,
+    STOP_CONTAINER_CAPABILITY, UPDATE_MACHINE_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -42,6 +42,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (
             ENSURE_IMAGE_INGEST_CAPABILITY,
             "ployz.image.ingest.ensure.v1",
+        ),
+        (
+            PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+            "ployz.image.pull-from-machine.v1",
         ),
         (GET_CADDY_CONFIG_CAPABILITY, "ployz.caddy.config.v1"),
         (RESERVE_DOMAIN_CAPABILITY, "ployz.dns.reserve.v1"),
@@ -103,6 +107,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.volume.remove.v1",
             "ployz.image.list.v1",
             "ployz.image.ingest.ensure.v1",
+            "ployz.image.pull-from-machine.v1",
             "ployz.container.logs.v1",
             "ployz.machine.logs.v1",
             "ployz.container.exec.v1",
@@ -144,6 +149,10 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
     assert_eq!(
         op::EnsureImageIngest::PATH,
         "/ployz.rpc.v1.MachineRpc/EnsureImageIngest"
+    );
+    assert_eq!(
+        op::PullImageFromMachine::PATH,
+        "/ployz.rpc.v1.MachineRpc/PullImageFromMachine"
     );
     assert_eq!(
         op::CreateDomainRecords::PATH,

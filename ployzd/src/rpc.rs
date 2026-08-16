@@ -6,9 +6,9 @@ use std::{
 
 use ployz_core::{
     CaddyConfig, CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerList,
-    ContractDescription, Domain, DomainRecords, ImageIngestReason, LocalMachinePhase, LogMetadata,
-    LogOrigin, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
+    ContractDescription, Domain, DomainRecords, ImageIngestReason, ImagePulled, LocalMachinePhase,
+    LogMetadata, LogOrigin, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -511,6 +511,27 @@ impl MachineRpc for MachineService {
         match self.ingest.open(machine.subnet.gateway()).await {
             Ok(opened) => respond(opened),
             Err(error) => respond(error),
+        }
+    }
+
+    async fn pull_image_from_machine(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PullImageFromMachine>(request)?;
+        if request.image.is_empty() {
+            return respond(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "image is required".into(),
+                details: Value::Null,
+            });
+        }
+        if self.containers().is_err() {
+            return respond(unavailable("Docker is not available"));
+        }
+        match crate::docker_image::pull_from_ingest(&request.image, request.source).await {
+            Ok(()) => respond(ImagePulled {}),
+            Err(error) => respond(docker_rpc_error(error)),
         }
     }
 

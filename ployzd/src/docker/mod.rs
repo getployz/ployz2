@@ -541,6 +541,8 @@ pub enum Error {
     LocalStorePoisoned,
     #[error("system clock cannot be represented for Docker event replay: {0}")]
     Clock(String),
+    #[error("peer image pull failed: {0}")]
+    PeerPull(String),
 }
 
 impl Error {
@@ -574,7 +576,8 @@ impl Error {
             | Self::ReplicatedStore(_)
             | Self::EventStreamClosed
             | Self::LocalStorePoisoned
-            | Self::Clock(_) => RpcErrorCode::Internal,
+            | Self::Clock(_)
+            | Self::PeerPull(_) => RpcErrorCode::Internal,
         }
     }
 }

@@ -654,6 +654,63 @@ async fn image_ingest_opens_on_push_and_stays_reachable_from_containers() {
 
 #[tokio::test]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+async fn image_push_pulls_from_the_source_machine_without_opening_dest_ingest() {
+    let mut plan = ClusterPlan::new(&format!("l3-peer-pull-{}", process::id()), 2).unwrap();
+    for machine in &mut plan.machines {
+        machine
+            .daemon_args
+            .extend(["--data-dir".into(), "/var/lib/ployz/data".into()]);
+    }
+    let cluster = Cluster::create(plan).unwrap();
+    for index in 0..2 {
+        cluster
+            .shell(index, "ln -s data/corrosion /var/lib/ployz/corrosion")
+            .unwrap();
+    }
+    let machines = cluster.initialize_two().await.unwrap();
+    let gateways = [
+        machines[0].subnet.gateway().0,
+        machines[1].subnet.gateway().0,
+    ];
+    for (index, gateway) in gateways.into_iter().enumerate() {
+        assert!(
+            !image_ingest_catalog(&cluster, index, gateway),
+            "ingest must not listen until a Machine is the push source"
+        );
+    }
+    cluster
+        .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
+        .unwrap();
+    cluster
+        .shell(0, "ployz image push --platform linux/amd64 busybox:1.37.0")
+        .unwrap();
+    let ingest = [
+        image_ingest_catalog(&cluster, 0, gateways[0]),
+        image_ingest_catalog(&cluster, 1, gateways[1]),
+    ];
+    assert_ne!(
+        ingest[0], ingest[1],
+        "only the push source opens ingest; the destination pulls"
+    );
+    for index in 0..2 {
+        assert!(
+            cluster
+                .images(index, Some("busybox:1.37.0".into()))
+                .await
+                .unwrap()
+                .images
+                .iter()
+                .any(|image| image
+                    .repo_tags
+                    .iter()
+                    .any(|tag| tag.contains("busybox:1.37.0"))),
+            "machine {index} must have the image after push-once peer pull"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
 async fn multi_platform_direct_push_retains_success_beside_target_failure() {
     let mut plan = ClusterPlan::new(&format!("l3-image-push-{}", process::id()), 2).unwrap();
     plan.machines

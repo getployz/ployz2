@@ -362,6 +362,17 @@ pub struct ImageIngestOpened {
     pub destination: ImageIngestDestination,
 }
 
+/// Pull one image from another Machine's image-ingest TCP destination.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PullImageFromMachineRequest {
+    pub image: String,
+    pub source: ImageIngestDestination,
+}
+
+/// Successful `PullImageFromMachine` payload.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImagePulled {}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GetCaddyConfigRequest {}
 
@@ -760,6 +771,7 @@ define_responses! {
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     MachineImages(MachineImages) => "machine_images";
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
+    ImagePulled(ImagePulled) => "image_pulled";
     CaddyConfig(CaddyConfig) => "caddy_config";
     Domain(Domain) => "domain";
     DomainRecords(DomainRecords) => "domain_records";
