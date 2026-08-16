@@ -84,6 +84,7 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "plain-caddy-config".to_owned(),
             "product-identity".to_owned(),
             "root-version-flag".to_owned(),
+            "scriptable-ctx-connection".to_owned(),
             "volume-remove-auto-confirm-env".to_owned(),
         ])
     );
@@ -366,6 +367,15 @@ fn reference_positionals(
             .expect("machine init has a destination positional")
             .1
             .required = false;
+    }
+    if command_path == "ployz ctx connection" && deviations.contains("scriptable-ctx-connection") {
+        positionals.push((
+            "connection".into(),
+            Positional {
+                required: false,
+                multiple: false,
+            },
+        ));
     }
     positionals
         .into_iter()

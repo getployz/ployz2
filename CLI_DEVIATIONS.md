@@ -10,3 +10,4 @@
 - `volume-remove-auto-confirm-env` — Let `ployz volume rm --yes` read `PLOYZ_AUTO_CONFIRM`, preserving the configured auto-confirm path required by the Volume workflow.
 - `fixed-wireguard-port` — Keep `ployz machine add --wg-port` at the daemon-supported port 51820; reject other values instead of advertising a port the WireGuard interface and firewall do not apply.
 - `direct-push-reference-boundary` — Reject digest and port-qualified-registry references for direct image push: Docker cannot push a digest or nest a registry-port colon below the temporary loopback registry without changing the reference. Build resolution remains exact, and external `--push-registry` delivery remains supported.
+- `scriptable-ctx-connection` — Let `ployz ctx connection [CONNECTION]` print the current default connection when omitted, and select when given, so a scripted caller can read without a TTY.
