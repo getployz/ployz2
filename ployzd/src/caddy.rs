@@ -6,8 +6,9 @@ use ployz_core::{
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     fs,
     future::Future,
@@ -70,17 +71,13 @@ impl AdminClient {
     }
 
     async fn post(&self, path: &str, content_type: &str, body: String) -> Result<String, Error> {
-        self.send(
-            self.client
-                .post(format!("http://localhost{path}"))
-                .header(header::CONTENT_TYPE, content_type)
-                .body(body),
-        )
-        .await
-    }
-
-    async fn send(&self, request: reqwest::RequestBuilder) -> Result<String, Error> {
-        let response = request.send().await?;
+        let response = self
+            .client
+            .post(format!("http://localhost{path}"))
+            .header(header::CONTENT_TYPE, content_type)
+            .body(body)
+            .send()
+            .await?;
         let status = response.status();
         let body = response.text().await?;
         if status != StatusCode::OK {
@@ -107,16 +104,8 @@ impl CaddyAdmin for AdminClient {
     }
 
     async fn load(&self, json: &str) -> Result<(), Error> {
-        // Pin paths stay the same when only file bytes change. Caddy
-        // no-ops identical JSON unless this header forces a reload.
-        self.send(
-            self.client
-                .post("http://localhost/load")
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::CACHE_CONTROL, "must-revalidate")
-                .body(json.to_owned()),
-        )
-        .await?;
+        self.post("/load", "application/json", json.to_owned())
+            .await?;
         Ok(())
     }
 }
@@ -214,6 +203,7 @@ async fn reconcile<A: CaddyAdmin>(
         admin.load(&json).await?;
     }
     write_caddyfile(config_file, &caddyfile)?;
+    remove_stale_certificate_files(config_file, certificates)?;
     Ok(())
 }
 
@@ -227,14 +217,55 @@ fn write_certificate_files(
         .join(CERTS_DIR);
     prepare_directory(&directory)?;
     for (hostname, material) in certificates {
-        let cert_path = directory.join(format!("{hostname}.crt"));
-        let key_path = directory.join(format!("{hostname}.key"));
+        let stem = certificate_file_stem(hostname, material);
+        let cert_path = directory.join(format!("{stem}.crt"));
+        let key_path = directory.join(format!("{stem}.key"));
         atomic_write(&cert_path, material.certificate().as_bytes(), 0o644)?;
         set_ployz_group(&cert_path)?;
         atomic_write(&key_path, material.private_key().as_bytes(), 0o600)?;
         set_ployz_group(&key_path)?;
     }
     Ok(())
+}
+
+fn remove_stale_certificate_files(
+    config_file: &Path,
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+) -> Result<(), Error> {
+    let directory = config_file
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?
+        .join(CERTS_DIR);
+    if !directory.exists() {
+        return Ok(());
+    }
+    let keep: BTreeSet<String> = certificates
+        .iter()
+        .flat_map(|(hostname, material)| {
+            let stem = certificate_file_stem(hostname, material);
+            [format!("{stem}.crt"), format!("{stem}.key")]
+        })
+        .collect();
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !keep.contains(name) {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn certificate_file_stem(hostname: &IngressHost, material: &CertificateMaterial) -> String {
+    let mut digest = Sha256::new();
+    digest.update((material.certificate().len() as u64).to_le_bytes());
+    digest.update(material.certificate().as_bytes());
+    digest.update((material.private_key().len() as u64).to_le_bytes());
+    digest.update(material.private_key().as_bytes());
+    format!("{hostname}-{:x}", digest.finalize())
 }
 
 fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
@@ -555,10 +586,9 @@ http:// {{\n\
         write_site(&mut output, "http", hostname, &upstreams, "");
     }
     for (hostname, upstreams) in https {
-        let tls = if certificates.contains_key(hostname) {
-            format!(
-                "\ttls {CONTAINER_CERTS_DIR}/{hostname}.crt {CONTAINER_CERTS_DIR}/{hostname}.key\n"
-            )
+        let tls = if let Some(material) = certificates.get(hostname) {
+            let stem = certificate_file_stem(hostname, material);
+            format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n")
         } else {
             String::new()
         };

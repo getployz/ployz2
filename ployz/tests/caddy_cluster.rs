@@ -222,9 +222,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     let (first_cert, first_key) = self_signed_material("secure.example.test", "first");
     publish_certificate_row(&cluster, 0, "secure.example.test", &first_cert, &first_key);
     wait_config(&mut client, &first, |config| {
-        config.contains(
-            "tls /config/certs/secure.example.test.crt /config/certs/secure.example.test.key",
-        )
+        config.contains("tls /config/certs/secure.example.test-")
     })
     .await;
     assert_eq!(curl_https(&cluster, 0, &first_cert).trim(), "ok");
@@ -262,9 +260,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
         ],
     );
     wait_config(&mut client, &second, |config| {
-        config.contains(
-            "tls /config/certs/secure.example.test.crt /config/certs/secure.example.test.key",
-        )
+        config.contains("tls /config/certs/secure.example.test-")
     })
     .await;
     tokio::time::timeout(Duration::from_secs(60), async {

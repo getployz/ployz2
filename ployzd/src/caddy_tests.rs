@@ -8,6 +8,7 @@ use ployz_core::{
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::sync::Mutex;
 
 use super::{CONFIG_FILE, CaddyAdmin, Error, automatic_caddyfile, generate_caddyfile, reconcile};
@@ -112,15 +113,22 @@ fn https_site_with_material_pins_tls_paths() {
         &certificates,
     );
 
-    assert!(caddyfile.contains(
-        "https://secure.example.com {\n\
-\ttls /config/certs/secure.example.com.crt /config/certs/secure.example.com.key\n\
-\treverse_proxy 10.210.1.2:8443 {\n\
+    let pin = pinned_tls_line(&caddyfile, "secure.example.com").expect("https pin");
+    assert!(
+        pin.contains("tls /config/certs/secure.example.com-")
+            && pin.contains(".crt")
+            && pin.contains(".key"),
+        "{pin}"
+    );
+    assert!(caddyfile.contains(&format!(
+        "https://secure.example.com {{\n\
+{pin}\n\
+\treverse_proxy 10.210.1.2:8443 {{\n\
 \t\timport common_proxy\n\
-\t}\n\
+\t}}\n\
 \tlog\n\
-}\n"
-    ));
+}}\n"
+    )));
     assert!(caddyfile.contains(
         "http://example.com {\n\
 \treverse_proxy 10.210.1.2:80 {\n\
@@ -130,6 +138,46 @@ fn https_site_with_material_pins_tls_paths() {
 }\n"
     ));
     assert!(!caddyfile.contains("tls /config/certs/example.com"));
+}
+
+#[test]
+fn changing_material_changes_the_pin_paths() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
+    )];
+    let containers = service_containers(observations);
+    let first = automatic_caddyfile(
+        &local,
+        "node-a",
+        &containers,
+        "TIMESTAMP",
+        None,
+        &BTreeMap::from([(
+            IngressHost::parse("secure.example.com").unwrap(),
+            CertificateMaterial::new("CERT", "KEY").unwrap(),
+        )]),
+    );
+    let second = automatic_caddyfile(
+        &local,
+        "node-a",
+        &containers,
+        "TIMESTAMP",
+        None,
+        &BTreeMap::from([(
+            IngressHost::parse("secure.example.com").unwrap(),
+            CertificateMaterial::new("CERT-2", "KEY-2").unwrap(),
+        )]),
+    );
+
+    assert_ne!(
+        pinned_tls_line(&first, "secure.example.com"),
+        pinned_tls_line(&second, "secure.example.com")
+    );
 }
 
 #[test]
@@ -556,30 +604,62 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
         CertificateMaterial::new("CERT-BODY", "KEY-BODY").unwrap(),
     )]);
     let admin = FakeAdmin::default();
+    let certs = directory.join("certs");
+    std::fs::create_dir_all(&certs).unwrap();
+    let stale_cert = certs.join("secure.example.com-old.crt");
+    let stale_key = certs.join("secure.example.com-old.key");
+    std::fs::write(&stale_cert, "OLD").unwrap();
+    std::fs::write(&stale_key, "OLD").unwrap();
 
     reconcile(&machine, &observations, &certificates, &path, Some(&admin))
         .await
         .unwrap();
 
-    let cert = directory.join("certs/secure.example.com.crt");
-    let key = directory.join("certs/secure.example.com.key");
+    let caddyfile = std::fs::read_to_string(&path).unwrap();
+    let pin = pinned_tls_line(&caddyfile, "secure.example.com").expect("https pin");
+    let (cert_name, key_name) = pinned_file_names(pin);
+    let cert = certs.join(&cert_name);
+    let key = certs.join(&key_name);
     assert_eq!(std::fs::read_to_string(&cert).unwrap(), "CERT-BODY");
     assert_eq!(std::fs::read_to_string(&key).unwrap(), "KEY-BODY");
     assert_eq!(
         std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    let caddyfile = std::fs::read_to_string(&path).unwrap();
-    assert!(caddyfile.contains(
-        "\ttls /config/certs/secure.example.com.crt /config/certs/secure.example.com.key\n"
-    ));
+    assert!(!stale_cert.exists());
+    assert!(!stale_key.exists());
     let adapted = admin.adapted.lock().unwrap();
     assert!(
         adapted
             .last()
-            .is_some_and(|config| config.contains("tls /config/certs/secure.example.com.crt"))
+            .is_some_and(|config| config.contains(&format!("tls /config/certs/{cert_name}")))
     );
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+fn pinned_tls_line<'a>(caddyfile: &'a str, hostname: &str) -> Option<&'a str> {
+    let needle = format!("tls /config/certs/{hostname}-");
+    caddyfile.lines().find(|line| line.contains(&needle))
+}
+
+fn pinned_file_names(pin: &str) -> (String, String) {
+    let mut paths = pin.split_whitespace().skip(1);
+    let cert = paths.next().expect("cert path");
+    let key = paths.next().expect("key path");
+    (
+        Path::new(cert)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned(),
+        Path::new(key)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    )
 }
 
 #[derive(Default)]
