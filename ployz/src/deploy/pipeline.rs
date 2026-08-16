@@ -16,7 +16,7 @@ use ployz_core::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    compose::{BuildService, ComposeProject, plan_compose_deploy},
+    compose::{BuildService, ComposeProject},
     connect::Client,
     failure::Failure,
     image::PushError,
@@ -24,7 +24,7 @@ use crate::{
 
 use super::{
     DeployOperation, DeployOutcome, DeployPlan, DeploySnapshot, ExecutionError, PlanOptions,
-    exec::execute_operations, plan_deploy,
+    exec::execute_operations, plan_deploy, plan_services,
 };
 
 /// Observer-relative plan-plus-warnings offered for confirmation before one Deploy executes.
@@ -122,14 +122,10 @@ pub(super) async fn plan_project(
     project.resolve_secrets()?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     expand_ingress(client, project.services.values_mut()).await?;
-    let compose = plan_compose_deploy(project, &snapshot, options)?;
+    let plan = plan_services(&project.dependency_order()?, &snapshot, options)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
     Ok(DeployPreview {
-        operations: compose
-            .operations()
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>(),
+        operations: plan.operations().into_iter().cloned().collect::<Vec<_>>(),
         warnings,
     })
 }

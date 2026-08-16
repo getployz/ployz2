@@ -9,7 +9,9 @@ use std::{
 
 use ployz::{
     compose::{ComposePlanError, ComposeProject, parse_normalized, plan_compose_deploy},
-    deploy::{DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanOptions},
+    deploy::{
+        DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanOptions, ProjectPlanError,
+    },
 };
 use ployz_core::{
     AdvertisedEndpoint, HostBind, HttpProtocol, Machine, MachineId, MachineName,
@@ -898,10 +900,10 @@ volumes: {data: {name: shared}}
     .unwrap();
     assert!(matches!(
         plan_compose_deploy(&disjoint, &snapshot, PlanOptions::default()),
-        Err(ComposePlanError::Service {
+        Err(ComposePlanError::Plan(ProjectPlanError::Service {
             source: ployz::deploy::PlanError::NoEligibleMachines,
             ..
-        })
+        }))
     ));
 
     let mixed = parse_normalized(
@@ -921,7 +923,7 @@ volumes: {data: {name: shared}}
     .unwrap();
     assert!(matches!(
         plan_compose_deploy(&mixed, &snapshot, PlanOptions::default()),
-        Err(ComposePlanError::MixedVolumeModes { name, global, replicated })
+        Err(ComposePlanError::Plan(ProjectPlanError::MixedVolumeModes { name, global, replicated }))
             if name.as_str() == "shared" && global == "everywhere" && replicated == "singleton"
     ));
 }

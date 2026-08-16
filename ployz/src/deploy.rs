@@ -12,8 +12,7 @@ mod planning;
 
 pub(crate) use apply::{apply_requested, deploy_project, deploy_scale, deploy_spec};
 pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execute_plan};
-pub use planning::plan_deploy;
-pub(crate) use planning::volume_eligible_machine_ids;
+pub use planning::{ProjectDeployPlan, ProjectPlanError, plan_deploy, plan_services};
 pub use ployz_core::compare_specs;
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {

@@ -11,7 +11,7 @@ use crate::{
     compose::{ComposeError, ComposePlanError},
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
-    deploy::PlanError,
+    deploy::{PlanError, ProjectPlanError},
     dns::{DomainRequired, Error as DnsError, NoReachableMachines},
     image::PushError,
     operator::{ContainerSelectorError, OperatorError},
@@ -171,6 +171,12 @@ impl From<ComposeError> for Failure {
 impl From<ComposePlanError> for Failure {
     fn from(error: ComposePlanError) -> Self {
         Cause::ComposePlan(error).into()
+    }
+}
+
+impl From<ProjectPlanError> for Failure {
+    fn from(error: ProjectPlanError) -> Self {
+        ComposePlanError::from(error).into()
     }
 }
 
