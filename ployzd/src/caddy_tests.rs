@@ -1,15 +1,16 @@
 use ployz_core::{
     AdvertisedEndpoint, CADDY_VERIFY_PATH, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol,
-    IngressHost, IngressHostname, Machine, MachineId, MachineName, ManagementAddress,
-    PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol,
-    WireGuardPublicKey, service_containers,
+    IngressHost, IngressHostname, IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName,
+    ManagementAddress, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName,
+    TransportProtocol, WireGuardPublicKey, service_containers,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use super::{CONFIG_FILE, CaddyAdmin, Error, automatic_caddyfile, generate_caddyfile, reconcile};
 use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
@@ -269,8 +270,9 @@ fn last_error_is_a_skipped_certificate_comment() {
     )];
     let certificates = BTreeMap::from([(
         IngressHost::parse("secure.example.com").unwrap(),
-        CertificateRow::from_parts(None, None).with_last_error(
+        CertificateRow::from_parts(None, None).with_backoff(
             "Ingress Hostname secure.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1.",
+            inspect_clock(),
         ),
     )]);
 
@@ -303,7 +305,7 @@ fn last_error_is_omitted_once_material_exists() {
     let certificates = BTreeMap::from([(
         IngressHost::parse("secure.example.com").unwrap(),
         CertificateRow::from_parts(CertificateMaterial::new("CERT", "KEY"), None)
-            .with_last_error("stale"),
+            .with_backoff("stale", inspect_clock()),
     )]);
 
     let caddyfile = automatic_caddyfile(
@@ -781,6 +783,14 @@ impl CaddyAdmin for FakeAdmin {
         } else {
             Ok(())
         }
+    }
+}
+
+fn inspect_clock() -> IssuanceClock {
+    IssuanceClock {
+        failures: 1,
+        next_attempt_at: SystemTime::UNIX_EPOCH,
+        last_failure: IssuanceFailure::ResolvesElsewhere,
     }
 }
 

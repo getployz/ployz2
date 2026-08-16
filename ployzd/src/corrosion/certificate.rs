@@ -3,7 +3,7 @@
 use std::time::SystemTime;
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use ployz_core::IssuanceFailure;
+use ployz_core::{IssuanceClock, IssuanceFailure};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -64,15 +64,37 @@ impl CertificateChallenge {
     }
 }
 
+/// Refusal reason plus the shared clock. Absent unless every field is present.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CertificateBackoff {
+    last_error: String,
+    clock: IssuanceClock,
+}
+
+impl CertificateBackoff {
+    #[must_use]
+    pub fn new(last_error: impl Into<String>, clock: IssuanceClock) -> Option<Self> {
+        let last_error = last_error.into();
+        (!last_error.is_empty()).then_some(Self { last_error, clock })
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> &str {
+        &self.last_error
+    }
+
+    #[must_use]
+    pub fn clock(&self) -> IssuanceClock {
+        self.clock
+    }
+}
+
 /// Replicated certificate row for one Ingress Hostname.
 #[derive(Clone, Default, Debug, Eq, PartialEq)]
 pub struct CertificateRow {
     pub(crate) material: Option<CertificateMaterial>,
     pub(crate) challenge: Option<CertificateChallenge>,
-    pub(crate) last_error: Option<String>,
-    pub(crate) next_attempt_at: Option<SystemTime>,
-    pub(crate) failures: u32,
-    pub(crate) last_failure: Option<IssuanceFailure>,
+    pub(crate) backoff: Option<CertificateBackoff>,
 }
 
 impl CertificateRow {
@@ -85,14 +107,13 @@ impl CertificateRow {
         Self {
             material,
             challenge,
-            ..Self::default()
+            backoff: None,
         }
     }
 
     #[must_use]
-    pub fn with_last_error(mut self, error: impl Into<String>) -> Self {
-        let error = error.into();
-        self.last_error = (!error.is_empty()).then_some(error);
+    pub fn with_backoff(mut self, last_error: impl Into<String>, clock: IssuanceClock) -> Self {
+        self.backoff = CertificateBackoff::new(last_error, clock);
         self
     }
 
@@ -108,22 +129,12 @@ impl CertificateRow {
 
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
+        self.backoff.as_ref().map(CertificateBackoff::last_error)
     }
 
     #[must_use]
-    pub fn next_attempt_at(&self) -> Option<SystemTime> {
-        self.next_attempt_at
-    }
-
-    #[must_use]
-    pub fn failures(&self) -> u32 {
-        self.failures
-    }
-
-    #[must_use]
-    pub fn last_failure(&self) -> Option<IssuanceFailure> {
-        self.last_failure
+    pub fn clock(&self) -> Option<IssuanceClock> {
+        self.backoff.as_ref().map(CertificateBackoff::clock)
     }
 
     pub(crate) fn decode(encoded: &str) -> Result<Self, Error> {
@@ -131,13 +142,11 @@ impl CertificateRow {
             return Ok(Self::default());
         }
         let body: CertificateBody = serde_json::from_str(encoded)?;
+        let backoff = decode_backoff(&body);
         Ok(Self {
             material: CertificateMaterial::new(body.certificate, body.private_key),
             challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
-            last_error: (!body.last_error.is_empty()).then_some(body.last_error),
-            next_attempt_at: decode_attempt(&body.next_attempt_at),
-            failures: body.failures,
-            last_failure: decode_failure(&body.last_failure),
+            backoff,
         })
     }
 
@@ -147,10 +156,10 @@ impl CertificateRow {
             "private_key": self.material.as_ref().map(CertificateMaterial::private_key).unwrap_or(""),
             "challenge_token": self.challenge.as_ref().map(CertificateChallenge::token).unwrap_or(""),
             "challenge_response": self.challenge.as_ref().map(CertificateChallenge::response).unwrap_or(""),
-            "last_error": self.last_error.as_deref().unwrap_or(""),
-            "next_attempt_at": self.next_attempt_at.map(encode_attempt).unwrap_or_default(),
-            "failures": self.failures,
-            "last_failure": encode_failure(self.last_failure),
+            "last_error": self.backoff.as_ref().map(CertificateBackoff::last_error).unwrap_or(""),
+            "next_attempt_at": self.backoff.as_ref().map(|backoff| encode_attempt(backoff.clock.next_attempt_at)).unwrap_or_default(),
+            "failures": self.backoff.as_ref().map(|backoff| backoff.clock.failures).unwrap_or(0),
+            "last_failure": encode_failure(self.backoff.as_ref().map(|backoff| backoff.clock.last_failure)),
         }))?)
     }
 }
@@ -188,6 +197,19 @@ fn decode_attempt(text: &str) -> Option<SystemTime> {
         .map(|time| SystemTime::from(time.with_timezone(&Utc)))
 }
 
+fn decode_backoff(body: &CertificateBody) -> Option<CertificateBackoff> {
+    let last_failure = decode_failure(&body.last_failure)?;
+    let next_attempt_at = decode_attempt(&body.next_attempt_at)?;
+    CertificateBackoff::new(
+        body.last_error.clone(),
+        IssuanceClock {
+            failures: body.failures.max(1),
+            next_attempt_at,
+            last_failure,
+        },
+    )
+}
+
 fn encode_failure(failure: Option<IssuanceFailure>) -> &'static str {
     match failure {
         Some(IssuanceFailure::DoesNotResolve) => "does_not_resolve",
@@ -215,7 +237,7 @@ fn decode_certificate_body(encoded: &str) -> Result<Option<CertificateMaterial>,
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use ployz_core::IssuanceFailure;
+    use ployz_core::{IssuanceClock, IssuanceFailure};
 
     use super::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
@@ -265,38 +287,33 @@ mod tests {
     #[test]
     fn certificate_row_round_trips_refusal_clock() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        let row = CertificateRow {
-            last_error: Some(
-                "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
-                    .into(),
-            ),
-            next_attempt_at: Some(at),
+        let clock = IssuanceClock {
             failures: 3,
-            last_failure: Some(IssuanceFailure::DoesNotResolve),
-            ..CertificateRow::default()
+            next_attempt_at: at,
+            last_failure: IssuanceFailure::DoesNotResolve,
         };
+        let row = CertificateRow::from_parts(None, None).with_backoff(
+            "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1.",
+            clock,
+        );
         let encoded = row.encode().unwrap();
         let decoded = CertificateRow::decode(&encoded).unwrap();
         assert_eq!(decoded.last_error(), row.last_error());
-        assert_eq!(decoded.next_attempt_at(), Some(at));
-        assert_eq!(decoded.failures(), 3);
-        assert_eq!(
-            decoded.last_failure(),
-            Some(IssuanceFailure::DoesNotResolve)
-        );
+        assert_eq!(decoded.clock(), Some(clock));
         assert_eq!(
             CertificateRow::decode(
                 r#"{"certificate":"","private_key":"","last_error":"later","next_attempt_at":"2023-11-14T22:13:20Z","failures":2,"last_failure":"resolves_elsewhere"}"#
             )
             .unwrap()
-            .last_failure(),
+            .clock()
+            .map(|clock| clock.last_failure),
             Some(IssuanceFailure::ResolvesElsewhere)
         );
         assert_eq!(
             CertificateRow::decode(r#"{"last_failure":"authority"}"#)
                 .unwrap()
-                .last_failure(),
-            Some(IssuanceFailure::Authority)
+                .clock(),
+            None
         );
     }
 }

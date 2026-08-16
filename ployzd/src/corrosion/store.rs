@@ -2,12 +2,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerId, ContainerObservation, IngressHost, IssuanceFailure, LocalMachinePhase, Machine,
+    ContainerId, ContainerObservation, IngressHost, IssuanceClock, LocalMachinePhase, Machine,
     MachineId,
 };
 use serde::de::DeserializeOwned;
@@ -16,8 +16,8 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error, Statement,
-    Subscription,
+    ApiClient, CertificateBackoff, CertificateChallenge, CertificateMaterial, CertificateRow,
+    Error, Statement, Subscription,
 };
 use crate::{
     hosted_dns::Reservation,
@@ -354,7 +354,7 @@ impl ReplicatedStore {
             &CertificateRow {
                 material: Some(material.clone()),
                 challenge: None,
-                ..CertificateRow::default()
+                backoff: None,
             },
         )
         .await
@@ -423,9 +423,7 @@ impl ReplicatedStore {
         &self,
         hostname: &IngressHost,
         last_error: impl Into<String>,
-        next_attempt_at: SystemTime,
-        failures: u32,
-        last_failure: IssuanceFailure,
+        clock: IssuanceClock,
     ) -> Result<(), Error> {
         let row = self.certificate_row(hostname).await?;
         if row.material.is_some() {
@@ -434,10 +432,7 @@ impl ReplicatedStore {
         self.upsert_certificate(
             hostname,
             &CertificateRow {
-                last_error: Some(last_error.into()),
-                next_attempt_at: Some(next_attempt_at),
-                failures,
-                last_failure: Some(last_failure),
+                backoff: CertificateBackoff::new(last_error, clock),
                 ..row
             },
         )
@@ -734,7 +729,7 @@ mod tests {
         time::SystemTime,
     };
 
-    use ployz_core::{IngressHost, IssuanceFailure, LocalMachinePhase, Machine};
+    use ployz_core::{IngressHost, IssuanceClock, IssuanceFailure, LocalMachinePhase, Machine};
     use serde_json::json;
 
     use super::ReplicatedStore;
@@ -838,9 +833,11 @@ mod tests {
                 .record_certificate_failure(
                     &hostname,
                     "does not resolve",
-                    SystemTime::UNIX_EPOCH,
-                    1,
-                    IssuanceFailure::DoesNotResolve,
+                    IssuanceClock {
+                        failures: 1,
+                        next_attempt_at: SystemTime::UNIX_EPOCH,
+                        last_failure: IssuanceFailure::DoesNotResolve,
+                    },
                 )
                 .await
                 .is_err()

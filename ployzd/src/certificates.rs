@@ -18,8 +18,8 @@ use instant_acme::{
 };
 use ployz_core::{
     ContainerKind, ContainerObservation, HttpProtocol, IngressHost, IngressHostname,
-    IssuanceAction, IssuanceFailure, IssuanceInput, Machine, PortPublication, cluster_dns_verdict,
-    issuance_action, issuance_failure_clock, issuance_refusal_reason,
+    IssuanceAction, IssuanceFailure, IssuanceInput, IssuanceSubject, Machine, PortPublication,
+    cluster_dns_verdict, issuance_action, issuance_failure_clock, issuance_refusal_reason,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -150,28 +150,20 @@ async fn issue_wanted(
         let resolved = resolve_ingress_addresses(&hostname).await;
         let verdict = cluster_dns_verdict(&resolved, &cluster);
         match issuance_action(IssuanceInput {
-            has_material: row.material().is_some(),
-            next_attempt_at: row.next_attempt_at(),
-            last_failure: row.last_failure(),
-            failures: row.failures(),
+            subject: if row.material().is_some() {
+                IssuanceSubject::HasMaterial
+            } else {
+                IssuanceSubject::Missing { clock: row.clock() }
+            },
             verdict,
             now,
         }) {
             IssuanceAction::Nothing => {}
-            IssuanceAction::Refuse {
-                failures,
-                next_attempt_at,
-                last_failure,
-            } => {
-                let reason = issuance_refusal_reason(&hostname, last_failure, &resolved, &cluster);
+            IssuanceAction::Refuse(clock) => {
+                let reason =
+                    issuance_refusal_reason(&hostname, clock.last_failure, &resolved, &cluster);
                 if let Err(error) = store
-                    .record_certificate_failure(
-                        &hostname,
-                        reason,
-                        next_attempt_at,
-                        failures,
-                        last_failure,
-                    )
+                    .record_certificate_failure(&hostname, reason, clock)
                     .await
                 {
                     eprintln!("failed to record certificate refusal for {hostname}: {error}");
@@ -180,20 +172,10 @@ async fn issue_wanted(
             IssuanceAction::Order => {
                 if let Err(error) = obtain(store, &hostname, directory, account_dir).await {
                     eprintln!("failed to obtain certificate for {hostname}: {error}");
-                    let (failures, next_attempt_at) = issuance_failure_clock(
-                        row.failures(),
-                        row.last_failure(),
-                        IssuanceFailure::Authority,
-                        now,
-                    );
+                    let clock =
+                        issuance_failure_clock(row.clock(), IssuanceFailure::Authority, now);
                     if let Err(record_error) = store
-                        .record_certificate_failure(
-                            &hostname,
-                            error.to_string(),
-                            next_attempt_at,
-                            failures,
-                            IssuanceFailure::Authority,
-                        )
+                        .record_certificate_failure(&hostname, error.to_string(), clock)
                         .await
                     {
                         eprintln!(
