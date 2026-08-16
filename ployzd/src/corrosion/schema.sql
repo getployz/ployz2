@@ -24,6 +24,13 @@ CREATE TABLE containers
     updated_at         TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
 );
 
+CREATE TABLE certificates
+(
+    hostname   TEXT      NOT NULL PRIMARY KEY,
+    body       TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(body)),
+    updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
+);
+
 CREATE INDEX idx_machines_name ON machines (name);
 CREATE INDEX idx_containers_machine_id ON containers (machine_id);
 CREATE INDEX idx_containers_service_id ON containers (service_id);

@@ -1,8 +1,8 @@
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
-    HttpProtocol, IngressHostname, Machine, MachineId, PortPublication, ServiceContainer,
-    ServiceName, service_containers,
+    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, PortPublication,
+    ServiceContainer, ServiceName, service_containers,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -21,11 +21,13 @@ use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::ReplicatedStore,
+    corrosion::{CertificateMaterial, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
 };
 
 pub const CONFIG_FILE: &str = "Caddyfile";
+const CERTS_DIR: &str = "certs";
+const CONTAINER_CERTS_DIR: &str = "/config/certs";
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
@@ -124,37 +126,51 @@ pub async fn run(
             .parent()
             .ok_or_else(|| io::Error::other("Caddy admin socket has no parent"))?,
     )?;
-    let mut changes = replicated
+    let mut container_changes = replicated
         .subscribe_container_changes()
+        .await
+        .map_err(io::Error::other)?;
+    let mut certificate_changes = replicated
+        .subscribe_certificate_changes()
         .await
         .map_err(io::Error::other)?;
     let mut last_applied = None;
     loop {
-        match replicated.containers().await {
-            Ok(containers) if last_applied.as_ref() != Some(&containers.observations) => {
-                let admin = AdminClient::connect_if_available(&admin_socket)
-                    .await
-                    .map_err(io::Error::other)?;
-                match reconcile(
-                    &machine,
-                    &containers.observations,
-                    &config_file,
-                    admin.as_ref(),
-                )
+        let snapshot = match (
+            replicated.containers().await,
+            replicated.certificates().await,
+        ) {
+            (Ok(containers), Ok(certificates)) => Some((containers.observations, certificates)),
+            (Err(error), _) | (_, Err(error)) => {
+                eprintln!("failed to rebuild Caddy projection: {error}");
+                None
+            }
+        };
+        if let Some(snapshot) = snapshot
+            && last_applied.as_ref() != Some(&snapshot)
+        {
+            let admin = AdminClient::connect_if_available(&admin_socket)
                 .await
-                {
-                    Ok(()) => last_applied = Some(containers.observations),
-                    Err(error) => {
-                        last_applied = None;
-                        eprintln!("failed to update Caddy configuration: {error}");
-                    }
+                .map_err(io::Error::other)?;
+            match reconcile(
+                &machine,
+                &snapshot.0,
+                &snapshot.1,
+                &config_file,
+                admin.as_ref(),
+            )
+            .await
+            {
+                Ok(()) => last_applied = Some(snapshot),
+                Err(error) => {
+                    last_applied = None;
+                    eprintln!("failed to update Caddy configuration: {error}");
                 }
             }
-            Ok(_) => {}
-            Err(error) => eprintln!("failed to rebuild Caddy projection: {error}"),
         }
         tokio::select! {
-            changed = changes.changed() => changed.map_err(io::Error::other)?,
+            changed = container_changes.changed() => changed.map_err(io::Error::other)?,
+            changed = certificate_changes.changed() => changed.map_err(io::Error::other)?,
             () = shutdown.cancelled() => return Ok(()),
         }
     }
@@ -163,11 +179,13 @@ pub async fn run(
 async fn reconcile<A: CaddyAdmin>(
     machine: &Machine,
     observations: &[ContainerObservation],
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
     config_file: &Path,
     admin: Option<&A>,
 ) -> Result<(), Error> {
     // TODO(UT-116): keep the Caddy projection membership-blind until the membership model is
     // intentionally changed across replicated projections.
+    write_certificate_files(config_file, certificates)?;
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let containers = service_containers(observations.iter().cloned());
     let caddyfile = generate_caddyfile(
@@ -175,6 +193,7 @@ async fn reconcile<A: CaddyAdmin>(
         machine.name.as_str(),
         &containers,
         &timestamp,
+        certificates,
         admin,
     )
     .await;
@@ -183,6 +202,29 @@ async fn reconcile<A: CaddyAdmin>(
         admin.load(&json).await?;
     }
     write_caddyfile(config_file, &caddyfile)?;
+    Ok(())
+}
+
+fn write_certificate_files(
+    config_file: &Path,
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+) -> Result<(), Error> {
+    let directory = config_file
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?
+        .join(CERTS_DIR);
+    prepare_directory(&directory)?;
+    for (hostname, material) in certificates {
+        if !material.is_present() {
+            continue;
+        }
+        let cert_path = directory.join(format!("{hostname}.crt"));
+        let key_path = directory.join(format!("{hostname}.key"));
+        atomic_write(&cert_path, material.certificate().as_bytes(), 0o644)?;
+        set_ployz_group(&cert_path)?;
+        atomic_write(&key_path, material.private_key().as_bytes(), 0o600)?;
+        set_ployz_group(&key_path)?;
+    }
     Ok(())
 }
 
@@ -207,9 +249,17 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     machine_name: &str,
     containers: &[ServiceContainer],
     timestamp: &str,
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
     admin: Option<&A>,
 ) -> String {
-    let mut output = automatic_caddyfile(local_machine, machine_name, containers, timestamp, None);
+    let mut output = automatic_caddyfile(
+        local_machine,
+        machine_name,
+        containers,
+        timestamp,
+        None,
+        certificates,
+    );
     let Some(admin) = admin else {
         output.push_str(
             "\n# User-defined Caddy configs are unavailable because Caddy's admin API is not reachable.\n\
@@ -243,6 +293,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
                     containers,
                     timestamp,
                     Some(&rendered),
+                    certificates,
                 );
                 // TODO(UT-119): /adapt remains the only validation for custom Caddyfile
                 // candidates and may accept a configuration that /load rejects.
@@ -430,6 +481,7 @@ fn automatic_caddyfile(
     containers: &[ServiceContainer],
     timestamp: &str,
     global_config: Option<&str>,
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
 ) -> String {
     let containers = eligible_containers(local_machine, containers);
 
@@ -493,10 +545,15 @@ http:// {{\n\
     }
     for (protocol, sites) in [("http", http), ("https", https)] {
         for (hostname, upstreams) in sites {
+            let tls = if protocol == "https" {
+                pinned_tls_line(hostname, certificates)
+            } else {
+                String::new()
+            };
             let _ = write!(
                 output,
                 "\n{protocol}://{hostname} {{\n\
-\treverse_proxy {} {{\n\
+{tls}\treverse_proxy {} {{\n\
 \t\timport common_proxy\n\
 \t}}\n\
 \tlog\n\
@@ -506,6 +563,22 @@ http:// {{\n\
         }
     }
     output
+}
+
+fn pinned_tls_line(
+    hostname: &str,
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
+) -> String {
+    let Ok(host) = IngressHost::parse(hostname) else {
+        return String::new();
+    };
+    let Some(material) = certificates.get(&host) else {
+        return String::new();
+    };
+    if !material.is_present() {
+        return String::new();
+    }
+    format!("\ttls {CONTAINER_CERTS_DIR}/{hostname}.crt {CONTAINER_CERTS_DIR}/{hostname}.key\n")
 }
 
 #[cfg(test)]

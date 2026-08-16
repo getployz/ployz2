@@ -6,8 +6,10 @@ use std::{
 };
 
 use ipnet::Ipv4Net;
-use ployz_core::{ContainerId, ContainerObservation, LocalMachinePhase, Machine, MachineId};
-use serde::de::DeserializeOwned;
+use ployz_core::{
+    ContainerId, ContainerObservation, IngressHost, LocalMachinePhase, Machine, MachineId,
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -17,6 +19,40 @@ use crate::{
     hosted_dns::Reservation,
     machine::{LocalMachineRecord, LocalMachineStore, StoreError},
 };
+
+/// Certificate and private key held in cluster state for one Ingress Hostname.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CertificateMaterial {
+    #[serde(default)]
+    certificate: String,
+    #[serde(default)]
+    private_key: String,
+}
+
+impl CertificateMaterial {
+    #[must_use]
+    pub fn new(certificate: impl Into<String>, private_key: impl Into<String>) -> Self {
+        Self {
+            certificate: certificate.into(),
+            private_key: private_key.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_present(&self) -> bool {
+        !self.certificate.is_empty() && !self.private_key.is_empty()
+    }
+
+    #[must_use]
+    pub fn certificate(&self) -> &str {
+        &self.certificate
+    }
+
+    #[must_use]
+    pub fn private_key(&self) -> &str {
+        &self.private_key
+    }
+}
 
 #[derive(Clone)]
 pub struct ReplicatedStore {
@@ -335,6 +371,68 @@ impl ReplicatedStore {
             .await
     }
 
+    pub async fn publish_certificate(
+        &self,
+        hostname: &IngressHost,
+        material: &CertificateMaterial,
+    ) -> Result<(), Error> {
+        if self.certificate(hostname).await?.as_ref() == Some(material) {
+            return Ok(());
+        }
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO certificates (hostname, body, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+                [json!(hostname.as_str()), json!(serde_json::to_string(material)?)],
+            )])
+            .await
+    }
+
+    pub async fn certificate(
+        &self,
+        hostname: &IngressHost,
+    ) -> Result<Option<CertificateMaterial>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT body FROM certificates WHERE hostname = ?",
+                [json!(hostname.as_str())],
+            ))
+            .await?;
+        let rows = query.rows(["body"])?;
+        let Some([encoded]) = rows.first() else {
+            return Ok(None);
+        };
+        decode_certificate_body(text(encoded, "certificate body")?).map(Some)
+    }
+
+    pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT hostname, body FROM certificates ORDER BY hostname",
+                [],
+            ))
+            .await?;
+        let mut certificates = BTreeMap::new();
+        for [hostname, encoded] in query.rows(["hostname", "body"])? {
+            let hostname = IngressHost::parse(text(&hostname, "certificate hostname")?)?;
+            certificates.insert(
+                hostname,
+                decode_certificate_body(text(&encoded, "certificate body")?)?,
+            );
+        }
+        Ok(certificates)
+    }
+
+    pub(crate) async fn subscribe_certificate_changes(&self) -> Result<Subscription, Error> {
+        self.api
+            .subscribe(Statement::new(
+                "SELECT hostname, body FROM certificates",
+                [],
+            ))
+            .await
+    }
+
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {
         let query = self
             .api
@@ -535,6 +633,13 @@ pub async fn run_machine_publisher(
     }
 }
 
+fn decode_certificate_body(encoded: &str) -> Result<CertificateMaterial, Error> {
+    if encoded.is_empty() {
+        return Ok(CertificateMaterial::new("", ""));
+    }
+    Ok(serde_json::from_str(encoded)?)
+}
+
 fn decode_observations<T: DeserializeOwned>(
     rows: Vec<[Value; 2]>,
 ) -> Result<ReplicatedObservations<T>, Error> {
@@ -590,7 +695,7 @@ mod tests {
     use ployz_core::{LocalMachinePhase, Machine};
     use serde_json::json;
 
-    use super::ReplicatedStore;
+    use super::{CertificateMaterial, ReplicatedStore};
     use crate::corrosion::ApiClient;
     use crate::machine::{LocalMachineRecord, LocalMachineStore};
 
@@ -691,6 +796,25 @@ mod tests {
 
         local.phase = LocalMachinePhase::Resetting;
         assert_eq!(publication.publishable_machine(&local), None);
+    }
+
+    #[test]
+    fn empty_certificate_body_is_not_present() {
+        let material: CertificateMaterial = serde_json::from_str("{}").unwrap();
+        assert!(!material.is_present());
+        assert_eq!(material.certificate(), "");
+        assert_eq!(material.private_key(), "");
+    }
+
+    #[test]
+    fn certificate_material_reads_known_fields_and_ignores_the_rest() {
+        let material: CertificateMaterial = serde_json::from_str(
+            r#"{"certificate":"CERT","private_key":"KEY","last_error":"later"}"#,
+        )
+        .unwrap();
+        assert!(material.is_present());
+        assert_eq!(material.certificate(), "CERT");
+        assert_eq!(material.private_key(), "KEY");
     }
 
     fn participating_record() -> (Machine, LocalMachineRecord) {
