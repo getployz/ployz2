@@ -164,11 +164,21 @@ pub struct MachineObservation {
     pub selected_endpoint: Option<SelectedEndpoint>,
 }
 
+/// Match a Machine by exact ID or observer-relative Name. `all` is identity text.
 #[must_use]
 pub fn machine_matches_target(machine: &Machine, target: &MachineTarget) -> bool {
     machine.id.as_str() == target.as_str() || machine.name.as_str() == target.as_str()
 }
 
+/// Resolve fan-out selection to visible Machines. `*` selects every visible Machine;
+/// other text is a Machine Target.
+///
+/// # Errors
+///
+/// Returns [`MachineSelectorError::NoTargets`] when `selectors` is empty,
+/// [`MachineSelectorError::NotFound`] when a Machine Target matches nothing,
+/// [`MachineSelectorError::Ambiguous`] when a name matches more than one Machine,
+/// or [`MachineSelectorError::NoVisibleMachines`] when `*` matches no Machines.
 pub fn resolve_machine_selectors(
     visible: &[Machine],
     selectors: &[FanoutSelector],

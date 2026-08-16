@@ -95,26 +95,30 @@ pub fn routing_from_metadata(
             .map_err(|_| RoutingMetadataError::InvalidTarget);
     }
     if has_text_target {
-        let mut selectors = ascii_targets(metadata, ONE_TARGET_HEADER)?;
+        let mut selectors = ascii_parsed(metadata, ONE_TARGET_HEADER, |value| {
+            MachineTarget::parse(value)
+        })?;
         if selectors.len() != 1 {
             return Err(RoutingMetadataError::InvalidSingleTarget);
         }
         return Ok(RoutingRequest::One(selectors.remove(0)));
     }
     if has_many {
-        Ok(RoutingRequest::Many(ascii_fanout(
+        Ok(RoutingRequest::Many(ascii_parsed(
             metadata,
             MANY_TARGETS_HEADER,
+            |value| FanoutSelector::parse(value),
         )?))
     } else {
         Ok(RoutingRequest::Local)
     }
 }
 
-fn ascii_targets(
+fn ascii_parsed<T>(
     metadata: &MetadataMap,
     name: &'static str,
-) -> Result<Vec<MachineTarget>, RoutingMetadataError> {
+    parse: impl Fn(&str) -> Result<T, crate::ValueError>,
+) -> Result<Vec<T>, RoutingMetadataError> {
     metadata
         .get_all(name)
         .iter()
@@ -122,27 +126,7 @@ fn ascii_targets(
             value
                 .to_str()
                 .map_err(|_| RoutingMetadataError::InvalidTarget)
-                .and_then(|value| {
-                    MachineTarget::parse(value).map_err(|_| RoutingMetadataError::InvalidTarget)
-                })
-        })
-        .collect()
-}
-
-fn ascii_fanout(
-    metadata: &MetadataMap,
-    name: &'static str,
-) -> Result<Vec<FanoutSelector>, RoutingMetadataError> {
-    metadata
-        .get_all(name)
-        .iter()
-        .map(|value| {
-            value
-                .to_str()
-                .map_err(|_| RoutingMetadataError::InvalidTarget)
-                .and_then(|value| {
-                    FanoutSelector::parse(value).map_err(|_| RoutingMetadataError::InvalidTarget)
-                })
+                .and_then(|value| parse(value).map_err(|_| RoutingMetadataError::InvalidTarget))
         })
         .collect()
 }

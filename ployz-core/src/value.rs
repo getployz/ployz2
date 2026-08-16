@@ -365,14 +365,11 @@ impl FanoutSelector {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let values: Vec<_> = values.into_iter().collect();
-        if values.is_empty() {
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
             Ok(vec![Self::All])
         } else {
-            values
-                .into_iter()
-                .map(|value| Self::parse(value.as_ref()))
-                .collect()
+            values.map(|value| Self::parse(value.as_ref())).collect()
         }
     }
 }
@@ -402,12 +399,6 @@ impl TryFrom<String> for FanoutSelector {
 impl From<FanoutSelector> for String {
     fn from(value: FanoutSelector) -> Self {
         value.as_str().to_owned()
-    }
-}
-
-impl From<MachineTarget> for FanoutSelector {
-    fn from(value: MachineTarget) -> Self {
-        Self::One(value)
     }
 }
 
