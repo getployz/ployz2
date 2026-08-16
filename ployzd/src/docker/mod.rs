@@ -23,9 +23,9 @@ use bollard::{
 };
 use ployz_core::{
     ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HealthObservation, HealthcheckCommand, HealthcheckCommandKind,
-    HealthcheckSpec, ImageSummary, MachineId, MachineImages, RpcErrorCode, ServiceId, ServiceName,
-    ValueError,
+    ContainerRuntimeObservation, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation,
+    HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages, RpcErrorCode,
+    ServiceId, ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -446,23 +446,23 @@ fn runtime_observation(state: Option<&serde_json::Value>) -> ContainerRuntimeObs
 fn effective_healthcheck(config: Option<&RawContainerConfig>) -> Option<HealthcheckSpec> {
     let healthcheck = config?.healthcheck.as_ref()?;
     let test = healthcheck.test.clone().unwrap_or_default();
-    match HealthcheckCommand::classify(test) {
-        HealthcheckCommandKind::DisableSentinel => Some(HealthcheckSpec::Disabled),
-        HealthcheckCommandKind::Empty => None,
-        HealthcheckCommandKind::Command(command) => {
-            Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {
-                test: command,
-                interval_millis: nanos_to_millis(healthcheck.interval),
-                timeout_millis: nanos_to_millis(healthcheck.timeout),
-                start_period_millis: nanos_to_millis(healthcheck.start_period),
-                start_interval_millis: nanos_to_millis(healthcheck.start_interval),
-                retries: healthcheck
-                    .retries
-                    .filter(|retries| *retries > 0)
-                    .and_then(|retries| u32::try_from(retries).ok()),
-            }))
-        }
+    if test
+        .first()
+        .is_some_and(|command| command == HEALTHCHECK_DISABLE_SENTINEL)
+    {
+        return Some(HealthcheckSpec::Disabled);
     }
+    Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {
+        test: HealthcheckCommand::parse(test).ok()?,
+        interval_millis: nanos_to_millis(healthcheck.interval),
+        timeout_millis: nanos_to_millis(healthcheck.timeout),
+        start_period_millis: nanos_to_millis(healthcheck.start_period),
+        start_interval_millis: nanos_to_millis(healthcheck.start_interval),
+        retries: healthcheck
+            .retries
+            .filter(|retries| *retries > 0)
+            .and_then(|retries| u32::try_from(retries).ok()),
+    }))
 }
 
 fn nanos_to_millis(nanos: Option<i64>) -> Option<u64> {

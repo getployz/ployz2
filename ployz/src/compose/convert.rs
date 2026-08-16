@@ -6,7 +6,7 @@ use std::{
 
 use ployz_core::{
     ConfiguredHealthcheck, ContainerPath, ContainerResources, DeviceMapping, DeviceReservation,
-    HealthcheckCommand, HealthcheckCommandKind, HealthcheckSpec, LogDriver, MachinePath,
+    HEALTHCHECK_DISABLE_SENTINEL, HealthcheckCommand, HealthcheckSpec, LogDriver, MachinePath,
     MachineSelector, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
     ServiceContainerSpec, ServiceMode, ServiceName, Ulimit, UpdateConfig, UpdateOrder,
 };
@@ -467,6 +467,9 @@ fn device_request(
 }
 
 fn healthcheck(raw: &RawHealthcheck) -> Result<HealthcheckSpec, ComposeError> {
+    if raw.disable {
+        return Ok(HealthcheckSpec::Disabled);
+    }
     let test = match &raw.test {
         Value::Null => Vec::new(),
         Value::String(value) => vec![value.clone()],
@@ -480,25 +483,20 @@ fn healthcheck(raw: &RawHealthcheck) -> Result<HealthcheckSpec, ComposeError> {
             return Err(invalid("healthcheck test must be a string or list"));
         }
     };
-    if raw.disable {
+    if test
+        .first()
+        .is_some_and(|command| command == HEALTHCHECK_DISABLE_SENTINEL)
+    {
         return Ok(HealthcheckSpec::Disabled);
     }
-    match HealthcheckCommand::classify(test) {
-        HealthcheckCommandKind::DisableSentinel => Ok(HealthcheckSpec::Disabled),
-        HealthcheckCommandKind::Empty => Err(invalid(
-            "healthcheck command must be a non-empty command that does not begin with NONE",
-        )),
-        HealthcheckCommandKind::Command(command) => {
-            Ok(HealthcheckSpec::Configured(ConfiguredHealthcheck {
-                test: command,
-                interval_millis: duration_millis(raw.interval.as_deref())?,
-                timeout_millis: duration_millis(raw.timeout.as_deref())?,
-                start_period_millis: duration_millis(raw.start_period.as_deref())?,
-                start_interval_millis: duration_millis(raw.start_interval.as_deref())?,
-                retries: raw.retries,
-            }))
-        }
-    }
+    Ok(HealthcheckSpec::Configured(ConfiguredHealthcheck {
+        test: HealthcheckCommand::parse(test).map_err(invalid)?,
+        interval_millis: duration_millis(raw.interval.as_deref())?,
+        timeout_millis: duration_millis(raw.timeout.as_deref())?,
+        start_period_millis: duration_millis(raw.start_period.as_deref())?,
+        start_interval_millis: duration_millis(raw.start_interval.as_deref())?,
+        retries: raw.retries,
+    }))
 }
 
 fn update(deploy: Option<&RawDeploy>) -> Result<UpdateConfig, ComposeError> {
