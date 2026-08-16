@@ -4,7 +4,8 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, Machine, MachineFailure, MachineId, MachineName, MachineSuccess,
     ManagementAddress, MembershipObservation, PartialResult, RequestedServiceSpec,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceMode, WireGuardPublicKey,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceMode, ServiceSelector,
+    WireGuardPublicKey,
 };
 use serde_json::Value;
 
@@ -29,7 +30,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
                 "v1",
                 '1'
             )]),
-            "api",
+            &ServiceSelector::parse("api").unwrap(),
             replicas(2),
         )
         .unwrap_err()
@@ -48,7 +49,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
                 "v1",
                 '1'
             )]),
-            "api",
+            &ServiceSelector::parse("api").unwrap(),
             replicas(1),
         )
         .unwrap()
@@ -65,7 +66,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
                 "v1",
                 '1',
             )]),
-            "api",
+            &ServiceSelector::parse("api").unwrap(),
             replicas(3),
         )
         .unwrap()
@@ -77,7 +78,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
             observation(&service_id, replicated.clone(), "v1", '1'),
             observation(&service_id, replicated, "v2", '2'),
         ]),
-        "api",
+        &ServiceSelector::parse("api").unwrap(),
         replicas(3),
     )
     .unwrap()

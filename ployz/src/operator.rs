@@ -9,11 +9,12 @@ use std::{
 
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerLogsRequest, ContainerObservation, ExecConfig,
-    ExecOptions, ExecRequestFrame, FanoutSelector, HealthObservation, LogEntry, LogStream,
-    LogsOptions, MachineId, MachineLogService, MachineLogsRequest, MachineName, MachineObservation,
-    MachineTarget, MembershipObservation, OpaquePayload, ServiceObservation, StreamProtocolError,
-    op, resolve_machine_selectors, select_service,
+    ContainerId, ContainerKind, ContainerLogsRequest, ContainerObservation, ContainerSelector,
+    ExecConfig, ExecOptions, ExecRequestFrame, FanoutSelector, HealthObservation, LogEntry,
+    LogStream, LogsOptions, MachineId, MachineLogService, MachineLogsRequest, MachineName,
+    MachineObservation, MachineTarget, MembershipObservation, OpaquePayload, ServiceObservation,
+    ServiceSelector, StreamProtocolError, op, resolve_container_selector,
+    resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -51,8 +52,8 @@ pub type LogSource = Pin<Box<dyn Stream<Item = Result<LogEntry, LogError>> + Sen
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceArg {
-    pub service: String,
-    pub containers: Vec<String>,
+    pub service: ServiceSelector,
+    pub containers: Vec<ContainerSelector>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,11 +74,11 @@ pub struct ExecMode {
 pub enum ContainerSelectorError {
     #[error("Service has no regular containers")]
     NoRegularContainer,
-    #[error("Container {selector:?} was not found in the Service")]
-    NotFound { selector: String },
-    #[error("Container {selector:?} matches multiple containers: {container_ids:?}")]
+    #[error("Container \"{selector}\" was not found in the Service")]
+    NotFound { selector: ContainerSelector },
+    #[error("Container \"{selector}\" matches multiple containers: {container_ids:?}")]
     Ambiguous {
-        selector: String,
+        selector: ContainerSelector,
         container_ids: Vec<ContainerId>,
     },
 }
@@ -116,8 +117,8 @@ pub enum OperatorError {
     InvalidRemotePort(String),
     #[error("no running healthy regular container found for Service")]
     NoHealthyContainer,
-    #[error("no containers for Service {service:?} found on the selected Machines")]
-    NoContainersOnMachines { service: String },
+    #[error("no containers for Service \"{service}\" found on the selected Machines")]
+    NoContainersOnMachines { service: ServiceSelector },
     #[error("none of the selected Services exist in the Cluster")]
     NoSelectedServices,
     #[error("no Machines found")]
@@ -182,68 +183,32 @@ pub fn exec_options(command: Vec<String>, mode: ExecMode) -> Result<ExecOptions,
 
 pub fn select_exec_container<'a>(
     service: &'a ServiceObservation,
-    selector: Option<&str>,
+    selector: Option<&ContainerSelector>,
 ) -> Result<&'a ContainerObservation, ContainerSelectorError> {
-    let regular = service
+    let mut regular = service
         .containers
         .iter()
-        .filter(|container| container.kind == ContainerKind::ServiceContainer)
-        .collect::<Vec<_>>();
-    let Some(selector) = selector.filter(|selector| !selector.is_empty()) else {
+        .filter(|container| container.kind == ContainerKind::ServiceContainer);
+    let Some(selector) = selector else {
         return regular
-            .into_iter()
             .next()
             .ok_or(ContainerSelectorError::NoRegularContainer);
     };
-    resolve_container_selector(&regular, selector)
+    resolve_container_selector(regular, selector).map_err(container_selector_error)
 }
 
-fn resolve_container_selector<'a>(
-    containers: &[&'a ContainerObservation],
-    selector: &str,
-) -> Result<&'a ContainerObservation, ContainerSelectorError> {
-    if let Some(container) = containers
-        .iter()
-        .copied()
-        .find(|container| container.container_id.as_str() == selector)
-    {
-        return Ok(container);
-    }
-    let named = containers
-        .iter()
-        .copied()
-        .filter(|container| container.display_name == selector)
-        .collect::<Vec<_>>();
-    match named.as_slice() {
-        [container] => return Ok(container),
-        [] => {}
-        _ => {
-            return Err(ContainerSelectorError::Ambiguous {
-                selector: selector.to_owned(),
-                container_ids: named
-                    .into_iter()
-                    .map(|container| container.container_id)
-                    .collect(),
-            });
+fn container_selector_error(error: ployz_core::ContainerSelectorError) -> ContainerSelectorError {
+    match error {
+        ployz_core::ContainerSelectorError::NotFound { selector } => {
+            ContainerSelectorError::NotFound { selector }
         }
-    }
-    let prefixed = containers
-        .iter()
-        .copied()
-        .filter(|container| container.container_id.as_str().starts_with(selector))
-        .collect::<Vec<_>>();
-    match prefixed.as_slice() {
-        [] => Err(ContainerSelectorError::NotFound {
-            selector: selector.to_owned(),
-        }),
-        [container] => Ok(container),
-        _ => Err(ContainerSelectorError::Ambiguous {
-            selector: selector.to_owned(),
-            container_ids: prefixed
-                .into_iter()
-                .map(|container| container.container_id)
-                .collect(),
-        }),
+        ployz_core::ContainerSelectorError::Ambiguous {
+            selector,
+            container_ids,
+        } => ContainerSelectorError::Ambiguous {
+            selector,
+            container_ids,
+        },
     }
 }
 
@@ -259,20 +224,22 @@ pub fn parse_service_args(values: &[String]) -> Result<Vec<ServiceArg>, Operator
         if service.is_empty() || container.is_some_and(str::is_empty) {
             return Err(OperatorError::InvalidServiceSelector(value.to_owned()));
         }
+        let service = ServiceSelector::parse(service)?;
+        let container = container.map(ContainerSelector::parse).transpose()?;
         if let Some(existing) = parsed.iter_mut().find(|arg| arg.service == service) {
             match container {
                 None => existing.containers.clear(),
                 Some(container) if !existing.containers.is_empty() => {
-                    if !existing.containers.iter().any(|value| value == container) {
-                        existing.containers.push(container.to_owned());
+                    if !existing.containers.iter().any(|value| value == &container) {
+                        existing.containers.push(container);
                     }
                 }
                 Some(_) => {}
             }
         } else {
             parsed.push(ServiceArg {
-                service: service.to_owned(),
-                containers: container.into_iter().map(ToOwned::to_owned).collect(),
+                service,
+                containers: container.into_iter().collect(),
             });
         }
     }
@@ -341,13 +308,13 @@ pub struct LogInput {
 
 pub struct ServiceLogInputs {
     pub inputs: Vec<LogInput>,
-    pub skipped_services: Vec<String>,
+    pub skipped_services: Vec<ServiceSelector>,
 }
 
 pub async fn open_exec(
     client: &mut Client,
-    service_selector: &str,
-    container_selector: Option<&str>,
+    service_selector: &ServiceSelector,
+    container_selector: Option<&ContainerSelector>,
     options: ExecOptions,
 ) -> Result<ExecSession, OperatorError> {
     let live = client.live_services().await?;
@@ -379,7 +346,7 @@ pub async fn open_exec(
 pub async fn open_service_logs(
     client: &mut Client,
     args: &[ServiceArg],
-    machine_selectors: &[String],
+    machine_selectors: &[FanoutSelector],
     options: LogsOptions,
     compose_selection: bool,
     cancellation: CancellationToken,
@@ -450,7 +417,7 @@ pub async fn open_service_logs(
 pub async fn open_machine_logs(
     client: &mut Client,
     services: &[String],
-    machine_selectors: &[String],
+    machine_selectors: &[FanoutSelector],
     options: LogsOptions,
     cancellation: CancellationToken,
 ) -> Result<Vec<LogInput>, OperatorError> {
@@ -546,7 +513,7 @@ pub(crate) async fn open_log_input(
 
 pub(crate) fn select_log_containers<'a>(
     service: &'a ServiceObservation,
-    selectors: &[String],
+    selectors: &[ContainerSelector],
 ) -> Result<Vec<&'a ContainerObservation>, OperatorError> {
     let all = service
         .containers
@@ -558,7 +525,8 @@ pub(crate) fn select_log_containers<'a>(
     }
     let mut selected = Vec::new();
     for selector in selectors {
-        let container = resolve_container_selector(&all, selector)?;
+        let container = resolve_container_selector(all.iter().copied(), selector)
+            .map_err(container_selector_error)?;
         if !selected
             .iter()
             .any(|selected: &&ContainerObservation| selected.container_id == container.container_id)
@@ -571,7 +539,7 @@ pub(crate) fn select_log_containers<'a>(
 
 pub(crate) fn select_machines<'a>(
     machines: &'a [MachineObservation],
-    selectors: &[String],
+    selectors: &[FanoutSelector],
 ) -> Result<Vec<&'a MachineObservation>, OperatorError> {
     let eligible = machines
         .iter()
@@ -588,15 +556,11 @@ pub(crate) fn select_machines<'a>(
         }
         return Ok(eligible);
     }
-    let selectors = selectors
-        .iter()
-        .map(|selector| FanoutSelector::parse(selector.as_str()))
-        .collect::<Result<Vec<_>, _>>()?;
     let visible = eligible
         .iter()
         .map(|observation| observation.machine.clone())
         .collect::<Vec<_>>();
-    resolve_machine_selectors(&visible, &selectors)?
+    resolve_machine_selectors(&visible, selectors)?
         .into_iter()
         .map(|machine| {
             eligible

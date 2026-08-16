@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{ContainerKind, ContainerObservation, PartialResult, ServiceId};
+use crate::{ContainerKind, ContainerObservation, PartialResult, ServiceId, ServiceSelector};
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -87,23 +87,29 @@ pub fn derive_services(
 #[derive(Clone, Debug, Eq, Error, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "error")]
 pub enum ServiceSelectorError {
-    #[error("Service {selector:?} was not found")]
-    NotFound { selector: String },
-    #[error("Service Name {selector:?} matches multiple Service IDs: {service_ids:?}")]
+    #[error("Service \"{selector}\" was not found")]
+    NotFound { selector: ServiceSelector },
+    #[error("Service Name \"{selector}\" matches multiple Service IDs: {service_ids:?}")]
     NameAmbiguity {
-        selector: String,
+        selector: ServiceSelector,
         service_ids: Vec<ServiceId>,
     },
 }
 
+/// Resolve a Service by exact Service ID, then Service Name.
+///
+/// # Errors
+///
+/// Returns [`ServiceSelectorError::NotFound`] when no Service matches, or
+/// [`ServiceSelectorError::NameAmbiguity`] when a name matches more than one Service ID.
 pub fn select_service<'a>(
     services: &'a [ServiceObservation],
-    selector: &str,
+    selector: &ServiceSelector,
 ) -> Result<&'a ServiceObservation, ServiceSelectorError> {
     // TODO(UT-103): same-named Service IDs remain ambiguous; never select or repair a winner.
     if let Some(service) = services
         .iter()
-        .find(|service| service.service_id.as_str() == selector)
+        .find(|service| service.service_id.as_str() == selector.as_str())
     {
         return Ok(service);
     }
@@ -114,16 +120,16 @@ pub fn select_service<'a>(
                 .containers
                 .iter()
                 .chain(&service.hook_containers)
-                .any(|container| container.service_name.as_str() == selector)
+                .any(|container| container.service_name.as_str() == selector.as_str())
         })
         .collect::<Vec<_>>();
     match matches.as_slice() {
         [] => Err(ServiceSelectorError::NotFound {
-            selector: selector.to_owned(),
+            selector: selector.clone(),
         }),
         [service] => Ok(service),
         _ => Err(ServiceSelectorError::NameAmbiguity {
-            selector: selector.to_owned(),
+            selector: selector.clone(),
             service_ids: matches
                 .into_iter()
                 .map(|service| service.service_id)
@@ -141,7 +147,7 @@ mod tests {
     use crate::{
         ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
         MachineFailure, MachineId, MachineSuccess, PartialResult, ResolvedServiceSpec, RpcError,
-        RpcErrorCode, ServiceId, ServiceName,
+        RpcErrorCode, ServiceId, ServiceName, ServiceSelector,
     };
 
     #[test]
@@ -236,25 +242,27 @@ mod tests {
         ]);
 
         assert_eq!(
-            super::select_service(&services, first_id.as_str())
+            super::select_service(&services, &ServiceSelector::from(&first_id))
                 .unwrap()
                 .service_id,
             first_id
         );
         assert!(matches!(
-            super::select_service(&services, "missing"),
-            Err(super::ServiceSelectorError::NotFound { .. })
+            super::select_service(&services, &ServiceSelector::parse("missing").unwrap()),
+            Err(super::ServiceSelectorError::NotFound { selector })
+                if selector.as_str() == "missing"
         ));
         assert_eq!(
-            super::select_service(&services, "unique")
+            super::select_service(&services, &ServiceSelector::parse("unique").unwrap())
                 .unwrap()
                 .service_id,
             unique_id
         );
         assert!(matches!(
-            super::select_service(&services, "shared"),
-            Err(super::ServiceSelectorError::NameAmbiguity { service_ids, .. })
-                if service_ids.len() == 2
+            super::select_service(&services, &ServiceSelector::parse("shared").unwrap()),
+            Err(super::ServiceSelectorError::NameAmbiguity { selector, service_ids })
+                if selector.as_str() == "shared"
+                    && service_ids.len() == 2
                     && service_ids.contains(&first_id)
                     && service_ids.contains(&second_id)
         ));

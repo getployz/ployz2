@@ -8,8 +8,9 @@ use std::{
 
 use futures_util::stream;
 use ployz_core::{
-    ContainerRuntimeObservation, LogMetadata, LogOrigin, MachineId, MachineName,
-    ResolvedServiceSpec, RestartPolicy, ServiceId, ServiceName,
+    ContainerKind, ContainerRuntimeObservation, ContainerSelector, FanoutSelector, LogMetadata,
+    LogOrigin, MachineId, MachineName, ResolvedServiceSpec, RestartPolicy, ServiceId, ServiceName,
+    ServiceSelector,
 };
 
 use super::*;
@@ -22,23 +23,24 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
         "api-one"
     );
     assert_eq!(
-        select_exec_container(&service, Some(&"b".repeat(64)))
+        select_exec_container(&service, Some(&container_selector(&"b".repeat(64))))
             .unwrap()
             .display_name,
         "api-two"
     );
     assert_eq!(
-        select_exec_container(&service, Some("b"))
+        select_exec_container(&service, Some(&container_selector("b")))
             .unwrap()
             .display_name,
         "b"
     );
     assert!(matches!(
-        select_exec_container(&service, Some("bb")),
-        Err(ContainerSelectorError::Ambiguous { .. })
+        select_exec_container(&service, Some(&container_selector("bb"))),
+        Err(ContainerSelectorError::Ambiguous { selector, .. })
+            if selector.as_str() == "bb"
     ));
     assert_eq!(
-        select_log_containers(&service, &["b".into()])
+        select_log_containers(&service, &[container_selector("b")])
             .unwrap()
             .first()
             .unwrap()
@@ -48,8 +50,9 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
     let mut duplicate_names = service.clone();
     duplicate_names.containers.get_mut(1).unwrap().display_name = "api-one".into();
     assert!(matches!(
-        select_exec_container(&duplicate_names, Some("api-one")),
-        Err(ContainerSelectorError::Ambiguous { .. })
+        select_exec_container(&duplicate_names, Some(&container_selector("api-one"))),
+        Err(ContainerSelectorError::Ambiguous { selector, .. })
+            if selector.as_str() == "api-one"
     ));
     let options = exec_options(
         Vec::new(),
@@ -95,6 +98,51 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
 }
 
 #[test]
+fn empty_exec_and_logs_container_selection_stay_distinct() {
+    let mut service = observed_service();
+    service.hook_containers.push(container(
+        &"e".repeat(64),
+        "hook-one",
+        service.service_id,
+        ContainerKind::PreDeployHook,
+    ));
+    assert_eq!(
+        select_exec_container(&service, None).unwrap().display_name,
+        "api-one"
+    );
+    assert_eq!(
+        select_log_containers(&service, &[])
+            .unwrap()
+            .iter()
+            .map(|container| container.display_name.as_str())
+            .collect::<Vec<_>>(),
+        ["api-one", "api-two", "b", "hook-one"]
+    );
+    assert!(matches!(
+        select_exec_container(&service, Some(&container_selector("hook-one"))),
+        Err(ContainerSelectorError::NotFound { selector })
+            if selector.as_str() == "hook-one"
+    ));
+    assert_eq!(
+        select_log_containers(&service, &[container_selector("hook-one")])
+            .unwrap()
+            .first()
+            .unwrap()
+            .display_name,
+        "hook-one"
+    );
+    let hooks_only = ServiceObservation {
+        service_id: service.service_id,
+        containers: Vec::new(),
+        hook_containers: service.hook_containers,
+    };
+    assert!(matches!(
+        select_exec_container(&hooks_only, None),
+        Err(ContainerSelectorError::NoRegularContainer)
+    ));
+}
+
+#[test]
 fn service_args_tail_and_proxy_ports_cover_the_argument_tables() {
     assert!(service_logs_use_compose(&[]));
     assert!(!service_logs_use_compose(&["api".into()]));
@@ -102,12 +150,12 @@ fn service_args_tail_and_proxy_ports_cover_the_argument_tables() {
         parse_service_args(&strings(["api/one", "api/two", "worker/x", "api"])).unwrap(),
         [
             ServiceArg {
-                service: "api".into(),
+                service: service_selector("api"),
                 containers: vec![],
             },
             ServiceArg {
-                service: "worker".into(),
-                containers: vec!["x".into()],
+                service: service_selector("worker"),
+                containers: vec![container_selector("x")],
             },
         ]
     );
@@ -317,9 +365,14 @@ fn machine_selection_treats_star_as_all_and_all_as_a_name() {
         machine_observation(2, "all"),
     ];
     assert_eq!(select_machines(&machines, &[]).unwrap().len(), 2);
-    assert_eq!(select_machines(&machines, &["*".into()]).unwrap().len(), 2);
     assert_eq!(
-        select_machines(&machines, &["all".into()])
+        select_machines(&machines, &[FanoutSelector::parse("*").unwrap()])
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        select_machines(&machines, &[FanoutSelector::parse("all").unwrap()])
             .unwrap()
             .first()
             .unwrap()
@@ -328,11 +381,19 @@ fn machine_selection_treats_star_as_all_and_all_as_a_name() {
             .as_str(),
         "all"
     );
-    assert!(select_machines(&machines, &["missing".into()]).is_err());
+    assert!(select_machines(&machines, &[FanoutSelector::parse("missing").unwrap()]).is_err());
 }
 
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
     values.into_iter().map(ToOwned::to_owned).collect()
+}
+
+fn service_selector(value: &str) -> ServiceSelector {
+    ServiceSelector::parse(value).unwrap()
+}
+
+fn container_selector(value: &str) -> ContainerSelector {
+    ContainerSelector::parse(value).unwrap()
 }
 
 fn machine_observation(seed: u8, name: &str) -> MachineObservation {
@@ -357,15 +418,35 @@ fn observed_service() -> ServiceObservation {
     ServiceObservation {
         service_id,
         containers: vec![
-            container(&"a".repeat(64), "api-one", service_id),
-            container(&"b".repeat(64), "api-two", service_id),
-            container(&format!("{}c", "b".repeat(63)), "b", service_id),
+            container(
+                &"a".repeat(64),
+                "api-one",
+                service_id,
+                ContainerKind::ServiceContainer,
+            ),
+            container(
+                &"b".repeat(64),
+                "api-two",
+                service_id,
+                ContainerKind::ServiceContainer,
+            ),
+            container(
+                &format!("{}c", "b".repeat(63)),
+                "b",
+                service_id,
+                ContainerKind::ServiceContainer,
+            ),
         ],
         hook_containers: vec![],
     }
 }
 
-fn container(id: &str, name: &str, service_id: ServiceId) -> ContainerObservation {
+fn container(
+    id: &str,
+    name: &str,
+    service_id: ServiceId,
+    kind: ContainerKind,
+) -> ContainerObservation {
     ContainerObservation {
         container_id: ContainerId::parse(id).unwrap(),
         display_name: name.into(),
@@ -373,7 +454,7 @@ fn container(id: &str, name: &str, service_id: ServiceId) -> ContainerObservatio
         machine_id: MachineId::parse("2".repeat(32)).unwrap(),
         service_id,
         service_name: ServiceName::parse("api").unwrap(),
-        kind: ContainerKind::ServiceContainer,
+        kind,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
         },

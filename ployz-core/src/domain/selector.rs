@@ -29,7 +29,7 @@ impl ServiceSelector {
         &self,
         services: &'a [ServiceObservation],
     ) -> Result<&'a ServiceObservation, ServiceSelectorError> {
-        select_service(services, self.as_str())
+        select_service(services, self)
     }
 }
 
