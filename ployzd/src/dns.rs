@@ -19,8 +19,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, ContainerRuntimeObservation, HealthObservation, Machine,
-    ServiceContainer, ServiceId, ServiceName, service_containers,
+    ContainerObservation, ContainerRuntimeObservation, HealthObservation, Machine, ServiceId,
+    ServiceName, service_containers,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -56,16 +56,13 @@ struct Projection {
 
 impl Projection {
     fn from_observations(observations: &[ContainerObservation]) -> Self {
-        Self::from_service_containers(&service_containers(observations.iter().cloned()))
-    }
-
-    fn from_service_containers(containers: &[ServiceContainer]) -> Self {
         // TODO(UT-117, UT-118): keep Membership Observations out of DNS projection until a
         // product decision replaces the baseline's deliberately membership-blind behavior.
+        let containers = service_containers(observations.iter().cloned());
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut names = HashMap::<ServiceName, Vec<Ipv4Addr>>::new();
         let mut machine_services = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
-        for container in containers {
+        for container in &containers {
             let observation = container.as_observation();
             let service_addresses = service_ids.entry(observation.service_id).or_default();
             let healthy = matches!(
