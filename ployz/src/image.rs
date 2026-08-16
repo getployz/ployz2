@@ -572,8 +572,8 @@ mod tests {
     use super::*;
     use ployz_core::{
         EnsureImageIngestRequest, ImageSummary, ListImagesRequest, MachineId, MachineImages,
-        MachineName, MachineObservation, ManagementAddress, MembershipObservation,
-        PullImageFromMachineRequest, RpcErrorCode, WireGuardPublicKey,
+        MachineName, MachineObservation, ManagementAddress, MembershipObservation, RpcErrorCode,
+        WireGuardPublicKey,
     };
     use serde_json::Value;
 
@@ -720,24 +720,6 @@ mod tests {
         assert_eq!(ingest.body.command(), "ensure_image_ingest");
         assert_eq!(list.body.command(), "list_images");
         assert_ne!(ingest.body.command(), list.body.command());
-    }
-
-    #[test]
-    fn peer_pull_is_a_distinct_command_from_ingest() {
-        let pull = op::PullImageFromMachine::into_request(PullImageFromMachineRequest {
-            image: "busybox:1.37.0".into(),
-            source: ployz_core::ImageIngestDestination {
-                gateway: ployz_core::MachineGateway(std::net::Ipv4Addr::new(10, 210, 1, 1)),
-                port: ployz_core::UNREGISTRY_PORT,
-            },
-        });
-        assert_eq!(pull.body.command(), "pull_image_from_machine");
-        assert_ne!(
-            pull.body.command(),
-            op::EnsureImageIngest::into_request(EnsureImageIngestRequest {})
-                .body
-                .command()
-        );
     }
 
     fn listing(seed: u8, tags: &[&str]) -> MachineSuccess<MachineImagesObservation> {

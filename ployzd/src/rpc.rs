@@ -529,7 +529,7 @@ impl MachineRpc for MachineService {
         if self.containers().is_err() {
             return respond(unavailable("Docker is not available"));
         }
-        match crate::docker_image::pull_from_ingest(&request.image, request.source).await {
+        match crate::docker::pull_from_ingest(&request.image, request.source).await {
             Ok(()) => respond(ImagePulled {}),
             Err(error) => respond(docker_rpc_error(error)),
         }

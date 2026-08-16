@@ -2,6 +2,7 @@ mod create;
 mod lifecycle;
 mod managed_service;
 mod observe;
+mod peer_pull;
 mod spec_store;
 mod stream;
 mod unregistry;
@@ -30,6 +31,7 @@ use thiserror::Error;
 use observe::ObservationSink;
 
 pub(crate) use managed_service::ManagedService;
+pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
 pub use unregistry::{ImageIngest, unregistry_matches};
 
