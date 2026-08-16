@@ -511,12 +511,13 @@ async fn monitor_container<C: MachineOperations>(
         .update
         .monitor_millis
         .map_or(DEFAULT_HEALTH_MONITOR, Duration::from_millis);
-    let spec_healthcheck = spec.container.healthcheck.as_ref();
-    let spec_configured = spec_healthcheck.and_then(HealthcheckSpec::as_configured);
-    let spec_disabled = matches!(spec_healthcheck, Some(HealthcheckSpec::Disabled));
     let started = Instant::now();
 
-    if spec_configured.is_none() && !monitor.is_zero() {
+    if !matches!(
+        spec.container.healthcheck,
+        Some(HealthcheckSpec::Configured(_))
+    ) && !monitor.is_zero()
+    {
         tokio::select! {
             () = cancellation.cancelled() => {
                 return Err(health_error(container_id, HealthFailure::Cancelled));
@@ -532,29 +533,8 @@ async fn monitor_container<C: MachineOperations>(
         }
         let observed = inspect(client, machine_id, container_id).await?;
         let now = Instant::now();
-        let health_deadline = spec_configured
-            .or_else(|| {
-                if spec_disabled {
-                    None
-                } else {
-                    observed
-                        .effective_healthcheck
-                        .as_ref()
-                        .and_then(HealthcheckSpec::as_configured)
-                }
-            })
-            .map(|healthcheck| started + healthcheck_timeout(Some(healthcheck)))
-            .or_else(|| {
-                (!spec_disabled
-                    && matches!(
-                        &observed.runtime,
-                        ContainerRuntimeObservation::Running {
-                            health: HealthObservation::Starting
-                                | HealthObservation::Unrecognized(_),
-                        }
-                    ))
-                .then(|| started + healthcheck_timeout(None))
-            });
+        let health_deadline =
+            health_deadline_for(spec.container.healthcheck.as_ref(), &observed, started);
         let wake_deadline =
             match classify_health(&observed.runtime, now, monitor_deadline, health_deadline) {
                 HealthPoll::Complete => return Ok(()),
@@ -758,6 +738,33 @@ fn stop_grace_period(spec: &ResolvedServiceSpec) -> Option<i32> {
     spec.container
         .stop_timeout_secs
         .map(|secs| i32::try_from(secs).unwrap_or(i32::MAX))
+}
+
+fn health_deadline_for(
+    spec: Option<&HealthcheckSpec>,
+    observed: &ContainerObservation,
+    started: Instant,
+) -> Option<Instant> {
+    match spec {
+        Some(HealthcheckSpec::Configured(configured)) => {
+            Some(started + healthcheck_timeout(Some(configured)))
+        }
+        Some(HealthcheckSpec::Disabled) => None,
+        None => observed
+            .effective_healthcheck
+            .as_ref()
+            .and_then(HealthcheckSpec::as_configured)
+            .map(|check| started + healthcheck_timeout(Some(check)))
+            .or_else(|| {
+                matches!(
+                    &observed.runtime,
+                    ContainerRuntimeObservation::Running {
+                        health: HealthObservation::Starting | HealthObservation::Unrecognized(_),
+                    }
+                )
+                .then(|| started + healthcheck_timeout(None))
+            }),
+    }
 }
 
 fn healthcheck_timeout(healthcheck: Option<&ConfiguredHealthcheck>) -> Duration {

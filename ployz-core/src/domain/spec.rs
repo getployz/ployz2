@@ -179,6 +179,7 @@ pub enum HealthcheckSpec {
 }
 
 impl HealthcheckSpec {
+    /// Borrow the Configured payload, if this Healthcheck is Configured.
     #[must_use]
     pub fn as_configured(&self) -> Option<&ConfiguredHealthcheck> {
         match self {
@@ -188,12 +189,43 @@ impl HealthcheckSpec {
     }
 }
 
+/// How a raw command list maps before timings are attached.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HealthcheckCommandKind {
+    Empty,
+    DisableSentinel,
+    Command(HealthcheckCommand),
+}
+
 /// A Healthcheck command that is non-empty and does not begin with Docker's disable sentinel.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "Vec<String>", into = "Vec<String>")]
 pub struct HealthcheckCommand(Vec<String>);
 
 impl HealthcheckCommand {
+    /// Classify a raw command list as empty, Docker's disable sentinel, or a real command.
+    #[must_use]
+    pub fn classify<I, S>(test: I) -> HealthcheckCommandKind
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::classify_vec(test.into_iter().map(Into::into).collect())
+    }
+
+    fn classify_vec(test: Vec<String>) -> HealthcheckCommandKind {
+        if test
+            .first()
+            .is_some_and(|command| command == HEALTHCHECK_DISABLE_SENTINEL)
+        {
+            HealthcheckCommandKind::DisableSentinel
+        } else if test.is_empty() {
+            HealthcheckCommandKind::Empty
+        } else {
+            HealthcheckCommandKind::Command(Self(test))
+        }
+    }
+
     /// Parse a Healthcheck command.
     ///
     /// # Errors
@@ -205,30 +237,25 @@ impl HealthcheckCommand {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let test = test.into_iter().map(Into::into).collect::<Vec<_>>();
-        if test.is_empty()
-            || test
-                .first()
-                .is_some_and(|command| command == HEALTHCHECK_DISABLE_SENTINEL)
-        {
-            return Err(ValueError::new(
+        match Self::classify(test) {
+            HealthcheckCommandKind::Command(command) => Ok(command),
+            HealthcheckCommandKind::Empty => Err(ValueError::new(
                 "healthcheck command",
-                test.join(" "),
+                "",
                 "a non-empty command that does not begin with NONE",
-            ));
+            )),
+            HealthcheckCommandKind::DisableSentinel => Err(ValueError::new(
+                "healthcheck command",
+                HEALTHCHECK_DISABLE_SENTINEL,
+                "a non-empty command that does not begin with NONE",
+            )),
         }
-        Ok(Self(test))
     }
 
+    /// Borrow the command tokens.
     #[must_use]
     pub fn as_slice(&self) -> &[String] {
         &self.0
-    }
-}
-
-impl AsRef<[String]> for HealthcheckCommand {
-    fn as_ref(&self) -> &[String] {
-        self.as_slice()
     }
 }
 
@@ -674,6 +701,14 @@ mod tests {
 
     #[test]
     fn healthcheck_command_rejects_empty_and_disable_sentinel() {
+        assert_eq!(
+            HealthcheckCommand::classify(Vec::<String>::new()),
+            HealthcheckCommandKind::Empty
+        );
+        assert_eq!(
+            HealthcheckCommand::classify(["NONE"]),
+            HealthcheckCommandKind::DisableSentinel
+        );
         assert!(HealthcheckCommand::parse(Vec::<String>::new()).is_err());
         assert!(HealthcheckCommand::parse(["NONE"]).is_err());
         assert!(HealthcheckCommand::parse(["NONE", "CMD", "true"]).is_err());
