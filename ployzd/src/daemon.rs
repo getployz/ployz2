@@ -31,7 +31,7 @@ use crate::{
         RunningCorrosion, run_machine_publisher_with_restart,
     },
     dns,
-    docker::{ContainerRuntime, LocalDocker, MachineSpecStore, RunningUnregistry, SpecStoreError},
+    docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     filesystem::set_ployz_group,
     machine::{LocalMachineStore, StoreError},
     metrics,
@@ -66,7 +66,7 @@ pub struct Daemon {
     shutdown: CancellationToken,
     store: Arc<Mutex<LocalMachineStore>>,
     corrosion: Option<RunningCorrosion>,
-    unregistry: Option<Arc<RunningUnregistry>>,
+    ingest: Arc<ImageIngest>,
     reset_rx: watch::Receiver<bool>,
     servers: JoinHandle<io::Result<()>>,
     _socket_lock: File,
@@ -142,31 +142,8 @@ impl Daemon {
                 }
             }
         };
-        let unregistry_gateway = if local_record.phase == LocalMachinePhase::Participating {
-            local_record
-                .machine
-                .as_ref()
-                .map(|machine| machine.subnet.gateway().0)
-        } else {
-            None
-        };
         let corrosion = start_corrosion(&config, &store).await?;
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
-        let unregistry = match (&containers, unregistry_gateway) {
-            (Some(runtime), Some(gateway)) => {
-                match runtime
-                    .start_unregistry(gateway, config.containerd_socket.as_deref())
-                    .await
-                {
-                    Ok(running) => running.map(Arc::new),
-                    Err(error) => {
-                        eprintln!("WARNING: unregistry disabled: {error}");
-                        None
-                    }
-                }
-            }
-            _ => None,
-        };
         let containers = match (containers, replicated_store.clone()) {
             (Some(runtime), Some(replicated)) => {
                 Some(runtime.replicating(replicated, Arc::clone(&store)))
@@ -174,6 +151,11 @@ impl Daemon {
             (runtime, _) => runtime,
         };
         let shutdown = CancellationToken::new();
+        let ingest = ImageIngest::new(
+            config.containerd_socket.clone(),
+            shutdown.child_token(),
+            containers.as_ref().map(ContainerRuntime::local_docker),
+        );
         let (participating, participating_rx) =
             watch::channel(local_record.phase == LocalMachinePhase::Participating);
         let (reset, reset_rx) = watch::channel(false);
@@ -192,7 +174,7 @@ impl Daemon {
         )
         .with_optional_containers(containers.clone())
         .with_caddyfile(caddyfile.clone())
-        .with_containerd_socket(config.containerd_socket.clone());
+        .with_image_ingest(Arc::clone(&ingest));
         let proxy = MachineProxy::new(
             Routes::new(MachineRpcServer::new(service)),
             local_record.id,
@@ -222,7 +204,6 @@ impl Daemon {
                 (Some(management), Some(gateway))
             });
         let socket = config.socket.clone();
-        let unregistry_for_refresh = unregistry.clone();
         let store_for_servers = Arc::clone(&store);
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -301,22 +282,6 @@ impl Daemon {
                     }
                 }
             };
-            let unregistry_refresh = {
-                let running = unregistry_for_refresh;
-                let shutdown = shutdown.clone();
-                async move {
-                    match running.as_deref() {
-                        Some(running) => running
-                            .keep_socket_current(shutdown)
-                            .await
-                            .map_err(io::Error::other),
-                        None => {
-                            shutdown.cancelled().await;
-                            Ok(())
-                        }
-                    }
-                }
-            };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
                 metrics,
@@ -326,7 +291,6 @@ impl Daemon {
                 observer,
                 dns,
                 caddy,
-                unregistry_refresh,
             )
             .map(|_| ())
         });
@@ -341,7 +305,7 @@ impl Daemon {
             shutdown,
             store,
             corrosion,
-            unregistry,
+            ingest,
             reset_rx,
             servers,
             _socket_lock: socket_lock,
@@ -401,15 +365,13 @@ impl Daemon {
                 errors.push(error.to_string());
             }
         }
-        if let Some(running) = &self.unregistry {
-            let result = if resetting {
-                running.cleanup().await
-            } else {
-                running.stop().await
-            };
-            if let Err(error) = result {
-                errors.push(error.to_string());
-            }
+        let ingest_result = if resetting {
+            self.ingest.cleanup().await
+        } else {
+            self.ingest.stop().await
+        };
+        if let Err(error) = ingest_result {
+            errors.push(error.to_string());
         }
         if resetting {
             match self.store.lock() {

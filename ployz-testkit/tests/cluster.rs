@@ -556,24 +556,10 @@ async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable
     }
     let machines = cluster.initialize_two().await.unwrap();
     let gateway = machines.first().unwrap().subnet.gateway().0;
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            let ready = cluster
-                .shell(
-                    0,
-                    &format!(
-                        "docker inspect ployz-unregistry >/dev/null 2>&1 && curl --fail --silent http://{gateway}:{UNREGISTRY_PORT}/v2/ >/dev/null"
-                    ),
-                )
-                .is_ok();
-            if ready {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    .unwrap();
+    assert!(
+        cluster.shell(0, "docker inspect ployz-unregistry").is_err(),
+        "helper must not start until image ingest is opened"
+    );
     cluster.docker(0, &["pull", "alpine:3.23.3"]).unwrap();
     cluster
         .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
@@ -650,7 +636,14 @@ async fn pinned_unregistry_starts_on_the_gateway_and_remains_container_reachable
 #[tokio::test]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
 async fn multi_platform_direct_push_retains_success_beside_target_failure() {
-    let plan = ClusterPlan::new(&format!("l3-image-push-{}", process::id()), 2).unwrap();
+    let mut plan = ClusterPlan::new(&format!("l3-image-push-{}", process::id()), 2).unwrap();
+    plan.machines
+        .first_mut()
+        .expect("cluster plan has a first Machine")
+        .daemon_args = vec![
+        "--containerd-socket".into(),
+        "/missing/containerd.sock".into(),
+    ];
     let cluster = Cluster::create(plan).unwrap();
     let machines = cluster.initialize_two().await.unwrap();
     let image = format!("l3.invalid/multi-{}:v1", process::id());
@@ -663,7 +656,6 @@ async fn multi_platform_direct_push_retains_success_beside_target_failure() {
     cluster
         .docker(0, &["tag", "busybox:1.37.0", &image])
         .unwrap();
-    cluster.docker(0, &["stop", "ployz-unregistry"]).unwrap();
 
     let pushed = cluster.shell(
         0,
@@ -720,11 +712,14 @@ async fn daemon_stays_ready_when_unregistry_prerequisites_are_missing() {
             )
             .is_err()
     );
+    disabled
+        .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
+        .unwrap();
+    let push = disabled.shell(0, "ployz image push --machine machine-1 busybox:1.37.0");
+    let failure = push.expect_err("unsupported store must fail image ingest");
     assert!(
-        disabled
-            .logs(0)
-            .unwrap()
-            .contains("unregistry disabled: Docker is not using the containerd image store")
+        failure.to_string().contains("containerd image store"),
+        "{failure}"
     );
     drop(disabled);
 
@@ -750,10 +745,13 @@ async fn daemon_stays_ready_when_unregistry_prerequisites_are_missing() {
             )
             .is_err()
     );
+    missing
+        .docker(0, &["pull", "--platform", "linux/amd64", "busybox:1.37.0"])
+        .unwrap();
+    let push = missing.shell(0, "ployz image push --machine machine-1 busybox:1.37.0");
+    let failure = push.expect_err("missing containerd socket must fail image ingest");
     assert!(
-        missing
-            .logs(0)
-            .unwrap()
-            .contains("unregistry disabled: no containerd socket was detected")
+        failure.to_string().contains("containerd socket"),
+        "{failure}"
     );
 }

@@ -35,7 +35,8 @@ use observe::ObservationSink;
 
 pub(crate) use managed_service::ManagedService;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
-pub use unregistry::{ImageIngestPrerequisite, RunningUnregistry, unregistry_matches};
+pub(crate) use unregistry::RunningUnregistry;
+pub use unregistry::{ImageIngest, ImageIngestPrerequisite, unregistry_matches};
 
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
@@ -145,19 +146,22 @@ impl ContainerRuntime {
         })
     }
 
-    /// Start the image-ingest helper when the store and socket are ready.
+    #[must_use]
+    pub(crate) fn local_docker(&self) -> LocalDocker {
+        self.docker.clone()
+    }
+
+    /// Start the image-ingest helper on this socket.
     ///
     /// # Errors
     ///
-    /// Returns when Docker info cannot be read or the helper cannot be started.
-    pub async fn start_unregistry(
+    /// Returns when the helper cannot be created or started.
+    pub(crate) async fn start_unregistry(
         &self,
         gateway: Ipv4Addr,
-        configured_socket: Option<&Path>,
-    ) -> Result<Option<RunningUnregistry>, Error> {
-        self.docker
-            .start_unregistry(gateway, configured_socket)
-            .await
+        socket: PathBuf,
+    ) -> Result<RunningUnregistry, Error> {
+        self.docker.start_unregistry(gateway, socket).await
     }
 
     /// Store and socket gates for image ingest on this Machine.

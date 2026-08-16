@@ -3,6 +3,7 @@ use std::{
     net::Ipv4Addr,
     os::unix::fs::{FileTypeExt, MetadataExt},
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -10,11 +11,15 @@ use bollard::models::{
     ContainerCreateBody, HostConfig, HostConfigLogConfig, Mount, MountType, PortBinding,
     RestartPolicy, RestartPolicyNameEnum,
 };
+use ployz_core::{
+    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, MachineGateway, RpcError,
+};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::network::{DOCKER_NETWORK_NAME, UNREGISTRY_PORT};
 
-use super::{Error, LocalDocker, ManagedService};
+use super::{ContainerRuntime, Error, LocalDocker, ManagedService};
 
 pub const IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 const NAME: &str = "ployz-unregistry";
@@ -29,11 +34,141 @@ const SOCKETS: &[&str] = &[
     "/var/run/docker/containerd/containerd.sock",
 ];
 
-/// Store and socket gates shared by boot-time start and `EnsureImageIngest`.
+/// Store and socket gates for image ingest on this Machine.
 pub enum ImageIngestPrerequisite {
     Ready(PathBuf),
     UnsupportedStore,
     MissingSocket,
+}
+
+impl ImageIngestPrerequisite {
+    fn socket(self) -> Result<PathBuf, ImageIngestReason> {
+        match self {
+            Self::Ready(socket) => Ok(socket),
+            Self::UnsupportedStore => Err(ImageIngestReason::UnsupportedContainerdStore),
+            Self::MissingSocket => Err(ImageIngestReason::ContainerdSocketMissing),
+        }
+    }
+}
+
+/// Image ingest for one Machine: first `open` starts the helper; later opens reuse it.
+pub struct ImageIngest {
+    slot: Mutex<Option<StartedIngest>>,
+    configured_socket: Option<PathBuf>,
+    refresh_shutdown: CancellationToken,
+    docker: Option<LocalDocker>,
+}
+
+struct StartedIngest {
+    running: Arc<RunningUnregistry>,
+    refresh: tokio::task::JoinHandle<()>,
+}
+
+impl ImageIngest {
+    #[must_use]
+    pub fn new(
+        configured_socket: Option<PathBuf>,
+        refresh_shutdown: CancellationToken,
+        docker: Option<LocalDocker>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            slot: Mutex::new(None),
+            configured_socket,
+            refresh_shutdown,
+            docker,
+        })
+    }
+
+    /// Start the helper if needed and return the Machine Gateway TCP destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns a named ingest RPC error when the Machine cannot ingest, or when
+    /// the helper fails to start.
+    pub async fn open(
+        &self,
+        runtime: &ContainerRuntime,
+        gateway: MachineGateway,
+    ) -> Result<ImageIngestOpened, RpcError> {
+        let opened = ImageIngestOpened {
+            destination: ImageIngestDestination {
+                gateway,
+                port: UNREGISTRY_PORT,
+            },
+        };
+        let socket = match runtime
+            .image_ingest_prerequisite(self.configured_socket.as_deref())
+            .await
+        {
+            Ok(prerequisite) => prerequisite.socket().map_err(ingest_skip_error)?,
+            Err(error) => {
+                return Err(ImageIngestReason::DockerUnavailable.rpc_error(error.to_string()));
+            }
+        };
+        let mut slot = self.slot.lock().await;
+        if slot.is_some() {
+            return Ok(opened);
+        }
+        let running = runtime
+            .start_unregistry(gateway.0, socket)
+            .await
+            .map_err(|error| ImageIngestReason::StartFailed.rpc_error(error.to_string()))?;
+        let running = Arc::new(running);
+        let refresh = {
+            let running = Arc::clone(&running);
+            let shutdown = self.refresh_shutdown.clone();
+            tokio::spawn(async move {
+                let _ = running.keep_socket_current(shutdown).await;
+            })
+        };
+        *slot = Some(StartedIngest { running, refresh });
+        Ok(opened)
+    }
+
+    /// Stop the helper if this process started it.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot stop the helper.
+    pub async fn stop(&self) -> Result<(), Error> {
+        let Some(started) = self.slot.lock().await.take() else {
+            return Ok(());
+        };
+        started.refresh.abort();
+        started.running.stop().await
+    }
+
+    /// Remove the helper, including a leftover from a previous process.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot remove the helper.
+    pub async fn cleanup(&self) -> Result<(), Error> {
+        if let Some(started) = self.slot.lock().await.take() {
+            started.refresh.abort();
+            return started.running.cleanup().await;
+        }
+        let Some(docker) = &self.docker else {
+            return Ok(());
+        };
+        ManagedService::new(docker.client.clone(), NAME, IMAGE)
+            .remove()
+            .await
+            .map_err(Into::into)
+    }
+}
+
+fn ingest_skip_error(reason: ImageIngestReason) -> RpcError {
+    let message = match reason {
+        ImageIngestReason::UnsupportedContainerdStore => {
+            "Docker is not using the containerd image store"
+        }
+        ImageIngestReason::ContainerdSocketMissing => "no containerd socket was detected",
+        ImageIngestReason::NotParticipating => "Machine is not participating",
+        ImageIngestReason::DockerUnavailable => "Docker is not available",
+        ImageIngestReason::StartFailed => "image ingest helper failed to start",
+    };
+    reason.rpc_error(message)
 }
 
 impl LocalDocker {
@@ -55,40 +190,27 @@ impl LocalDocker {
         })
     }
 
-    /// Start the image-ingest helper when the store and socket are ready.
+    /// Start the image-ingest helper on this socket.
     ///
     /// # Errors
     ///
-    /// Returns when Docker info cannot be read or the helper cannot be started.
-    pub async fn start_unregistry(
+    /// Returns when the helper cannot be created or started.
+    pub(crate) async fn start_unregistry(
         &self,
         gateway: Ipv4Addr,
-        configured_socket: Option<&Path>,
-    ) -> Result<Option<RunningUnregistry>, Error> {
-        let socket = match self.image_ingest_prerequisite(configured_socket).await? {
-            ImageIngestPrerequisite::Ready(socket) => socket,
-            ImageIngestPrerequisite::UnsupportedStore => {
-                eprintln!(
-                    "WARNING: unregistry disabled: Docker is not using the containerd image store"
-                );
-                return Ok(None);
-            }
-            ImageIngestPrerequisite::MissingSocket => {
-                eprintln!("WARNING: unregistry disabled: no containerd socket was detected");
-                return Ok(None);
-            }
-        };
+        socket: PathBuf,
+    ) -> Result<RunningUnregistry, Error> {
         let service = RunningUnregistry {
             service: ManagedService::new(self.client.clone(), NAME, IMAGE),
             socket,
             gateway,
         };
         service.start().await?;
-        Ok(Some(service))
+        Ok(service)
     }
 }
 
-pub struct RunningUnregistry {
+pub(crate) struct RunningUnregistry {
     service: ManagedService,
     socket: PathBuf,
     gateway: Ipv4Addr,
@@ -262,6 +384,25 @@ fn is_socket(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ingest_prerequisites_map_to_named_reasons() {
+        assert!(matches!(
+            ImageIngestPrerequisite::UnsupportedStore.socket(),
+            Err(ImageIngestReason::UnsupportedContainerdStore)
+        ));
+        assert!(matches!(
+            ImageIngestPrerequisite::MissingSocket.socket(),
+            Err(ImageIngestReason::ContainerdSocketMissing)
+        ));
+        let socket = PathBuf::from("/run/containerd/containerd.sock");
+        assert_eq!(
+            ImageIngestPrerequisite::Ready(socket.clone())
+                .socket()
+                .unwrap(),
+            socket
+        );
+    }
 
     #[test]
     fn configured_containerd_socket_wins_and_regular_files_are_rejected() {
