@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, num::NonZeroU32};
 
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, Machine, MachineFailure, MachineId, MachineName, MachineSubnet,
-    MachineSuccess, ManagementAddress, MembershipObservation, PartialResult, RequestedServiceSpec,
+    ContainerRuntimeObservation, Machine, MachineFailure, MachineId, MachineName, MachineSuccess,
+    ManagementAddress, MembershipObservation, PartialResult, RequestedServiceSpec,
     ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceMode, WireGuardPublicKey,
 };
 use serde_json::Value;
@@ -83,7 +83,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     .unwrap()
     .unwrap();
     let image = mixed
-        .operations()
+        .operations
         .iter()
         .find_map(|operation| match operation {
             DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
@@ -170,7 +170,7 @@ fn machine() -> ployz_core::MachineObservation {
         machine: Machine {
             id: MachineId::parse("a".repeat(32)).unwrap(),
             name: MachineName::parse("machine-1").unwrap(),
-            subnet: MachineSubnet("10.210.1.0/24".parse().unwrap()),
+            subnet: "10.210.1.0/24".parse().unwrap(),
             management_address: ManagementAddress("::1".parse().unwrap()),
             public_key: WireGuardPublicKey([1; 32]),
             public_ip: None,

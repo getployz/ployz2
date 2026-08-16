@@ -8,7 +8,7 @@ use ployz_core::{
     CaddyConfig, CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerList,
     ContractDescription, Domain, DomainRecords, LocalMachinePhase, LogMetadata, LogOrigin,
     MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, VolumeCreated, VolumeDetails, VolumeList, VolumeRemoved, op,
+    RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -19,7 +19,6 @@ use crate::{
     docker::{ContainerRuntime, Error as DockerError},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
-    network::machine_gateway,
 };
 
 #[derive(Clone)]
@@ -228,8 +227,7 @@ impl MachineRpc for MachineService {
             .machine
             .as_ref()
             .ok_or_else(|| Status::unavailable("Machine network is not configured"))?;
-        let gateway =
-            machine_gateway(machine.subnet).map_err(|error| Status::internal(error.to_string()))?;
+        let gateway = machine.subnet.gateway();
         match containers
             .create(&record.id, gateway, request.kind, &request.resolved_spec)
             .await
@@ -311,7 +309,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         match containers.create_volume(&machine_id, request).await {
-            Ok(volume) => respond(VolumeCreated { volume }),
+            Ok(volume) => respond(volume),
             Err(error) => respond(docker_rpc_error(error)),
         }
     }
@@ -343,7 +341,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         match containers.inspect_volume(&machine_id, &request.name).await {
-            Ok(volume) => respond(VolumeDetails { volume }),
+            Ok(volume) => respond(volume),
             Err(error) => respond(docker_rpc_error(error)),
         }
     }
