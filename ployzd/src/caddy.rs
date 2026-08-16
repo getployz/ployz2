@@ -7,7 +7,7 @@ use ployz_core::{
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fmt::Write as _,
     fs,
     future::Future,
@@ -197,7 +197,7 @@ async fn reconcile<A: CaddyAdmin>(
 ) -> Result<(), Error> {
     // TODO(UT-116): keep the Caddy projection membership-blind until the membership model is
     // intentionally changed across replicated projections.
-    let pinned = write_certificate_files(config_file, certificates)?;
+    write_certificate_files(config_file, certificates)?;
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let containers = service_containers(observations.iter().cloned());
     let caddyfile = generate_caddyfile(
@@ -205,7 +205,7 @@ async fn reconcile<A: CaddyAdmin>(
         machine.name.as_str(),
         &containers,
         &timestamp,
-        &pinned,
+        certificates,
         admin,
     )
     .await;
@@ -220,13 +220,12 @@ async fn reconcile<A: CaddyAdmin>(
 fn write_certificate_files(
     config_file: &Path,
     certificates: &BTreeMap<IngressHost, CertificateMaterial>,
-) -> Result<BTreeSet<IngressHost>, Error> {
+) -> Result<(), Error> {
     let directory = config_file
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?
         .join(CERTS_DIR);
     prepare_directory(&directory)?;
-    let mut pinned = BTreeSet::new();
     for (hostname, material) in certificates {
         let cert_path = directory.join(format!("{hostname}.crt"));
         let key_path = directory.join(format!("{hostname}.key"));
@@ -234,9 +233,8 @@ fn write_certificate_files(
         set_ployz_group(&cert_path)?;
         atomic_write(&key_path, material.private_key().as_bytes(), 0o600)?;
         set_ployz_group(&key_path)?;
-        pinned.insert(hostname.clone());
     }
-    Ok(pinned)
+    Ok(())
 }
 
 fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
@@ -260,7 +258,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     machine_name: &str,
     containers: &[ServiceContainer],
     timestamp: &str,
-    pinned: &BTreeSet<IngressHost>,
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
     admin: Option<&A>,
 ) -> String {
     let mut output = automatic_caddyfile(
@@ -269,7 +267,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         containers,
         timestamp,
         None,
-        pinned,
+        certificates,
     );
     let Some(admin) = admin else {
         output.push_str(
@@ -304,7 +302,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
                     containers,
                     timestamp,
                     Some(&rendered),
-                    pinned,
+                    certificates,
                 );
                 // TODO(UT-119): /adapt remains the only validation for custom Caddyfile
                 // candidates and may accept a configuration that /load rejects.
@@ -492,7 +490,7 @@ fn automatic_caddyfile(
     containers: &[ServiceContainer],
     timestamp: &str,
     global_config: Option<&str>,
-    pinned: &BTreeSet<IngressHost>,
+    certificates: &BTreeMap<IngressHost, CertificateMaterial>,
 ) -> String {
     let containers = eligible_containers(local_machine, containers);
 
@@ -553,37 +551,39 @@ http:// {{\n\
     if !http.is_empty() || !https.is_empty() {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
-    write_sites(&mut output, "http", http, None);
-    write_sites(&mut output, "https", https, Some(pinned));
+    for (hostname, upstreams) in http {
+        write_site(&mut output, "http", hostname, &upstreams, "");
+    }
+    for (hostname, upstreams) in https {
+        let tls = if certificates.contains_key(hostname) {
+            format!(
+                "\ttls {CONTAINER_CERTS_DIR}/{hostname}.crt {CONTAINER_CERTS_DIR}/{hostname}.key\n"
+            )
+        } else {
+            String::new()
+        };
+        write_site(&mut output, "https", hostname, &upstreams, &tls);
+    }
     output
 }
 
-fn write_sites(
+fn write_site(
     output: &mut String,
     protocol: &str,
-    sites: BTreeMap<&IngressHost, Vec<String>>,
-    pinned: Option<&BTreeSet<IngressHost>>,
+    hostname: &IngressHost,
+    upstreams: &[String],
+    tls: &str,
 ) {
-    for (hostname, upstreams) in sites {
-        let tls = pinned
-            .filter(|pinned| pinned.contains(hostname))
-            .map(|_pinned| {
-                format!(
-                    "\ttls {CONTAINER_CERTS_DIR}/{hostname}.crt {CONTAINER_CERTS_DIR}/{hostname}.key\n"
-                )
-            })
-            .unwrap_or_default();
-        let _ = write!(
-            output,
-            "\n{protocol}://{hostname} {{\n\
+    let _ = write!(
+        output,
+        "\n{protocol}://{hostname} {{\n\
 {tls}\treverse_proxy {} {{\n\
 \t\timport common_proxy\n\
 \t}}\n\
 \tlog\n\
 }}\n",
-            upstreams.join(" ")
-        );
-    }
+        upstreams.join(" ")
+    );
 }
 
 #[cfg(test)]

@@ -21,26 +21,21 @@ use crate::{
 };
 
 /// Certificate and private key held in cluster state for one Ingress Hostname.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CertificateMaterial {
-    #[serde(default)]
     certificate: String,
-    #[serde(default)]
     private_key: String,
 }
 
 impl CertificateMaterial {
     #[must_use]
-    pub fn new(certificate: impl Into<String>, private_key: impl Into<String>) -> Self {
-        Self {
-            certificate: certificate.into(),
-            private_key: private_key.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn is_present(&self) -> bool {
-        !self.certificate.is_empty() && !self.private_key.is_empty()
+    pub fn new(certificate: impl Into<String>, private_key: impl Into<String>) -> Option<Self> {
+        let certificate = certificate.into();
+        let private_key = private_key.into();
+        (!certificate.is_empty() && !private_key.is_empty()).then_some(Self {
+            certificate,
+            private_key,
+        })
     }
 
     #[must_use]
@@ -52,6 +47,14 @@ impl CertificateMaterial {
     pub fn private_key(&self) -> &str {
         &self.private_key
     }
+}
+
+#[derive(Deserialize)]
+struct CertificateBody {
+    #[serde(default)]
+    certificate: String,
+    #[serde(default)]
+    private_key: String,
 }
 
 #[derive(Clone)]
@@ -633,11 +636,11 @@ pub async fn run_machine_publisher(
 }
 
 fn decode_certificate_body(encoded: &str) -> Result<Option<CertificateMaterial>, Error> {
-    if encoded.is_empty() || encoded == "{}" {
+    if encoded.is_empty() {
         return Ok(None);
     }
-    let material: CertificateMaterial = serde_json::from_str(encoded)?;
-    Ok(material.is_present().then_some(material))
+    let body: CertificateBody = serde_json::from_str(encoded)?;
+    Ok(CertificateMaterial::new(body.certificate, body.private_key))
 }
 
 fn decode_observations<T: DeserializeOwned>(
@@ -806,21 +809,23 @@ mod tests {
 
     #[test]
     fn empty_certificate_body_is_not_present() {
-        let material: CertificateMaterial = serde_json::from_str("{}").unwrap();
-        assert!(!material.is_present());
-        assert_eq!(material.certificate(), "");
-        assert_eq!(material.private_key(), "");
+        assert_eq!(CertificateMaterial::new("", ""), None);
+        assert_eq!(CertificateMaterial::new("CERT", ""), None);
         assert_eq!(super::decode_certificate_body("").unwrap(), None);
         assert_eq!(super::decode_certificate_body("{}").unwrap(), None);
+        assert_eq!(
+            super::decode_certificate_body(r#"{"certificate":"CERT","private_key":""}"#).unwrap(),
+            None
+        );
     }
 
     #[test]
     fn certificate_material_reads_known_fields_and_ignores_the_rest() {
-        let material: CertificateMaterial = serde_json::from_str(
+        let material = super::decode_certificate_body(
             r#"{"certificate":"CERT","private_key":"KEY","last_error":"later"}"#,
         )
+        .unwrap()
         .unwrap();
-        assert!(material.is_present());
         assert_eq!(material.certificate(), "CERT");
         assert_eq!(material.private_key(), "KEY");
     }
