@@ -57,16 +57,20 @@ pub(crate) fn machine_rank<'id>(
 }
 
 /// Whether this Machine should order now.
+///
+/// `step` must cover the HTTP-01 probe wait so a later rank cannot start
+/// a competing order while an earlier rank is still presenting.
 #[must_use]
 pub(crate) fn issuance_action(
     row: Option<&CertificateRow>,
     rank: usize,
     elapsed: Duration,
+    step: Duration,
 ) -> IssuanceAction {
     if row.and_then(CertificateRow::material).is_some() {
         return IssuanceAction::Nothing;
     }
-    let delay = RANK_STEP.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX));
+    let delay = step.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX));
     if elapsed < delay {
         IssuanceAction::Nothing
     } else {
@@ -286,7 +290,9 @@ async fn issue_wanted(
             now
         };
         let elapsed = now.saturating_duration_since(seen);
-        if issuance_action(row, rank, elapsed) == IssuanceAction::Order {
+        if issuance_action(row, rank, elapsed, RANK_STEP.max(policy.probe_timeout()))
+            == IssuanceAction::Order
+        {
             to_order.push(hostname);
         }
     }
@@ -701,24 +707,33 @@ mod tests {
     fn only_rank_zero_orders_immediately() {
         assert_eq!(RANK_STEP, Duration::from_secs(30));
         assert_eq!(
-            issuance_action(None, 0, Duration::ZERO),
+            issuance_action(None, 0, Duration::ZERO, RANK_STEP),
             IssuanceAction::Order
         );
         assert_eq!(
-            issuance_action(None, 1, Duration::from_secs(30) - Duration::from_millis(1)),
+            issuance_action(
+                None,
+                1,
+                Duration::from_secs(30) - Duration::from_millis(1),
+                RANK_STEP
+            ),
             IssuanceAction::Nothing
         );
         assert_eq!(
-            issuance_action(None, 1, Duration::from_secs(30)),
+            issuance_action(None, 1, Duration::from_secs(30), RANK_STEP),
             IssuanceAction::Order
         );
         assert_eq!(
-            issuance_action(None, 2, Duration::from_secs(30)),
+            issuance_action(None, 2, Duration::from_secs(30), RANK_STEP),
             IssuanceAction::Nothing
         );
         assert_eq!(
-            issuance_action(None, 2, Duration::from_secs(60)),
+            issuance_action(None, 2, Duration::from_secs(60), RANK_STEP),
             IssuanceAction::Order
+        );
+        assert_eq!(
+            issuance_action(None, 1, Duration::from_secs(30), Duration::from_secs(120)),
+            IssuanceAction::Nothing
         );
     }
 
@@ -727,7 +742,7 @@ mod tests {
         let material = CertificateMaterial::new("CERT", "KEY").unwrap();
         let row = CertificateRow::from_parts(Some(material), None);
         assert_eq!(
-            issuance_action(Some(&row), 0, Duration::from_secs(60)),
+            issuance_action(Some(&row), 0, Duration::from_secs(60), RANK_STEP),
             IssuanceAction::Nothing
         );
     }
