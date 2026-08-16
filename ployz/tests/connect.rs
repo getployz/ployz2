@@ -1,6 +1,8 @@
 use std::{
     collections::VecDeque,
+    fs,
     net::Ipv6Addr,
+    os::unix::fs::PermissionsExt,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -12,7 +14,7 @@ use ployz::{
         BoxProxyStream, Client, ConnectError, Connector, SystemConnector, connect_selected_with,
         resolve_connections,
     },
-    context::{Connection, ConnectionSource, SelectedConnections},
+    context::{Connection, ConnectionSource, SelectedConnections, SshDestination},
 };
 use ployz_core::{
     AdvertisedEndpoint, CapabilityName, ContractDescription, DescribeContractRequest, DockerVolume,
@@ -31,6 +33,14 @@ use tonic::{
 
 struct FakeConnector {
     outcomes: Mutex<VecDeque<bool>>,
+    attempts: Mutex<Vec<String>>,
+}
+
+/// First `lazy` connects report success with a lazy channel (tunnel up, daemon
+/// not reached). Later connects use [`SystemConnector`].
+struct LazyThenLive {
+    lazy: AtomicUsize,
+    inner: SystemConnector,
     attempts: Mutex<Vec<String>>,
 }
 
@@ -78,32 +88,207 @@ impl Connector for FakeConnector {
     }
 }
 
+#[tonic::async_trait]
+impl Connector for LazyThenLive {
+    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.attempts.lock().unwrap().push(connection.to_string());
+        if self.lazy.fetch_sub(1, Ordering::SeqCst) > 0 {
+            return Ok(Endpoint::from_static("http://127.0.0.1:1").connect_lazy());
+        }
+        self.inner.connect(connection).await
+    }
+
+    async fn dial_proxy(
+        &self,
+        _connection: &Connection,
+        _network: &str,
+        _address: &str,
+    ) -> Result<BoxProxyStream, ConnectError> {
+        Err(ConnectError::Attempt("unused".into()))
+    }
+}
+
 #[tokio::test]
-async fn ordered_connections_stop_after_the_first_success() {
-    let connector = Arc::new(FakeConnector {
-        outcomes: Mutex::new(VecDeque::from([false, true, true])),
+async fn lazy_first_connection_falls_through_to_a_healthy_machine() {
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let live = tcp.local_addr().unwrap();
+    let description = test_description();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(DiscoveryService::new(
+                description.clone(),
+            )))
+            .serve_with_incoming(TcpListenerStream::new(tcp)),
+    );
+    let connector = Arc::new(LazyThenLive {
+        lazy: AtomicUsize::new(1),
+        inner: SystemConnector::default(),
         attempts: Mutex::new(Vec::new()),
     });
-    let selected = SelectedConnections {
-        source: ConnectionSource::Context("prod".into()),
-        connections: [51000, 51001, 51002]
-            .map(|port| Connection::tcp(format!("127.0.0.1:{port}").parse().unwrap()))
-            .into(),
+    let dead = Connection::tcp("127.0.0.1:1".parse().unwrap());
+    let live = Connection::tcp(live);
+
+    let mut client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Context("prod".into()),
+            connections: vec![dead, live.clone()],
+        },
+        connector.clone(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(client.connection().to_string(), live.to_string());
+    assert_eq!(
+        client
+            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .await
+            .unwrap(),
+        description
+    );
+    assert_eq!(
+        *connector.attempts.lock().unwrap(),
+        ["tcp://127.0.0.1:1", live.to_string().as_str()]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn ssh_to_a_stopped_daemon_falls_through_to_a_healthy_machine() {
+    let root = std::env::temp_dir().join(format!("ployz-ssh-down-{}", std::process::id()));
+    let program = root.join("ssh");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        &program,
+        "#!/bin/sh\nfor arg in \"$@\"; do [ \"$arg\" = true ] && exit 0; done\necho 'Error: Io(Os { code: 111, kind: ConnectionRefused, message: \"Connection refused\" })' >&2\nexit 1\n",
+    )
+    .unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let live = tcp.local_addr().unwrap();
+    let description = test_description();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(DiscoveryService::new(
+                description.clone(),
+            )))
+            .serve_with_incoming(TcpListenerStream::new(tcp)),
+    );
+
+    let mut client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Context("prod".into()),
+            connections: vec![
+                Connection::ssh(SshDestination::parse("user@example.com").unwrap()),
+                Connection::tcp(live),
+            ],
+        },
+        Arc::new(SystemConnector::new(&program)),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(client.connection().to_string(), format!("tcp://{live}"));
+    assert_eq!(
+        client
+            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .await
+            .unwrap(),
+        description
+    );
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn exhausting_every_connection_reports_how_many_were_tried() {
+    let connector = Arc::new(LazyThenLive {
+        lazy: AtomicUsize::new(2),
+        inner: SystemConnector::default(),
+        attempts: Mutex::new(Vec::new()),
+    });
+
+    let error = match connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Context("prod".into()),
+            connections: vec![
+                Connection::tcp("127.0.0.1:1".parse().unwrap()),
+                Connection::tcp("127.0.0.1:2".parse().unwrap()),
+            ],
+        },
+        connector,
+    )
+    .await
+    {
+        Ok(_) => panic!("expected every connection to fail"),
+        Err(error) => error,
     };
 
-    let client = connect_selected_with(selected, connector.clone())
-        .await
-        .unwrap();
+    assert!(
+        matches!(
+            &error,
+            ConnectError::AllFailed {
+                attempts: 2,
+                source: ConnectionSource::Context(name),
+                ..
+            } if name == "prod"
+        ),
+        "{error:?}"
+    );
+    let display = error.to_string();
+    assert!(
+        display.contains("2") && display.contains("prod"),
+        "{display}"
+    );
+    assert!(
+        !display.contains("Os {") && !display.contains("code: 111"),
+        "{display}"
+    );
+}
 
-    assert_eq!(client.connection().to_string(), "tcp://127.0.0.1:51001");
+#[tokio::test]
+async fn ordered_connections_stop_after_the_first_success() {
+    let dropped = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unreachable = dropped.local_addr().unwrap();
+    drop(dropped);
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let live = tcp.local_addr().unwrap();
+    let unused = "127.0.0.1:9".parse().unwrap();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(DiscoveryService::new(
+                test_description(),
+            )))
+            .serve_with_incoming(TcpListenerStream::new(tcp)),
+    );
+    let connects = Arc::new(AtomicUsize::new(0));
+    let connector = Arc::new(CountingConnector {
+        inner: SystemConnector::default(),
+        connects: connects.clone(),
+    });
+
+    let client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Context("prod".into()),
+            connections: vec![
+                Connection::tcp(unreachable),
+                Connection::tcp(live),
+                Connection::tcp(unused),
+            ],
+        },
+        connector,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(client.connection().to_string(), format!("tcp://{live}"));
     assert_eq!(
         client.connection_source(),
         &ConnectionSource::Context("prod".into())
     );
-    assert_eq!(
-        *connector.attempts.lock().unwrap(),
-        ["tcp://127.0.0.1:51000", "tcp://127.0.0.1:51001"]
-    );
+    assert_eq!(connects.load(Ordering::SeqCst), 2);
+    server.abort();
 }
 
 #[tokio::test]
@@ -703,6 +888,7 @@ async fn connected_client(
 async fn unary_call_retries_unavailable_after_redial() {
     let description = test_description();
     let service = DiscoveryService::new(description.clone());
+    let (mut client, server, connects) = connected_client(service.clone()).await;
     service
         .describe_outcomes
         .lock()
@@ -710,7 +896,6 @@ async fn unary_call_retries_unavailable_after_redial() {
         .push_back(DescribeOutcome::Status(Status::unavailable(
             "transport error",
         )));
-    let (mut client, server, connects) = connected_client(service).await;
 
     assert_eq!(
         client
@@ -727,12 +912,12 @@ async fn unary_call_retries_unavailable_after_redial() {
 #[tokio::test]
 async fn unary_call_does_not_retry_remote_or_not_found() {
     let not_found = DiscoveryService::new(test_description());
+    let (mut client, server, connects) = connected_client(not_found.clone()).await;
     not_found
         .describe_outcomes
         .lock()
         .unwrap()
         .push_back(DescribeOutcome::Status(Status::not_found("missing")));
-    let (mut client, server, connects) = connected_client(not_found).await;
     let error = client
         .call::<op::DescribeContract>(DescribeContractRequest {}, None)
         .await
@@ -745,6 +930,7 @@ async fn unary_call_does_not_retry_remote_or_not_found() {
     server.abort();
 
     let remote = DiscoveryService::new(test_description());
+    let (mut client, server, connects) = connected_client(remote.clone()).await;
     remote
         .describe_outcomes
         .lock()
@@ -754,7 +940,6 @@ async fn unary_call_does_not_retry_remote_or_not_found() {
             message: "already a member".into(),
             details: Value::Null,
         }));
-    let (mut client, server, connects) = connected_client(remote).await;
     let error = client
         .call::<op::DescribeContract>(DescribeContractRequest {}, None)
         .await
@@ -776,13 +961,13 @@ async fn unary_call_does_not_retry_remote_or_not_found() {
 #[tokio::test]
 async fn unary_call_gives_up_after_four_unavailable_attempts() {
     let service = DiscoveryService::new(test_description());
+    let (mut client, server, connects) = connected_client(service.clone()).await;
     service.describe_outcomes.lock().unwrap().extend([
         DescribeOutcome::Status(Status::unavailable("drop 1")),
         DescribeOutcome::Status(Status::unavailable("drop 2")),
         DescribeOutcome::Status(Status::unavailable("drop 3")),
         DescribeOutcome::Status(Status::unavailable("drop 4")),
     ]);
-    let (mut client, server, connects) = connected_client(service).await;
 
     let error = client
         .call::<op::DescribeContract>(DescribeContractRequest {}, None)

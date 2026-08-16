@@ -2,13 +2,13 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    CreateContainerRequest, DockerVolume, FanoutOutcome, FanoutResponse, FanoutSelector,
-    GetDomainRequest, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
-    ListVolumesRequest, LiveServices, MachineFailure, MachineId, MachineImages, MachineName,
-    MachineObservation, MachineRpcClient, MachineSuccess, MachineTarget, MembershipObservation,
-    OpaquePayload, PartialResult, RemoveContainerRequest, ResolvedServiceSpec, Rpc, RpcError,
-    RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest, apply_many_targets,
-    derive_live_services, op,
+    CreateContainerRequest, DescribeContractRequest, DockerVolume, FanoutOutcome, FanoutResponse,
+    FanoutSelector, GetDomainRequest, ListContainersRequest, ListImagesRequest,
+    ListMachinesRequest, ListVolumesRequest, LiveServices, MachineFailure, MachineId,
+    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
+    MachineTarget, MembershipObservation, OpaquePayload, PartialResult, RemoveContainerRequest,
+    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest,
+    StopContainerRequest, apply_many_targets, derive_live_services, op,
 };
 use serde_json::Value;
 use tokio::task::JoinSet;
@@ -70,6 +70,20 @@ impl Client {
     #[must_use]
     pub fn connection_source(&self) -> &ConnectionSource {
         &self.source
+    }
+
+    /// One-shot check that this channel reaches a daemon. No unary retry — a
+    /// down daemon must not stall the connection walk.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport or codec error when the daemon does not answer.
+    pub(crate) async fn confirm_entry(&self) -> Result<(), ConnectError> {
+        let payload = op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
+        match self.call_once::<op::DescribeContract>(payload, None).await {
+            Ok(_) | Err(ConnectError::Remote(_)) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     /// Issue one unary RPC. The response type is derived from the RPC, so a request

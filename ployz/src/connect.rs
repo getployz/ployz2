@@ -240,6 +240,7 @@ fn spawn_ssh(program: &Path, args: &[String]) -> io::Result<SshIo> {
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
     let reader = child
@@ -380,6 +381,14 @@ pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> t
     request
 }
 
+/// Walk every connection and keep the first whose daemon answers.
+///
+/// A tunnel or lazy channel is not enough. Confirmation is one-shot so a down
+/// daemon cannot stall the walk or consume unary retries.
+///
+/// # Errors
+///
+/// Returns [`ConnectError::AllFailed`] after every connection is tried.
 pub async fn connect_selected_with(
     selected: SelectedConnections,
     connector: Arc<dyn Connector>,
@@ -388,12 +397,21 @@ pub async fn connect_selected_with(
     for connection in &selected.connections {
         match connector.connect(connection).await {
             Ok(channel) => {
-                return Ok(Client::new(
+                let client = Client::new(
                     channel,
                     connection.clone(),
                     selected.source.clone(),
-                    connector,
-                ));
+                    connector.clone(),
+                );
+                match tokio::time::timeout(Duration::from_secs(5), client.confirm_entry()).await {
+                    Ok(Ok(())) => return Ok(client),
+                    Ok(Err(error)) => last_error = Some(error),
+                    Err(_) => {
+                        last_error = Some(ConnectError::Attempt(
+                            "entry Machine did not become ready".into(),
+                        ));
+                    }
+                }
             }
             Err(error) => last_error = Some(error),
         }
