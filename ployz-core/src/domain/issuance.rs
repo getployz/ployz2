@@ -54,25 +54,27 @@ impl IssuanceClock {
     }
 }
 
-/// What the issuance loop should do for one wanted hostname.
+/// Whether DNS and the shared clock allow contacting the certificate authority.
+///
+/// Distinct from the daemon's rank / due-time `IssuanceAction` (`Order` / `Renew`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IssuanceAction {
+pub enum IssuanceGate {
     Nothing,
     Refuse(IssuanceClock),
     Order,
 }
 
-/// Decide whether to wait, refuse, or order. A resolve-verdict change drops resolve backoff.
+/// Decide whether to wait, refuse, or proceed. A resolve-verdict change drops resolve backoff.
 ///
-/// The caller skips hostnames that already have material.
+/// Call this before every certificate-authority contact, including renewal.
 #[must_use]
-pub fn issuance_action(
+pub fn issuance_gate(
     clock: Option<IssuanceClock>,
     verdict: ClusterDnsVerdict,
     now: SystemTime,
     backoff_base: Duration,
     backoff_cap: Duration,
-) -> IssuanceAction {
+) -> IssuanceGate {
     let waiting = clock.is_some_and(|clock| clock.next_attempt_at() > now);
     let last_resolve = clock.and_then(|clock| match clock.last_failure() {
         IssuanceFailure::DoesNotResolve => Some(ClusterDnsVerdict::DoesNotResolve),
@@ -81,14 +83,14 @@ pub fn issuance_action(
     });
     let resolve_cleared = last_resolve.is_some_and(|last| last != verdict);
     if waiting && !resolve_cleared {
-        return IssuanceAction::Nothing;
+        return IssuanceGate::Nothing;
     }
     let last_failure = match verdict {
-        ClusterDnsVerdict::PointsAtCluster => return IssuanceAction::Order,
+        ClusterDnsVerdict::PointsAtCluster => return IssuanceGate::Order,
         ClusterDnsVerdict::DoesNotResolve => IssuanceFailure::DoesNotResolve,
         ClusterDnsVerdict::ResolvesElsewhere => IssuanceFailure::ResolvesElsewhere,
     };
-    IssuanceAction::Refuse(issuance_failure_clock(
+    IssuanceGate::Refuse(issuance_failure_clock(
         clock,
         last_failure,
         now,
@@ -165,16 +167,16 @@ mod tests {
     };
 
     use super::{
-        IssuanceAction, IssuanceClock, IssuanceFailure, issuance_action, issuance_backoff,
-        issuance_failure_clock, issuance_refusal_reason,
+        issuance_backoff, issuance_failure_clock, issuance_gate, issuance_refusal_reason,
+        IssuanceClock, IssuanceFailure, IssuanceGate,
     };
-    use crate::{ClusterDnsVerdict, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP, IngressHost};
+    use crate::{ClusterDnsVerdict, IngressHost, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP};
 
     #[test]
     fn empty_row_orders_when_dns_points_at_the_cluster() {
         assert_eq!(
             decide(None, ClusterDnsVerdict::PointsAtCluster, now()),
-            IssuanceAction::Order
+            IssuanceGate::Order
         );
     }
 
@@ -199,11 +201,11 @@ mod tests {
         ));
         assert_eq!(
             decide(clock, ClusterDnsVerdict::PointsAtCluster, now()),
-            IssuanceAction::Nothing
+            IssuanceGate::Nothing
         );
         assert_eq!(
             decide(clock, ClusterDnsVerdict::DoesNotResolve, now()),
-            IssuanceAction::Nothing
+            IssuanceGate::Nothing
         );
     }
 
@@ -219,7 +221,7 @@ mod tests {
                 ClusterDnsVerdict::DoesNotResolve,
                 now(),
             ),
-            IssuanceAction::Nothing
+            IssuanceGate::Nothing
         );
     }
 
@@ -232,7 +234,7 @@ mod tests {
                 ClusterDnsVerdict::PointsAtCluster,
                 now(),
             ),
-            IssuanceAction::Order
+            IssuanceGate::Order
         );
         assert_eq!(
             decide(
@@ -240,7 +242,7 @@ mod tests {
                 ClusterDnsVerdict::PointsAtCluster,
                 now(),
             ),
-            IssuanceAction::Order
+            IssuanceGate::Order
         );
     }
 
@@ -272,7 +274,7 @@ mod tests {
                 ClusterDnsVerdict::PointsAtCluster,
                 now(),
             ),
-            IssuanceAction::Order
+            IssuanceGate::Order
         );
         assert_eq!(
             decide(
@@ -358,8 +360,8 @@ mod tests {
         clock: Option<IssuanceClock>,
         verdict: ClusterDnsVerdict,
         now: SystemTime,
-    ) -> IssuanceAction {
-        issuance_action(
+    ) -> IssuanceGate {
+        issuance_gate(
             clock,
             verdict,
             now,
@@ -386,8 +388,8 @@ mod tests {
         issuance_backoff(failures, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP)
     }
 
-    fn refuse(last_failure: IssuanceFailure, failures: u32) -> IssuanceAction {
-        IssuanceAction::Refuse(clock(last_failure, failures, now() + delay(failures)))
+    fn refuse(last_failure: IssuanceFailure, failures: u32) -> IssuanceGate {
+        IssuanceGate::Refuse(clock(last_failure, failures, now() + delay(failures)))
     }
 
     fn clock(
