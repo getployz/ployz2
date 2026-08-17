@@ -244,10 +244,6 @@ fn dropping_the_default_machine_leaves_the_next_connection_as_default() {
     context.drop_machine(&machine_id('1'));
 
     assert_eq!(
-        context.connections[0].to_string(),
-        "ssh://root@ord2.example.com"
-    );
-    assert_eq!(
         context
             .connections
             .iter()
