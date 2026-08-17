@@ -13,10 +13,11 @@ use ployz::{
         resolve_connections,
     },
     context::{Connection, ConnectionSource, SelectedConnections},
+    operator::open_machine_logs,
 };
 use ployz_core::{
     AdvertisedEndpoint, CapabilityName, ContractDescription, DescribeContractRequest, DockerVolume,
-    DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineList, MachineName,
+    DockerVolumeId, DockerVolumeName, LogsOptions, Machine, MachineId, MachineList, MachineName,
     MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
     OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList,
     WireGuardPublicKey, op,
@@ -24,6 +25,7 @@ use ployz_core::{
 use serde_json::Value;
 use tokio::net::{TcpListener, UnixListener};
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
+use tokio_util::sync::CancellationToken;
 use tonic::{
     Request, Response, Status, Streaming,
     transport::{Channel, Endpoint, Server},
@@ -261,6 +263,7 @@ enum DescribeOutcome {
 struct DiscoveryService {
     description: ContractDescription,
     describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
+    stream_opens: Arc<AtomicUsize>,
 }
 
 impl DiscoveryService {
@@ -268,6 +271,7 @@ impl DiscoveryService {
         Self {
             description,
             describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
+            stream_opens: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -277,11 +281,39 @@ struct CountingConnector {
     connects: Arc<AtomicUsize>,
 }
 
+struct RedirectingConnector {
+    inner: SystemConnector,
+    targets: Mutex<VecDeque<SocketAddr>>,
+    connects: Arc<AtomicUsize>,
+}
+
 #[tonic::async_trait]
 impl Connector for CountingConnector {
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
         self.connects.fetch_add(1, Ordering::SeqCst);
         self.inner.connect(connection).await
+    }
+
+    async fn dial_proxy(
+        &self,
+        _connection: &Connection,
+        _network: &str,
+        _address: &str,
+    ) -> Result<BoxProxyStream, ConnectError> {
+        Err(ConnectError::Attempt("unused".into()))
+    }
+}
+
+#[tonic::async_trait]
+impl Connector for RedirectingConnector {
+    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.connects.fetch_add(1, Ordering::SeqCst);
+        let redirected = self.targets.lock().unwrap().pop_front();
+        let connection = match redirected {
+            Some(address) => Connection::tcp(address),
+            None => connection.clone(),
+        };
+        self.inner.connect(&connection).await
     }
 
     async fn dial_proxy(
@@ -484,7 +516,8 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<Self::MachineLogsStream>, Status> {
-        Err(Status::unimplemented("unused"))
+        self.stream_opens.fetch_add(1, Ordering::SeqCst);
+        Ok(Response::new(tokio_stream::empty()))
     }
 
     async fn list_images(
@@ -958,4 +991,60 @@ async fn unary_call_gives_up_after_four_unavailable_attempts() {
     assert_eq!(connects.load(Ordering::SeqCst), 4);
 
     server.abort();
+}
+
+#[tokio::test]
+async fn stream_after_redial_uses_the_replaced_channel() {
+    let first = DiscoveryService::new(test_description());
+    let second = DiscoveryService::new(test_description());
+    let (address_a, server_a) = serve_discovery(first.clone()).await;
+    let (address_b, server_b) = serve_discovery(second.clone()).await;
+    let connects = Arc::new(AtomicUsize::new(0));
+    let mut client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![Connection::tcp(address_a)],
+        },
+        Arc::new(RedirectingConnector {
+            inner: SystemConnector::default(),
+            targets: Mutex::new(VecDeque::from([address_a, address_b])),
+            connects: connects.clone(),
+        }),
+    )
+    .await
+    .unwrap();
+    first
+        .describe_outcomes
+        .lock()
+        .unwrap()
+        .push_back(DescribeOutcome::Status(Status::unavailable(
+            "transport error",
+        )));
+
+    client
+        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .await
+        .unwrap();
+    assert_eq!(connects.load(Ordering::SeqCst), 2);
+
+    let logs = open_machine_logs(
+        &mut client,
+        &[],
+        &[],
+        LogsOptions {
+            follow: false,
+            tail: 0,
+            since: String::new(),
+            until: String::new(),
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(first.stream_opens.load(Ordering::SeqCst), 0);
+    assert_eq!(second.stream_opens.load(Ordering::SeqCst), 1);
+
+    server_a.abort();
+    server_b.abort();
 }
