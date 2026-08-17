@@ -119,6 +119,39 @@ async fn health_monitor_fails_a_restart_after_a_healthy_probe_inside_the_monitor
     client.assert_done();
 }
 
+#[tokio::test(start_paused = true)]
+async fn health_monitor_fails_restarting_without_waiting_out_the_monitor_window() {
+    let machine = machine('1');
+    let new = container('a');
+    let plan = plan(vec![run(
+        &machine,
+        spec(Some(1_000), Some(healthcheck()), None),
+        false,
+    )]);
+    let client = Scripted::new(vec![
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
+        observed(
+            Call::Inspect(machine, new),
+            ContainerRuntimeObservation::Restarting,
+        ),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(matches!(
+        outcome.failed,
+        Some(FailedOperation::Operation {
+            error: ExecutionError::Health {
+                failure: HealthFailure::Runtime(ContainerRuntimeObservation::Restarting),
+                ..
+            },
+            ..
+        })
+    ));
+    client.assert_done();
+}
+
 #[tokio::test]
 async fn health_monitor_still_fails_a_restart_loop() {
     let machine = machine('1');

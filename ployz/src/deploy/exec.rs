@@ -699,12 +699,16 @@ fn classify_health(
                 HealthPoll::PendingUntil(health_deadline)
             }
         }
+        // The process already died. Waiting would let a later healthy snapshot
+        // during the next start window succeed the deploy.
+        ContainerRuntimeObservation::Restarting => {
+            HealthPoll::Failed(HealthFailure::Runtime(runtime.clone()))
+        }
         ContainerRuntimeObservation::Created
         | ContainerRuntimeObservation::Running {
             health: HealthObservation::Unhealthy,
         }
         | ContainerRuntimeObservation::Paused
-        | ContainerRuntimeObservation::Restarting
         | ContainerRuntimeObservation::Exited { .. }
         | ContainerRuntimeObservation::Removing
         | ContainerRuntimeObservation::Dead
