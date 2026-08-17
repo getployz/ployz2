@@ -129,10 +129,10 @@ pub fn service_containers(
 
 /// Serving Containers: Service Containers that are healthy and have a Container Address.
 #[must_use]
-pub fn serving_replicas(
-    observations: impl IntoIterator<Item = ContainerObservation>,
-) -> Vec<ServiceContainer> {
-    service_containers(observations)
+pub fn serving_replicas<'a>(
+    containers: impl IntoIterator<Item = &'a ServiceContainer>,
+) -> Vec<&'a ServiceContainer> {
+    containers
         .into_iter()
         .filter(|container| {
             let observation = container.as_observation();
@@ -267,7 +267,7 @@ mod tests {
             Some([10, 210, 1, 7]),
         );
 
-        let serving = super::serving_replicas([
+        let containers = super::service_containers([
             healthy.clone(),
             not_configured.clone(),
             hook,
@@ -276,10 +276,11 @@ mod tests {
             no_address,
             exited,
         ]);
+        let serving = super::serving_replicas(&containers);
 
         assert_eq!(
             serving
-                .iter()
+                .into_iter()
                 .map(ServiceContainer::as_observation)
                 .collect::<Vec<_>>(),
             vec![&healthy, &not_configured]

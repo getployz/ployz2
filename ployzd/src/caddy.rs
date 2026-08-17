@@ -405,17 +405,12 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     output
 }
 
-fn eligible_containers(
+fn eligible_containers<'a>(
     local_machine: &MachineId,
-    containers: &[ServiceContainer],
-) -> Vec<ServiceContainer> {
-    let mut containers = serving_replicas(
-        containers
-            .iter()
-            .cloned()
-            .map(ServiceContainer::into_observation),
-    );
-    sort_caddy_containers(local_machine, &mut containers);
+    containers: &'a [ServiceContainer],
+) -> Vec<&'a ServiceContainer> {
+    let mut containers = serving_replicas(containers);
+    containers.sort_by_key(|container| caddy_container_order(local_machine, container));
     containers
 }
 
@@ -429,12 +424,6 @@ fn healthy_containers<'a>(
         .collect::<Vec<_>>();
     containers.sort_by_key(|container| caddy_container_order(local_machine, container));
     containers
-}
-
-fn sort_caddy_containers(local_machine: &MachineId, containers: &mut [ServiceContainer]) {
-    containers.sort_by(|left, right| {
-        caddy_container_order(local_machine, left).cmp(&caddy_container_order(local_machine, right))
-    });
 }
 
 fn caddy_container_order<'a>(
@@ -461,7 +450,7 @@ fn creation_key(container: &ServiceContainer) -> (i64, &str) {
 fn render_custom_config(
     template: &str,
     current_service: &ServiceName,
-    containers: &[ServiceContainer],
+    containers: &[&ServiceContainer],
 ) -> Result<String, Error> {
     let mut rendered = String::new();
     let mut remaining = template;
@@ -515,7 +504,7 @@ fn render_custom_config(
     Ok(rendered)
 }
 
-fn upstreams(containers: &[ServiceContainer], service: &str, port: Option<u16>) -> String {
+fn upstreams(containers: &[&ServiceContainer], service: &str, port: Option<u16>) -> String {
     containers
         .iter()
         .map(|container| container.as_observation())
@@ -539,7 +528,7 @@ fn automatic_caddyfile(
 ) -> String {
     let containers = eligible_containers(local_machine, containers);
     let mut sites = BTreeMap::<IngressHost, Site<'_>>::new();
-    for container in &containers {
+    for container in containers {
         let observation = container.as_observation();
         let address = observation.address.expect("address was filtered above");
         for port in &observation.resolved_spec.ports {
