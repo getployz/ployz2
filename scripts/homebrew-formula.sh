@@ -12,9 +12,13 @@ checksum_for() {
     printf '%s\n' "$hash"
 }
 
-write_homebrew_formula() {
-    local dest=$1 version=$2 tag=$3 repo=$4
-    local hash_linux_amd64=$5 hash_linux_arm64=$6 hash_macos_amd64=$7 hash_macos_arm64=$8
+write_homebrew_formula_from_checksums() {
+    local checksums=$1 dest=$2 version=$3 tag=$4 repo=$5
+    local hash_linux_amd64 hash_linux_arm64 hash_macos_amd64 hash_macos_arm64
+    hash_linux_amd64=$(checksum_for "$checksums" ployz_linux_amd64.tar.gz)
+    hash_linux_arm64=$(checksum_for "$checksums" ployz_linux_arm64.tar.gz)
+    hash_macos_amd64=$(checksum_for "$checksums" ployz_macos_amd64.tar.gz)
+    hash_macos_arm64=$(checksum_for "$checksums" ployz_macos_arm64.tar.gz)
     mkdir -p "$(dirname "$dest")"
     cat > "$dest" <<EOF
 # typed: false
@@ -75,13 +79,4 @@ class Ployz < Formula
   end
 end
 EOF
-}
-
-write_homebrew_formula_from_checksums() {
-    local checksums=$1 dest=$2 version=$3 tag=$4 repo=$5
-    write_homebrew_formula "$dest" "$version" "$tag" "$repo" \
-        "$(checksum_for "$checksums" ployz_linux_amd64.tar.gz)" \
-        "$(checksum_for "$checksums" ployz_linux_arm64.tar.gz)" \
-        "$(checksum_for "$checksums" ployz_macos_amd64.tar.gz)" \
-        "$(checksum_for "$checksums" ployz_macos_arm64.tar.gz)"
 }

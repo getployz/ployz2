@@ -10,10 +10,6 @@ stable_release_tag() {
     [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
-release_tag_ok() {
-    stable_release_tag "$1" || beta_release_tag "$1"
-}
-
 channel_name_for_tag() {
     local tag=$1
     if beta_release_tag "$tag"; then

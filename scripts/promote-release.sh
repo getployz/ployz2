@@ -7,10 +7,6 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 source "$ROOT/scripts/homebrew-formula.sh"
 # shellcheck source=scripts/release-tag.sh
 source "$ROOT/scripts/release-tag.sh"
-# shellcheck source=scripts/repoint-homebrew-tap.sh
-PLOYZ_HOMEBREW_TEST_ONLY=true source "$ROOT/scripts/repoint-homebrew-tap.sh"
-
-HOMEBREW_TAP_REPO=${HOMEBREW_TAP_REPO:-getployz/homebrew-ployz}
 
 write_channel_file() {
     local dest_dir=$1 tag=$2 channel
@@ -69,15 +65,15 @@ push_homebrew_tap() {
     local token=${HOMEBREW_TAP_TOKEN:-}
     local version=${tag#v} work formula
     [ -n "$token" ] || {
-        echo "HOMEBREW_TAP_TOKEN is required to update $HOMEBREW_TAP_REPO" >&2
+        echo "HOMEBREW_TAP_TOKEN is required to update getployz/homebrew-ployz" >&2
         return 1
     }
     work=$(mktemp -d)
-    git clone --depth 1 "https://x-access-token:${token}@github.com/${HOMEBREW_TAP_REPO}.git" "$work"
+    git clone --depth 1 "https://x-access-token:${token}@github.com/getployz/homebrew-ployz.git" "$work"
     git_identity "$work"
     formula=$(mktemp)
     write_homebrew_formula_from_checksums "$checksums" "$formula" "$version" "$tag" "${GITHUB_REPOSITORY:-getployz/ployz2}"
-    repoint_homebrew_tap "$work" "$formula"
+    bash "$ROOT/scripts/repoint-homebrew-tap.sh" "$work" "$formula"
     commit_if_changed "$work" "ployz $version"
     git -C "$work" push origin HEAD
     rm -f "$formula"

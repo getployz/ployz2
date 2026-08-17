@@ -49,26 +49,22 @@ fetch_channel_version() {
 }
 
 resolve_install_version() {
-    local requested=${1#v} dest=$2 resolved
+    local requested=${1#v} dest=$2 resolved name
     case "$requested" in
-        latest | stable | '')
-            if resolved=$(fetch_channel_version stable "$dest"); then
-                echo "${resolved#v}"
-            else
-                echo latest
-            fi
-            ;;
-        beta)
-            if resolved=$(fetch_channel_version beta "$dest"); then
-                echo "${resolved#v}"
-            else
-                error "beta channel is unavailable"
-            fi
-            ;;
+        latest | stable | '') name=stable ;;
+        beta) name=beta ;;
         *)
             echo "$requested"
+            return 0
             ;;
     esac
+    if resolved=$(fetch_channel_version "$name" "$dest"); then
+        echo "${resolved#v}"
+    elif [ "$name" = beta ]; then
+        error "beta channel is unavailable"
+    else
+        echo latest
+    fi
 }
 
 daemon_archive() {
@@ -139,10 +135,11 @@ create_user_and_directories() {
 }
 
 install_binaries() {
-    local archive installed_version latest_version action base_url tmp_dir channel_file
+    local archive installed_version latest_version action base_url tmp_dir channel_file requested resolved action_requested
     archive=$(daemon_archive "$(uname -m)") || error "Unsupported architecture: $(uname -m)"
+    requested=$PLOYZ_VERSION
     channel_file=$(mktemp)
-    PLOYZ_VERSION=$(resolve_install_version "$PLOYZ_VERSION" "$channel_file")
+    resolved=$(resolve_install_version "$requested" "$channel_file")
     rm -f "$channel_file"
     installed_version=""
     if [ -x "$INSTALL_BIN_DIR/ployzd" ]; then
@@ -150,7 +147,11 @@ install_binaries() {
     fi
 
     latest_version=""
-    if [ "$PLOYZ_VERSION" = latest ]; then
+    case "$requested" in
+        latest | stable | '') action_requested=latest ;;
+        *) action_requested=$resolved ;;
+    esac
+    if [ "$resolved" = latest ]; then
         local latest_url
         latest_url=$(curl -sLI -o /dev/null -w '%{url_effective}' "$PLOYZ_GITHUB_URL/releases/latest" 2>/dev/null || true)
         latest_version=${latest_url##*/}
@@ -163,10 +164,11 @@ install_binaries() {
             base_url="$PLOYZ_GITHUB_URL/releases/download/v$latest_version"
         fi
     else
-        base_url="$PLOYZ_GITHUB_URL/releases/download/v$PLOYZ_VERSION"
+        latest_version=$resolved
+        base_url="$PLOYZ_GITHUB_URL/releases/download/v$resolved"
     fi
 
-    action=$(daemon_action "$installed_version" "$PLOYZ_VERSION" "$latest_version")
+    action=$(daemon_action "$installed_version" "$action_requested" "$latest_version")
     if [ "$action" = keep ]; then
         log "ployzd ${installed_version} retained"
         return

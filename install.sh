@@ -57,25 +57,23 @@ fetch_channel_version() {
 
 resolve_install_version() {
     requested=${1#v}
+    dest=$2
+    name=
     case "$requested" in
-        latest | stable | '')
-            if resolved=$(fetch_channel_version stable "$2"); then
-                echo "${resolved#v}"
-            else
-                echo latest
-            fi
-            ;;
-        beta)
-            if resolved=$(fetch_channel_version beta "$2"); then
-                echo "${resolved#v}"
-            else
-                error "beta channel is unavailable"
-            fi
-            ;;
+        latest | stable | '') name=stable ;;
+        beta) name=beta ;;
         *)
             echo "$requested"
+            return 0
             ;;
     esac
+    if resolved=$(fetch_channel_version "$name" "$dest"); then
+        echo "${resolved#v}"
+    elif [ "$name" = beta ]; then
+        error "beta channel is unavailable"
+    else
+        echo latest
+    fi
 }
 
 install_cli() {

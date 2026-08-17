@@ -15,7 +15,7 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 source "$root/scripts/release-tag.sh"
 manifest=${manifest:-"$root/Cargo.toml"}
 
-if ! release_tag_ok "$tag"; then
+if ! stable_release_tag "$tag" && ! beta_release_tag "$tag"; then
     echo "tag '$tag' is not vX.Y.Z or vX.Y.Z-beta.N" >&2
     exit 1
 fi
