@@ -1,8 +1,8 @@
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
-    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, PortPublication,
-    ServiceContainer, ServiceName, service_containers,
+    CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, IngressHostname, Machine,
+    MachineId, PortPublication, ServiceContainer, ServiceName, service_containers,
+    serving_replicas,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -316,6 +316,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
 
     let healthy = healthy_containers(local_machine, containers);
     let eligible = eligible_containers(local_machine, containers);
+    let eligible = eligible.iter().collect::<Vec<_>>();
     let mut skipped = Vec::new();
     if let Some(container) = healthy
         .iter()
@@ -405,14 +406,17 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     output
 }
 
-fn eligible_containers<'a>(
+fn eligible_containers(
     local_machine: &MachineId,
-    containers: &'a [ServiceContainer],
-) -> Vec<&'a ServiceContainer> {
-    healthy_containers(local_machine, containers)
-        .into_iter()
-        .filter(|container| container.as_observation().address.is_some())
-        .collect()
+    containers: &[ServiceContainer],
+) -> Vec<ServiceContainer> {
+    let mut containers = serving_replicas(
+        containers
+            .iter()
+            .map(|container| container.as_observation().clone()),
+    );
+    sort_caddy_containers(local_machine, &mut containers);
+    containers
 }
 
 fn healthy_containers<'a>(
@@ -421,25 +425,29 @@ fn healthy_containers<'a>(
 ) -> Vec<&'a ServiceContainer> {
     let mut containers = containers
         .iter()
-        .filter(|container| {
-            matches!(
-                container.as_observation().runtime,
-                ContainerRuntimeObservation::Running {
-                    health: HealthObservation::Healthy | HealthObservation::NotConfigured
-                }
-            )
-        })
+        .filter(|container| container.as_observation().runtime.is_healthy())
         .collect::<Vec<_>>();
-    containers.sort_by_key(|container| {
-        let observation = container.as_observation();
-        (
-            observation.machine_id != *local_machine,
-            observation.service_name.as_str(),
-            observation.created_at_unix_nanos,
-            observation.container_id.as_str(),
-        )
-    });
+    containers.sort_by_key(|container| caddy_container_order(local_machine, container));
     containers
+}
+
+fn sort_caddy_containers(local_machine: &MachineId, containers: &mut [ServiceContainer]) {
+    containers.sort_by(|left, right| {
+        caddy_container_order(local_machine, left).cmp(&caddy_container_order(local_machine, right))
+    });
+}
+
+fn caddy_container_order<'a>(
+    local_machine: &MachineId,
+    container: &'a ServiceContainer,
+) -> (bool, &'a str, i64, &'a str) {
+    let observation = container.as_observation();
+    (
+        observation.machine_id != *local_machine,
+        observation.service_name.as_str(),
+        observation.created_at_unix_nanos,
+        observation.container_id.as_str(),
+    )
 }
 
 fn creation_key(container: &ServiceContainer) -> (i64, &str) {
@@ -531,7 +539,7 @@ fn automatic_caddyfile(
 ) -> String {
     let containers = eligible_containers(local_machine, containers);
     let mut sites = BTreeMap::<IngressHost, Site<'_>>::new();
-    for container in containers {
+    for container in &containers {
         let observation = container.as_observation();
         let address = observation.address.expect("address was filtered above");
         for port in &observation.resolved_spec.ports {

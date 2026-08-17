@@ -18,10 +18,10 @@ use instant_acme::{
     ExternalAccountKey, HttpClient, Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use ployz_core::{
-    CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HealthObservation, HttpProtocol, IngressHost, IngressHostname,
-    IssuanceFailure, IssuanceGate, Machine, MachineId, PortPublication, cluster_dns_verdict,
-    issuance_failure_clock, issuance_gate, issuance_refusal_reason, resolve_certificate_policy,
+    CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation, HttpProtocol,
+    IngressHost, IngressHostname, IssuanceFailure, IssuanceGate, Machine, MachineId,
+    PortPublication, cluster_dns_verdict, issuance_failure_clock, issuance_gate,
+    issuance_refusal_reason, resolve_certificate_policy,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -233,12 +233,7 @@ fn caddy_challenge_ips(
 }
 
 fn caddy_is_running(observation: &ContainerObservation) -> bool {
-    matches!(
-        observation.runtime,
-        ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy | HealthObservation::NotConfigured
-        }
-    )
+    observation.runtime.is_healthy()
 }
 
 fn machine_challenge_ips(machine: &Machine) -> impl Iterator<Item = IpAddr> {
