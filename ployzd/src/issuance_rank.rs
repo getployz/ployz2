@@ -4,8 +4,6 @@ use std::time::Duration;
 
 use ployz_core::MachineId;
 
-use crate::corrosion::CertificateRow;
-
 /// Rank among Machine identifiers. Lowest id is 0 and may order immediately.
 #[must_use]
 pub(crate) fn machine_rank<'id>(
@@ -20,15 +18,7 @@ pub(crate) fn machine_rank<'id>(
 /// `step` must cover the HTTP-01 probe wait so a later rank cannot start
 /// a competing order while an earlier rank is still presenting.
 #[must_use]
-pub(crate) fn rank_may_order(
-    row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
-    step: Duration,
-) -> bool {
-    if row.and_then(CertificateRow::material).is_some() {
-        return false;
-    }
+pub(crate) fn rank_may_order(rank: usize, elapsed: Duration, step: Duration) -> bool {
     let delay = step.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX));
     elapsed >= delay
 }
@@ -40,7 +30,6 @@ mod tests {
     use ployz_core::MachineId;
 
     use super::{machine_rank, rank_may_order};
-    use crate::corrosion::{CertificateMaterial, CertificateRow};
 
     const STEP: Duration = Duration::from_secs(30);
 
@@ -55,33 +44,19 @@ mod tests {
 
     #[test]
     fn only_rank_zero_orders_immediately() {
-        assert!(rank_may_order(None, 0, Duration::ZERO, STEP));
+        assert!(rank_may_order(0, Duration::ZERO, STEP));
         assert!(!rank_may_order(
-            None,
             1,
             Duration::from_secs(30) - Duration::from_millis(1),
             STEP
         ));
-        assert!(rank_may_order(None, 1, Duration::from_secs(30), STEP));
-        assert!(!rank_may_order(None, 2, Duration::from_secs(30), STEP));
-        assert!(rank_may_order(None, 2, Duration::from_secs(60), STEP));
+        assert!(rank_may_order(1, Duration::from_secs(30), STEP));
+        assert!(!rank_may_order(2, Duration::from_secs(30), STEP));
+        assert!(rank_may_order(2, Duration::from_secs(60), STEP));
         assert!(!rank_may_order(
-            None,
             1,
             Duration::from_secs(30),
             Duration::from_secs(120)
-        ));
-    }
-
-    #[test]
-    fn issued_material_means_nothing_to_do() {
-        let material = CertificateMaterial::new("CERT", "KEY").unwrap();
-        let row = CertificateRow::from_parts(Some(material), None);
-        assert!(!rank_may_order(
-            Some(&row),
-            0,
-            Duration::from_secs(60),
-            STEP
         ));
     }
 }

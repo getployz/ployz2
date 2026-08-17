@@ -280,7 +280,7 @@ async fn issue_wanted(
                     now
                 };
                 let elapsed = now.saturating_duration_since(seen);
-                if rank_may_order(row, rank, elapsed, RANK_STEP.max(policy.probe_timeout())) {
+                if rank_may_order(rank, elapsed, RANK_STEP.max(policy.probe_timeout())) {
                     to_order.push(hostname);
                 }
             }
