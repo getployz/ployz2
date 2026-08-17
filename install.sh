@@ -71,18 +71,17 @@ resolve_install_version() {
         echo "${resolved#v}"
     elif [ "$name" = beta ]; then
         error "beta channel is unavailable"
-    else
-        echo latest
     fi
 }
 
 install_cli() {
     tmp_dir=$(mktemp -d)
     trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
-    version=$(resolve_install_version "$PLOYZ_VERSION" "$tmp_dir/channel")
-    [ "$version" != nightly ] || error "nightly is not a supported release channel"
+    requested=${PLOYZ_VERSION#v}
+    [ "$requested" != nightly ] || error "nightly is not a supported release channel"
+    version=$(resolve_install_version "$requested" "$tmp_dir/channel")
     case "$version" in
-        latest|[0-9A-Za-z]* ) ;;
+        ''|[0-9A-Za-z]*) ;;
         *) error "Invalid version: $PLOYZ_VERSION" ;;
     esac
     case "$version" in
@@ -91,7 +90,7 @@ install_cli() {
 
     archive=$(cli_archive "$(uname -s)" "$(uname -m)") || \
         error "Unsupported platform: $(uname -s) $(uname -m)"
-    if [ "$version" = latest ]; then
+    if [ -z "$version" ]; then
         base_url="$PLOYZ_GITHUB_URL/releases/latest/download"
     else
         base_url="$PLOYZ_GITHUB_URL/releases/download/v$version"

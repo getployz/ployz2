@@ -62,8 +62,6 @@ resolve_install_version() {
         echo "${resolved#v}"
     elif [ "$name" = beta ]; then
         error "beta channel is unavailable"
-    else
-        echo latest
     fi
 }
 
@@ -76,17 +74,17 @@ daemon_archive() {
 }
 
 daemon_action() {
-    local installed=$1 requested=$2 latest=${3:-}
+    local installed=$1 target=$2 mode=$3
     if [ -z "$installed" ]; then
         echo replace
-    elif [ "$requested" != latest ]; then
-        [ "$installed" = "$requested" ] && echo keep || echo replace
-    elif [ -z "$latest" ] || [ "$installed" = "$latest" ]; then
-        [ -z "$latest" ] && echo replace || echo keep
+    elif [ "$mode" = pin ]; then
+        [ "$installed" = "$target" ] && echo keep || echo replace
+    elif [ -z "$target" ] || [ "$installed" = "$target" ]; then
+        [ -z "$target" ] && echo replace || echo keep
     else
         local newest
-        newest=$(printf '%s\n%s\n' "${installed//-/\~}" "$latest" | sort -V | tail -n1)
-        [ "$newest" = "$latest" ] && echo replace || echo keep
+        newest=$(printf '%s\n%s\n' "${installed//-/\~}" "$target" | sort -V | tail -n1)
+        [ "$newest" = "$target" ] && echo replace || echo keep
     fi
 }
 
@@ -135,7 +133,7 @@ create_user_and_directories() {
 }
 
 install_binaries() {
-    local archive installed_version latest_version action base_url tmp_dir channel_file requested resolved action_requested
+    local archive installed_version target action base_url tmp_dir channel_file requested resolved mode
     archive=$(daemon_archive "$(uname -m)") || error "Unsupported architecture: $(uname -m)"
     requested=$PLOYZ_VERSION
     channel_file=$(mktemp)
@@ -146,29 +144,28 @@ install_binaries() {
         installed_version=$("$INSTALL_BIN_DIR/ployzd" version 2>/dev/null || true)
     fi
 
-    latest_version=""
     case "$requested" in
-        latest | stable | '') action_requested=latest ;;
-        *) action_requested=$resolved ;;
+        latest | stable | '') mode=floating ;;
+        *) mode=pin ;;
     esac
-    if [ "$resolved" = latest ]; then
+    if [ -n "$resolved" ]; then
+        target=$resolved
+        base_url="$PLOYZ_GITHUB_URL/releases/download/v$resolved"
+    else
         local latest_url
         latest_url=$(curl -sLI -o /dev/null -w '%{url_effective}' "$PLOYZ_GITHUB_URL/releases/latest" 2>/dev/null || true)
-        latest_version=${latest_url##*/}
-        latest_version=${latest_version#v}
-        if [ -z "$latest_version" ] || [ "$latest_version" = latest ]; then
+        target=${latest_url##*/}
+        target=${target#v}
+        if [ -z "$target" ] || [ "$target" = latest ]; then
             warning "Could not resolve the latest release; using GitHub's redirect"
-            latest_version=""
+            target=""
             base_url="$PLOYZ_GITHUB_URL/releases/latest/download"
         else
-            base_url="$PLOYZ_GITHUB_URL/releases/download/v$latest_version"
+            base_url="$PLOYZ_GITHUB_URL/releases/download/v$target"
         fi
-    else
-        latest_version=$resolved
-        base_url="$PLOYZ_GITHUB_URL/releases/download/v$resolved"
     fi
 
-    action=$(daemon_action "$installed_version" "$action_requested" "$latest_version")
+    action=$(daemon_action "$installed_version" "$target" "$mode")
     if [ "$action" = keep ]; then
         log "ployzd ${installed_version} retained"
         return

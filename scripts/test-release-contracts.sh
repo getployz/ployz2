@@ -176,11 +176,11 @@ if daemon_archive riscv64 >/dev/null 2>&1; then
     echo "unsupported daemon architecture was accepted" >&2
     exit 1
 fi
-assert_eq "$(daemon_action 1.2.3 latest 1.2.3)" "keep"
-assert_eq "$(daemon_action 1.2.2 latest 1.2.3)" "replace"
-assert_eq "$(daemon_action 1.2.4 latest 1.2.3)" "keep"
-assert_eq "$(daemon_action 1.2.3 1.2.2 '')" "replace"
-assert_eq "$(daemon_action 1.2.2 1.2.3 '')" "replace"
+assert_eq "$(daemon_action 1.2.3 1.2.3 floating)" "keep"
+assert_eq "$(daemon_action 1.2.2 1.2.3 floating)" "replace"
+assert_eq "$(daemon_action 1.2.4 1.2.3 floating)" "keep"
+assert_eq "$(daemon_action 1.2.3 1.2.2 pin)" "replace"
+assert_eq "$(daemon_action 1.2.2 1.2.3 pin)" "replace"
 
 PLOYZ_CLI_INSTALL_TEST_ONLY=true source "$ROOT/install.sh"
 assert_eq "$(cli_archive Linux x86_64)" "ployz_linux_amd64.tar.gz"
