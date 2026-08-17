@@ -513,38 +513,12 @@ pub enum ConnectError {
     Rpc(TransportError),
     #[error("Machine RPC payload failed: {0}")]
     Codec(#[from] CodecError),
-    #[error("Machine RPC returned: {}", remote_rpc_message(.0))]
+    #[error("Machine RPC returned: {}", .0.message)]
     Remote(RpcError),
     #[error("Machine RPC framing failed: {0}")]
     Framing(#[from] FramingError),
     #[error("Machine RPC identity failed: {0}")]
     Value(#[from] ployz_core::ValueError),
-}
-
-fn remote_rpc_message(error: &RpcError) -> String {
-    let message = error.message.as_str();
-    let Some(status) = hosted_http_status(message) else {
-        return message.to_owned();
-    };
-    if message.contains("retry") || message.contains("escalate") {
-        return message.to_owned();
-    }
-    format!("{message}; {}", hosted_status_action(status))
-}
-
-fn hosted_http_status(message: &str) -> Option<u16> {
-    let rest = message.strip_prefix("hosted DNS returned HTTP ")?;
-    rest.find(|c: char| !c.is_ascii_digit())
-        .map_or(rest, |end| rest.get(..end).unwrap_or(rest))
-        .parse()
-        .ok()
-}
-
-fn hosted_status_action(status: u16) -> &'static str {
-    match status {
-        408 | 429 | 500..=599 => "retry, then escalate if it persists",
-        _ => "escalate; do not retry",
-    }
 }
 
 impl From<tonic::Status> for ConnectError {
@@ -676,8 +650,7 @@ mod tests {
 
     use super::*;
     use crate::context::SshDestination;
-    use ployz_core::{ONE_TARGET_BINARY_HEADER, ONE_TARGET_HEADER, RpcError, RpcErrorCode};
-    use serde_json::Value;
+    use ployz_core::{ONE_TARGET_BINARY_HEADER, ONE_TARGET_HEADER};
 
     #[tokio::test]
     async fn target_timeout_becomes_a_typed_partial_failure() {
@@ -734,43 +707,6 @@ mod tests {
         );
         assert!(!args.iter().any(|arg| arg.contains("id_*")));
         assert!(!args.iter().any(|arg| arg.contains("BatchMode")));
-    }
-
-    #[test]
-    fn hosted_dns_http_errors_tell_the_operator_whether_to_retry() {
-        let bare = ConnectError::Remote(RpcError {
-            code: RpcErrorCode::Internal,
-            message: "hosted DNS returned HTTP 500".into(),
-            details: Value::Null,
-        });
-        let display = bare.to_string();
-        assert!(display.contains("Machine RPC returned:"), "{display}");
-        assert!(display.contains("HTTP 500"), "{display}");
-        assert!(
-            display.contains("retry") && display.contains("escalate"),
-            "{display}"
-        );
-
-        let already = ConnectError::Remote(RpcError {
-            code: RpcErrorCode::Internal,
-            message: "hosted DNS returned HTTP 500: route53; retry, then escalate if it persists"
-                .into(),
-            details: Value::Null,
-        });
-        assert_eq!(
-            already.to_string(),
-            "Machine RPC returned: hosted DNS returned HTTP 500: route53; retry, then escalate if it persists"
-        );
-
-        let other = ConnectError::Remote(RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "Cluster domain was not found".into(),
-            details: Value::Null,
-        });
-        assert_eq!(
-            other.to_string(),
-            "Machine RPC returned: Cluster domain was not found"
-        );
     }
 
     #[test]

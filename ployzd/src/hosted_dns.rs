@@ -54,8 +54,8 @@ impl HostedDns {
         let reservation = store.domain_reservation().await?.ok_or(Error::NotFound)?;
         // Hosted Uncloud DNS has no domain-delete. Purge removes Route53 answers when
         // its DB still matches. After any record upsert, PersistRecord leaves stale
-        // values and purge returns InvalidChangeBatch forever. Overwrite the wildcard
-        // so leftover answers are not the Cluster, then drop the local reservation.
+        // values and purge 500s forever. Overwrite the wildcard so leftover answers
+        // are not the Cluster, then drop the local reservation.
         self.release_hosted(&reservation).await?;
         store.remove_domain_reservation().await?;
         Ok(reservation.name)
@@ -64,9 +64,7 @@ impl HostedDns {
     async fn release_hosted(&self, reservation: &Reservation) -> Result<(), Error> {
         match self.purge_hosted_records(reservation).await {
             Ok(()) => Ok(()),
-            Err(error) if error.is_stale_record_delete() => {
-                self.neutralize_hosted_records(reservation).await
-            }
+            Err(Error::Status(500, _)) => self.neutralize_hosted_records(reservation).await,
             Err(error) => Err(error),
         }
     }
@@ -202,18 +200,9 @@ fn hosted_error_detail(body: &[u8]) -> String {
             .or(error.message)
             .filter(|msg| !msg.is_empty())
     {
-        return collapse_detail(&msg);
+        return msg;
     }
-    collapse_detail(&String::from_utf8_lossy(body))
-}
-
-fn collapse_detail(detail: &str) -> String {
-    let collapsed = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-    const MAX: usize = 240;
-    match collapsed.char_indices().nth(MAX) {
-        None => collapsed,
-        Some((index, _)) => collapsed.get(..index).unwrap_or(&collapsed).to_owned(),
-    }
+    String::from_utf8_lossy(body).into_owned()
 }
 
 fn hosted_status_message(status: &u16, detail: &str) -> String {
@@ -288,15 +277,6 @@ pub(crate) enum Error {
     Authentication,
     #[error("the supplied domain failed authentication")]
     AuthNoDomain,
-}
-
-impl Error {
-    fn is_stale_record_delete(&self) -> bool {
-        let Self::Status(500, detail) = self else {
-            return false;
-        };
-        detail.contains("InvalidChangeBatch") && detail.contains("values provided do not match")
-    }
 }
 
 #[cfg(test)]
@@ -538,11 +518,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_overwrites_wildcard_when_purge_hits_stale_hosted_values() {
+    async fn release_overwrites_wildcard_when_purge_returns_http_500() {
         let (endpoint, requests) = fake_server([
             (
                 500,
-                r#"{"status":500,"msg":"failed to delete route53 records for domain opaque.uncloud.example with error InvalidChangeBatch: [Tried to delete resource record set [name='\\052.opaque.uncloud.example.', type='A'] but the values provided do not match the current values]"}"#,
+                r#"{"status":500,"msg":"failed to delete route53 records for domain opaque.uncloud.example with error InvalidChangeBatch: values provided do not match the current values"}"#,
             ),
             (
                 201,
