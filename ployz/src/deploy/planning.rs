@@ -175,12 +175,8 @@ fn plan_one_service(
     options: PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, snapshot, options);
-    volume_creates.extend(plan_volume_operations(
-        requested,
-        snapshot,
-        pins,
-        &mut machines,
-    )?);
+    let created = plan_volume_operations(requested, snapshot, pins, volume_creates, &mut machines)?;
+    volume_creates.extend(created);
     let matching = services
         .iter()
         .filter(|service| service.has_name(requested.name.as_str()))
