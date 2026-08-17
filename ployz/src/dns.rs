@@ -115,11 +115,11 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
         .map(|observation| observation.machine)
         .filter(|machine| caddy_machines.contains(&machine.id) && machine.public_ip.is_some())
         .collect::<Vec<_>>();
-    let records = records_from_machines(&probe_machines(&machines).await?)?;
+    let records = records_from_machines(&probe_machines(machines).await?)?;
     publish_records(client, records).await
 }
 
-async fn probe_machines(machines: &[Machine]) -> Result<Vec<Machine>, Error> {
+async fn probe_machines(machines: Vec<Machine>) -> Result<Vec<Machine>, Error> {
     let http = HttpClient::builder()
         .no_proxy()
         .redirect(Policy::none())
@@ -127,9 +127,9 @@ async fn probe_machines(machines: &[Machine]) -> Result<Vec<Machine>, Error> {
         .build()
         .map_err(Error::from)?;
     Ok(
-        futures_util::future::join_all(machines.iter().map(|machine| {
+        futures_util::future::join_all(machines.into_iter().map(|machine| {
             let http = &http;
-            async move { probe_machine(http, machine).await.then(|| machine.clone()) }
+            async move { probe_machine(http, &machine).await.then_some(machine) }
         }))
         .await
         .into_iter()
