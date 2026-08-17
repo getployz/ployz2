@@ -74,6 +74,36 @@ async fn second_register_for_the_same_machine_is_rejected() {
 }
 
 #[tokio::test]
+async fn dial_rejects_an_invalid_machine_id() {
+    let mut session = Session::start().await;
+    session.register().await;
+    let mut request = session.dial_request(DIAL, &session.machine_id, mpsc::channel(4).1);
+    request.metadata_mut().insert(
+        MACHINE_ID_METADATA,
+        "not-a-machine-id"
+            .parse()
+            .expect("invalid id text is ASCII metadata"),
+    );
+    let error = session.cloud.dial(request).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn attach_rejects_an_invalid_tunnel_id() {
+    let mut session = Session::start().await;
+    session.register().await;
+    let mut request = Request::new(ReceiverStream::new(mpsc::channel(1).1));
+    request.metadata_mut().insert(
+        TUNNEL_ID_METADATA,
+        "not-a-tunnel-id"
+            .parse()
+            .expect("invalid id text is ASCII metadata"),
+    );
+    let error = session.machine.attach(request).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
 async fn pairing_credential_is_rejected_on_dial() {
     let mut session = Session::start().await;
     session.register().await;

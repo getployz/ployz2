@@ -211,6 +211,7 @@ impl ServiceId {
 }
 
 impl TunnelId {
+    /// Generate a 32-character lowercase hexadecimal Tunnel ID.
     #[must_use]
     pub fn random() -> Self {
         let mut hex = [0_u8; 32];

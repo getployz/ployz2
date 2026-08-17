@@ -42,6 +42,7 @@ pub struct RegisterRequest {
 }
 
 impl RegisterRequest {
+    /// Build a Register message for this Machine ID.
     #[must_use]
     pub fn new(machine_id: &MachineId) -> Self {
         Self {
@@ -49,6 +50,8 @@ impl RegisterRequest {
         }
     }
 
+    /// Parse the Machine ID from the wire string.
+    ///
     /// # Errors
     ///
     /// Returns [`ValueError`] when the wire string is not a Machine ID.
@@ -65,6 +68,7 @@ pub struct Open {
 }
 
 impl Open {
+    /// Build an Open carrying this Tunnel ID.
     #[must_use]
     pub fn new(tunnel_id: &TunnelId) -> Self {
         Self {
@@ -72,6 +76,8 @@ impl Open {
         }
     }
 
+    /// Parse the Tunnel ID from the Open.
+    ///
     /// # Errors
     ///
     /// Returns [`ValueError`] when the wire string is not a Tunnel ID.
@@ -88,6 +94,7 @@ pub struct TunnelFrame {
 }
 
 impl TunnelFrame {
+    /// Wrap opaque tunnel bytes. The Relay does not parse them.
     #[must_use]
     pub fn new(data: Vec<u8>) -> Self {
         Self { data }
@@ -121,6 +128,7 @@ impl PairingCredential {
         parse_credential(value).map(Self)
     }
 
+    /// Pairing Credential bearer.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -137,6 +145,7 @@ impl DialCredential {
         parse_credential(value).map(Self)
     }
 
+    /// Dial Credential bearer.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -380,5 +389,15 @@ mod tests {
             panic!("expected credential collision");
         };
         assert_eq!(error, RelayError::CredentialCollision);
+    }
+
+    #[test]
+    fn register_request_rejects_a_non_machine_id() {
+        assert!(RegisterRequest::default().machine_id().is_err());
+    }
+
+    #[test]
+    fn open_rejects_a_non_tunnel_id() {
+        assert!(Open::default().tunnel_id().is_err());
     }
 }
