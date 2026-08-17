@@ -157,38 +157,12 @@ async fn hosted_body(response: reqwest::Response) -> Result<Bytes, Error> {
         });
     }
     if !status.is_success() {
-        return Err(Error::Status(status.as_u16(), hosted_error_detail(&body)));
+        return Err(Error::Status(
+            status.as_u16(),
+            String::from_utf8_lossy(&body).into_owned(),
+        ));
     }
     Ok(body)
-}
-
-fn hosted_error_detail(body: &[u8]) -> String {
-    if let Ok(error) = serde_json::from_slice::<HostedErrorBody>(body)
-        && let Some(msg) = error
-            .msg
-            .or(error.error)
-            .or(error.message)
-            .filter(|msg| !msg.is_empty())
-    {
-        return msg;
-    }
-    String::from_utf8_lossy(body).into_owned()
-}
-
-fn hosted_status_message(status: &u16, detail: &str) -> String {
-    let action = hosted_status_action(*status);
-    if detail.is_empty() {
-        format!("hosted DNS returned HTTP {status}; {action}")
-    } else {
-        format!("hosted DNS returned HTTP {status}: {detail}; {action}")
-    }
-}
-
-fn hosted_status_action(status: u16) -> &'static str {
-    match status {
-        408 | 429 | 500..=599 => "retry, then escalate if it persists",
-        _ => "escalate; do not retry",
-    }
 }
 
 #[derive(Deserialize)]
@@ -203,16 +177,6 @@ struct RecordResponse {
     record_type: ployz_core::DnsRecordType,
     values: Vec<String>,
     fqdn: String,
-}
-
-#[derive(Default, Deserialize)]
-struct HostedErrorBody {
-    #[serde(default)]
-    msg: Option<String>,
-    #[serde(default)]
-    error: Option<String>,
-    #[serde(default)]
-    message: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -241,7 +205,7 @@ pub(crate) enum Error {
     Json(#[from] serde_json::Error),
     #[error("invalid hosted DNS endpoint: {0}")]
     InvalidEndpoint(String),
-    #[error("{}", hosted_status_message(.0, .1))]
+    #[error("hosted DNS returned HTTP {0}: {1}")]
     Status(u16, String),
     #[error("hosted DNS authentication failed")]
     Authentication,
@@ -454,37 +418,7 @@ mod tests {
         let display = error.to_string();
         assert!(display.contains("HTTP 500"), "{display}");
         assert!(display.contains("route53"), "{display}");
-        assert!(
-            display.contains("retry") && display.contains("escalate"),
-            "{display}"
-        );
-    }
-
-    #[tokio::test]
-    async fn hosted_status_uses_the_service_msg_not_a_bare_code() {
-        let (endpoint, _) = fake_server([(
-            500,
-            r#"{"status":500,"msg":"failed to delete route53 records for domain opaque.uncloud.example with error InvalidChangeBatch: values provided do not match the current values"}"#,
-        )])
-        .await;
-        let reservation = super::Reservation {
-            endpoint,
-            name: "opaque.uncloud.example".into(),
-            token: "raw-token".into(),
-        };
-
-        let error = HostedDns::new()
-            .purge_hosted_records(&reservation)
-            .await
-            .unwrap_err();
-
-        let display = error.to_string();
-        assert!(display.contains("InvalidChangeBatch"), "{display}");
-        assert!(
-            display.contains("values provided do not match"),
-            "{display}"
-        );
-        assert!(!display.eq("hosted DNS returned HTTP 500"), "{display}");
+        assert_ne!(display, "hosted DNS returned HTTP 500");
     }
 
     #[tokio::test]
