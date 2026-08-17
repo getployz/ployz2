@@ -9,6 +9,7 @@
 - `compose-diagnostics-source` — Preserve a failed `docker compose config` diagnostic unchanged when the subsequent plugin-version probe succeeds.
 - `volume-remove-auto-confirm-env` — Let `ployz volume rm --yes` read `PLOYZ_AUTO_CONFIRM`, preserving the configured auto-confirm path required by the Volume workflow.
 - `fixed-wireguard-port` — Keep `ployz machine add --wg-port` at the daemon-supported port 51820; reject other values instead of advertising a port the WireGuard interface and firewall do not apply.
+- `deploy-intent-flags` — Add `--skip-health` to `run`, `service run`, `scale`, `service scale`, and `caddy deploy`, and `--recreate` to `run`, `service run`, and `caddy deploy`, so every Deploy command can set the shared planning options bag. Uncloud exposes these only on `uc deploy`. Scale has no `--recreate`.
 - `direct-push-reference-boundary` — Reject digest and port-qualified-registry references for direct image push: Docker cannot push a digest or nest a registry-port colon below the temporary loopback registry without changing the reference. Build resolution remains exact, and external `--push-registry` delivery remains supported.
 - `images-json-output` — Add `-o, --output json` to `ployz images` and `ployz image ls` so consumers can still read raw `CREATED` and `SIZE` after the table becomes human-formatted.
 - `scriptable-ctx-connection` — Let `ployz ctx connection [CONNECTION]` print the current default connection when omitted, and select when given, so a scripted caller can read without a TTY.
