@@ -2065,7 +2065,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-build",
- "uuid",
 ]
 
 [[package]]

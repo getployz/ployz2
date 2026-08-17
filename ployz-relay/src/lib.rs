@@ -4,11 +4,10 @@ use std::{
     collections::HashMap,
     fmt,
     net::SocketAddr,
-    str,
     sync::{Arc, Mutex},
 };
 
-use ployz_core::MachineId;
+use ployz_core::{MachineId, TunnelId};
 use prost::Message;
 use thiserror::Error;
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
@@ -18,8 +17,11 @@ use tokio_stream::{
 };
 use tonic::{Request, Response, Status, Streaming, metadata::MetadataMap, transport::Server};
 
+/// Bearer metadata key (`authorization`).
 pub const AUTHORIZATION_METADATA: &str = "authorization";
+/// Dial metadata key for the target Machine ID.
 pub const MACHINE_ID_METADATA: &str = "machine-id";
+/// Attach metadata key for the Tunnel ID from Open.
 pub const TUNNEL_ID_METADATA: &str = "tunnel-id";
 
 const BEARER_PREFIX: &str = "Bearer ";
@@ -68,10 +70,6 @@ pub struct PairingCredential(String);
 #[derive(Clone, Eq, PartialEq)]
 pub struct DialCredential(String);
 
-/// Relay-issued identity of one opaque splice.
-#[derive(Clone, Eq, Hash, PartialEq)]
-pub struct TunnelId(String);
-
 /// Failures constructing a [`Relay`] or its credentials.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum RelayError {
@@ -113,23 +111,6 @@ impl DialCredential {
     }
 }
 
-impl TunnelId {
-    fn random() -> Self {
-        let mut hex = [0_u8; 32];
-        uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
-        Self(
-            str::from_utf8(&hex)
-                .expect("uuid simple hex is ASCII")
-                .to_owned(),
-        )
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 impl fmt::Debug for PairingCredential {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("PairingCredential(..)")
@@ -139,15 +120,6 @@ impl fmt::Debug for PairingCredential {
 impl fmt::Debug for DialCredential {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("DialCredential(..)")
-    }
-}
-
-impl fmt::Debug for TunnelId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("TunnelId")
-            .field(&self.as_str())
-            .finish()
     }
 }
 
@@ -234,7 +206,10 @@ fn metadata_str<'a>(metadata: &'a MetadataMap, key: &'static str) -> Option<&'a 
     metadata.get(key).and_then(|value| value.to_str().ok())
 }
 
-async fn pump(mut inbound: Streaming<TunnelFrame>, tx: mpsc::Sender<Result<TunnelFrame, Status>>) {
+async fn forward_frames(
+    mut inbound: Streaming<TunnelFrame>,
+    tx: mpsc::Sender<Result<TunnelFrame, Status>>,
+) {
     while let Some(Ok(frame)) = inbound.next().await {
         if tx.send(Ok(frame)).await.is_err() {
             break;
@@ -264,11 +239,22 @@ impl CloudRelay for Relay {
         let machine_id = MachineId::parse(&first.machine_id)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let (open_tx, open_rx) = mpsc::channel(TUNNEL_BUFFER);
-        self.lock().machines.insert(machine_id, open_tx);
+        {
+            let mut state = self.lock();
+            if state.machines.contains_key(&machine_id) {
+                return Err(Status::already_exists("Machine already registered"));
+            }
+            state.machines.insert(machine_id, open_tx.clone());
+        }
         let state = Arc::clone(&self.state);
         tokio::spawn(async move {
             while inbound.next().await.is_some() {}
-            if let Ok(mut state) = state.lock() {
+            if let Ok(mut state) = state.lock()
+                && state
+                    .machines
+                    .get(&machine_id)
+                    .is_some_and(|current| current.same_channel(&open_tx))
+            {
                 state.machines.remove(&machine_id);
             }
         });
@@ -302,7 +288,7 @@ impl CloudRelay for Relay {
                 .cloned()
                 .ok_or_else(|| Status::not_found("unknown Machine ID"))?;
             state.pending.insert(
-                tunnel_id.clone(),
+                tunnel_id,
                 Pending {
                     to_machine: to_machine_rx,
                     from_machine: from_machine_tx,
@@ -320,7 +306,7 @@ impl CloudRelay for Relay {
             self.lock().pending.remove(&tunnel_id);
             return Err(Status::unavailable("Register closed"));
         }
-        tokio::spawn(pump(request.into_inner(), to_machine_tx));
+        tokio::spawn(forward_frames(request.into_inner(), to_machine_tx));
         Ok(Response::new(ReceiverStream::new(from_machine_rx)))
     }
 
@@ -328,17 +314,17 @@ impl CloudRelay for Relay {
         &self,
         request: Request<Streaming<TunnelFrame>>,
     ) -> Result<Response<Self::AttachStream>, Status> {
-        let tunnel_id = TunnelId(
+        let tunnel_id = TunnelId::parse(
             metadata_str(request.metadata(), TUNNEL_ID_METADATA)
-                .ok_or_else(|| Status::invalid_argument("missing or invalid tunnel-id"))?
-                .to_owned(),
-        );
+                .ok_or_else(|| Status::invalid_argument("missing or invalid tunnel-id"))?,
+        )
+        .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let pending = self
             .lock()
             .pending
             .remove(&tunnel_id)
             .ok_or_else(|| Status::not_found("unknown Tunnel ID"))?;
-        tokio::spawn(pump(request.into_inner(), pending.from_machine));
+        tokio::spawn(forward_frames(request.into_inner(), pending.from_machine));
         Ok(Response::new(ReceiverStream::new(pending.to_machine)))
     }
 }
