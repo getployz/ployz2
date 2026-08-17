@@ -217,15 +217,17 @@ impl DeployPlan {
     }
 }
 
+/// Evidence from executing a Deploy Plan: every operation completed, or the
+/// completed prefix plus the failed operation and the unexecuted rest.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[expect(
     clippy::large_enum_variant,
     reason = "Failed must own the named op and unexecuted rest; boxing would not change the states"
 )]
 pub enum DeployOutcome<E> {
-    Success {
-        completed: Vec<DeployOperation>,
-    },
+    /// Every planned operation completed.
+    Success { completed: Vec<DeployOperation> },
+    /// Execution stopped at `failed`; `unexecuted` is the rest of the plan.
     Failed {
         completed: Vec<DeployOperation>,
         failed: FailedOperation<E>,

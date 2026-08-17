@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeName, MachineId, MachineObservation, RequestedServiceSpec, ServiceMode,
-    ServiceVolume, ServiceVolumeGraph, VolumeSource,
+    DockerVolumeId, DockerVolumeName, MachineId, MachineObservation, RequestedServiceSpec,
+    ServiceMode, ServiceVolume, ServiceVolumeGraph, VolumeSource,
 };
 
 use crate::deploy::{
@@ -12,11 +12,13 @@ use crate::deploy::{
 /// Planner-internal assignment of Docker Volumes to Machines.
 ///
 /// Anchors override Deploy Snapshot observations for a shared replicated
-/// Docker Volume (the chosen Machine is the only legal location). Later specs
-/// see planned creates from the CreateVolume ops, without mutating the snapshot.
+/// Docker Volume (the chosen Machine is the only legal location). `creates` is
+/// the one CreateVolume list later specs consult; it is not a reconstructed
+/// observation list.
 #[derive(Default)]
 pub(super) struct VolumePins {
     anchors: BTreeMap<DockerVolumeName, MachineId>,
+    creates: Vec<(MachineId, ServiceVolume)>,
 }
 
 impl VolumePins {
@@ -24,11 +26,55 @@ impl VolumePins {
         self.anchors.insert(name, machine_id);
     }
 
+    fn record_create(&mut self, machine_id: MachineId, volume: &ServiceVolume) {
+        if self.creates.iter().any(|(id, existing)| {
+            *id == machine_id && named_volume_name(existing) == named_volume_name(volume)
+        }) {
+            return;
+        }
+        self.creates.push((machine_id, volume.clone()));
+    }
+
     fn anchor_for(&self, volume: &ServiceVolume) -> Option<MachineId> {
         let VolumeSource::Named { name, .. } = &volume.source else {
             return None;
         };
         self.anchors.get(name).copied()
+    }
+
+    fn created_present(&self, machine_id: MachineId, volume: &ServiceVolume) -> bool {
+        self.creates.iter().any(|(created_on, created)| {
+            *created_on == machine_id
+                && created_to_observed(*created_on, created)
+                    .is_some_and(|observed| volume_matches(&observed, volume))
+        })
+    }
+
+    fn created_conflicts(&self, machine_id: MachineId, volume: &ServiceVolume) -> bool {
+        self.creates.iter().any(|(created_on, created)| {
+            *created_on == machine_id
+                && created_to_observed(*created_on, created).is_some_and(|observed| {
+                    volume_has_same_name(&observed, volume) && !volume_matches(&observed, volume)
+                })
+        })
+    }
+
+    fn created_matching_machines(
+        &self,
+        volume: &ServiceVolume,
+    ) -> impl Iterator<Item = MachineId> + '_ {
+        self.creates.iter().filter_map(|(machine_id, created)| {
+            created_to_observed(*machine_id, created)
+                .filter(|observed| volume_matches(observed, volume))
+                .map(|observed| observed.id.machine_id)
+        })
+    }
+
+    pub(super) fn into_creates(self) -> Vec<DeployOperation> {
+        self.creates
+            .into_iter()
+            .map(|(machine_id, volume)| DeployOperation::CreateVolume { machine_id, volume })
+            .collect()
     }
 }
 
@@ -130,20 +176,18 @@ pub(super) fn prepare_shared_replicated_volumes(
     snapshot: &DeploySnapshot,
     pins: &mut VolumePins,
     options: PlanOptions,
-) -> Result<Vec<DeployOperation>, PlanError> {
-    let mut operations = Vec::new();
+) -> Result<(), PlanError> {
     for component in shared_volume_components(volume_uses) {
-        let machine_id = shared_component_anchor(&component, snapshot, pins, &operations, options)?;
-        operations.extend(pin_shared_component(&component, machine_id, snapshot, pins));
+        let machine_id = shared_component_anchor(&component, snapshot, pins, options)?;
+        pin_shared_component(&component, machine_id, snapshot, pins);
     }
-    Ok(operations)
+    Ok(())
 }
 
 fn shared_component_anchor(
     component: &SharedVolumeComponent<'_>,
     snapshot: &DeploySnapshot,
     pins: &VolumePins,
-    creates: &[DeployOperation],
     options: PlanOptions,
 ) -> Result<MachineId, PlanError> {
     let services = component
@@ -156,10 +200,10 @@ fn shared_component_anchor(
     let (first_service_name, first_service) = services
         .next()
         .expect("shared Volume component has at least two services");
-    let mut eligible = volume_eligible_machine_ids(first_service, snapshot, pins, creates, options)
+    let mut eligible = volume_eligible_machine_ids(first_service, snapshot, pins, options)
         .map_err(|source| super::service_error(true, first_service_name, source))?;
     for (service_name, service) in services {
-        let other_eligible = volume_eligible_machine_ids(service, snapshot, pins, creates, options)
+        let other_eligible = volume_eligible_machine_ids(service, snapshot, pins, options)
             .map_err(|source| super::service_error(true, service_name, source))?;
         eligible.retain(|machine_id| other_eligible.contains(machine_id));
     }
@@ -178,8 +222,7 @@ fn pin_shared_component(
     machine_id: MachineId,
     snapshot: &DeploySnapshot,
     pins: &mut VolumePins,
-) -> Vec<DeployOperation> {
-    let mut operations = Vec::new();
+) {
     for (name, uses) in &component.volumes {
         pins.constrain((*name).clone(), machine_id);
         if snapshot
@@ -190,23 +233,18 @@ fn pin_shared_component(
             continue;
         }
         let first_use = uses.first().expect("shared Volume has at least two uses");
-        operations.push(DeployOperation::CreateVolume {
-            machine_id,
-            volume: first_use.volume.clone(),
-        });
+        pins.record_create(machine_id, first_use.volume);
     }
-    operations
 }
 
 fn volume_eligible_machine_ids(
     spec: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     pins: &VolumePins,
-    creates: &[DeployOperation],
     options: PlanOptions,
 ) -> Result<Vec<MachineId>, PlanError> {
     let mut machines = super::eligible_machines(spec, snapshot, options);
-    volume_constraints(spec, snapshot, pins, creates, &mut machines)?;
+    volume_constraints(spec, snapshot, pins, &mut machines)?;
     Ok(machines
         .into_iter()
         .map(|machine| machine.machine.id)
@@ -217,14 +255,11 @@ pub(super) fn plan_volume_operations(
     spec: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     pins: &mut VolumePins,
-    creates: &[DeployOperation],
     machines: &mut Vec<&MachineObservation>,
-) -> Result<Vec<DeployOperation>, PlanError> {
+) -> Result<(), PlanError> {
     // TODO(UT-001, UT-051, UT-052, UT-078): preserve the baseline
     // placement ceiling: do not filter by memory, image platform, or local image presence.
-    let (mounted_volumes, missing_volumes) =
-        volume_constraints(spec, snapshot, pins, creates, machines)?;
-    let mut operations = Vec::new();
+    let (mounted_volumes, missing_volumes) = volume_constraints(spec, snapshot, pins, machines)?;
     match spec.mode {
         ServiceMode::Replicated { .. } if !missing_volumes.is_empty() => {
             // TODO(UT-005): named-volume driver and label options remain part of planned creation;
@@ -238,49 +273,42 @@ pub(super) fn plan_volume_operations(
                 if let VolumeSource::Named { name, .. } = &volume.source {
                     pins.constrain(name.clone(), machine_id);
                 }
-                operations.push(DeployOperation::CreateVolume {
-                    machine_id,
-                    volume: volume.clone(),
-                });
+                pins.record_create(machine_id, volume);
             }
         }
         ServiceMode::Global => {
             for machine in machines.iter() {
                 for volume in mounted_volumes.iter().copied() {
-                    if volume_present(snapshot, creates, &operations, machine.machine.id, volume) {
+                    if volume_present(snapshot, pins, machine.machine.id, volume) {
                         continue;
                     }
-                    operations.push(DeployOperation::CreateVolume {
-                        machine_id: machine.machine.id,
-                        volume: volume.clone(),
-                    });
+                    pins.record_create(machine.machine.id, volume);
                 }
             }
         }
         ServiceMode::Replicated { .. } => {}
     }
-    Ok(operations)
+    Ok(())
 }
 
 fn volume_constraints<'spec>(
     spec: &'spec RequestedServiceSpec,
     snapshot: &DeploySnapshot,
     pins: &VolumePins,
-    creates: &[DeployOperation],
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
     let mounted_volumes = mounted_named_volumes(&spec.volume_graph)?;
     let mut missing_volumes = Vec::new();
     for volume in mounted_volumes.iter().copied() {
         machines.retain(|machine| {
-            !volume_conflicts_on_machine(snapshot, creates, machine.machine.id, volume)
+            !volume_conflicts_on_machine(snapshot, pins, machine.machine.id, volume)
         });
         if matches!(spec.mode, ServiceMode::Replicated { .. }) {
             if let Some(anchor) = pins.anchor_for(volume) {
                 machines.retain(|machine| machine.machine.id == anchor);
                 continue;
             }
-            let locations = matching_machines(snapshot, creates, volume);
+            let locations = matching_machines(snapshot, pins, volume);
             if !locations.is_empty() {
                 machines.retain(|machine| locations.contains(&machine.machine.id));
             } else {
@@ -296,11 +324,15 @@ fn volume_constraints<'spec>(
     Ok((mounted_volumes, missing_volumes))
 }
 
-fn volume_has_same_name(observed: &ObservedDockerVolume, volume: &ServiceVolume) -> bool {
+fn named_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {
     let VolumeSource::Named { name, .. } = &volume.source else {
-        return false;
+        return None;
     };
-    observed.id.name == *name
+    Some(name)
+}
+
+fn volume_has_same_name(observed: &ObservedDockerVolume, volume: &ServiceVolume) -> bool {
+    named_volume_name(volume).is_some_and(|name| observed.id.name == *name)
 }
 
 fn volume_matches(observed: &ObservedDockerVolume, volume: &ServiceVolume) -> bool {
@@ -313,10 +345,31 @@ fn volume_matches(observed: &ObservedDockerVolume, volume: &ServiceVolume) -> bo
         })
 }
 
+// Query-time view of a planned create. Pins keep ops, not a stored observation list.
+fn created_to_observed(
+    machine_id: MachineId,
+    volume: &ServiceVolume,
+) -> Option<ObservedDockerVolume> {
+    let VolumeSource::Named { name, driver, .. } = &volume.source else {
+        return None;
+    };
+    Some(ObservedDockerVolume {
+        id: DockerVolumeId {
+            machine_id,
+            name: name.clone(),
+        },
+        driver: driver
+            .as_ref()
+            .map_or_else(|| "local".into(), |driver| driver.name.clone()),
+        options: driver
+            .as_ref()
+            .map_or_else(Default::default, |driver| driver.options.clone()),
+    })
+}
+
 fn volume_present(
     snapshot: &DeploySnapshot,
-    prior: &[DeployOperation],
-    extra: &[DeployOperation],
+    pins: &VolumePins,
     machine_id: MachineId,
     volume: &ServiceVolume,
 ) -> bool {
@@ -324,13 +377,12 @@ fn volume_present(
         .volumes
         .iter()
         .any(|observed| observed.id.machine_id == machine_id && volume_matches(observed, volume))
-        || create_present(prior, machine_id, volume)
-        || create_present(extra, machine_id, volume)
+        || pins.created_present(machine_id, volume)
 }
 
 fn volume_conflicts_on_machine(
     snapshot: &DeploySnapshot,
-    creates: &[DeployOperation],
+    pins: &VolumePins,
     machine_id: MachineId,
     volume: &ServiceVolume,
 ) -> bool {
@@ -338,18 +390,12 @@ fn volume_conflicts_on_machine(
         observed.id.machine_id == machine_id
             && volume_has_same_name(observed, volume)
             && !volume_matches(observed, volume)
-    }) || creates.iter().any(|operation| {
-        as_volume_create(operation).is_some_and(|(created_on, created)| {
-            created_on == machine_id
-                && named_volume_same_name(created, volume)
-                && !named_volume_matches(created, volume)
-        })
-    })
+    }) || pins.created_conflicts(machine_id, volume)
 }
 
 fn matching_machines(
     snapshot: &DeploySnapshot,
-    creates: &[DeployOperation],
+    pins: &VolumePins,
     volume: &ServiceVolume,
 ) -> BTreeSet<MachineId> {
     snapshot
@@ -357,74 +403,8 @@ fn matching_machines(
         .iter()
         .filter(|observed| volume_matches(observed, volume))
         .map(|observed| observed.id.machine_id)
-        .chain(
-            creates
-                .iter()
-                .filter_map(as_volume_create)
-                .filter_map(|(machine_id, created)| {
-                    named_volume_matches(created, volume).then_some(machine_id)
-                }),
-        )
+        .chain(pins.created_matching_machines(volume))
         .collect()
-}
-
-fn create_present(
-    creates: &[DeployOperation],
-    machine_id: MachineId,
-    volume: &ServiceVolume,
-) -> bool {
-    creates.iter().any(|operation| {
-        as_volume_create(operation).is_some_and(|(created_on, created)| {
-            created_on == machine_id && named_volume_matches(created, volume)
-        })
-    })
-}
-
-fn as_volume_create(operation: &DeployOperation) -> Option<(MachineId, &ServiceVolume)> {
-    match operation {
-        DeployOperation::CreateVolume { machine_id, volume } => Some((*machine_id, volume)),
-        DeployOperation::RunContainer { .. }
-        | DeployOperation::StopContainer { .. }
-        | DeployOperation::RemoveContainer { .. }
-        | DeployOperation::ReplaceContainer(_)
-        | DeployOperation::StopHook { .. }
-        | DeployOperation::RunHook { .. } => None,
-    }
-}
-
-fn named_volume_same_name(created: &ServiceVolume, wanted: &ServiceVolume) -> bool {
-    let (VolumeSource::Named { name: created, .. }, VolumeSource::Named { name: wanted, .. }) =
-        (&created.source, &wanted.source)
-    else {
-        return false;
-    };
-    created == wanted
-}
-
-fn named_volume_matches(created: &ServiceVolume, wanted: &ServiceVolume) -> bool {
-    let VolumeSource::Named {
-        name: created_name,
-        driver: created_driver,
-        ..
-    } = &created.source
-    else {
-        return false;
-    };
-    let VolumeSource::Named {
-        name: wanted_name,
-        driver: wanted_driver,
-        ..
-    } = &wanted.source
-    else {
-        return false;
-    };
-    created_name == wanted_name
-        && wanted_driver
-            .as_ref()
-            .is_none_or(|required| match created_driver {
-                None => required.name == "local" && required.options.is_empty(),
-                Some(driver) => required.name == driver.name && required.options == driver.options,
-            })
 }
 
 fn mounted_named_volumes(graph: &ServiceVolumeGraph) -> Result<Vec<&ServiceVolume>, PlanError> {
