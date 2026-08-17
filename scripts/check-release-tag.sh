@@ -13,8 +13,8 @@ fi
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 manifest=${manifest:-"$root/Cargo.toml"}
 
-if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "tag '$tag' is not a stable SemVer vX.Y.Z" >&2
+if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+    echo "tag '$tag' is not vX.Y.Z or vX.Y.Z-beta.N" >&2
     exit 1
 fi
 

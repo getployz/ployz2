@@ -8,6 +8,8 @@ INSTALL_ONLY=${INSTALL_ONLY:-false}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
 INSTALL_SYSTEMD_DIR=${INSTALL_SYSTEMD_DIR:-/etc/systemd/system}
 PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz2}
+PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
+PLOYZ_CHANNELS_FALLBACK=${PLOYZ_CHANNELS_FALLBACK:-https://raw.githubusercontent.com/getployz/ployz2/channels}
 PLOYZ_VERSION=${PLOYZ_VERSION:-latest}
 PLOYZ_VERSION=${PLOYZ_VERSION#v}
 PLOYZ_USER=ployz
@@ -27,6 +29,47 @@ log() { echo "$1"; }
 warning() { echo "WARNING: $1" >&2; }
 error() { echo "ERROR: $1" >&2; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+channel_version_from_file() {
+    local version
+    version=$(tr -d ' \t\r\n' < "$1")
+    echo "$version" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$' || return 1
+    echo "$version"
+}
+
+fetch_channel_version() {
+    local name=$1 dest=$2 base
+    for base in "$PLOYZ_CHANNEL_URL" "$PLOYZ_CHANNELS_FALLBACK"; do
+        if curl -fsSL -o "$dest" "$base/$name" && channel_version_from_file "$dest" >/dev/null; then
+            channel_version_from_file "$dest"
+            return 0
+        fi
+    done
+    return 1
+}
+
+resolve_install_version() {
+    local requested=${1#v} dest=$2 resolved
+    case "$requested" in
+        latest | stable | '')
+            if resolved=$(fetch_channel_version stable "$dest"); then
+                echo "${resolved#v}"
+            else
+                echo latest
+            fi
+            ;;
+        beta)
+            if resolved=$(fetch_channel_version beta "$dest"); then
+                echo "${resolved#v}"
+            else
+                error "beta channel is unavailable"
+            fi
+            ;;
+        *)
+            echo "$requested"
+            ;;
+    esac
+}
 
 daemon_archive() {
     case "$1" in
@@ -96,8 +139,11 @@ create_user_and_directories() {
 }
 
 install_binaries() {
-    local archive installed_version latest_version action base_url tmp_dir
+    local archive installed_version latest_version action base_url tmp_dir channel_file
     archive=$(daemon_archive "$(uname -m)") || error "Unsupported architecture: $(uname -m)"
+    channel_file=$(mktemp)
+    PLOYZ_VERSION=$(resolve_install_version "$PLOYZ_VERSION" "$channel_file")
+    rm -f "$channel_file"
     installed_version=""
     if [ -x "$INSTALL_BIN_DIR/ployzd" ]; then
         installed_version=$("$INSTALL_BIN_DIR/ployzd" version 2>/dev/null || true)

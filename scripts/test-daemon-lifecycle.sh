@@ -30,7 +30,9 @@ done
 while [ "$#" -gt 0 ]; do
     if [ "$1" = -o ]; then output=$2; shift 2; else url=$1; shift; fi
 done
-cp "$FAKE_RELEASE/${url##*/}" "$output"
+src="$FAKE_RELEASE/${url##*/}"
+[ -f "$src" ] || exit 1
+cp "$src" "$output"
 EOF
 cat > "$TMP/bin/install" <<'EOF'
 #!/bin/bash
