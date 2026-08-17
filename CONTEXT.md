@@ -210,7 +210,11 @@ _Avoid_: Machine Proxy, tunnel binary, control plane
 
 **Cloud Pairing**:
 The cluster-scoped grant of a Cloud Relay endpoint and bearer that makes a Cluster's Machines dial out. Absence means no Machine dials. It authenticates a Cluster to the relay and is not a per-Machine credential, not daemon-side authorization, and not proof any Machine is currently connected.
-_Avoid_: per-Machine credential, login, daemon authn
+_Avoid_: per-Machine credential, login, daemon authn, Relay Attach
+
+**Relay Attach**:
+The credential that authenticates reaching one Machine through the Cloud Relay. It is not Cloud Pairing.
+_Avoid_: Cloud Pairing, Cloud Connection, pairing credential
 
 **Live Observation**:
 Data obtained by directly querying a Machine at a point in time. It may still be incomplete, entry-relative, or obsolete immediately after collection.
