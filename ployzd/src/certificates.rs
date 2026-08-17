@@ -300,12 +300,7 @@ async fn issue_wanted(
                     RANK_STEP.max(policy.probe_timeout()),
                 ) == IssuanceAction::Order
                 {
-                    let reason = issuance_refusal_reason(
-                        hostname,
-                        clock.last_failure(),
-                        &resolved,
-                        &cluster,
-                    );
+                    let reason = issuance_refusal_reason(hostname, &resolved, &cluster);
                     if let Err(error) = store
                         .record_certificate_failure(hostname, reason, clock)
                         .await

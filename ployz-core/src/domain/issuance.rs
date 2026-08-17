@@ -41,16 +41,19 @@ impl IssuanceClock {
         }
     }
 
+    /// Recorded attempts under this failure. Always at least 1.
     #[must_use]
     pub fn failures(&self) -> u32 {
         self.failures
     }
 
+    /// When the Cluster may try again.
     #[must_use]
     pub fn next_attempt_at(&self) -> SystemTime {
         self.next_attempt_at
     }
 
+    /// Which failure earned this clock.
     #[must_use]
     pub fn last_failure(&self) -> IssuanceFailure {
         self.last_failure
@@ -120,23 +123,20 @@ pub fn issuance_failure_clock(
 #[must_use]
 pub fn issuance_refusal_reason(
     hostname: &IngressHost,
-    last_failure: IssuanceFailure,
     resolved: &[IpAddr],
     cluster_addresses: &[IpAddr],
 ) -> String {
-    match last_failure {
-        IssuanceFailure::DoesNotResolve => format!(
+    if resolved.is_empty() {
+        format!(
             "Ingress Hostname {hostname} does not resolve; it should resolve to {}.",
             join_addresses(cluster_addresses)
-        ),
-        IssuanceFailure::ResolvesElsewhere => format!(
+        )
+    } else {
+        format!(
             "Ingress Hostname {hostname} resolves to {}; it should resolve to {}.",
             join_addresses(resolved),
             join_addresses(cluster_addresses)
-        ),
-        IssuanceFailure::Authority => {
-            format!("certificate authority failed for Ingress Hostname {hostname}")
-        }
+        )
     }
 }
 
@@ -342,25 +342,15 @@ mod tests {
         let elsewhere = addrs(["198.51.100.10"]);
 
         assert_eq!(
-            issuance_refusal_reason(&hostname, IssuanceFailure::DoesNotResolve, &[], &cluster),
+            issuance_refusal_reason(&hostname, &[], &cluster),
             "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1, 192.0.2.2."
         );
         assert_eq!(
-            issuance_refusal_reason(
-                &hostname,
-                IssuanceFailure::ResolvesElsewhere,
-                &elsewhere,
-                &cluster
-            ),
+            issuance_refusal_reason(&hostname, &elsewhere, &cluster),
             "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1, 192.0.2.2."
         );
         assert_eq!(
-            issuance_refusal_reason(
-                &hostname,
-                IssuanceFailure::ResolvesElsewhere,
-                &elsewhere,
-                &[]
-            ),
+            issuance_refusal_reason(&hostname, &elsewhere, &[]),
             "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to this Cluster's Machine addresses (none are published)."
         );
     }
