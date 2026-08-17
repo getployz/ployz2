@@ -204,13 +204,21 @@ _Avoid_: Selected Endpoint, current endpoint
 The endpoint one observing Machine currently selects for reaching a target Machine. Different observers may select different endpoints for the same target.
 _Avoid_: Advertised Endpoint, globally current endpoint
 
+**Ployz Cloud**:
+The control plane product: the application plus its Cloud Relay. Prod, staging, self-host, and dev use that same pair.
+_Avoid_: hosted-only Cloud, local Cloud mode, Unix-socket Cloud
+
 **Cloud Relay**:
-The hosted byte pipe a Machine dials out to and holds open so Cloud can reach it without an inbound route. It carries opaque streams and interprets none of them. It is not a Machine, not a mesh peer, and holds no Cluster observation.
-_Avoid_: Machine Proxy, tunnel binary, control plane
+The Cloud product's outbound-dial acceptor. Machines Register to it; Cloud Dials through it; it splices opaque tunnels and holds no Cluster observation. It is not a Machine and not a mesh peer.
+_Avoid_: Machine Proxy, hosted-only relay, yamux, Quinn, sticky load balancer
 
 **Cloud Pairing**:
-The cluster-scoped grant of a Cloud Relay endpoint and bearer that makes a Cluster's Machines dial out. Absence means no Machine dials. It authenticates a Cluster to the relay and is not a per-Machine credential, not daemon-side authorization, and not proof any Machine is currently connected.
-_Avoid_: per-Machine credential, login, daemon authn
+The cluster-scoped grant of control plane, cluster id, credential, and relay URLs that makes Machines Register. Cloud writes the relay URLs; they are not in the bootstrap token. Absence means no Machine dials; it is not a Relay Attach and not a per-Machine credential.
+_Avoid_: relay hostname in the bootstrap token, per-Machine credential, daemon polling Cloud for discovery
+
+**Relay Attach**:
+The Cloud- or CLI-side Dial that splices an opaque tunnel onto a Registered Machine. It is not Cloud Pairing and is not daemon-side authorization.
+_Avoid_: pairing credential, Machine Token, WireGuard key
 
 **Live Observation**:
 Data obtained by directly querying a Machine at a point in time. It may still be incomplete, entry-relative, or obsolete immediately after collection.
