@@ -161,11 +161,15 @@ An observer-local, TTL-zero A answer derived from replicated healthy Service Con
 _Avoid_: Service registry record, membership-filtered endpoint set
 
 **Ingress Hostname**:
-The HTTP hostname a Service publishes through ingress: assignment from the reserved hosted DNS domain, or an explicit validated hostname. An empty string is not an assignment signal.
-_Avoid_: empty hostname sentinel
+The HTTP hostname a Service publishes through ingress: assignment from the reserved hosted DNS domain, or an explicit validated hostname. An empty string is not an assignment signal. It is never a wildcard.
+_Avoid_: empty hostname sentinel, Certificate Identity
+
+**Certificate Identity**:
+The DNS name the certificate authority is asked to sign. An exact Ingress Hostname, or a covering wildcard derived from the hosted Cluster Domain reservation. It is not a site name and not an issuance request.
+_Avoid_: Ingress Hostname as the cert key, wanted row, cert intent
 
 **Certificate Material**:
-The certificate and private key held in cluster state for one Ingress Hostname. It is served as given; it is not an issuance request and not a local proxy store.
+The certificate and private key held in cluster state for one Certificate Identity. It is served as given; it is not an issuance request and not a local proxy store.
 _Avoid_: Caddy certificate, ACME certificate, cert secret
 
 **Certificate Policy**:
