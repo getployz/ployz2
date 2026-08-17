@@ -672,18 +672,18 @@ fn merge_logs_with_options(
                         }
                         match entry {
                             Err(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
-                            Ok(entry) => {
-                                if let LogBody::Error(error) = &entry.body {
-                                    if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return }
-                                } else {
+                            Ok(entry) => match &entry.body {
+                                LogBody::Error(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
+                                LogBody::Heartbeat => {
                                     source.watermark = source.watermark.max(entry.timestamp_unix_nanos);
-                                    if matches!(entry.body, LogBody::Stdout(_) | LogBody::Stderr(_)) {
-                                        if entry.timestamp_unix_nanos == 0 {
-                                            if output_sender.send(Ok(entry)).await.is_err() { return }
-                                        } else {
-                                            queue.push(QueuedLog { timestamp: entry.timestamp_unix_nanos, sequence, entry });
-                                            sequence = sequence.wrapping_add(1);
-                                        }
+                                }
+                                LogBody::Stdout(_) | LogBody::Stderr(_) => {
+                                    source.watermark = source.watermark.max(entry.timestamp_unix_nanos);
+                                    if entry.timestamp_unix_nanos == 0 {
+                                        if output_sender.send(Ok(entry)).await.is_err() { return }
+                                    } else {
+                                        queue.push(QueuedLog { timestamp: entry.timestamp_unix_nanos, sequence, entry });
+                                        sequence = sequence.wrapping_add(1);
                                     }
                                 }
                             }
