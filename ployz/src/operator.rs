@@ -666,12 +666,11 @@ fn merge_logs_with_options(
                 },
                 now = ticker.tick() => {
                     for source in &mut sources {
-                        match source.state {
-                            LogState::Live if now.duration_since(source.last_activity) > stall_timeout => {
-                                source.state = LogState::Stalled;
-                                if output_sender.send(Err(format!("log stream {} stalled", source.identity))).await.is_err() { return }
-                            }
-                            LogState::Live | LogState::Stalled | LogState::Closed => {}
+                        if let LogState::Live = source.state
+                            && now.duration_since(source.last_activity) > stall_timeout
+                        {
+                            source.state = LogState::Stalled;
+                            if output_sender.send(Err(format!("log stream {} stalled", source.identity))).await.is_err() { return }
                         }
                     }
                     if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
