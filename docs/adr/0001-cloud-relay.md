@@ -1,14 +1,17 @@
-# Cloud reaches a private Cluster through a single-node Rust Cloud Relay
+# Cloud is the application plus a Cloud Relay; Machines dial out over tonic/h2
 
-Hosted Cloud has no operator vantage and must not expose Machine RPC. Every paired Machine dials one active Rust Cloud Relay over TLS/443; Cloud and the CLI attach to that same process; the relay splices opaque streams and holds no Cluster observation. One node until about 20k Machines — then the same pairing URL can grow to internal scatter/forward without changing `ployzd` or the SDK.
+Ployz Cloud is one product in every environment: control plane + Cloud Relay. Machines Register with a long-lived HTTP/2 stream, Cloud Dials, the relay Opens on that control stream, the Machine Attaches a second outbound stream, and the inner bytes are the existing Machine RPC Channel. No Unix shortcut for Cloud. No yamux, no Quinn. TLS belongs to the HTTP/2 terminator in front (Caddy or a platform), not this binary.
 
 Spec: https://github.com/getployz/ployz2/issues/297
 
 ## Considered Options
 
 - **Inbound public Machine RPC / NATS** — fails behind NAT; this reconstruction has no inbound daemon authn.
-- **Cloud as a WireGuard peer** — puts a multi-tenant hosted process in Machine Subnet / Management Address space and needs outbound UDP.
+- **Cloud as a WireGuard peer** — puts a multi-tenant process in Machine Subnet / Management Address space and needs outbound UDP.
 - **Stored SSH** — Cloud holding customer SSH; already culled as legacy.
-- **Sticky load balancer** — rejected: affinity breaks on topology change.
-- **Elixir BEAM scatter/forward** — right *later* shape for any-node attach on a private network; not v1. Relays stay cattle; drain still drops sockets.
-- **Bundled cloudflared/frp** — third-party binary inside `ployzd` with its own upgrade clock.
+- **Unix-socket Cloud when colocated** — a second topology; self-host and dev would lie. Rejected.
+- **Yamux (or Quinn) as the mux** — extra crate, and Quinn is UDP. HTTP/2 already multiplexes; the Machine is the client so Open-then-Attach is the stream dance.
+- **Relay URL inside the bootstrap token** — freeze the hostname into pairing. Cloud writes `relay_urls` on the pairing row instead.
+- **Daemon polls the control plane to discover relays** — the dialer would interpret Cloud. Policy-as-data: it dials stored URLs.
+- **Sticky load balancer / two active acceptors** — attach can miss. One acceptor until scatter/forward.
+- **Bundled cloudflared/frp** — third-party binary inside `ployzd`.
