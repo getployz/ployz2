@@ -55,7 +55,45 @@ Cloud  --connectPloyzNatsClient-->  Core NATS (tls://host:4222)
 
 `RuntimeSnapshot` fields Cloud projects: `automatic_hostname_configuration`, `ployz_dns_target`, `machines`, `services`, `route_tls`, `updated_at_unix_seconds` ([getployz/ployz](https://github.com/getployz/ployz) `packages/ployz-sdk/src/generated.ts` type `RuntimeSnapshot` @ `v0.0.2-alpha.89`; projector [getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/runtime/runtime-snapshot.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`).
 
-Cloud maps each snapshot through `runtimeSnapshotLensFromSnapshot` and SSE-emits `event: runtime.lens` ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/runtime/runtime-events.server.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`). Route: `src/routes/api/runtime/events.handler.ts` calls `openRuntimeWatch` then `createRuntimeEventsResponse` (same SHA). Browser collections (`src/models/runtime/runtime.collection.ts`, `use-runtime-lens.ts`) consume that Cloud lens, not `@ployz/sdk`.
+Cloud maps each snapshot through `runtimeSnapshotLensFromSnapshot` and SSE-emits `event: runtime.lens` ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/runtime/runtime-events.server.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`). Route: `src/routes/api/runtime/events.handler.ts` calls `openRuntimeWatch` then `createRuntimeEventsResponse` (same SHA). Browser collections (`src/models/runtime/runtime.collection.ts`, `use-runtime-lens.ts`) consume that Cloud lens, not `@ployz/sdk`. The lens schema is Cloud-owned Zod (`runtimeSnapshotLensSchema`); it does not import `@ployz/sdk` ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/runtime/runtime.collection.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`).
+
+### `RuntimeSnapshot` → `RuntimeSnapshotLens` (field map)
+
+Projector: `projectRuntimeSnapshot` in [getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/runtime/runtime-snapshot.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`. Wire type: [getployz/ployz](https://github.com/getployz/ployz) `packages/ployz-sdk/src/generated.ts` `RuntimeSnapshot` @ `v0.0.2-alpha.89`.
+
+Cloud-synthesized statuses (no snapshot): `connecting` (empty collections), `no_connection` (no Cloud Connection row), `unavailable` (RPC/stream failure; one-shot query blanks machines/services, SSE `unavailableRuntimeSnapshot` keeps previous rows) ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/runtime/runtime.collection.ts`; `src/models/runtime/runtime-snapshot-query.server.ts`; `src/models/runtime/runtime-events.server.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`).
+
+| Lens field | Source on `RuntimeSnapshot` | Rule |
+| --- | --- | --- |
+| `status` | `machines.length` | `live_rows` if `> 0`, else `live_empty` |
+| `error` | none | always `null` on a successful project |
+| `updatedAt` | `updated_at_unix_seconds` | ISO from unix seconds |
+| `publicUrl.mode` | `automatic_hostname_configuration.mode` | `disabled` \| `ployz` \| `custom` |
+| `publicUrl.domain` | mode + DNS lease | `custom` → `suffix`; `ployz` → allocated lease hostname or `null`; `disabled` → `null` |
+| `publicUrl.leaseApex` | `ployz_dns_target.allocation` | `allocated.hostname` or `null` if `unacquired` |
+| `publicUrl.dnsTarget.intent` | `ployz_dns_target.intent` | `enabled` \| `disabled` |
+| `publicUrl.dnsTarget.allocation` | `ployz_dns_target.allocation.status` | `unacquired` \| `allocated` (drops issued/expiry timestamps) |
+| `publicUrl.dnsTarget.publication` | `ployz_dns_target.publication.status` | `unpublished` \| `applied` \| `withdrawn` (drops `ingress_projection`) |
+| `machines[].id` | `machines[].active.machine_id` | |
+| `machines[].name` | `machines[].active.name` | |
+| `machines[].publicIp` | `testimony.endpoints.control_endpoints[0]` | only when `testimony.status === "answered"`; else `null` |
+| `machines[].gateway` | `active.roles.gateway` + `testimony.gateway` | `skip` → `{ status: "not_installed" }`; `install` + `no_answer` → `{ status: "silent", reason: "no_answer" }`; `install` + missing gateway → `{ status: "silent", reason: "not_reported" }`; else `{ status: serving, routeCount }` (`current` \| `last_known_good` \| `unavailable`) |
+| `machines[].observedContainerCount` | `testimony.containers` | answered count, or `null` if `no_answer` / containers `unavailable` |
+| `machines[].testimonyStatus` | `testimony.status` | `answered` \| `no_answer` |
+| `machines[].storage` | `testimony.storage` | only when answered and field present; snake_case capacity → camelCase; `null` storage stays `null` |
+| `machines[].storageAlarms` | `storage_alarms` | omitted when undefined; else `{ namespaceId, volumeName, machineId, reason }` |
+| `machines[].lastObservedAt` | `testimony.last_observed_at_unix_seconds` | ISO when answered; else `null` |
+| `machines[].region` / `availabilityZone` / `overlayIp` | none | always `null` |
+| `machines[].endpoints` | none | always `[]` (does **not** copy `active.control_endpoints` / `mesh_endpoints`) |
+| `services[].id` | `active.namespace_id` + `active.service_id` | `"${namespace_id}:${service_id}"` |
+| `services[].namespaceId` / `serviceId` | `active.namespace_id` / `active.service_id` | |
+| `services[].activeRevisionId` | `active.namespace_revision_entry_id` | |
+| `services[].routeCount` | `route_bindings.length` | |
+| `services[].instanceCount` | `testimony.observed_container_count` | |
+| `services[].readyInstanceCount` | `testimony.ready_container_count` | |
+| `services[].bindings[]` | `route_bindings[]` + `route_tls` | `{ id, hostname: target.hostname, origin, tls }`; TLS looked up by `route_binding_id`; missing TLS → `{ status: "unknown" }` |
+
+Dropped from the snapshot (present on the wire, unused by the lens): `ingress_endpoint_projection`, `active_certificates`, top-level `routes`, `containers`, `revisions`, `releases`, `instances`, `projection_sources`, `control_health` on the seed result, machine `active.{activated_by,lifecycle,control_endpoints,mesh_endpoints,endpoint_subnet,wireguard_public_key}`, machine `testimony.{disk_space,gateway.listen_addr,gateway.process_health}`, service `active.{image,mode,volume_names}`, service `testimony.machines`, route binding `{namespace_id,endpoint_port,service_id}` ([getployz/ployz](https://github.com/getployz/ployz) `packages/ployz-sdk/src/generated.ts` `RuntimeSnapshot` / `MachineSnapshot` / `ServiceSnapshot` @ `v0.0.2-alpha.89`; projector cited above).
 
 ### `runtime.snapshot` (one-shot)
 
@@ -80,7 +118,10 @@ Second caller: storage-prep admission reads a fresh roster via `client.runtimeSn
 
 `VolumeSnapshot`: `{ namespace_id, volume_name, machine_id, kind, referencing_services, testimony, status }` ([getployz/ployz](https://github.com/getployz/ployz) `packages/ployz-sdk/src/generated.ts` @ `v0.0.2-alpha.89`). Cloud re-validates with Zod before trusting the list ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/runtime/runtime-volume-query.server.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`). Downstream: provisioned-storage lens (`src/models/runtime/provisioned-storage-lens.ts`, type-only `VolumeSnapshot`); storage history page (`src/models/runtime/provisioned-storage-read.server.ts`).
 
-Same RPC for destructive-volume confirmation: `verifyFreshDestructiveVolumeEvidence` lists volumes and compares reviewed testimony ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/operations/destructive-volume-runtime-adapter.server.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`).
+Same RPC, two more callers:
+
+- Destructive-volume confirmation: `verifyFreshDestructiveVolumeEvidence` lists volumes and compares reviewed testimony ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/operations/destructive-volume-runtime-adapter.server.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`).
+- Destructive-volume review prep: `listVolumes` → `request("volume.list", {})`, then fingerprints every volume in the environment namespace ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/operations/destructive-volume-preparation.server.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`).
 
 ### `build.target.capabilities`
 
@@ -201,7 +242,7 @@ Joiner bootstrap **does** call the `machine.add` RPC. It does **not** go through
 
 Payload (`MachineAddRequest`): `{ operation_id: op_cloud_add_<redemption>, idempotency_key: idem_cloud_add_<redemption>, machine_id: machine_<redemption>, name, roles: { gateway: "install" }, host_port_assurance: "keeper" }` (`buildCloudMachineAddRequest`, same file). Types imported from `@ployz/sdk/generated`.
 
-Result: `MachineAddAccepted` (`join_token`, `join_secret_delivery`, …) becomes the joiner envelope ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/servers/cloud-bootstrap-redemptions.server.ts` `joinerIntent` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`). Founder path does not call `machine.add`; it issues founder NATS material and later proves reachability with a raw `connect` + `flush` (`proveCloudNatsReachability`).
+Result: `MachineAddAccepted` (`join_token`, `join_secret_delivery`, …) becomes the joiner envelope ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/servers/cloud-bootstrap-redemptions.server.ts` `joinerIntent` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`). Founder path does not call `machine.add` or `init.first_machine.activate`; it issues a `CloudBootstrapEnvelope` with `intent: "founder"` (`runtime_nats_url` + `cloud_nats_user_public_key`) and later proves reachability with a raw `connect` + `flush` (`proveCloudNatsReachability`). The machine performs activation. Wait-for-founder is `intent: "wait_for_founder"` with no RPC ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/servers/cloud-bootstrap-redemptions.server.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`; types [getployz/ployz](https://github.com/getployz/ployz) `packages/ployz-sdk/src/generated.ts` `CloudBootstrapIntent` @ `v0.0.2-alpha.89`).
 
 A contract test freezes the `machine.add` **subject** even though production never uses `PloyzClient.machineAdd()` ([getployz/ployz-dashboard](https://github.com/getployz/ployz-dashboard) `src/models/runtime/ployz-sdk-contract.test.ts` @ `bf8ca4c6e5b6ef12fc11ab7bbee1c6d924164bde`).
 
@@ -264,6 +305,7 @@ Every production file found importing `@ployz/sdk` or `@ployz/sdk/generated` on 
 - `src/models/servers/machine-build-cache-prune.server.ts` — `machineBuildCachePrune` + `status`
 - `src/models/runtime/runtime-snapshot-query.server.ts` — `runtimeSnapshot` (via wrapper)
 - `src/models/runtime/runtime-volume-query.server.ts` — `volume.list`
+- `src/models/operations/destructive-volume-preparation.server.ts` — `volume.list`
 - `src/models/builds/build-target-readiness.server.ts` — `build.target.capabilities`
 - `src/models/servers/cloud-storage-preparation-runtime-adapter.server.ts` — `runtimeSnapshot`
 - `src/models/operations/core-operation-evidence.server.ts` — `ops.watch`
@@ -276,12 +318,11 @@ Every production file found importing `@ployz/sdk` or `@ployz/sdk/generated` on 
 - `src/models/environment-resources/volume-config.ts`
 - `src/models/operations/build-operation-evidence.ts`, `deploy-operation-evidence.ts`, `destructive-volume-operation-evidence.ts`, `destructive-volume-evidence.ts`, `destructive-volume-attempt.ts`
 - `src/models/servers/cloud-storage-preparation.ts`, `cloud-storage-preparation-admission.ts`
-- `src/models/servers/cloud-bootstrap-request.ts`, `cloud-bootstrap-redemption-source.ts`, `cloud-bootstrap-redemption-policy.ts`, `cloud-bootstrap-redemptions.server.ts`, `cloud-bootstrap-tokens.server.ts`, `cloud-bootstrap-callbacks.server.ts`, `cloud-bootstrap-terminal.server.ts`
-- `src/models/builds/build-target-policy.ts`, `build-attempt-executor.server.ts`, `github-actions-target-executor.server.ts`
+- `src/models/servers/cloud-bootstrap-request.ts`, `cloud-bootstrap-redemption-source.ts`, `cloud-bootstrap-redemption-policy.ts`, `cloud-bootstrap-redemptions.server.ts`, `cloud-bootstrap-tokens.server.ts`, `cloud-bootstrap-callbacks.server.ts`, `cloud-bootstrap-terminal.server.ts`, `bootstrap-sessions.server.ts`
+- `src/models/builds/build-target-policy.ts`, `build-attempt-executor.server.ts`, `github-actions-target-executor.server.ts`, `build-operation-watch.server.ts`, `build-priority-presentation.ts`, `build-record-lifecycle.repository.ts`, `build-target-attempt.repository.ts`, `current-tree-command.server.ts`, `github-actions-build-authority.server.ts`, `github-actions-build-authority.repository.ts`
 - `src/models/servers/machine-build-cache-prune.functions.ts`
-- `src/db/schema.ts`
+- `src/models/servers/cloud-storage-preparation-admission.server.ts`, `cloud-storage-preparation-admission.repository.ts`, `cloud-storage-preparation-retry.ts`, `cloud-storage-preparation-retry.server.ts`, `cloud-storage-preparation-retry.repository.ts`, `cloud-storage-preparation-watch-evidence.repository.ts`, `cloud-storage-preparation-workflow.server.ts`
+- `src/models/operations/destructive-volume-attempt-persistence.server.ts`, `destructive-volume-attempt-reconciliation.server.ts`, `destructive-volume-attempt-workflow.server.ts`, `destructive-volume-workflow.server.ts`
+- `src/db/schema.ts` (also `import("@ployz/sdk").ServiceMode` inline in a column type)
 
-**Contract test**
-
-- `src/models/runtime/ployz-sdk-contract.test.ts`
-- `src/models/runtime/runtime-snapshot.test-fixture.ts`
+**Tests** (import brands/fixtures only; no extra RPC): `ployz-sdk-contract.test.ts` (`OPERATION_API_CONTRACTS` subjects for `deploy.reserve`/`submit`, `machine.add`, `ops.status`, `runtime.snapshot`); `runtime-snapshot.test.ts` / `.test-fixture.ts` / `runtime-events.server.test.ts` / `provisioned-storage-lens.test.ts` / `runtime-volume-query.server.test.ts`; build/storage/volume/bootstrap `*.test.ts` siblings of the files above; `src/routes/api/runtime/-events.test.ts`. Directory walk found **98** files importing `@ployz/sdk` or `@ployz/sdk/generated` at this SHA. Inngest processors (`src/inggest/functions/{environment-deployments,storage-preparation,destructive-volume}`) call Cloud adapters and do not import the SDK.
