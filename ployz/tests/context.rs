@@ -315,8 +315,8 @@ fn filesystem_resolution_bypasses_config_and_limits_the_local_fallback() {
     let overridden = resolve_connections(&config, None, Some("dev"), &socket).unwrap();
     assert_eq!(overridden.source, ConnectionSource::Context("dev".into()));
     assert_eq!(
-        Config::load(&config).unwrap().current_context,
-        Some("prod".into())
+        Config::load(&config).unwrap().current_context(),
+        Some("prod")
     );
 
     fs::remove_file(&config).unwrap();
@@ -349,7 +349,17 @@ fn config_cannot_store_current_context_as_empty_string() {
         !yaml.contains("current_context:"),
         "empty current context was stored: {yaml}"
     );
-    assert_eq!(Config::load(&path).unwrap().current_context, None);
+    assert_eq!(Config::load(&path).unwrap().current_context(), None);
+
+    let mut config = Config::load(&path).unwrap();
+    config.set_current_context(Some(String::new()));
+    config.save().unwrap();
+    let yaml = fs::read_to_string(&path).unwrap();
+    assert!(
+        !yaml.contains("current_context:"),
+        "empty current context was stored: {yaml}"
+    );
+    assert_eq!(config.current_context(), None);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -363,7 +373,7 @@ fn empty_current_context_yaml_loads_as_none() {
     fs::create_dir_all(&root).unwrap();
     fs::write(&path, "current_context: \"\"\n").unwrap();
 
-    assert_eq!(Config::load(&path).unwrap().current_context, None);
+    assert_eq!(Config::load(&path).unwrap().current_context(), None);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -375,7 +385,7 @@ fn load_or_empty_with_no_file_has_no_current_context() {
     let _ = fs::remove_file(&path);
 
     let config = Config::load_or_empty(&path).unwrap();
-    assert_eq!(config.current_context, None);
+    assert_eq!(config.current_context(), None);
 }
 
 #[test]

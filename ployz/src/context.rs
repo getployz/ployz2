@@ -28,31 +28,16 @@ pub(crate) fn expand_home(path: &Path) -> PathBuf {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(
-        default,
-        deserialize_with = "empty_as_none",
-        skip_serializing_if = "no_current_context"
-    )]
-    pub current_context: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    current_context: Option<String>,
     #[serde(default)]
     pub contexts: BTreeMap<String, Context>,
     #[serde(skip)]
     path: PathBuf,
 }
 
-fn empty_as_none<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(none_if_empty(Option::<String>::deserialize(deserializer)?))
-}
-
 fn none_if_empty(name: Option<String>) -> Option<String> {
     name.filter(|name| !name.is_empty())
-}
-
-fn no_current_context(current: &Option<String>) -> bool {
-    current.as_deref().is_none_or(str::is_empty)
 }
 
 impl Config {
@@ -80,8 +65,25 @@ impl Config {
                 path: path.clone(),
                 source,
             })?;
+        config.current_context = none_if_empty(config.current_context);
         config.path = path;
         Ok(config)
+    }
+
+    #[must_use]
+    pub fn current_context(&self) -> Option<&str> {
+        self.current_context.as_deref()
+    }
+
+    pub fn set_current_context(&mut self, name: Option<String>) {
+        self.current_context = none_if_empty(name);
+    }
+
+    #[must_use]
+    pub fn context_name<'a>(&'a self, context_override: Option<&'a str>) -> Option<&'a str> {
+        context_override
+            .or(self.current_context.as_deref())
+            .filter(|name| !name.is_empty())
     }
 
     pub fn load_or_empty(path: impl Into<PathBuf>) -> Result<Self, ConfigError> {
@@ -222,9 +224,8 @@ pub fn select_connections(
         if config.contexts.is_empty() {
             return Err(ContextError::NoContexts(config.path.clone()));
         }
-        let name = context_override
-            .or(config.current_context.as_deref())
-            .filter(|name| !name.is_empty())
+        let name = config
+            .context_name(context_override)
             .ok_or_else(|| ContextError::NoCurrentContext(config.path.clone()))?;
         let context = config
             .contexts

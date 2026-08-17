@@ -43,10 +43,7 @@ fn context_commands_list_show_and_persist_an_explicit_selection() {
         "{}",
         String::from_utf8_lossy(&selected.stderr)
     );
-    assert_eq!(
-        Config::load(&path).unwrap().current_context,
-        Some("dev".into())
-    );
+    assert_eq!(Config::load(&path).unwrap().current_context(), Some("dev"));
 
     let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(["ctx", "ls", "--ployz-config", path.to_str().unwrap()])
@@ -296,12 +293,12 @@ fn explicit_config_beats_environment_and_interactive_errors_do_not_mutate() {
         String::from_utf8_lossy(&selected.stderr)
     );
     assert_eq!(
-        Config::load(&flag_path).unwrap().current_context,
-        Some("dev".into())
+        Config::load(&flag_path).unwrap().current_context(),
+        Some("dev")
     );
     assert_eq!(
-        Config::load(&env_path).unwrap().current_context,
-        Some("prod".into())
+        Config::load(&env_path).unwrap().current_context(),
+        Some("prod")
     );
 
     let before = Config::load(&flag_path).unwrap();
@@ -345,9 +342,6 @@ fn a_filename_only_config_override_saves_in_the_current_directory() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        Config::load(&path).unwrap().current_context,
-        Some("dev".into())
-    );
+    assert_eq!(Config::load(&path).unwrap().current_context(), Some("dev"));
     fs::remove_dir_all(root).unwrap();
 }

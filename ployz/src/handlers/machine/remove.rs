@@ -73,11 +73,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         // Drop the local connection before DNS refresh. A refresh failure
         // must not leave the removed Machine named in the context (#249).
         let mut config = options.load_or_empty_config()?;
-        if let Some(context_name) = options
-            .context()
-            .map(str::to_owned)
-            .or_else(|| config.current_context.clone())
-            .filter(|name| !name.is_empty())
+        if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
             && let Some(context) = config.contexts.get_mut(&context_name)
         {
             context.drop_machine(&selected.id);

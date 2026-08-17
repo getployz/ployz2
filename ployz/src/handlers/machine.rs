@@ -50,11 +50,9 @@ impl ConnectionOptions {
 
     pub(super) fn active_config(&self) -> Result<(Config, String), Error> {
         let config = self.load_config()?;
-        let Some(name) = self
-            .context
-            .clone()
-            .or_else(|| config.current_context.clone())
-            .filter(|name| !name.is_empty())
+        let Some(name) = config
+            .context_name(self.context.as_deref())
+            .map(str::to_owned)
         else {
             return Err(Error::usage(format!(
                 "current context is not set in Ployz config {}",
