@@ -72,12 +72,8 @@ fn cyclic_apply_dependencies_are_a_plan_error() {
         (web.name.clone(), vec![db.name.clone()]),
         (db.name.clone(), vec![web.name.clone()]),
     ]);
-    let intent = DeployIntent::new(
-        vec![db, web],
-        vec![attempt("web")],
-        PlanOptions::default(),
-    )
-    .with_dependencies(dependencies);
+    let intent = DeployIntent::new(vec![db, web], vec![attempt("web")], PlanOptions::default())
+        .with_dependencies(dependencies);
     assert!(matches!(
         plan_deploy(&intent, &snapshot()),
         Err(PlanError::DependencyCycle { service }) if service == "db"
