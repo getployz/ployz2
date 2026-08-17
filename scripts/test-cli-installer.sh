@@ -24,6 +24,9 @@ EOF
 cat > "$TMP/bin/curl" <<'EOF'
 #!/bin/sh
 echo "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
+for argument in "$@"; do
+    case "$argument" in *'%{url_effective}'*) echo 'https://example.invalid/releases/tag/v1.2.3'; exit ;; esac
+done
 while [ "$#" -gt 0 ]; do
     if [ "$1" = -o ]; then output=$2; shift 2; else url=$1; shift; fi
 done

@@ -64,6 +64,11 @@ resolve_install() {
     done
     rm -f "$dest"
     [ "$name" != beta ] || error "beta channel is unavailable"
+    latest_url=$(curl -sLI -o /dev/null -w '%{url_effective}' "$PLOYZ_GITHUB_URL/releases/latest") || error "stable channel is unavailable"
+    version=${latest_url##*/}
+    version=${version#v}
+    [ -n "$version" ] && [ "$version" != latest ] || error "stable channel is unavailable"
+    printf '%s\n' "$version"
 }
 
 install_cli() {
@@ -73,7 +78,7 @@ install_cli() {
     [ "$requested" != nightly ] || error "nightly is not a supported release channel"
     version=$(resolve_install "$requested")
     case "$version" in
-        ''|[0-9A-Za-z]*) ;;
+        [0-9A-Za-z]*) ;;
         *) error "Invalid version: $PLOYZ_VERSION" ;;
     esac
     case "$version" in
@@ -82,11 +87,7 @@ install_cli() {
 
     archive=$(cli_archive "$(uname -s)" "$(uname -m)") || \
         error "Unsupported platform: $(uname -s) $(uname -m)"
-    if [ -z "$version" ]; then
-        base_url="$PLOYZ_GITHUB_URL/releases/latest/download"
-    else
-        base_url="$PLOYZ_GITHUB_URL/releases/download/v$version"
-    fi
+    base_url="$PLOYZ_GITHUB_URL/releases/download/v$version"
 
     curl -fsSL -o "$tmp_dir/$archive" "$base_url/$archive" || error "Failed to download $archive"
     curl -fsSL -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt" || error "Failed to download checksums.txt"

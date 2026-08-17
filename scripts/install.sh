@@ -38,7 +38,7 @@ channel_version_from_file() {
 }
 
 resolve_install() {
-    local requested=${1#v} dest resolved base name
+    local requested=${1#v} dest resolved base name latest_url version
     case "$requested" in
         latest | stable | '') name=stable ;;
         beta) name=beta ;;
@@ -57,6 +57,11 @@ resolve_install() {
     done
     rm -f "$dest"
     [ "$name" != beta ] || error "beta channel is unavailable"
+    latest_url=$(curl -sLI -o /dev/null -w '%{url_effective}' "$PLOYZ_GITHUB_URL/releases/latest") || error "stable channel is unavailable"
+    version=${latest_url##*/}
+    version=${version#v}
+    [ -n "$version" ] && [ "$version" != latest ] || error "stable channel is unavailable"
+    printf '%s\n' "$version"
 }
 
 daemon_archive() {
@@ -73,8 +78,8 @@ daemon_action() {
         echo replace
     elif [ "$mode" = pin ]; then
         [ "$installed" = "$target" ] && echo keep || echo replace
-    elif [ -z "$target" ] || [ "$installed" = "$target" ]; then
-        [ -z "$target" ] && echo replace || echo keep
+    elif [ "$installed" = "$target" ]; then
+        echo keep
     else
         local newest
         newest=$(printf '%s\n%s\n' "${installed//-/\~}" "$target" | sort -V | tail -n1)
@@ -140,21 +145,7 @@ install_binaries() {
         installed_version=$("$INSTALL_BIN_DIR/ployzd" version 2>/dev/null || true)
     fi
 
-    if [ -n "$target" ]; then
-        base_url="$PLOYZ_GITHUB_URL/releases/download/v$target"
-    else
-        local latest_url
-        latest_url=$(curl -sLI -o /dev/null -w '%{url_effective}' "$PLOYZ_GITHUB_URL/releases/latest" 2>/dev/null || true)
-        target=${latest_url##*/}
-        target=${target#v}
-        if [ -z "$target" ] || [ "$target" = latest ]; then
-            warning "Could not resolve the latest release; using GitHub's redirect"
-            target=""
-            base_url="$PLOYZ_GITHUB_URL/releases/latest/download"
-        else
-            base_url="$PLOYZ_GITHUB_URL/releases/download/v$target"
-        fi
-    fi
+    base_url="$PLOYZ_GITHUB_URL/releases/download/v$target"
 
     action=$(daemon_action "$installed_version" "$target" "$mode")
     if [ "$action" = keep ]; then
