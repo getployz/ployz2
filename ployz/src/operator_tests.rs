@@ -279,7 +279,7 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
             .contains("quiet")
     );
     assert_eq!(
-        stalled_then_closed.recv().await.unwrap().unwrap().message,
+        output_bytes(&stalled_then_closed.recv().await.unwrap().unwrap()),
         b"nine"
     );
     assert!(stalled_then_closed.recv().await.is_none());
