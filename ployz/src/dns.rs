@@ -74,14 +74,14 @@ pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error
 /// Returns a connection or hosted-DNS error. An unreserved domain is success.
 pub(crate) async fn update_records_after_removal(
     client: &mut Client,
-    members: &[MachineObservation],
+    members: Vec<MachineObservation>,
     removed: &MachineId,
 ) -> Result<(), Error> {
     if client.domain_if_reserved().await?.is_none() {
         return Ok(());
     }
     let remaining = remaining_members(
-        members.iter().map(|observation| &observation.machine),
+        members.into_iter().map(|observation| observation.machine),
         removed,
     );
     if remaining.is_empty() {
@@ -167,14 +167,13 @@ fn reachability_matches(machine_id: &MachineId, status: u16, body: Option<&[u8]>
     status == 200 && body == Some(machine_id.as_str().as_bytes())
 }
 
-fn remaining_members<'a>(
-    members: impl IntoIterator<Item = &'a Machine>,
+fn remaining_members(
+    members: impl IntoIterator<Item = Machine>,
     removed: &MachineId,
 ) -> Vec<Machine> {
     members
         .into_iter()
         .filter(|machine| machine.id != *removed && machine.public_ip.is_some())
-        .cloned()
         .collect()
 }
 
@@ -452,10 +451,14 @@ mod tests {
 
     #[test]
     fn remaining_members_drop_the_removed_machine_from_a_three_machine_wildcard() {
-        let kept = machine('1', "192.0.2.1");
-        let removed = machine('2', "198.51.100.1");
-        let other = machine('3', "203.0.113.1");
-        let remaining = remaining_members([&kept, &removed, &other], &removed.id);
+        let remaining = remaining_members(
+            [
+                machine('1', "192.0.2.1"),
+                machine('2', "198.51.100.1"),
+                machine('3', "203.0.113.1"),
+            ],
+            &MachineId::parse("2".repeat(32)).unwrap(),
+        );
         let records = records_from_machines(&remaining).unwrap();
         assert_eq!(
             records,
