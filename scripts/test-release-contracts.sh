@@ -156,22 +156,18 @@ assert_eq "$(cat "$channels/stable")" v1.2.3
 checksums=$(mktemp)
 printf '%s  %s\n' aaa ployz_linux_amd64.tar.gz bbb ployz_linux_arm64.tar.gz ccc ployz_macos_amd64.tar.gz ddd ployz_macos_arm64.tar.gz > "$checksums"
 tap=$(mktemp -d)
-PLOYZ_CHANNELS_DIR="$channels" PLOYZ_HOMEBREW_TAP_DIR="$tap" PLOYZ_CHECKSUMS="$checksums" \
-    promote_published_release v9.9.9
-assert_eq "$(cat "$channels/stable")" v9.9.9
+formula=$(mktemp)
+write_homebrew_formula_from_checksums "$checksums" "$formula" 9.9.9 v9.9.9 getployz/ployz2
+repoint_homebrew_tap "$tap" "$formula"
 assert_contains "$tap/Formula/ployz.rb" "version \"9.9.9\""
 assert_contains "$tap/Formula/ployz.rb" "releases/download/v9.9.9/ployz_linux_amd64.tar.gz"
 assert_contains "$tap/Formula/ployz.rb" aaa
-beta_tap=$(mktemp -d)
-PLOYZ_CHANNELS_DIR="$channels" PLOYZ_HOMEBREW_TAP_DIR="$beta_tap" PLOYZ_CHECKSUMS="$checksums" \
-    promote_published_release v9.9.9-beta.1
-assert_eq "$(cat "$channels/beta")" v9.9.9-beta.1
-if [ -e "$beta_tap/Formula/ployz.rb" ]; then
-    echo "beta promote updated Homebrew" >&2
+if stable_release_tag v9.9.9-beta.1; then
+    echo "beta tag was classified stable" >&2
     exit 1
 fi
-rm -rf "$channels" "$tap" "$beta_tap"
-rm -f "$checksums"
+rm -rf "$channels" "$tap"
+rm -f "$checksums" "$formula"
 
 PLOYZ_INSTALL_TEST_ONLY=true source "$ROOT/scripts/install.sh"
 assert_eq "$(daemon_archive x86_64)" "ployzd_linux_amd64.tar.gz"
@@ -223,6 +219,7 @@ assert_eq "$(release_artifacts_needed pull_request .goreleaser.yaml)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/verify-release.sh)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/pack-release.sh)" true
 assert_eq "$(release_artifacts_needed pull_request scripts/homebrew-formula.sh)" true
+assert_eq "$(release_artifacts_needed pull_request scripts/release-tag.sh)" false
 assert_eq "$(release_artifacts_needed pull_request .github/workflows/release-contracts.yml)" true
 
 pack_dist=$(mktemp -d)

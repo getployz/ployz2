@@ -5,30 +5,12 @@ set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 # shellcheck source=scripts/homebrew-formula.sh
 source "$ROOT/scripts/homebrew-formula.sh"
+# shellcheck source=scripts/release-tag.sh
+source "$ROOT/scripts/release-tag.sh"
 # shellcheck source=scripts/repoint-homebrew-tap.sh
 PLOYZ_HOMEBREW_TEST_ONLY=true source "$ROOT/scripts/repoint-homebrew-tap.sh"
 
 HOMEBREW_TAP_REPO=${HOMEBREW_TAP_REPO:-getployz/homebrew-ployz}
-
-beta_release_tag() {
-    [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]
-}
-
-stable_release_tag() {
-    [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-}
-
-channel_name_for_tag() {
-    local tag=$1
-    if beta_release_tag "$tag"; then
-        printf 'beta\n'
-    elif stable_release_tag "$tag"; then
-        printf 'stable\n'
-    else
-        echo "tag '$tag' is not vX.Y.Z or vX.Y.Z-beta.N" >&2
-        return 1
-    fi
-}
 
 write_channel_file() {
     local dest_dir=$1 tag=$2 channel
@@ -103,25 +85,9 @@ push_homebrew_tap() {
 }
 
 promote_published_release() {
-    local tag=$1 checksums_dir checksums formula
-    if [ -n "${PLOYZ_CHANNELS_DIR:-}" ]; then
-        write_channel_file "$PLOYZ_CHANNELS_DIR" "$tag"
-    else
-        push_channel_file "$tag"
-    fi
+    local tag=$1 checksums_dir
+    push_channel_file "$tag"
     if ! stable_release_tag "$tag"; then
-        return 0
-    fi
-    if [ -n "${PLOYZ_HOMEBREW_TAP_DIR:-}" ]; then
-        checksums=${PLOYZ_CHECKSUMS:-}
-        [ -n "$checksums" ] || {
-            echo "PLOYZ_CHECKSUMS is required when PLOYZ_HOMEBREW_TAP_DIR is set" >&2
-            return 1
-        }
-        formula=$(mktemp)
-        write_homebrew_formula_from_checksums "$checksums" "$formula" "${tag#v}" "$tag" "${GITHUB_REPOSITORY:-getployz/ployz2}"
-        repoint_homebrew_tap "$PLOYZ_HOMEBREW_TAP_DIR" "$formula"
-        rm -f "$formula"
         return 0
     fi
     checksums_dir=$(mktemp -d)

@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+# shellcheck source=scripts/release-tag.sh
+source "$ROOT/scripts/release-tag.sh"
 
 release_assets() {
     local dist=$1 name
@@ -25,10 +27,6 @@ release_assets() {
     while IFS= read -r name; do
         printf '%s/%s\n' "$dist" "$name"
     done <<< "$expected"
-}
-
-beta_release_tag() {
-    [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]
 }
 
 release_create_flags() {

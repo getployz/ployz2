@@ -21,6 +21,7 @@ on:
       - scripts/release-artifacts-needed.sh
       - scripts/publish-github-release.sh
       - scripts/check-release-tag.sh
+      - scripts/release-tag.sh
       - scripts/homebrew-formula.sh
       - scripts/promote-release.sh
       - scripts/test-release-contracts.sh

@@ -85,16 +85,3 @@ write_homebrew_formula_from_checksums() {
         "$(checksum_for "$checksums" ployz_macos_amd64.tar.gz)" \
         "$(checksum_for "$checksums" ployz_macos_arm64.tar.gz)"
 }
-
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-    checksums=${1:-}
-    dest=${2:-}
-    version=${3:-}
-    tag=${4:-}
-    repo=${5:-}
-    [ -n "$checksums" ] && [ -n "$dest" ] && [ -n "$version" ] && [ -n "$tag" ] && [ -n "$repo" ] || {
-        echo "usage: $0 <checksums.txt> <ployz.rb> <version> <tag> <repo>" >&2
-        exit 1
-    }
-    write_homebrew_formula_from_checksums "$checksums" "$dest" "$version" "$tag" "$repo"
-fi
