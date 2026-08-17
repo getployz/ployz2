@@ -84,27 +84,19 @@ fn planned_presence(machine_id: MachineId, volume: &ServiceVolume) -> Option<Vol
     let VolumeSource::Named { name, driver, .. } = &volume.source else {
         return None;
     };
-    Some(match driver {
-        None => VolumePresence {
-            machine_id,
-            name,
-            driver: "local",
-            options: &EMPTY_VOLUME_OPTIONS,
-        },
-        Some(driver) => VolumePresence {
-            machine_id,
-            name,
-            driver: &driver.name,
-            options: &driver.options,
-        },
+    Some(VolumePresence {
+        machine_id,
+        name,
+        driver: driver
+            .as_ref()
+            .map_or("local", |driver| driver.name.as_str()),
+        options: driver
+            .as_ref()
+            .map_or(&EMPTY_VOLUME_OPTIONS, |driver| &driver.options),
     })
 }
 
 impl VolumePresence<'_> {
-    fn same_name(self, volume: &ServiceVolume) -> bool {
-        named_volume_name(volume).is_some_and(|name| self.name == name)
-    }
-
     fn matches(self, volume: &ServiceVolume) -> bool {
         let VolumeSource::Named { name, driver, .. } = &volume.source else {
             return false;
@@ -342,7 +334,7 @@ fn volume_constraints<'spec>(
         machines.retain(|machine| {
             !pins.observations(snapshot).any(|located| {
                 located.machine_id == machine.machine.id
-                    && located.same_name(volume)
+                    && named_volume_name(volume) == Some(located.name)
                     && !located.matches(volume)
             })
         });
