@@ -77,7 +77,13 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
         }
 
-        if let Err(error) = crate::dns::update_records_if_reserved(&mut client).await {
+        let members: Vec<Machine> = machines
+            .iter()
+            .map(|observation| observation.machine.clone())
+            .collect();
+        if let Err(error) =
+            crate::dns::update_records_after_removal(&mut client, &members, &selected.id).await
+        {
             eprintln!("WARNING: hosted DNS refresh failed after removing the Machine: {error}.");
             return Err(error.into());
         }
