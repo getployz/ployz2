@@ -64,41 +64,13 @@ impl CertificateChallenge {
     }
 }
 
-/// Refusal reason plus the shared clock. Absent unless every field is present.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CertificateBackoff {
-    last_error: String,
-    clock: IssuanceClock,
-}
-
-impl CertificateBackoff {
-    /// Refusal text plus the shared clock. Empty text is not a recorded refusal.
-    #[must_use]
-    pub fn new(last_error: impl Into<String>, clock: IssuanceClock) -> Option<Self> {
-        let last_error = last_error.into();
-        (!last_error.is_empty()).then_some(Self { last_error, clock })
-    }
-
-    /// Operator-visible reason stored with this clock.
-    #[must_use]
-    pub fn last_error(&self) -> &str {
-        &self.last_error
-    }
-
-    /// Shared backoff clock written with this reason.
-    #[must_use]
-    pub fn clock(&self) -> IssuanceClock {
-        self.clock
-    }
-}
-
 /// Replicated certificate row for one Ingress Hostname.
 #[derive(Clone, Default, Debug, Eq, PartialEq)]
 pub struct CertificateRow {
     material: Option<CertificateMaterial>,
     challenge: Option<CertificateChallenge>,
     last_error: Option<String>,
-    backoff: Option<CertificateBackoff>,
+    clock: Option<IssuanceClock>,
 }
 
 impl CertificateRow {
@@ -112,7 +84,7 @@ impl CertificateRow {
             material,
             challenge,
             last_error: None,
-            backoff: None,
+            clock: None,
         }
     }
 
@@ -123,18 +95,22 @@ impl CertificateRow {
             material: Some(material),
             challenge: None,
             last_error: None,
-            backoff: None,
+            clock: None,
         }
     }
 
     /// Attach a complete refusal clock, or leave the row unchanged if the text is empty.
     #[must_use]
-    pub fn with_backoff(mut self, last_error: impl Into<String>, clock: IssuanceClock) -> Self {
-        if let Some(backoff) = CertificateBackoff::new(last_error, clock) {
-            self.last_error = Some(backoff.last_error().to_owned());
-            self.backoff = Some(backoff);
+    pub fn with_backoff(self, last_error: impl Into<String>, clock: IssuanceClock) -> Self {
+        let last_error = last_error.into();
+        if last_error.is_empty() {
+            return self;
         }
-        self
+        Self {
+            last_error: Some(last_error),
+            clock: Some(clock),
+            ..self
+        }
     }
 
     /// Issued material, if any.
@@ -152,15 +128,13 @@ impl CertificateRow {
     /// Last recorded refusal or issuance error, if any.
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
-        self.last_error
-            .as_deref()
-            .or_else(|| self.backoff.as_ref().map(CertificateBackoff::last_error))
+        self.last_error.as_deref()
     }
 
     /// Shared backoff clock, if a complete refusal has been recorded.
     #[must_use]
     pub fn clock(&self) -> Option<IssuanceClock> {
-        self.backoff.as_ref().map(CertificateBackoff::clock)
+        self.clock
     }
 
     /// Take issued material out of the row.
@@ -197,8 +171,8 @@ impl CertificateRow {
             material: CertificateMaterial::new(body.certificate, body.private_key),
             challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
             last_error,
-            backoff: decode_backoff(
-                body.last_error,
+            clock: decode_clock(
+                &body.last_error,
                 &body.next_attempt_at,
                 body.failures,
                 &body.last_failure,
@@ -253,18 +227,18 @@ fn decode_attempt(text: &str) -> Option<SystemTime> {
         .map(|time| SystemTime::from(time.with_timezone(&Utc)))
 }
 
-fn decode_backoff(
-    last_error: String,
+fn decode_clock(
+    last_error: &str,
     next_attempt_at: &str,
     failures: u32,
     last_failure: &str,
-) -> Option<CertificateBackoff> {
+) -> Option<IssuanceClock> {
+    if last_error.is_empty() {
+        return None;
+    }
     let last_failure = decode_failure(last_failure)?;
     let next_attempt_at = decode_attempt(next_attempt_at)?;
-    CertificateBackoff::new(
-        last_error,
-        IssuanceClock::new(failures, next_attempt_at, last_failure),
-    )
+    Some(IssuanceClock::new(failures, next_attempt_at, last_failure))
 }
 
 fn encode_failure(failure: Option<IssuanceFailure>) -> &'static str {

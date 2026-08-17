@@ -20,9 +20,8 @@ use instant_acme::{
 use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, HealthObservation, HttpProtocol, IngressHost, IngressHostname,
-    IssuanceAction as RefuseAction, IssuanceFailure, Machine, MachineId, PortPublication,
-    cluster_dns_verdict, issuance_action as refuse_action, issuance_failure_clock,
-    issuance_refusal_reason, resolve_certificate_policy,
+    IssuanceAction, IssuanceFailure, Machine, MachineId, PortPublication, cluster_dns_verdict,
+    issuance_action, issuance_failure_clock, issuance_refusal_reason, resolve_certificate_policy,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -32,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
+    issuance_rank::{machine_rank, rank_may_order},
 };
 
 pub(crate) const DIRECTORY_ENV: &str = "PLOYZ_ACME_DIRECTORY";
@@ -42,43 +42,6 @@ const CHALLENGE_POLL: Duration = Duration::from_millis(200);
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
 /// Must cover `CHALLENGE_WAIT` so rank 1 cannot write a competing token while rank 0 is still probing.
 pub(crate) const RANK_STEP: Duration = CHALLENGE_WAIT;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum IssuanceAction {
-    Nothing,
-    Order,
-}
-
-/// Rank among Machine identifiers. Lowest id is 0 and may order immediately.
-#[must_use]
-pub(crate) fn machine_rank<'id>(
-    this: &MachineId,
-    machines: impl IntoIterator<Item = &'id MachineId>,
-) -> usize {
-    machines.into_iter().filter(|id| *id < this).count()
-}
-
-/// Whether this Machine should order now.
-///
-/// `step` must cover the HTTP-01 probe wait so a later rank cannot start
-/// a competing order while an earlier rank is still presenting.
-#[must_use]
-pub(crate) fn issuance_action(
-    row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
-    step: Duration,
-) -> IssuanceAction {
-    if row.and_then(CertificateRow::material).is_some() {
-        return IssuanceAction::Nothing;
-    }
-    let delay = step.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX));
-    if elapsed < delay {
-        IssuanceAction::Nothing
-    } else {
-        IssuanceAction::Order
-    }
-}
 
 /// Addresses the ordering Machine must see the challenge on before validation.
 #[must_use]
@@ -287,19 +250,19 @@ async fn issue_wanted(
             first_seen.remove(hostname);
             continue;
         }
-        let resolved = resolve_ingress_addresses(hostname).await;
+        let resolved = resolve_host(hostname).await;
         let verdict = cluster_dns_verdict(&resolved, &cluster);
-        match refuse_action(row.and_then(CertificateRow::clock), verdict, wall) {
-            RefuseAction::Nothing => continue,
-            RefuseAction::Refuse(clock) => {
+        match issuance_action(
+            row.and_then(CertificateRow::clock),
+            verdict,
+            wall,
+            policy.backoff_base(),
+            policy.backoff_cap(),
+        ) {
+            IssuanceAction::Nothing => continue,
+            IssuanceAction::Refuse(clock) => {
                 first_seen.remove(hostname);
-                if issuance_action(
-                    row,
-                    rank,
-                    Duration::ZERO,
-                    RANK_STEP.max(policy.probe_timeout()),
-                ) == IssuanceAction::Order
-                {
+                if rank == 0 {
                     let reason = issuance_refusal_reason(hostname, &resolved, &cluster);
                     if let Err(error) = store
                         .record_certificate_failure(hostname, reason, clock)
@@ -309,7 +272,7 @@ async fn issue_wanted(
                     }
                 }
             }
-            RefuseAction::Order => {
+            IssuanceAction::Order => {
                 let seen = if let Some(&seen) = first_seen.get(hostname) {
                     seen
                 } else {
@@ -317,9 +280,7 @@ async fn issue_wanted(
                     now
                 };
                 let elapsed = now.saturating_duration_since(seen);
-                if issuance_action(row, rank, elapsed, RANK_STEP.max(policy.probe_timeout()))
-                    == IssuanceAction::Order
-                {
+                if rank_may_order(row, rank, elapsed, RANK_STEP.max(policy.probe_timeout())) {
                     to_order.push(hostname);
                 }
             }
@@ -342,6 +303,8 @@ async fn issue_wanted(
                 rows.get(*hostname).and_then(CertificateRow::clock),
                 IssuanceFailure::Authority,
                 wall,
+                policy.backoff_base(),
+                policy.backoff_cap(),
             );
             if let Err(record_error) = store
                 .record_certificate_failure(hostname, error.to_string(), clock)
@@ -360,17 +323,6 @@ fn cluster_addresses(machines: &[Machine]) -> Vec<IpAddr> {
     machines
         .iter()
         .filter_map(|machine| machine.public_ip)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-async fn resolve_ingress_addresses(hostname: &IngressHost) -> Vec<IpAddr> {
-    let Ok(addresses) = tokio::net::lookup_host((hostname.as_str(), 0)).await else {
-        return Vec::new();
-    };
-    addresses
-        .map(|address| address.ip())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -688,11 +640,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CHALLENGE_WAIT, IssuanceAction, RANK_STEP, caddy_challenge_ips, challenge_probe_addresses,
-        directory_from_env, issuance_action, machine_rank, order_certificate, wait_for_http01,
-        wanted_certificate_hosts,
+        CHALLENGE_WAIT, caddy_challenge_ips, challenge_probe_addresses, directory_from_env,
+        order_certificate, wait_for_http01, wanted_certificate_hosts,
     };
-    use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
+    use crate::corrosion::CertificateChallenge;
 
     fn policy_for(directory: &str) -> CertificatePolicy {
         CertificatePolicy::built_in(Some(directory.to_owned()))
@@ -753,59 +704,6 @@ mod tests {
         assert_eq!(
             wanted_certificate_hosts([observation(1, "api", Vec::new())].iter()),
             BTreeSet::new()
-        );
-    }
-
-    #[test]
-    fn lowest_machine_id_is_rank_zero() {
-        let low = MachineId::parse("a".repeat(32)).unwrap();
-        let high = MachineId::parse("f".repeat(32)).unwrap();
-        assert_eq!(machine_rank(&low, &[high, low]), 0);
-        assert_eq!(machine_rank(&high, &[low]), 1);
-        assert_eq!(machine_rank(&low, &[]), 0);
-    }
-
-    #[test]
-    fn only_rank_zero_orders_immediately() {
-        assert_eq!(RANK_STEP, Duration::from_secs(30));
-        assert_eq!(
-            issuance_action(None, 0, Duration::ZERO, RANK_STEP),
-            IssuanceAction::Order
-        );
-        assert_eq!(
-            issuance_action(
-                None,
-                1,
-                Duration::from_secs(30) - Duration::from_millis(1),
-                RANK_STEP
-            ),
-            IssuanceAction::Nothing
-        );
-        assert_eq!(
-            issuance_action(None, 1, Duration::from_secs(30), RANK_STEP),
-            IssuanceAction::Order
-        );
-        assert_eq!(
-            issuance_action(None, 2, Duration::from_secs(30), RANK_STEP),
-            IssuanceAction::Nothing
-        );
-        assert_eq!(
-            issuance_action(None, 2, Duration::from_secs(60), RANK_STEP),
-            IssuanceAction::Order
-        );
-        assert_eq!(
-            issuance_action(None, 1, Duration::from_secs(30), Duration::from_secs(120)),
-            IssuanceAction::Nothing
-        );
-    }
-
-    #[test]
-    fn issued_material_means_nothing_to_do() {
-        let material = CertificateMaterial::new("CERT", "KEY").unwrap();
-        let row = CertificateRow::from_parts(Some(material), None);
-        assert_eq!(
-            issuance_action(Some(&row), 0, Duration::from_secs(60), RANK_STEP),
-            IssuanceAction::Nothing
         );
     }
 

@@ -8,12 +8,6 @@ use std::{
 use super::ClusterDnsVerdict;
 use crate::IngressHost;
 
-/// Delay after the first refusal or authority failure.
-pub const ISSUANCE_BACKOFF_BASE: Duration = Duration::from_secs(60);
-
-/// Longest delay between attempts. 4/day stays far below 5 failed validations/hour.
-pub const ISSUANCE_BACKOFF_CAP: Duration = Duration::from_secs(6 * 60 * 60);
-
 /// Which failure earned the shared backoff clock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IssuanceFailure {
@@ -76,6 +70,8 @@ pub fn issuance_action(
     clock: Option<IssuanceClock>,
     verdict: ClusterDnsVerdict,
     now: SystemTime,
+    backoff_base: Duration,
+    backoff_cap: Duration,
 ) -> IssuanceAction {
     let waiting = clock.is_some_and(|clock| clock.next_attempt_at() > now);
     let last_resolve = clock.and_then(|clock| match clock.last_failure() {
@@ -92,17 +88,21 @@ pub fn issuance_action(
         ClusterDnsVerdict::DoesNotResolve => IssuanceFailure::DoesNotResolve,
         ClusterDnsVerdict::ResolvesElsewhere => IssuanceFailure::ResolvesElsewhere,
     };
-    IssuanceAction::Refuse(issuance_failure_clock(clock, last_failure, now))
+    IssuanceAction::Refuse(issuance_failure_clock(
+        clock,
+        last_failure,
+        now,
+        backoff_base,
+        backoff_cap,
+    ))
 }
 
 /// Delay after `failures` recorded attempts. `failures == 0` uses the base delay.
 #[must_use]
-pub fn issuance_backoff(failures: u32) -> Duration {
+pub fn issuance_backoff(failures: u32, base: Duration, cap: Duration) -> Duration {
     let shift = failures.saturating_sub(1).min(31);
-    let seconds = ISSUANCE_BACKOFF_BASE
-        .as_secs()
-        .saturating_mul(1_u64 << shift);
-    Duration::from_secs(seconds.min(ISSUANCE_BACKOFF_CAP.as_secs()))
+    let seconds = base.as_secs().saturating_mul(1_u64 << shift);
+    Duration::from_secs(seconds.min(cap.as_secs()))
 }
 
 /// Next shared clock after a refusal or an authority failure.
@@ -111,12 +111,18 @@ pub fn issuance_failure_clock(
     clock: Option<IssuanceClock>,
     new_failure: IssuanceFailure,
     now: SystemTime,
+    backoff_base: Duration,
+    backoff_cap: Duration,
 ) -> IssuanceClock {
     let failures = match clock {
         Some(clock) if clock.last_failure() == new_failure => clock.failures().saturating_add(1),
         Some(_) | None => 1,
     };
-    IssuanceClock::new(failures, now + issuance_backoff(failures), new_failure)
+    IssuanceClock::new(
+        failures,
+        now + issuance_backoff(failures, backoff_base, backoff_cap),
+        new_failure,
+    )
 }
 
 /// Why a hostname that misses this Cluster has no certificate.
@@ -159,16 +165,15 @@ mod tests {
     };
 
     use super::{
-        ISSUANCE_BACKOFF_BASE, ISSUANCE_BACKOFF_CAP, IssuanceAction, IssuanceClock,
-        IssuanceFailure, issuance_action, issuance_backoff, issuance_failure_clock,
-        issuance_refusal_reason,
+        IssuanceAction, IssuanceClock, IssuanceFailure, issuance_action, issuance_backoff,
+        issuance_failure_clock, issuance_refusal_reason,
     };
-    use crate::{ClusterDnsVerdict, IngressHost};
+    use crate::{ClusterDnsVerdict, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP, IngressHost};
 
     #[test]
     fn empty_row_orders_when_dns_points_at_the_cluster() {
         assert_eq!(
-            issuance_action(None, ClusterDnsVerdict::PointsAtCluster, now()),
+            decide(None, ClusterDnsVerdict::PointsAtCluster, now()),
             IssuanceAction::Order
         );
     }
@@ -176,11 +181,11 @@ mod tests {
     #[test]
     fn empty_row_refuses_when_dns_misses_the_cluster() {
         assert_eq!(
-            issuance_action(None, ClusterDnsVerdict::DoesNotResolve, now()),
+            decide(None, ClusterDnsVerdict::DoesNotResolve, now()),
             refuse(IssuanceFailure::DoesNotResolve, 1)
         );
         assert_eq!(
-            issuance_action(None, ClusterDnsVerdict::ResolvesElsewhere, now()),
+            decide(None, ClusterDnsVerdict::ResolvesElsewhere, now()),
             refuse(IssuanceFailure::ResolvesElsewhere, 1)
         );
     }
@@ -193,11 +198,11 @@ mod tests {
             now() + Duration::from_secs(3600),
         ));
         assert_eq!(
-            issuance_action(clock, ClusterDnsVerdict::PointsAtCluster, now()),
+            decide(clock, ClusterDnsVerdict::PointsAtCluster, now()),
             IssuanceAction::Nothing
         );
         assert_eq!(
-            issuance_action(clock, ClusterDnsVerdict::DoesNotResolve, now()),
+            decide(clock, ClusterDnsVerdict::DoesNotResolve, now()),
             IssuanceAction::Nothing
         );
     }
@@ -205,7 +210,7 @@ mod tests {
     #[test]
     fn unchanged_resolve_backoff_is_served_out() {
         assert_eq!(
-            issuance_action(
+            decide(
                 Some(clock(
                     IssuanceFailure::DoesNotResolve,
                     1,
@@ -222,7 +227,7 @@ mod tests {
     fn resolve_verdict_change_orders_without_waiting() {
         let later = now() + Duration::from_secs(6 * 60 * 60);
         assert_eq!(
-            issuance_action(
+            decide(
                 Some(clock(IssuanceFailure::DoesNotResolve, 1, later)),
                 ClusterDnsVerdict::PointsAtCluster,
                 now(),
@@ -230,7 +235,7 @@ mod tests {
             IssuanceAction::Order
         );
         assert_eq!(
-            issuance_action(
+            decide(
                 Some(clock(IssuanceFailure::ResolvesElsewhere, 1, later)),
                 ClusterDnsVerdict::PointsAtCluster,
                 now(),
@@ -242,7 +247,7 @@ mod tests {
     #[test]
     fn resolve_verdict_change_refuses_without_waiting() {
         assert_eq!(
-            issuance_action(
+            decide(
                 Some(clock(
                     IssuanceFailure::DoesNotResolve,
                     1,
@@ -258,7 +263,7 @@ mod tests {
     #[test]
     fn expired_clock_retries() {
         assert_eq!(
-            issuance_action(
+            decide(
                 Some(clock(
                     IssuanceFailure::Authority,
                     1,
@@ -270,7 +275,7 @@ mod tests {
             IssuanceAction::Order
         );
         assert_eq!(
-            issuance_action(
+            decide(
                 Some(clock(
                     IssuanceFailure::DoesNotResolve,
                     4,
@@ -285,16 +290,18 @@ mod tests {
 
     #[test]
     fn backoff_doubles_until_the_cap_and_never_stops() {
-        assert_eq!(issuance_backoff(0), ISSUANCE_BACKOFF_BASE);
-        assert_eq!(issuance_backoff(1), Duration::from_secs(60));
-        assert_eq!(issuance_backoff(2), Duration::from_secs(120));
-        assert_eq!(issuance_backoff(3), Duration::from_secs(240));
-        assert_eq!(issuance_backoff(7), Duration::from_secs(3840));
-        assert_eq!(issuance_backoff(9), Duration::from_secs(15360));
-        assert_eq!(issuance_backoff(10), ISSUANCE_BACKOFF_CAP);
-        assert_eq!(issuance_backoff(11), ISSUANCE_BACKOFF_CAP);
-        assert_eq!(issuance_backoff(u32::MAX), ISSUANCE_BACKOFF_CAP);
-        assert_eq!(ISSUANCE_BACKOFF_CAP, Duration::from_secs(21600));
+        assert_eq!(delay(0), DEFAULT_BACKOFF_BASE);
+        assert_eq!(delay(1), Duration::from_secs(60));
+        assert_eq!(delay(2), Duration::from_secs(120));
+        assert_eq!(delay(3), Duration::from_secs(240));
+        assert_eq!(delay(6), Duration::from_secs(1920));
+        assert_eq!(delay(7), DEFAULT_BACKOFF_CAP);
+        assert_eq!(delay(11), DEFAULT_BACKOFF_CAP);
+        assert_eq!(delay(u32::MAX), DEFAULT_BACKOFF_CAP);
+        assert_eq!(
+            issuance_backoff(3, Duration::from_secs(10), Duration::from_secs(30)),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]
@@ -302,36 +309,28 @@ mod tests {
         let resolve = clock(IssuanceFailure::DoesNotResolve, 4, now());
         let elsewhere = IssuanceFailure::ResolvesElsewhere;
         assert_eq!(
-            issuance_failure_clock(None, IssuanceFailure::DoesNotResolve, now()),
-            clock(
-                IssuanceFailure::DoesNotResolve,
-                1,
-                now() + issuance_backoff(1)
-            )
+            next_clock(None, IssuanceFailure::DoesNotResolve, now()),
+            clock(IssuanceFailure::DoesNotResolve, 1, now() + delay(1))
         );
         assert_eq!(
-            issuance_failure_clock(Some(resolve), IssuanceFailure::DoesNotResolve, now()),
-            clock(
-                IssuanceFailure::DoesNotResolve,
-                5,
-                now() + issuance_backoff(5)
-            )
+            next_clock(Some(resolve), IssuanceFailure::DoesNotResolve, now()),
+            clock(IssuanceFailure::DoesNotResolve, 5, now() + delay(5))
         );
         assert_eq!(
-            issuance_failure_clock(Some(resolve), elsewhere, now()),
-            clock(elsewhere, 1, now() + issuance_backoff(1))
+            next_clock(Some(resolve), elsewhere, now()),
+            clock(elsewhere, 1, now() + delay(1))
         );
         assert_eq!(
-            issuance_failure_clock(Some(resolve), IssuanceFailure::Authority, now()),
-            clock(IssuanceFailure::Authority, 1, now() + issuance_backoff(1))
+            next_clock(Some(resolve), IssuanceFailure::Authority, now()),
+            clock(IssuanceFailure::Authority, 1, now() + delay(1))
         );
         assert_eq!(
-            issuance_failure_clock(
+            next_clock(
                 Some(clock(IssuanceFailure::Authority, 3, now())),
                 IssuanceFailure::Authority,
                 now()
             ),
-            clock(IssuanceFailure::Authority, 4, now() + issuance_backoff(4))
+            clock(IssuanceFailure::Authority, 4, now() + delay(4))
         );
     }
 
@@ -355,12 +354,40 @@ mod tests {
         );
     }
 
+    fn decide(
+        clock: Option<IssuanceClock>,
+        verdict: ClusterDnsVerdict,
+        now: SystemTime,
+    ) -> IssuanceAction {
+        issuance_action(
+            clock,
+            verdict,
+            now,
+            DEFAULT_BACKOFF_BASE,
+            DEFAULT_BACKOFF_CAP,
+        )
+    }
+
+    fn next_clock(
+        clock: Option<IssuanceClock>,
+        new_failure: IssuanceFailure,
+        now: SystemTime,
+    ) -> IssuanceClock {
+        issuance_failure_clock(
+            clock,
+            new_failure,
+            now,
+            DEFAULT_BACKOFF_BASE,
+            DEFAULT_BACKOFF_CAP,
+        )
+    }
+
+    fn delay(failures: u32) -> Duration {
+        issuance_backoff(failures, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_CAP)
+    }
+
     fn refuse(last_failure: IssuanceFailure, failures: u32) -> IssuanceAction {
-        IssuanceAction::Refuse(clock(
-            last_failure,
-            failures,
-            now() + issuance_backoff(failures),
-        ))
+        IssuanceAction::Refuse(clock(last_failure, failures, now() + delay(failures)))
     }
 
     fn clock(
