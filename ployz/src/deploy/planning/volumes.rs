@@ -59,15 +59,17 @@ impl VolumePins {
         })
     }
 
-    fn created_matching_machines(
-        &self,
-        volume: &ServiceVolume,
-    ) -> impl Iterator<Item = MachineId> + '_ {
-        self.creates.iter().filter_map(|(machine_id, created)| {
-            created_to_observed(*machine_id, created)
-                .filter(|observed| volume_matches(observed, volume))
-                .map(|observed| observed.id.machine_id)
-        })
+    fn created_matching_machines<'pins>(
+        &'pins self,
+        volume: &'pins ServiceVolume,
+    ) -> impl Iterator<Item = MachineId> + 'pins {
+        self.creates
+            .iter()
+            .filter_map(move |(machine_id, created)| {
+                created_to_observed(*machine_id, created)
+                    .filter(|observed| volume_matches(observed, volume))
+                    .map(|_| *machine_id)
+            })
     }
 
     pub(super) fn into_creates(self) -> Vec<DeployOperation> {
