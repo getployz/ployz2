@@ -158,7 +158,7 @@ fn include_service<'a>(
     visiting.insert(name);
     selected.push(name);
     if let Some(build) = project.builds.get(name) {
-        for dependency in &build.additional_services {
+        for dependency in build.additional_services() {
             include_service(project, dependency, deps, visiting, seen, selected)?;
         }
     }

@@ -5,12 +5,55 @@ use serde::Deserialize;
 use serde_norway::Value;
 use thiserror::Error;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// A Compose build held as the raw spec. Additional contexts are read from `raw`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct BuildSpec {
-    pub context: Option<String>,
-    pub dockerfile: Option<String>,
-    pub additional_services: Vec<String>,
     pub raw: Value,
+}
+
+impl BuildSpec {
+    /// Service names referenced as `service:` additional build contexts.
+    #[must_use]
+    pub fn additional_services(&self) -> Vec<&str> {
+        let Value::Mapping(map) = &self.raw else {
+            return Vec::new();
+        };
+        let Some(contexts) = map.get(Value::String("additional_contexts".into())) else {
+            return Vec::new();
+        };
+        let values = match contexts {
+            Value::Mapping(map) => map.values().filter_map(Value::as_str).collect(),
+            Value::Sequence(values) => values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter_map(|value| value.split_once('=').map(|(_, context)| context))
+                .collect(),
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Tagged(_) => Vec::new(),
+        };
+        values
+            .into_iter()
+            .filter_map(|context| context.strip_prefix("service:"))
+            .collect()
+    }
+}
+
+/// A project secret after validate: one source, or the resolved value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectSecret {
+    Unresolved(SecretSource),
+    Resolved(String),
+}
+
+/// How an unresolved project secret is obtained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SecretSource {
+    File(String),
+    Environment(String),
+    Command(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -22,9 +65,8 @@ pub struct ComposeProject {
     pub builds: BTreeMap<String, BuildSpec>,
     pub dependencies: BTreeMap<String, Vec<String>>,
     pub warnings: Vec<String>,
-    pub(super) secrets: BTreeMap<String, RawSecret>,
+    pub(super) secrets: BTreeMap<String, ProjectSecret>,
     pub(super) environment: BTreeMap<String, String>,
-    pub(super) resolved_secrets: BTreeMap<String, String>,
 }
 
 impl ComposeProject {
