@@ -34,11 +34,9 @@ async fn register_dial_attach_splices_bytes_both_ways() {
 async fn register_rejects_dial_credential() {
     let mut session = Session::start().await;
     let (tx, rx) = mpsc::channel(4);
-    tx.send(RegisterRequest {
-        machine_id: session.machine_id.to_string(),
-    })
-    .await
-    .unwrap();
+    tx.send(RegisterRequest::new(&session.machine_id))
+        .await
+        .unwrap();
     let mut request = Request::new(ReceiverStream::new(rx));
     set_bearer(request.metadata_mut(), DIAL);
     let error = session.machine.register(request).await.unwrap_err();
@@ -66,11 +64,9 @@ async fn second_register_for_the_same_machine_is_rejected() {
     let mut session = Session::start().await;
     session.register().await;
     let (tx, rx) = mpsc::channel(4);
-    tx.send(RegisterRequest {
-        machine_id: session.machine_id.to_string(),
-    })
-    .await
-    .unwrap();
+    tx.send(RegisterRequest::new(&session.machine_id))
+        .await
+        .unwrap();
     let mut request = Request::new(ReceiverStream::new(rx));
     set_bearer(request.metadata_mut(), PAIRING);
     let error = session.machine.register(request).await.unwrap_err();
@@ -156,11 +152,9 @@ impl Session {
 
     async fn register(&mut self) {
         let (tx, rx) = mpsc::channel(4);
-        tx.send(RegisterRequest {
-            machine_id: self.machine_id.to_string(),
-        })
-        .await
-        .unwrap();
+        tx.send(RegisterRequest::new(&self.machine_id))
+            .await
+            .unwrap();
         let mut request = Request::new(ReceiverStream::new(rx));
         set_bearer(request.metadata_mut(), PAIRING);
         let opens = self.machine.register(request).await.unwrap().into_inner();
@@ -194,7 +188,11 @@ impl Session {
         let mut attach_request = Request::new(ReceiverStream::new(attach_rx));
         attach_request.metadata_mut().insert(
             TUNNEL_ID_METADATA,
-            open.id.parse().expect("Tunnel ID is ASCII metadata"),
+            open.tunnel_id()
+                .expect("Open carries a Tunnel ID")
+                .as_str()
+                .parse()
+                .expect("Tunnel ID is ASCII metadata"),
         );
         let attach_in = self
             .machine

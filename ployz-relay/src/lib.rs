@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use ployz_core::{MachineId, TunnelId};
+use ployz_core::{MachineId, TunnelId, ValueError};
 use prost::Message;
 use thiserror::Error;
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
@@ -38,14 +38,46 @@ pub use transport::{cloud_relay_client::CloudRelayClient, cloud_relay_server::Cl
 #[derive(Clone, PartialEq, Message)]
 pub struct RegisterRequest {
     #[prost(string, tag = "1")]
-    pub machine_id: String,
+    machine_id: String,
+}
+
+impl RegisterRequest {
+    #[must_use]
+    pub fn new(machine_id: &MachineId) -> Self {
+        Self {
+            machine_id: machine_id.to_string(),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when the wire string is not a Machine ID.
+    pub fn machine_id(&self) -> Result<MachineId, ValueError> {
+        MachineId::parse(&self.machine_id)
+    }
 }
 
 /// `Open(id)` sent on Register when Cloud Dials.
 #[derive(Clone, PartialEq, Message)]
 pub struct Open {
     #[prost(string, tag = "1")]
-    pub id: String,
+    id: String,
+}
+
+impl Open {
+    #[must_use]
+    pub fn new(tunnel_id: &TunnelId) -> Self {
+        Self {
+            id: tunnel_id.to_string(),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when the wire string is not a Tunnel ID.
+    pub fn tunnel_id(&self) -> Result<TunnelId, ValueError> {
+        TunnelId::parse(&self.id)
+    }
 }
 
 /// One opaque chunk on Dial or Attach. The Relay does not parse Machine RPC.
@@ -236,7 +268,8 @@ impl CloudRelay for Relay {
             .next()
             .await
             .ok_or_else(|| Status::invalid_argument("Register requires a Machine ID"))??;
-        let machine_id = MachineId::parse(&first.machine_id)
+        let machine_id = first
+            .machine_id()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let (open_tx, open_rx) = mpsc::channel(TUNNEL_BUFFER);
         {
@@ -296,13 +329,7 @@ impl CloudRelay for Relay {
             );
             open_tx
         };
-        if open_tx
-            .send(Ok(Open {
-                id: tunnel_id.as_str().to_owned(),
-            }))
-            .await
-            .is_err()
-        {
+        if open_tx.send(Ok(Open::new(&tunnel_id))).await.is_err() {
             self.lock().pending.remove(&tunnel_id);
             return Err(Status::unavailable("Register closed"));
         }
