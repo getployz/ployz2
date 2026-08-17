@@ -7,8 +7,8 @@ use std::{
 
 use ployz_core::{
     CADDY_VERIFY_PATH, ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, DnsRecordType,
-    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, PortPublication,
-    RequestedServiceSpec, cluster_dns_verdict, op,
+    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, MachineObservation,
+    PortPublication, RequestedServiceSpec, cluster_dns_verdict, op,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -51,6 +51,11 @@ fn protocol_label(protocol: &HttpProtocol) -> &'static str {
     }
 }
 
+/// Publish Caddy wildcard records when a Cluster domain is reserved.
+///
+/// # Errors
+///
+/// Returns a connection, hosted-DNS, or reachability error from the Caddy refresh.
 pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error> {
     match client.domain_if_reserved().await? {
         Some(_) => update_records_for_caddy(client).await,
@@ -58,14 +63,38 @@ pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error
     }
 }
 
-pub async fn update_records_after_removal(
+/// Publish remaining member public IPs after a Machine leaves.
+///
+/// Uses the pre-removal membership snapshot so refresh does not Inspect over a
+/// reconverging mesh. Caddy filtering would need that mesh, so this path keeps
+/// every remaining public IP.
+///
+/// # Errors
+///
+/// Returns a connection or hosted-DNS error. An unreserved domain is success.
+pub(crate) async fn update_records_after_removal(
     client: &mut Client,
-    members: &[Machine],
+    members: &[MachineObservation],
     removed: &MachineId,
 ) -> Result<(), Error> {
-    update_records_from_machines_if_reserved(client, &remaining_members(members, removed)).await
+    if client.domain_if_reserved().await?.is_none() {
+        return Ok(());
+    }
+    let remaining = remaining_members(
+        members.iter().map(|observation| &observation.machine),
+        removed,
+    );
+    if remaining.is_empty() {
+        return Ok(());
+    }
+    publish_records(client, records_from_machines(&remaining)?).await
 }
 
+/// Publish wildcard records for reachable Caddy Machines.
+///
+/// # Errors
+///
+/// Returns a connection, hosted-DNS, or [`NoReachableMachines`] error.
 pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> {
     let observations = client.machines().await?;
     let live = client.live_services_from(&observations).await?;
@@ -88,18 +117,6 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
         .collect::<Vec<_>>();
     let records = records_from_machines(&probe_machines(&machines).await?)?;
     publish_records(client, records).await
-}
-
-async fn update_records_from_machines_if_reserved(
-    client: &mut Client,
-    members: &[Machine],
-) -> Result<(), Error> {
-    if client.domain_if_reserved().await?.is_none() || members.is_empty() {
-        return Ok(());
-    }
-    let reachable = probe_machines(members).await?;
-    // ponytail: empty probes still publish remaining members so a dead Machine cannot keep a wildcard share
-    publish_records(client, records_for_membership_refresh(&reachable, members)?).await
 }
 
 async fn probe_machines(machines: &[Machine]) -> Result<Vec<Machine>, Error> {
@@ -150,23 +167,15 @@ fn reachability_matches(machine_id: &MachineId, status: u16, body: Option<&[u8]>
     status == 200 && body == Some(machine_id.as_str().as_bytes())
 }
 
-fn remaining_members(members: &[Machine], removed: &MachineId) -> Vec<Machine> {
+fn remaining_members<'a>(
+    members: impl IntoIterator<Item = &'a Machine>,
+    removed: &MachineId,
+) -> Vec<Machine> {
     members
-        .iter()
+        .into_iter()
         .filter(|machine| machine.id != *removed && machine.public_ip.is_some())
         .cloned()
         .collect()
-}
-
-fn records_for_membership_refresh(
-    reachable: &[Machine],
-    members: &[Machine],
-) -> Result<Vec<DnsRecord>, NoReachableMachines> {
-    if reachable.is_empty() {
-        records_from_machines(members)
-    } else {
-        records_from_machines(reachable)
-    }
 }
 
 fn records_from_machines(machines: &[Machine]) -> Result<Vec<DnsRecord>, NoReachableMachines> {
@@ -399,8 +408,7 @@ mod tests {
 
     use super::{
         DomainRequired, NoReachableMachines, expand_ingress_ports, ingress_dns_warnings,
-        reachability_matches, records_for_membership_refresh, records_from_machines,
-        remaining_members, resolve_ingress_addresses,
+        reachability_matches, records_from_machines, remaining_members, resolve_ingress_addresses,
     };
 
     #[test]
@@ -443,44 +451,12 @@ mod tests {
     }
 
     #[test]
-    fn membership_refresh_still_publishes_remaining_addresses_when_probes_fail() {
+    fn remaining_members_drop_the_removed_machine_from_a_three_machine_wildcard() {
         let kept = machine('1', "192.0.2.1");
+        let removed = machine('2', "198.51.100.1");
         let other = machine('3', "203.0.113.1");
-        let records = records_for_membership_refresh(&[], &[kept, other]).unwrap();
-        assert_eq!(
-            records,
-            vec![DnsRecord {
-                name: "*".into(),
-                record_type: DnsRecordType::A,
-                values: vec!["192.0.2.1".into(), "203.0.113.1".into()],
-            }]
-        );
-    }
-
-    #[test]
-    fn membership_refresh_prefers_reachable_machines_and_omits_a_removed_address() {
-        let kept = machine('1', "192.0.2.1");
-        let quiet = machine('3', "203.0.113.1");
-        let records =
-            records_for_membership_refresh(std::slice::from_ref(&kept), &[kept.clone(), quiet])
-                .unwrap();
-        assert_eq!(
-            records,
-            vec![DnsRecord {
-                name: "*".into(),
-                record_type: DnsRecordType::A,
-                values: vec!["192.0.2.1".into()],
-            }]
-        );
-        let remaining = remaining_members(
-            &[
-                machine('1', "192.0.2.1"),
-                machine('2', "198.51.100.1"),
-                machine('3', "203.0.113.1"),
-            ],
-            &MachineId::parse("2".repeat(32)).unwrap(),
-        );
-        let records = records_for_membership_refresh(&[], &remaining).unwrap();
+        let remaining = remaining_members([&kept, &removed, &other], &removed.id);
+        let records = records_from_machines(&remaining).unwrap();
         assert_eq!(
             records,
             vec![DnsRecord {
