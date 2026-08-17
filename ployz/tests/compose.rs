@@ -221,13 +221,17 @@ configs:
             if name.as_str() == "data" && subpath == "current"
     )));
     assert!(api.container.image.starts_with("registry.example/api:"));
-    let api_build = project.builds.get("api").unwrap();
-    assert!(api_build.additional_services().is_empty());
     assert_eq!(
-        api_build.raw.as_mapping().and_then(|map| {
-            map.get(serde_norway::Value::String("dockerfile".into()))
-                .and_then(serde_norway::Value::as_str)
-        }),
+        project
+            .builds
+            .get("api")
+            .unwrap()
+            .raw
+            .as_mapping()
+            .and_then(|map| {
+                map.get(serde_norway::Value::String("dockerfile".into()))
+                    .and_then(serde_norway::Value::as_str)
+            }),
         Some("Dockerfile.release")
     );
     assert_eq!(

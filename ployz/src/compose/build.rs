@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_norway::Value;
 
 use super::{
-    ComposeError, ComposeProject, LoadOptions,
+    BuildSpec, ComposeError, ComposeProject, LoadOptions,
     loader::{
         TemporaryComposeFile, compose_command, discover_default_compose_file,
         first_compose_file_from_environment,
@@ -188,4 +188,35 @@ fn build_service(project: &ComposeProject, name: &str) -> Result<BuildService, C
             .clone(),
         machines: service.placement.machines.clone(),
     })
+}
+
+impl BuildSpec {
+    /// Service names referenced as `service:` additional build contexts.
+    #[must_use]
+    pub(crate) fn additional_services(&self) -> Vec<&str> {
+        let Value::Mapping(map) = &self.raw else {
+            return Vec::new();
+        };
+        let Some(contexts) = map.get(Value::String("additional_contexts".into())) else {
+            return Vec::new();
+        };
+        match contexts {
+            Value::Mapping(map) => map
+                .values()
+                .filter_map(Value::as_str)
+                .filter_map(|context| context.strip_prefix("service:"))
+                .collect(),
+            Value::Sequence(values) => values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter_map(|value| value.split_once('=').map(|(_, context)| context))
+                .filter_map(|context| context.strip_prefix("service:"))
+                .collect(),
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Tagged(_) => Vec::new(),
+        }
+    }
 }

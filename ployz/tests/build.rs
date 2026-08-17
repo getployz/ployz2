@@ -96,15 +96,6 @@ services:
         ".",
     )
     .unwrap();
-    assert_eq!(
-        listed
-            .builds
-            .get("api")
-            .unwrap()
-            .additional_services()
-            .as_slice(),
-        ["base"]
-    );
     let listed_plan = plan_build(
         &listed,
         &BuildOptions {

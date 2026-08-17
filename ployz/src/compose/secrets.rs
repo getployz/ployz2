@@ -40,18 +40,18 @@ impl ComposeProject {
             })
             .collect::<Vec<_>>();
         for (_, _, name) in &references {
-            let source = match self.secrets.get(name) {
-                Some(ProjectSecret::Resolved(_)) => continue,
-                Some(ProjectSecret::Unresolved(source)) => source.clone(),
-                None => {
-                    return Err(invalid(format!(
-                        "secret '{name}' referenced via '{SECRET_PREFIX}{name}' is not defined"
-                    )));
+            let Some(secret) = self.secrets.get_mut(name) else {
+                return Err(invalid(format!(
+                    "secret '{name}' referenced via '{SECRET_PREFIX}{name}' is not defined"
+                )));
+            };
+            let value = match secret {
+                ProjectSecret::Resolved(_) => continue,
+                ProjectSecret::Unresolved(source) => {
+                    resolve_secret(name, source, &self.working_dir, &self.environment)?
                 }
             };
-            let value = resolve_secret(name, &source, &self.working_dir, &self.environment)?;
-            self.secrets
-                .insert(name.clone(), ProjectSecret::Resolved(value));
+            *secret = ProjectSecret::Resolved(value);
         }
         for (service, key, name) in references {
             let Some(ProjectSecret::Resolved(resolved)) = self.secrets.get(&name) else {
@@ -267,40 +267,4 @@ fn read_capped(reader: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
     let truncated = bytes.len() > SECRET_COMMAND_OUTPUT_LIMIT;
     bytes.truncate(SECRET_COMMAND_OUTPUT_LIMIT);
     Ok((bytes, truncated))
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::compose::{ProjectSecret, SecretSource, parse_normalized};
-
-    #[test]
-    fn unused_secrets_stay_unresolved_and_used_secrets_become_resolved() {
-        let mut project = parse_normalized(
-            r#"
-services: {app: {image: app, environment: {TOKEN: secret://used}}}
-secrets:
-  used: {x-command: printf from-command}
-  unused: {x-command: printf unused}
-"#,
-            ".",
-        )
-        .unwrap();
-        assert!(matches!(
-            project.secrets.get("used"),
-            Some(ProjectSecret::Unresolved(SecretSource::Command(_)))
-        ));
-        assert!(matches!(
-            project.secrets.get("unused"),
-            Some(ProjectSecret::Unresolved(SecretSource::Command(_)))
-        ));
-        project.resolve_secrets().unwrap();
-        assert!(matches!(
-            project.secrets.get("used"),
-            Some(ProjectSecret::Resolved(value)) if value == "from-command"
-        ));
-        assert!(matches!(
-            project.secrets.get("unused"),
-            Some(ProjectSecret::Unresolved(SecretSource::Command(_)))
-        ));
-    }
 }

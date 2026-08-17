@@ -11,46 +11,16 @@ pub struct BuildSpec {
     pub raw: Value,
 }
 
-impl BuildSpec {
-    /// Service names referenced as `service:` additional build contexts.
-    #[must_use]
-    pub fn additional_services(&self) -> Vec<&str> {
-        let Value::Mapping(map) = &self.raw else {
-            return Vec::new();
-        };
-        let Some(contexts) = map.get(Value::String("additional_contexts".into())) else {
-            return Vec::new();
-        };
-        let values = match contexts {
-            Value::Mapping(map) => map.values().filter_map(Value::as_str).collect(),
-            Value::Sequence(values) => values
-                .iter()
-                .filter_map(Value::as_str)
-                .filter_map(|value| value.split_once('=').map(|(_, context)| context))
-                .collect(),
-            Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::String(_)
-            | Value::Tagged(_) => Vec::new(),
-        };
-        values
-            .into_iter()
-            .filter_map(|context| context.strip_prefix("service:"))
-            .collect()
-    }
-}
-
 /// A project secret after validate: one source, or the resolved value.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProjectSecret {
+pub(crate) enum ProjectSecret {
     Unresolved(SecretSource),
     Resolved(String),
 }
 
 /// How an unresolved project secret is obtained.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SecretSource {
+pub(crate) enum SecretSource {
     File(String),
     Environment(String),
     Command(String),
