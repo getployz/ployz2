@@ -37,32 +37,24 @@ channel_version_from_file() {
     echo "$version"
 }
 
-fetch_channel_version() {
-    local name=$1 dest=$2 base
-    for base in "$PLOYZ_CHANNEL_URL" "$PLOYZ_CHANNELS_FALLBACK"; do
-        if curl -fsSL -o "$dest" "$base/$name" && channel_version_from_file "$dest" >/dev/null; then
-            channel_version_from_file "$dest"
-            return 0
-        fi
-    done
-    return 1
-}
-
-resolve_install_version() {
-    local requested=${1#v} dest=$2 resolved name
+resolve_install() {
+    local requested=${1#v} dest=$2 resolved base name
     case "$requested" in
         latest | stable | '') name=stable ;;
         beta) name=beta ;;
         *)
-            echo "$requested"
+            printf 'pin %s\n' "$requested"
             return 0
             ;;
     esac
-    if resolved=$(fetch_channel_version "$name" "$dest"); then
-        echo "${resolved#v}"
-    elif [ "$name" = beta ]; then
-        error "beta channel is unavailable"
-    fi
+    for base in "$PLOYZ_CHANNEL_URL" "$PLOYZ_CHANNELS_FALLBACK"; do
+        if curl -fsSL -o "$dest" "$base/$name" && resolved=$(channel_version_from_file "$dest"); then
+            printf 'floating %s\n' "${resolved#v}"
+            return 0
+        fi
+    done
+    [ "$name" != beta ] || error "beta channel is unavailable"
+    printf 'floating\n'
 }
 
 daemon_archive() {
@@ -133,24 +125,19 @@ create_user_and_directories() {
 }
 
 install_binaries() {
-    local archive installed_version target action base_url tmp_dir channel_file requested resolved mode
+    local archive installed_version target action base_url tmp_dir channel_file requested mode
     archive=$(daemon_archive "$(uname -m)") || error "Unsupported architecture: $(uname -m)"
     requested=$PLOYZ_VERSION
     channel_file=$(mktemp)
-    resolved=$(resolve_install_version "$requested" "$channel_file")
+    read -r mode target < <(resolve_install "$requested" "$channel_file")
     rm -f "$channel_file"
     installed_version=""
     if [ -x "$INSTALL_BIN_DIR/ployzd" ]; then
         installed_version=$("$INSTALL_BIN_DIR/ployzd" version 2>/dev/null || true)
     fi
 
-    case "$requested" in
-        latest | stable | '') mode=floating ;;
-        *) mode=pin ;;
-    esac
-    if [ -n "$resolved" ]; then
-        target=$resolved
-        base_url="$PLOYZ_GITHUB_URL/releases/download/v$resolved"
+    if [ -n "$target" ]; then
+        base_url="$PLOYZ_GITHUB_URL/releases/download/v$target"
     else
         local latest_url
         latest_url=$(curl -sLI -o /dev/null -w '%{url_effective}' "$PLOYZ_GITHUB_URL/releases/latest" 2>/dev/null || true)

@@ -29,18 +29,6 @@ commit_if_changed() {
     git -C "$work" commit -m "$message"
 }
 
-clone_or_init_branch() {
-    local remote=$1 branch=$2 work=$3
-    if git ls-remote --heads "$remote" "$branch" | grep -q .; then
-        git clone --depth 1 --branch "$branch" "$remote" "$work"
-        return
-    fi
-    mkdir -p "$work"
-    git -C "$work" init
-    git -C "$work" checkout -b "$branch"
-    git -C "$work" remote add origin "$remote"
-}
-
 push_channel_file() {
     local tag=$1
     local token=${GITHUB_TOKEN:-${GH_TOKEN:-}}
@@ -52,7 +40,13 @@ push_channel_file() {
     }
     remote="https://x-access-token:${token}@github.com/${repo}.git"
     work=$(mktemp -d)
-    clone_or_init_branch "$remote" channels "$work"
+    if git ls-remote --heads "$remote" channels | grep -q .; then
+        git clone --depth 1 --branch channels "$remote" "$work"
+    else
+        git -C "$work" init
+        git -C "$work" checkout -b channels
+        git -C "$work" remote add origin "$remote"
+    fi
     git_identity "$work"
     write_channel_file "$work" "$tag"
     commit_if_changed "$work" "channel $(channel_name_for_tag "$tag") -> $tag"
