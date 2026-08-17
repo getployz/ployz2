@@ -671,7 +671,15 @@ fn classify_health(
     match runtime {
         ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
-        } => HealthPoll::Complete,
+        } => {
+            // A crash loop can report healthy during a brief restart window.
+            // Hold until the monitor deadline so a later Restarting inspect fails.
+            if now >= monitor_deadline {
+                HealthPoll::Complete
+            } else {
+                HealthPoll::PendingUntil(monitor_deadline)
+            }
+        }
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
         } if health_deadline.is_none() => HealthPoll::Complete,
