@@ -95,13 +95,14 @@ impl CertificateBackoff {
 /// Replicated certificate row for one Ingress Hostname.
 #[derive(Clone, Default, Debug, Eq, PartialEq)]
 pub struct CertificateRow {
-    pub(crate) material: Option<CertificateMaterial>,
-    pub(crate) challenge: Option<CertificateChallenge>,
-    pub(crate) backoff: Option<CertificateBackoff>,
+    material: Option<CertificateMaterial>,
+    challenge: Option<CertificateChallenge>,
+    last_error: Option<String>,
+    backoff: Option<CertificateBackoff>,
 }
 
 impl CertificateRow {
-    /// Material and challenge without a refusal clock.
+    /// Stored snapshot for one hostname.
     #[must_use]
     pub fn from_parts(
         material: Option<CertificateMaterial>,
@@ -110,6 +111,18 @@ impl CertificateRow {
         Self {
             material,
             challenge,
+            last_error: None,
+            backoff: None,
+        }
+    }
+
+    /// Row that holds newly issued material and no challenge.
+    #[must_use]
+    pub fn issued(material: CertificateMaterial) -> Self {
+        Self {
+            material: Some(material),
+            challenge: None,
+            last_error: None,
             backoff: None,
         }
     }
@@ -117,24 +130,31 @@ impl CertificateRow {
     /// Attach a complete refusal clock, or leave the row unchanged if the text is empty.
     #[must_use]
     pub fn with_backoff(mut self, last_error: impl Into<String>, clock: IssuanceClock) -> Self {
-        self.backoff = CertificateBackoff::new(last_error, clock);
+        if let Some(backoff) = CertificateBackoff::new(last_error, clock) {
+            self.last_error = Some(backoff.last_error().to_owned());
+            self.backoff = Some(backoff);
+        }
         self
     }
 
+    /// Issued material, if any.
     #[must_use]
     pub fn material(&self) -> Option<&CertificateMaterial> {
         self.material.as_ref()
     }
 
+    /// Pending HTTP-01 challenge, if any.
     #[must_use]
     pub fn challenge(&self) -> Option<&CertificateChallenge> {
         self.challenge.as_ref()
     }
 
-    /// Operator-visible reason when issuance was refused or the authority failed.
+    /// Last recorded refusal or issuance error, if any.
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
-        self.backoff.as_ref().map(CertificateBackoff::last_error)
+        self.last_error
+            .as_deref()
+            .or_else(|| self.backoff.as_ref().map(CertificateBackoff::last_error))
     }
 
     /// Shared backoff clock, if a complete refusal has been recorded.
@@ -143,25 +163,46 @@ impl CertificateRow {
         self.backoff.as_ref().map(CertificateBackoff::clock)
     }
 
+    /// Take issued material out of the row.
+    #[must_use]
+    pub fn into_material(self) -> Option<CertificateMaterial> {
+        self.material
+    }
+
+    /// Keep existing material and set the pending challenge.
+    #[must_use]
+    pub fn with_challenge(self, challenge: CertificateChallenge) -> Self {
+        Self {
+            challenge: Some(challenge),
+            ..self
+        }
+    }
+
+    /// Keep existing material and challenge and record a refusal reason.
+    #[must_use]
+    pub fn with_error(self, reason: impl Into<String>) -> Self {
+        Self {
+            last_error: Some(reason.into()),
+            ..self
+        }
+    }
+
     pub(crate) fn decode(encoded: &str) -> Result<Self, Error> {
         if encoded.is_empty() {
             return Ok(Self::default());
         }
         let body: CertificateBody = serde_json::from_str(encoded)?;
-        let CertificateBody {
-            certificate,
-            private_key,
-            challenge_token,
-            challenge_response,
-            last_error,
-            next_attempt_at,
-            failures,
-            last_failure,
-        } = body;
+        let last_error = (!body.last_error.is_empty()).then_some(body.last_error.clone());
         Ok(Self {
-            material: CertificateMaterial::new(certificate, private_key),
-            challenge: CertificateChallenge::new(challenge_token, challenge_response),
-            backoff: decode_backoff(last_error, &next_attempt_at, failures, &last_failure),
+            material: CertificateMaterial::new(body.certificate, body.private_key),
+            challenge: CertificateChallenge::new(body.challenge_token, body.challenge_response),
+            last_error,
+            backoff: decode_backoff(
+                body.last_error,
+                &body.next_attempt_at,
+                body.failures,
+                &body.last_failure,
+            ),
         })
     }
 
@@ -171,10 +212,10 @@ impl CertificateRow {
             "private_key": self.material.as_ref().map(CertificateMaterial::private_key).unwrap_or(""),
             "challenge_token": self.challenge.as_ref().map(CertificateChallenge::token).unwrap_or(""),
             "challenge_response": self.challenge.as_ref().map(CertificateChallenge::response).unwrap_or(""),
-            "last_error": self.backoff.as_ref().map(CertificateBackoff::last_error).unwrap_or(""),
-            "next_attempt_at": self.backoff.as_ref().map(|backoff| encode_attempt(backoff.clock.next_attempt_at())).unwrap_or_default(),
-            "failures": self.backoff.as_ref().map(|backoff| backoff.clock.failures()).unwrap_or(0),
-            "last_failure": encode_failure(self.backoff.as_ref().map(|backoff| backoff.clock.last_failure())),
+            "last_error": self.last_error().unwrap_or(""),
+            "next_attempt_at": self.clock().map(|clock| encode_attempt(clock.next_attempt_at())).unwrap_or_default(),
+            "failures": self.clock().map(|clock| clock.failures()).unwrap_or(0),
+            "last_failure": encode_failure(self.clock().map(|clock| clock.last_failure())),
         }))?)
     }
 }
@@ -245,11 +286,6 @@ fn decode_failure(text: &str) -> Option<IssuanceFailure> {
 }
 
 #[cfg(test)]
-fn decode_certificate_body(encoded: &str) -> Result<Option<CertificateMaterial>, Error> {
-    Ok(CertificateRow::decode(encoded)?.material)
-}
-
-#[cfg(test)]
 mod tests {
     use std::time::{Duration, SystemTime};
 
@@ -257,33 +293,49 @@ mod tests {
 
     use super::{CertificateChallenge, CertificateMaterial, CertificateRow};
 
+    fn decode_material(encoded: &str) -> Result<Option<CertificateMaterial>, super::Error> {
+        Ok(CertificateRow::decode(encoded)?.into_material())
+    }
+
     #[test]
     fn invalid_certificate_body_is_an_error() {
-        assert!(super::decode_certificate_body("{").is_err());
-        assert!(super::decode_certificate_body("null").is_err());
+        assert!(decode_material("{").is_err());
+        assert!(decode_material("null").is_err());
     }
 
     #[test]
     fn empty_certificate_body_is_not_present() {
         assert_eq!(CertificateMaterial::new("", ""), None);
         assert_eq!(CertificateMaterial::new("CERT", ""), None);
-        assert_eq!(super::decode_certificate_body("").unwrap(), None);
-        assert_eq!(super::decode_certificate_body("{}").unwrap(), None);
+        assert_eq!(decode_material("").unwrap(), None);
+        assert_eq!(decode_material("{}").unwrap(), None);
         assert_eq!(
-            super::decode_certificate_body(r#"{"certificate":"CERT","private_key":""}"#).unwrap(),
+            decode_material(r#"{"certificate":"CERT","private_key":""}"#).unwrap(),
             None
         );
     }
 
     #[test]
     fn certificate_material_reads_known_fields_and_ignores_the_rest() {
-        let material = super::decode_certificate_body(
-            r#"{"certificate":"CERT","private_key":"KEY","last_error":"later"}"#,
+        let row = CertificateRow::decode(
+            r#"{"certificate":"CERT","private_key":"KEY","last_error":"refused","future":1}"#,
         )
-        .unwrap()
         .unwrap();
+        let material = row.material().unwrap();
         assert_eq!(material.certificate(), "CERT");
         assert_eq!(material.private_key(), "KEY");
+        assert_eq!(row.last_error(), Some("refused"));
+    }
+
+    #[test]
+    fn certificate_row_round_trips_last_error() {
+        let row = CertificateRow::default().with_error(
+            "certificate policy names challenge kind dns-01 which this daemon cannot perform",
+        );
+        let encoded = row.encode().unwrap();
+        let decoded = CertificateRow::decode(&encoded).unwrap();
+        assert_eq!(decoded.last_error(), row.last_error());
+        assert_eq!(CertificateRow::decode("{}").unwrap().last_error(), None);
     }
 
     #[test]
@@ -292,12 +344,12 @@ mod tests {
             r#"{"certificate":"","private_key":"","challenge_token":"tok","challenge_response":"tok.thumb"}"#,
         )
         .unwrap();
-        assert_eq!(row.material, None);
-        let challenge = row.challenge.unwrap();
+        assert_eq!(row.material(), None);
+        let challenge = row.challenge().unwrap();
         assert_eq!(challenge.token(), "tok");
         assert_eq!(challenge.response(), "tok.thumb");
         assert_eq!(CertificateChallenge::new("", "tok.thumb"), None);
-        assert_eq!(CertificateRow::decode("{}").unwrap().challenge, None);
+        assert_eq!(CertificateRow::decode("{}").unwrap().challenge(), None);
     }
 
     #[test]
@@ -327,5 +379,33 @@ mod tests {
                 .clock(),
             None
         );
+    }
+
+    #[test]
+    fn challenge_write_keeps_issued_material() {
+        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let latest = CertificateRow::from_parts(Some(issued.clone()), None);
+        let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
+        let row = latest.with_challenge(challenge.clone());
+        assert_eq!(row.material(), Some(&issued));
+        assert_eq!(row.challenge(), Some(&challenge));
+    }
+
+    #[test]
+    fn issued_write_replaces_the_row() {
+        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let row = CertificateRow::issued(issued.clone());
+        assert_eq!(row.material(), Some(&issued));
+        assert_eq!(row.challenge(), None);
+        assert_eq!(row.last_error(), None);
+        assert_eq!(row.clock(), None);
+    }
+
+    #[test]
+    fn error_write_keeps_issued_material() {
+        let issued = CertificateMaterial::new("CERT", "KEY").unwrap();
+        let row = CertificateRow::issued(issued.clone()).with_error("refused");
+        assert_eq!(row.material(), Some(&issued));
+        assert_eq!(row.last_error(), Some("refused"));
     }
 }

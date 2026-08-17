@@ -1,3 +1,4 @@
+mod certificate_policy;
 mod cluster_dns;
 mod issuance;
 mod machine;
@@ -6,6 +7,7 @@ mod selector;
 mod service_graph;
 mod spec;
 
+pub use certificate_policy::*;
 pub use cluster_dns::*;
 pub use issuance::*;
 pub use machine::*;
