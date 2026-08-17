@@ -38,23 +38,25 @@ channel_version_from_file() {
 }
 
 resolve_install() {
-    local requested=${1#v} dest=$2 resolved base name
+    local requested=${1#v} dest resolved base name
     case "$requested" in
         latest | stable | '') name=stable ;;
         beta) name=beta ;;
         *)
-            printf 'pin %s\n' "$requested"
+            printf '%s\n' "$requested"
             return 0
             ;;
     esac
+    dest=$(mktemp)
     for base in "$PLOYZ_CHANNEL_URL" "$PLOYZ_CHANNELS_FALLBACK"; do
         if curl -fsSL -o "$dest" "$base/$name" && resolved=$(channel_version_from_file "$dest"); then
-            printf 'floating %s\n' "${resolved#v}"
+            rm -f "$dest"
+            printf '%s\n' "${resolved#v}"
             return 0
         fi
     done
+    rm -f "$dest"
     [ "$name" != beta ] || error "beta channel is unavailable"
-    printf 'floating\n'
 }
 
 daemon_archive() {
@@ -125,12 +127,14 @@ create_user_and_directories() {
 }
 
 install_binaries() {
-    local archive installed_version target action base_url tmp_dir channel_file requested mode
+    local archive installed_version target action base_url tmp_dir requested mode
     archive=$(daemon_archive "$(uname -m)") || error "Unsupported architecture: $(uname -m)"
     requested=$PLOYZ_VERSION
-    channel_file=$(mktemp)
-    read -r mode target < <(resolve_install "$requested" "$channel_file")
-    rm -f "$channel_file"
+    case "$requested" in
+        latest | stable | beta | '') mode=floating ;;
+        *) mode=pin ;;
+    esac
+    target=$(resolve_install "$requested")
     installed_version=""
     if [ -x "$INSTALL_BIN_DIR/ployzd" ]; then
         installed_version=$("$INSTALL_BIN_DIR/ployzd" version 2>/dev/null || true)

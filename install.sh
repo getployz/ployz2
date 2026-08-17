@@ -45,24 +45,25 @@ channel_version_from_file() {
 
 resolve_install() {
     requested=${1#v}
-    dest=$2
     name=
     case "$requested" in
         latest | stable | '') name=stable ;;
         beta) name=beta ;;
         *)
-            printf 'pin %s\n' "$requested"
+            printf '%s\n' "$requested"
             return 0
             ;;
     esac
+    dest=$(mktemp)
     for base in "$PLOYZ_CHANNEL_URL" "$PLOYZ_CHANNELS_FALLBACK"; do
         if curl -fsSL -o "$dest" "$base/$name" && resolved=$(channel_version_from_file "$dest"); then
-            printf 'floating %s\n' "${resolved#v}"
+            rm -f "$dest"
+            printf '%s\n' "${resolved#v}"
             return 0
         fi
     done
+    rm -f "$dest"
     [ "$name" != beta ] || error "beta channel is unavailable"
-    printf 'floating\n'
 }
 
 install_cli() {
@@ -70,10 +71,7 @@ install_cli() {
     trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
     requested=${PLOYZ_VERSION#v}
     [ "$requested" != nightly ] || error "nightly is not a supported release channel"
-    resolved=$(resolve_install "$requested" "$tmp_dir/channel")
-    mode=${resolved%% *}
-    version=${resolved#"$mode"}
-    version=${version# }
+    version=$(resolve_install "$requested")
     case "$version" in
         ''|[0-9A-Za-z]*) ;;
         *) error "Invalid version: $PLOYZ_VERSION" ;;
