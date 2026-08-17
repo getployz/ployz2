@@ -64,6 +64,10 @@ pub struct DeployIntent {
 }
 
 impl DeployIntent {
+    /// Complete desired Services, the Service Attempts this command applies, and planning options.
+    ///
+    /// Empty `apply` means apply nothing. Names in `apply` that are absent from
+    /// `target` are not planned; they are not a prune.
     #[must_use]
     pub fn new(
         target: Vec<RequestedServiceSpec>,
@@ -78,6 +82,7 @@ impl DeployIntent {
         }
     }
 
+    /// Target and apply set from every spec, in that order.
     #[must_use]
     pub fn apply_all<'a>(
         specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
@@ -93,6 +98,7 @@ impl DeployIntent {
         Self::new(target, apply, options)
     }
 
+    /// One-spec target with apply set to that name.
     #[must_use]
     pub fn apply_one(spec: RequestedServiceSpec, options: PlanOptions) -> Self {
         let apply = vec![ServiceAttempt {
@@ -101,6 +107,7 @@ impl DeployIntent {
         Self::new(vec![spec], apply, options)
     }
 
+    /// Target from every loaded spec; `apply` is this command's Service Attempts.
     #[must_use]
     pub fn from_named_specs(
         services: &BTreeMap<String, RequestedServiceSpec>,
@@ -123,6 +130,7 @@ impl DeployIntent {
             .with_dependencies(dependencies)
     }
 
+    /// `depends_on` edges used to expand and order `apply` inside the planner.
     #[must_use]
     pub fn with_dependencies(
         mut self,
@@ -130,10 +138,6 @@ impl DeployIntent {
     ) -> Self {
         self.dependencies = dependencies;
         self
-    }
-
-    pub(crate) fn dependencies(&self) -> &BTreeMap<ServiceName, Vec<ServiceName>> {
-        &self.dependencies
     }
 }
 

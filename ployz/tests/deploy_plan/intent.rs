@@ -65,6 +65,26 @@ fn one_spec_intent_plans_that_name() {
 }
 
 #[test]
+fn cyclic_apply_dependencies_are_a_plan_error() {
+    let db = spec("db");
+    let web = spec("web");
+    let dependencies = BTreeMap::from([
+        (web.name.clone(), vec![db.name.clone()]),
+        (db.name.clone(), vec![web.name.clone()]),
+    ]);
+    let intent = DeployIntent::new(
+        vec![db, web],
+        vec![attempt("web")],
+        PlanOptions::default(),
+    )
+    .with_dependencies(dependencies);
+    assert!(matches!(
+        plan_deploy(&intent, &snapshot()),
+        Err(PlanError::DependencyCycle { service }) if service == "db"
+    ));
+}
+
+#[test]
 fn skip_health_on_options_is_set_on_planned_operations() {
     let plan = plan_deploy(
         &DeployIntent::apply_one(

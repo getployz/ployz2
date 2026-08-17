@@ -20,6 +20,15 @@ use volumes::{
     reject_mixed_volume_modes,
 };
 
+/// Plan operations for the Services this Deploy applies from the target.
+///
+/// Empty `apply` yields an empty plan. Names in `apply` expand through
+/// dependencies that are also in `target`. Other target Services are unchanged.
+///
+/// # Errors
+///
+/// Returns when placement, volumes, service identity, or the apply-set
+/// dependency graph cannot produce a plan.
 pub fn plan_deploy(
     intent: &DeployIntent,
     snapshot: &DeploySnapshot,
@@ -28,7 +37,8 @@ pub fn plan_deploy(
         return Ok(DeployPlan::new(Vec::new()));
     }
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
-    let requested = specs_to_plan(intent)?
+    let requested = intent
+        .specs_to_plan()?
         .into_iter()
         .map(normalize)
         .collect::<Vec<_>>();
@@ -61,100 +71,100 @@ pub fn plan_deploy(
     Ok(DeployPlan::new(operations))
 }
 
-fn specs_to_plan(intent: &DeployIntent) -> Result<Vec<&RequestedServiceSpec>, PlanError> {
-    let included = expand_apply(intent);
-    dependency_order(intent, &included)
-}
-
-fn expand_apply(intent: &DeployIntent) -> BTreeSet<ServiceName> {
-    let present = intent
-        .target
-        .iter()
-        .map(|spec| spec.name.clone())
-        .collect::<BTreeSet<_>>();
-    let mut included = BTreeSet::new();
-    let mut pending = intent
-        .apply
-        .iter()
-        .map(|attempt| attempt.name.clone())
-        .filter(|name| present.contains(name))
-        .collect::<Vec<_>>();
-    while let Some(name) = pending.pop() {
-        if included.insert(name.clone()) {
-            pending.extend(
-                intent
-                    .dependencies()
-                    .get(&name)
-                    .into_iter()
-                    .flatten()
-                    .filter(|dependency| present.contains(*dependency))
-                    .cloned(),
-            );
-        }
+impl DeployIntent {
+    fn specs_to_plan(&self) -> Result<Vec<&RequestedServiceSpec>, PlanError> {
+        self.order_included(&self.expand_apply())
     }
-    included
-}
 
-fn dependency_order<'intent>(
-    intent: &'intent DeployIntent,
-    included: &BTreeSet<ServiceName>,
-) -> Result<Vec<&'intent RequestedServiceSpec>, PlanError> {
-    fn visit<'intent>(
-        name: &ServiceName,
-        intent: &'intent DeployIntent,
-        included: &BTreeSet<ServiceName>,
-        by_name: &BTreeMap<&ServiceName, &'intent RequestedServiceSpec>,
-        visiting: &mut BTreeSet<ServiceName>,
-        visited: &mut BTreeSet<ServiceName>,
-        ordered: &mut Vec<&'intent RequestedServiceSpec>,
-    ) -> Result<(), PlanError> {
-        if visited.contains(name) {
-            return Ok(());
-        }
-        if !visiting.insert(name.clone()) {
-            return Err(PlanError::DependencyCycle {
-                service: name.as_str().to_owned(),
-            });
-        }
-        if let Some(dependencies) = intent.dependencies().get(name) {
-            for dependency in dependencies {
-                if included.contains(dependency) {
-                    visit(
-                        dependency, intent, included, by_name, visiting, visited, ordered,
-                    )?;
-                }
+    fn expand_apply(&self) -> BTreeSet<ServiceName> {
+        let present = self
+            .target
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect::<BTreeSet<_>>();
+        let mut included = BTreeSet::new();
+        let mut pending = self
+            .apply
+            .iter()
+            .map(|attempt| attempt.name.clone())
+            .filter(|name| present.contains(name))
+            .collect::<Vec<_>>();
+        while let Some(name) = pending.pop() {
+            if included.insert(name.clone()) {
+                pending.extend(
+                    self.dependencies
+                        .get(&name)
+                        .into_iter()
+                        .flatten()
+                        .filter(|dependency| present.contains(*dependency))
+                        .cloned(),
+                );
             }
         }
-        visiting.remove(name);
-        visited.insert(name.clone());
-        if let Some(spec) = by_name.get(name) {
-            ordered.push(*spec);
-        }
-        Ok(())
+        included
     }
 
-    let by_name = intent
-        .target
-        .iter()
-        .map(|spec| (&spec.name, spec))
-        .collect::<BTreeMap<_, _>>();
-    let mut ordered = Vec::new();
-    let mut visiting = BTreeSet::new();
-    let mut visited = BTreeSet::new();
-    for spec in &intent.target {
-        if included.contains(&spec.name) {
-            visit(
-                &spec.name,
-                intent,
-                included,
-                &by_name,
-                &mut visiting,
-                &mut visited,
-                &mut ordered,
-            )?;
+    fn order_included<'intent>(
+        &'intent self,
+        included: &BTreeSet<ServiceName>,
+    ) -> Result<Vec<&'intent RequestedServiceSpec>, PlanError> {
+        fn visit<'intent>(
+            name: &ServiceName,
+            intent: &'intent DeployIntent,
+            included: &BTreeSet<ServiceName>,
+            by_name: &BTreeMap<&ServiceName, &'intent RequestedServiceSpec>,
+            visiting: &mut BTreeSet<ServiceName>,
+            visited: &mut BTreeSet<ServiceName>,
+            ordered: &mut Vec<&'intent RequestedServiceSpec>,
+        ) -> Result<(), PlanError> {
+            if visited.contains(name) {
+                return Ok(());
+            }
+            if !visiting.insert(name.clone()) {
+                return Err(PlanError::DependencyCycle {
+                    service: name.as_str().to_owned(),
+                });
+            }
+            if let Some(dependencies) = intent.dependencies.get(name) {
+                for dependency in dependencies {
+                    if included.contains(dependency) {
+                        visit(
+                            dependency, intent, included, by_name, visiting, visited, ordered,
+                        )?;
+                    }
+                }
+            }
+            visiting.remove(name);
+            visited.insert(name.clone());
+            if let Some(spec) = by_name.get(name) {
+                ordered.push(*spec);
+            }
+            Ok(())
         }
+
+        let by_name = self
+            .target
+            .iter()
+            .map(|spec| (&spec.name, spec))
+            .collect::<BTreeMap<_, _>>();
+        let mut ordered = Vec::new();
+        let mut visiting = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        for spec in &self.target {
+            if included.contains(&spec.name) {
+                visit(
+                    &spec.name,
+                    self,
+                    included,
+                    &by_name,
+                    &mut visiting,
+                    &mut visited,
+                    &mut ordered,
+                )?;
+            }
+        }
+        Ok(ordered)
     }
-    Ok(ordered)
 }
 
 fn plan_one_service(
