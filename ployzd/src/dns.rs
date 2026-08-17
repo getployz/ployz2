@@ -66,7 +66,7 @@ impl Projection {
                 .entry(container.as_observation().service_id)
                 .or_default();
         }
-        for container in serving_replicas(observations.iter().cloned()) {
+        for container in serving_replicas(containers) {
             let observation = container.as_observation();
             let address = observation
                 .address

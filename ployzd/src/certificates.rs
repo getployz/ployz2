@@ -222,7 +222,7 @@ fn caddy_challenge_ips(
     let caddy: BTreeSet<_> = observations
         .iter()
         .filter(|observation| observation.service_name.as_str() == CADDY_SERVICE)
-        .filter(|observation| caddy_is_running(observation))
+        .filter(|observation| observation.runtime.is_healthy())
         .map(|observation| observation.machine_id)
         .collect();
     machines
@@ -230,10 +230,6 @@ fn caddy_challenge_ips(
         .filter(|machine| caddy.contains(&machine.id))
         .flat_map(machine_challenge_ips)
         .collect()
-}
-
-fn caddy_is_running(observation: &ContainerObservation) -> bool {
-    observation.runtime.is_healthy()
 }
 
 fn machine_challenge_ips(machine: &Machine) -> impl Iterator<Item = IpAddr> {

@@ -5,7 +5,7 @@ use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol,
     IngressHost, IngressHostname, Machine, MachineId, MachineName, ManagementAddress,
     PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol,
-    WireGuardPublicKey, service_containers,
+    WireGuardPublicKey,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -41,7 +41,7 @@ fn automatic_sites_match_the_frozen_caddyfile_contract() {
         automatic_caddyfile(
             &local,
             "node-a",
-            &service_containers(observations),
+            &observations,
             "TIMESTAMP",
             None,
             &BTreeMap::new(),
@@ -103,7 +103,7 @@ fn https_site_with_material_pins_tls_paths() {
     let caddyfile = automatic_caddyfile(
         &local,
         "node-a",
-        &service_containers(observations),
+        &observations,
         "TIMESTAMP",
         None,
         &certificates,
@@ -146,11 +146,10 @@ fn changing_material_changes_the_pin_paths() {
         Some([10, 210, 1, 2]),
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
-    let containers = service_containers(observations);
     let first = automatic_caddyfile(
         &local,
         "node-a",
-        &containers,
+        &observations,
         "TIMESTAMP",
         None,
         &BTreeMap::from([(
@@ -161,7 +160,7 @@ fn changing_material_changes_the_pin_paths() {
     let second = automatic_caddyfile(
         &local,
         "node-a",
-        &containers,
+        &observations,
         "TIMESTAMP",
         None,
         &BTreeMap::from([(
@@ -186,11 +185,10 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
         Some([10, 210, 1, 2]),
         vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
     )];
-    let containers = service_containers(observations);
     let without = automatic_caddyfile(
         &local,
         "node-a",
-        &containers,
+        &observations,
         "TIMESTAMP",
         None,
         &BTreeMap::new(),
@@ -204,7 +202,7 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
         automatic_caddyfile(
             &local,
             "node-a",
-            &containers,
+            &observations,
             "TIMESTAMP",
             None,
             &BTreeMap::new(),
@@ -212,7 +210,7 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
         without
     );
     assert_eq!(
-        automatic_caddyfile(&local, "node-a", &containers, "TIMESTAMP", None, &unused,),
+        automatic_caddyfile(&local, "node-a", &observations, "TIMESTAMP", None, &unused,),
         without
     );
     assert!(!without.contains("tls "));
@@ -238,7 +236,7 @@ fn pending_challenge_is_answered_on_the_http_site() {
     let caddyfile = automatic_caddyfile(
         &local,
         "node-a",
-        &service_containers(observations),
+        &observations,
         "TIMESTAMP",
         None,
         &certificates,
@@ -276,7 +274,7 @@ fn last_error_is_a_skipped_certificate_comment() {
     let caddyfile = automatic_caddyfile(
         &local,
         "node-a",
-        &service_containers(observations),
+        &observations,
         "TIMESTAMP",
         None,
         &certificates,
@@ -308,7 +306,7 @@ fn last_error_is_omitted_once_material_exists() {
     let caddyfile = automatic_caddyfile(
         &local,
         "node-a",
-        &service_containers(observations),
+        &observations,
         "TIMESTAMP",
         None,
         &certificates,
@@ -345,7 +343,7 @@ fn automatic_sites_exclude_hook_containers() {
     let caddyfile = automatic_caddyfile(
         &local,
         "node-a",
-        &service_containers(observations),
+        &observations,
         "TIMESTAMP",
         None,
         &BTreeMap::new(),
@@ -397,7 +395,7 @@ fn automatic_sites_omit_unaddressed_host_and_unassigned_ports() {
     let caddyfile = automatic_caddyfile(
         &local,
         "node-a",
-        &service_containers(observations),
+        &observations,
         "TIMESTAMP",
         None,
         &BTreeMap::new(),
@@ -455,7 +453,7 @@ async fn custom_configs_exclude_hook_containers() {
     let caddyfile = generate_caddyfile(
         &local,
         "node-a",
-        &service_containers(observations),
+        &observations,
         "TIMESTAMP",
         &BTreeMap::new(),
         Some(&FakeAdmin::default()),
@@ -539,7 +537,7 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
     let caddyfile = generate_caddyfile(
         &local,
         "node-a",
-        &service_containers(observations),
+        &observations,
         "TIMESTAMP",
         &BTreeMap::new(),
         Some(&admin),
@@ -590,7 +588,7 @@ async fn unavailable_caddy_omits_every_custom_config() {
     let caddyfile = generate_caddyfile(
         &local,
         "node-a",
-        &service_containers(observations),
+        &observations,
         "TIME",
         &BTreeMap::new(),
         None::<&FakeAdmin>,
@@ -625,7 +623,7 @@ async fn broken_global_template_does_not_hide_valid_service_configs() {
     let caddyfile = generate_caddyfile(
         &local,
         "node-a",
-        &service_containers(observations),
+        &observations,
         "TIME",
         &BTreeMap::new(),
         Some(&FakeAdmin::default()),

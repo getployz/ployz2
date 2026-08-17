@@ -130,9 +130,9 @@ pub fn service_containers(
 /// Serving Containers: Service Containers that are healthy and have a Container Address.
 #[must_use]
 pub fn serving_replicas(
-    observations: impl IntoIterator<Item = ContainerObservation>,
+    observations: impl IntoIterator<Item = impl Into<ContainerObservation>>,
 ) -> Vec<ServiceContainer> {
-    service_containers(observations)
+    service_containers(observations.into_iter().map(Into::into))
         .into_iter()
         .filter(|container| {
             let observation = container.as_observation();
