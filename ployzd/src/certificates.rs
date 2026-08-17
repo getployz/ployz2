@@ -14,12 +14,13 @@ use bytes::Bytes;
 use futures_util::future::join_all;
 use http_body_util::BodyExt;
 use instant_acme::{
-    Account, AccountCredentials, AuthorizationStatus, BytesResponse, ChallengeType, HttpClient,
-    Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
+    Account, AccountCredentials, AuthorizationStatus, BytesResponse, ChallengeType,
+    ExternalAccountKey, HttpClient, Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use ployz_core::{
-    ContainerKind, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
-    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, PortPublication,
+    CertificateKeyType, CertificatePolicy, ContainerKind, ContainerObservation,
+    ContainerRuntimeObservation, HealthObservation, HttpProtocol, IngressHost, IngressHostname,
+    Machine, MachineId, PortPublication, resolve_certificate_policy,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -38,7 +39,7 @@ const CHALLENGE_WAIT: Duration = Duration::from_secs(30);
 const CHALLENGE_POLL: Duration = Duration::from_millis(200);
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
 /// Must cover `CHALLENGE_WAIT` so rank 1 cannot write a competing token while rank 0 is still probing.
-pub(crate) const RANK_STEP: Duration = Duration::from_secs(30);
+pub(crate) const RANK_STEP: Duration = CHALLENGE_WAIT;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IssuanceAction {
@@ -46,10 +47,6 @@ pub(crate) enum IssuanceAction {
     Order,
     Renew,
 }
-
-/// Elapsed fraction of a certificate's own lifetime that opens the renewal window.
-const RENEW_AFTER_ELAPSED_NUM: u32 = 2;
-const RENEW_AFTER_ELAPSED_DEN: u32 = 3;
 
 /// Rank among Machine identifiers. Lowest id is 0 and may order immediately.
 #[must_use]
@@ -61,6 +58,9 @@ pub(crate) fn machine_rank<'id>(
 }
 
 /// Whether this Machine should order or renew now.
+///
+/// Rank delay uses `RANK_STEP.max(policy.probe_timeout())` so a later rank
+/// cannot start a competing order while an earlier rank is still presenting.
 #[must_use]
 pub(crate) fn issuance_action(
     row: Option<&CertificateRow>,
@@ -68,12 +68,17 @@ pub(crate) fn issuance_action(
     elapsed: Duration,
     now: SystemTime,
     machine_id: &MachineId,
+    policy: &CertificatePolicy,
 ) -> IssuanceAction {
-    action_due(row, rank, elapsed, now, machine_id).0
+    action_due(row, rank, elapsed, now, machine_id, policy).0
 }
 
-fn rank_delay(rank: usize) -> Duration {
-    RANK_STEP.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX))
+fn rank_delay(rank: usize, step: Duration) -> Duration {
+    step.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX))
+}
+
+fn issuance_step(policy: &CertificatePolicy) -> Duration {
+    RANK_STEP.max(policy.probe_timeout())
 }
 
 fn action_due(
@@ -82,8 +87,9 @@ fn action_due(
     elapsed: Duration,
     now: SystemTime,
     machine_id: &MachineId,
+    policy: &CertificatePolicy,
 ) -> (IssuanceAction, Duration) {
-    let delay = rank_delay(rank);
+    let delay = rank_delay(rank, issuance_step(policy));
     match row.and_then(CertificateRow::material) {
         None => {
             let wait = delay.saturating_sub(elapsed);
@@ -94,7 +100,8 @@ fn action_due(
             };
             (action, wait)
         }
-        Some(material) => match renew_at(material, machine_id) {
+        Some(material) => match renew_at(material, machine_id, policy.renew_at_lifetime_fraction())
+        {
             Some(renew_at) => {
                 let wait = saturating_add(renew_at, delay)
                     .duration_since(now)
@@ -111,22 +118,30 @@ fn action_due(
     }
 }
 
-/// Instant two thirds of the certificate's own lifetime has elapsed.
+/// Instant `fraction` of the certificate's own lifetime has elapsed.
 #[must_use]
-pub(crate) fn renewal_window(not_before: SystemTime, not_after: SystemTime) -> Option<SystemTime> {
+pub(crate) fn renewal_window(
+    not_before: SystemTime,
+    not_after: SystemTime,
+    fraction: f64,
+) -> Option<SystemTime> {
     let lifetime = not_after.duration_since(not_before).ok()?;
     if lifetime.is_zero() {
         return None;
     }
     Some(saturating_add(
         not_before,
-        duration_ratio(lifetime, RENEW_AFTER_ELAPSED_NUM, RENEW_AFTER_ELAPSED_DEN),
+        duration_fraction(lifetime, fraction),
     ))
 }
 
-fn renew_at(material: &CertificateMaterial, machine_id: &MachineId) -> Option<SystemTime> {
+fn renew_at(
+    material: &CertificateMaterial,
+    machine_id: &MachineId,
+    fraction: f64,
+) -> Option<SystemTime> {
     let (not_before, not_after) = material_validity(material.certificate())?;
-    let window_start = renewal_window(not_before, not_after)?;
+    let window_start = renewal_window(not_before, not_after, fraction)?;
     let remaining = not_after.duration_since(window_start).ok()?;
     Some(saturating_add(
         window_start,
@@ -170,9 +185,9 @@ fn asn1_to_system(time: x509_parser::time::ASN1Time) -> Option<SystemTime> {
     }
 }
 
-fn duration_ratio(duration: Duration, numerator: u32, denominator: u32) -> Duration {
-    let nanos = duration.as_nanos().saturating_mul(u128::from(numerator)) / u128::from(denominator);
-    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+fn duration_fraction(duration: Duration, fraction: f64) -> Duration {
+    let nanos = (duration.as_nanos() as f64 * fraction).round();
+    Duration::from_nanos(u64::try_from(nanos as u128).unwrap_or(u64::MAX))
 }
 
 fn saturating_add(time: SystemTime, duration: Duration) -> SystemTime {
@@ -185,8 +200,9 @@ fn poll_wait(
     elapsed: Duration,
     now: SystemTime,
     machine_id: &MachineId,
+    policy: &CertificatePolicy,
 ) -> Duration {
-    match action_due(row, rank, elapsed, now, machine_id) {
+    match action_due(row, rank, elapsed, now, machine_id, policy) {
         (IssuanceAction::Order | IssuanceAction::Renew, _) => RANK_STEP,
         (IssuanceAction::Nothing, due_in) => due_in.min(RETRY_INTERVAL),
     }
@@ -269,6 +285,12 @@ pub(crate) enum Error {
     },
     #[error("no HTTP-01 challenge for {0}")]
     NoHttp01(IngressHost),
+    #[error("certificate key type {0} is not supported")]
+    UnsupportedKeyType(String),
+    #[error("certificate key: {0}")]
+    Key(String),
+    #[error("external account binding hmac_key is not base64")]
+    InvalidEab,
 }
 
 /// Built-in directory, or `PLOYZ_ACME_DIRECTORY`. Empty disables issuance.
@@ -314,14 +336,10 @@ pub(crate) fn wanted_certificate_hosts<'a>(
 pub(crate) async fn run(
     store: ReplicatedStore,
     data_dir: PathBuf,
-    directory: Option<String>,
+    directory_default: Option<String>,
     machine_id: MachineId,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    let Some(directory) = directory else {
-        shutdown.cancelled().await;
-        return Ok(());
-    };
     let account_dir = data_dir.join("acme");
     let mut changes = store
         .subscribe_container_changes()
@@ -331,7 +349,7 @@ pub(crate) async fn run(
     loop {
         let wait = match issue_wanted(
             &store,
-            &directory,
+            &directory_default,
             &account_dir,
             &machine_id,
             &mut first_seen,
@@ -354,11 +372,29 @@ pub(crate) async fn run(
 
 async fn issue_wanted(
     store: &ReplicatedStore,
-    directory: &str,
+    directory_default: &Option<String>,
     account_dir: &Path,
     machine_id: &MachineId,
     first_seen: &mut BTreeMap<IngressHost, Instant>,
 ) -> Result<Duration, Error> {
+    let policy = match resolve_certificate_policy(
+        store.certificate_policy().await?.as_deref(),
+        &CertificatePolicy::built_in(directory_default.clone()),
+    ) {
+        Ok(policy) => policy,
+        Err(refusal) => {
+            let containers = store.containers().await?;
+            for hostname in wanted_certificate_hosts(containers.observations.iter()) {
+                store
+                    .record_certificate_error(&hostname, refusal.reason())
+                    .await?;
+            }
+            return Ok(RETRY_INTERVAL);
+        }
+    };
+    let Some(directory) = policy.directory_url() else {
+        return Ok(RETRY_INTERVAL);
+    };
     let containers = store.containers().await?;
     let wanted = wanted_certificate_hosts(containers.observations.iter());
     first_seen.retain(|hostname, _| wanted.contains(hostname));
@@ -391,17 +427,17 @@ async fn issue_wanted(
                 now.saturating_duration_since(seen)
             }
         };
-        match issuance_action(row, rank, elapsed, wall, machine_id) {
+        match issuance_action(row, rank, elapsed, wall, machine_id, &policy) {
             IssuanceAction::Order | IssuanceAction::Renew => to_order.push(hostname),
             IssuanceAction::Nothing => {}
         }
     }
     if !to_order.is_empty() {
-        account(directory, account_dir).await?;
+        account(directory, &policy, account_dir).await?;
         let results = join_all(
             to_order
                 .iter()
-                .map(|hostname| obtain(store, hostname, directory, account_dir, rank, machine_id)),
+                .map(|hostname| obtain(store, hostname, &policy, account_dir, rank, machine_id)),
         )
         .await;
         for (hostname, result) in to_order.iter().zip(results) {
@@ -420,7 +456,7 @@ async fn issue_wanted(
                 .get(hostname)
                 .map(|seen| now.saturating_duration_since(*seen))
                 .unwrap_or(Duration::ZERO);
-            poll_wait(rows.get(hostname), rank, elapsed, wall, machine_id)
+            poll_wait(rows.get(hostname), rank, elapsed, wall, machine_id, &policy)
         })
         .min()
         .unwrap_or(RETRY_INTERVAL))
@@ -429,7 +465,7 @@ async fn issue_wanted(
 async fn obtain(
     store: &ReplicatedStore,
     hostname: &IngressHost,
-    directory: &str,
+    policy: &CertificatePolicy,
     account_dir: &Path,
     rank: usize,
     machine_id: &MachineId,
@@ -442,11 +478,13 @@ async fn obtain(
             Duration::ZERO,
             SystemTime::now(),
             machine_id,
+            policy,
         ) == IssuanceAction::Nothing
     {
         return Ok(());
     }
-    let material = order_certificate(hostname, directory, account_dir, |challenge| {
+    let probe_timeout = policy.probe_timeout();
+    let material = order_certificate(hostname, policy, account_dir, |challenge| {
         let store = store.clone();
         let hostname = hostname.clone();
         async move {
@@ -458,7 +496,7 @@ async fn obtain(
             let containers = store.containers().await?;
             let caddy_ips = caddy_challenge_ips(&machines.observations, &containers.observations);
             let addresses = challenge_probe_addresses(&resolved, &caddy_ips);
-            wait_for_http01(&hostname, &challenge, &addresses).await
+            wait_for_http01(&hostname, &challenge, &addresses, probe_timeout).await
         }
     })
     .await?;
@@ -473,7 +511,7 @@ async fn obtain(
 /// Returns if the directory, account, challenge presentation, or issuance fails.
 pub(crate) async fn order_certificate<F, Fut>(
     hostname: &IngressHost,
-    directory: &str,
+    policy: &CertificatePolicy,
     account_dir: &Path,
     mut present: F,
 ) -> Result<CertificateMaterial, Error>
@@ -481,7 +519,8 @@ where
     F: FnMut(CertificateChallenge) -> Fut,
     Fut: Future<Output = Result<(), Error>>,
 {
-    let account = account(directory, account_dir).await?;
+    let directory = policy.directory_url().ok_or(Error::MissingMaterial)?;
+    let account = account(directory, policy, account_dir).await?;
     let identifiers = [Identifier::Dns(hostname.as_str().to_owned())];
     let mut order = account
         .new_order(&NewOrder::new(identifiers.as_slice()))
@@ -520,21 +559,82 @@ where
             status,
         });
     }
-    let private_key = order.finalize().await?;
+    let private_key = match policy.key_type() {
+        CertificateKeyType::EcdsaP256 => order.finalize().await?,
+        key_type @ (CertificateKeyType::EcdsaP384
+        | CertificateKeyType::Rsa2048
+        | CertificateKeyType::Unrecognized(_)) => {
+            let (pem, csr) = certificate_request(hostname, key_type)?;
+            order.finalize_csr(&csr).await?;
+            pem
+        }
+    };
     let certificate = order.poll_certificate(&RetryPolicy::default()).await?;
     CertificateMaterial::new(certificate, private_key).ok_or(Error::MissingMaterial)
 }
 
-async fn account(directory: &str, account_dir: &Path) -> Result<Account, Error> {
+fn certificate_request(
+    hostname: &IngressHost,
+    key_type: &CertificateKeyType,
+) -> Result<(String, Vec<u8>), Error> {
+    let key = match key_type {
+        CertificateKeyType::EcdsaP256 => {
+            rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
+        }
+        CertificateKeyType::EcdsaP384 => {
+            rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384)
+        }
+        CertificateKeyType::Rsa2048 => rcgen::KeyPair::generate_for(&rcgen::PKCS_RSA_SHA256),
+        CertificateKeyType::Unrecognized(kind) => {
+            return Err(Error::UnsupportedKeyType(kind.clone()));
+        }
+    }
+    .map_err(|error| Error::Key(error.to_string()))?;
+    let mut params = rcgen::CertificateParams::new(vec![hostname.as_str().to_owned()])
+        .map_err(|error| Error::Key(error.to_string()))?;
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    let csr = params
+        .serialize_request(&key)
+        .map_err(|error| Error::Key(error.to_string()))?;
+    Ok((key.serialize_pem(), csr.der().as_ref().to_vec()))
+}
+
+fn eab_key(policy: &CertificatePolicy) -> Result<Option<ExternalAccountKey>, Error> {
+    let Some(eab) = policy.eab() else {
+        return Ok(None);
+    };
+    let key = eab.to_hmac_key_bytes().map_err(|_| Error::InvalidEab)?;
+    Ok(Some(ExternalAccountKey::new(eab.kid().to_owned(), &key)))
+}
+
+fn stored_directory(bytes: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Stored {
+        directory: Option<String>,
+    }
+    serde_json::from_slice::<Stored>(bytes)
+        .ok()
+        .and_then(|stored| stored.directory)
+}
+
+async fn account(
+    directory: &str,
+    policy: &CertificatePolicy,
+    account_dir: &Path,
+) -> Result<Account, Error> {
     let http: Box<dyn HttpClient> = Box::new(ReqwestAcmeClient::new()?);
     let path = account_dir.join(ACCOUNT_FILE);
     if path.exists() {
-        let credentials: AccountCredentials = serde_json::from_slice(&std::fs::read(&path)?)?;
-        return Ok(Account::builder_with_http(http)
-            .from_credentials(credentials)
-            .await?);
+        let bytes = std::fs::read(&path)?;
+        if stored_directory(&bytes).as_deref() == Some(directory) {
+            let credentials: AccountCredentials = serde_json::from_slice(&bytes)?;
+            return Ok(Account::builder_with_http(http)
+                .from_credentials(credentials)
+                .await?);
+        }
     }
     std::fs::create_dir_all(account_dir)?;
+    let eab = eab_key(policy)?;
     let (account, credentials) = Account::builder_with_http(http)
         .create(
             &NewAccount {
@@ -543,7 +643,7 @@ async fn account(directory: &str, account_dir: &Path) -> Result<Account, Error> 
                 only_return_existing: false,
             },
             directory.to_owned(),
-            None,
+            eab.as_ref(),
         )
         .await?;
     atomic_write(&path, &serde_json::to_vec(&credentials)?, 0o600)?;
@@ -562,6 +662,7 @@ async fn wait_for_http01(
     hostname: &IngressHost,
     challenge: &CertificateChallenge,
     addresses: &[SocketAddr],
+    probe_timeout: Duration,
 ) -> Result<(), Error> {
     if addresses.is_empty() {
         return Err(Error::ChallengeNotServed);
@@ -569,9 +670,9 @@ async fn wait_for_http01(
     let client = Client::builder()
         .redirect(Policy::none())
         .no_proxy()
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(2).min(probe_timeout))
         .build()?;
-    let deadline = Instant::now() + CHALLENGE_WAIT;
+    let deadline = Instant::now() + probe_timeout;
     loop {
         let answered = join_all(addresses.iter().map(|address| {
             let client = &client;

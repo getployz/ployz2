@@ -5,18 +5,35 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HealthObservation, HttpProtocol, IngressHost, IngressHostname,
-    Machine, MachineId, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName,
+    CertificateKeyType, CertificatePolicy, ContainerAddress, ContainerId, ContainerKind,
+    ContainerObservation, ContainerRuntimeObservation, DEFAULT_RENEW_AT_LIFETIME_FRACTION,
+    HealthObservation, HttpProtocol, IngressHost, IngressHostname, Machine, MachineId,
+    PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, resolve_certificate_policy,
 };
 use serde_json::json;
 
 use super::{
-    IssuanceAction, RANK_STEP, caddy_challenge_ips, challenge_probe_addresses, directory_from_env,
-    issuance_action, machine_jitter, machine_rank, material_validity, order_certificate, poll_wait,
-    renewal_window, wait_for_http01, wanted_certificate_hosts,
+    CHALLENGE_WAIT, IssuanceAction, RANK_STEP, caddy_challenge_ips, challenge_probe_addresses,
+    directory_from_env, issuance_action, machine_jitter, machine_rank, material_validity,
+    order_certificate, poll_wait, renewal_window, wait_for_http01, wanted_certificate_hosts,
 };
 use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
+
+fn policy_for(directory: &str) -> CertificatePolicy {
+    CertificatePolicy::built_in(Some(directory.to_owned()))
+}
+
+fn default_policy() -> CertificatePolicy {
+    CertificatePolicy::built_in(None)
+}
+
+fn policy_probe(seconds: u64) -> CertificatePolicy {
+    resolve_certificate_policy(
+        Some(&format!(r#"{{"probe_timeout":{seconds}}}"#)),
+        &CertificatePolicy::built_in(None),
+    )
+    .unwrap()
+}
 
 #[test]
 fn directory_empty_disables_issuance() {
@@ -105,10 +122,21 @@ fn only_rank_zero_orders_immediately() {
         decide(None, 2, Duration::from_secs(60)),
         IssuanceAction::Order
     );
+    assert_eq!(
+        issuance_action(
+            None,
+            1,
+            Duration::from_secs(30),
+            UNIX_EPOCH,
+            &machine_id("a"),
+            &policy_probe(120)
+        ),
+        IssuanceAction::Nothing
+    );
 }
 
 #[test]
-fn issued_material_means_nothing_to_do() {
+fn unparseable_material_does_not_renew() {
     let material = CertificateMaterial::new("CERT", "KEY").unwrap();
     let row = CertificateRow::from_parts(Some(material), None);
     assert_eq!(
@@ -122,12 +150,22 @@ fn renewal_window_is_two_thirds_of_the_certificate_lifetime() {
     let day = Duration::from_secs(86_400);
     let start = UNIX_EPOCH;
     assert_eq!(
-        renewal_window(start, start + day * 90).unwrap(),
+        renewal_window(start, start + day * 90, DEFAULT_RENEW_AT_LIFETIME_FRACTION).unwrap(),
         start + day * 60
     );
     assert_eq!(
-        renewal_window(start, start + day * 6).unwrap(),
+        renewal_window(start, start + day * 6, DEFAULT_RENEW_AT_LIFETIME_FRACTION).unwrap(),
         start + day * 4
+    );
+}
+
+#[test]
+fn renewal_window_uses_the_policy_fraction() {
+    let start = UNIX_EPOCH;
+    let life = Duration::from_secs(100);
+    assert_eq!(
+        renewal_window(start, start + life, 0.5).unwrap(),
+        start + Duration::from_secs(50)
     );
 }
 
@@ -146,24 +184,27 @@ fn machine_jitter_stays_inside_the_remaining_third() {
 fn same_certificate_renews_at_two_thirds_for_long_and_short_lifetimes() {
     let day = Duration::from_secs(86_400);
     let machine = machine_id("a");
+    let policy = default_policy();
     for lifetime in [day * 90, day * 6] {
         let not_before = UNIX_EPOCH;
         let not_after = not_before + lifetime;
         let row = row_with_lifetime(not_before, not_after);
-        let window = renewal_window(not_before, not_after).unwrap();
+        let window =
+            renewal_window(not_before, not_after, policy.renew_at_lifetime_fraction()).unwrap();
         assert_eq!(
             issuance_action(
                 Some(&row),
                 0,
                 Duration::ZERO,
                 window - Duration::from_secs(1),
-                &machine
+                &machine,
+                &policy
             ),
             IssuanceAction::Nothing,
             "lifetime {lifetime:?}"
         );
         assert_eq!(
-            issuance_action(Some(&row), 0, Duration::ZERO, not_after, &machine),
+            issuance_action(Some(&row), 0, Duration::ZERO, not_after, &machine, &policy),
             IssuanceAction::Renew,
             "lifetime {lifetime:?}"
         );
@@ -177,9 +218,15 @@ fn renewal_uses_rank_delay_after_jitter() {
     let not_after = not_before + day * 90;
     let row = row_with_lifetime(not_before, not_after);
     let machine = machine_id("a");
-    let due = super::renew_at(row.material().unwrap(), &machine).unwrap();
+    let policy = default_policy();
+    let due = super::renew_at(
+        row.material().unwrap(),
+        &machine,
+        policy.renew_at_lifetime_fraction(),
+    )
+    .unwrap();
     assert_eq!(
-        issuance_action(Some(&row), 1, Duration::ZERO, due, &machine),
+        issuance_action(Some(&row), 1, Duration::ZERO, due, &machine, &policy),
         IssuanceAction::Nothing
     );
     assert_eq!(
@@ -188,12 +235,20 @@ fn renewal_uses_rank_delay_after_jitter() {
             1,
             Duration::ZERO,
             due + RANK_STEP - Duration::from_millis(1),
-            &machine
+            &machine,
+            &policy
         ),
         IssuanceAction::Nothing
     );
     assert_eq!(
-        issuance_action(Some(&row), 1, Duration::ZERO, due + RANK_STEP, &machine),
+        issuance_action(
+            Some(&row),
+            1,
+            Duration::ZERO,
+            due + RANK_STEP,
+            &machine,
+            &policy
+        ),
         IssuanceAction::Renew
     );
 }
@@ -206,8 +261,10 @@ fn machines_holding_the_same_certificate_do_not_renew_together() {
     let row = row_with_lifetime(not_before, not_after);
     let first = machine_id("a");
     let second = machine_id("f");
-    let first_due = super::renew_at(row.material().unwrap(), &first).unwrap();
-    let second_due = super::renew_at(row.material().unwrap(), &second).unwrap();
+    let policy = default_policy();
+    let fraction = policy.renew_at_lifetime_fraction();
+    let first_due = super::renew_at(row.material().unwrap(), &first, fraction).unwrap();
+    let second_due = super::renew_at(row.material().unwrap(), &second, fraction).unwrap();
     assert_ne!(first_due, second_due);
     let earlier = first_due.min(second_due);
     let later_machine = if first_due < second_due {
@@ -216,7 +273,14 @@ fn machines_holding_the_same_certificate_do_not_renew_together() {
         &first
     };
     assert_eq!(
-        issuance_action(Some(&row), 0, Duration::ZERO, earlier, later_machine),
+        issuance_action(
+            Some(&row),
+            0,
+            Duration::ZERO,
+            earlier,
+            later_machine,
+            &policy
+        ),
         IssuanceAction::Nothing
     );
 }
@@ -225,21 +289,34 @@ fn machines_holding_the_same_certificate_do_not_renew_together() {
 fn poll_wait_follows_each_certificate_lifetime() {
     let day = Duration::from_secs(86_400);
     let machine = machine_id("a");
+    let policy = default_policy();
     let long = row_with_lifetime(UNIX_EPOCH, UNIX_EPOCH + day * 90);
     let short = row_with_lifetime(UNIX_EPOCH, UNIX_EPOCH + day * 6);
     let now = UNIX_EPOCH + Duration::from_secs(60);
     assert_eq!(
-        poll_wait(Some(&long), 0, Duration::ZERO, now, &machine),
+        poll_wait(Some(&long), 0, Duration::ZERO, now, &machine, &policy),
         Duration::from_secs(60)
     );
     assert_eq!(
-        poll_wait(Some(&short), 0, Duration::ZERO, now, &machine),
+        poll_wait(Some(&short), 0, Duration::ZERO, now, &machine, &policy),
         Duration::from_secs(60)
     );
-    let near_short =
-        super::renew_at(short.material().unwrap(), &machine).unwrap() - Duration::from_secs(10);
+    let near_short = super::renew_at(
+        short.material().unwrap(),
+        &machine,
+        policy.renew_at_lifetime_fraction(),
+    )
+    .unwrap()
+        - Duration::from_secs(10);
     assert_eq!(
-        poll_wait(Some(&short), 0, Duration::ZERO, near_short, &machine),
+        poll_wait(
+            Some(&short),
+            0,
+            Duration::ZERO,
+            near_short,
+            &machine,
+            &policy
+        ),
         Duration::from_secs(10)
     );
 }
@@ -296,6 +373,7 @@ async fn challenge_must_be_answerable_on_every_probe_address() {
             SocketAddr::from(([127, 0, 0, 1], first_port)),
             SocketAddr::from(([127, 0, 0, 1], second_port)),
         ],
+        CHALLENGE_WAIT,
     )
     .await
     .unwrap();
@@ -308,7 +386,7 @@ async fn empty_probe_addresses_fail_without_waiting() {
     let challenge = CertificateChallenge::new("tok", "tok.thumb").unwrap();
     let error = tokio::time::timeout(
         Duration::from_secs(1),
-        wait_for_http01(&hostname, &challenge, &[]),
+        wait_for_http01(&hostname, &challenge, &[], CHALLENGE_WAIT),
     )
     .await
     .unwrap()
@@ -328,7 +406,12 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     ca.set_validation("127.0.0.1", validation_port);
     let account_dir =
         std::env::temp_dir().join(format!("ployzd-acme-{}-{}", std::process::id(), hostname));
-    let material = order_certificate(&hostname, &ca.directory_url(), &account_dir, |challenge| {
+    let policy = resolve_certificate_policy(
+        Some(&format!(r#"{{"directory_url":"{}"}}"#, ca.directory_url())),
+        &CertificatePolicy::built_in(None),
+    )
+    .unwrap();
+    let material = order_certificate(&hostname, &policy, &account_dir, |challenge| {
         let answers = std::sync::Arc::clone(&answers);
         async move {
             answers.lock().unwrap().insert(
@@ -344,6 +427,56 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     assert!(material.certificate().contains("BEGIN CERTIFICATE"));
     assert!(material.private_key().contains("BEGIN"));
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
+    drop(http01);
+    let _ = std::fs::remove_dir_all(account_dir);
+}
+
+#[tokio::test]
+async fn policy_key_type_and_eab_issue_against_a_fake_ca() {
+    let hostname = host("rsa.example.com");
+    let answers = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+    let (http01, validation_port) =
+        ployz_testkit::fake_acme::serve_http01(std::sync::Arc::clone(&answers));
+    let ca = ployz_testkit::fake_acme::FakeCa::bind("127.0.0.1:0")
+        .await
+        .unwrap();
+    ca.set_validation("127.0.0.1", validation_port);
+    let account_dir = std::env::temp_dir().join(format!(
+        "ployzd-acme-policy-{}-{}",
+        std::process::id(),
+        hostname
+    ));
+    let policy = resolve_certificate_policy(
+        Some(&format!(
+            r#"{{
+                    "directory_url":"{}",
+                    "eab":{{"kid":"kid-1","hmac_key":"dGVzdA"}},
+                    "key_type":"ecdsa-p384",
+                    "probe_timeout":5
+                }}"#,
+            ca.directory_url()
+        )),
+        &CertificatePolicy::built_in(None),
+    )
+    .unwrap();
+    assert_eq!(policy.key_type(), &CertificateKeyType::EcdsaP384);
+    assert_eq!(policy.eab().unwrap().kid(), "kid-1");
+    let material = order_certificate(&hostname, &policy, &account_dir, |challenge| {
+        let answers = std::sync::Arc::clone(&answers);
+        async move {
+            answers.lock().unwrap().insert(
+                challenge.token().to_owned(),
+                challenge.response().to_owned(),
+            );
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+
+    assert!(material.certificate().contains("BEGIN CERTIFICATE"));
+    assert!(material.private_key().contains("BEGIN"));
+    assert_eq!(ca.ordered(), vec!["rsa.example.com".to_owned()]);
     drop(http01);
     let _ = std::fs::remove_dir_all(account_dir);
 }
@@ -369,19 +502,19 @@ async fn fake_ca_lifetime_is_the_certificate_lifetime() {
             lifetime.as_secs(),
             hostname
         ));
-        let material =
-            order_certificate(&hostname, &ca.directory_url(), &account_dir, |challenge| {
-                let answers = std::sync::Arc::clone(&answers);
-                async move {
-                    answers.lock().unwrap().insert(
-                        challenge.token().to_owned(),
-                        challenge.response().to_owned(),
-                    );
-                    Ok(())
-                }
-            })
-            .await
-            .unwrap();
+        let policy = policy_for(&ca.directory_url());
+        let material = order_certificate(&hostname, &policy, &account_dir, |challenge| {
+            let answers = std::sync::Arc::clone(&answers);
+            async move {
+                answers.lock().unwrap().insert(
+                    challenge.token().to_owned(),
+                    challenge.response().to_owned(),
+                );
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
         let (not_before, not_after) = material_validity(material.certificate()).unwrap();
         let got = not_after.duration_since(not_before).unwrap();
         assert!(
@@ -403,7 +536,7 @@ async fn order_fails_when_the_directory_is_unreachable() {
     ));
     let error = order_certificate(
         &hostname,
-        "http://127.0.0.1:1/directory",
+        &policy_for("http://127.0.0.1:1/directory"),
         &account_dir,
         |_| async { Ok(()) },
     )
@@ -417,7 +550,14 @@ async fn order_fails_when_the_directory_is_unreachable() {
 }
 
 fn decide(row: Option<&CertificateRow>, rank: usize, elapsed: Duration) -> IssuanceAction {
-    issuance_action(row, rank, elapsed, UNIX_EPOCH, &machine_id("a"))
+    issuance_action(
+        row,
+        rank,
+        elapsed,
+        UNIX_EPOCH,
+        &machine_id("a"),
+        &default_policy(),
+    )
 }
 
 fn machine_id(seed: &str) -> MachineId {
