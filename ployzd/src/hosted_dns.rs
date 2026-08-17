@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use ployz_core::DnsRecord;
+use ployz_core::{DnsRecord, DnsRecordType};
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -52,10 +52,43 @@ impl HostedDns {
 
     pub(crate) async fn release_domain(&self, store: &ReplicatedStore) -> Result<String, Error> {
         let reservation = store.domain_reservation().await?.ok_or(Error::NotFound)?;
-        // Hosted Uncloud DNS has no domain-delete; this action removes the Route53 answers.
-        self.purge_hosted_records(&reservation).await?;
+        // Hosted Uncloud DNS has no domain-delete. Purge removes Route53 answers when
+        // its DB still matches. After any record upsert, PersistRecord leaves stale
+        // values and purge returns InvalidChangeBatch forever. Overwrite the wildcard
+        // so leftover answers are not the Cluster, then drop the local reservation.
+        self.release_hosted(&reservation).await?;
         store.remove_domain_reservation().await?;
         Ok(reservation.name)
+    }
+
+    async fn release_hosted(&self, reservation: &Reservation) -> Result<(), Error> {
+        match self.purge_hosted_records(reservation).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.is_stale_record_delete() => {
+                self.neutralize_hosted_records(reservation).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn neutralize_hosted_records(&self, reservation: &Reservation) -> Result<(), Error> {
+        self.submit_records(
+            reservation,
+            &[
+                DnsRecord {
+                    name: "*".into(),
+                    record_type: DnsRecordType::A,
+                    values: vec!["192.0.2.1".into()],
+                },
+                DnsRecord {
+                    name: "*".into(),
+                    record_type: DnsRecordType::Aaaa,
+                    values: vec!["2001:db8::1".into()],
+                },
+            ],
+        )
+        .await
+        .map(drop)
     }
 
     pub(crate) async fn create_records(
@@ -156,9 +189,47 @@ async fn hosted_body(response: reqwest::Response) -> Result<Bytes, Error> {
         });
     }
     if !status.is_success() {
-        return Err(Error::Status(status.as_u16()));
+        return Err(Error::Status(status.as_u16(), hosted_error_detail(&body)));
     }
     Ok(body)
+}
+
+fn hosted_error_detail(body: &[u8]) -> String {
+    if let Ok(error) = serde_json::from_slice::<HostedErrorBody>(body)
+        && let Some(msg) = error
+            .msg
+            .or(error.error)
+            .or(error.message)
+            .filter(|msg| !msg.is_empty())
+    {
+        return collapse_detail(&msg);
+    }
+    collapse_detail(&String::from_utf8_lossy(body))
+}
+
+fn collapse_detail(detail: &str) -> String {
+    let collapsed = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    const MAX: usize = 240;
+    match collapsed.char_indices().nth(MAX) {
+        None => collapsed,
+        Some((index, _)) => collapsed.get(..index).unwrap_or(&collapsed).to_owned(),
+    }
+}
+
+fn hosted_status_message(status: &u16, detail: &str) -> String {
+    let action = hosted_status_action(*status);
+    if detail.is_empty() {
+        format!("hosted DNS returned HTTP {status}; {action}")
+    } else {
+        format!("hosted DNS returned HTTP {status}: {detail}; {action}")
+    }
+}
+
+fn hosted_status_action(status: u16) -> &'static str {
+    match status {
+        408 | 429 | 500..=599 => "retry, then escalate if it persists",
+        _ => "escalate; do not retry",
+    }
 }
 
 #[derive(Deserialize)]
@@ -173,6 +244,16 @@ struct RecordResponse {
     record_type: ployz_core::DnsRecordType,
     values: Vec<String>,
     fqdn: String,
+}
+
+#[derive(Default, Deserialize)]
+struct HostedErrorBody {
+    #[serde(default)]
+    msg: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -201,12 +282,21 @@ pub(crate) enum Error {
     Json(#[from] serde_json::Error),
     #[error("invalid hosted DNS endpoint: {0}")]
     InvalidEndpoint(String),
-    #[error("hosted DNS returned HTTP {0}")]
-    Status(u16),
+    #[error("{}", hosted_status_message(.0, .1))]
+    Status(u16, String),
     #[error("hosted DNS authentication failed")]
     Authentication,
     #[error("the supplied domain failed authentication")]
     AuthNoDomain,
+}
+
+impl Error {
+    fn is_stale_record_delete(&self) -> bool {
+        let Self::Status(500, detail) = self else {
+            return false;
+        };
+        detail.contains("InvalidChangeBatch") && detail.contains("values provided do not match")
+    }
 }
 
 #[cfg(test)]
@@ -410,7 +500,91 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, Error::Status(500)));
+        assert!(matches!(error, Error::Status(500, _)));
+        let display = error.to_string();
+        assert!(display.contains("HTTP 500"), "{display}");
+        assert!(display.contains("route53"), "{display}");
+        assert!(
+            display.contains("retry") && display.contains("escalate"),
+            "{display}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hosted_status_uses_the_service_msg_not_a_bare_code() {
+        let (endpoint, _) = fake_server([(
+            500,
+            r#"{"status":500,"msg":"failed to delete route53 records for domain opaque.uncloud.example with error InvalidChangeBatch: values provided do not match the current values"}"#,
+        )])
+        .await;
+        let reservation = super::Reservation {
+            endpoint,
+            name: "opaque.uncloud.example".into(),
+            token: "raw-token".into(),
+        };
+
+        let error = HostedDns::new()
+            .purge_hosted_records(&reservation)
+            .await
+            .unwrap_err();
+
+        let display = error.to_string();
+        assert!(display.contains("InvalidChangeBatch"), "{display}");
+        assert!(
+            display.contains("values provided do not match"),
+            "{display}"
+        );
+        assert!(!display.eq("hosted DNS returned HTTP 500"), "{display}");
+    }
+
+    #[tokio::test]
+    async fn release_overwrites_wildcard_when_purge_hits_stale_hosted_values() {
+        let (endpoint, requests) = fake_server([
+            (
+                500,
+                r#"{"status":500,"msg":"failed to delete route53 records for domain opaque.uncloud.example with error InvalidChangeBatch: [Tried to delete resource record set [name='\\052.opaque.uncloud.example.', type='A'] but the values provided do not match the current values]"}"#,
+            ),
+            (
+                201,
+                r#"{"name":"*","type":"A","values":["192.0.2.1"],"fqdn":"*.opaque.uncloud.example"}"#,
+            ),
+            (
+                201,
+                r#"{"name":"*","type":"AAAA","values":["2001:db8::1"],"fqdn":"*.opaque.uncloud.example"}"#,
+            ),
+        ])
+        .await;
+        let reservation = super::Reservation {
+            endpoint,
+            name: "opaque.uncloud.example".into(),
+            token: "raw-token".into(),
+        };
+
+        HostedDns::new().release_hosted(&reservation).await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let requests = requests.lock().unwrap();
+        let [purge, a_request, aaaa_request] = requests.as_slice() else {
+            panic!("expected one purge and two neutralize requests");
+        };
+        assert!(
+            purge
+                .head
+                .starts_with("POST /v1/domains/opaque.uncloud.example/purgerecords HTTP/1.1\r\n")
+        );
+        assert!(
+            a_request
+                .head
+                .starts_with("POST /v1/domains/opaque.uncloud.example/records HTTP/1.1\r\n")
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&a_request.body).unwrap(),
+            serde_json::json!({"name":"*","type":"A","values":["192.0.2.1"]})
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&aaaa_request.body).unwrap(),
+            serde_json::json!({"name":"*","type":"AAAA","values":["2001:db8::1"]})
+        );
     }
 
     #[tokio::test]
