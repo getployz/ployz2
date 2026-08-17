@@ -129,10 +129,7 @@ pub(crate) fn renewal_window(
     if lifetime.is_zero() {
         return None;
     }
-    Some(saturating_add(
-        not_before,
-        duration_fraction(lifetime, fraction),
-    ))
+    Some(saturating_add(not_before, lifetime.mul_f64(fraction)))
 }
 
 fn renew_at(
@@ -183,11 +180,6 @@ fn asn1_to_system(time: x509_parser::time::ASN1Time) -> Option<SystemTime> {
     } else {
         UNIX_EPOCH.checked_sub(Duration::from_secs(secs.unsigned_abs()))
     }
-}
-
-fn duration_fraction(duration: Duration, fraction: f64) -> Duration {
-    let nanos = (duration.as_nanos() as f64 * fraction).round();
-    Duration::from_nanos(u64::try_from(nanos as u128).unwrap_or(u64::MAX))
 }
 
 fn saturating_add(time: SystemTime, duration: Duration) -> SystemTime {
