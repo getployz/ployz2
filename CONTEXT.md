@@ -160,8 +160,16 @@ _Avoid_: Management Address, globally unique container address
 An observer-local, TTL-zero A answer derived from replicated healthy Service Container observations. It is not persisted and is not authoritative Cluster state even though the DNS response is authoritative for the `.internal` zone.
 _Avoid_: Service registry record, membership-filtered endpoint set
 
+**Cluster Domain**:
+The reserved hosted FQDN this Cluster publishes Ingress Hostnames under. It is not an Internal DNS name and not a Worker lease identifier.
+_Avoid_: reserved domain, cluster hostname, lease slug, reservation name
+
+**Hosted DNS Renew Request**:
+The cluster-scoped stored HTTP renew that keeps a Cluster Domain's hosted lease and public addresses live. The daemon POSTs it as stored and does not interpret the records in it.
+_Avoid_: DNS records RPC, reservation, CreateDomainRecords
+
 **Ingress Hostname**:
-The HTTP hostname a Service publishes through ingress: assignment from the reserved hosted DNS domain, or an explicit validated hostname. An empty string is not an assignment signal.
+The HTTP hostname a Service publishes through ingress: assignment from the Cluster Domain, or an explicit validated hostname. An empty string is not an assignment signal.
 _Avoid_: empty hostname sentinel
 
 **Certificate Material**:
