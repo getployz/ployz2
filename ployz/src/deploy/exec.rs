@@ -638,6 +638,12 @@ async fn monitor_container<C: MachineOperations>(
     }
 
     let monitor_deadline = started + monitor;
+    // A crash loop can report healthy at the deadline during a restart window.
+    let healthy_until = if monitor.is_zero() {
+        monitor_deadline
+    } else {
+        monitor_deadline + POLL_INTERVAL
+    };
     loop {
         if cancellation.is_cancelled() {
             return Err(health_error(container_id, HealthFailure::Cancelled));
@@ -651,7 +657,7 @@ async fn monitor_container<C: MachineOperations>(
             now,
             monitor_deadline,
             health_deadline,
-            monitor,
+            healthy_until,
         ) {
             HealthPoll::Complete => return Ok(()),
             HealthPoll::PendingUntil(deadline) => deadline,
@@ -672,23 +678,16 @@ fn classify_health(
     now: Instant,
     monitor_deadline: Instant,
     health_deadline: Option<Instant>,
-    monitor: Duration,
+    healthy_until: Instant,
 ) -> HealthPoll {
     match runtime {
         ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
         } => {
-            // A crash loop can report healthy at the deadline during a restart
-            // window. Hold one more poll so Restarting can still fail the deploy.
-            let hold_until = if monitor.is_zero() {
-                monitor_deadline
-            } else {
-                monitor_deadline + POLL_INTERVAL
-            };
-            if now >= hold_until {
+            if now >= healthy_until {
                 HealthPoll::Complete
             } else {
-                HealthPoll::PendingUntil(hold_until)
+                HealthPoll::PendingUntil(healthy_until)
             }
         }
         ContainerRuntimeObservation::Running {
