@@ -2,6 +2,15 @@
 
 Rust reconstruction of Uncloud preserving its deliberate architecture and limitations
 
+## Install
+
+```sh
+curl -fsSL https://ployz.sh | sh
+brew install getployz/ployz/ployz
+```
+
+Release process: [docs/RELEASE.md](docs/RELEASE.md).
+
 ## Workspace
 
 - `ployz-core`: domain and wire contracts shared by both binaries

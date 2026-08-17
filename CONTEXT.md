@@ -164,6 +164,18 @@ _Avoid_: Service registry record, membership-filtered endpoint set
 The HTTP hostname a Service publishes through ingress: assignment from the reserved hosted DNS domain, or an explicit validated hostname. An empty string is not an assignment signal.
 _Avoid_: empty hostname sentinel
 
+**Certificate Material**:
+The certificate and private key held in cluster state for one Ingress Hostname. It is served as given; it is not an issuance request and not a local proxy store.
+_Avoid_: Caddy certificate, ACME certificate, cert secret
+
+**Certificate Policy**:
+The cluster-state values that steer certificate issuance: authority directory, external account binding, key type, renewal fraction, backoff bounds, and probe timeout. Absence means the daemon's built-in defaults. A challenge kind the daemon cannot perform is a refusal, not a default.
+_Avoid_: ACME config, daemon certificate constants, CA settings
+
+**Cluster DNS Verdict**:
+Whether an Ingress Hostname's resolved addresses intersect this Cluster's Machine public addresses. It is not Caddy health, certificate readiness, or a Deploy failure.
+_Avoid_: DNS health, certificate gate, reachability
+
 **Nearest DNS Selector**:
 An Internal DNS selector that orders addresses from the observing Machine's subnet before other addresses. It expresses subnet locality, not measured reachability or latency.
 _Avoid_: closest Machine, available endpoint
@@ -179,6 +191,14 @@ _Avoid_: Selected Endpoint, current endpoint
 **Selected Endpoint**:
 The endpoint one observing Machine currently selects for reaching a target Machine. Different observers may select different endpoints for the same target.
 _Avoid_: Advertised Endpoint, globally current endpoint
+
+**Cloud Relay**:
+The hosted byte pipe a Machine dials out to and holds open so Cloud can reach it without an inbound route. It carries opaque streams and interprets none of them. It is not a Machine, not a mesh peer, and holds no Cluster observation.
+_Avoid_: Machine Proxy, tunnel binary, control plane
+
+**Cloud Pairing**:
+The cluster-scoped grant of a Cloud Relay endpoint and bearer that makes a Cluster's Machines dial out. Absence means no Machine dials. It authenticates a Cluster to the relay and is not a per-Machine credential, not daemon-side authorization, and not proof any Machine is currently connected.
+_Avoid_: per-Machine credential, login, daemon authn
 
 **Live Observation**:
 Data obtained by directly querying a Machine at a point in time. It may still be incomplete, entry-relative, or obsolete immediately after collection.

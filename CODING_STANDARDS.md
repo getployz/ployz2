@@ -2,6 +2,8 @@
 
 Apply to new and touched code. rustfmt and the workspace Clippy lints in `Cargo.toml` remain the source of truth for format and lint. New Clippy suppressions are `#[expect(clippy::lint)]` with a why, not `#[allow]`. Treat `redundant_clone` and `needless_collect` as bugs even when Clippy is quiet.
 
+Run every code change through this lens: ployz updates are cheap; ployzd daemon updates are not. A cluster that opts out of updates can leave ployzd unchanged for years, and every RPC on it is maintenance for as long as it does. Put new behavior in ployz. Latest ployz must still speak to that lagged ployzd — versions eventually drop; that is not the baseline.
+
 ## Names
 
 Accessors omit `get_`: `name()`, `as_str()`. Wire RPC method names that already exist on the contract (`get_caddy_config`) stay as they are.
@@ -15,6 +17,8 @@ Conversion prefixes:
 Iterators are `iter()` / `iter_mut()` / `into_iter()`. Keep an iterator an iterator until a collection is the result.
 
 ## Types
+
+A type cannot represent an illegal state. If two cases cannot both be true, they are not bools, string modes, or paired `Option`s. If two fields must stay consistent, they are one type, not two a caller can desync. Replace those shapes with a type that cannot hold the illegal combination.
 
 A `CONTEXT.md` term is a newtype, not `String` or a primitive. `MachineId` and `MachineName` are different types.
 

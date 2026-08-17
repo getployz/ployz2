@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::{service::Routes, transport::Server};
 
 use crate::{
-    caddy,
+    caddy, certificates,
     corrosion::{
         CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
         RunningCorrosion, run_machine_publisher,
@@ -159,6 +159,8 @@ impl Daemon {
         let (participating, participating_rx) =
             watch::channel(local_record.phase == LocalMachinePhase::Participating);
         let (reset, reset_rx) = watch::channel(false);
+        let certificate_data_dir = config.data_dir.clone();
+        let acme_directory = certificates::directory_url();
         let caddyfile = caddy::caddyfile_path(&config.data_dir);
         let caddy_admin_socket = config
             .socket
@@ -281,6 +283,27 @@ impl Daemon {
                     }
                 }
             };
+            let certificates = async {
+                if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
+                    return Ok(());
+                }
+                match replicated_store.clone() {
+                    Some(replicated) => {
+                        certificates::run(
+                            replicated,
+                            certificate_data_dir,
+                            acme_directory,
+                            local_record.id,
+                            shutdown.clone(),
+                        )
+                        .await
+                    }
+                    None => {
+                        shutdown.cancelled().await;
+                        Ok(())
+                    }
+                }
+            };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
                 metrics,
@@ -290,6 +313,7 @@ impl Daemon {
                 observer,
                 dns,
                 caddy,
+                certificates,
             )
             .map(|_| ())
         });
@@ -325,10 +349,16 @@ impl Daemon {
     /// Wait until a signal, [`request_stop`](Self::request_stop), or restart-request
     /// finishes shutdown or reset.
     ///
+    /// systemd READY is advertised only after SIGINT/SIGTERM are catchable, so a
+    /// stop that races with READY cannot hit the default terminate action.
+    ///
     /// # Errors
     ///
     /// If a plane or cleanup step fails.
     pub async fn wait(mut self) -> Result<(), Error> {
+        let mut interrupt = signal(SignalKind::interrupt())?;
+        let mut terminate = signal(SignalKind::terminate())?;
+        notify(NotifyState::Ready);
         let mut servers = self.servers;
         let mut completed_servers = None;
         let mut errors = Vec::new();
@@ -337,13 +367,8 @@ impl Daemon {
                 completed_servers = Some(join_servers(result));
                 StopKind::Plane
             },
-            result = shutdown_signal() => match result {
-                Ok(signal) => StopKind::Signal(signal),
-                Err(error) => {
-                    errors.push(error.to_string());
-                    StopKind::WatchFailed("signal")
-                }
-            },
+            _ = interrupt.recv() => StopKind::Signal("SIGINT"),
+            _ = terminate.recv() => StopKind::Signal("SIGTERM"),
             () = self.stop.cancelled() => StopKind::Stop,
             changed = self.reset_rx.changed() => match changed {
                 Ok(()) => StopKind::Restart,
@@ -558,15 +583,6 @@ enum StopKind {
     WatchFailed(&'static str),
 }
 
-async fn shutdown_signal() -> io::Result<&'static str> {
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
-    tokio::select! {
-        _ = interrupt.recv() => Ok("SIGINT"),
-        _ = terminate.recv() => Ok("SIGTERM"),
-    }
-}
-
 fn bind_socket(path: &Path) -> io::Result<(UnixListener, File)> {
     let parent = path
         .parent()
@@ -631,8 +647,8 @@ mod tests {
     use tokio::net::UnixListener;
 
     use ployz_core::{
-        DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, LIST_CONTAINERS_CAPABILITY,
-        MachineRpcClient, ResetRequest, op,
+        CERTIFICATE_POLICY_CAPABILITY, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest,
+        LIST_CONTAINERS_CAPABILITY, MachineRpcClient, ResetRequest, op,
     };
     use tonic::transport::Endpoint;
 
@@ -724,6 +740,7 @@ mod tests {
         let daemon = Daemon::start(config).await.unwrap();
         let description = describe(&socket).await;
         assert!(description.supports(DESCRIBE_CONTRACT_CAPABILITY));
+        assert!(description.supports(CERTIFICATE_POLICY_CAPABILITY));
         assert!(!description.supports(LIST_CONTAINERS_CAPABILITY));
         daemon.request_stop();
         daemon.wait().await.unwrap();

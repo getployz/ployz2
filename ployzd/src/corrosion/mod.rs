@@ -1,5 +1,6 @@
 mod admin;
 mod api;
+mod certificate;
 mod service;
 mod store;
 
@@ -9,6 +10,7 @@ mod integration_tests;
 pub use admin::{AdminClient, MembershipState};
 pub(crate) use api::Subscription;
 use api::{ApiClient, Statement};
+pub use certificate::{CertificateChallenge, CertificateMaterial, CertificateRow};
 pub use service::{
     CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, DEFAULT_GOSSIP_ADDRESS,
     RunningCorrosion,

@@ -6,13 +6,19 @@ use std::{
 };
 
 use ipnet::Ipv4Net;
-use ployz_core::{ContainerId, ContainerObservation, LocalMachinePhase, Machine, MachineId};
+use ployz_core::{
+    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, IngressHost, IssuanceClock,
+    LocalMachinePhase, Machine, MachineId,
+};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{ApiClient, Error, Statement, Subscription};
+use super::{
+    ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error, Statement,
+    Subscription,
+};
 use crate::{
     hosted_dns::Reservation,
     machine::{LocalMachineRecord, LocalMachineStore, StoreError},
@@ -335,6 +341,155 @@ impl ReplicatedStore {
             .await
     }
 
+    pub async fn publish_certificate(
+        &self,
+        hostname: &IngressHost,
+        material: &CertificateMaterial,
+    ) -> Result<(), Error> {
+        let latest = self.certificate_row(hostname).await?;
+        if latest.material() == Some(material) && latest.challenge().is_none() {
+            return Ok(());
+        }
+        self.upsert_certificate(hostname, &CertificateRow::issued(material.clone()))
+            .await
+    }
+
+    pub async fn certificate(
+        &self,
+        hostname: &IngressHost,
+    ) -> Result<Option<CertificateMaterial>, Error> {
+        Ok(self.certificate_row(hostname).await?.into_material())
+    }
+
+    pub(crate) async fn certificate_row(
+        &self,
+        hostname: &IngressHost,
+    ) -> Result<CertificateRow, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT body FROM certificates WHERE hostname = ?",
+                [json!(hostname.as_str())],
+            ))
+            .await?;
+        let rows = query.rows(["body"])?;
+        let Some([encoded]) = rows.first() else {
+            return Ok(CertificateRow::default());
+        };
+        CertificateRow::decode(text(encoded, "certificate body")?)
+    }
+
+    async fn upsert_certificate(
+        &self,
+        hostname: &IngressHost,
+        row: &CertificateRow,
+    ) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO certificates (hostname, body, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (hostname) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+                [json!(hostname.as_str()), json!(row.encode()?)],
+            )])
+            .await
+    }
+
+    pub async fn publish_certificate_challenge(
+        &self,
+        hostname: &IngressHost,
+        challenge: &CertificateChallenge,
+    ) -> Result<(), Error> {
+        let latest = self.certificate_row(hostname).await?;
+        if latest.challenge() == Some(challenge) {
+            return Ok(());
+        }
+        self.upsert_certificate(hostname, &latest.with_challenge(challenge.clone()))
+            .await
+    }
+
+    /// Record why a hostname has no certificate and when the Cluster may try again.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or written.
+    pub async fn record_certificate_failure(
+        &self,
+        hostname: &IngressHost,
+        last_error: impl Into<String>,
+        clock: IssuanceClock,
+    ) -> Result<(), Error> {
+        let latest = self.certificate_row(hostname).await?;
+        if latest.material().is_some() {
+            return Ok(());
+        }
+        self.upsert_certificate(hostname, &latest.with_backoff(last_error, clock))
+            .await
+    }
+
+    pub async fn record_certificate_error(
+        &self,
+        hostname: &IngressHost,
+        reason: &str,
+    ) -> Result<(), Error> {
+        let latest = self.certificate_row(hostname).await?;
+        if latest.last_error() == Some(reason) {
+            return Ok(());
+        }
+        self.upsert_certificate(hostname, &latest.with_error(reason))
+            .await
+    }
+
+    pub async fn certificate_policy(&self) -> Result<Option<String>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT value FROM cluster WHERE key = ?",
+                [json!(CERTIFICATE_POLICY_CLUSTER_KEY)],
+            ))
+            .await?;
+        let rows = query.rows(["value"])?;
+        let Some([value]) = rows.first() else {
+            return Ok(None);
+        };
+        let encoded = text(value, "certificate policy")?;
+        Ok((!encoded.is_empty()).then(|| encoded.to_owned()))
+    }
+
+    pub async fn certificates(&self) -> Result<BTreeMap<IngressHost, CertificateMaterial>, Error> {
+        Ok(self
+            .certificate_state()
+            .await?
+            .into_iter()
+            .filter_map(|(hostname, row)| row.into_material().map(|material| (hostname, material)))
+            .collect())
+    }
+
+    pub async fn certificate_state(&self) -> Result<BTreeMap<IngressHost, CertificateRow>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT hostname, body FROM certificates ORDER BY hostname",
+                [],
+            ))
+            .await?;
+        let mut rows = BTreeMap::new();
+        for [hostname, encoded] in query.rows(["hostname", "body"])? {
+            let hostname = IngressHost::parse(text(&hostname, "certificate hostname")?)?;
+            rows.insert(
+                hostname,
+                CertificateRow::decode(text(&encoded, "certificate body")?)?,
+            );
+        }
+        Ok(rows)
+    }
+
+    pub(crate) async fn subscribe_certificate_changes(&self) -> Result<Subscription, Error> {
+        self.api
+            .subscribe(Statement::new(
+                "SELECT hostname, body FROM certificates",
+                [],
+            ))
+            .await
+    }
+
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {
         let query = self
             .api
@@ -585,9 +740,10 @@ mod tests {
         collections::BTreeMap,
         net::TcpListener,
         sync::{Arc, Mutex},
+        time::SystemTime,
     };
 
-    use ployz_core::{LocalMachinePhase, Machine};
+    use ployz_core::{IngressHost, IssuanceClock, IssuanceFailure, LocalMachinePhase, Machine};
     use serde_json::json;
 
     use super::ReplicatedStore;
@@ -677,6 +833,25 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let store = ReplicatedStore::new(ApiClient::new(address, &"a".repeat(64)).unwrap());
+        let hostname = IngressHost::parse("app.example.com").unwrap();
+        assert!(
+            store
+                .record_certificate_failure(
+                    &hostname,
+                    "does not resolve",
+                    IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::DoesNotResolve,),
+                )
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

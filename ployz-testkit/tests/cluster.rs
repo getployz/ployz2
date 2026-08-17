@@ -741,14 +741,19 @@ async fn multi_platform_direct_push_retains_success_beside_target_failure() {
     assert!(
         failure
             .to_string()
-            .contains(machines.first().unwrap().id.as_str())
+            .contains(machines.first().unwrap().id.as_str()),
+        "unavailable source must be named: {failure}"
     );
     let retained = cluster.images(1, Some(image.clone())).await.unwrap();
     let image = retained
         .images
         .iter()
         .find(|entry| entry.repo_tags.contains(&image))
-        .expect("successful target retained the original image reference");
+        .unwrap_or_else(|| {
+            panic!(
+                "successful target retained the original image reference\npush error: {failure}\nimages: {retained:?}"
+            )
+        });
     assert!(
         image
             .platforms

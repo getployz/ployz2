@@ -3,7 +3,7 @@
 - `plain-caddy-config` — Drop `ployz caddy config --no-color`; the Machine RPC returns the owned Caddyfile as plain text and Ployz has no coloured mode to disable.
 - `native-completion` — Add `ployz completion <SHELL>`; completion is preserved through Clap's native shell generators rather than Cobra's hidden protocol.
 - `local-machine-init-stub` — Make `ployz machine init [DESTINATION]` syntactically optional so the preserved local-initialisation path reaches its explicit not-implemented handler.
-- `no-nightly-daemon-channel` — Reject `--version nightly`; Ployz has stable `latest` and explicit-version daemon installs only.
+- `no-nightly-daemon-channel` — Reject `--version nightly`; Ployz has `stable`, `beta`, and explicit-version installs only.
 - `compose-plugin-scope` — Probe the client-side Docker Compose plugin only for `deploy`, `build`, and bare `logs`; explicit-service `logs` and unrelated commands have no global Compose preflight.
 - `compose-prerequisite-errors` — Report command-specific Ployz prerequisite errors when the Docker CLI or Compose plugin is unavailable, without requiring a reachable Docker daemon.
 - `compose-diagnostics-source` — Preserve a failed `docker compose config` diagnostic unchanged when the subsequent plugin-version probe succeeds.
