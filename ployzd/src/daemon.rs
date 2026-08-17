@@ -33,7 +33,7 @@ use crate::{
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     filesystem::set_ployz_group,
-    machine::{LocalMachineStore, StoreError},
+    machine::{LocalMachineBody, LocalMachineStore, StoreError},
     metrics,
     network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane},
     proxy::MachineProxy,
@@ -523,22 +523,23 @@ async fn start_corrosion(
         .map_err(|_| Error::StorePoisoned)?
         .record()
         .clone();
-    let phase = record.phase();
-    if !matches!(
-        phase,
-        LocalMachinePhase::Joining | LocalMachinePhase::Participating
-    ) {
-        return Ok(None);
-    }
-    let Some(machine) = record.machine().cloned() else {
-        return Ok(None);
+    let (machine, bootstrap) = match record.body {
+        LocalMachineBody::Joining {
+            machine, bootstrap, ..
+        }
+        | LocalMachineBody::Participating {
+            machine, bootstrap, ..
+        } => (machine, bootstrap),
+        LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
+            return Ok(None);
+        }
     };
     let run_dir = config
         .socket
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?
         .join("corrosion");
-    let bootstrap = record.bootstrap().iter().map(|machine| {
+    let bootstrap = bootstrap.iter().map(|machine| {
         SocketAddr::new(
             IpAddr::V6(machine.management_address.0),
             CORROSION_GOSSIP_PORT,

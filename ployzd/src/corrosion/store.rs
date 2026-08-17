@@ -8,7 +8,7 @@ use std::{
 use ipnet::Ipv4Net;
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, IngressHost, IssuanceClock,
-    LocalMachinePhase, Machine, MachineId,
+    Machine, MachineId,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -21,7 +21,7 @@ use super::{
 };
 use crate::{
     hosted_dns::Reservation,
-    machine::{LocalMachineRecord, LocalMachineStore, StoreError},
+    machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore, StoreError},
 };
 
 #[derive(Clone)]
@@ -40,7 +40,7 @@ impl MachinePublicationGuard<'_> {
         &self,
         local: &mut LocalMachineStore,
     ) -> Result<bool, StoreError> {
-        if local.record().phase() != LocalMachinePhase::Joining {
+        if !matches!(local.record().body, LocalMachineBody::Joining { .. }) {
             return Ok(false);
         }
         local.complete_catch_up()?;
@@ -48,9 +48,12 @@ impl MachinePublicationGuard<'_> {
     }
 
     pub(crate) fn publishable_machine(&self, local: &LocalMachineRecord) -> Option<Machine> {
-        (local.phase() == LocalMachinePhase::Participating)
-            .then(|| local.machine().cloned())
-            .flatten()
+        match &local.body {
+            LocalMachineBody::Participating { machine, .. } => Some(machine.clone()),
+            LocalMachineBody::Uninitialized { .. }
+            | LocalMachineBody::Joining { .. }
+            | LocalMachineBody::Resetting { .. } => None,
+        }
     }
 
     pub(crate) async fn publish(&self, machine: &Machine) -> Result<(), Error> {
@@ -623,10 +626,14 @@ pub async fn run_machine_publisher(
             let local = local
                 .lock()
                 .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-            (
-                local.record().phase() == LocalMachinePhase::Joining,
-                local.record().min_store_version().clone(),
-            )
+            match &local.record().body {
+                LocalMachineBody::Joining {
+                    min_store_version, ..
+                } => (true, min_store_version.clone()),
+                LocalMachineBody::Uninitialized { .. }
+                | LocalMachineBody::Participating { .. }
+                | LocalMachineBody::Resetting { .. } => (false, BTreeMap::new()),
+            }
         };
         if joining {
             tokio::select! {
@@ -748,7 +755,9 @@ mod tests {
 
     use super::ReplicatedStore;
     use crate::corrosion::ApiClient;
-    use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore};
+    use crate::machine::{
+        LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
+    };
 
     #[tokio::test]
     async fn catch_up_waits_for_removal_and_rechecks_phase() {
@@ -859,9 +868,21 @@ mod tests {
         let publication = store.machine_publication().await;
         assert_eq!(publication.publishable_machine(&local), Some(machine));
 
+        let LocalMachineBody::Participating {
+            machine: body_machine,
+            cluster_network,
+            bootstrap,
+        } = local.body
+        else {
+            panic!("fixture is participating");
+        };
         let local = LocalMachineRecord {
             body: LocalMachineBody::Resetting {
-                prior: Box::new(local.body),
+                prior: Box::new(LocalMachinePrior::Participating {
+                    machine: body_machine,
+                    cluster_network,
+                    bootstrap,
+                }),
             },
             ..local
         };

@@ -13,8 +13,8 @@ use ployz_core::{
     MachineRuntime, MachineUpdate, PublicIpUpdate, SelectedEndpoint,
 };
 use ployzd::machine::{
-    LocalMachine, LocalMachineBody, LocalMachineError, LocalMachineRecord, LocalMachineStore,
-    StoreError,
+    LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior, LocalMachineRecord,
+    LocalMachineStore, StoreError,
 };
 use ployzd::network::WireGuardPrivateKey;
 
@@ -271,7 +271,7 @@ fn reset_stops_if_the_machine_record_changes() {
     store.begin_reset().unwrap();
     let replacement = LocalMachineRecord {
         body: LocalMachineBody::Resetting {
-            prior: Box::new(LocalMachineBody::Uninitialized {
+            prior: Box::new(LocalMachinePrior::Uninitialized {
                 id: ployz_core::MachineId::random(),
             }),
         },
@@ -343,6 +343,16 @@ fn completing_catch_up_persists_participation_and_clears_the_target() {
     assert_eq!(reopened.record().phase(), LocalMachinePhase::Participating);
     assert!(reopened.record().min_store_version().is_empty());
     assert!(reopened.record().cluster_network().is_none());
+}
+
+#[test]
+fn complete_catch_up_requires_joining() {
+    let dir = TestDir::new("ployzd-catch-up-not-joining");
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
+    assert!(matches!(
+        store.complete_catch_up(),
+        Err(StoreError::NotJoining)
+    ));
 }
 
 #[test]
@@ -467,7 +477,7 @@ fn legal_bodies_round_trip() {
         },
         LocalMachineRecord {
             body: LocalMachineBody::Resetting {
-                prior: Box::new(LocalMachineBody::Participating {
+                prior: Box::new(LocalMachinePrior::Participating {
                     machine,
                     cluster_network: None,
                     bootstrap: Vec::new(),

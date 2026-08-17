@@ -30,7 +30,7 @@ use super::{
 };
 use crate::{
     corrosion::{ReplicatedObservations, ReplicatedStore},
-    machine::{LocalMachineRecord, LocalMachineStore},
+    machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore},
 };
 
 const NETWORK_MTU: u32 = 1420;
@@ -91,14 +91,16 @@ pub struct NetworkPlane {
 
 impl NetworkPlane {
     pub async fn start(record: &LocalMachineRecord) -> Result<Option<Self>, NetworkError> {
-        if !matches!(
-            record.phase(),
-            LocalMachinePhase::Joining | LocalMachinePhase::Participating
-        ) {
-            return Ok(None);
-        }
-        let Some(machine) = record.machine().cloned() else {
-            return Ok(None);
+        let (machine, bootstrap) = match &record.body {
+            LocalMachineBody::Joining {
+                machine, bootstrap, ..
+            }
+            | LocalMachineBody::Participating {
+                machine, bootstrap, ..
+            } => (machine.clone(), bootstrap.as_slice()),
+            LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
+                return Ok(None);
+            }
         };
         let private_key = record.wireguard_private_key.clone();
         if private_key.public_key() != machine.public_key {
@@ -112,7 +114,7 @@ impl NetworkPlane {
         let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME.into())?;
         wireguard.create_interface()?;
         let now = SystemTime::now();
-        let peers = peers_for(&machine.id, record.bootstrap());
+        let peers = peers_for(&machine.id, bootstrap);
         let selections = peers
             .iter()
             .filter_map(|peer| {

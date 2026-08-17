@@ -55,7 +55,29 @@ pub enum LocalMachineBody {
         bootstrap: Vec<Machine>,
     },
     Resetting {
-        prior: Box<LocalMachineBody>,
+        prior: Box<LocalMachinePrior>,
+    },
+}
+
+/// Live body wrapped by Resetting. Cannot itself be Resetting.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum LocalMachinePrior {
+    Uninitialized {
+        id: MachineId,
+    },
+    Joining {
+        machine: Machine,
+        bootstrap: Vec<Machine>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        min_store_version: BTreeMap<String, i64>,
+    },
+    Participating {
+        machine: Machine,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cluster_network: Option<Ipv4Net>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bootstrap: Vec<Machine>,
     },
 }
 
@@ -74,6 +96,47 @@ pub struct LocalMachineRecord {
 }
 
 static EMPTY_STORE_VERSION: BTreeMap<String, i64> = BTreeMap::new();
+
+impl LocalMachinePrior {
+    fn id(&self) -> MachineId {
+        match self {
+            Self::Uninitialized { id } => *id,
+            Self::Joining { machine, .. } | Self::Participating { machine, .. } => machine.id,
+        }
+    }
+
+    fn machine(&self) -> Option<&Machine> {
+        match self {
+            Self::Uninitialized { .. } => None,
+            Self::Joining { machine, .. } | Self::Participating { machine, .. } => Some(machine),
+        }
+    }
+
+    fn cluster_network(&self) -> Option<Ipv4Net> {
+        match self {
+            Self::Participating {
+                cluster_network, ..
+            } => *cluster_network,
+            Self::Uninitialized { .. } | Self::Joining { .. } => None,
+        }
+    }
+
+    fn bootstrap(&self) -> &[Machine] {
+        match self {
+            Self::Uninitialized { .. } => &[],
+            Self::Joining { bootstrap, .. } | Self::Participating { bootstrap, .. } => bootstrap,
+        }
+    }
+
+    fn min_store_version(&self) -> &BTreeMap<String, i64> {
+        match self {
+            Self::Joining {
+                min_store_version, ..
+            } => min_store_version,
+            Self::Uninitialized { .. } | Self::Participating { .. } => &EMPTY_STORE_VERSION,
+        }
+    }
+}
 
 impl LocalMachineBody {
     fn id(&self) -> MachineId {
@@ -98,14 +161,6 @@ impl LocalMachineBody {
             Self::Uninitialized { .. } => None,
             Self::Joining { machine, .. } | Self::Participating { machine, .. } => Some(machine),
             Self::Resetting { prior } => prior.machine(),
-        }
-    }
-
-    fn machine_mut(&mut self) -> Option<&mut Machine> {
-        match self {
-            Self::Uninitialized { .. } => None,
-            Self::Joining { machine, .. } | Self::Participating { machine, .. } => Some(machine),
-            Self::Resetting { prior } => prior.machine_mut(),
         }
     }
 
@@ -136,6 +191,33 @@ impl LocalMachineBody {
             Self::Uninitialized { .. } | Self::Participating { .. } => &EMPTY_STORE_VERSION,
         }
     }
+
+    fn into_prior(self) -> LocalMachinePrior {
+        match self {
+            Self::Uninitialized { id } => LocalMachinePrior::Uninitialized { id },
+            Self::Joining {
+                machine,
+                bootstrap,
+                min_store_version,
+            } => LocalMachinePrior::Joining {
+                machine,
+                bootstrap,
+                min_store_version,
+            },
+            Self::Participating {
+                machine,
+                cluster_network,
+                bootstrap,
+            } => LocalMachinePrior::Participating {
+                machine,
+                cluster_network,
+                bootstrap,
+            },
+            Self::Resetting { .. } => {
+                unreachable!("prepare_reset rejects an already resetting Machine")
+            }
+        }
+    }
 }
 
 impl LocalMachineRecord {
@@ -155,10 +237,6 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn machine(&self) -> Option<&Machine> {
         self.body.machine()
-    }
-
-    fn machine_mut(&mut self) -> Option<&mut Machine> {
-        self.body.machine_mut()
     }
 
     /// Cluster IPv4 pool when this participating Machine has one.
@@ -182,9 +260,11 @@ impl LocalMachineRecord {
     fn into_resetting(self) -> Self {
         Self {
             body: LocalMachineBody::Resetting {
-                prior: Box::new(self.body),
+                prior: Box::new(self.body.into_prior()),
             },
-            ..self
+            wireguard_private_key: self.wireguard_private_key,
+            wireguard_mtu: self.wireguard_mtu,
+            selected_endpoints: self.selected_endpoints,
         }
     }
 }
@@ -299,18 +379,25 @@ impl LocalMachineStore {
     }
 
     fn refresh_runtime(&mut self) -> Result<(), StoreError> {
-        let Some(machine) = self.record.machine() else {
-            return Ok(());
-        };
         let runtime = local_runtime();
-        if machine.runtime == runtime {
+        let stale = match &self.record.body {
+            LocalMachineBody::Joining { machine, .. }
+            | LocalMachineBody::Participating { machine, .. } => machine.runtime != runtime,
+            LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
+                return Ok(());
+            }
+        };
+        if !stale {
             return Ok(());
         }
         let mut refreshed = self.record.clone();
-        refreshed
-            .machine_mut()
-            .expect("Machine presence was checked")
-            .runtime = runtime;
+        match &mut refreshed.body {
+            LocalMachineBody::Joining { machine, .. }
+            | LocalMachineBody::Participating { machine, .. } => machine.runtime = runtime,
+            LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
+                return Ok(());
+            }
+        }
         save(&self.data_dir, &refreshed)?;
         self.record = refreshed;
         Ok(())
@@ -347,8 +434,7 @@ impl LocalMachineStore {
         if advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
-        let private_key = self.record.wireguard_private_key.clone();
-        let public_key = private_key.public_key();
+        let public_key = self.record.wireguard_private_key.public_key();
         let machine = Machine {
             id: self.record.id(),
             name,
@@ -383,8 +469,7 @@ impl LocalMachineStore {
         if visible_peers.is_empty() {
             return Err(StoreError::MissingPeers);
         }
-        let private_key = self.record.wireguard_private_key.clone();
-        if private_key.public_key() != assigned_machine.public_key {
+        if self.record.wireguard_private_key.public_key() != assigned_machine.public_key {
             return Err(StoreError::KeyMismatch);
         }
         assigned_machine.runtime = local_runtime();
@@ -405,18 +490,17 @@ impl LocalMachineStore {
         update: MachineUpdate,
         visible: &[Machine],
     ) -> Result<Machine, StoreError> {
-        if self.record.phase() != LocalMachinePhase::Participating {
-            return Err(StoreError::NotParticipating);
-        }
-        let machine = self
-            .record
-            .machine()
-            .expect("Participating carries a Machine");
-        let updated = apply_machine_update(machine, visible, update)?;
+        let updated = {
+            let LocalMachineBody::Participating { machine, .. } = &self.record.body else {
+                return Err(StoreError::NotParticipating);
+            };
+            apply_machine_update(machine, visible, update)?
+        };
         let mut record = self.record.clone();
-        *record
-            .machine_mut()
-            .expect("Participating carries a Machine") = updated.clone();
+        let LocalMachineBody::Participating { machine, .. } = &mut record.body else {
+            return Err(StoreError::NotParticipating);
+        };
+        *machine = updated.clone();
         save(&self.data_dir, &record)?;
         self.record = record;
         Ok(updated)
