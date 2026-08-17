@@ -490,16 +490,11 @@ impl LocalMachineStore {
         update: MachineUpdate,
         visible: &[Machine],
     ) -> Result<Machine, StoreError> {
-        let updated = {
-            let LocalMachineBody::Participating { machine, .. } = &self.record.body else {
-                return Err(StoreError::NotParticipating);
-            };
-            apply_machine_update(machine, visible, update)?
-        };
         let mut record = self.record.clone();
         let LocalMachineBody::Participating { machine, .. } = &mut record.body else {
             return Err(StoreError::NotParticipating);
         };
+        let updated = apply_machine_update(machine, visible, update)?;
         *machine = updated.clone();
         save(&self.data_dir, &record)?;
         self.record = record;
