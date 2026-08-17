@@ -188,10 +188,11 @@ async fn reconcile<A: CaddyAdmin>(
     // intentionally changed across replicated projections.
     write_certificate_files(config_file, certificates)?;
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let containers = service_containers(observations.iter().cloned());
     let caddyfile = generate_caddyfile(
         &machine.id,
         machine.name.as_str(),
-        observations,
+        &containers,
         &timestamp,
         certificates,
         admin,
@@ -292,16 +293,15 @@ fn prepare_directory(path: &Path) -> io::Result<()> {
 async fn generate_caddyfile<A: CaddyAdmin>(
     local_machine: &MachineId,
     machine_name: &str,
-    observations: &[ContainerObservation],
+    containers: &[ServiceContainer],
     timestamp: &str,
     certificates: &BTreeMap<IngressHost, CertificateRow>,
     admin: Option<&A>,
 ) -> String {
-    let containers = service_containers(observations.iter().cloned());
     let mut output = automatic_caddyfile(
         local_machine,
         machine_name,
-        observations,
+        containers,
         timestamp,
         None,
         certificates,
@@ -314,8 +314,8 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         return output;
     };
 
-    let healthy = healthy_containers(local_machine, &containers);
-    let eligible = eligible_containers(local_machine, observations);
+    let healthy = healthy_containers(local_machine, containers);
+    let eligible = eligible_containers(local_machine, containers);
     let mut skipped = Vec::new();
     if let Some(container) = healthy
         .iter()
@@ -336,7 +336,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
                 let candidate = automatic_caddyfile(
                     local_machine,
                     machine_name,
-                    observations,
+                    containers,
                     timestamp,
                     Some(&rendered),
                     certificates,
@@ -407,9 +407,14 @@ async fn generate_caddyfile<A: CaddyAdmin>(
 
 fn eligible_containers(
     local_machine: &MachineId,
-    observations: &[ContainerObservation],
+    containers: &[ServiceContainer],
 ) -> Vec<ServiceContainer> {
-    let mut containers = serving_replicas(observations.iter().cloned());
+    let mut containers = serving_replicas(
+        containers
+            .iter()
+            .cloned()
+            .map(ServiceContainer::into_observation),
+    );
     sort_caddy_containers(local_machine, &mut containers);
     containers
 }
@@ -527,12 +532,12 @@ fn upstreams(containers: &[ServiceContainer], service: &str, port: Option<u16>) 
 fn automatic_caddyfile(
     local_machine: &MachineId,
     machine_name: &str,
-    observations: &[ContainerObservation],
+    containers: &[ServiceContainer],
     timestamp: &str,
     global_config: Option<&str>,
     certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> String {
-    let containers = eligible_containers(local_machine, observations);
+    let containers = eligible_containers(local_machine, containers);
     let mut sites = BTreeMap::<IngressHost, Site<'_>>::new();
     for container in &containers {
         let observation = container.as_observation();
