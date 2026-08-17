@@ -5,9 +5,7 @@ use ployz_core::{
     ServiceVolume, ServiceVolumeGraph, VolumeSource,
 };
 
-use crate::deploy::{
-    DeployOperation, DeploySnapshot, ObservedDockerVolume, PlanError, PlanOptions,
-};
+use crate::deploy::{DeployOperation, DeploySnapshot, PlanError, PlanOptions};
 
 /// Planner-internal assignment of Docker Volumes to Machines.
 ///
@@ -47,12 +45,21 @@ impl VolumePins {
     fn observations<'pins>(
         &'pins self,
         snapshot: &'pins DeploySnapshot,
-    ) -> impl Iterator<Item = LocatedVolume<'pins>> + 'pins {
-        snapshot.volumes.iter().map(LocatedVolume::Observed).chain(
-            self.creates
-                .iter()
-                .map(|(machine_id, volume)| LocatedVolume::Planned(*machine_id, volume)),
-        )
+    ) -> impl Iterator<Item = VolumePresence<'pins>> + 'pins {
+        snapshot
+            .volumes
+            .iter()
+            .map(|observed| VolumePresence {
+                machine_id: observed.id.machine_id,
+                name: &observed.id.name,
+                driver: &observed.driver,
+                options: &observed.options,
+            })
+            .chain(
+                self.creates
+                    .iter()
+                    .filter_map(|(machine_id, volume)| planned_presence(*machine_id, volume)),
+            )
     }
 
     pub(super) fn into_creates(self) -> Vec<DeployOperation> {
@@ -63,58 +70,49 @@ impl VolumePins {
     }
 }
 
+static EMPTY_VOLUME_OPTIONS: BTreeMap<String, String> = BTreeMap::new();
+
 #[derive(Clone, Copy)]
-enum LocatedVolume<'a> {
-    Observed(&'a ObservedDockerVolume),
-    Planned(MachineId, &'a ServiceVolume),
+struct VolumePresence<'a> {
+    machine_id: MachineId,
+    name: &'a DockerVolumeName,
+    driver: &'a str,
+    options: &'a BTreeMap<String, String>,
 }
 
-impl LocatedVolume<'_> {
-    fn machine_id(self) -> MachineId {
-        match self {
-            Self::Observed(observed) => observed.id.machine_id,
-            Self::Planned(machine_id, _) => machine_id,
-        }
-    }
+fn planned_presence(machine_id: MachineId, volume: &ServiceVolume) -> Option<VolumePresence<'_>> {
+    let VolumeSource::Named { name, driver, .. } = &volume.source else {
+        return None;
+    };
+    Some(match driver {
+        None => VolumePresence {
+            machine_id,
+            name,
+            driver: "local",
+            options: &EMPTY_VOLUME_OPTIONS,
+        },
+        Some(driver) => VolumePresence {
+            machine_id,
+            name,
+            driver: &driver.name,
+            options: &driver.options,
+        },
+    })
+}
 
+impl VolumePresence<'_> {
     fn same_name(self, volume: &ServiceVolume) -> bool {
-        match self {
-            Self::Observed(observed) => {
-                named_volume_name(volume).is_some_and(|name| observed.id.name == *name)
-            }
-            Self::Planned(_, created) => named_volume_name(created) == named_volume_name(volume),
-        }
+        named_volume_name(volume).is_some_and(|name| self.name == name)
     }
 
     fn matches(self, volume: &ServiceVolume) -> bool {
         let VolumeSource::Named { name, driver, .. } = &volume.source else {
             return false;
         };
-        match self {
-            Self::Observed(observed) => {
-                observed.id.name == *name
-                    && driver.as_ref().is_none_or(|required| {
-                        required.name == observed.driver && required.options == observed.options
-                    })
-            }
-            Self::Planned(_, created) => {
-                let VolumeSource::Named {
-                    name: created_name,
-                    driver: created_driver,
-                    ..
-                } = &created.source
-                else {
-                    return false;
-                };
-                created_name == name
-                    && driver.as_ref().is_none_or(|required| match created_driver {
-                        None => required.name == "local" && required.options.is_empty(),
-                        Some(driver) => {
-                            required.name == driver.name && required.options == driver.options
-                        }
-                    })
-            }
-        }
+        self.name == name
+            && driver.as_ref().is_none_or(|required| {
+                required.name == self.driver && required.options == *self.options
+            })
     }
 }
 
@@ -265,10 +263,9 @@ fn pin_shared_component(
 ) {
     for (name, uses) in &component.volumes {
         pins.constrain((*name).clone(), machine_id);
-        if snapshot
-            .volumes
-            .iter()
-            .any(|volume| volume.id.machine_id == machine_id && volume.id.name == **name)
+        if pins
+            .observations(snapshot)
+            .any(|located| located.machine_id == machine_id && located.name == *name)
         {
             continue;
         }
@@ -320,7 +317,7 @@ pub(super) fn plan_volume_operations(
             for machine in machines.iter() {
                 for volume in mounted_volumes.iter().copied() {
                     if pins.observations(snapshot).any(|located| {
-                        located.machine_id() == machine.machine.id && located.matches(volume)
+                        located.machine_id == machine.machine.id && located.matches(volume)
                     }) {
                         continue;
                     }
@@ -344,7 +341,7 @@ fn volume_constraints<'spec>(
     for volume in mounted_volumes.iter().copied() {
         machines.retain(|machine| {
             !pins.observations(snapshot).any(|located| {
-                located.machine_id() == machine.machine.id
+                located.machine_id == machine.machine.id
                     && located.same_name(volume)
                     && !located.matches(volume)
             })
@@ -357,7 +354,7 @@ fn volume_constraints<'spec>(
             let locations = pins
                 .observations(snapshot)
                 .filter(|located| located.matches(volume))
-                .map(LocatedVolume::machine_id)
+                .map(|located| located.machine_id)
                 .collect::<BTreeSet<_>>();
             if !locations.is_empty() {
                 machines.retain(|machine| locations.contains(&machine.machine.id));
