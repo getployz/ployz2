@@ -28,23 +28,42 @@ pub(crate) fn expand_home(path: &Path) -> PathBuf {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default)]
-    pub current_context: String,
+    #[serde(
+        default,
+        deserialize_with = "empty_as_none",
+        skip_serializing_if = "no_current_context"
+    )]
+    pub current_context: Option<String>,
     #[serde(default)]
     pub contexts: BTreeMap<String, Context>,
     #[serde(skip)]
     path: PathBuf,
 }
 
+fn empty_as_none<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(none_if_empty(Option::<String>::deserialize(deserializer)?))
+}
+
+fn none_if_empty(name: Option<String>) -> Option<String> {
+    name.filter(|name| !name.is_empty())
+}
+
+fn no_current_context(current: &Option<String>) -> bool {
+    current.as_deref().is_none_or(str::is_empty)
+}
+
 impl Config {
     #[must_use]
     pub fn new(
         path: impl Into<PathBuf>,
-        current_context: impl Into<String>,
+        current_context: Option<String>,
         contexts: BTreeMap<String, Context>,
     ) -> Self {
         Self {
-            current_context: current_context.into(),
+            current_context: none_if_empty(current_context),
             contexts,
             path: path.into(),
         }
@@ -70,7 +89,7 @@ impl Config {
         match Self::load(&path) {
             Ok(config) => Ok(config),
             Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-                Ok(Self::new(path, "", BTreeMap::new()))
+                Ok(Self::new(path, None, BTreeMap::new()))
             }
             Err(error) => Err(error),
         }
@@ -203,10 +222,10 @@ pub fn select_connections(
         if config.contexts.is_empty() {
             return Err(ContextError::NoContexts(config.path.clone()));
         }
-        let name = context_override.unwrap_or(&config.current_context);
-        if name.is_empty() {
-            return Err(ContextError::NoCurrentContext(config.path.clone()));
-        }
+        let name = context_override
+            .or(config.current_context.as_deref())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| ContextError::NoCurrentContext(config.path.clone()))?;
         let context = config
             .contexts
             .get(name)
