@@ -10,9 +10,9 @@ use std::{
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
-    ExecRequestFrame, FanoutSelector, LogEntry, LogStream, LogsOptions, MachineId,
-    MachineLogService, MachineLogsRequest, MachineName, MachineObservation, MachineTarget,
-    OpaquePayload, ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, op,
+    ExecRequestFrame, FanoutSelector, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
+    MachineLogsRequest, MachineName, MachineObservation, MachineTarget, OpaquePayload,
+    ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, op,
     resolve_container_selector, resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
@@ -61,12 +61,47 @@ pub struct ProxyPorts {
     pub remote: u16,
 }
 
+/// Detached exec, or attached exec with an optional TTY.
+///
+/// Detach cannot request a TTY; resolve CLI `--detach`/`-T` through
+/// [`ExecMode::resolve`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExecMode {
-    pub detach: bool,
-    pub no_tty: bool,
-    pub stdout_terminal: bool,
-    pub stdin_terminal: bool,
+pub enum ExecMode {
+    Detached,
+    Attached { tty: bool },
+}
+
+impl ExecMode {
+    /// Collapse CLI `--detach`/`-T` and terminal probes into a mode that cannot
+    /// request a TTY while detached.
+    ///
+    /// `-T` is ignored when `detach` is set. Attached TTY still requires
+    /// terminal stdin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperatorError::TtyRequiresStdin`] when an attached TTY is
+    /// requested without terminal stdin.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "CLI detach/-T plus stdin/stdout terminal probes collapse into ExecMode"
+    )]
+    pub fn resolve(
+        detach: bool,
+        no_tty: bool,
+        stdout_terminal: bool,
+        stdin_terminal: bool,
+    ) -> Result<Self, OperatorError> {
+        if detach {
+            return Ok(Self::Detached);
+        }
+        // TODO(UT-039): preserve the Compose-style stdout-driven TTY rule.
+        let tty = stdout_terminal && !no_tty;
+        if tty && !stdin_terminal {
+            return Err(OperatorError::TtyRequiresStdin);
+        }
+        Ok(Self::Attached { tty })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -146,27 +181,31 @@ impl From<TransportError> for OperatorError {
     }
 }
 
-pub fn exec_options(command: Vec<String>, mode: ExecMode) -> Result<ExecOptions, OperatorError> {
-    // TODO(UT-039): preserve the Compose-style stdout-driven TTY rule.
-    let tty = !mode.detach && mode.stdout_terminal && !mode.no_tty;
-    if tty && !mode.stdin_terminal {
-        return Err(OperatorError::TtyRequiresStdin);
-    }
-    Ok(ExecOptions {
-        command: if command.is_empty() {
-            DEFAULT_EXEC_COMMAND
-                .iter()
-                .map(ToString::to_string)
-                .collect()
-        } else {
-            command
-        },
-        attach_stdin: !mode.detach,
-        attach_stdout: !mode.detach,
-        attach_stderr: !mode.detach,
+/// Translate [`ExecMode`] into wire [`ExecOptions`].
+///
+/// Detached does not attach stdin/stdout/stderr and never sets `tty`.
+#[must_use]
+pub fn exec_options(command: Vec<String>, mode: ExecMode) -> ExecOptions {
+    let command = if command.is_empty() {
+        DEFAULT_EXEC_COMMAND
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    } else {
+        command
+    };
+    let (attach, tty, detach) = match mode {
+        ExecMode::Detached => (false, false, true),
+        ExecMode::Attached { tty } => (true, tty, false),
+    };
+    ExecOptions {
+        command,
+        attach_stdin: attach,
+        attach_stdout: attach,
+        attach_stderr: attach,
         tty,
-        detach: mode.detach,
-    })
+        detach,
+    }
 }
 
 pub fn select_exec_container<'a>(
@@ -283,7 +322,8 @@ pub async fn open_exec(
     options: ExecOptions,
 ) -> Result<ExecSession, OperatorError> {
     let live = client.live_services().await?;
-    let service = select_service(&live.services, service_selector)?;
+    let services = live.services();
+    let service = select_service(&services, service_selector)?;
     let container = select_exec_container(service, container_selector)?.as_observation();
     let machine_id = container.machine_id;
     let config = ExecRequestFrame::Config(ExecConfig {
@@ -323,10 +363,11 @@ pub async fn open_service_logs(
         .map(|machine| machine.machine.id)
         .collect::<HashSet<_>>();
     let live = client.live_services().await?;
+    let services = live.services();
     let mut inputs = Vec::new();
     let mut skipped_services = Vec::new();
     for arg in args {
-        let service = match select_service(&live.services, &arg.service) {
+        let service = match select_service(&services, &arg.service) {
             Ok(service) => service,
             Err(ployz_core::ServiceSelectorError::NotFound { .. }) if compose_selection => {
                 skipped_services.push(arg.service.clone());
@@ -532,12 +573,17 @@ struct LogEvent {
     entry: Option<Result<LogEntry, LogError>>,
 }
 
-struct LogState {
+enum LogState {
+    Live,
+    Stalled,
+    Closed,
+}
+
+struct LogInputState {
     identity: String,
     watermark: i64,
     last_activity: tokio::time::Instant,
-    closed: bool,
-    stalled: bool,
+    state: LogState,
 }
 
 struct QueuedLog {
@@ -588,16 +634,15 @@ fn merge_logs_with_options(
         return output;
     }
     let now = tokio::time::Instant::now();
-    let mut states = Vec::with_capacity(inputs.len());
+    let mut sources = Vec::with_capacity(inputs.len());
     let mut events: stream::SelectAll<Pin<Box<dyn Stream<Item = LogEvent> + Send>>> =
         stream::select_all(Vec::new());
     for (index, input) in inputs.into_iter().enumerate() {
-        states.push(LogState {
+        sources.push(LogInputState {
             identity: input.identity,
             watermark: 0,
             last_activity: now,
-            closed: false,
-            stalled: false,
+            state: LogState::Live,
         });
         events.push(Box::pin(
             input
@@ -619,18 +664,21 @@ fn merge_logs_with_options(
                 () = cancellation.cancelled() => return,
                 event = events.next() => match event {
                     Some(LogEvent { index, entry: Some(entry) }) => {
-                        let Some(state) = states.get_mut(index) else { continue };
-                        state.last_activity = tokio::time::Instant::now();
-                        state.stalled = false;
+                        let Some(source) = sources.get_mut(index) else { continue };
+                        source.last_activity = tokio::time::Instant::now();
+                        match source.state {
+                            LogState::Closed => {}
+                            LogState::Live | LogState::Stalled => source.state = LogState::Live,
+                        }
                         match entry {
-                            Err(error) => if output_sender.send(Err(format!("{}: {error}", state.identity))).await.is_err() { return },
-                            Ok(entry) if entry.stream == LogStream::Error => {
-                                let error = entry.error.clone().unwrap_or_else(|| "log stream failed".into());
-                                if output_sender.send(Err(format!("{}: {error}", state.identity))).await.is_err() { return }
-                            }
-                            Ok(entry) => {
-                                state.watermark = state.watermark.max(entry.timestamp_unix_nanos);
-                                if matches!(entry.stream, LogStream::Stdout | LogStream::Stderr) {
+                            Err(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
+                            Ok(entry) => match &entry.body {
+                                LogBody::Error(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
+                                LogBody::Heartbeat => {
+                                    source.watermark = source.watermark.max(entry.timestamp_unix_nanos);
+                                }
+                                LogBody::Stdout(_) | LogBody::Stderr(_) => {
+                                    source.watermark = source.watermark.max(entry.timestamp_unix_nanos);
                                     if entry.timestamp_unix_nanos == 0 {
                                         if output_sender.send(Ok(entry)).await.is_err() { return }
                                     } else {
@@ -640,12 +688,15 @@ fn merge_logs_with_options(
                                 }
                             }
                         }
-                        if flush_ready(&states, &mut queue, &output_sender).await.is_err() { return }
+                        if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
                     }
                     Some(LogEvent { index, entry: None }) => {
-                        if let Some(state) = states.get_mut(index) { state.closed = true; }
-                        if flush_ready(&states, &mut queue, &output_sender).await.is_err() { return }
-                        if states.iter().all(|state| state.closed) {
+                        if let Some(source) = sources.get_mut(index) { source.state = LogState::Closed; }
+                        if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
+                        if sources.iter().all(|source| match source.state {
+                            LogState::Closed => true,
+                            LogState::Live | LogState::Stalled => false,
+                        }) {
                             while let Some(queued) = queue.pop() {
                                 if output_sender.send(Ok(queued.entry)).await.is_err() { return }
                             }
@@ -655,13 +706,15 @@ fn merge_logs_with_options(
                     None => return,
                 },
                 now = ticker.tick() => {
-                    for state in &mut states {
-                        if !state.closed && !state.stalled && now.duration_since(state.last_activity) > stall_timeout {
-                            state.stalled = true;
-                            if output_sender.send(Err(format!("log stream {} stalled", state.identity))).await.is_err() { return }
+                    for source in &mut sources {
+                        if let LogState::Live = source.state
+                            && now.duration_since(source.last_activity) > stall_timeout
+                        {
+                            source.state = LogState::Stalled;
+                            if output_sender.send(Err(format!("log stream {} stalled", source.identity))).await.is_err() { return }
                         }
                     }
-                    if flush_ready(&states, &mut queue, &output_sender).await.is_err() { return }
+                    if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
                 }
             }
         }
@@ -670,14 +723,17 @@ fn merge_logs_with_options(
 }
 
 async fn flush_ready(
-    states: &[LogState],
+    sources: &[LogInputState],
     queue: &mut BinaryHeap<QueuedLog>,
     output: &mpsc::Sender<Result<LogEntry, String>>,
 ) -> Result<(), ()> {
-    let watermark = states
+    let watermark = sources
         .iter()
-        .filter(|state| !state.closed && !state.stalled)
-        .map(|state| state.watermark)
+        .filter(|source| match source.state {
+            LogState::Live => true,
+            LogState::Stalled | LogState::Closed => false,
+        })
+        .map(|source| source.watermark)
         .min();
     let Some(watermark) = watermark else {
         while let Some(queued) = queue.pop() {

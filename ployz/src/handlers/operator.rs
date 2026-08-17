@@ -8,8 +8,8 @@ use clap::ArgMatches;
 use crossterm::terminal;
 use futures_util::StreamExt;
 use ployz_core::{
-    ContainerSelector, ExecRequestFrame, ExecResponseFrame, FanoutSelector, LogEntry, LogOrigin,
-    LogStream, LogsOptions, ServiceSelector, select_service,
+    ContainerSelector, ExecRequestFrame, ExecResponseFrame, FanoutSelector, LogBody, LogEntry,
+    LogOrigin, LogsOptions, ServiceSelector, select_service,
 };
 use tokio::io::copy_bidirectional;
 use tokio_util::sync::CancellationToken;
@@ -18,9 +18,9 @@ use crate::{
     compose::{LoadOptions, load_project},
     context::Transport,
     operator::{
-        ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs, open_service_logs,
-        parse_proxy_ports, parse_service_args, parse_tail, select_proxy_container,
-        service_logs_use_compose,
+        ExecMode, ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs,
+        open_service_logs, parse_proxy_ports, parse_service_args, parse_tail,
+        select_proxy_container, service_logs_use_compose,
     },
 };
 
@@ -44,13 +44,13 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         .unwrap_or_default();
     let options = exec_options(
         command,
-        crate::operator::ExecMode {
-            detach: leaf.get_flag("detach"),
-            no_tty: leaf.get_flag("no-tty"),
-            stdout_terminal: std::io::stdout().is_terminal(),
-            stdin_terminal: std::io::stdin().is_terminal(),
-        },
-    )?;
+        ExecMode::resolve(
+            leaf.get_flag("detach"),
+            leaf.get_flag("no-tty"),
+            std::io::stdout().is_terminal(),
+            std::io::stdin().is_terminal(),
+        )?,
+    );
     with_client_context(root, None, |client| {
         Box::pin(async move {
             let tty = options.tty;
@@ -208,7 +208,8 @@ async fn run_proxy(
         )));
     }
     let live = client.live_services().await?;
-    let service = select_service(&live.services, service_selector)?;
+    let services = live.services();
+    let service = select_service(&services, service_selector)?;
     let container = select_proxy_container(service)?.as_observation();
     let address = container.address.ok_or_else(|| {
         Error::usage(format!(
@@ -323,16 +324,27 @@ async fn print_logs(
             "{timestamp} {} {}/{}{}{} | ",
             entry.metadata.machine_name, service_name, service_id, container, hook,
         );
-        let output: &mut dyn Write = if entry.stream == LogStream::Stderr {
+        let Some((message, stderr)) = printable_log_bytes(&entry.body) else {
+            continue;
+        };
+        let output: &mut dyn Write = if stderr {
             &mut std::io::stderr()
         } else {
             &mut std::io::stdout()
         };
         output
             .write_all(prefix.as_bytes())
-            .and_then(|()| output.write_all(&entry.message))?;
+            .and_then(|()| output.write_all(message))?;
     }
     Ok(())
+}
+
+fn printable_log_bytes(body: &LogBody) -> Option<(&[u8], bool)> {
+    match body {
+        LogBody::Stdout(bytes) => Some((bytes, false)),
+        LogBody::Stderr(bytes) => Some((bytes, true)),
+        LogBody::Heartbeat | LogBody::Error(_) => None,
+    }
 }
 
 fn timestamp(entry: &LogEntry, utc: bool) -> String {
@@ -470,6 +482,20 @@ mod tests {
 
         assert!(output.buffer().is_empty());
         assert_eq!(output.get_ref(), b"ready");
+    }
+
+    #[test]
+    fn print_logs_never_writes_heartbeat_or_error_as_stdout() {
+        assert_eq!(
+            printable_log_bytes(&LogBody::Stdout(b"out".to_vec())),
+            Some((b"out".as_slice(), false))
+        );
+        assert_eq!(
+            printable_log_bytes(&LogBody::Stderr(b"err".to_vec())),
+            Some((b"err".as_slice(), true))
+        );
+        assert_eq!(printable_log_bytes(&LogBody::Heartbeat), None);
+        assert_eq!(printable_log_bytes(&LogBody::Error("nope".into())), None);
     }
 
     #[test]

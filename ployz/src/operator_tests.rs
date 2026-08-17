@@ -9,8 +9,8 @@ use std::{
 use futures_util::stream;
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
-    ContainerSelector, FanoutSelector, HealthObservation, HookContainer, LogMetadata, LogOrigin,
-    MachineId, MachineName, MembershipObservation, ResolvedServiceSpec, RestartPolicy,
+    ContainerSelector, FanoutSelector, HealthObservation, HookContainer, LogBody, LogMetadata,
+    LogOrigin, MachineId, MachineName, MembershipObservation, ResolvedServiceSpec, RestartPolicy,
     ServiceContainer, ServiceId, ServiceName, ServiceSelector,
 };
 
@@ -111,47 +111,58 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
         Err(OperatorError::Container(ployz_core::ContainerSelectorError::Ambiguous { selector, .. }))
             if selector.as_str() == "api-one"
     ));
-    let options = exec_options(
-        Vec::new(),
-        ExecMode {
-            detach: false,
-            no_tty: false,
-            stdout_terminal: true,
-            stdin_terminal: true,
-        },
-    )
-    .unwrap();
+}
+
+#[test]
+fn exec_mode_resolves_cli_flags_without_detach_plus_tty() {
     assert_eq!(
-        options.command,
+        ExecMode::resolve(true, false, true, true).unwrap(),
+        ExecMode::Detached
+    );
+    assert_eq!(
+        ExecMode::resolve(true, true, true, true).unwrap(),
+        ExecMode::Detached
+    );
+    let detached = exec_options(vec!["true".into()], ExecMode::Detached);
+    assert!(!detached.tty);
+    assert!(!detached.attach_stdin);
+    assert!(!detached.attach_stdout);
+    assert!(!detached.attach_stderr);
+    assert!(detached.detach);
+
+    assert!(matches!(
+        ExecMode::resolve(false, false, true, false),
+        Err(OperatorError::TtyRequiresStdin)
+    ));
+
+    let attached = exec_options(vec!["true".into()], ExecMode::Attached { tty: false });
+    assert!(!attached.tty);
+    assert!(attached.attach_stdin && attached.attach_stdout && attached.attach_stderr);
+    assert!(!attached.detach);
+
+    let tty = exec_options(Vec::new(), ExecMode::Attached { tty: true });
+    assert_eq!(
+        tty.command,
         DEFAULT_EXEC_COMMAND
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
     );
-    assert!(options.tty && options.attach_stdin && options.attach_stdout);
-    assert!(
-        exec_options(
-            Vec::new(),
-            ExecMode {
-                detach: false,
-                no_tty: false,
-                stdout_terminal: true,
-                stdin_terminal: false,
-            },
-        )
-        .is_err()
+    assert!(tty.tty && tty.attach_stdin && tty.attach_stdout && tty.attach_stderr);
+    assert!(!tty.detach);
+
+    assert_eq!(
+        ExecMode::resolve(false, true, true, true).unwrap(),
+        ExecMode::Attached { tty: false }
     );
-    let detached = exec_options(
-        vec!["true".into()],
-        ExecMode {
-            detach: true,
-            no_tty: false,
-            stdout_terminal: true,
-            stdin_terminal: true,
-        },
-    )
-    .unwrap();
-    assert!(!detached.tty && !detached.attach_stdin && detached.detach);
+    assert_eq!(
+        ExecMode::resolve(false, false, false, false).unwrap(),
+        ExecMode::Attached { tty: false }
+    );
+    assert_eq!(
+        ExecMode::resolve(false, false, true, true).unwrap(),
+        ExecMode::Attached { tty: true }
+    );
 }
 
 #[test]
@@ -212,7 +223,7 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
     assert_eq!(
         entries
             .iter()
-            .map(|entry| entry.message.clone())
+            .map(|entry| output_bytes(entry).to_vec())
             .collect::<Vec<_>>(),
         [b"one".to_vec(), b"raw".to_vec(), b"two".to_vec()]
     );
@@ -238,8 +249,40 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         Duration::from_millis(2),
     );
     assert!(stalled.recv().await.unwrap().unwrap_err().contains("quiet"));
-    assert_eq!(stalled.recv().await.unwrap().unwrap().message, b"released");
+    assert_eq!(
+        output_bytes(&stalled.recv().await.unwrap().unwrap()),
+        b"released"
+    );
     cancel.cancel();
+
+    let mut stalled_then_closed = merge_logs_with_options(
+        vec![
+            LogInput {
+                identity: "quiet".into(),
+                stream: Box::pin(stream::unfold((), |()| async {
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    None::<(Result<LogEntry, LogError>, ())>
+                })),
+            },
+            input("buffered", vec![Ok(log(metadata("buffered"), 9, b"nine"))]),
+        ],
+        CancellationToken::new(),
+        Duration::from_millis(15),
+        Duration::from_millis(2),
+    );
+    assert!(
+        stalled_then_closed
+            .recv()
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("quiet")
+    );
+    assert_eq!(
+        output_bytes(&stalled_then_closed.recv().await.unwrap().unwrap()),
+        b"nine"
+    );
+    assert!(stalled_then_closed.recv().await.is_none());
 }
 
 #[tokio::test]
@@ -274,6 +317,15 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
             .contains("remote failed")
     );
 
+    let mut empty_error = merge_logs(
+        vec![input(
+            "broken",
+            vec![Ok(LogEntry::error(metadata("broken"), ""))],
+        )],
+        CancellationToken::new(),
+    );
+    assert_eq!(empty_error.recv().await.unwrap().unwrap_err(), "broken: ");
+
     let mut closing = merge_logs(
         vec![
             input("buffered", vec![Ok(log(metadata("buffered"), 9, b"nine"))]),
@@ -281,7 +333,10 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
         ],
         CancellationToken::new(),
     );
-    assert_eq!(closing.recv().await.unwrap().unwrap().message, b"nine");
+    assert_eq!(
+        output_bytes(&closing.recv().await.unwrap().unwrap()),
+        b"nine"
+    );
     assert!(closing.recv().await.is_none());
 }
 
@@ -350,10 +405,15 @@ fn input(identity: &str, entries: Vec<Result<LogEntry, LogError>>) -> LogInput {
 fn log(metadata: LogMetadata, timestamp: i64, message: &[u8]) -> LogEntry {
     LogEntry {
         metadata,
-        stream: LogStream::Stdout,
         timestamp_unix_nanos: timestamp,
-        message: message.to_vec(),
-        error: None,
+        body: LogBody::Stdout(message.to_vec()),
+    }
+}
+
+fn output_bytes(entry: &LogEntry) -> &[u8] {
+    match &entry.body {
+        LogBody::Stdout(bytes) | LogBody::Stderr(bytes) => bytes,
+        LogBody::Heartbeat | LogBody::Error(_) => panic!("expected output body, got {entry:?}"),
     }
 }
 

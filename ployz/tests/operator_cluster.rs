@@ -7,7 +7,7 @@ use ployz::operator::{
 };
 use ployz_core::{
     ContainerAction, ContainerKind, ContainerSelector, ExecRequestFrame, ExecResponseFrame,
-    FanoutSelector, LogEntry, LogOrigin, LogsOptions, MachineLogService, MachineTarget,
+    FanoutSelector, LogBody, LogEntry, LogOrigin, LogsOptions, MachineLogService, MachineTarget,
     ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
@@ -102,16 +102,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
         .unwrap()
         .contains(&ExecResponseFrame::Exit(127))
     );
-    let defaults = exec_options(
-        Vec::new(),
-        ExecMode {
-            detach: false,
-            no_tty: true,
-            stdout_terminal: false,
-            stdin_terminal: false,
-        },
-    )
-    .unwrap();
+    let defaults = exec_options(Vec::new(), ExecMode::Attached { tty: false });
     assert!(
         run_exec(
             &mut client,
@@ -181,7 +172,8 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     assert_machine_logs(&mut client, &machines).await;
 
     let live = client.live_services().await.unwrap();
-    let service = select_service(&live.services, &ServiceSelector::from(&service_id)).unwrap();
+    let services = live.services();
+    let service = select_service(&services, &ServiceSelector::from(&service_id)).unwrap();
     client
         .change_observed_service(service, ContainerAction::Remove, None, None)
         .await;
@@ -216,10 +208,7 @@ async fn assert_service_logs(
         .iter()
         .filter_map(|entry| match &entry.metadata.origin {
             LogOrigin::Service { container_id, .. }
-                if matches!(
-                    entry.stream,
-                    ployz_core::LogStream::Stdout | ployz_core::LogStream::Stderr
-                ) =>
+                if matches!(entry.body, LogBody::Stdout(_) | LogBody::Stderr(_)) =>
             {
                 Some(*container_id)
             }
@@ -231,21 +220,18 @@ async fn assert_service_logs(
             .iter()
             .filter_map(|entry| match &entry.metadata.origin {
                 LogOrigin::Service { container_id, .. }
-                    if *container_id == container.as_observation().container_id
-                        && matches!(
-                            entry.stream,
-                            ployz_core::LogStream::Stdout | ployz_core::LogStream::Stderr
-                        ) =>
+                    if *container_id == container.as_observation().container_id =>
                 {
-                    Some(entry.stream)
+                    match &entry.body {
+                        LogBody::Stdout(_) => Some("stdout"),
+                        LogBody::Stderr(_) => Some("stderr"),
+                        LogBody::Heartbeat | LogBody::Error(_) => None,
+                    }
                 }
                 LogOrigin::Service { .. } | LogOrigin::Machine { .. } => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(
-            streams,
-            [ployz_core::LogStream::Stdout, ployz_core::LogStream::Stderr]
-        );
+        assert_eq!(streams, ["stdout", "stderr"]);
         assert_eq!(
             actual
                 .iter()
@@ -457,12 +443,13 @@ async fn wait_for_service(
 ) -> ployz_core::ServiceObservation {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Ok(live) = client.live_services().await
-                && let Ok(service) =
-                    select_service(&live.services, &ServiceSelector::from(service_id))
-                && service.containers.len() == containers
-            {
-                return service.clone();
+            if let Ok(live) = client.live_services().await {
+                let services = live.services();
+                if let Ok(service) = select_service(&services, &ServiceSelector::from(service_id))
+                    && service.containers.len() == containers
+                {
+                    return service.clone();
+                }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -474,40 +461,22 @@ async fn wait_for_service(
 fn attached<const N: usize>(command: [&str; N]) -> ployz_core::ExecOptions {
     exec_options(
         command.into_iter().map(ToOwned::to_owned).collect(),
-        ExecMode {
-            detach: false,
-            no_tty: true,
-            stdout_terminal: false,
-            stdin_terminal: false,
-        },
+        ExecMode::Attached { tty: false },
     )
-    .unwrap()
 }
 
 fn tty<const N: usize>(command: [&str; N]) -> ployz_core::ExecOptions {
     exec_options(
         command.into_iter().map(ToOwned::to_owned).collect(),
-        ExecMode {
-            detach: false,
-            no_tty: false,
-            stdout_terminal: true,
-            stdin_terminal: true,
-        },
+        ExecMode::Attached { tty: true },
     )
-    .unwrap()
 }
 
 fn detached<const N: usize>(command: [&str; N]) -> ployz_core::ExecOptions {
     exec_options(
         command.into_iter().map(ToOwned::to_owned).collect(),
-        ExecMode {
-            detach: true,
-            no_tty: false,
-            stdout_terminal: true,
-            stdin_terminal: true,
-        },
+        ExecMode::Detached,
     )
-    .unwrap()
 }
 
 fn log_options() -> LogsOptions {

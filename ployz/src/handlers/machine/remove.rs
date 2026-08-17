@@ -73,11 +73,9 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         // Drop the local connection before DNS refresh. A refresh failure
         // must not leave the removed Machine named in the context (#249).
         let mut config = options.load_or_empty_config()?;
-        let context_name = options
-            .context()
-            .map(str::to_owned)
-            .unwrap_or_else(|| config.current_context.clone());
-        if let Some(context) = config.contexts.get_mut(&context_name) {
+        if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
+            && let Some(context) = config.contexts.get_mut(&context_name)
+        {
             context.drop_machine(&selected.id);
             config.save()?;
         }
@@ -142,5 +140,14 @@ mod tests {
             })
             .is_unreachable()
         );
+    }
+
+    #[test]
+    fn deadline_exceeded_is_retryable_not_unreachable() {
+        let error = ConnectError::Rpc(crate::connect::TransportError::from(
+            tonic::Status::deadline_exceeded("timed out"),
+        ));
+        assert!(error.is_retryable());
+        assert!(!error.is_unreachable());
     }
 }
