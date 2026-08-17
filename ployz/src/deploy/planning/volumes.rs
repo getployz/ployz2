@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeId, DockerVolumeName, MachineId, MachineObservation, RequestedServiceSpec,
-    ServiceMode, ServiceVolume, ServiceVolumeGraph, VolumeSource,
+    DockerVolumeName, MachineId, MachineObservation, RequestedServiceSpec, ServiceMode,
+    ServiceVolume, ServiceVolumeGraph, VolumeSource,
 };
 
 use crate::deploy::{
@@ -27,6 +27,8 @@ impl VolumePins {
     }
 
     fn record_create(&mut self, machine_id: MachineId, volume: &ServiceVolume) {
+        // Docker Volume identity on a Machine is the name; driver mismatch is a
+        // conflict, not a second create.
         if self.creates.iter().any(|(id, existing)| {
             *id == machine_id && named_volume_name(existing) == named_volume_name(volume)
         }) {
@@ -42,34 +44,15 @@ impl VolumePins {
         self.anchors.get(name).copied()
     }
 
-    fn created_present(&self, machine_id: MachineId, volume: &ServiceVolume) -> bool {
-        self.creates.iter().any(|(created_on, created)| {
-            *created_on == machine_id
-                && created_to_observed(*created_on, created)
-                    .is_some_and(|observed| volume_matches(&observed, volume))
-        })
-    }
-
-    fn created_conflicts(&self, machine_id: MachineId, volume: &ServiceVolume) -> bool {
-        self.creates.iter().any(|(created_on, created)| {
-            *created_on == machine_id
-                && created_to_observed(*created_on, created).is_some_and(|observed| {
-                    volume_has_same_name(&observed, volume) && !volume_matches(&observed, volume)
-                })
-        })
-    }
-
-    fn created_matching_machines<'pins>(
+    fn observations<'pins>(
         &'pins self,
-        volume: &'pins ServiceVolume,
-    ) -> impl Iterator<Item = MachineId> + 'pins {
-        self.creates
-            .iter()
-            .filter_map(move |(machine_id, created)| {
-                created_to_observed(*machine_id, created)
-                    .filter(|observed| volume_matches(observed, volume))
-                    .map(|_| *machine_id)
-            })
+        snapshot: &'pins DeploySnapshot,
+    ) -> impl Iterator<Item = LocatedVolume<'pins>> + 'pins {
+        snapshot.volumes.iter().map(LocatedVolume::Observed).chain(
+            self.creates
+                .iter()
+                .map(|(machine_id, volume)| LocatedVolume::Planned(*machine_id, volume)),
+        )
     }
 
     pub(super) fn into_creates(self) -> Vec<DeployOperation> {
@@ -77,6 +60,61 @@ impl VolumePins {
             .into_iter()
             .map(|(machine_id, volume)| DeployOperation::CreateVolume { machine_id, volume })
             .collect()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LocatedVolume<'a> {
+    Observed(&'a ObservedDockerVolume),
+    Planned(MachineId, &'a ServiceVolume),
+}
+
+impl LocatedVolume<'_> {
+    fn machine_id(self) -> MachineId {
+        match self {
+            Self::Observed(observed) => observed.id.machine_id,
+            Self::Planned(machine_id, _) => machine_id,
+        }
+    }
+
+    fn same_name(self, volume: &ServiceVolume) -> bool {
+        match self {
+            Self::Observed(observed) => {
+                named_volume_name(volume).is_some_and(|name| observed.id.name == *name)
+            }
+            Self::Planned(_, created) => named_volume_name(created) == named_volume_name(volume),
+        }
+    }
+
+    fn matches(self, volume: &ServiceVolume) -> bool {
+        let VolumeSource::Named { name, driver, .. } = &volume.source else {
+            return false;
+        };
+        match self {
+            Self::Observed(observed) => {
+                observed.id.name == *name
+                    && driver.as_ref().is_none_or(|required| {
+                        required.name == observed.driver && required.options == observed.options
+                    })
+            }
+            Self::Planned(_, created) => {
+                let VolumeSource::Named {
+                    name: created_name,
+                    driver: created_driver,
+                    ..
+                } = &created.source
+                else {
+                    return false;
+                };
+                created_name == name
+                    && driver.as_ref().is_none_or(|required| match created_driver {
+                        None => required.name == "local" && required.options.is_empty(),
+                        Some(driver) => {
+                            required.name == driver.name && required.options == driver.options
+                        }
+                    })
+            }
+        }
     }
 }
 
@@ -281,7 +319,9 @@ pub(super) fn plan_volume_operations(
         ServiceMode::Global => {
             for machine in machines.iter() {
                 for volume in mounted_volumes.iter().copied() {
-                    if volume_present(snapshot, pins, machine.machine.id, volume) {
+                    if pins.observations(snapshot).any(|located| {
+                        located.machine_id() == machine.machine.id && located.matches(volume)
+                    }) {
                         continue;
                     }
                     pins.record_create(machine.machine.id, volume);
@@ -303,14 +343,22 @@ fn volume_constraints<'spec>(
     let mut missing_volumes = Vec::new();
     for volume in mounted_volumes.iter().copied() {
         machines.retain(|machine| {
-            !volume_conflicts_on_machine(snapshot, pins, machine.machine.id, volume)
+            !pins.observations(snapshot).any(|located| {
+                located.machine_id() == machine.machine.id
+                    && located.same_name(volume)
+                    && !located.matches(volume)
+            })
         });
         if matches!(spec.mode, ServiceMode::Replicated { .. }) {
             if let Some(anchor) = pins.anchor_for(volume) {
                 machines.retain(|machine| machine.machine.id == anchor);
                 continue;
             }
-            let locations = matching_machines(snapshot, pins, volume);
+            let locations = pins
+                .observations(snapshot)
+                .filter(|located| located.matches(volume))
+                .map(LocatedVolume::machine_id)
+                .collect::<BTreeSet<_>>();
             if !locations.is_empty() {
                 machines.retain(|machine| locations.contains(&machine.machine.id));
             } else {
@@ -331,82 +379,6 @@ fn named_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {
         return None;
     };
     Some(name)
-}
-
-fn volume_has_same_name(observed: &ObservedDockerVolume, volume: &ServiceVolume) -> bool {
-    named_volume_name(volume).is_some_and(|name| observed.id.name == *name)
-}
-
-fn volume_matches(observed: &ObservedDockerVolume, volume: &ServiceVolume) -> bool {
-    let VolumeSource::Named { name, driver, .. } = &volume.source else {
-        return false;
-    };
-    observed.id.name == *name
-        && driver.as_ref().is_none_or(|required| {
-            required.name == observed.driver && required.options == observed.options
-        })
-}
-
-// Query-time view of a planned create. Pins keep ops, not a stored observation list.
-fn created_to_observed(
-    machine_id: MachineId,
-    volume: &ServiceVolume,
-) -> Option<ObservedDockerVolume> {
-    let VolumeSource::Named { name, driver, .. } = &volume.source else {
-        return None;
-    };
-    Some(ObservedDockerVolume {
-        id: DockerVolumeId {
-            machine_id,
-            name: name.clone(),
-        },
-        driver: driver
-            .as_ref()
-            .map_or_else(|| "local".into(), |driver| driver.name.clone()),
-        options: driver
-            .as_ref()
-            .map_or_else(Default::default, |driver| driver.options.clone()),
-    })
-}
-
-fn volume_present(
-    snapshot: &DeploySnapshot,
-    pins: &VolumePins,
-    machine_id: MachineId,
-    volume: &ServiceVolume,
-) -> bool {
-    snapshot
-        .volumes
-        .iter()
-        .any(|observed| observed.id.machine_id == machine_id && volume_matches(observed, volume))
-        || pins.created_present(machine_id, volume)
-}
-
-fn volume_conflicts_on_machine(
-    snapshot: &DeploySnapshot,
-    pins: &VolumePins,
-    machine_id: MachineId,
-    volume: &ServiceVolume,
-) -> bool {
-    snapshot.volumes.iter().any(|observed| {
-        observed.id.machine_id == machine_id
-            && volume_has_same_name(observed, volume)
-            && !volume_matches(observed, volume)
-    }) || pins.created_conflicts(machine_id, volume)
-}
-
-fn matching_machines(
-    snapshot: &DeploySnapshot,
-    pins: &VolumePins,
-    volume: &ServiceVolume,
-) -> BTreeSet<MachineId> {
-    snapshot
-        .volumes
-        .iter()
-        .filter(|observed| volume_matches(observed, volume))
-        .map(|observed| observed.id.machine_id)
-        .chain(pins.created_matching_machines(volume))
-        .collect()
 }
 
 fn mounted_named_volumes(graph: &ServiceVolumeGraph) -> Result<Vec<&ServiceVolume>, PlanError> {
