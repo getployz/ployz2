@@ -47,7 +47,7 @@ brew install getployz/ployz/ployz             # stable
 
 `latest` and `stable` mean the same thing. `nightly` is rejected.
 
-The installer reads `https://ployz.sh/stable` or `/beta` (one line, `vX.Y.Z` or `vX.Y.Z-beta.N`). If that URL still serves the old v1 script, it falls back to `https://raw.githubusercontent.com/getployz/ployz2/channels/<channel>`. Stable can also fall back to GitHub `releases/latest` (drafts and prereleases never become `latest`).
+The installer reads `https://ployz.sh/stable` or `/beta` (one line, `vX.Y.Z` or `vX.Y.Z-beta.N`). Missing or invalid channel files fail the install. Pins skip the channel fetch.
 
 Artifacts stay on GitHub Releases. `ployz.sh` is the pointer plus CLI installer.
 
@@ -61,7 +61,7 @@ Point the zone:
 | `https://ployz.sh/stable` | `channels` branch file `stable` |
 | `https://ployz.sh/beta` | `channels` branch file `beta` |
 
-Until that cutover, `curl | sh` against the apex still installs v1. Use the fallbacks above, or `curl -fsSL https://raw.githubusercontent.com/getployz/ployz2/v0.1.1/install.sh | sh`.
+Apex and channel URLs must serve these bodies. The installer does not detect or tolerate the old v1 script.
 
 ## Homebrew
 

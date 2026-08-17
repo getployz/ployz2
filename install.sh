@@ -4,7 +4,6 @@ set -eu
 
 PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz2}
 PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
-PLOYZ_CHANNELS_FALLBACK=${PLOYZ_CHANNELS_FALLBACK:-https://raw.githubusercontent.com/getployz/ployz2/channels}
 PLOYZ_VERSION=${PLOYZ_VERSION:-${1:-latest}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
 
@@ -55,20 +54,12 @@ resolve_install() {
             ;;
     esac
     dest=$(mktemp)
-    for base in "$PLOYZ_CHANNEL_URL" "$PLOYZ_CHANNELS_FALLBACK"; do
-        if curl -fsSL -o "$dest" "$base/$name" && resolved=$(channel_version_from_file "$dest"); then
-            rm -f "$dest"
-            printf '%s\n' "${resolved#v}"
-            return 0
-        fi
-    done
+    if ! curl -fsSL -o "$dest" "$PLOYZ_CHANNEL_URL/$name" || ! resolved=$(channel_version_from_file "$dest"); then
+        rm -f "$dest"
+        error "$name channel is unavailable"
+    fi
     rm -f "$dest"
-    [ "$name" != beta ] || error "beta channel is unavailable"
-    latest_url=$(curl -sLI -o /dev/null -w '%{url_effective}' "$PLOYZ_GITHUB_URL/releases/latest") || error "stable channel is unavailable"
-    version=${latest_url##*/}
-    version=${version#v}
-    [ -n "$version" ] && [ "$version" != latest ] || error "stable channel is unavailable"
-    printf '%s\n' "$version"
+    printf '%s\n' "${resolved#v}"
 }
 
 install_cli() {

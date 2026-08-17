@@ -16,6 +16,7 @@ for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd
     tar -czf "$TMP/release/$archive" -C "$TMP" ployz
 done
 (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
+printf 'v1.2.3\n' > "$TMP/release/stable"
 
 cat > "$TMP/bin/uname" <<'EOF'
 #!/bin/sh
@@ -24,9 +25,6 @@ EOF
 cat > "$TMP/bin/curl" <<'EOF'
 #!/bin/sh
 echo "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
-for argument in "$@"; do
-    case "$argument" in *'%{url_effective}'*) echo 'https://example.invalid/releases/tag/v1.2.3'; exit ;; esac
-done
 while [ "$#" -gt 0 ]; do
     if [ "$1" = -o ]; then output=$2; shift 2; else url=$1; shift; fi
 done

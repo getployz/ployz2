@@ -196,9 +196,9 @@ printf 'v1.2.3\n' > "$channel_file"
 assert_eq "$(channel_version_from_file "$channel_file")" v1.2.3
 printf '0.2.0-beta.1\n' > "$channel_file"
 assert_eq "$(channel_version_from_file "$channel_file")" 0.2.0-beta.1
-printf '#!/bin/sh\nset -eu\n' > "$channel_file"
+printf 'not-a-version\n' > "$channel_file"
 if channel_version_from_file "$channel_file" >/dev/null 2>&1; then
-    echo "installer script was accepted as a channel file" >&2
+    echo "non-version channel file was accepted" >&2
     exit 1
 fi
 rm -f "$channel_file"
