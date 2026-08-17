@@ -12,7 +12,6 @@ pub mod docker;
 #[doc(hidden)]
 pub mod filesystem;
 mod hosted_dns;
-pub(crate) mod issuance_rank;
 pub mod logs;
 pub mod machine;
 pub mod metrics;
