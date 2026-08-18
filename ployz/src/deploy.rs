@@ -24,7 +24,9 @@ pub(crate) use apply::{
 };
 pub use pipeline::DeployError;
 pub(crate) use pipeline::{ReconciliationHints, plan_options};
-pub use planning::{IngressContext, VolumeFate, plan_project_removal, preview_deploy};
+pub use planning::{
+    IngressContext, VolumeFate, data_loss_from_plan, plan_project_removal, preview_deploy,
+};
 pub use ployz_core::compare_specs;
 pub use ployz_core::{
     ComposePruneRefusal, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,

@@ -10,8 +10,9 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    DeployOperation, MachineFailure, MachineId, MachineObservation, PortPublication, ProjectName,
-    RequestedServiceSpec, RpcError, ServiceMode, ServiceSelector, select_service,
+    DataLoss, DeployOperation, MachineFailure, MachineId, MachineObservation, ObservedDataLoss,
+    PortPublication, ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceMode,
+    ServiceSelector, UnconfirmedDataLoss, select_service,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -78,6 +79,88 @@ impl Client {
         project: &ProjectName,
         volumes: super::VolumeFate,
     ) -> Result<DeployPreview, DeployError> {
+        self.plan_project_destroy(project, volumes).await
+    }
+
+    /// Live Observation of Data Loss that destroying `project` would cause.
+    ///
+    /// [`super::VolumeFate::Preserve`] yields an empty list. Mutates nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the Project is reserved, snapshot
+    /// gathering fails, or destroying volumes is requested against a known
+    /// incomplete snapshot.
+    pub async fn data_loss_if_project_destroyed(
+        &mut self,
+        project: &ProjectName,
+        volumes: super::VolumeFate,
+    ) -> Result<ObservedDataLoss, RpcError> {
+        let preview = self.plan_project_destroy(project, volumes).await?;
+        observed_destroy_loss(&preview, volumes)
+    }
+
+    /// Re-read Data Loss, refuse when uncovered, then plan and execute removal.
+    ///
+    /// Confirmation is [`ObservedDataLoss::uncovered_by`]. Extra names are
+    /// ignored. Executes the execute-time plan; it does not replay an earlier
+    /// preview.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the Project is reserved or not
+    /// visible, the snapshot is incomplete, or the confirmation does not cover
+    /// the fresh Data Loss. Execution failure is a [`DeployOutcome::Failed`].
+    pub async fn destroy_project(
+        &mut self,
+        project: &ProjectName,
+        confirm_data_loss: &[DataLoss],
+        volumes: super::VolumeFate,
+        cancellation: &CancellationToken,
+        progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
+    ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
+        let preview = self
+            .prepare_project_destroy(project, confirm_data_loss, volumes)
+            .await?;
+        Ok(self.confirm(&preview, cancellation, progress).await)
+    }
+
+    /// Execute-time re-read and plan. Confirming runs these operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the Project is reserved or not
+    /// visible, the snapshot is incomplete, planning fails, or the confirmation
+    /// does not cover the fresh Data Loss.
+    pub(crate) async fn prepare_project_destroy(
+        &mut self,
+        project: &ProjectName,
+        confirm_data_loss: &[DataLoss],
+        volumes: super::VolumeFate,
+    ) -> Result<DeployPreview, RpcError> {
+        let preview = self.plan_project_destroy(project, volumes).await?;
+        let missing = observed_destroy_loss(&preview, volumes)?.uncovered_by(confirm_data_loss);
+        if !missing.is_empty() {
+            return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
+        }
+        if let Some(reason) = preview.prune_refusal {
+            return Err(invalid_argument(reason.to_string()));
+        }
+        if project_not_found(&preview) {
+            return Err(RpcError {
+                code: RpcErrorCode::NotFound,
+                message: format!("Project '{project}' was not found"),
+                details: serde_json::Value::Null,
+            });
+        }
+        Ok(preview)
+    }
+
+    async fn plan_project_destroy(
+        &mut self,
+        project: &ProjectName,
+        volumes: super::VolumeFate,
+    ) -> Result<DeployPreview, DeployError> {
         crate::project::refuse_reserved(project)?;
         let machines = self.machines().await?;
         let (snapshot, warnings) = gather_snapshot(self, machines).await?;
@@ -121,6 +204,43 @@ impl Client {
     ) -> Result<DeployOutcome<ExecutionError>, DeployError> {
         let preview = self.preview(intent).await?;
         Ok(self.confirm(&preview, cancellation, progress).await)
+    }
+}
+
+fn observed_destroy_loss(
+    preview: &DeployPreview,
+    volumes: super::VolumeFate,
+) -> Result<ObservedDataLoss, RpcError> {
+    if volumes == super::VolumeFate::Destroy
+        && let Some(reason) = preview.prune_refusal
+    {
+        return Err(invalid_argument(reason.to_string()));
+    }
+    Ok(planning::data_loss_from_plan(preview))
+}
+
+pub(crate) fn project_not_found(preview: &DeployPreview) -> bool {
+    preview.prune_refusal.is_none()
+        && preview.operations.is_empty()
+        && preview.preserved_volumes.is_empty()
+        && preview.would_remove.is_empty()
+}
+
+impl From<DeployError> for RpcError {
+    fn from(error: DeployError) -> Self {
+        match error {
+            DeployError::Connect(error) => error.into(),
+            DeployError::Plan(error) => invalid_argument(error.to_string()),
+            DeployError::Project(error) => invalid_argument(error.to_string()),
+        }
+    }
+}
+
+fn invalid_argument(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::InvalidArgument,
+        message,
+        details: serde_json::Value::Null,
     }
 }
 

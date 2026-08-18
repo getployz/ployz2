@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerRuntimeObservation, HookContainer, HostBind,
-    IngressHost, MachineId, MachineObservation, MembershipObservation, PortPublication,
-    PreservedVolume, ProjectName, PruneRefusal, QualifiedService, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder, VolumeSource,
-    compare_specs, explicit_ingress_hosts, hostname_owners, machine_matches_target,
+    ContainerAction, ContainerId, ContainerRuntimeObservation, DataLoss, HookContainer, HostBind,
+    IngressHost, MachineId, MachineObservation, MembershipObservation, ObservedDataLoss,
+    PortPublication, PreservedVolume, ProjectName, PruneRefusal, QualifiedService,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
+    ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
+    VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners, machine_matches_target,
     same_service_mode_kind,
 };
 
@@ -80,6 +80,28 @@ pub fn plan_project_removal(
         );
     }
     Ok(preview_from(planned, snapshot, project))
+}
+
+/// Data Loss implied by a Project-removal preview.
+///
+/// Preserve previews are empty. Destroy names each `RemoveVolume`. Completeness
+/// is the caller's check; this listing is not a Cluster view.
+#[must_use]
+pub fn data_loss_from_plan(preview: &DeployPreview) -> ObservedDataLoss {
+    ObservedDataLoss {
+        data_loss: preview
+            .operations
+            .iter()
+            .filter_map(|row| remove_volume_loss(&row.operation))
+            .collect(),
+    }
+}
+
+fn remove_volume_loss(operation: &DeployOperation) -> Option<DataLoss> {
+    let DeployOperation::RemoveVolume { id } = operation else {
+        return None;
+    };
+    Some(DataLoss::DockerVolume(id.clone()))
 }
 
 /// Calculate a Deploy Preview for this Intent against this Snapshot.
