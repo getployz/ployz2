@@ -5,8 +5,8 @@ use oci_client::{
 };
 use ployz_core::{
     ContainerObservation, ContainerPath, ContainerResources, HostBind, MachinePath, MachineTarget,
-    Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceContainer,
-    ServiceContainerSpec, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    Placement, PortPublication, PullPolicy, QualifiedService, RequestedServiceSpec, RestartPolicy,
+    ServiceContainer, ServiceContainerSpec, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
     ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
 };
 use semver::Version;
@@ -53,7 +53,7 @@ pub fn select_image(tags: &[String]) -> String {
 /// True when this observation is the reserved Caddy Service.
 #[must_use]
 pub fn is_system_caddy(observation: &ContainerObservation) -> bool {
-    observation.project_name.is_reserved() && observation.service_name.as_str() == SERVICE_NAME
+    observation.identity() == QualifiedService::system_caddy()
 }
 
 #[must_use]

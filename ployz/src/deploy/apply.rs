@@ -94,12 +94,11 @@ pub(crate) async fn deploy_scale(
     auto_confirm: bool,
     project: &ResolvedProject,
 ) -> Result<(), Failure> {
-    let preview = plan_scale(
+    let (preview, selected_project) = plan_scale(
         client,
         selector,
         replicas,
         plan_options(false, skip_health_monitor),
-        &project.name,
     )
     .await?;
     print_warnings(&preview);
@@ -108,7 +107,11 @@ pub(crate) async fn deploy_scale(
         println!("No changes.");
         return Ok(());
     }
-    confirm_and_execute(client, &preview.operations, auto_confirm, project).await
+    let project = ResolvedProject {
+        name: selected_project.expect("a non-empty scale plan selected a Service"),
+        source: project.source,
+    };
+    confirm_and_execute(client, &preview.operations, auto_confirm, &project).await
 }
 
 async fn confirm_and_execute(

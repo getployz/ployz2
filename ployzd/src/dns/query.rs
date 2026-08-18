@@ -1,7 +1,7 @@
 //! Parse an Internal DNS name into a typed query and target.
 
 use hickory_server::proto::rr::Name;
-use ployz_core::{MachineId, ServiceId, ServiceName};
+use ployz_core::{MachineId, ProjectName, QualifiedService, ServiceId, ServiceName};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Query {
@@ -19,12 +19,20 @@ pub(super) struct InternalQuery {
 pub(super) enum Target {
     Empty,
     ServiceId(ServiceId),
+    Identity(QualifiedService),
     ServiceName(ServiceName),
-    MachineService(MachineServiceTarget),
+    MachineIdentity(MachineServiceTarget),
+    MachineServiceName(MachineServiceNameTarget),
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) struct MachineServiceTarget {
+    pub machine_id: MachineId,
+    pub identity: QualifiedService,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(super) struct MachineServiceNameTarget {
     pub machine_id: MachineId,
     pub service_name: ServiceName,
 }
@@ -56,19 +64,41 @@ fn parse_target(selector: &str) -> Target {
     if selector.is_empty() {
         return Target::Empty;
     }
-    if let Some((machine, service)) = selector.split_once(".m.")
+    if let Some((machine, rest)) = selector.split_once(".m.")
         && let Ok(machine_id) = MachineId::parse(machine)
-        && let Ok(service_name) = ServiceName::parse(service)
     {
-        return Target::MachineService(MachineServiceTarget {
-            machine_id,
-            service_name,
-        });
+        if let Some(identity) = parse_identity(rest) {
+            return Target::MachineIdentity(MachineServiceTarget {
+                machine_id,
+                identity,
+            });
+        }
+        if let Ok(service_name) = ServiceName::parse(rest) {
+            return Target::MachineServiceName(MachineServiceNameTarget {
+                machine_id,
+                service_name,
+            });
+        }
+        return Target::Empty;
     }
     if let Ok(id) = ServiceId::parse(selector) {
         return Target::ServiceId(id);
     }
+    if let Some(identity) = parse_identity(selector) {
+        return Target::Identity(identity);
+    }
     ServiceName::parse(selector).map_or(Target::Empty, Target::ServiceName)
+}
+
+fn parse_identity(selector: &str) -> Option<QualifiedService> {
+    let (name, project) = selector.split_once('.')?;
+    if project.contains('.') {
+        return None;
+    }
+    Some(QualifiedService::new(
+        ProjectName::parse(project).ok()?,
+        ServiceName::parse(name).ok()?,
+    ))
 }
 
 #[cfg(test)]
@@ -108,15 +138,41 @@ mod tests {
     }
 
     #[test]
+    fn qualified_target_is_service_then_project() {
+        assert_eq!(
+            query("web.shop-staging.internal."),
+            internal(
+                Target::Identity(QualifiedService::parse("shop-staging/web").unwrap()),
+                false
+            )
+        );
+    }
+
+    #[test]
     fn machine_service_target_splits_machine_id_and_service_name() {
         let machine = MachineId::parse("a".repeat(32)).unwrap();
         let service = ServiceName::parse("api").unwrap();
         assert_eq!(
             query(&format!("{machine}.m.api.internal.")),
             internal(
-                Target::MachineService(MachineServiceTarget {
+                Target::MachineServiceName(MachineServiceNameTarget {
                     machine_id: machine,
                     service_name: service,
+                }),
+                false
+            )
+        );
+    }
+
+    #[test]
+    fn machine_identity_target_includes_the_project() {
+        let machine = MachineId::parse("a".repeat(32)).unwrap();
+        assert_eq!(
+            query(&format!("{machine}.m.web.shop-staging.internal.")),
+            internal(
+                Target::MachineIdentity(MachineServiceTarget {
+                    machine_id: machine,
+                    identity: QualifiedService::parse("shop-staging/web").unwrap(),
                 }),
                 false
             )
@@ -136,7 +192,7 @@ mod tests {
         assert_eq!(
             query(&format!("nearest.{machine}.m.api.internal.")),
             internal(
-                Target::MachineService(MachineServiceTarget {
+                Target::MachineServiceName(MachineServiceNameTarget {
                     machine_id: machine,
                     service_name: ServiceName::parse("api").unwrap(),
                 }),

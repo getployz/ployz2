@@ -265,8 +265,6 @@ impl fmt::Display for EliminatingConstraints {
 pub enum PlanError {
     #[error("no machines available that satisfy all constraints: {constraints}")]
     NoEligibleMachines { constraints: EliminatingConstraints },
-    #[error("service name matches multiple Service IDs: {matches:?}")]
-    AmbiguousService { matches: Vec<ServiceId> },
     #[error("service mode cannot be changed")]
     ServiceModeCannotChange,
     #[error("mounted Service Volumes disagree about Docker Volume {name}")]

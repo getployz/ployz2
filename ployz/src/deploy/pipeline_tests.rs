@@ -15,7 +15,6 @@ use crate::deploy::{DeployOperation, DeploySnapshot};
 fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     let service_id = ServiceId::random();
     let replicas = |count: u32| NonZeroU32::new(count).unwrap();
-    let project = ProjectName::parse("app").unwrap();
     let snapshot = |containers: Vec<ContainerObservation>| DeploySnapshot {
         machines: vec![machine()],
         containers,
@@ -32,7 +31,6 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
             )]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(2),
-            &project,
         )
         .unwrap_err()
         .to_string(),
@@ -52,7 +50,6 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
             )]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(1),
-            &project,
         )
         .unwrap()
         .is_none()
@@ -70,7 +67,6 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
             )]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(3),
-            &project,
         )
         .unwrap()
         .is_some()
@@ -84,15 +80,15 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
         &mixed_snapshot,
         &ServiceSelector::parse("api").unwrap(),
         replicas(3),
-        &project,
     )
     .unwrap()
     .unwrap();
-    assert_eq!(requested.container.image, "v1");
+    assert_eq!(requested.project_name.as_str(), "app");
+    assert_eq!(requested.requested.container.image, "v1");
     let mixed = plan_deploy(
         &DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
-            requested,
+            requested.project_name,
+            requested.requested,
             PlanOptions::default(),
         ),
         &mixed_snapshot,
@@ -125,7 +121,6 @@ fn scale_plan_accepts_only_service_containers() {
     };
     let mut hook = observation(&service_id, replicated.clone(), "hook", '2');
     hook.kind = ContainerKind::PreDeployHook;
-    let project = ProjectName::parse("app").unwrap();
     let snapshot = |containers: Vec<ContainerObservation>| DeploySnapshot {
         machines: vec![machine()],
         containers,
@@ -137,7 +132,6 @@ fn scale_plan_accepts_only_service_containers() {
             &snapshot(vec![hook.clone()]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(2),
-            &project,
         )
         .unwrap_err()
         .to_string(),
@@ -148,7 +142,6 @@ fn scale_plan_accepts_only_service_containers() {
             &snapshot(vec![observation(&service_id, replicated, "v1", '1'), hook]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(1),
-            &project,
         )
         .unwrap()
         .is_none()
@@ -171,13 +164,60 @@ fn scale_does_not_select_a_service_owned_by_another_project() {
     assert_eq!(
         choose_scale_spec(
             &snapshot,
-            &ServiceSelector::parse("api").unwrap(),
+            &ServiceSelector::parse("shop/api").unwrap(),
             NonZeroU32::new(2).unwrap(),
-            &ProjectName::parse("shop").unwrap(),
         )
         .unwrap_err()
         .to_string(),
-        "Service \"api\" was not found"
+        "Service \"shop/api\" was not found"
+    );
+    let choice = choose_scale_spec(
+        &snapshot,
+        &ServiceSelector::parse("api").unwrap(),
+        NonZeroU32::new(2).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(choice.project_name.as_str(), "ployz-system");
+}
+
+#[test]
+fn scale_uses_the_selected_qualified_service_project() {
+    let replicas = |count: u32| NonZeroU32::new(count).unwrap();
+    let replicated = ServiceMode::Replicated {
+        replicas: replicas(1),
+    };
+    let mut staging = observation(&ServiceId::random(), replicated.clone(), "v1", '1');
+    staging.project_name = ProjectName::parse("shop-staging").unwrap();
+    staging.service_name = ployz_core::ServiceName::parse("web").unwrap();
+    staging.resolved_spec.name = staging.service_name.clone();
+    let mut prod = observation(&ServiceId::random(), replicated, "v2", '2');
+    prod.project_name = ProjectName::parse("shop-prod").unwrap();
+    prod.service_name = ployz_core::ServiceName::parse("web").unwrap();
+    prod.resolved_spec.name = prod.service_name.clone();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine()],
+        containers: vec![staging, prod],
+        ..Default::default()
+    };
+
+    let choice = choose_scale_spec(
+        &snapshot,
+        &ServiceSelector::parse("shop-staging/web").unwrap(),
+        replicas(2),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(choice.project_name.as_str(), "shop-staging");
+    assert_eq!(choice.requested.name.as_str(), "web");
+    assert_eq!(choice.requested.container.image, "v1");
+    assert!(
+        choose_scale_spec(
+            &snapshot,
+            &ServiceSelector::parse("web").unwrap(),
+            replicas(2),
+        )
+        .is_err()
     );
 }
 

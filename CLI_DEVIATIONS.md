@@ -16,3 +16,4 @@
 - `scriptable-ctx-connection` — Let `ployz ctx connection [CONNECTION]` print the current default connection when omitted, and select when given, so a scripted caller can read without a TTY.
 - `project-name-no-short-flag` — Expose Project name as `--project-name` only. `-p` stays `--profile` on `build` and `deploy`, and `--publish` on `run`.
 - `strict-project-name` — Reject Project names with underscores or uppercase instead of normalising them. Docker Compose permits underscores and normalisation; Ployz keeps Project names directly DNS-safe.
+- `qualified-service-container-target` — Target a container as `service:container` or `project/service:container`. `/` is Qualified Service identity, so Uncloud's `SERVICE/CONTAINER` form is not used.
