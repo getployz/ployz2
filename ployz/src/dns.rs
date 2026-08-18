@@ -364,12 +364,6 @@ fn ingress_targets_from_ports<'a>(
     targets
 }
 
-fn ingress_targets<'a>(
-    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
-) -> BTreeMap<&'a IngressHost, bool> {
-    ingress_targets_from_ports(specs.into_iter().flat_map(|spec| spec.ports.iter()))
-}
-
 fn miss_warning(
     hostname: &IngressHost,
     resolved: &[IpAddr],
@@ -418,7 +412,11 @@ pub fn ingress_dns_warnings<'a>(
     cluster_addresses: &[IpAddr],
     resolve: impl FnMut(&IngressHost) -> Vec<IpAddr>,
 ) -> Vec<IngressDnsWarning> {
-    warnings_from_targets(ingress_targets(specs), cluster_addresses, resolve)
+    warnings_from_targets(
+        ingress_targets_from_ports(specs.into_iter().flat_map(|spec| spec.ports.iter())),
+        cluster_addresses,
+        resolve,
+    )
 }
 
 fn unique_addresses(addresses: impl IntoIterator<Item = IpAddr>) -> Vec<IpAddr> {

@@ -184,10 +184,6 @@ mod replacement;
 #[path = "exec_tests/restart.rs"]
 mod restart;
 
-fn plan(operations: Vec<DeployOperation>) -> Vec<DeployOperation> {
-    operations
-}
-
 fn run(
     machine_id: &MachineId,
     spec: ResolvedServiceSpec,
