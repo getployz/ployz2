@@ -22,10 +22,10 @@ const requestedConfigs: NonNullable<RequestedServiceSpec["configs"]> =
   fixtures.requested_service_spec_typed.configs;
 const resolvedConfigs: NonNullable<ResolvedServiceSpec["configs"]> =
   fixtures.resolved_service_spec_typed.configs;
-const disabled: HealthcheckSpec = fixtures.effective_healthcheck_disabled;
-const configured: HealthcheckSpec = fixtures.effective_healthcheck_configured;
+const configured: HealthcheckSpec =
+  fixtures.requested_service_spec_typed.container.healthcheck;
 const effective: ContainerObservation["effective_healthcheck"] =
-  fixtures.container_observation_configured_healthcheck.effective_healthcheck;
+  fixtures.container_observation_disabled_healthcheck.effective_healthcheck;
 
 void volumeDriver;
 void configSpec;
@@ -35,7 +35,6 @@ void deviceReservation;
 void ulimit;
 void requestedConfigs;
 void resolvedConfigs;
-void disabled;
 void configured;
 void effective;
 

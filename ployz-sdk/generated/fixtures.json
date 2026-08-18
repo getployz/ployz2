@@ -85,22 +85,13 @@
     ],
     "name": "settings"
   },
-  "container_observation_configured_healthcheck": {
+  "container_observation_disabled_healthcheck": {
     "address": null,
     "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
     "created_at_unix_nanos": 1700000000000000000,
     "display_name": "api-1",
     "effective_healthcheck": {
-      "interval_millis": 10000,
-      "retries": 3,
-      "start_interval_millis": 1000,
-      "start_period_millis": 15000,
-      "state": "configured",
-      "test": [
-        "CMD",
-        "true"
-      ],
-      "timeout_millis": 5000
+      "state": "disabled"
     },
     "kind": "service_container",
     "labels": {},
@@ -396,13 +387,6 @@
       "count": "1"
     }
   },
-  "device_reservation_sparse": {
-    "capabilities": [],
-    "count": null,
-    "device_ids": [],
-    "driver": null,
-    "options": {}
-  },
   "docker_volume": {
     "driver": "local",
     "id": {
@@ -429,21 +413,6 @@
       "type": "none"
     },
     "quota_bytes": 1
-  },
-  "effective_healthcheck_configured": {
-    "interval_millis": 10000,
-    "retries": 3,
-    "start_interval_millis": 1000,
-    "start_period_millis": 15000,
-    "state": "configured",
-    "test": [
-      "CMD",
-      "true"
-    ],
-    "timeout_millis": 5000
-  },
-  "effective_healthcheck_disabled": {
-    "state": "disabled"
   },
   "health_observation_unknown": "degraded",
   "ingress_hostname_cluster_domain": {

@@ -122,10 +122,6 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert("config_mount".into(), to_value(&config_mount()));
     fixtures.insert("device_mapping".into(), to_value(&device_mapping()));
     fixtures.insert("device_reservation".into(), to_value(&device_reservation()));
-    fixtures.insert(
-        "device_reservation_sparse".into(),
-        to_value(&device_reservation_sparse()),
-    );
     fixtures.insert("ulimit".into(), to_value(&ulimit()));
     fixtures.insert(
         "requested_service_spec_typed".into(),
@@ -136,16 +132,8 @@ pub fn fixtures() -> BTreeMap<String, Value> {
         to_value(&typed_resolved_spec()),
     );
     fixtures.insert(
-        "effective_healthcheck_disabled".into(),
-        to_value(&HealthcheckSpec::Disabled),
-    );
-    fixtures.insert(
-        "effective_healthcheck_configured".into(),
-        to_value(&configured_healthcheck()),
-    );
-    fixtures.insert(
-        "container_observation_configured_healthcheck".into(),
-        to_value(&container_observation_configured_healthcheck()),
+        "container_observation_disabled_healthcheck".into(),
+        to_value(&container_observation_disabled_healthcheck()),
     );
     fixtures.insert(
         "ingress_hostname_cluster_domain".into(),
@@ -953,9 +941,9 @@ fn typed_resolved_spec() -> ResolvedServiceSpec {
     typed_requested_spec().to_resolved(service_id(), ResolvedUpdateConfig::default())
 }
 
-fn container_observation_configured_healthcheck() -> ContainerObservation {
+fn container_observation_disabled_healthcheck() -> ContainerObservation {
     let mut observation = container_observation();
-    observation.effective_healthcheck = Some(configured_healthcheck());
+    observation.effective_healthcheck = Some(HealthcheckSpec::Disabled);
     observation
 }
 

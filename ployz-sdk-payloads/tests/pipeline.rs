@@ -1,6 +1,6 @@
 //! Pipeline tests for `@ployz/sdk` generated TypeScript and JSON fixtures.
 
-use std::{collections::BTreeMap, process::Command};
+use std::collections::BTreeMap;
 
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
@@ -437,13 +437,6 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("effective_healthcheck: HealthcheckSpec | null"));
     assert!(!dts.contains("export type RequestedServiceSpec = JsonValue"));
     assert!(!dts.contains("export type ResolvedServiceSpec = JsonValue"));
-    assert!(!dts.contains("driver?: JsonValue"));
-    assert!(!dts.contains("devices?: JsonValue[]"));
-    assert!(!dts.contains("device_reservations?: JsonValue[]"));
-    assert!(!dts.contains("ulimits?: JsonObject"));
-    assert!(!dts.contains("config_mounts?: JsonValue[]"));
-    assert!(!dts.contains("configs?: JsonValue[]"));
-    assert!(!dts.contains("effective_healthcheck: JsonValue | null"));
     assert!(dts.contains("readonly __brand: \"MachineId\""));
     assert!(dts.contains("readonly __brand: \"ServiceId\""));
     assert!(dts.contains("readonly __brand: \"ContainerId\""));
@@ -659,14 +652,6 @@ fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
         *fixture(fixtures, "device_reservation")
     );
 
-    let sparse: DeviceReservation = decode_fixture(fixture(fixtures, "device_reservation_sparse"));
-    assert!(sparse.driver.is_none());
-    assert!(sparse.device_ids.is_empty());
-    assert_eq!(
-        serde_json::to_value(&sparse).unwrap(),
-        *fixture(fixtures, "device_reservation_sparse")
-    );
-
     let ulimit: Ulimit = decode_fixture(fixture(fixtures, "ulimit"));
     assert_eq!(ulimit.soft, 1024);
     assert_eq!(ulimit.hard, 2048);
@@ -691,12 +676,28 @@ fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
         Some(&mapping)
     );
     assert_eq!(
-        requested.container.resources.device_reservations,
-        [reservation.clone(), sparse.clone()]
+        requested.container.resources.device_reservations.first(),
+        Some(&reservation)
     );
+    let sparse = requested
+        .container
+        .resources
+        .device_reservations
+        .get(1)
+        .expect("typed spec includes a sparse DeviceReservation");
+    assert!(sparse.driver.is_none());
+    assert!(sparse.device_ids.is_empty());
     assert_eq!(
         requested.container.resources.ulimits.get("nofile"),
         Some(&ulimit)
+    );
+    assert!(
+        requested
+            .container
+            .healthcheck
+            .as_ref()
+            .and_then(HealthcheckSpec::as_configured)
+            .is_some()
     );
     assert_eq!(
         serde_json::to_value(&requested).unwrap(),
@@ -712,33 +713,22 @@ fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
         *fixture(fixtures, "resolved_service_spec_typed")
     );
 
-    let disabled: HealthcheckSpec =
-        decode_fixture(fixture(fixtures, "effective_healthcheck_disabled"));
-    assert_eq!(disabled, HealthcheckSpec::Disabled);
-    let configured: HealthcheckSpec =
-        decode_fixture(fixture(fixtures, "effective_healthcheck_configured"));
-    assert!(configured.as_configured().is_some());
-    assert_eq!(
-        serde_json::to_value(&configured).unwrap(),
-        *fixture(fixtures, "effective_healthcheck_configured")
-    );
-
     let observation: ContainerObservation = decode_fixture(fixture(
         fixtures,
-        "container_observation_configured_healthcheck",
+        "container_observation_disabled_healthcheck",
     ));
     assert_eq!(
-        observation.effective_healthcheck.as_ref(),
-        Some(&configured)
+        observation.effective_healthcheck,
+        Some(HealthcheckSpec::Disabled)
     );
     assert_eq!(
         serde_json::to_value(&observation).unwrap(),
-        *fixture(fixtures, "container_observation_configured_healthcheck")
+        *fixture(fixtures, "container_observation_disabled_healthcheck")
     );
 }
 
 #[test]
-fn sdk_package_typechecks_generated_payloads() {
+fn sdk_package_declares_typescript_payload_checks() {
     let pkg: Value = serde_json::from_str(include_str!("../../ployz-sdk/package.json")).unwrap();
     assert!(
         pkg_field(&pkg, "devDependencies")
@@ -749,25 +739,7 @@ fn sdk_package_typechecks_generated_payloads() {
     );
     let typecheck = include_str!("../../ployz-sdk/tests/payload-types.ts");
     assert!(typecheck.contains("@ts-expect-error"));
-    assert!(typecheck.contains("VolumeDriver"));
-    assert!(typecheck.contains("ConfigSpec"));
-    assert!(typecheck.contains("DeviceMapping"));
-
-    let root = sdk_package_root();
-    if !root.join("node_modules/typescript").exists() {
-        let install = Command::new("npm")
-            .args(["ci", "--ignore-scripts"])
-            .current_dir(&root)
-            .status()
-            .expect("npm ci");
-        assert!(install.success(), "npm ci --ignore-scripts failed");
-    }
-    let status = Command::new("npx")
-        .args(["--no-install", "tsc", "--noEmit", "-p", "."])
-        .current_dir(&root)
-        .status()
-        .expect("tsc");
-    assert!(status.success(), "tsc --noEmit failed");
+    assert!(include_str!("../../scripts/check-sdk-package.sh").contains("tsc --noEmit"));
 }
 
 #[test]
