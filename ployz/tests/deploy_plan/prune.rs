@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use super::support::*;
 use ployz::deploy::{IngressContext, preview_deploy};
 use ployz_core::{
-    ComposePruneRefusal, ContainerKind, FailedOperation, MachineFailure, PruneRefusal,
-    QualifiedService, RpcError, RpcErrorCode, ServiceName,
+    ComposePruneRefusal, ContainerKind, MachineFailure, PruneRefusal, QualifiedService, RpcError,
+    RpcErrorCode, ServiceName,
 };
 
 #[test]
@@ -410,33 +410,24 @@ fn failed_desired_change_leaves_prune_in_the_unexecuted_suffix() {
         IngressContext::default(),
     )
     .unwrap();
-    let outcome = failure_outcome(&plan, 0, "create failed").unwrap();
-    match outcome {
-        DeployOutcome::Failed {
-            completed,
-            failed,
-            unexecuted,
-        } => {
-            assert!(completed.is_empty());
-            assert!(matches!(
-                failed,
-                FailedOperation::Operation {
-                    operation: DeployOperation::RunContainer { .. },
-                    ..
-                }
-            ));
-            assert!(unexecuted.iter().any(|operation| {
-                matches!(
-                    operation,
-                    DeployOperation::RemoveContainer {
-                        container_id: removed,
-                        ..
-                    } if *removed == container_id('d')
-                )
-            }));
-        }
-        other => panic!("expected failed outcome, got {other:?}"),
-    }
+    let ops = operations(&plan);
+    assert!(
+        matches!(
+            ops.first(),
+            Some(DeployOperation::RunContainer { spec, .. }) if spec.name.as_str() == "web"
+        ),
+        "desired work comes first: {ops:?}"
+    );
+    assert!(
+        ops.iter().skip(1).any(|operation| {
+            matches!(
+                operation,
+                DeployOperation::RemoveContainer { container_id, .. }
+                    if *container_id == container_id('d')
+            )
+        }),
+        "prune is after desired work: {ops:?}"
+    );
 }
 
 fn shop_with_obsolete_debug() -> (RequestedServiceSpec, DeploySnapshot) {

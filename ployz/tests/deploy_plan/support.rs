@@ -5,10 +5,9 @@ pub(super) use std::{
 };
 
 pub(super) use ployz::deploy::{
-    DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeploySnapshot,
-    EliminatingConstraint, EliminatingConstraints, FailedOperation, IngressContext,
-    ObservedDockerVolume, PlanError, PlanOptions, ReplacementCompensation, ReplacementOperation,
-    RestartAttempt, ServiceAttempt, compare_specs, preview_deploy,
+    DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, EliminatingConstraint,
+    EliminatingConstraints, IngressContext, ObservedDockerVolume, PlanError, PlanOptions,
+    ReplacementOperation, ServiceAttempt, compare_specs, preview_deploy,
 };
 
 pub(super) fn plan_deploy<'a>(
@@ -29,53 +28,6 @@ pub(super) fn operations(preview: &DeployPreview) -> Vec<DeployOperation> {
         .iter()
         .map(|row| row.operation.clone())
         .collect()
-}
-
-pub(super) fn failure_outcome<E>(
-    preview: &DeployPreview,
-    completed_count: usize,
-    error: E,
-) -> Option<DeployOutcome<E>> {
-    let operations = operations(preview);
-    let completed = operations.get(..completed_count)?;
-    let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
-    Some(DeployOutcome::Failed {
-        completed: completed.to_vec(),
-        failed: FailedOperation::Operation {
-            operation: failed.clone(),
-            error,
-        },
-        unexecuted: unexecuted.to_vec(),
-    })
-}
-
-pub(super) fn replacement_health_failure_outcome<E>(
-    preview: &DeployPreview,
-    completed_count: usize,
-    error: E,
-    compensation: ReplacementCompensation<E>,
-) -> Option<DeployOutcome<E>> {
-    let operations = operations(preview);
-    let completed = operations.get(..completed_count)?;
-    let (failed, unexecuted) = operations.get(completed_count..)?.split_first()?;
-    let DeployOperation::ReplaceContainer(operation) = failed else {
-        return None;
-    };
-    Some(DeployOutcome::Failed {
-        completed: completed.to_vec(),
-        failed: FailedOperation::ReplacementHealth {
-            operation: operation.clone(),
-            error,
-            compensation,
-        },
-        unexecuted: unexecuted.to_vec(),
-    })
-}
-
-pub(super) fn success_outcome<E>(preview: &DeployPreview) -> DeployOutcome<E> {
-    DeployOutcome::Success {
-        completed: operations(preview),
-    }
 }
 
 pub(super) fn assert_no_eligible(
