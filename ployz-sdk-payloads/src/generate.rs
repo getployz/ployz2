@@ -7,9 +7,8 @@ use std::{
 };
 
 use ployz_core::{
-    CERTIFICATE_POLICY_CAPABILITY, CapabilityName, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, DockerVolume, DockerVolumeId, DockerVolumeName,
-    EXEC_CONTAINER_CAPABILITY, HealthObservation, MachineFailure, MachineId, MachineSuccess,
+    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DockerVolume,
+    DockerVolumeId, DockerVolumeName, HealthObservation, MachineFailure, MachineId, MachineSuccess,
     MembershipObservation, PROTOCOL_MAJOR, PartialResult, RpcError, RpcErrorCode,
 };
 use serde::de::DeserializeOwned;
@@ -24,7 +23,7 @@ const OTHER_MACHINE_ID_HEX: &str = "fedcba9876543210fedcba9876543210";
 enum Shape {
     Alias(&'static str),
     OpenString(&'static [&'static str]),
-    Additive(&'static [(&'static str, &'static str, bool)]),
+    Additive(&'static [(&'static str, &'static str)]),
     Raw(&'static str),
 }
 
@@ -62,36 +61,31 @@ const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "DockerVolumeId",
-        Shape::Additive(&[
-            ("machine_id", "MachineId", false),
-            ("name", "DockerVolumeName", false),
-        ]),
+        Shape::Additive(&[("machine_id", "MachineId"), ("name", "DockerVolumeName")]),
     ),
     (
         "DockerVolume",
         Shape::Additive(&[
-            ("id", "DockerVolumeId", false),
-            ("driver", "string", false),
-            ("options", "{ readonly [key: string]: string }", false),
-            ("labels", "{ readonly [key: string]: string }", false),
+            ("id", "DockerVolumeId"),
+            ("driver", "string"),
+            ("options", "{ readonly [key: string]: string }"),
+            ("labels", "{ readonly [key: string]: string }"),
         ]),
     ),
     (
         "ContractDescription",
         Shape::Additive(&[
-            ("machine_id", "MachineId", false),
-            ("protocol_major", "number", false),
-            ("daemon_version", "string", false),
-            ("capabilities", "CapabilityName[]", false),
+            ("machine_id", "MachineId"),
+            ("protocol_major", "number"),
+            ("daemon_version", "string"),
+            ("capabilities", "CapabilityName[]"),
         ]),
     ),
     (
         "RpcError",
-        Shape::Additive(&[
-            ("code", "RpcErrorCode", false),
-            ("message", "string", false),
-            ("details", "JsonValue", true),
-        ]),
+        Shape::Raw(
+            "export type RpcError = Additive<{\n  code: RpcErrorCode;\n  message: string;\n  details?: JsonValue;\n}>;\n",
+        ),
     ),
     (
         "MachineSuccess",
@@ -120,28 +114,28 @@ const PAYLOADS: &[(&str, Shape)] = &[
     (
         "PlanOptions",
         Shape::Additive(&[
-            ("force_recreate", "boolean", false),
-            ("skip_health_monitor", "boolean", false),
-            ("placement_seed", "number", false),
+            ("force_recreate", "boolean"),
+            ("skip_health_monitor", "boolean"),
+            ("placement_seed", "number"),
         ]),
     ),
     (
         "ServiceAttempt",
-        Shape::Additive(&[("name", "ServiceName", false)]),
+        Shape::Additive(&[("name", "ServiceName")]),
     ),
     (
         "DeployIntent",
         Shape::Additive(&[
-            ("target", "JsonValue[]", false),
-            ("apply", "ServiceAttempt[]", false),
-            ("options", "PlanOptions", false),
+            ("target", "JsonValue[]"),
+            ("apply", "ServiceAttempt[]"),
+            ("options", "PlanOptions"),
         ]),
     ),
     (
-        // ponytail: serde tags land with #325; RequestedServiceSpec stays JsonValue until then.
+        // ponytail: RequestedServiceSpec / DeployOperation stay JsonValue until #325 serde.
         "DeployOutcome",
         Shape::Raw(
-            "export type DeployOutcome<E = RpcError> =\n  | Additive<{ Success: { completed: JsonValue[] } }>\n  | Additive<{ Failed: { completed: JsonValue[]; failed: JsonValue; unexecuted: JsonValue[] } }>;\n",
+            "export type DeployOutcome<E = RpcError> =\n  | Additive<{ completed: JsonValue[] }>\n  | Additive<{ completed: JsonValue[]; failed: JsonValue; unexecuted: JsonValue[] }>;\n",
         ),
     ),
 ];
@@ -155,9 +149,11 @@ pub struct Artifacts {
 /// Build the checked-in `@ployz/sdk` artifacts from Rust types.
 #[must_use]
 pub fn artifacts() -> Artifacts {
+    let fixtures = fixtures();
+    check_additive_fields_match_rust(&fixtures);
     Artifacts {
         index_dts: typescript(),
-        fixtures_json: pretty_json(&Value::Object(fixtures().into_iter().collect())),
+        fixtures_json: pretty_json(&Value::Object(fixtures.into_iter().collect())),
     }
 }
 
@@ -296,11 +292,9 @@ fn emit_shape(name: &str, shape: &Shape) -> String {
         }
         Shape::Additive(fields) => {
             let mut body = format!("export type {name} = Additive<{{\n");
-            for (field, ts, optional) in *fields {
-                let optional = if *optional { "?" } else { "" };
+            for (field, ts) in *fields {
                 body.push_str("  ");
                 body.push_str(field);
-                body.push_str(optional);
                 body.push_str(": ");
                 body.push_str(ts);
                 body.push_str(";\n");
@@ -337,26 +331,81 @@ fn capability_typescript() -> String {
 }
 
 fn capability_rows() -> Vec<(&'static str, &'static str)> {
-    macro_rules! rows {
-        (
-            package $package:literal
-            unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
-            server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
-        ) => {
-            vec![
-                $((stringify!($unary_capability), $unary_capability_name),)+
-                $((stringify!($stream_capability), $stream_capability_name),)+
-            ]
-        };
-    }
-    let mut rows = ployz_core::rpc_catalog!(rows);
-    rows.push(("EXEC_CONTAINER_CAPABILITY", EXEC_CONTAINER_CAPABILITY));
-    rows.push((
-        "CERTIFICATE_POLICY_CAPABILITY",
-        CERTIFICATE_POLICY_CAPABILITY,
-    ));
+    let mut rows = ployz_core::CATALOGUED_CAPABILITY_BINDINGS.to_vec();
     rows.sort_by_key(|(_, wire)| *wire);
     rows
+}
+
+fn check_additive_fields_match_rust(fixtures: &BTreeMap<String, Value>) {
+    let examples = [
+        (
+            "ContractDescription",
+            fixtures
+                .get("contract_description")
+                .expect("contract_description fixture"),
+        ),
+        (
+            "DockerVolume",
+            fixtures
+                .get("docker_volume")
+                .expect("docker_volume fixture"),
+        ),
+        (
+            "DockerVolumeId",
+            fixtures
+                .get("docker_volume")
+                .and_then(|volume| volume.get("id"))
+                .expect("docker_volume.id fixture"),
+        ),
+        (
+            "PartialResult",
+            fixtures
+                .get("partial_result")
+                .expect("partial_result fixture"),
+        ),
+        (
+            "DeployIntent",
+            fixtures
+                .get("deploy_intent")
+                .expect("deploy_intent fixture"),
+        ),
+        (
+            "PlanOptions",
+            fixtures
+                .get("deploy_intent")
+                .and_then(|intent| intent.get("options"))
+                .expect("deploy_intent.options fixture"),
+        ),
+    ];
+    for (name, value) in examples {
+        let Some(fields) = additive_fields(name) else {
+            continue;
+        };
+        let object = value
+            .as_object()
+            .unwrap_or_else(|| panic!("{name} fixture is not an object"));
+        for key in object.keys() {
+            assert!(
+                fields.iter().any(|(field, _)| field == key),
+                "{name} TypeScript fields missing serde key {key}"
+            );
+        }
+        for (field, _) in fields {
+            assert!(
+                object.contains_key(*field),
+                "{name} serde value missing field {field}"
+            );
+        }
+    }
+}
+
+fn additive_fields(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    PAYLOADS.iter().find_map(|(payload, shape)| {
+        let Shape::Additive(fields) = shape else {
+            return None;
+        };
+        (*payload == name).then_some(*fields)
+    })
 }
 
 fn contract_description() -> ContractDescription {

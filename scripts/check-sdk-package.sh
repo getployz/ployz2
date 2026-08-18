@@ -5,9 +5,7 @@ set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
-if [ -z "${SKIP_SDK_BUILD:-}" ]; then
-    cargo build -p ployz-sdk --locked
-fi
+cargo build -p ployz-sdk --locked
 
 if [ -f target/debug/libployz_sdk.so ]; then
     cp target/debug/libployz_sdk.so ployz-sdk/ployz-sdk.node

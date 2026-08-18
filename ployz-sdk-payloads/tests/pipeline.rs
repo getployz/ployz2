@@ -5,7 +5,9 @@ use ployz_core::{
     DESCRIBE_CONTRACT_CAPABILITY, DockerVolume, HealthObservation, MembershipObservation, RpcError,
     RpcErrorCode,
 };
-use ployz_sdk_payloads::{PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root};
+use ployz_sdk_payloads::{
+    PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
+};
 use serde_json::Value;
 
 fn fixture<'a>(fixtures: &'a BTreeMap<String, Value>, name: &str) -> &'a Value {
@@ -30,22 +32,15 @@ fn type_block<'a>(dts: &'a str, type_name: &str) -> &'a str {
     let mut from = 0;
     while let Some(relative) = dts.get(from..).and_then(|slice| slice.find(&marker)) {
         let start = from + relative;
-        let after = start + marker.len();
-        let next = dts
-            .get(after..)
-            .and_then(|slice| slice.chars().next())
-            .unwrap_or('\0');
-        if next.is_ascii_alphanumeric() || next == '_' {
-            from = after;
+        from = start + marker.len();
+        let next = dts.as_bytes().get(from).copied().unwrap_or(0);
+        if next == b'_' || next.is_ascii_alphanumeric() {
             continue;
         }
-        let rest = dts
-            .get(start..)
-            .unwrap_or_else(|| panic!("TypeScript type {type_name} is truncated"));
-        let end = rest.find("\nexport ").unwrap_or(rest.len());
+        let rest = dts.get(start..).expect("TypeScript type is in range");
         return rest
-            .get(..end)
-            .unwrap_or_else(|| panic!("TypeScript type {type_name} is truncated"));
+            .split_once("\nexport ")
+            .map_or(rest, |(block, _)| block);
     }
     panic!("missing TypeScript type {type_name}");
 }
@@ -214,6 +209,9 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("state?: string"));
     assert!(dts.contains("export type ContractDescription = Additive<{"));
     assert!(dts.contains("export type DeployIntent = Additive<{"));
+    assert!(dts.contains("export type DeployOutcome<E = RpcError> ="));
+    assert!(dts.contains("unexecuted: JsonValue[]"));
+    assert!(!dts.contains("{ Success:"));
     assert!(dts.contains("export const DESCRIBE_CONTRACT_CAPABILITY: CapabilityName"));
     assert!(dts.contains(DESCRIBE_CONTRACT_CAPABILITY));
     assert!(dts.contains(CERTIFICATE_POLICY_CAPABILITY));
@@ -285,4 +283,15 @@ fn no_nats_compatibility_package_is_introduced() {
     let workspace = root.parent().expect("workspace root");
     assert!(!workspace.join("packages/ployz-sdk").exists());
     assert!(!workspace.join("ployz-nats-sdk").exists());
+}
+
+#[test]
+fn write_generated_fails_when_the_package_root_is_a_file() {
+    let path = std::env::temp_dir().join(format!(
+        "ployz-sdk-write-generated-{}.tmp",
+        std::process::id()
+    ));
+    std::fs::write(&path, b"not a directory").unwrap();
+    assert!(write_generated(&path).is_err());
+    std::fs::remove_file(&path).unwrap();
 }
