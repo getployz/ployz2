@@ -25,48 +25,33 @@ pub struct ObservedDataLoss {
 impl ObservedDataLoss {
     /// Data Loss this observer listed for `machine_id`.
     ///
+    /// `listed` is the Volume listing for that one Machine.
+    ///
     /// # Errors
     ///
-    /// Returns the listing's per-Machine error when that Machine failed, or
-    /// [`RpcErrorCode::Unavailable`] when this observer omitted it, or
-    /// [`RpcErrorCode::NotFound`] when it is not in the listing at all.
+    /// Returns the listing error when that Machine failed, or
+    /// [`RpcErrorCode::Unavailable`] when this observer produced no listing.
     pub fn from_volume_listing(
         machine_id: &MachineId,
         listed: &PartialResult<Vec<DockerVolume>, RpcError>,
     ) -> Result<Self, RpcError> {
-        if let Some(success) = listed
-            .successes
-            .iter()
-            .find(|success| success.machine_id == *machine_id)
-        {
+        if let Some(success) = listed.successes.first() {
             return Ok(Self {
                 data_loss: success
                     .value
                     .iter()
-                    .filter(|volume| volume.id.machine_id == *machine_id)
                     .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
                     .collect(),
             });
         }
-        if let Some(failure) = listed
-            .failures
-            .iter()
-            .find(|failure| failure.machine_id == *machine_id)
-        {
+        if let Some(failure) = listed.failures.first() {
             return Err(failure.error.clone());
         }
-        if listed.omissions.iter().any(|id| id == machine_id) {
-            return Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: format!(
-                    "Machine {machine_id} did not produce a Volume listing from this observer"
-                ),
-                details: Value::Null,
-            });
-        }
         Err(RpcError {
-            code: RpcErrorCode::NotFound,
-            message: format!("Machine {machine_id} is not visible to this observer"),
+            code: RpcErrorCode::Unavailable,
+            message: format!(
+                "Machine {machine_id} did not produce a Volume listing from this observer"
+            ),
             details: Value::Null,
         })
     }

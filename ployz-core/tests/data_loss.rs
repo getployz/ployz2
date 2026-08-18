@@ -45,22 +45,12 @@ fn a_kind_cannot_carry_an_identity_that_does_not_belong_to_it() {
 fn volume_listing_with_volumes_and_without_are_live_observation() {
     let loaded = machine_id('a');
     let empty = machine_id('c');
-    let listed = PartialResult {
-        successes: vec![
-            MachineSuccess {
-                machine_id: loaded,
-                value: vec![volume(loaded, "data"), volume(loaded, "logs")],
-            },
-            MachineSuccess {
-                machine_id: empty,
-                value: vec![],
-            },
-        ],
-        failures: Vec::new(),
-        omissions: Vec::new(),
-    };
 
-    let observed = ObservedDataLoss::from_volume_listing(&loaded, &listed).unwrap();
+    let observed = ObservedDataLoss::from_volume_listing(
+        &loaded,
+        &listing(loaded, vec![volume(loaded, "data"), volume(loaded, "logs")]),
+    )
+    .unwrap();
     assert_eq!(
         observed.data_loss,
         [
@@ -75,7 +65,7 @@ fn volume_listing_with_volumes_and_without_are_live_observation() {
         ]
     );
 
-    let none = ObservedDataLoss::from_volume_listing(&empty, &listed).unwrap();
+    let none = ObservedDataLoss::from_volume_listing(&empty, &listing(empty, vec![])).unwrap();
     assert_eq!(none.data_loss, Vec::<DataLoss>::new());
 }
 
@@ -83,30 +73,51 @@ fn volume_listing_with_volumes_and_without_are_live_observation() {
 fn omitted_or_failed_listings_are_not_an_empty_data_loss_list() {
     let omitted = machine_id('d');
     let failed = machine_id('b');
-    let missing = machine_id('e');
-    let listed = PartialResult {
-        successes: Vec::new(),
-        failures: vec![MachineFailure {
-            machine_id: failed,
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "target unavailable".into(),
-                details: Value::Null,
-            },
-        }],
-        omissions: vec![omitted],
-    };
 
-    let omitted_error = ObservedDataLoss::from_volume_listing(&omitted, &listed).unwrap_err();
+    let omitted_error = ObservedDataLoss::from_volume_listing(
+        &omitted,
+        &PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: vec![omitted],
+        },
+    )
+    .unwrap_err();
     assert_eq!(omitted_error.code, RpcErrorCode::Unavailable);
     assert!(omitted_error.message.contains("this observer"));
 
-    let failed_error = ObservedDataLoss::from_volume_listing(&failed, &listed).unwrap_err();
+    let failed_error = ObservedDataLoss::from_volume_listing(
+        &failed,
+        &PartialResult {
+            successes: Vec::new(),
+            failures: vec![MachineFailure {
+                machine_id: failed,
+                error: RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "target unavailable".into(),
+                    details: Value::Null,
+                },
+            }],
+            omissions: Vec::new(),
+        },
+    )
+    .unwrap_err();
     assert_eq!(failed_error.code, RpcErrorCode::Unavailable);
     assert_eq!(failed_error.message, "target unavailable");
+}
 
-    let missing_error = ObservedDataLoss::from_volume_listing(&missing, &listed).unwrap_err();
-    assert_eq!(missing_error.code, RpcErrorCode::NotFound);
+fn listing(
+    machine_id: MachineId,
+    volumes: Vec<DockerVolume>,
+) -> PartialResult<Vec<DockerVolume>, RpcError> {
+    PartialResult {
+        successes: vec![MachineSuccess {
+            machine_id,
+            value: volumes,
+        }],
+        failures: Vec::new(),
+        omissions: Vec::new(),
+    }
 }
 
 fn volume(machine_id: MachineId, name: &str) -> DockerVolume {

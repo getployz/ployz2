@@ -136,7 +136,7 @@ fn two_machine_cluster() -> (
     MachineObservation,
     DiscoveryService,
 ) {
-    let description = advertised();
+    let description = super::sdk::advertised_description();
     let loaded = machine_named(&description.machine_id, "loaded");
     let empty = machine('c', "empty");
     let mut service = DiscoveryService::new(description.clone());
@@ -152,10 +152,6 @@ fn two_machine_cluster() -> (
         (empty.machine.id, vec![]),
     ]);
     (description, loaded, empty, service)
-}
-
-fn advertised() -> ContractDescription {
-    super::sdk::advertised_description()
 }
 
 fn machine_named(id: &MachineId, name: &str) -> MachineObservation {
