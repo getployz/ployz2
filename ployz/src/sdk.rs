@@ -150,7 +150,7 @@ impl Session {
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the session is closed, snapshot
-    /// gathering fails, ingress expansion fails, or planning fails.
+    /// gathering fails, or planning fails.
     pub async fn preview(&self, intent: DeployIntent) -> Result<PreparedDeploy, RpcError> {
         let mut client = self.client().await?;
         let preview = client.preview(intent).await.map_err(deploy_error)?;
@@ -427,7 +427,6 @@ fn deploy_error(error: DeployError) -> RpcError {
     match error {
         DeployError::Connect(error) => error.into(),
         DeployError::Plan(error) => invalid_argument(error.to_string()),
-        DeployError::Ingress(error) => invalid_argument(error.to_string()),
         DeployError::Project(error) => invalid_argument(error.to_string()),
     }
 }

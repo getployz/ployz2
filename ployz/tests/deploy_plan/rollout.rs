@@ -36,7 +36,7 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::StopHook { container_id: running, .. },
             DeployOperation::StopHook { container_id: paused, .. },
@@ -86,18 +86,17 @@ fn sequence_failure_keeps_completed_failed_and_unexecuted_operations_exact() {
     )
     .unwrap();
 
-    let outcome = plan.failure_outcome(1, "container failed").unwrap();
-
-    let operations = &plan.operations;
+    let ops = operations(&plan);
+    let outcome = failure_outcome(&plan, 1, "container failed").unwrap();
     assert_eq!(
         outcome,
         DeployOutcome::Failed {
-            completed: operations.get(..1).unwrap().to_vec(),
+            completed: ops.get(..1).unwrap().to_vec(),
             failed: FailedOperation::Operation {
-                operation: operations.get(1).unwrap().clone(),
+                operation: ops.get(1).unwrap().clone(),
                 error: "container failed",
             },
-            unexecuted: operations.get(2..).unwrap().to_vec(),
+            unexecuted: ops.get(2..).unwrap().to_vec(),
         }
     );
 }
@@ -157,7 +156,7 @@ fn global_missing_volume_is_created_on_every_eligible_machine_before_containers(
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::CreateVolume { machine_id: first_volume, .. },
             DeployOperation::CreateVolume { machine_id: second_volume, .. },
@@ -190,7 +189,7 @@ fn force_recreate_replaces_an_otherwise_matching_container() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [DeployOperation::ReplaceContainer(ReplacementOperation { old_container_id, .. })]
             if old_container_id == &container_id('b')
     ));
@@ -243,9 +242,9 @@ fn replacement_failure_can_record_its_only_allowed_compensation() {
         restart_old_container: RestartAttempt::Attempted(Err("restart failed")),
     };
 
-    let outcome = plan
-        .replacement_health_failure_outcome(0, "health failed", compensation.clone())
-        .unwrap();
+    let outcome =
+        replacement_health_failure_outcome(&plan, 0, "health failed", compensation.clone())
+            .unwrap();
 
     assert!(matches!(
         outcome,
@@ -282,16 +281,16 @@ fn stop_first_failure_can_record_that_a_stopped_old_container_was_not_restarted(
     )
     .unwrap();
 
-    let outcome = plan
-        .replacement_health_failure_outcome(
-            0,
-            "health failed",
-            ReplacementCompensation::StopFirst {
-                stop_new_container: Ok(()),
-                restart_old_container: RestartAttempt::NotAttempted,
-            },
-        )
-        .unwrap();
+    let outcome = replacement_health_failure_outcome(
+        &plan,
+        0,
+        "health failed",
+        ReplacementCompensation::StopFirst {
+            stop_new_container: Ok(()),
+            restart_old_container: RestartAttempt::NotAttempted,
+        },
+    )
+    .unwrap();
 
     assert!(matches!(
         outcome,
@@ -359,7 +358,7 @@ fn incompatible_volume_excludes_only_its_machine() {
     .unwrap();
     assert!(
         matches!(
-            plan.operations.as_slice(),
+            operations(&plan).as_slice(),
             [
                 DeployOperation::CreateVolume { machine_id: volume_machine, .. },
                 DeployOperation::RunContainer { machine_id: container_machine, .. },
@@ -392,7 +391,7 @@ fn multi_replica_named_volume_replacement_defaults_to_start_first() {
     .unwrap();
 
     assert!(matches!(
-        plan.operations.first(),
+        operations(&plan).first(),
         Some(DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. }))
             if spec.update.order == UpdateOrder::StartFirst
     ));
@@ -424,7 +423,7 @@ fn global_replacement_stops_other_containers_with_conflicting_host_ports_first()
     .unwrap();
 
     assert!(matches!(
-        plan.operations.as_slice(),
+        operations(&plan).as_slice(),
         [
             DeployOperation::StopContainer { container_id: stopped, .. },
             DeployOperation::ReplaceContainer(ReplacementOperation {
@@ -453,9 +452,9 @@ fn successful_outcome_has_no_failed_or_unexecuted_operation() {
     )
     .unwrap();
     assert_eq!(
-        plan.success_outcome::<&str>(),
+        success_outcome::<&str>(&plan),
         DeployOutcome::Success {
-            completed: plan.operations.clone(),
+            completed: operations(&plan),
         }
     );
 }

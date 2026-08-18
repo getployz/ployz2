@@ -1,8 +1,8 @@
-//! The Deploy pipeline: snapshot → plan → execute.
+//! The Deploy pipeline: snapshot → preview → confirm.
 //!
-//! A Deploy Snapshot is gathered, a Deploy Preview is calculated, and a Deploy
-//! Plan is executed to a Deploy Outcome. This module does not print, read
-//! stdin, or exit the process.
+//! A Deploy Snapshot is gathered, a Deploy Preview is calculated, and
+//! `confirm` executes those rows to a Deploy Outcome. This module does not
+//! print, read stdin, or exit the process.
 
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    MachineFailure, MachineId, MachineObservation, PortPublication, ProjectName,
+    DeployOperation, MachineFailure, MachineId, MachineObservation, PortPublication, ProjectName,
     RequestedServiceSpec, RpcError, ServiceMode, ServiceSelector, select_service,
 };
 use thiserror::Error;
@@ -19,15 +19,15 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     compose::{BuildService, ComposeProject},
     connect::{Client, ConnectError},
-    dns::{ExpandIngressError, IngressDnsWarning, resolve_ingress_dns_warnings},
+    dns::{IngressDnsWarning, resolve_ingress_dns_warnings_for_ports},
     failure::Failure,
     image::PushError,
 };
 
 use super::{
     ComposePruneRefusal, DeployEvent, DeployIntent, DeployOutcome, DeployPreview, DeploySnapshot,
-    DeployWarning, ExecutionError, ObservationKind, PlanError, PlanOptions,
-    exec::execute_operation_sequence, pending_rows, planning,
+    DeployWarning, ExecutionError, IngressContext, ObservationKind, PlanError, PlanOptions,
+    exec::execute_operation_sequence, planning, preview_deploy,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -36,7 +36,7 @@ pub(crate) struct ReconciliationHints {
     pub compose_refusal: Option<ComposePruneRefusal>,
 }
 
-/// Snapshot, planning, or ingress-expansion failure before a Deploy executes.
+/// Snapshot or planning failure before a Deploy executes.
 ///
 /// Execution failure is a [`DeployOutcome::Failed`], not this error.
 #[derive(Debug, Error)]
@@ -46,27 +46,23 @@ pub enum DeployError {
     #[error(transparent)]
     Plan(#[from] PlanError),
     #[error(transparent)]
-    Ingress(#[from] ExpandIngressError),
-    #[error(transparent)]
     Project(#[from] crate::project::ProjectError),
 }
 
 impl Client {
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
-    /// Reuses the same planner, ingress expansion, and DNS warnings as the CLI.
-    /// Confirming executes these operations; it does not re-plan.
+    /// Gathers the observer-relative snapshot and reserved domain, calls
+    /// [`preview_deploy`], then performs public-DNS warning I/O. Confirming
+    /// executes these operations; it does not re-plan.
     ///
     /// # Errors
     ///
-    /// Returns when snapshot gathering, ingress expansion, or planning fails.
-    pub async fn preview(
-        &mut self,
-        mut intent: DeployIntent,
-    ) -> Result<DeployPreview, DeployError> {
+    /// Returns when snapshot gathering or planning fails.
+    pub async fn preview(&mut self, intent: DeployIntent) -> Result<DeployPreview, DeployError> {
         let machines = self.machines().await?;
         let (snapshot, warnings) = gather_snapshot(self, machines).await?;
-        prepare_intent(self, snapshot, warnings, &mut intent).await
+        preview_gathered(self, snapshot, warnings, &intent).await
     }
 
     /// Calculate a Project-removal preview. Confirming executes these operations.
@@ -85,15 +81,9 @@ impl Client {
         crate::project::refuse_reserved(project)?;
         let machines = self.machines().await?;
         let (snapshot, warnings) = gather_snapshot(self, machines).await?;
-        let plan = planning::plan_project_removal(project, &snapshot, volumes)?;
-        Ok(DeployPreview {
-            project_name: project.clone(),
-            operations: pending_rows(&plan.operations, &snapshot),
-            warnings,
-            would_remove: plan.would_remove,
-            preserved_volumes: plan.preserved_volumes,
-            prune_refusal: plan.prune_refusal,
-        })
+        let mut preview = planning::plan_project_removal(project, &snapshot, volumes)?;
+        preview.warnings.splice(0..0, warnings);
+        Ok(preview)
     }
 
     /// Execute the operations on this Deploy Preview. Does not re-plan.
@@ -121,7 +111,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns when snapshot gathering, ingress expansion, or planning fails
+    /// Returns when snapshot gathering or planning fails
     /// before execution starts.
     pub async fn run(
         &mut self,
@@ -150,18 +140,6 @@ impl From<IngressDnsWarning> for DeployWarning {
     fn from(warning: IngressDnsWarning) -> Self {
         Self::IngressHostname(warning.to_string())
     }
-}
-
-pub(super) async fn plan_spec(
-    client: &mut Client,
-    requested: &RequestedServiceSpec,
-    options: PlanOptions,
-    project_name: &ProjectName,
-) -> Result<DeployPreview, Failure> {
-    let machines = list_machines(client).await?;
-    let (snapshot, warnings) = gather_snapshot(client, machines).await?;
-    let mut intent = DeployIntent::apply_one(project_name.clone(), requested.clone(), options);
-    Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
 pub(super) async fn push_project_images(
@@ -194,7 +172,7 @@ pub(super) async fn plan_project(
     project.resolve_secrets()?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     super::reject_missing_external_volumes(project, &snapshot)?;
-    let mut intent = DeployIntent::from_named_specs(
+    let intent = DeployIntent::from_named_specs(
         project_name.clone(),
         &project.services,
         &project.dependencies,
@@ -203,7 +181,7 @@ pub(super) async fn plan_project(
     .with_service_profiles(project.service_profiles())
     .with_requested_profiles(hints.requested_profiles)
     .with_compose_refusal(hints.compose_refusal);
-    Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
+    Ok(preview_gathered(client, snapshot, warnings, &intent).await?)
 }
 
 pub(super) async fn plan_scale(
@@ -221,31 +199,36 @@ pub(super) async fn plan_scale(
             choice.project_name,
         ));
     };
-    let mut intent = DeployIntent::apply_one(choice.project_name.clone(), requested, options);
+    let intent = DeployIntent::apply_one(choice.project_name.clone(), requested, options);
     Ok((
-        prepare_intent(client, snapshot, warnings, &mut intent).await?,
+        preview_gathered(client, snapshot, warnings, &intent).await?,
         choice.project_name,
     ))
 }
 
-async fn prepare_intent(
+async fn preview_gathered(
     client: &mut Client,
     snapshot: DeploySnapshot,
     mut warnings: Vec<DeployWarning>,
-    intent: &mut DeployIntent,
+    intent: &DeployIntent,
 ) -> Result<DeployPreview, DeployError> {
-    expand_ingress(client, &intent.project_name, intent.target.iter_mut()).await?;
-    warnings.extend(hostname_warnings(intent.target.iter(), &snapshot.machines).await);
-    let plan = planning::plan_deploy(intent, &snapshot)?;
-    warnings.extend(plan.warnings);
-    Ok(DeployPreview {
-        project_name: intent.project_name.clone(),
-        operations: pending_rows(&plan.operations, &snapshot),
-        warnings,
-        would_remove: plan.would_remove,
-        preserved_volumes: plan.preserved_volumes,
-        prune_refusal: plan.prune_refusal,
-    })
+    let domain = if intent.target.iter().any(needs_ingress_expansion) {
+        client.domain_if_reserved().await?
+    } else {
+        None
+    };
+    let mut preview = preview_deploy(
+        intent,
+        &snapshot,
+        IngressContext {
+            cluster_domain: domain.as_deref(),
+        },
+    )?;
+    let plan_warnings = std::mem::take(&mut preview.warnings);
+    warnings.extend(hostname_warnings(&preview, &snapshot.machines).await);
+    warnings.extend(plan_warnings);
+    preview.warnings = warnings;
+    Ok(preview)
 }
 
 pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
@@ -342,31 +325,35 @@ fn observation_warnings(
         .collect()
 }
 
-async fn expand_ingress<'a>(
-    client: &mut Client,
-    project: &ProjectName,
-    specs: impl IntoIterator<Item = &'a mut RequestedServiceSpec>,
-) -> Result<(), DeployError> {
-    let specs: Vec<_> = specs.into_iter().collect();
-    if !specs.iter().any(|spec| needs_ingress_expansion(spec)) {
-        return Ok(());
-    }
-    let domain = client.domain_if_reserved().await?;
-    for spec in specs {
-        crate::dns::expand_ingress_ports(spec, project, domain.as_deref())?;
-    }
-    Ok(())
-}
-
-async fn hostname_warnings<'a>(
-    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
+async fn hostname_warnings(
+    preview: &DeployPreview,
     machines: &[MachineObservation],
 ) -> Vec<DeployWarning> {
-    resolve_ingress_dns_warnings(specs, &machine_public_addresses(machines))
-        .await
-        .into_iter()
-        .map(DeployWarning::from)
-        .collect()
+    resolve_ingress_dns_warnings_for_ports(
+        preview_ports(preview),
+        &machine_public_addresses(machines),
+    )
+    .await
+    .into_iter()
+    .map(DeployWarning::from)
+    .collect()
+}
+
+fn preview_ports(preview: &DeployPreview) -> impl Iterator<Item = &PortPublication> {
+    preview
+        .operations
+        .iter()
+        .flat_map(|row| match &row.operation {
+            DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
+                spec.ports.as_slice()
+            }
+            DeployOperation::ReplaceContainer(replacement) => replacement.spec.ports.as_slice(),
+            DeployOperation::CreateVolume { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RemoveVolume { .. } => &[],
+        })
 }
 
 fn machine_public_addresses(machines: &[MachineObservation]) -> Vec<IpAddr> {

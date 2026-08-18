@@ -3,7 +3,9 @@ use std::{
     num::NonZeroU32,
 };
 
-use ployz_core::{DeployEvent, PlanOptions, ProjectName, RequestedServiceSpec, ServiceSelector};
+use ployz_core::{
+    DeployEvent, DeployIntent, PlanOptions, ProjectName, RequestedServiceSpec, ServiceSelector,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -17,7 +19,7 @@ use super::{
     DeployOutcome, DeployPreview, ExecutionError, VolumeFate,
     pipeline::{
         PushOutcome, ReconciliationHints, list_machines, plan_options, plan_project, plan_scale,
-        plan_spec, push_project_images,
+        push_project_images,
     },
     render,
 };
@@ -31,13 +33,13 @@ pub(crate) async fn deploy_spec(
     context: &str,
     project: Option<&ResolvedProject>,
 ) -> Result<(), Failure> {
-    let preview = plan_spec(
-        client,
-        requested,
-        plan_options(force_recreate, skip_health_monitor),
-        project_name,
-    )
-    .await?;
+    let preview = client
+        .preview(DeployIntent::apply_one(
+            project_name.clone(),
+            requested.clone(),
+            plan_options(force_recreate, skip_health_monitor),
+        ))
+        .await?;
     print_warnings(&preview);
     if preview.noop() {
         let source = project.map(|project| project.source.to_string());
