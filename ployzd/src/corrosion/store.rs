@@ -7,8 +7,8 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, IngressHost, IssuanceClock,
-    Machine, MachineId,
+    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, DockerVolume,
+    DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock, Machine, MachineId,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -61,6 +61,13 @@ impl MachinePublicationGuard<'_> {
     }
 
     pub(crate) async fn remove(&self, machine_id: &MachineId) -> Result<(), Error> {
+        self.store
+            .api
+            .execute([Statement::new(
+                "DELETE FROM volumes WHERE machine_id = ?",
+                [json!(machine_id)],
+            )])
+            .await?;
         self.store
             .api
             .execute([Statement::new(
@@ -344,6 +351,62 @@ impl ReplicatedStore {
             .await
     }
 
+    pub async fn publish_volume(&self, volume: &DockerVolume) -> Result<(), Error> {
+        if self.volume(&volume.id).await? == Some(volume.clone()) {
+            return Ok(());
+        }
+        self.api.execute([volume_upsert(volume)?]).await?;
+        Ok(())
+    }
+
+    pub async fn volume(&self, id: &DockerVolumeId) -> Result<Option<DockerVolume>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT volume FROM volumes WHERE machine_id = ? AND name = ?",
+                [json!(id.machine_id), json!(id.name)],
+            ))
+            .await?;
+        let rows = query.rows(["volume"])?;
+        let Some([encoded]) = rows.first() else {
+            return Ok(None);
+        };
+        let encoded = text(encoded, "replicated volume JSON")?;
+        if encoded.is_empty() || encoded == "{}" {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_str(encoded)?))
+    }
+
+    pub async fn volumes(
+        &self,
+    ) -> Result<ReplicatedObservations<DockerVolume, DockerVolumeId>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT machine_id, name, volume FROM volumes ORDER BY machine_id, name",
+                [],
+            ))
+            .await?;
+        decode_volume_observations(query.rows(["machine_id", "name", "volume"])?)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Watch will subscribe; this ticket only stores the wakeup seam"
+        )
+    )]
+    pub(crate) async fn subscribe_volume_changes(&self) -> Result<Subscription, Error> {
+        self.api
+            .subscribe(Statement::new(
+                "SELECT machine_id, name, volume FROM volumes",
+                [],
+            ))
+            .await
+    }
+
     pub async fn publish_certificate(
         &self,
         hostname: &IngressHost,
@@ -569,10 +632,21 @@ fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Err
     ))
 }
 
+fn volume_upsert(volume: &DockerVolume) -> Result<Statement, Error> {
+    Ok(Statement::new(
+        "INSERT INTO volumes (machine_id, name, volume, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (machine_id, name) DO UPDATE SET volume = excluded.volume, updated_at = excluded.updated_at",
+        [
+            json!(volume.id.machine_id),
+            json!(volume.id.name),
+            json!(serde_json::to_string(volume)?),
+        ],
+    ))
+}
+
 #[derive(Debug, Eq, PartialEq)]
-pub struct ReplicatedObservations<T> {
+pub struct ReplicatedObservations<T, Id = String> {
     pub observations: Vec<T>,
-    pub incomplete_ids: Vec<String>,
+    pub incomplete_ids: Vec<Id>,
 }
 
 pub async fn wait_for_catch_up(
@@ -705,6 +779,29 @@ fn decode_observations<T: DeserializeOwned>(
     for [id, encoded] in rows {
         let id = text(&id, "row ID")?.to_owned();
         let encoded = text(&encoded, "replicated JSON")?;
+        if encoded.is_empty() || encoded == "{}" {
+            incomplete_ids.push(id);
+        } else {
+            observations.push(serde_json::from_str(encoded)?);
+        }
+    }
+    Ok(ReplicatedObservations {
+        observations,
+        incomplete_ids,
+    })
+}
+
+fn decode_volume_observations(
+    rows: Vec<[Value; 3]>,
+) -> Result<ReplicatedObservations<DockerVolume, DockerVolumeId>, Error> {
+    let mut observations = Vec::new();
+    let mut incomplete_ids = Vec::new();
+    for [machine_id, name, encoded] in rows {
+        let id = DockerVolumeId {
+            machine_id: MachineId::parse(text(&machine_id, "volume Machine ID")?)?,
+            name: DockerVolumeName::parse(text(&name, "Docker Volume name")?)?,
+        };
+        let encoded = text(&encoded, "replicated volume JSON")?;
         if encoded.is_empty() || encoded == "{}" {
             incomplete_ids.push(id);
         } else {
