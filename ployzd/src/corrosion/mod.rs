@@ -17,7 +17,7 @@ pub use service::{
     CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, DEFAULT_GOSSIP_ADDRESS,
     RunningCorrosion,
 };
-pub(crate) use store::{LocalContainerSnapshot, LocalVolumeSnapshot};
+pub(crate) use store::{LocalContainerSnapshot, LocalVolumeSnapshot, RuntimeWatchChanges};
 pub use store::{
     ReplicatedObservations, ReplicatedStore, run_machine_publisher, wait_for_catch_up,
 };

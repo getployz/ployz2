@@ -642,6 +642,33 @@ impl ReplicatedStore {
             .await
     }
 
+    /// Wake Runtime Watch when any replicated observation table changes.
+    ///
+    /// The Corrosion `Change` payload is discarded; callers re-read the store.
+    pub(crate) async fn subscribe_runtime_watch_changes(
+        &self,
+    ) -> Result<RuntimeWatchChanges, Error> {
+        Ok(RuntimeWatchChanges {
+            machines: self
+                .api
+                .subscribe(Statement::new("SELECT id, info FROM machines", []))
+                .await?,
+            containers: self.subscribe_container_changes().await?,
+            volumes: self
+                .api
+                .subscribe(Statement::new(
+                    "SELECT machine_id, name, volume FROM volumes",
+                    [],
+                ))
+                .await?,
+            certificates: self.subscribe_certificate_changes().await?,
+            cluster: self
+                .api
+                .subscribe(Statement::new("SELECT key, value FROM cluster", []))
+                .await?,
+        })
+    }
+
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {
         let query = self
             .api
@@ -742,10 +769,31 @@ fn volume_upsert(volume: &DockerVolume) -> Result<Statement, Error> {
     ))
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicatedObservations<T, Id> {
     pub observations: Vec<T>,
     pub incomplete_ids: Vec<Id>,
+}
+
+/// Store subscriptions that wake Runtime Watch. Change payloads are ignored.
+pub(crate) struct RuntimeWatchChanges {
+    machines: Subscription,
+    containers: Subscription,
+    volumes: Subscription,
+    certificates: Subscription,
+    cluster: Subscription,
+}
+
+impl RuntimeWatchChanges {
+    pub(crate) async fn changed(&mut self) -> Result<(), Error> {
+        tokio::select! {
+            result = self.machines.changed() => result,
+            result = self.containers.changed() => result,
+            result = self.volumes.changed() => result,
+            result = self.certificates.changed() => result,
+            result = self.cluster.changed() => result,
+        }
+    }
 }
 
 pub async fn wait_for_catch_up(
