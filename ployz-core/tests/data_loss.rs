@@ -1,8 +1,6 @@
 //! Data Loss identity.
 
-use ployz_core::{
-    DataLoss, DockerVolume, DockerVolumeId, DockerVolumeName, MachineId, ObservedDataLoss,
-};
+use ployz_core::{DataLoss, DockerVolumeId, DockerVolumeName, MachineId};
 use serde_json::json;
 
 #[test]
@@ -38,42 +36,6 @@ fn a_kind_cannot_carry_an_identity_that_does_not_belong_to_it() {
         "DockerVolume": { "name": "data" }
     }))
     .unwrap_err();
-}
-
-#[test]
-fn from_volumes_names_each_docker_volume_and_none_when_empty() {
-    let loaded = machine_id('a');
-    let observed =
-        ObservedDataLoss::from_volumes(&[volume(loaded, "data"), volume(loaded, "logs")]);
-    assert_eq!(
-        observed.data_loss,
-        [
-            DataLoss::DockerVolume(DockerVolumeId {
-                machine_id: loaded,
-                name: DockerVolumeName::parse("data").unwrap(),
-            }),
-            DataLoss::DockerVolume(DockerVolumeId {
-                machine_id: loaded,
-                name: DockerVolumeName::parse("logs").unwrap(),
-            }),
-        ]
-    );
-    assert_eq!(
-        ObservedDataLoss::from_volumes(&[]).data_loss,
-        Vec::<DataLoss>::new()
-    );
-}
-
-fn volume(machine_id: MachineId, name: &str) -> DockerVolume {
-    DockerVolume {
-        id: DockerVolumeId {
-            machine_id,
-            name: DockerVolumeName::parse(name).unwrap(),
-        },
-        driver: "local".into(),
-        options: Default::default(),
-        labels: Default::default(),
-    }
 }
 
 fn machine_id(value: char) -> MachineId {

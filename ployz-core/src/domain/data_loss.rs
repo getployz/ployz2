@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DockerVolume, DockerVolumeId};
+use crate::DockerVolumeId;
 
 /// One named thing an operation will destroy.
 ///
@@ -18,17 +18,4 @@ pub enum DataLoss {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ObservedDataLoss {
     pub data_loss: Vec<DataLoss>,
-}
-
-impl ObservedDataLoss {
-    /// Data Loss for each Docker Volume in this observer's listing.
-    #[must_use]
-    pub fn from_volumes(volumes: &[DockerVolume]) -> Self {
-        Self {
-            data_loss: volumes
-                .iter()
-                .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
-                .collect(),
-        }
-    }
 }

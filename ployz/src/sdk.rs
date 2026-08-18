@@ -8,10 +8,10 @@ use tokio_util::sync::CancellationToken;
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
 use crate::deploy::{DeployError, DeployIntent, DeployPreview};
 use ployz_core::{
-    ContractDescription, DeployOutcome, DescribeContractRequest, DockerVolumeName, ExecutionError,
-    MachineId, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
-    RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest,
-    RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
+    ContractDescription, DataLoss, DeployOutcome, DescribeContractRequest, DockerVolumeName,
+    ExecutionError, MachineId, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload,
+    PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest, RpcError, RpcErrorCode,
+    RuntimeWatchFrame, RuntimeWatchRequest, op,
 };
 
 /// Connected Cloud session over one Relay Attach.
@@ -206,7 +206,13 @@ impl Session {
             .expect("resolved Machine came from this list");
         let listed = client.list_volumes(std::slice::from_ref(observation)).await;
         if let Some(success) = listed.successes.first() {
-            return Ok(ObservedDataLoss::from_volumes(&success.value));
+            return Ok(ObservedDataLoss {
+                data_loss: success
+                    .value
+                    .iter()
+                    .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
+                    .collect(),
+            });
         }
         if let Some(failure) = listed.failures.first() {
             return Err(failure.error.clone());
