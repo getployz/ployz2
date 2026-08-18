@@ -164,11 +164,12 @@ fn reject_hostname_conflicts(
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
 ) -> Result<(), PlanError> {
+    let owners = hostname_owners(snapshot.containers.iter());
     let mut claimed = BTreeMap::<&IngressHost, QualifiedService>::new();
     for spec in requested {
         let identity = QualifiedService::new(project_name.clone(), spec.name.clone());
         for hostname in explicit_ingress_hosts(&spec.ports) {
-            if let Some(owner) = claimed.get(hostname)
+            if let Some(owner) = claimed.get(hostname).or_else(|| owners.get(hostname))
                 && *owner != identity
             {
                 return Err(PlanError::HostnameConflict {
@@ -177,17 +178,6 @@ fn reject_hostname_conflicts(
                 });
             }
             claimed.entry(hostname).or_insert_with(|| identity.clone());
-        }
-    }
-    let owners = hostname_owners(snapshot.containers.iter());
-    for (hostname, identity) in claimed {
-        if let Some(owner) = owners.get(hostname)
-            && *owner != identity
-        {
-            return Err(PlanError::HostnameConflict {
-                hostname: hostname.clone(),
-                owner: owner.clone(),
-            });
         }
     }
     Ok(())

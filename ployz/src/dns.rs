@@ -242,9 +242,6 @@ pub fn expand_ingress_ports(
     cluster_domain: Option<&str>,
 ) -> Result<(), ExpandIngressError> {
     let domain = cluster_domain.filter(|domain| !domain.is_empty());
-    if let Some(required) = cluster_domain_required(spec, domain) {
-        return Err(required.into());
-    }
     let automatic = match domain {
         Some(domain) if needs_automatic_hostname(spec, domain) => {
             let label =
@@ -267,18 +264,21 @@ pub fn expand_ingress_ports(
         match hostname {
             IngressHostname::ClusterDomain { label: None } => {
                 *hostname = IngressHostname::Explicit {
-                    hostname: automatic.clone().expect(
-                        "automatic Cluster Domain ports compute the combined label before mutation",
-                    ),
+                    hostname: automatic.clone().ok_or(DomainRequired {
+                        container_port: container_port.get(),
+                        protocol: *http_protocol,
+                    })?,
                 };
             }
             IngressHostname::ClusterDomain { label: Some(label) } => {
+                let label = label.as_str().to_owned();
                 *hostname = IngressHostname::Explicit {
                     hostname: cluster_domain_host(
-                        label.as_str(),
-                        domain.expect(
-                            "chosen Cluster Domain labels require a reserved domain, checked before mutation",
-                        ),
+                        &label,
+                        domain.ok_or(DomainRequired {
+                            container_port: container_port.get(),
+                            protocol: *http_protocol,
+                        })?,
                     ),
                 };
             }
@@ -305,31 +305,6 @@ pub fn expand_ingress_ports(
 fn cluster_domain_host(label: &str, domain: &str) -> IngressHost {
     IngressHost::parse(format!("{label}.{domain}"))
         .expect("validated ingress label and reserved cluster domain form a hostname")
-}
-
-fn cluster_domain_required(
-    spec: &RequestedServiceSpec,
-    domain: Option<&str>,
-) -> Option<DomainRequired> {
-    if domain.is_some() {
-        return None;
-    }
-    spec.ports.iter().find_map(|port| match port {
-        PortPublication::Ingress {
-            hostname: IngressHostname::ClusterDomain { .. },
-            container_port,
-            http_protocol,
-            ..
-        } => Some(DomainRequired {
-            container_port: container_port.get(),
-            protocol: *http_protocol,
-        }),
-        PortPublication::Ingress {
-            hostname: IngressHostname::Explicit { .. },
-            ..
-        }
-        | PortPublication::Host { .. } => None,
-    })
 }
 
 fn needs_automatic_hostname(spec: &RequestedServiceSpec, domain: &str) -> bool {
