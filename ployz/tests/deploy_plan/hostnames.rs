@@ -221,9 +221,10 @@ fn generated_ingress_label_over_63_characters_is_a_plan_error() {
 fn unselected_cluster_domain_spec_does_not_require_a_domain() {
     let mut api = assigned_web();
     api.name = ServiceName::parse("api").unwrap();
-    let web = requested(ServiceMode::Replicated {
+    let mut web = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
+    web.name = ServiceName::parse("web").unwrap();
     let intent = DeployIntent::new(
         ProjectName::parse("app").unwrap(),
         vec![api, web.clone()],
