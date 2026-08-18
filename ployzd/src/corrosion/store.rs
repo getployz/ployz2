@@ -337,6 +337,11 @@ impl ReplicatedStore {
             .await
     }
 
+    /// Publish a Docker Volume observation. Unchanged documents are not rewritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or written.
     pub async fn publish_volume(&self, volume: &DockerVolume) -> Result<(), Error> {
         if self.volume(&volume.id).await?.as_ref() == Some(volume) {
             return Ok(());
@@ -354,6 +359,11 @@ impl ReplicatedStore {
         Ok(())
     }
 
+    /// Return one Docker Volume observation, or `None` if the row is missing or incomplete.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or decoded.
     pub async fn volume(&self, id: &DockerVolumeId) -> Result<Option<DockerVolume>, Error> {
         let query = self
             .api
@@ -369,6 +379,13 @@ impl ReplicatedStore {
         decode_json_document(text(encoded, "replicated volume JSON")?)
     }
 
+    /// Return decoded Docker Volume observations and typed incomplete volume IDs.
+    ///
+    /// An incomplete row is listed in `incomplete_ids`; it is not a deletion.
+    ///
+    /// # Errors
+    ///
+    /// Returns if rows cannot be read or decoded.
     pub async fn volumes(
         &self,
     ) -> Result<ReplicatedObservations<DockerVolume, DockerVolumeId>, Error> {
@@ -817,7 +834,10 @@ mod tests {
         time::SystemTime,
     };
 
-    use ployz_core::{IngressHost, IssuanceClock, IssuanceFailure, Machine};
+    use ployz_core::{
+        DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock,
+        IssuanceFailure, Machine, MachineId,
+    };
     use serde_json::json;
 
     use super::ReplicatedStore;
@@ -904,6 +924,27 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn volume_store_is_an_error_when_the_store_is_unreachable() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let store = ReplicatedStore::new(ApiClient::new(address, &"a".repeat(64)).unwrap());
+        let id = DockerVolumeId {
+            machine_id: MachineId::random(),
+            name: DockerVolumeName::parse("data").unwrap(),
+        };
+        let volume = DockerVolume {
+            id: id.clone(),
+            driver: "local".into(),
+            options: BTreeMap::new(),
+            labels: BTreeMap::new(),
+        };
+        assert!(store.publish_volume(&volume).await.is_err());
+        assert!(store.volume(&id).await.is_err());
+        assert!(store.volumes().await.is_err());
     }
 
     #[tokio::test]
