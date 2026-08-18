@@ -1,5 +1,5 @@
 //! Session-level preview/confirm/run behaviour against a fake Machine.
-#[path = "deploy_client_support.rs"]
+#[path = "deploy_client/support.rs"]
 mod support;
 use support::*;
 
