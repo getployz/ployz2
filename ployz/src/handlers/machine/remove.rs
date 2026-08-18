@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use clap::ArgMatches;
 use ployz_core::{
     DescribeContractRequest, DockerVolume, DockerVolumeName, LiveServices, Machine, MachineId,
@@ -148,8 +146,6 @@ fn docker_volumes_on(
         .filter(|success| success.machine_id == *machine_id)
         .flat_map(|success| success.value.iter())
         .map(|volume| volume.id.name.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
         .collect()
 }
 
@@ -164,8 +160,6 @@ fn services_on(machine_id: &MachineId, live: &LiveServices<RpcError>) -> Vec<Ser
                 .any(|container| container.as_observation().machine_id == *machine_id)
         })
         .filter_map(|service| service.service_name().cloned())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
         .collect()
 }
 
@@ -179,27 +173,24 @@ fn removal_warnings(
     if !volumes.is_empty() {
         lines.push(format!(
             "WARNING: Docker Volumes on Machine {machine} will be destroyed: {}",
-            join_names(volumes.iter().map(DockerVolumeName::as_str))
+            volumes
+                .iter()
+                .map(DockerVolumeName::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if !services.is_empty() {
         lines.push(format!(
             "WARNING: Machine {machine} is running Services: {}",
-            join_names(services.iter().map(ServiceName::as_str))
+            services
+                .iter()
+                .map(ServiceName::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     lines
-}
-
-fn join_names<'a>(names: impl Iterator<Item = &'a str>) -> String {
-    let mut joined = String::new();
-    for name in names {
-        if !joined.is_empty() {
-            joined.push_str(", ");
-        }
-        joined.push_str(name);
-    }
-    joined
 }
 
 #[cfg(test)]
@@ -282,8 +273,8 @@ mod tests {
         assert_eq!(
             docker_volumes_on(&machine_id('a'), &listed),
             [
-                DockerVolumeName::parse("ams-critical").unwrap(),
                 DockerVolumeName::parse("data").unwrap(),
+                DockerVolumeName::parse("ams-critical").unwrap(),
             ]
         );
     }
@@ -295,9 +286,9 @@ mod tests {
                 MachineSuccess {
                     machine_id: machine_id('a'),
                     value: vec![
-                        observation('1', 'a', "api", ContainerKind::ServiceContainer),
-                        observation('2', 'a', "api", ContainerKind::ServiceContainer),
-                        observation('3', 'a', "hooked", ContainerKind::PreDeployHook),
+                        observation('1', 'a', "api", ContainerKind::ServiceContainer, 'a'),
+                        observation('2', 'a', "api", ContainerKind::ServiceContainer, 'a'),
+                        observation('3', 'a', "hooked", ContainerKind::PreDeployHook, 'b'),
                     ],
                 },
                 MachineSuccess {
@@ -307,6 +298,7 @@ mod tests {
                         'b',
                         "web",
                         ContainerKind::ServiceContainer,
+                        'c',
                     )],
                 },
             ],
@@ -336,8 +328,9 @@ mod tests {
         machine: char,
         name: &str,
         kind: ContainerKind,
+        service: char,
     ) -> ContainerObservation {
-        let service_id = ServiceId::parse(id.to_string().repeat(32)).unwrap();
+        let service_id = ServiceId::parse(service.to_string().repeat(32)).unwrap();
         let service_name = ServiceName::parse(name).unwrap();
         ContainerObservation {
             container_id: ployz_core::ContainerId::parse(id.to_string().repeat(64)).unwrap(),
