@@ -1,6 +1,8 @@
+use std::fmt;
+
 use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    MachineObservation, ServiceId,
+    MachineName, MachineObservation, MachineTarget, ServiceId,
 };
 use thiserror::Error;
 
@@ -119,10 +121,125 @@ impl DeployPlan {
     }
 }
 
+/// Why [`PlanError::NoEligibleMachines`] found zero Machines.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EliminatingConstraint {
+    NoMachines,
+    UnknownPlacement {
+        targets: Vec<MachineTarget>,
+    },
+    MachineDown {
+        names: Vec<MachineName>,
+    },
+    VolumeAnchor {
+        volume: DockerVolumeName,
+        on: Vec<MachineName>,
+        requested: Vec<MachineTarget>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EliminatingConstraints(Vec<EliminatingConstraint>);
+
+impl EliminatingConstraints {
+    #[must_use]
+    pub fn new(constraints: Vec<EliminatingConstraint>) -> Self {
+        Self(if constraints.is_empty() {
+            vec![EliminatingConstraint::NoMachines]
+        } else {
+            constraints
+        })
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[EliminatingConstraint] {
+        &self.0
+    }
+}
+
+fn write_quoted<T: fmt::Display>(f: &mut fmt::Formatter<'_>, items: &[T]) -> fmt::Result {
+    let mut first = true;
+    for item in items {
+        if !first {
+            f.write_str(", ")?;
+        }
+        first = false;
+        write!(f, "'{item}'")?;
+    }
+    Ok(())
+}
+
+fn write_machine_names(f: &mut fmt::Formatter<'_>, names: &[MachineName]) -> fmt::Result {
+    match names {
+        [name] => write!(f, "Machine '{name}'"),
+        _ => {
+            f.write_str("Machines ")?;
+            write_quoted(f, names)
+        }
+    }
+}
+
+impl fmt::Display for EliminatingConstraint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoMachines => f.write_str("no Machines in the Deploy Snapshot"),
+            Self::UnknownPlacement { targets } => {
+                f.write_str("x-machines ")?;
+                write_quoted(f, targets)?;
+                f.write_str(" matched no Machine")
+            }
+            Self::MachineDown { names } => match names.as_slice() {
+                [name] => write!(f, "Machine '{name}' is down"),
+                _ => {
+                    f.write_str("Machines ")?;
+                    write_quoted(f, names)?;
+                    f.write_str(" are down")
+                }
+            },
+            Self::VolumeAnchor {
+                volume,
+                on,
+                requested,
+            } => match (on.as_slice(), requested.as_slice()) {
+                ([], []) => write!(f, "Docker Volume '{volume}' eliminated every Machine"),
+                ([], _) => {
+                    f.write_str("x-machines ")?;
+                    write_quoted(f, requested)?;
+                    write!(f, " have no Machine in common for Docker Volume '{volume}'")
+                }
+                (_, []) => {
+                    write!(f, "Docker Volume '{volume}' is already on ")?;
+                    write_machine_names(f, on)
+                }
+                (_, _) => {
+                    write!(f, "Docker Volume '{volume}' is already on ")?;
+                    write_machine_names(f, on)?;
+                    f.write_str(", which conflicts with x-machines ")?;
+                    write_quoted(f, requested)
+                }
+            },
+        }
+    }
+}
+
+impl fmt::Display for EliminatingConstraints {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for constraint in &self.0 {
+            if !first {
+                f.write_str("; ")?;
+            }
+            first = false;
+            write!(f, "{constraint}")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlanError {
-    #[error("no machines available that satisfy all constraints")]
-    NoEligibleMachines,
+    #[error("no machines available that satisfy all constraints: {constraints}")]
+    NoEligibleMachines { constraints: EliminatingConstraints },
     #[error("service name matches multiple Service IDs: {matches:?}")]
     AmbiguousService { matches: Vec<ServiceId> },
     #[error("service mode cannot be changed")]
@@ -145,4 +262,12 @@ pub enum PlanError {
     },
     #[error("dependency cycle at service '{service}'")]
     DependencyCycle { service: String },
+}
+
+impl PlanError {
+    pub(crate) fn no_eligible_machines(constraints: Vec<EliminatingConstraint>) -> Self {
+        Self::NoEligibleMachines {
+            constraints: EliminatingConstraints::new(constraints),
+        }
+    }
 }
