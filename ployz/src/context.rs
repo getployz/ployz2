@@ -277,11 +277,11 @@ pub enum Transport {
     },
     Tcp(SocketAddr),
     Unix(PathBuf),
-    /// Cloud Relay Attach. Caller supplies the URL, Dial Credential, and Machine ID.
+    /// Cloud Relay Attach. Caller supplies the URL and Dial Credential; the
+    /// entry Machine ID lives on [`Connection`].
     Relay {
         url: String,
         credential: DialCredential,
-        machine_id: MachineId,
     },
 }
 
@@ -347,17 +347,13 @@ impl Connection {
             transport: Transport::Relay {
                 url: url.into(),
                 credential,
-                machine_id,
             },
-            machine_id: None,
+            machine_id: Some(machine_id),
         }
     }
 
     #[must_use]
     pub fn with_machine_id(mut self, machine_id: MachineId) -> Self {
-        if matches!(self.transport, Transport::Relay { .. }) {
-            return self;
-        }
         self.machine_id = Some(machine_id);
         self
     }
@@ -385,12 +381,7 @@ impl Connection {
 
     #[must_use]
     pub fn machine_id(&self) -> Option<&MachineId> {
-        match &self.transport {
-            Transport::Relay { machine_id, .. } => Some(machine_id),
-            Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => {
-                self.machine_id.as_ref()
-            }
-        }
+        self.machine_id.as_ref()
     }
 }
 
