@@ -1,6 +1,12 @@
-//! Assemble and stream complete Runtime Watch frames from replicated observations.
+//! Assemble and stream complete Runtime Watch frames from replicated observations
+//! plus entry-local membership and RTT samples.
 
-use std::{collections::BTreeMap, future::Future, time::SystemTime};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    net::IpAddr,
+    time::{Duration, SystemTime},
+};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::{Stream, StreamExt};
@@ -8,17 +14,25 @@ use ployz_core::{
     CertificateAvailability, CertificateBackoff, CertificateFailureKind, CertificateObservation,
     ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost, IssuanceClock,
     IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation, OpaquePayload,
-    RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, derive_services,
+    RttObservation, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint,
+    derive_services, synthesize_membership,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
 
 use crate::{
-    corrosion::{CertificateRow, Error, ReplicatedObservations, ReplicatedStore},
+    corrosion::{
+        AdminClient, CertificateRow, Error, MembershipState, ReplicatedObservations,
+        ReplicatedStore,
+    },
     hosted_dns::Reservation,
     logs::RpcStream,
+    machine::unique_identities,
 };
+
+/// How often Watch samples membership and RTT from the local admin socket.
+const TELEMETRY_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Replicated observations used to assemble one Runtime Watch frame.
 ///
@@ -62,58 +76,100 @@ impl RuntimeWatchSnapshot {
 /// Serve complete Runtime Watch frames from the replicated store.
 ///
 /// Subscribes first, then yields one complete frame immediately. Later frames
-/// are assembled on store wakeups; the notification payload is not the
-/// observation. Unchanged observations do not yield. Store failure ends the
-/// stream. `observed_at` is frozen for the stream. Membership/RTT sampling is #319.
+/// are assembled on store wakeups or once-per-second membership/RTT samples
+/// from the same local admin source as ListMachines and inspect RTT. The
+/// notification payload is not the observation. Unchanged observations do not
+/// yield, including when only `observed_at` advances. Store failure ends the
+/// stream. Admin telemetry failure keeps replicated rows.
 ///
 /// # Errors
 ///
 /// Returns if store subscriptions cannot be opened.
 pub(crate) async fn serve_replicated_runtime_watch(
     store: ReplicatedStore,
+    admin: AdminClient,
     entry_id: MachineId,
+    selected_endpoints: impl Fn() -> BTreeMap<MachineId, SelectedEndpoint> + Send + 'static,
 ) -> Result<RpcStream, Error> {
     let changes = store.subscribe_runtime_watch_changes().await?;
+    let mut interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + TELEMETRY_SAMPLE_INTERVAL,
+        TELEMETRY_SAMPLE_INTERVAL,
+    );
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     Ok(serve_runtime_watch(
         entry_id,
-        rfc3339(SystemTime::now()),
         move || {
             let store = store.clone();
             async move { RuntimeWatchSnapshot::from_store(&store).await }
         },
+        move |machines| {
+            let admin = admin.clone();
+            let machines = machines.to_vec();
+            let endpoints = selected_endpoints();
+            async move {
+                let telemetry =
+                    sample_admin_telemetry(&admin, &machines, &entry_id, endpoints).await;
+                (telemetry, rfc3339(SystemTime::now()))
+            }
+        },
         changes,
+        futures_util::stream::unfold(interval, |mut interval| async move {
+            interval.tick().await;
+            Some(((), interval))
+        }),
     ))
 }
 
 /// Serve complete Runtime Watch frames from replicated store reads.
 ///
 /// Yields one complete frame immediately, then another when a store
-/// notification wakes assembly and the assembled observation changed.
-fn serve_runtime_watch<L, Fut, C>(
+/// notification or a telemetry sample wakes assembly and the assembled
+/// observation changed. `observed_at` is the time of the latest membership/RTT
+/// sample and is ignored when deciding whether the observation changed.
+fn serve_runtime_watch<L, Fut, S, SFut, C, T>(
     entry_id: MachineId,
-    observed_at: String,
     load: L,
+    sample: S,
     changes: C,
+    ticks: T,
 ) -> RpcStream
 where
     L: Fn() -> Fut + Send + 'static,
     Fut: Future<Output = Result<RuntimeWatchSnapshot, Error>> + Send,
+    S: Fn(&[Machine]) -> SFut + Send + 'static,
+    SFut: Future<Output = (Option<RuntimeWatchTelemetry>, String)> + Send,
     C: Stream<Item = Result<(), Error>> + Send + 'static,
+    T: Stream<Item = ()> + Send + 'static,
 {
     let (sender, receiver) = mpsc::channel(8);
     tokio::spawn(async move {
         let mut changes = std::pin::pin!(changes);
+        let mut ticks = std::pin::pin!(ticks);
         let mut last = None;
+        let mut telemetry = None;
+        let mut observed_at = String::new();
+        let mut resample = true;
         loop {
             match load().await {
                 Ok(snapshot) => {
+                    if resample {
+                        let (next_telemetry, next_observed_at) =
+                            sample(&snapshot.machines.observations).await;
+                        telemetry = next_telemetry;
+                        observed_at = next_observed_at;
+                        resample = false;
+                    }
                     let frame = assemble_runtime_watch_frame(
                         snapshot,
                         &entry_id,
-                        None,
+                        telemetry.as_ref(),
                         observed_at.clone(),
                     );
-                    if last.as_ref() != Some(&frame) {
+                    if last
+                        .as_ref()
+                        .is_none_or(|previous| observation_changed(previous, &frame))
+                    {
                         let payload = match OpaquePayload::from_json(&frame) {
                             Ok(payload) => payload,
                             Err(error) => {
@@ -134,29 +190,105 @@ where
                     return;
                 }
             }
-            match tokio::select! {
+            tokio::select! {
+                biased;
                 () = sender.closed() => return,
-                changed = changes.next() => changed,
-            } {
-                Some(Ok(())) => {}
-                Some(Err(error)) => {
-                    let _ = sender
-                        .send(Err(Status::unavailable(error.to_string())))
-                        .await;
-                    return;
-                }
-                None => {
-                    let _ = sender
-                        .send(Err(Status::unavailable(
-                            "Runtime Watch store subscription ended",
-                        )))
-                        .await;
-                    return;
+                changed = changes.next() => match changed {
+                    Some(Ok(())) => {}
+                    Some(Err(error)) => {
+                        let _ = sender
+                            .send(Err(Status::unavailable(error.to_string())))
+                            .await;
+                        return;
+                    }
+                    None => {
+                        let _ = sender
+                            .send(Err(Status::unavailable(
+                                "Runtime Watch store subscription ended",
+                            )))
+                            .await;
+                        return;
+                    }
+                },
+                Some(()) = ticks.next() => {
+                    resample = true;
                 }
             }
         }
     });
     ReceiverStream::new(receiver)
+}
+
+/// Sample membership and RTT from the local admin socket.
+///
+/// Uses the same Corrosion admin commands as ListMachines and inspect RTT.
+/// Both reads must succeed; otherwise Watch keeps replicated rows and treats
+/// telemetry as unavailable.
+async fn sample_admin_telemetry(
+    admin: &AdminClient,
+    machines: &[Machine],
+    entry_id: &MachineId,
+    selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+) -> Option<RuntimeWatchTelemetry> {
+    let states = admin.membership_states().await.ok()?;
+    let rtts = admin.member_rtts().await.ok()?;
+    Some(telemetry_from_admin(
+        machines,
+        entry_id,
+        &states,
+        &rtts,
+        selected_endpoints,
+    ))
+}
+
+/// Map admin membership and RTT onto replicated Machines the way ListMachines
+/// and inspect RTT do.
+fn telemetry_from_admin(
+    machines: &[Machine],
+    entry_id: &MachineId,
+    states: &[MembershipState],
+    rtts: &[RttObservation],
+    selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+) -> RuntimeWatchTelemetry {
+    let membership_states = states
+        .iter()
+        .filter_map(|state| match state.address.ip() {
+            IpAddr::V6(address) => Some((
+                ployz_core::ManagementAddress(address),
+                state.membership.clone(),
+            )),
+            IpAddr::V4(_) => None,
+        })
+        .collect();
+    let membership = synthesize_membership(machines.to_vec(), entry_id, &membership_states)
+        .into_iter()
+        .map(|observation| (observation.machine.id, observation.membership))
+        .collect();
+    let identities = unique_identities(
+        machines
+            .iter()
+            .map(|machine| (IpAddr::V6(machine.management_address.0), machine.id)),
+    );
+    let rtt = rtts
+        .iter()
+        .filter_map(|observation| {
+            identities
+                .get(&observation.address.ip())
+                .copied()
+                .map(|id| (id, observation.statistics.clone()))
+        })
+        .collect();
+    RuntimeWatchTelemetry {
+        membership,
+        selected_endpoints,
+        rtt,
+    }
+}
+
+fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -> bool {
+    let mut comparable = next.clone();
+    comparable.observed_at.clone_from(&previous.observed_at);
+    previous != &comparable
 }
 
 /// Assemble one complete Runtime Watch frame.
@@ -288,17 +420,19 @@ mod tests {
         ContainerRuntimeObservation, DockerVolume, DockerVolumeId, DockerVolumeName,
         HealthObservation, HookContainer, IngressHost, IssuanceClock, IssuanceFailure, Machine,
         MachineId, MachineName, MachineObservation, MachineRuntime, ManagementAddress,
-        MembershipObservation, OpaquePayload, ResolvedServiceSpec, RttStatistics, SelectedEndpoint,
-        ServiceContainer, ServiceId, ServiceName, ServiceObservation, WireGuardPublicKey,
+        MembershipObservation, OpaquePayload, ResolvedServiceSpec, RttObservation, RttStatistics,
+        SelectedEndpoint, ServiceContainer, ServiceId, ServiceName, ServiceObservation,
+        WireGuardPublicKey,
     };
     use serde_json::{Value, json};
 
     use super::{
         RuntimeWatchSnapshot, RuntimeWatchTelemetry, assemble_runtime_watch_frame,
-        serve_runtime_watch,
+        sample_admin_telemetry, serve_runtime_watch, telemetry_from_admin,
     };
     use crate::corrosion::{
-        CertificateChallenge, CertificateMaterial, CertificateRow, Error, ReplicatedObservations,
+        AdminClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error,
+        MembershipState, ReplicatedObservations,
     };
     use crate::hosted_dns::Reservation;
     use tokio::sync::mpsc;
@@ -604,6 +738,70 @@ mod tests {
         assert_eq!(frame.hosted_dns_hostname, None);
     }
 
+    #[test]
+    fn sampled_telemetry_marks_entry_up_and_maps_inspect_rtt() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let peer = machine("peer", PEER_ID, 2);
+        let endpoint = SelectedEndpoint("203.0.113.10:51820".parse().unwrap());
+        let rtt = RttStatistics {
+            median_ns: 1_500_000,
+            population_stddev_ns: 250_000,
+        };
+        let telemetry = telemetry_from_admin(
+            &[entry.clone(), peer.clone()],
+            &entry.id,
+            &[MembershipState {
+                address: format!("[{}]:51001", peer.management_address.0)
+                    .parse()
+                    .unwrap(),
+                membership: MembershipObservation::Suspect,
+            }],
+            &[RttObservation {
+                peer_id: "peer".into(),
+                address: format!("[{}]:51001", peer.management_address.0)
+                    .parse()
+                    .unwrap(),
+                machine: None,
+                statistics: rtt.clone(),
+            }],
+            BTreeMap::from([(entry.id, endpoint)]),
+        );
+
+        assert_eq!(
+            telemetry.membership.get(&entry.id),
+            Some(&MembershipObservation::Up)
+        );
+        assert_eq!(
+            telemetry.membership.get(&peer.id),
+            Some(&MembershipObservation::Suspect)
+        );
+        assert_eq!(telemetry.rtt.get(&peer.id), Some(&rtt));
+        assert_eq!(telemetry.selected_endpoints.get(&entry.id), Some(&endpoint));
+    }
+
+    #[test]
+    fn sampled_telemetry_uses_down_for_peers_missing_from_admin() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let peer = machine("peer", PEER_ID, 2);
+        let telemetry = telemetry_from_admin(
+            &[entry.clone(), peer.clone()],
+            &entry.id,
+            &[],
+            &[],
+            BTreeMap::new(),
+        );
+
+        assert_eq!(
+            telemetry.membership.get(&entry.id),
+            Some(&MembershipObservation::Up)
+        );
+        assert_eq!(
+            telemetry.membership.get(&peer.id),
+            Some(&MembershipObservation::Down)
+        );
+        assert!(telemetry.rtt.is_empty());
+    }
+
     fn observations<T, Id>(observations: Vec<T>) -> ReplicatedObservations<T, Id> {
         ReplicatedObservations {
             observations,
@@ -820,20 +1018,184 @@ mod tests {
         assert_eq!(reconnect.machines.len(), 1);
     }
 
+    #[tokio::test]
+    async fn watch_stream_reports_entry_up_and_sampled_rtt() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let peer = machine("peer", PEER_ID, 2);
+        let rtt = RttStatistics {
+            median_ns: 1_500_000,
+            population_stddev_ns: 250_000,
+        };
+        let mut telemetry = RuntimeWatchTelemetry::default();
+        telemetry
+            .membership
+            .insert(peer.id, MembershipObservation::Up);
+        telemetry.rtt.insert(peer.id, rtt.clone());
+        let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
+        fixture.set_sample(Some(telemetry), OBSERVED_AT);
+        let (_wake, changes) = mpsc::channel(1);
+        let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+        let frame = next_frame(&mut stream).await;
+        let entry_row = frame.machines.first().expect("entry Machine");
+        let peer_row = frame.machines.get(1).expect("peer Machine");
+        assert_eq!(entry_row.membership, MembershipObservation::Up);
+        assert_eq!(entry_row.rtt, None);
+        assert_eq!(peer_row.membership, MembershipObservation::Up);
+        assert_eq!(peer_row.rtt, Some(rtt));
+        assert_eq!(frame.observed_at, OBSERVED_AT);
+    }
+
+    #[tokio::test]
+    async fn unavailable_admin_telemetry_keeps_replicated_rows_with_entry_up() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let peer = machine("peer", PEER_ID, 2);
+        let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
+        let (_wake, changes) = mpsc::channel(1);
+        let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            frame.machines,
+            vec![
+                MachineObservation {
+                    machine: entry,
+                    membership: MembershipObservation::Up,
+                    selected_endpoint: None,
+                    rtt: None,
+                },
+                MachineObservation {
+                    machine: peer,
+                    membership: MembershipObservation::Unknown,
+                    selected_endpoint: None,
+                    rtt: None,
+                },
+            ]
+        );
+        assert_eq!(frame.observed_at, OBSERVED_AT);
+    }
+
+    #[tokio::test]
+    async fn semantic_telemetry_change_yields_a_new_complete_frame() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let peer = machine("peer", PEER_ID, 2);
+        let mut first = RuntimeWatchTelemetry::default();
+        first.membership.insert(peer.id, MembershipObservation::Up);
+        let mut second = RuntimeWatchTelemetry::default();
+        second
+            .membership
+            .insert(peer.id, MembershipObservation::Suspect);
+        let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
+        fixture.set_sample(Some(first), OBSERVED_AT);
+        let (_wake, changes) = mpsc::channel(1);
+        let (ticks, tick_rx) = mpsc::channel(1);
+        let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
+
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            frame.machines.get(1).expect("peer Machine").membership,
+            MembershipObservation::Up
+        );
+
+        fixture.set_sample(Some(second), "2024-01-01T00:00:01Z");
+        ticks.send(()).await.unwrap();
+
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            frame.machines.get(1).expect("peer Machine").membership,
+            MembershipObservation::Suspect
+        );
+        assert_eq!(frame.observed_at, "2024-01-01T00:00:01Z");
+    }
+
+    #[tokio::test]
+    async fn unchanged_telemetry_sample_does_not_yield_when_observed_at_advances() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let peer = machine("peer", PEER_ID, 2);
+        let mut telemetry = RuntimeWatchTelemetry::default();
+        telemetry
+            .membership
+            .insert(peer.id, MembershipObservation::Up);
+        let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
+        fixture.set_sample(Some(telemetry.clone()), OBSERVED_AT);
+        let (_wake, changes) = mpsc::channel(1);
+        let (ticks, tick_rx) = mpsc::channel(1);
+        let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
+
+        let first = next_frame(&mut stream).await;
+        assert_eq!(first.observed_at, OBSERVED_AT);
+
+        fixture.set_sample(Some(telemetry), "2024-01-01T00:00:01Z");
+        ticks.send(()).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), stream.next())
+                .await
+                .is_err(),
+            "an unchanged membership/RTT sample must not yield because time or observed_at advanced"
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_sample_after_telemetry_keeps_replicated_rows() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let peer = machine("peer", PEER_ID, 2);
+        let mut telemetry = RuntimeWatchTelemetry::default();
+        telemetry
+            .membership
+            .insert(peer.id, MembershipObservation::Up);
+        let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
+        fixture.set_sample(Some(telemetry), OBSERVED_AT);
+        let (_wake, changes) = mpsc::channel(1);
+        let (ticks, tick_rx) = mpsc::channel(1);
+        let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
+
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            frame.machines.get(1).expect("peer Machine").membership,
+            MembershipObservation::Up
+        );
+
+        fixture.set_sample(None, "2024-01-01T00:00:01Z");
+        ticks.send(()).await.unwrap();
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            frame.machines.get(1).expect("peer Machine").membership,
+            MembershipObservation::Unknown
+        );
+        assert_eq!(frame.machines.get(1).expect("peer Machine").rtt, None);
+    }
+
+    #[tokio::test]
+    async fn missing_admin_socket_is_unavailable_telemetry() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let admin = AdminClient::new("/no/such/ployz-admin.sock");
+        assert!(
+            sample_admin_telemetry(&admin, &[entry.clone()], &entry.id, BTreeMap::new())
+                .await
+                .is_none()
+        );
+    }
+
     #[derive(Clone)]
     struct WatchFixture {
         snapshot: Arc<Mutex<Result<RuntimeWatchSnapshot, String>>>,
+        sample: Arc<Mutex<(Option<RuntimeWatchTelemetry>, String)>>,
     }
 
     impl WatchFixture {
         fn new(snapshot: RuntimeWatchSnapshot) -> Self {
             Self {
                 snapshot: Arc::new(Mutex::new(Ok(snapshot))),
+                sample: Arc::new(Mutex::new((None, OBSERVED_AT.into()))),
             }
         }
 
         fn set(&self, snapshot: RuntimeWatchSnapshot) {
             *self.snapshot.lock().unwrap() = Ok(snapshot);
+        }
+
+        fn set_sample(&self, telemetry: Option<RuntimeWatchTelemetry>, observed_at: &str) {
+            *self.sample.lock().unwrap() = (telemetry, observed_at.into());
         }
 
         fn fail(&self, message: &str) {
@@ -846,6 +1208,10 @@ mod tests {
                 Err(message) => Err(Error::Protocol(message.clone())),
             }
         }
+
+        async fn sample(&self) -> (Option<RuntimeWatchTelemetry>, String) {
+            self.sample.lock().unwrap().clone()
+        }
     }
 
     fn serve_fixture(
@@ -853,15 +1219,29 @@ mod tests {
         fixture: &WatchFixture,
         changes: mpsc::Receiver<Result<(), Error>>,
     ) -> crate::logs::RpcStream {
-        let fixture = fixture.clone();
+        serve_sampled(entry_id, fixture, changes, mpsc::channel(1).1)
+    }
+
+    fn serve_sampled(
+        entry_id: MachineId,
+        fixture: &WatchFixture,
+        changes: mpsc::Receiver<Result<(), Error>>,
+        ticks: mpsc::Receiver<()>,
+    ) -> crate::logs::RpcStream {
+        let load_fixture = fixture.clone();
+        let sample_fixture = fixture.clone();
         serve_runtime_watch(
             entry_id,
-            OBSERVED_AT.into(),
             move || {
-                let fixture = fixture.clone();
+                let fixture = load_fixture.clone();
                 async move { fixture.load().await }
             },
+            move |_machines| {
+                let fixture = sample_fixture.clone();
+                async move { fixture.sample().await }
+            },
             ReceiverStream::new(changes),
+            ReceiverStream::new(ticks),
         )
     }
 

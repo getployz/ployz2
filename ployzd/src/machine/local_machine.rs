@@ -124,6 +124,12 @@ impl LocalMachine {
             .ok_or(Error::ClusterStoreUnavailable)
     }
 
+    /// Local Corrosion admin socket used by ListMachines and inspect RTT.
+    #[must_use]
+    pub(crate) fn admin(&self) -> Option<&AdminClient> {
+        self.cluster.as_ref().map(|cluster| &cluster.admin)
+    }
+
     /// Live Observation of this Machine's identity, Local Machine Phase, and
     /// advertised reachability.
     ///
@@ -508,9 +514,9 @@ async fn machine_rtts(
         .collect())
 }
 
-fn unique_identities(
-    entries: impl IntoIterator<Item = (IpAddr, MachineIdentity)>,
-) -> BTreeMap<IpAddr, MachineIdentity> {
+pub(crate) fn unique_identities<T: Clone>(
+    entries: impl IntoIterator<Item = (IpAddr, T)>,
+) -> BTreeMap<IpAddr, T> {
     let mut identities = BTreeMap::new();
     let mut ambiguous = BTreeSet::new();
     for (address, identity) in entries {

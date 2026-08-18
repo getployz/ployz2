@@ -11,7 +11,7 @@ use ployz_core::{
 };
 use serde_json::json;
 
-use super::ReplicatedStore;
+use super::{AdminClient, ReplicatedStore};
 use crate::corrosion::ApiClient;
 use crate::machine::{LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore};
 use crate::runtime_watch::RuntimeWatchSnapshot;
@@ -155,9 +155,14 @@ async fn runtime_watch_snapshot_is_an_error_when_the_store_is_unreachable() {
     assert!(RuntimeWatchSnapshot::from_store(&store).await.is_err());
     assert!(store.subscribe_runtime_watch_changes().await.is_err());
     assert!(
-        crate::runtime_watch::serve_replicated_runtime_watch(store, MachineId::random())
-            .await
-            .is_err()
+        crate::runtime_watch::serve_replicated_runtime_watch(
+            store,
+            AdminClient::new("/dev/null"),
+            MachineId::random(),
+            BTreeMap::new,
+        )
+        .await
+        .is_err()
     );
 }
 
