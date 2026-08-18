@@ -14,8 +14,8 @@ use ployz::{
     context::{Connection, ConnectionSource, SelectedConnections},
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
-    DockerVolume, DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineList, MachineName,
+    AdvertisedEndpoint, ContainerCreated, ContainerId, ContractDescription, DockerVolume,
+    DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineList, MachineName,
     MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
     OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList,
     WireGuardPublicKey,
@@ -50,18 +50,12 @@ pub(super) enum DescribeOutcome {
 }
 
 #[derive(Clone)]
-struct DeployHarness {
-    create_volume_error: Option<RpcError>,
-    containers: Arc<AtomicUsize>,
-}
-
-#[derive(Clone)]
 pub(super) struct DiscoveryService {
     description: ContractDescription,
     pub(super) describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
     pub(super) stream_opens: Arc<AtomicUsize>,
     machines: Option<Vec<MachineObservation>>,
-    deploy: Option<DeployHarness>,
+    containers: Arc<AtomicUsize>,
 }
 
 impl DiscoveryService {
@@ -71,34 +65,13 @@ impl DiscoveryService {
             describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             stream_opens: Arc::new(AtomicUsize::new(0)),
             machines: None,
-            deploy: None,
-        }
-    }
-
-    pub(super) fn with_deploy(mut self) -> Self {
-        self.deploy.get_or_insert_with(|| DeployHarness {
-            create_volume_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
-        });
-        self
+        }
     }
 
     pub(super) fn with_machines(mut self, machines: Vec<MachineObservation>) -> Self {
         self.machines = Some(machines);
         self
-    }
-
-    pub(super) fn fail_create_volume(self, message: &str) -> Self {
-        let mut this = self.with_deploy();
-        this.deploy
-            .as_mut()
-            .expect("with_deploy inserts the harness")
-            .create_volume_error = Some(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: message.into(),
-            details: Value::Null,
-        });
-        this
     }
 }
 
@@ -232,26 +205,14 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if self.deploy.is_none() {
-            return Err(Status::unimplemented("unused"));
-        }
-        encoded(RpcResponse::from(ContainerList {
-            containers: Vec::new(),
-        }))
+        Err(Status::unimplemented("unused"))
     }
 
     async fn create_volume(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        match self
-            .deploy
-            .as_ref()
-            .and_then(|deploy| deploy.create_volume_error.clone())
-        {
-            Some(error) => encoded(RpcResponse::from(error)),
-            None => Err(Status::unimplemented("unused")),
-        }
+        Err(Status::unimplemented("unused"))
     }
 
     async fn inspect_container(
@@ -265,11 +226,6 @@ impl MachineRpc for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if self.deploy.is_some() {
-            return encoded(RpcResponse::from(VolumeList {
-                volumes: Vec::new(),
-            }));
-        }
         let machine_id =
             MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
         let request = request.into_inner().decode_request().unwrap();
@@ -307,15 +263,12 @@ impl MachineRpc for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let Some(deploy) = &self.deploy else {
-            return Err(Status::unimplemented("unused"));
-        };
         let RpcRequestBody::CreateContainer(create) =
             request.into_inner().decode_request().unwrap().body
         else {
             return Err(Status::invalid_argument("expected create_container"));
         };
-        let n = deploy.containers.fetch_add(1, Ordering::SeqCst) + 1;
+        let n = self.containers.fetch_add(1, Ordering::SeqCst) + 1;
         let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
         encoded(RpcResponse::from(ContainerCreated {
             container_id,
@@ -334,9 +287,6 @@ impl MachineRpc for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if self.deploy.is_none() {
-            return Err(Status::unimplemented("unused"));
-        }
         let RpcRequestBody::StartContainer(start) =
             request.into_inner().decode_request().unwrap().body
         else {

@@ -144,7 +144,7 @@ async fn deploy_returns_success_for_a_completed_run() {
     let _machine = session
         .spawn_machine(
             description.machine_id,
-            DiscoveryService::new(description.clone()).with_deploy(),
+            DiscoveryService::new(description.clone()),
         )
         .await;
     let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
@@ -189,16 +189,14 @@ async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
     let _machine = session
         .spawn_machine(
             description.machine_id,
-            DiscoveryService::new(description.clone())
-                .with_deploy()
-                .fail_create_volume("volume create failed"),
+            DiscoveryService::new(description.clone()),
         )
         .await;
     let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
         .await
         .unwrap();
     let mut spec = spec("web");
-    add_named_volume(&mut spec, "data");
+    add_named_volume(&mut spec, "scratch");
 
     let outcome = client
         .deploy(DeployIntent::apply_one(spec, skip_health()))
@@ -220,7 +218,7 @@ async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
         FailedOperation::Operation {
             operation: DeployOperation::CreateVolume { volume, .. },
             error: ExecutionError::Machine { .. },
-        } if volume.reference.as_str() == "data"
+        } if volume.reference.as_str() == "scratch"
     ));
     assert_eq!(unexecuted.len(), 1);
     assert!(matches!(
@@ -259,9 +257,7 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
     let _machine = session
         .spawn_machine(
             description.machine_id,
-            DiscoveryService::new(description.clone())
-                .with_deploy()
-                .with_machines(Vec::new()),
+            DiscoveryService::new(description.clone()).with_machines(Vec::new()),
         )
         .await;
     let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
@@ -290,7 +286,7 @@ async fn node_smoke_covers_connect_about_deploy_and_close() {
     let _machine = session
         .spawn_machine(
             description.machine_id,
-            DiscoveryService::new(description.clone()).with_deploy(),
+            DiscoveryService::new(description.clone()),
         )
         .await;
     let addon = native_addon();
