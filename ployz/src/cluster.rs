@@ -1,22 +1,20 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use ployz_core::{
-    ClusterTeardown, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
-    ContainerObservation, CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume,
-    DockerVolumeName, FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest,
-    ListContainersRequest, ListImagesRequest, ListMachinesRequest, ListVolumesRequest,
-    LiveServices, LocalMachineRemoved, MachineFailure, MachineId, MachineImages, MachineName,
-    MachineObservation, MachineRpcClient, MachineSuccess, MachineTarget, NameMatches,
-    ObservedDataLoss, OpaquePayload, PartialResult, ProjectName, RemoveContainerRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest,
-    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest,
-    StopContainerRequest, UnconfirmedDataLoss, apply_many_targets, derive_live_services,
-    derive_projects, op,
+    ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
+    CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume, DockerVolumeName,
+    FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest, ListContainersRequest,
+    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
+    MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
+    ProjectName, RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
+    RpcResponseBody, StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss,
+    apply_many_targets, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
 use tokio::task::JoinSet;
-use tokio_util::sync::CancellationToken;
 use tonic::{Streaming, codec::ProstCodec, codegen::http::uri::PathAndQuery, transport::Channel};
 
 use crate::{
@@ -25,8 +23,8 @@ use crate::{
         UNARY_RETRY_DELAYS, apply_timeout, decode_fanout_failure, is_unary_retryable, rpc_error,
         stop_rpc_timeout, target_request,
     },
-    context::{Connection, ConnectionSource, Transport},
-    deploy::{DeploySnapshot, ObservedDockerVolume, VolumeFate},
+    context::{Connection, ConnectionSource},
+    deploy::{DeploySnapshot, ObservedDockerVolume},
     service::ContainerOperationFailure,
 };
 
@@ -240,7 +238,7 @@ impl Client {
             let machine_id = machine.machine.id;
             let client = self.clone();
             requests
-                .spawn(async move { (index, list_volumes_on_machine(client, machine_id).await) });
+                .spawn(async move { (index, list_volumes_on_machine(&client, machine_id).await) });
         }
         let mut outcomes = Vec::with_capacity(requests.len());
         while let Some(outcome) = requests.join_next().await {
@@ -298,7 +296,7 @@ impl Client {
     ) -> Result<ObservedDataLoss, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let observation = visible_machine(machine, &machines)?;
-        data_loss_on_machine(self.clone(), observation).await
+        data_loss_on_machine(self, observation).await
     }
 
     /// Remove `machine` after a named Data Loss confirmation.
@@ -337,131 +335,6 @@ impl Client {
             });
         }
         evict_machine(self, observation, confirm_data_loss, current).await
-    }
-
-    /// Live Observation of Data Loss that destroying this Cluster would cause.
-    ///
-    /// Unions Docker Volumes across every visible Project and Machine. This is
-    /// not a complete Cluster view. Mutates nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] when listing Machines fails.
-    pub async fn data_loss_if_cluster_destroyed(&mut self) -> Result<ObservedDataLoss, RpcError> {
-        let machines = self.machines().await.map_err(RpcError::from)?;
-        cluster_data_loss(self, machines).await
-    }
-
-    /// Destroy this Cluster after a named Data Loss confirmation.
-    ///
-    /// Re-reads Data Loss at execute time. Extra confirmed names are ignored.
-    /// User Projects are destroyed with [`VolumeFate::Destroy`], every Machine
-    /// is reset, and the Cloud Pairing is revoked. Unreachable Machines are
-    /// reported. A repeated call can finish leftover work.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] when the confirmation does not cover
-    /// the fresh Data Loss. Unconfirmed names are in `UnconfirmedDataLoss`
-    /// details. Execution is otherwise a [`ClusterTeardown`] Partial Result.
-    pub async fn destroy_cluster(
-        &mut self,
-        confirm_data_loss: &[DataLoss],
-        cancellation: &CancellationToken,
-    ) -> Result<ClusterTeardown, RpcError> {
-        let machines = self.machines().await.map_err(RpcError::from)?;
-        let snapshot = self
-            .deploy_snapshot(machines.clone())
-            .await
-            .map_err(RpcError::from)?;
-        let missing = cluster_volume_loss(&snapshot).uncovered_by(confirm_data_loss);
-        if !missing.is_empty() {
-            return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
-        }
-        let current = self
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-            .await
-            .map_err(RpcError::from)?
-            .machine_id;
-        let projects = derive_projects(
-            &snapshot.containers,
-            snapshot
-                .volumes
-                .iter()
-                .map(|volume| (&volume.id, &volume.labels)),
-        );
-        let mut destroyed_projects = Vec::new();
-        for project in projects {
-            if project.name.is_reserved() {
-                continue;
-            }
-            match self
-                .destroy_project(
-                    &project.name,
-                    confirm_data_loss,
-                    VolumeFate::Destroy,
-                    cancellation,
-                    None,
-                )
-                .await
-            {
-                Ok(ployz_core::DeployOutcome::Success { .. }) => {
-                    destroyed_projects.push(project.name);
-                }
-                Ok(ployz_core::DeployOutcome::Failed { .. }) => {}
-                Err(error) if UnconfirmedDataLoss::from_rpc_error(&error).is_some() => {
-                    return Err(error);
-                }
-                Err(error) if error.code == RpcErrorCode::NotFound => {}
-                Err(_) => {}
-            }
-        }
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        };
-        let mut ordered = Vec::with_capacity(machines.len());
-        ordered.extend(
-            machines
-                .iter()
-                .filter(|observation| observation.machine.id != current)
-                .cloned(),
-        );
-        if let Some(entry) = machines
-            .iter()
-            .find(|observation| observation.machine.id == current)
-        {
-            ordered.push(entry.clone());
-        }
-        for observation in &ordered {
-            let machine_id = observation.machine.id;
-            match evict_machine(self, observation, confirm_data_loss, current).await {
-                Ok(value) => result.successes.push(MachineSuccess { machine_id, value }),
-                Err(error) if UnconfirmedDataLoss::from_rpc_error(&error).is_some() => {
-                    return Err(error);
-                }
-                Err(error) => {
-                    let _ = self
-                        .call::<op::RemoveMachine>(RemoveMachineRequest { machine_id }, None)
-                        .await;
-                    result.failures.push(MachineFailure { machine_id, error });
-                }
-            }
-        }
-        let pairing_revoked = match self.connection().transport() {
-            Transport::Relay { url, credential } => {
-                crate::connect::revoke_cloud_pairing(url, credential)
-                    .await
-                    .is_ok()
-            }
-            Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => false,
-        };
-        Ok(ClusterTeardown {
-            destroyed_projects,
-            machines: result,
-            pairing_revoked,
-        })
     }
 
     pub async fn list_images(
@@ -817,14 +690,14 @@ fn visible_machine<'list>(
         .expect("resolved Machine came from this list"))
 }
 
-async fn evict_machine(
+pub(crate) async fn evict_machine(
     client: &mut Client,
     observation: &MachineObservation,
     confirm_data_loss: &[DataLoss],
     current: MachineId,
 ) -> Result<LocalMachineRemoved, RpcError> {
     let selected = observation.machine.id;
-    let missing = data_loss_on_machine(client.clone(), observation)
+    let missing = data_loss_on_machine(client, observation)
         .await?
         .uncovered_by(confirm_data_loss);
     if !missing.is_empty() {
@@ -860,29 +733,8 @@ async fn evict_machine(
     Ok(LocalMachineRemoved { reset_warning })
 }
 
-async fn cluster_data_loss(
-    client: &mut Client,
-    machines: Vec<MachineObservation>,
-) -> Result<ObservedDataLoss, RpcError> {
-    let snapshot = client
-        .deploy_snapshot(machines)
-        .await
-        .map_err(RpcError::from)?;
-    Ok(cluster_volume_loss(&snapshot))
-}
-
-fn cluster_volume_loss(snapshot: &DeploySnapshot) -> ObservedDataLoss {
-    ObservedDataLoss {
-        data_loss: snapshot
-            .volumes
-            .iter()
-            .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
-            .collect(),
-    }
-}
-
 async fn data_loss_on_machine(
-    client: Client,
+    client: &Client,
     observation: &MachineObservation,
 ) -> Result<ObservedDataLoss, RpcError> {
     let selected = observation.machine.id;
@@ -908,7 +760,7 @@ async fn data_loss_on_machine(
 }
 
 async fn list_volumes_on_machine(
-    client: Client,
+    client: &Client,
     machine_id: MachineId,
 ) -> Result<MachineSuccess<Vec<DockerVolume>>, MachineFailure<RpcError>> {
     client

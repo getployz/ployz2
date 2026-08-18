@@ -236,7 +236,6 @@ struct Slot {
 struct TenantIndex {
     by_pairing: Mutex<HashMap<String, RelayTenant>>,
     by_dial: HashMap<String, RelayTenant>,
-    pairing_of: Mutex<HashMap<RelayTenant, String>>,
 }
 
 impl TenantIndex {
@@ -245,7 +244,6 @@ impl TenantIndex {
     ) -> Result<Self, RelayError> {
         let mut by_pairing = HashMap::new();
         let mut by_dial = HashMap::new();
-        let mut pairing_of = HashMap::new();
         for (id, (pairing, dial)) in (0_u64..).zip(tenants) {
             if pairing.as_str() == dial.as_str()
                 || by_pairing.contains_key(pairing.as_str())
@@ -256,7 +254,6 @@ impl TenantIndex {
                 return Err(RelayError::CredentialCollision);
             }
             let tenant = RelayTenant(id);
-            pairing_of.insert(tenant, pairing.0.clone());
             by_pairing.insert(pairing.0, tenant);
             by_dial.insert(dial.0, tenant);
         }
@@ -266,7 +263,6 @@ impl TenantIndex {
         Ok(Self {
             by_pairing: Mutex::new(by_pairing),
             by_dial,
-            pairing_of: Mutex::new(pairing_of),
         })
     }
 
@@ -287,11 +283,10 @@ impl TenantIndex {
     }
 
     fn revoke(&self, tenant: RelayTenant) {
-        let mut pairing_of = self.pairing_of.lock().expect("pairing_of map poisoned");
-        let mut by_pairing = self.by_pairing.lock().expect("pairing map poisoned");
-        if let Some(pairing) = pairing_of.remove(&tenant) {
-            by_pairing.remove(&pairing);
-        }
+        self.by_pairing
+            .lock()
+            .expect("pairing map poisoned")
+            .retain(|_, id| *id != tenant);
     }
 }
 
