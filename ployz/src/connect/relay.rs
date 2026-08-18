@@ -11,16 +11,13 @@ use std::{
 use hyper_util::rt::TokioIo;
 use ployz_core::MachineId;
 use ployz_relay::{
-    AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, MACHINE_ID_METADATA, TunnelFrame,
+    AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, MACHINE_ID_METADATA, TunnelIo,
 };
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf},
-    sync::mpsc,
-    task::JoinHandle,
-};
-use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
-    Request, Streaming,
+    Request,
     metadata::MetadataValue,
     transport::{Channel, Endpoint},
 };
@@ -68,11 +65,8 @@ async fn dial_tunnel(
         Ok(response) => response.into_inner(),
         Err(status) => return Err(dial_status(status)),
     };
-    let (io, other) = tokio::io::duplex(64 * 1024);
-    let splice = tokio::spawn(copy_tunnel(other, tx, inbound));
     Ok(RelayIo {
-        io,
-        splice,
+        io: TunnelIo::new(tx, inbound),
         _relay: relay,
     })
 }
@@ -107,47 +101,9 @@ fn dial_status(status: tonic::Status) -> ConnectError {
     }
 }
 
-async fn copy_tunnel(
-    io: DuplexStream,
-    tx: mpsc::Sender<TunnelFrame>,
-    mut inbound: Streaming<TunnelFrame>,
-) {
-    let (mut reader, mut writer) = tokio::io::split(io);
-    let to_relay = async {
-        let mut buf = vec![0_u8; 16 * 1024];
-        loop {
-            match reader.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let Some(data) = buf.get(..n) else { break };
-                    if tx.send(TunnelFrame::new(data.to_vec())).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    };
-    let from_relay = async {
-        while let Some(Ok(frame)) = inbound.next().await {
-            if writer.write_all(&frame.data).await.is_err() {
-                break;
-            }
-        }
-        let _ = writer.shutdown().await;
-    };
-    tokio::join!(to_relay, from_relay);
-}
-
 struct RelayIo {
-    io: DuplexStream,
-    splice: JoinHandle<()>,
+    io: TunnelIo,
     _relay: CloudRelayClient<Channel>,
-}
-
-impl Drop for RelayIo {
-    fn drop(&mut self) {
-        self.splice.abort();
-    }
 }
 
 impl AsyncRead for RelayIo {

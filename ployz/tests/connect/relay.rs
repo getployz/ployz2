@@ -1,27 +1,14 @@
-use std::{
-    io,
-    pin::Pin,
-    task::{Context, Poll},
-    time::Duration,
-};
+use std::time::Duration;
 
 use ployz::connect::{ConnectError, DialCredential, connect_relay};
 use ployz_core::{DescribeContractRequest, MachineId, MachineRpcServer, op};
 use ployz_relay::{
     AUTHORIZATION_METADATA, CloudRelayClient, PairingCredential, RegisterRequest, Relay,
-    TUNNEL_ID_METADATA, TunnelFrame,
+    TUNNEL_ID_METADATA, TunnelIo,
 };
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf},
-    sync::mpsc,
-    time::timeout,
-};
+use tokio::{sync::mpsc, time::timeout};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
-use tonic::{
-    Request,
-    metadata::MetadataValue,
-    transport::{Endpoint, server::Connected},
-};
+use tonic::{Request, metadata::MetadataValue, transport::Endpoint};
 
 use super::support::{DiscoveryService, test_description};
 
@@ -167,86 +154,11 @@ async fn serve_attach(
             .expect("Tunnel ID is ASCII metadata"),
     );
     let inbound = relay.attach(request).await.unwrap().into_inner();
-    let io = tunnel_io(tx, inbound);
+    let io = TunnelIo::new(tx, inbound);
     let _ = tonic::transport::Server::builder()
         .add_service(MachineRpcServer::new(service))
-        .serve_with_incoming(tokio_stream::once(Ok::<_, io::Error>(io)))
+        .serve_with_incoming(tokio_stream::once(Ok::<_, std::io::Error>(io)))
         .await;
-}
-
-fn tunnel_io(tx: mpsc::Sender<TunnelFrame>, inbound: tonic::Streaming<TunnelFrame>) -> AttachIo {
-    let (io, other) = tokio::io::duplex(64 * 1024);
-    tokio::spawn(copy_tunnel(other, tx, inbound));
-    AttachIo { inner: io }
-}
-
-async fn copy_tunnel(
-    io: DuplexStream,
-    tx: mpsc::Sender<TunnelFrame>,
-    mut inbound: tonic::Streaming<TunnelFrame>,
-) {
-    let (mut reader, mut writer) = tokio::io::split(io);
-    let to_relay = async {
-        let mut buf = vec![0_u8; 16 * 1024];
-        loop {
-            match reader.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let Some(data) = buf.get(..n) else { break };
-                    if tx.send(TunnelFrame::new(data.to_vec())).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    };
-    let from_relay = async {
-        while let Some(Ok(frame)) = inbound.next().await {
-            if writer.write_all(&frame.data).await.is_err() {
-                break;
-            }
-        }
-        let _ = writer.shutdown().await;
-    };
-    tokio::join!(to_relay, from_relay);
-}
-
-struct AttachIo {
-    inner: DuplexStream,
-}
-
-impl Connected for AttachIo {
-    type ConnectInfo = ();
-
-    fn connect_info(&self) -> Self::ConnectInfo {}
-}
-
-impl AsyncRead for AttachIo {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffer: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_read(context, buffer)
-    }
-}
-
-impl AsyncWrite for AttachIo {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffer: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(context, buffer)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(context)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(context)
-    }
 }
 
 async fn relay_client(url: &str) -> CloudRelayClient<tonic::transport::Channel> {

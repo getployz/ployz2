@@ -102,12 +102,11 @@ impl Connector for SystemConnector {
                 destination,
                 key_file,
             } => connect_ssh(destination, key_file.as_deref(), &self.ssh_program).await,
-            Transport::Relay { url, credential } => {
-                let machine_id = connection
-                    .machine_id()
-                    .expect("Relay connections include a Machine ID");
-                relay::connect_channel(url, credential, machine_id).await
-            }
+            Transport::Relay {
+                url,
+                credential,
+                machine_id,
+            } => relay::connect_channel(url, credential, machine_id).await,
         }
     }
 
