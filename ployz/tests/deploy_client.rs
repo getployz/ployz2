@@ -13,6 +13,30 @@ use ployz_core::{OperationPhase, ProjectName, RequestedServiceSpec};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
+async fn deploy_creates_containers_owned_by_the_intent_project() {
+    let service = DeployService::new(machine('a', "one"));
+    let created = service.created_projects();
+    let (mut client, server) = connected(service).await;
+    client
+        .run(
+            DeployIntent::apply_one(
+                ProjectName::parse("shop").unwrap(),
+                spec("web"),
+                skip_health(),
+            ),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        *created.lock().unwrap(),
+        [ProjectName::parse("shop").unwrap()]
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn deploy_returns_success_for_a_completed_run() {
     let machine = machine('a', "one");
     let (mut client, server) = connected(DeployService::new(machine.clone())).await;
