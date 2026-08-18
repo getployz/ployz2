@@ -97,7 +97,7 @@ impl RelaySession {
             DialCredential::parse(DIAL).unwrap(),
         )
         .unwrap();
-        let (address, server) = relay.serve().await.unwrap();
+        let (address, server, _) = relay.serve().await.unwrap();
         Self {
             url: format!("http://{address}"),
             _server: server,
