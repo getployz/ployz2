@@ -1,14 +1,16 @@
 //! Pipeline tests for `@ployz/sdk` generated TypeScript and JSON fixtures.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, process::Command};
 
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
-    ClusterTeardown, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOutcome, DeployPreview,
-    DockerVolume, ExecutionError, HealthObservation, IngressHostname, LocalMachineRemoved,
-    MembershipObservation, ObservedDataLoss, PlanOptions, RUNTIME_WATCH_CAPABILITY, RpcError,
-    RpcErrorCode, RuntimeWatchFrame, ServiceAttempt, UnconfirmedDataLoss,
+    ClusterTeardown, ConfigMount, ConfigSpec, ContainerObservation, ContainerRuntimeObservation,
+    ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOutcome,
+    DeployPreview, DeviceMapping, DeviceReservation, DockerVolume, ExecutionError,
+    HealthObservation, HealthcheckSpec, IngressHostname, LocalMachineRemoved,
+    MembershipObservation, ObservedDataLoss, PlanOptions, RUNTIME_WATCH_CAPABILITY,
+    RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode, RuntimeWatchFrame,
+    ServiceAttempt, Ulimit, UnconfirmedDataLoss, VolumeDriver, VolumeSource,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -193,13 +195,14 @@ fn json_fixtures_round_trip_through_rust_types() {
         *fixture(&fixtures, "deploy_preview")
     );
 
-    let spec: ployz_core::RequestedServiceSpec =
-        decode_fixture(fixture(&fixtures, "requested_service_spec"));
+    let spec: RequestedServiceSpec = decode_fixture(fixture(&fixtures, "requested_service_spec"));
     assert_eq!(spec.name.as_str(), "api");
     assert_eq!(
         serde_json::to_value(&spec).unwrap(),
         *fixture(&fixtures, "requested_service_spec")
     );
+
+    assert_typed_spec_fixtures(&fixtures);
 
     let automatic: IngressHostname =
         decode_fixture(fixture(&fixtures, "ingress_hostname_cluster_domain"));
@@ -418,8 +421,29 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type RequestedServiceSpec = Additive<{"));
     assert!(dts.contains("export type ResolvedServiceSpec = Additive<{"));
     assert!(dts.contains("export type ServiceVolume = Additive<{"));
+    assert!(dts.contains("export type VolumeDriver = Additive<{"));
+    assert!(dts.contains("driver?: VolumeDriver"));
+    assert!(dts.contains("export type ConfigSpec = Additive<{"));
+    assert!(dts.contains("content?: number[]"));
+    assert!(dts.contains("configs?: ConfigSpec[]"));
+    assert!(dts.contains("export type ConfigMount = Additive<{"));
+    assert!(dts.contains("config_mounts?: ConfigMount[]"));
+    assert!(dts.contains("export type DeviceMapping = Additive<{"));
+    assert!(dts.contains("devices?: DeviceMapping[]"));
+    assert!(dts.contains("export type DeviceReservation = Additive<{"));
+    assert!(dts.contains("device_reservations?: DeviceReservation[]"));
+    assert!(dts.contains("export type Ulimit = Additive<{"));
+    assert!(dts.contains("ulimits?: { readonly [key: string]: Ulimit }"));
+    assert!(dts.contains("effective_healthcheck: HealthcheckSpec | null"));
     assert!(!dts.contains("export type RequestedServiceSpec = JsonValue"));
     assert!(!dts.contains("export type ResolvedServiceSpec = JsonValue"));
+    assert!(!dts.contains("driver?: JsonValue"));
+    assert!(!dts.contains("devices?: JsonValue[]"));
+    assert!(!dts.contains("device_reservations?: JsonValue[]"));
+    assert!(!dts.contains("ulimits?: JsonObject"));
+    assert!(!dts.contains("config_mounts?: JsonValue[]"));
+    assert!(!dts.contains("configs?: JsonValue[]"));
+    assert!(!dts.contains("effective_healthcheck: JsonValue | null"));
     assert!(dts.contains("readonly __brand: \"MachineId\""));
     assert!(dts.contains("readonly __brand: \"ServiceId\""));
     assert!(dts.contains("readonly __brand: \"ContainerId\""));
@@ -558,6 +582,192 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(!dts.contains("ops.watch"));
     assert!(!dts.contains("export declare function call"));
     assert!(!dts.contains("export declare function request"));
+}
+
+#[test]
+fn remaining_json_value_fields_are_intentional_rpc_details() {
+    let dts = ployz_sdk_payloads::artifacts().payloads_dts;
+    let uses: Vec<&str> = dts
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            (line.contains("JsonValue") || line.contains("JsonObject"))
+                && !line.starts_with("export type JsonValue")
+                && !line.starts_with("export type JsonObject")
+                && !line.starts_with("export type Additive")
+                && !line.starts_with('|')
+        })
+        .collect();
+    assert_eq!(
+        uses,
+        ["details?: JsonValue;"],
+        "RpcError.details is per-code JSON; every other public payload field uses a Rust wire type"
+    );
+}
+
+fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
+    let driver: VolumeDriver = decode_fixture(fixture(fixtures, "volume_driver"));
+    assert_eq!(driver.name, "nfs");
+    assert_eq!(driver.options.get("share").map(String::as_str), Some("app"));
+    assert_eq!(
+        serde_json::to_value(&driver).unwrap(),
+        *fixture(fixtures, "volume_driver")
+    );
+
+    let config: ConfigSpec = decode_fixture(fixture(fixtures, "config_spec"));
+    assert_eq!(config.name, "settings");
+    assert_eq!(config.content, b"port = 8080");
+    assert_eq!(
+        serde_json::to_value(&config).unwrap(),
+        *fixture(fixtures, "config_spec")
+    );
+
+    let mount: ConfigMount = decode_fixture(fixture(fixtures, "config_mount"));
+    assert_eq!(mount.config_name, "settings");
+    assert_eq!(
+        mount.target.as_ref().map(ployz_core::ContainerPath::as_str),
+        Some("/etc/api/settings.toml")
+    );
+    assert_eq!(mount.uid, Some(1000));
+    assert_eq!(mount.gid, Some(1000));
+    assert_eq!(mount.mode, Some(0o440));
+    assert_eq!(
+        serde_json::to_value(&mount).unwrap(),
+        *fixture(fixtures, "config_mount")
+    );
+
+    let mapping: DeviceMapping = decode_fixture(fixture(fixtures, "device_mapping"));
+    assert_eq!(mapping.machine_path.as_str(), "/dev/fuse");
+    assert_eq!(mapping.container_path.as_str(), "/dev/fuse");
+    assert_eq!(mapping.cgroup_permissions, "rwm");
+    assert_eq!(
+        serde_json::to_value(&mapping).unwrap(),
+        *fixture(fixtures, "device_mapping")
+    );
+
+    let reservation: DeviceReservation = decode_fixture(fixture(fixtures, "device_reservation"));
+    assert_eq!(reservation.driver.as_deref(), Some("nvidia"));
+    assert_eq!(reservation.count, Some(1));
+    assert_eq!(reservation.device_ids, ["GPU-0".to_owned()]);
+    assert_eq!(reservation.capabilities, [vec!["gpu".to_owned()]]);
+    assert_eq!(
+        reservation.options.get("count").map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        serde_json::to_value(&reservation).unwrap(),
+        *fixture(fixtures, "device_reservation")
+    );
+
+    let sparse: DeviceReservation = decode_fixture(fixture(fixtures, "device_reservation_sparse"));
+    assert!(sparse.driver.is_none());
+    assert!(sparse.device_ids.is_empty());
+    assert_eq!(
+        serde_json::to_value(&sparse).unwrap(),
+        *fixture(fixtures, "device_reservation_sparse")
+    );
+
+    let ulimit: Ulimit = decode_fixture(fixture(fixtures, "ulimit"));
+    assert_eq!(ulimit.soft, 1024);
+    assert_eq!(ulimit.hard, 2048);
+    assert_eq!(
+        serde_json::to_value(ulimit).unwrap(),
+        *fixture(fixtures, "ulimit")
+    );
+
+    let requested: RequestedServiceSpec =
+        decode_fixture(fixture(fixtures, "requested_service_spec_typed"));
+    assert_eq!(requested.configs(), std::slice::from_ref(&config));
+    assert_eq!(requested.config_mounts().len(), 2);
+    match requested.volumes().first().map(|volume| &volume.source) {
+        Some(VolumeSource::Named {
+            driver: Some(nested),
+            ..
+        }) => assert_eq!(nested, &driver),
+        other => panic!("typed requested spec must nest VolumeDriver, got {other:?}"),
+    }
+    assert_eq!(
+        requested.container.resources.devices.first(),
+        Some(&mapping)
+    );
+    assert_eq!(
+        requested.container.resources.device_reservations,
+        [reservation.clone(), sparse.clone()]
+    );
+    assert_eq!(
+        requested.container.resources.ulimits.get("nofile"),
+        Some(&ulimit)
+    );
+    assert_eq!(
+        serde_json::to_value(&requested).unwrap(),
+        *fixture(fixtures, "requested_service_spec_typed")
+    );
+
+    let resolved: ResolvedServiceSpec =
+        decode_fixture(fixture(fixtures, "resolved_service_spec_typed"));
+    assert_eq!(resolved.configs(), requested.configs());
+    assert_eq!(resolved.config_mounts(), requested.config_mounts());
+    assert_eq!(
+        serde_json::to_value(&resolved).unwrap(),
+        *fixture(fixtures, "resolved_service_spec_typed")
+    );
+
+    let disabled: HealthcheckSpec =
+        decode_fixture(fixture(fixtures, "effective_healthcheck_disabled"));
+    assert_eq!(disabled, HealthcheckSpec::Disabled);
+    let configured: HealthcheckSpec =
+        decode_fixture(fixture(fixtures, "effective_healthcheck_configured"));
+    assert!(configured.as_configured().is_some());
+    assert_eq!(
+        serde_json::to_value(&configured).unwrap(),
+        *fixture(fixtures, "effective_healthcheck_configured")
+    );
+
+    let observation: ContainerObservation = decode_fixture(fixture(
+        fixtures,
+        "container_observation_configured_healthcheck",
+    ));
+    assert_eq!(
+        observation.effective_healthcheck.as_ref(),
+        Some(&configured)
+    );
+    assert_eq!(
+        serde_json::to_value(&observation).unwrap(),
+        *fixture(fixtures, "container_observation_configured_healthcheck")
+    );
+}
+
+#[test]
+fn sdk_package_typechecks_generated_payloads() {
+    let pkg: Value = serde_json::from_str(include_str!("../../ployz-sdk/package.json")).unwrap();
+    assert!(
+        pkg_field(&pkg, "devDependencies")
+            .get("typescript")
+            .and_then(Value::as_str)
+            .is_some(),
+        "TypeScript must be an @ployz/sdk dev dependency"
+    );
+    let typecheck = include_str!("../../ployz-sdk/tests/payload-types.ts");
+    assert!(typecheck.contains("@ts-expect-error"));
+    assert!(typecheck.contains("VolumeDriver"));
+    assert!(typecheck.contains("ConfigSpec"));
+    assert!(typecheck.contains("DeviceMapping"));
+
+    let root = sdk_package_root();
+    if !root.join("node_modules/typescript").exists() {
+        let install = Command::new("npm")
+            .args(["ci", "--ignore-scripts"])
+            .current_dir(&root)
+            .status()
+            .expect("npm ci");
+        assert!(install.success(), "npm ci --ignore-scripts failed");
+    }
+    let status = Command::new("npx")
+        .args(["--no-install", "tsc", "--noEmit", "-p", "."])
+        .current_dir(&root)
+        .status()
+        .expect("tsc");
+    assert!(status.success(), "tsc --noEmit failed");
 }
 
 #[test]

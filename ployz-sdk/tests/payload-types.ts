@@ -1,0 +1,70 @@
+import type {
+  ConfigMount,
+  ConfigSpec,
+  ContainerObservation,
+  DeviceMapping,
+  DeviceReservation,
+  HealthcheckSpec,
+  RequestedServiceSpec,
+  ResolvedServiceSpec,
+  Ulimit,
+  VolumeDriver,
+} from "../generated/payloads";
+import fixtures from "../generated/fixtures.json";
+
+const volumeDriver: VolumeDriver = fixtures.volume_driver;
+const configSpec: ConfigSpec = fixtures.config_spec;
+const configMount: ConfigMount = fixtures.config_mount;
+const deviceMapping: DeviceMapping = fixtures.device_mapping;
+const deviceReservation: DeviceReservation = fixtures.device_reservation;
+const ulimit: Ulimit = fixtures.ulimit;
+const requestedConfigs: NonNullable<RequestedServiceSpec["configs"]> =
+  fixtures.requested_service_spec_typed.configs;
+const resolvedConfigs: NonNullable<ResolvedServiceSpec["configs"]> =
+  fixtures.resolved_service_spec_typed.configs;
+const disabled: HealthcheckSpec = fixtures.effective_healthcheck_disabled;
+const configured: HealthcheckSpec = fixtures.effective_healthcheck_configured;
+const effective: ContainerObservation["effective_healthcheck"] =
+  fixtures.container_observation_configured_healthcheck.effective_healthcheck;
+
+void volumeDriver;
+void configSpec;
+void configMount;
+void deviceMapping;
+void deviceReservation;
+void ulimit;
+void requestedConfigs;
+void resolvedConfigs;
+void disabled;
+void configured;
+void effective;
+
+// @ts-expect-error VolumeDriver options values are strings
+const invalidDriver: VolumeDriver = { name: "nfs", options: { share: 1 } };
+// @ts-expect-error DeviceMapping requires cgroup_permissions
+const invalidDevice: DeviceMapping = {
+  machine_path: "/dev/fuse",
+  container_path: "/dev/fuse",
+};
+// @ts-expect-error ConfigSpec content is a byte array
+const invalidConfig: ConfigSpec = { name: "settings", content: "port = 8080" };
+// @ts-expect-error Ulimit requires hard
+const invalidUlimit: Ulimit = { soft: 1024 };
+// @ts-expect-error DeviceReservation count is a number
+const invalidReservation: DeviceReservation = { count: "one" };
+// @ts-expect-error HealthcheckSpec is tagged, not a string
+const invalidHealthcheck: HealthcheckSpec = "disabled";
+// @ts-expect-error configs is ConfigSpec[], not a number
+const invalidConfigs: RequestedServiceSpec["configs"] = 1;
+// @ts-expect-error effective_healthcheck is HealthcheckSpec | null, not a string
+const invalidEffective: ContainerObservation["effective_healthcheck"] =
+  "disabled";
+
+void invalidDriver;
+void invalidDevice;
+void invalidConfig;
+void invalidUlimit;
+void invalidReservation;
+void invalidHealthcheck;
+void invalidConfigs;
+void invalidEffective;
