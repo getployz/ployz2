@@ -15,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 
 use super::{
-    DeployOperation, DeployOutcome, DeployPlan, ReplacementCompensation, ReplacementOperation,
-    RestartAttempt,
+    DeployOperation, DeployOutcome, DeployPlan, DeploySnapshot, ReplacementCompensation,
+    ReplacementOperation, RestartAttempt, pending_rows,
 };
 
 pub(super) use super::progress::Progress;
@@ -336,22 +336,6 @@ where
     }
 }
 
-fn rows_from_operations(operations: &[DeployOperation]) -> Vec<OperationRow> {
-    operations
-        .iter()
-        .enumerate()
-        .map(|(index, operation)| {
-            OperationRow::pending(
-                u32::try_from(index).unwrap_or(u32::MAX),
-                operation.clone(),
-                None,
-                None,
-                None,
-            )
-        })
-        .collect()
-}
-
 async fn execute_with<C: MachineOperations>(
     plan: &DeployPlan,
     client: &C,
@@ -359,7 +343,7 @@ async fn execute_with<C: MachineOperations>(
     project_name: &ProjectName,
 ) -> DeployOutcome<ExecutionError> {
     execute_operation_sequence(
-        rows_from_operations(&plan.operations),
+        pending_rows(&plan.operations, &DeploySnapshot::default()),
         client,
         cancellation,
         None,
