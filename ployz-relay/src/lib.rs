@@ -197,7 +197,6 @@ impl Goaway {
 enum Phase {
     Live,
     Draining,
-    Closed,
 }
 
 /// Plaintext Cloud Relay: Register, Dial, Attach, opaque splice.
@@ -324,7 +323,6 @@ impl Relay {
     }
 
     fn force_close(&self) {
-        self.phase.send_replace(Phase::Closed);
         let mut state = self.lock();
         state.machines.clear();
         state.pending.clear();
@@ -333,7 +331,7 @@ impl Relay {
     fn accepting(&self) -> bool {
         match *self.phase.borrow() {
             Phase::Live => true,
-            Phase::Draining | Phase::Closed => false,
+            Phase::Draining => false,
         }
     }
 
