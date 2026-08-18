@@ -54,8 +54,7 @@ pub(super) struct DiscoveryService {
     description: ContractDescription,
     pub(super) describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
     pub(super) stream_opens: Arc<AtomicUsize>,
-    machines: Vec<MachineObservation>,
-    containers: Arc<AtomicUsize>,
+    pub(super) machines: Vec<MachineObservation>,
 }
 
 impl DiscoveryService {
@@ -65,13 +64,7 @@ impl DiscoveryService {
             describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             stream_opens: Arc::new(AtomicUsize::new(0)),
             machines: vec![machine('a', "one")],
-            containers: Arc::new(AtomicUsize::new(0)),
         }
-    }
-
-    pub(super) fn with_machines(mut self, machines: Vec<MachineObservation>) -> Self {
-        self.machines = machines;
-        self
     }
 }
 
@@ -259,19 +252,16 @@ impl MachineRpc for DiscoveryService {
 
     async fn create_container(
         &self,
-        request: Request<OpaquePayload>,
+        _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::CreateContainer(create) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument("expected create_container"));
-        };
-        let n = self.containers.fetch_add(1, Ordering::SeqCst) + 1;
-        let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
-        encoded(RpcResponse::from(ContainerCreated {
-            container_id,
-            display_name: format!("{}-{n}", create.resolved_spec.name),
-        }))
+        Ok(Response::new(
+            RpcResponse::from(ContainerCreated {
+                container_id: created_container_id(),
+                display_name: "web-1".into(),
+            })
+            .encode()
+            .unwrap(),
+        ))
     }
 
     async fn remove_volume(
@@ -283,16 +273,15 @@ impl MachineRpc for DiscoveryService {
 
     async fn start_container(
         &self,
-        request: Request<OpaquePayload>,
+        _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::StartContainer(start) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument("expected start_container"));
-        };
-        encoded(RpcResponse::from(ployz_core::ContainerChanged {
-            container_id: start.container_id,
-        }))
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::ContainerChanged {
+                container_id: created_container_id(),
+            })
+            .encode()
+            .unwrap(),
+        ))
     }
 
     async fn stop_container(
@@ -430,12 +419,8 @@ impl MachineRpc for DiscoveryService {
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic Status is the MachineRpc error type"
-)]
-fn encoded(response: RpcResponse) -> Result<Response<OpaquePayload>, Status> {
-    Ok(Response::new(response.encode().unwrap()))
+fn created_container_id() -> ContainerId {
+    ContainerId::parse("1".repeat(64)).unwrap()
 }
 
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {

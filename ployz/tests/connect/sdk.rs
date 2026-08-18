@@ -229,10 +229,11 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
     let description = advertised_description();
     let session = RelaySession::start().await;
     let _machine = session
-        .spawn_machine(
-            description.machine_id,
-            DiscoveryService::new(description.clone()).with_machines(Vec::new()),
-        )
+        .spawn_machine(description.machine_id, {
+            let mut service = DiscoveryService::new(description.clone());
+            service.machines.clear();
+            service
+        })
         .await;
     let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
         .await
