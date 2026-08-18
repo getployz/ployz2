@@ -99,7 +99,7 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
     let caddy_machines = services
         .iter()
         .flat_map(|service| &service.containers)
-        .filter(|container| crate::caddy::is_system(container.as_observation()))
+        .filter(|container| crate::caddy::is_system_caddy(container.as_observation()))
         .map(|container| container.as_observation().machine_id)
         .collect::<BTreeSet<_>>();
     if caddy_machines.is_empty() {

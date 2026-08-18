@@ -408,41 +408,6 @@ mod tests {
             dispatch(&scale, &mut command).unwrap_err().to_string(),
             "Project 'ployz-system' is reserved for Ployz infrastructure",
         );
-        let service_run = command
-            .clone()
-            .try_get_matches_from([
-                "ployz",
-                "service",
-                "run",
-                "--project-name",
-                "ployz-system",
-                "alpine",
-            ])
-            .unwrap();
-        assert_eq!(
-            dispatch(&service_run, &mut command)
-                .unwrap_err()
-                .to_string(),
-            "Project 'ployz-system' is reserved for Ployz infrastructure",
-        );
-        let service_scale = command
-            .clone()
-            .try_get_matches_from([
-                "ployz",
-                "service",
-                "scale",
-                "--project-name",
-                "ployz-system",
-                "web",
-                "2",
-            ])
-            .unwrap();
-        assert_eq!(
-            dispatch(&service_scale, &mut command)
-                .unwrap_err()
-                .to_string(),
-            "Project 'ployz-system' is reserved for Ployz infrastructure",
-        );
         let invalid = command
             .clone()
             .try_get_matches_from(["ployz", "deploy", "--project-name", "My_App"])

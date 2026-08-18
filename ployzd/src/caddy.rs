@@ -33,7 +33,7 @@ const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// True when this observation is the reserved Caddy Service.
 #[must_use]
-pub(crate) fn is_system(observation: &ContainerObservation) -> bool {
+pub(crate) fn is_system_caddy(observation: &ContainerObservation) -> bool {
     observation.project_name.is_reserved() && observation.service_name.as_str() == "caddy"
 }
 
@@ -328,7 +328,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         .copied()
         .filter(|container| {
             let observation = container.as_observation();
-            is_system(observation) && observation.machine_id == *local_machine
+            is_system_caddy(observation) && observation.machine_id == *local_machine
         })
         .max_by_key(|container| creation_key(container))
         && let Some(config) = container
@@ -363,7 +363,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     let mut newest = BTreeMap::<&str, &ServiceContainer>::new();
     for container in &healthy {
         let service = container.as_observation().service_name.as_str();
-        if is_system(container.as_observation()) {
+        if is_system_caddy(container.as_observation()) {
             continue;
         }
         newest

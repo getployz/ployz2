@@ -52,7 +52,7 @@ pub fn select_image(tags: &[String]) -> String {
 
 /// True when this observation is the reserved Caddy Service.
 #[must_use]
-pub fn is_system(observation: &ContainerObservation) -> bool {
+pub fn is_system_caddy(observation: &ContainerObservation) -> bool {
     observation.project_name.is_reserved() && observation.service_name.as_str() == SERVICE_NAME
 }
 
@@ -62,7 +62,7 @@ pub fn newest_existing_settings<'a>(
 ) -> Option<(String, Vec<MachineTarget>, Option<String>)> {
     containers
         .into_iter()
-        .filter(|container| is_system(container.as_observation()))
+        .filter(|container| is_system_caddy(container.as_observation()))
         .max_by_key(|container| {
             let observation = container.as_observation();
             (

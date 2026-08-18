@@ -221,7 +221,7 @@ fn caddy_challenge_ips(
     let caddy: BTreeSet<_> = observations
         .iter()
         .filter(|observation| {
-            crate::caddy::is_system(observation) && observation.runtime.is_healthy()
+            crate::caddy::is_system_caddy(observation) && observation.runtime.is_healthy()
         })
         .map(|observation| observation.machine_id)
         .collect();
