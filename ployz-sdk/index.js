@@ -22,38 +22,36 @@ class Client {
 function iterateWatch(start, signal) {
   return {
     async *[Symbol.asyncIterator]() {
+      if (signal?.aborted) {
+        return;
+      }
       let stream;
-      let stopped = false;
       const stop = () => {
-        stopped = true;
         if (stream) {
           stream.cancel();
         }
       };
       if (signal) {
-        if (signal.aborted) {
-          return;
-        }
         signal.addEventListener("abort", stop, { once: true });
       }
       try {
         stream = await start();
-        if (stopped) {
+        if (signal?.aborted) {
           stream.cancel();
           return;
         }
-        while (!stopped) {
+        for (;;) {
           const value = await stream.next();
-          if (stopped || value == null) {
+          if (value == null || signal?.aborted) {
             return;
           }
           yield value;
         }
       } finally {
-        stop();
         if (signal) {
           signal.removeEventListener("abort", stop);
         }
+        stop();
       }
     },
   };

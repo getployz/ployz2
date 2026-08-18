@@ -127,9 +127,7 @@ pub(super) struct DiscoveryService {
     pub(super) describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
     pub(super) stream_opens: Arc<AtomicUsize>,
     pub(super) watch_opens: Arc<AtomicUsize>,
-    pub(super) list_machines_calls: Arc<AtomicUsize>,
-    pub(super) list_containers_calls: Arc<AtomicUsize>,
-    pub(super) list_volumes_calls: Arc<AtomicUsize>,
+    pub(super) list_rpc_calls: Arc<AtomicUsize>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
     watch: Arc<WatchHub>,
 }
@@ -141,9 +139,7 @@ impl DiscoveryService {
             describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             stream_opens: Arc::new(AtomicUsize::new(0)),
             watch_opens: Arc::new(AtomicUsize::new(0)),
-            list_machines_calls: Arc::new(AtomicUsize::new(0)),
-            list_containers_calls: Arc::new(AtomicUsize::new(0)),
-            list_volumes_calls: Arc::new(AtomicUsize::new(0)),
+            list_rpc_calls: Arc::new(AtomicUsize::new(0)),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
             watch: Arc::new(WatchHub::new()),
         }
@@ -281,7 +277,7 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        self.list_machines_calls.fetch_add(1, Ordering::SeqCst);
+        self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
         Ok(Response::new(
             RpcResponse::from(MachineList {
                 machines: vec![machine('a', "one")],
@@ -295,7 +291,7 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        self.list_containers_calls.fetch_add(1, Ordering::SeqCst);
+        self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
         Err(Status::unimplemented("unused"))
     }
 
@@ -317,7 +313,7 @@ impl MachineRpc for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        self.list_volumes_calls.fetch_add(1, Ordering::SeqCst);
+        self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
         let machine_id =
             MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
         let request = request.into_inner().decode_request().unwrap();

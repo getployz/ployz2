@@ -66,13 +66,6 @@ async fn first_watch_yield_is_the_complete_generated_frame() {
         !frame.volumes.is_empty(),
         "replicated Docker Volumes belong on the frame"
     );
-    assert_eq!(
-        service
-            .list_volumes_calls
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "Watch must not fan-out ListVolumes"
-    );
     let incomplete =
         ContainerId::parse("2222222222222222222222222222222222222222222222222222222222222222")
             .unwrap();
@@ -378,8 +371,10 @@ fn assert_redacted(frame: &RuntimeWatchFrame) {
 }
 
 fn assert_no_list_rpc(service: &DiscoveryService) {
-    use std::sync::atomic::Ordering;
-    assert_eq!(service.list_machines_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(service.list_containers_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(service.list_volumes_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        service
+            .list_rpc_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 }
