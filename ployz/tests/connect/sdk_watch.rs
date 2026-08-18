@@ -148,6 +148,7 @@ async fn abort_ends_only_that_watch_and_leaves_the_client_usable() {
             .unwrap(),
         None
     );
+    wait_watch_rpc_dropped(&service).await;
     assert!(
         client
             .about()
@@ -160,6 +161,7 @@ async fn abort_ends_only_that_watch_and_leaves_the_client_usable() {
     let again = client.watch().await.unwrap();
     let _ = next_frame(&again).await;
     again.cancel();
+    wait_watch_rpc_dropped(&service).await;
     assert_eq!(
         service
             .watch_opens
@@ -293,6 +295,19 @@ async fn next_frame(watch: &sdk::Watch) -> RuntimeWatchFrame {
         .expect("Watch frame")
         .expect("Watch result")
         .expect("Watch item")
+}
+
+async fn wait_watch_rpc_dropped(service: &DiscoveryService) {
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if service.live_watch_senders() == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("cancel must drop the Watch RPC without another next()");
 }
 
 fn advertised_description() -> ContractDescription {

@@ -133,7 +133,7 @@ impl Watch {
             }
         };
         match message {
-            None => {
+            None | Some(Ok(None)) => {
                 *guard = None;
                 Ok(None)
             }
@@ -141,10 +141,6 @@ impl Watch {
                 .decode_json()
                 .map(Some)
                 .map_err(|error| RpcError::from(ConnectError::from(error))),
-            Some(Ok(None)) => {
-                *guard = None;
-                Ok(None)
-            }
             Some(Err(status))
                 if self.cancel.is_cancelled() || status.code() == tonic::Code::Cancelled =>
             {
@@ -161,6 +157,9 @@ impl Watch {
     /// End this Watch stream. The Client stays usable.
     pub fn cancel(&self) {
         self.cancel.cancel();
+        if let Ok(mut guard) = self.stream.try_lock() {
+            *guard = None;
+        }
     }
 }
 

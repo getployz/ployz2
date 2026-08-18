@@ -103,6 +103,12 @@ impl WatchHub {
         self.live.lock().unwrap().push(sender);
         receiver
     }
+
+    fn live_count(&self) -> usize {
+        let mut live = self.live.lock().unwrap();
+        live.retain(|sender| !sender.is_closed());
+        live.len()
+    }
 }
 
 fn send_watch_event(sender: &mpsc::Sender<Result<OpaquePayload, Status>>, event: &WatchEvent) {
@@ -153,6 +159,10 @@ impl DiscoveryService {
 
     pub(super) fn fail_watch(&self, status: Status) {
         self.watch.push(WatchEvent::Fail(status));
+    }
+
+    pub(super) fn live_watch_senders(&self) -> usize {
+        self.watch.live_count()
     }
 }
 
