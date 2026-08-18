@@ -272,6 +272,10 @@ fn deploy_warning_display_is_the_cli_line_body() {
             MachineId::parse("c".repeat(32)).unwrap()
         )
     );
+    assert_eq!(
+        DeployWarning::ObserverRelativeHostnameConflict.to_string(),
+        "Hostname conflict detection is observer-relative to this Machine's current visible fan-out and does not claim uniqueness."
+    );
 }
 
 #[test]

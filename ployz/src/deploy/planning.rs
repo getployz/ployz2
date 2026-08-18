@@ -5,7 +5,8 @@ use ployz_core::{
     MachineObservation, MembershipObservation, PortPublication, ProjectName, QualifiedService,
     RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
     ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
-    VolumeSource, compare_specs, machine_matches_target, same_service_mode_kind,
+    VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners, machine_matches_target,
+    same_service_mode_kind,
 };
 
 use super::{
@@ -31,8 +32,8 @@ use volumes::{
 ///
 /// # Errors
 ///
-/// Returns when placement, volumes, service identity, or the apply-set
-/// dependency graph cannot produce a plan.
+/// Returns when placement, volumes, service identity, hostname ownership, or
+/// the apply-set dependency graph cannot produce a plan.
 pub fn plan_deploy(
     intent: &DeployIntent,
     snapshot: &DeploySnapshot,
@@ -42,6 +43,13 @@ pub fn plan_deploy(
         .into_iter()
         .map(normalize)
         .collect::<Vec<_>>();
+    let observer_relative_hostname_detection = !snapshot.is_observer_complete()
+        && requested
+            .iter()
+            .any(|spec| explicit_ingress_hosts(&spec.ports).next().is_some());
+    if snapshot.is_observer_complete() {
+        reject_custom_hostname_conflicts(&intent.project_name, &requested, snapshot)?;
+    }
     let options = &intent.options;
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
@@ -73,7 +81,30 @@ pub fn plan_deploy(
         operations,
         would_remove,
         prune_refusal,
+        observer_relative_hostname_detection,
     })
+}
+
+fn reject_custom_hostname_conflicts(
+    project_name: &ProjectName,
+    requested: &[RequestedServiceSpec],
+    snapshot: &DeploySnapshot,
+) -> Result<(), PlanError> {
+    let owners = hostname_owners(snapshot.containers.iter());
+    for spec in requested {
+        let identity = QualifiedService::new(project_name.clone(), spec.name.clone());
+        for hostname in explicit_ingress_hosts(&spec.ports) {
+            if let Some(owner) = owners.get(hostname)
+                && *owner != identity
+            {
+                return Err(PlanError::CustomHostnameConflict {
+                    hostname: hostname.clone(),
+                    owner: owner.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn obsolete_services(
