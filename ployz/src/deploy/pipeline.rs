@@ -10,8 +10,8 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    MachineId, MachineObservation, PartialResult, PortPublication, RequestedServiceSpec, RpcError,
-    ServiceMode, ServiceSelector, select_service,
+    MachineId, MachineObservation, PartialResult, PortPublication, ProjectName,
+    RequestedServiceSpec, RpcError, ServiceMode, ServiceSelector, select_service,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -72,8 +72,14 @@ impl Client {
         cancellation: &CancellationToken,
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> DeployOutcome<ExecutionError> {
-        execute_operations_with_progress(preview.operations.clone(), self, cancellation, progress)
-            .await
+        execute_operations_with_progress(
+            preview.operations.clone(),
+            self,
+            cancellation,
+            progress,
+            &preview.project_name,
+        )
+        .await
     }
 
     /// Preview, auto-confirm, and return the Deploy Outcome.
@@ -115,10 +121,11 @@ pub(super) async fn plan_spec(
     client: &mut Client,
     requested: &RequestedServiceSpec,
     options: PlanOptions,
+    project_name: &ProjectName,
 ) -> Result<DeployPreview, Failure> {
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
-    let mut intent = DeployIntent::apply_one(requested.clone(), options);
+    let mut intent = DeployIntent::apply_one(project_name.clone(), requested.clone(), options);
     Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
@@ -147,12 +154,18 @@ pub(super) async fn plan_project(
     machines: Vec<MachineObservation>,
     apply: Vec<ServiceAttempt>,
     options: PlanOptions,
+    project_name: &ProjectName,
 ) -> Result<DeployPreview, Failure> {
     project.resolve_secrets()?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     super::reject_missing_external_volumes(project, &snapshot)?;
-    let mut intent =
-        DeployIntent::from_named_specs(&project.services, &project.dependencies, apply, options);
+    let mut intent = DeployIntent::from_named_specs(
+        project_name.clone(),
+        &project.services,
+        &project.dependencies,
+        apply,
+        options,
+    );
     Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
@@ -161,13 +174,18 @@ pub(super) async fn plan_scale(
     selector: &ServiceSelector,
     replicas: NonZeroU32,
     options: PlanOptions,
+    project_name: &ProjectName,
 ) -> Result<DeployPreview, Failure> {
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
-    let Some(requested) = choose_scale_spec(&snapshot, selector, replicas)? else {
-        return Ok(DeployPreview::new(Vec::new(), warnings));
+    let Some(requested) = choose_scale_spec(&snapshot, selector, replicas, project_name)? else {
+        return Ok(DeployPreview::new(
+            Vec::new(),
+            warnings,
+            project_name.clone(),
+        ));
     };
-    let mut intent = DeployIntent::apply_one(requested, options);
+    let mut intent = DeployIntent::apply_one(project_name.clone(), requested, options);
     Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
@@ -184,10 +202,11 @@ async fn prepare_intent(
     Ok(DeployPreview::new(
         pending_rows(&plan.operations, &snapshot),
         warnings,
+        intent.project_name.clone(),
     ))
 }
 
-pub(super) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
+pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
     PlanOptions {
         force_recreate,
         skip_health_monitor,
@@ -201,8 +220,9 @@ fn choose_scale_spec(
     snapshot: &DeploySnapshot,
     selector: &ServiceSelector,
     replicas: NonZeroU32,
+    project_name: &ProjectName,
 ) -> Result<Option<RequestedServiceSpec>, Failure> {
-    let services = ployz_core::derive_services(snapshot.containers.iter().cloned());
+    let services = snapshot.services_in(project_name);
     let service = select_service(&services, selector)?;
     let observed_container = service
         .containers

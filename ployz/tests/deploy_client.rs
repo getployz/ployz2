@@ -22,10 +22,10 @@ use ployz_core::{
     ContainerList, ContainerPath, ContainerRuntimeObservation, ContractDescription, DockerVolume,
     DockerVolumeId, DockerVolumeName, Domain, HealthObservation, Machine, MachineId, MachineImages,
     MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress,
-    MembershipObservation, OpaquePayload, OperationPhase, PROTOCOL_MAJOR, RequestedServiceSpec,
-    ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId,
-    ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder,
-    VolumeList, VolumeSource, WireGuardPublicKey,
+    MembershipObservation, OpaquePayload, OperationPhase, PROTOCOL_MAJOR, ProjectName,
+    RequestedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, UpdateOrder, VolumeList, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -41,7 +41,7 @@ async fn deploy_returns_success_for_a_completed_run() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(spec, skip_health()),
+            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), spec, skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -74,7 +74,7 @@ async fn deploy_returns_the_completed_prefix_failed_op_and_unexecuted_suffix() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(spec, skip_health()),
+            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), spec, skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -111,7 +111,11 @@ async fn deploy_surfaces_a_planning_error_instead_of_an_outcome() {
 
     let error = client
         .run(
-            DeployIntent::apply_one(spec("web"), skip_health()),
+            DeployIntent::apply_one(
+                ProjectName::parse("app").unwrap(),
+                spec("web"),
+                skip_health(),
+            ),
             &CancellationToken::new(),
             None,
         )
@@ -140,7 +144,11 @@ async fn preview_returns_operations_and_mutates_nothing() {
     let spec = spec("web");
 
     let preview = client
-        .preview(DeployIntent::apply_one(spec, skip_health()))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec,
+            skip_health(),
+        ))
         .await
         .unwrap();
 
@@ -165,7 +173,11 @@ async fn confirm_executes_the_previewed_operations_without_re_planning() {
     let mutating = service.mutating_rpcs();
     let listed = service.listed_containers();
     let (mut client, server) = connected(service).await;
-    let intent = DeployIntent::apply_one(spec.clone(), skip_health());
+    let intent = DeployIntent::apply_one(
+        ProjectName::parse("app").unwrap(),
+        spec.clone(),
+        skip_health(),
+    );
 
     let preview = client.preview(intent).await.unwrap();
     assert_eq!(mutating.load(Ordering::SeqCst), 0);
@@ -228,7 +240,11 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
     .unwrap();
 
     let preview = client
-        .preview(DeployIntent::apply_one(spec, skip_health()))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec,
+            skip_health(),
+        ))
         .await
         .unwrap();
 
@@ -283,7 +299,11 @@ async fn preview_surfaces_a_planning_error_instead_of_a_preview() {
     let (mut client, server) = connected(DeployService::empty()).await;
 
     let error = client
-        .preview(DeployIntent::apply_one(spec("web"), skip_health()))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
         .await
         .unwrap_err();
 
@@ -299,7 +319,11 @@ async fn confirm_emits_all_pending_before_any_machine_rpc() {
     let machine = machine('a', "one");
     let (mut client, server) = connected(DeployService::new(machine)).await;
     let preview = client
-        .preview(DeployIntent::apply_one(spec("web"), skip_health()))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
         .await
         .unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -330,6 +354,7 @@ async fn empty_apply_is_noop_and_confirm_succeeds_with_zero_operations() {
     let (mut client, server) = connected(DeployService::new(machine)).await;
     let preview = client
         .preview(DeployIntent::new(
+            ProjectName::parse("app").unwrap(),
             vec![spec("web")],
             Vec::new(),
             skip_health(),
@@ -358,7 +383,11 @@ async fn abort_during_health_wait_settles_a_cancelled_outcome() {
     let mut options = skip_health();
     options.skip_health_monitor = false;
     let preview = client
-        .preview(DeployIntent::apply_one(health_spec("web"), options))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            health_spec("web"),
+            options,
+        ))
         .await
         .unwrap();
     let cancel = CancellationToken::new();
@@ -408,7 +437,11 @@ async fn wait_phases_carry_elapsed_and_deadline_clocks() {
     let mut options = skip_health();
     options.skip_health_monitor = false;
     let preview = client
-        .preview(DeployIntent::apply_one(health_spec("web"), options))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            health_spec("web"),
+            options,
+        ))
         .await
         .unwrap();
     let cancel = CancellationToken::new();
@@ -685,6 +718,7 @@ impl MachineRpc for DeployService {
                     .first()
                     .map(|machine| machine.machine.id)
                     .unwrap_or_else(MachineId::random),
+                project_name: ProjectName::parse("app").unwrap(),
                 service_id: spec.service_id,
                 service_name: spec.name.clone(),
                 kind: ContainerKind::ServiceContainer,
@@ -931,6 +965,7 @@ fn running_container(
         display_name: format!("{}-1", spec.name),
         created_at_unix_nanos: 0,
         machine_id: machine.machine.id,
+        project_name: ProjectName::parse("app").unwrap(),
         service_id: resolved.service_id,
         service_name: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,

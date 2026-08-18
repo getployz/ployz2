@@ -2,11 +2,11 @@
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / about / runtime.watch / preview / run /
-//! remove_volumes / close.
+//! remove_volumes / dataLossIfMachineRemoved / removeMachine / close.
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
-use ployz_core::{DeployIntent, RemoveVolumesRequest, RpcError, RpcErrorCode};
+use ployz_core::{DataLoss, DeployIntent, RemoveVolumesRequest, RpcError, RpcErrorCode};
 
 /// npm package name.
 #[must_use]
@@ -110,6 +110,57 @@ impl Client {
             .await
             .map_err(rpc_to_napi)?;
         serde_json::to_value(&result).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Live Observation of Data Loss that removing `machine` would cause.
+    ///
+    /// Mutates nothing. Not a complete Cluster view.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when the session is
+    /// closed, `machine` is not a Machine Target, the Machine is not visible,
+    /// or this observer cannot list Docker Volumes on that Machine.
+    #[napi]
+    pub async fn data_loss_if_machine_removed(&self, machine: String) -> Result<serde_json::Value> {
+        let observed = self
+            .inner
+            .data_loss_if_machine_removed(&machine)
+            .await
+            .map_err(rpc_to_napi)?;
+        serde_json::to_value(&observed).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Remove `machine` after a named Data Loss confirmation.
+    ///
+    /// `confirm_data_loss` must name Data Loss identities, not a boolean and
+    /// not an ObservedDataLoss read.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `confirm_data_loss`
+    /// is not a Data Loss list, the session is closed, the Machine cannot be
+    /// removed, or the confirmation does not cover the fresh Data Loss.
+    #[napi]
+    pub async fn remove_machine(
+        &self,
+        machine: String,
+        confirm_data_loss: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let confirm_data_loss: Vec<DataLoss> =
+            serde_json::from_value(confirm_data_loss).map_err(|error| {
+                rpc_to_napi(RpcError {
+                    code: RpcErrorCode::InvalidArgument,
+                    message: error.to_string(),
+                    details: serde_json::Value::Null,
+                })
+            })?;
+        let removed = self
+            .inner
+            .remove_machine(&machine, &confirm_data_loss)
+            .await
+            .map_err(rpc_to_napi)?;
+        serde_json::to_value(&removed).map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.

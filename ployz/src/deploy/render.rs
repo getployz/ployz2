@@ -32,12 +32,20 @@ pub fn progress_text(event: &DeployEvent, title: &str) -> String {
 
 /// Tree plan plus footer. Empty operations are "No changes."
 #[must_use]
-pub fn plan_text(preview: &DeployPreview, context: &str) -> String {
+pub fn plan_text(preview: &DeployPreview, context: &str, project_source: Option<&str>) -> String {
     if preview.noop() {
         return "No changes.\n".into();
     }
     let mut out = String::from("Deployment plan\n");
     let _ = writeln!(out, "context: {context}");
+    match project_source {
+        Some(source) => {
+            let _ = writeln!(out, "project: {} ({source})", preview.project_name);
+        }
+        None => {
+            let _ = writeln!(out, "project: {}", preview.project_name);
+        }
+    }
     out.push_str(&service_trees(preview));
     out.push_str("──────────────────────────────────────────\n");
     out.push_str(&plan_footer(preview));
@@ -431,15 +439,17 @@ fn operation_label(operation: &DeployOperation) -> String {
 mod tests {
     use ployz_core::{
         ContainerId, DeployOperation, MachineId, MachineName, OperationRow, OperationStatus,
-        ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, ServiceName, UpdateOrder,
+        ProjectName, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, ServiceName,
+        UpdateOrder,
     };
 
     use super::*;
 
     #[test]
     fn empty_preview_prints_no_changes_without_a_prompt_body() {
-        let preview = DeployPreview::new(Vec::new(), Vec::new());
-        assert_eq!(plan_text(&preview, "default"), "No changes.\n");
+        let preview =
+            DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("app").unwrap());
+        assert_eq!(plan_text(&preview, "default", None), "No changes.\n");
         assert_eq!(
             confirm_prompt("default"),
             "Proceed with deployment to default? [y/N] "
@@ -463,9 +473,9 @@ mod tests {
             Some("excalidraw/fde7ac7f11ad".into()),
             Some(ServiceName::parse("excalidraw").unwrap()),
         );
-        let preview = DeployPreview::new(vec![row], Vec::new());
-        let text = plan_text(&preview, "default");
-        assert!(text.contains("Deployment plan\ncontext: default\n"));
+        let preview = DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("app").unwrap());
+        let text = plan_text(&preview, "default", None);
+        assert!(text.contains("Deployment plan\ncontext: default\nproject: app\n"));
         assert!(text.contains("~ update service excalidraw\n"));
         assert!(text.contains("  │   image: excalidraw/excalidraw:latest\n"));
         assert!(

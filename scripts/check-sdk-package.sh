@@ -90,6 +90,9 @@ if (!dts.includes("removeVolumes(")) {
 if (!dts.includes("RemoveVolumesRequest")) {
   throw new Error("index.d.ts is missing RemoveVolumesRequest");
 }
+if (!dts.includes("dataLossIfMachineRemoved(machine: MachineTarget): Promise<ObservedDataLoss>")) {
+  throw new Error("index.d.ts is missing dataLossIfMachineRemoved()");
+}
 if (!dts.includes("close(): Promise<void>")) {
   throw new Error("index.d.ts is missing close()");
 }
@@ -118,6 +121,9 @@ if (typeof sdk.applyAll !== "function" || typeof sdk.applyOne !== "function") {
 }
 if (typeof sdk.Client.prototype.removeVolumes !== "function") {
   throw new Error("Client.removeVolumes must be a method");
+}
+if (typeof sdk.Client.prototype.dataLossIfMachineRemoved !== "function") {
+  throw new Error("Client.dataLossIfMachineRemoved must be a method");
 }
 
 async function expectRpc(fn, code) {

@@ -1,4 +1,5 @@
-//! Relay-only Cloud session: connect, about, runtime.watch, preview, run, close.
+//! Relay-only Cloud session: connect, about, runtime.watch, preview, run,
+//! remove_volumes, Data Loss for Machine removal, remove_machine, and close.
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,9 +11,10 @@ use tokio_util::sync::CancellationToken;
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
 use crate::deploy::{DeployError, DeployIntent, DeployPreview};
 use ployz_core::{
-    ContractDescription, DeployEvent, DeployOutcome, DescribeContractRequest, DockerVolumeName,
-    ExecutionError, MachineId, OpaquePayload, PartialResult, RUNTIME_WATCH_CAPABILITY,
-    RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
+    ContractDescription, DataLoss, DeployEvent, DeployOutcome, DescribeContractRequest,
+    DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
+    ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest,
+    RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
 };
 
 struct SessionInner {
@@ -200,6 +202,50 @@ impl Session {
     ) -> Result<PartialResult<DockerVolumeName, RpcError>, RpcError> {
         let mut client = self.client().await?;
         client.remove_volumes(request).await
+    }
+
+    /// Live Observation of Data Loss that removing `machine` would cause.
+    ///
+    /// `machine` is a Machine Target. This is not a complete Cluster view.
+    /// Mutates nothing: it is safe to call when the operator then cancels.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine`
+    /// is not a Machine Target, the Machine is not visible or is ambiguous, or
+    /// this observer cannot list Docker Volumes on that Machine.
+    pub async fn data_loss_if_machine_removed(
+        &self,
+        machine: &str,
+    ) -> Result<ObservedDataLoss, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client().await?;
+        client.data_loss_if_machine_removed(&target).await
+    }
+
+    /// Remove `machine` after a named Data Loss confirmation.
+    ///
+    /// `confirm_data_loss` is the identities the caller showed a human. It is
+    /// not a boolean, auto-confirm flag, or echo of an [`ObservedDataLoss`]
+    /// read. Re-reads Data Loss at execute time.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine`
+    /// is not a Machine Target, the Machine is not visible or is the current
+    /// entry while another Machine is visible, the confirmation does not cover
+    /// the fresh Data Loss, or reset or shared-row removal fails. Unconfirmed
+    /// names are in `UnconfirmedDataLoss` details.
+    pub async fn remove_machine(
+        &self,
+        machine: &str,
+        confirm_data_loss: &[DataLoss],
+    ) -> Result<LocalMachineRemoved, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client().await?;
+        client.remove_machine(&target, confirm_data_loss).await
     }
 
     /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.

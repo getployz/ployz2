@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, sync::Mutex};
 
 use ployz_core::{
-    ContainerRuntimeObservation, DockerVolumeName, HealthFailure, HealthObservation,
+    ContainerRuntimeObservation, DockerVolumeName, HealthFailure, HealthObservation, ProjectName,
     ServiceVolumeReference, VolumeSource,
 };
 
@@ -9,6 +9,18 @@ use crate::deploy::{DeployOutcome, FailedOperation};
 
 use super::health::parse_monitor_period;
 use super::*;
+
+fn test_project() -> ProjectName {
+    ProjectName::parse("app").unwrap()
+}
+
+async fn execute_with<C: MachineOperations>(
+    plan: &DeployPlan,
+    client: &C,
+    cancellation: &CancellationToken,
+) -> DeployOutcome<ExecutionError> {
+    super::execute_with(plan, client, cancellation, &test_project()).await
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Call {
@@ -75,6 +87,7 @@ impl MachineOperations for Scripted {
         &self,
         machine_id: &MachineId,
         kind: ContainerKind,
+        _project_name: &ProjectName,
         _spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, RpcError> {
         match self.next(Call::Create(*machine_id, kind)) {
@@ -275,6 +288,7 @@ fn observation(
         display_name: container_id.to_string(),
         created_at_unix_nanos: 0,
         machine_id: *machine_id,
+        project_name: test_project(),
         service_id: spec.service_id,
         service_name: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,

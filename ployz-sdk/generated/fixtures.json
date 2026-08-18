@@ -67,6 +67,12 @@
     "machine_id": "0123456789abcdef0123456789abcdef",
     "protocol_major": 1
   },
+  "data_loss": {
+    "DockerVolume": {
+      "machine_id": "0123456789abcdef0123456789abcdef",
+      "name": "data"
+    }
+  },
   "deploy_event_progress": {
     "completed": 0,
     "rows": [
@@ -96,6 +102,7 @@
       "placement_seed": 0,
       "skip_health_monitor": false
     },
+    "project_name": "app",
     "target": []
   },
   "deploy_outcome": {
@@ -175,6 +182,7 @@
         }
       }
     ],
+    "project_name": "app",
     "warnings": [
       {
         "ObservationFailed": {
@@ -213,6 +221,7 @@
         }
       }
     ],
+    "project_name": "app",
     "warnings": [
       {
         "ObservationFailed": {
@@ -260,7 +269,24 @@
     "quota_bytes": 1
   },
   "health_observation_unknown": "degraded",
+  "local_machine_removed": {},
+  "local_machine_removed_reset_warning": {
+    "reset_warning": "replicated delete failed"
+  },
   "membership_observation_unknown": "future_membership",
+  "observed_data_loss": {
+    "data_loss": [
+      {
+        "DockerVolume": {
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "name": "data"
+        }
+      }
+    ]
+  },
+  "observed_data_loss_empty": {
+    "data_loss": []
+  },
   "partial_result": {
     "failures": [
       {
@@ -386,6 +412,7 @@
         "kind": "service_container",
         "labels": {},
         "machine_id": "0123456789abcdef0123456789abcdef",
+        "project_name": "app",
         "resolved_spec": {
           "caddy_config": null,
           "configs": [],
@@ -540,6 +567,7 @@
             "kind": "service_container",
             "labels": {},
             "machine_id": "0123456789abcdef0123456789abcdef",
+            "project_name": "app",
             "resolved_spec": {
               "caddy_config": null,
               "configs": [],
@@ -649,6 +677,7 @@
         "kind": "service_container",
         "labels": {},
         "machine_id": "0123456789abcdef0123456789abcdef",
+        "project_name": "app",
         "resolved_spec": {
           "caddy_config": null,
           "configs": [],
@@ -806,6 +835,7 @@
             "kind": "service_container",
             "labels": {},
             "machine_id": "0123456789abcdef0123456789abcdef",
+            "project_name": "app",
             "resolved_spec": {
               "caddy_config": null,
               "configs": [],
@@ -890,5 +920,15 @@
   },
   "service_attempt": {
     "name": "web"
+  },
+  "unconfirmed_data_loss": {
+    "missing": [
+      {
+        "DockerVolume": {
+          "machine_id": "0123456789abcdef0123456789abcdef",
+          "name": "data"
+        }
+      }
+    ]
   }
 }

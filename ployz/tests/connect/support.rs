@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     net::{Ipv6Addr, SocketAddr},
     path::PathBuf,
     process::Command,
@@ -17,10 +17,11 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContractDescription, DockerVolume,
-    DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineList, MachineName,
-    MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
-    OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RuntimeWatchFrame, RuntimeWatchRequest, VolumeList, VolumeRemoved, WireGuardPublicKey, op,
+    DockerVolumeId, DockerVolumeName, LocalMachineRemoved, Machine, MachineId, MachineList,
+    MachineName, MachineObservation, MachineRemoved, MachineRpc, MachineRpcServer,
+    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RemoveMachineRequest,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
+    VolumeList, VolumeRemoved, WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -131,6 +132,10 @@ pub(super) struct DiscoveryService {
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
     watch: Arc<WatchHub>,
     pub(super) machines: Vec<MachineObservation>,
+    pub(super) listed_volumes: Arc<Mutex<BTreeMap<MachineId, Vec<DockerVolume>>>>,
+    pub(super) reset_warning: Arc<Mutex<Option<String>>>,
+    pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
+    pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
 }
 
 impl DiscoveryService {
@@ -144,6 +149,10 @@ impl DiscoveryService {
             watch_requests: Arc::new(Mutex::new(Vec::new())),
             watch: Arc::new(WatchHub::new()),
             machines: vec![machine('a', "one")],
+            listed_volumes: Arc::new(Mutex::new(BTreeMap::new())),
+            reset_warning: Arc::new(Mutex::new(None)),
+            reset_machines: Arc::new(Mutex::new(Vec::new())),
+            removed_machines: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -320,6 +329,15 @@ impl MachineRpc for DiscoveryService {
             MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
         let request = request.into_inner().decode_request().unwrap();
         assert!(matches!(request.body, RpcRequestBody::ListVolumes(_)));
+        if let Some(volumes) = self.listed_volumes.lock().unwrap().get(&machine_id) {
+            return Ok(Response::new(
+                RpcResponse::from(VolumeList {
+                    volumes: volumes.clone(),
+                })
+                .encode()
+                .unwrap(),
+            ));
+        }
         let response = if machine_id.as_str().starts_with('b') {
             RpcResponse::from(RpcError {
                 code: RpcErrorCode::Unavailable,
@@ -533,16 +551,38 @@ impl MachineRpc for DiscoveryService {
 
     async fn remove_local_machine(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let machine_id =
+            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        let request = request.into_inner().decode_request().unwrap();
+        assert!(matches!(
+            request.body,
+            RpcRequestBody::RemoveLocalMachine(_)
+        ));
+        self.reset_machines.lock().unwrap().push(machine_id);
+        Ok(Response::new(
+            RpcResponse::from(LocalMachineRemoved {
+                reset_warning: self.reset_warning.lock().unwrap().clone(),
+            })
+            .encode()
+            .unwrap(),
+        ))
     }
 
     async fn remove_machine(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let request = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::RemoveMachine(RemoveMachineRequest { machine_id }) = request.body
+        else {
+            return Err(Status::invalid_argument("expected remove_machine"));
+        };
+        self.removed_machines.lock().unwrap().push(machine_id);
+        Ok(Response::new(
+            RpcResponse::from(MachineRemoved {}).encode().unwrap(),
+        ))
     }
 
     async fn inspect_wireguard(

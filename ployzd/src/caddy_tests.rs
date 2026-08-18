@@ -471,6 +471,35 @@ api.example { reverse_proxy 10.210.1.2 }"
 }
 
 #[tokio::test]
+async fn user_project_caddy_does_not_supply_global_config() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let mut user = custom_observation(2, 9, &local, "caddy", "{\n\tadmin off\n}", [10, 210, 1, 9]);
+    user.project_name = ployz_core::ProjectName::parse("shop").unwrap();
+    let observations = vec![
+        reserved(observation(
+            1,
+            &local,
+            "caddy",
+            Some([10, 210, 1, 1]),
+            Vec::new(),
+        )),
+        user,
+    ];
+
+    let caddyfile = generate_caddyfile(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        &BTreeMap::new(),
+        Some(&FakeAdmin::default()),
+    )
+    .await;
+
+    assert!(!caddyfile.contains("User-defined global config from Service 'caddy'"));
+}
+
+#[tokio::test]
 async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let remote = MachineId::parse("b".repeat(32)).unwrap();
@@ -484,14 +513,14 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
     );
     external.address = None;
     let observations = vec![
-        custom_observation(
+        reserved(custom_observation(
             1,
             1,
             &local,
             "caddy",
             "{\n\tadmin unix/{{upstreams \"api\"}}\n}",
             [10, 210, 1, 1],
-        ),
+        )),
         custom_observation(
             2,
             1,
@@ -604,14 +633,14 @@ async fn unavailable_caddy_omits_every_custom_config() {
 async fn broken_global_template_does_not_hide_valid_service_configs() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let observations = [
-        custom_observation(
+        reserved(custom_observation(
             1,
             1,
             &local,
             "caddy",
             "{{unknown\ninjected.example { respond owned }\n}}",
             [10, 210, 1, 1],
-        ),
+        )),
         custom_observation(
             2,
             1,
@@ -792,6 +821,11 @@ fn ingress(hostname: &str, port: u16, http_protocol: HttpProtocol) -> PortPublic
     }
 }
 
+fn reserved(mut observation: ContainerObservation) -> ContainerObservation {
+    observation.project_name = ployz_core::ProjectName::system();
+    observation
+}
+
 fn observation(
     suffix: u8,
     machine_id: &MachineId,
@@ -814,6 +848,7 @@ fn observation(
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: *machine_id,
+        project_name: ployz_core::ProjectName::parse("app").unwrap(),
         service_id,
         service_name,
         kind: ContainerKind::ServiceContainer,

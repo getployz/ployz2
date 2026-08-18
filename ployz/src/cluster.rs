@@ -2,13 +2,15 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    CreateContainerRequest, DescribeContractRequest, DockerVolume, DockerVolumeName, FanoutOutcome,
-    FanoutResponse, FanoutSelector, GetDomainRequest, ListContainersRequest, ListImagesRequest,
-    ListMachinesRequest, ListVolumesRequest, LiveServices, MachineFailure, MachineId,
-    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
-    MachineTarget, OpaquePayload, PartialResult, RemoveContainerRequest, RemoveVolumeRequest,
-    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
-    StartContainerRequest, StopContainerRequest, apply_many_targets, derive_live_services, op,
+    CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume, DockerVolumeName,
+    FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest, ListContainersRequest,
+    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
+    MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
+    ProjectName, RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
+    RpcResponseBody, StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss,
+    apply_many_targets, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -284,6 +286,95 @@ impl Client {
         Ok(remove_volumes_on(self, &machines.machines, request).await)
     }
 
+    /// Live Observation of Data Loss that removing `machine` would cause.
+    ///
+    /// This is not a complete Cluster view. Mutates nothing: it is safe to
+    /// call when the operator then cancels.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the Machine is not visible or is
+    /// ambiguous, or when this observer cannot list Docker Volumes on that
+    /// Machine.
+    pub async fn data_loss_if_machine_removed(
+        &mut self,
+        machine: &MachineTarget,
+    ) -> Result<ObservedDataLoss, RpcError> {
+        let machines = self.machines().await.map_err(RpcError::from)?;
+        let observation = visible_machine(machine, &machines)?;
+        data_loss_on_machine(self.clone(), observation).await
+    }
+
+    /// Remove `machine` after a named Data Loss confirmation.
+    ///
+    /// Re-reads Data Loss at execute time. Fresh names the confirmation does
+    /// not cover refuse the removal. Extra confirmed names are ignored.
+    /// Resets the Machine. A reset warning is returned, not swallowed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the Machine is not visible or is
+    /// the current entry while another Machine is visible, when this observer
+    /// cannot list Docker Volumes on that Machine, when the confirmation does
+    /// not cover the fresh Data Loss, or when reset or shared-row removal
+    /// fails.
+    pub async fn remove_machine(
+        &mut self,
+        machine: &MachineTarget,
+        confirm_data_loss: &[DataLoss],
+    ) -> Result<LocalMachineRemoved, RpcError> {
+        let machines = self.machines().await.map_err(RpcError::from)?;
+        let observation = visible_machine(machine, &machines)?;
+        let selected = observation.machine.id;
+        let current = self
+            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .await
+            .map_err(RpcError::from)?
+            .machine_id;
+        if selected == current && machines.len() > 1 {
+            return Err(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message:
+                    "the current entry Machine cannot be removed while another Machine is visible"
+                        .into(),
+                details: Value::Null,
+            });
+        }
+        let missing = data_loss_on_machine(self.clone(), observation)
+            .await?
+            .uncovered_by(confirm_data_loss);
+        if !missing.is_empty() {
+            return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
+        }
+        let selected_target = MachineTarget::from(&selected);
+        let reset_warning = match self
+            .call::<op::RemoveLocalMachine>(
+                RemoveLocalMachineRequest {
+                    restart_on_cleanup_failure: selected != current,
+                },
+                Some(&selected_target),
+            )
+            .await
+        {
+            Ok(removed) => removed.reset_warning,
+            Err(error) if error.is_unreachable() => Some(format!(
+                "target is unreachable; removing shared rows: {error}"
+            )),
+            Err(error) => return Err(error.into()),
+        };
+        if reset_warning.is_some() || selected != current {
+            self.call::<op::RemoveMachine>(
+                RemoveMachineRequest {
+                    machine_id: selected,
+                },
+                None,
+            )
+            .await
+            .map_err(RpcError::from)?;
+        }
+        Ok(LocalMachineRemoved { reset_warning })
+    }
+
     pub async fn list_images(
         &self,
         reference: Option<String>,
@@ -413,11 +504,13 @@ impl Client {
         &self,
         machine_id: MachineId,
         kind: ContainerKind,
+        project_name: ProjectName,
         resolved_spec: ResolvedServiceSpec,
     ) -> Result<ContainerCreated, RpcError> {
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
                 kind,
+                project_name,
                 resolved_spec,
             },
             &MachineTarget::from(&machine_id),
@@ -591,6 +684,66 @@ async fn remove_volumes_on(
         }
     }
     result
+}
+
+fn visible_machine<'list>(
+    machine: &MachineTarget,
+    machines: &'list [MachineObservation],
+) -> Result<&'list MachineObservation, RpcError> {
+    let selected = match machine.resolve(machines.iter().map(|entry| &entry.machine)) {
+        NameMatches::None => {
+            return Err(RpcError {
+                code: RpcErrorCode::NotFound,
+                message: format!("Machine {machine:?} was not found"),
+                details: Value::Null,
+            });
+        }
+        NameMatches::Ambiguous(matches) => {
+            return Err(RpcError {
+                code: RpcErrorCode::Ambiguous,
+                message: format!(
+                    "Machine name {machine:?} is ambiguous: {}",
+                    matches
+                        .into_iter()
+                        .map(|row| row.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                details: Value::Null,
+            });
+        }
+        NameMatches::One(row) => row.id,
+    };
+    Ok(machines
+        .iter()
+        .find(|entry| entry.machine.id == selected)
+        .expect("resolved Machine came from this list"))
+}
+
+async fn data_loss_on_machine(
+    client: Client,
+    observation: &MachineObservation,
+) -> Result<ObservedDataLoss, RpcError> {
+    let selected = observation.machine.id;
+    if !observation.membership.invites_rpc() {
+        return Err(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: format!(
+                "Machine {selected} did not produce a Volume listing from this observer"
+            ),
+            details: Value::Null,
+        });
+    }
+    let volumes = list_volumes_on_machine(client, selected)
+        .await
+        .map_err(|failure| failure.error)?;
+    Ok(ObservedDataLoss {
+        data_loss: volumes
+            .value
+            .into_iter()
+            .map(|volume| DataLoss::DockerVolume(volume.id))
+            .collect(),
+    })
 }
 
 async fn list_volumes_on_machine(

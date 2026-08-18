@@ -24,6 +24,8 @@ export type ServiceId = string & { readonly __brand: "ServiceId" };
 
 export type ServiceName = string & { readonly __brand: "ServiceName" };
 
+export type ProjectName = string & { readonly __brand: "ProjectName" };
+
 export type MachineName = string;
 
 export type MachineSubnet = string;
@@ -231,6 +233,21 @@ export type RemoveVolumesRequest = Additive<{
   force?: boolean;
 }>;
 
+export type DataLoss =
+  | Additive<{ DockerVolume: DockerVolumeId }>;
+
+export type ObservedDataLoss = Additive<{
+  data_loss: DataLoss[];
+}>;
+
+export type UnconfirmedDataLoss = Additive<{
+  missing: DataLoss[];
+}>;
+
+export type LocalMachineRemoved = Additive<{
+  reset_warning?: string;
+}>;
+
 export type ContractDescription = Additive<{
   machine_id: MachineId;
   protocol_major: number;
@@ -281,6 +298,7 @@ export type ServiceAttempt = Additive<{
 }>;
 
 export type DeployIntent = Additive<{
+  project_name: ProjectName;
   target: RequestedServiceSpec[];
   apply: ServiceAttempt[];
   options: PlanOptions;
@@ -294,6 +312,7 @@ export type DeployWarning =
   | Additive<{ IngressHostname: string }>;
 
 export type DeployPreview = Additive<{
+  project_name: ProjectName;
   operations: OperationRow[];
   warnings: DeployWarning[];
 }>;
@@ -426,6 +445,7 @@ export type ContainerObservation = Additive<{
   display_name: string;
   created_at_unix_nanos: number;
   machine_id: MachineId;
+  project_name: ProjectName;
   service_id: ServiceId;
   service_name: ServiceName;
   kind: ContainerKind;

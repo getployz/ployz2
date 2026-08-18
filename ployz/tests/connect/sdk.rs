@@ -6,7 +6,7 @@ use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz::sdk;
 use ployz_core::{
     CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployOperation,
-    DeployOutcome, ExecutionError, FailedOperation, MachineId, PROTOCOL_MAJOR,
+    DeployOutcome, ExecutionError, FailedOperation, MachineId, PROTOCOL_MAJOR, ProjectName,
     RequestedServiceSpec, RpcErrorCode,
 };
 use tokio::time::timeout;
@@ -151,7 +151,14 @@ async fn deploy_returns_success_for_a_completed_run() {
         .unwrap();
 
     let outcome = client
-        .run(DeployIntent::apply_one(spec("web"), skip_health()), None)
+        .run(
+            DeployIntent::apply_one(
+                ProjectName::parse("app").unwrap(),
+                spec("web"),
+                skip_health(),
+            ),
+            None,
+        )
         .await
         .unwrap();
 
@@ -188,7 +195,11 @@ async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
         .unwrap();
     let outcome = client
         .run(
-            DeployIntent::apply_one(spec_with_volume("web", "scratch"), skip_health()),
+            DeployIntent::apply_one(
+                ProjectName::parse("app").unwrap(),
+                spec_with_volume("web", "scratch"),
+                skip_health(),
+            ),
             None,
         )
         .await
@@ -240,7 +251,14 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
         .unwrap();
 
     let error = client
-        .run(DeployIntent::apply_one(spec("web"), skip_health()), None)
+        .run(
+            DeployIntent::apply_one(
+                ProjectName::parse("app").unwrap(),
+                spec("web"),
+                skip_health(),
+            ),
+            None,
+        )
         .await
         .unwrap_err();
 
@@ -270,7 +288,11 @@ async fn preview_planning_error_is_a_typed_rpc_error() {
         .unwrap();
 
     let error = client
-        .preview(DeployIntent::apply_one(spec("web"), skip_health()))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
         .await
         .unwrap_err();
 
@@ -297,7 +319,11 @@ async fn preview_then_confirm_executes_the_shown_plan() {
     let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
         .await
         .unwrap();
-    let intent = DeployIntent::apply_one(spec("web"), skip_health());
+    let intent = DeployIntent::apply_one(
+        ProjectName::parse("app").unwrap(),
+        spec("web"),
+        skip_health(),
+    );
 
     let preview = client.preview(intent).await.unwrap();
     assert_eq!(preview.operations.len(), 1);
@@ -337,7 +363,11 @@ async fn confirm_after_close_fails_closed() {
         .await
         .unwrap();
     let preview = client
-        .preview(DeployIntent::apply_one(spec("web"), skip_health()))
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
         .await
         .unwrap();
     client.close().await;
@@ -393,7 +423,7 @@ async fn node_smoke_covers_connect_about_preview_run_and_close() {
     );
 }
 
-fn advertised_description() -> ContractDescription {
+pub(super) fn advertised_description() -> ContractDescription {
     ContractDescription {
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         protocol_major: PROTOCOL_MAJOR,

@@ -11,7 +11,7 @@ use super::{
     ContainerRuntimeObservation, HealthObservation, RequestedServiceSpec, ResolvedServiceSpec,
     ServiceVolume,
 };
-use crate::{ContainerId, MachineId, MachineName, RpcError, ServiceName};
+use crate::{ContainerId, MachineId, MachineName, ProjectName, RpcError, ServiceName};
 use thiserror::Error;
 
 /// Planner knobs for one Deploy.
@@ -35,6 +35,8 @@ pub struct ServiceAttempt {
 /// Complete desired Services plus which of those Services this command applies.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeployIntent {
+    /// Project that will own Containers this Deploy creates.
+    pub project_name: ProjectName,
     /// Complete desired Services for this Cluster.
     pub target: Vec<RequestedServiceSpec>,
     /// Service Attempts this command applies. Empty means apply nothing.
@@ -53,11 +55,13 @@ impl DeployIntent {
     /// `target` are not planned; they are not a prune.
     #[must_use]
     pub fn new(
+        project_name: ProjectName,
         target: Vec<RequestedServiceSpec>,
         apply: Vec<ServiceAttempt>,
         options: PlanOptions,
     ) -> Self {
         Self {
+            project_name,
             target,
             apply,
             options,
@@ -68,6 +72,7 @@ impl DeployIntent {
     /// Target and apply set from every spec, in that order.
     #[must_use]
     pub fn apply_all<'a>(
+        project_name: ProjectName,
         specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
         options: PlanOptions,
     ) -> Self {
@@ -78,21 +83,26 @@ impl DeployIntent {
                 name: spec.name.clone(),
             })
             .collect();
-        Self::new(target, apply, options)
+        Self::new(project_name, target, apply, options)
     }
 
     /// One-spec target with apply set to that name.
     #[must_use]
-    pub fn apply_one(spec: RequestedServiceSpec, options: PlanOptions) -> Self {
+    pub fn apply_one(
+        project_name: ProjectName,
+        spec: RequestedServiceSpec,
+        options: PlanOptions,
+    ) -> Self {
         let apply = vec![ServiceAttempt {
             name: spec.name.clone(),
         }];
-        Self::new(vec![spec], apply, options)
+        Self::new(project_name, vec![spec], apply, options)
     }
 
     /// Target from every loaded spec; `apply` is this command's Service Attempts.
     #[must_use]
     pub fn from_named_specs(
+        project_name: ProjectName,
         services: &BTreeMap<String, RequestedServiceSpec>,
         dependencies: &BTreeMap<String, Vec<String>>,
         apply: Vec<ServiceAttempt>,
@@ -109,8 +119,13 @@ impl DeployIntent {
                 ))
             })
             .collect();
-        Self::new(services.values().cloned().collect(), apply, options)
-            .with_dependencies(dependencies)
+        Self::new(
+            project_name,
+            services.values().cloned().collect(),
+            apply,
+            options,
+        )
+        .with_dependencies(dependencies)
     }
 
     /// `depends_on` edges used to expand and order `apply` inside the planner.
@@ -246,6 +261,8 @@ pub enum DeployOperation {
 /// these operations; it does not re-plan.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeployPreview {
+    /// Project this preview was planned for. Confirm uses this name; it does not re-plan.
+    pub project_name: ProjectName,
     /// Pending rows for the operations this snapshot would execute.
     pub operations: Vec<OperationRow>,
     /// Observer-relative warnings for this snapshot, including ingress DNS misses.
@@ -255,8 +272,13 @@ pub struct DeployPreview {
 impl DeployPreview {
     /// Plan rows plus observer-relative warnings. `noop` is empty operations.
     #[must_use]
-    pub fn new(operations: Vec<OperationRow>, warnings: Vec<DeployWarning>) -> Self {
+    pub fn new(
+        operations: Vec<OperationRow>,
+        warnings: Vec<DeployWarning>,
+        project_name: ProjectName,
+    ) -> Self {
         Self {
+            project_name,
             operations,
             warnings,
         }

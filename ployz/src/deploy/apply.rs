@@ -3,13 +3,14 @@ use std::{
     num::NonZeroU32,
 };
 
-use ployz_core::{DeployEvent, RequestedServiceSpec, ServiceSelector};
+use ployz_core::{DeployEvent, ProjectName, RequestedServiceSpec, ServiceSelector};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     compose::{BuildService, ComposeProject},
     connect::Client,
     failure::Failure,
+    project::ResolvedProject,
 };
 
 use super::{
@@ -26,17 +27,24 @@ pub(crate) async fn deploy_spec(
     requested: &RequestedServiceSpec,
     force_recreate: bool,
     skip_health_monitor: bool,
+    project_name: &ProjectName,
     context: &str,
+    project: Option<&ResolvedProject>,
 ) -> Result<(), Failure> {
     let preview = plan_spec(
         client,
         requested,
         plan_options(force_recreate, skip_health_monitor),
+        project_name,
     )
     .await?;
     print_warnings(&preview);
     if preview.noop() {
-        print!("{}", render::plan_text(&preview, context));
+        let source = project.map(|project| project.source.to_string());
+        print!(
+            "{}",
+            render::plan_text(&preview, context, source.as_deref())
+        );
         return Ok(());
     }
     finish(
@@ -53,12 +61,22 @@ pub(crate) async fn apply_requested(
     client: &mut Client,
     requested: &RequestedServiceSpec,
 ) -> Result<(), Failure> {
-    deploy_spec(client, requested, false, false, "default").await
+    deploy_spec(
+        client,
+        requested,
+        false,
+        false,
+        &ProjectName::system(),
+        "default",
+        None,
+    )
+    .await
 }
 
 pub(crate) struct ConfirmGate<'a> {
     pub auto_confirm: bool,
     pub context: &'a str,
+    pub project: &'a ResolvedProject,
 }
 
 pub(crate) async fn deploy_project(
@@ -80,7 +98,15 @@ pub(crate) async fn deploy_project(
             outcome.failures.join("; ")
         )));
     }
-    let preview = plan_project(client, project, machines, apply, options).await?;
+    let preview = plan_project(
+        client,
+        project,
+        machines,
+        apply,
+        options,
+        &gate.project.name,
+    )
+    .await?;
     print_warnings(&preview);
     confirm_and_execute(client, &preview, gate).await
 }
@@ -97,6 +123,7 @@ pub(crate) async fn deploy_scale(
         selector,
         replicas,
         plan_options(false, skip_health_monitor),
+        &gate.project.name,
     )
     .await?;
     print_warnings(&preview);
@@ -108,7 +135,11 @@ async fn confirm_and_execute(
     preview: &DeployPreview,
     gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
-    print!("{}", render::plan_text(preview, gate.context));
+    let source = Some(gate.project.source.to_string());
+    print!(
+        "{}",
+        render::plan_text(preview, gate.context, source.as_deref())
+    );
     if preview.noop() {
         return Ok(());
     }
@@ -281,6 +312,7 @@ mod tests {
             .into_iter()
             .map(DeployWarning::from)
             .collect(),
+            ProjectName::parse("app").unwrap(),
         );
         assert_eq!(
             preview

@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
-    ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployIntent,
-    DeployOutcome, DeployPreview, DockerVolume, ExecutionError, HealthObservation,
-    MembershipObservation, PlanOptions, RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode,
-    RuntimeWatchFrame, ServiceAttempt,
+    ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss,
+    DeployIntent, DeployOutcome, DeployPreview, DockerVolume, ExecutionError, HealthObservation,
+    LocalMachineRemoved, MembershipObservation, ObservedDataLoss, PlanOptions,
+    RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode, RuntimeWatchFrame, ServiceAttempt,
+    UnconfirmedDataLoss,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -96,6 +97,39 @@ fn json_fixtures_round_trip_through_rust_types() {
         *fixture(&fixtures, "remove_volumes_request")
     );
 
+    let loss: DataLoss = decode_fixture(fixture(&fixtures, "data_loss"));
+    assert!(matches!(loss, DataLoss::DockerVolume(_)));
+    assert_eq!(
+        serde_json::to_value(&loss).unwrap(),
+        *fixture(&fixtures, "data_loss")
+    );
+
+    let observed: ObservedDataLoss = decode_fixture(fixture(&fixtures, "observed_data_loss"));
+    assert_eq!(observed.data_loss.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&observed).unwrap(),
+        *fixture(&fixtures, "observed_data_loss")
+    );
+    let empty: ObservedDataLoss = decode_fixture(fixture(&fixtures, "observed_data_loss_empty"));
+    assert!(empty.data_loss.is_empty());
+
+    let unconfirmed: UnconfirmedDataLoss =
+        decode_fixture(fixture(&fixtures, "unconfirmed_data_loss"));
+    assert_eq!(unconfirmed.missing.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&unconfirmed).unwrap(),
+        *fixture(&fixtures, "unconfirmed_data_loss")
+    );
+
+    let removed: LocalMachineRemoved = decode_fixture(fixture(&fixtures, "local_machine_removed"));
+    assert!(removed.reset_warning.is_none());
+    let warned: LocalMachineRemoved =
+        decode_fixture(fixture(&fixtures, "local_machine_removed_reset_warning"));
+    assert_eq!(
+        warned.reset_warning.as_deref(),
+        Some("replicated delete failed")
+    );
+
     let encoded = fixture(&fixtures, "partial_result");
     let successes = encoded
         .get("successes")
@@ -128,6 +162,7 @@ fn json_fixtures_round_trip_through_rust_types() {
     assert_eq!(error.code.as_str(), "unsupported");
 
     let intent: DeployIntent = decode_fixture(fixture(&fixtures, "deploy_intent"));
+    assert_eq!(intent.project_name.as_str(), "app");
     assert!(intent.target.is_empty());
     assert!(intent.apply.is_empty());
     assert_eq!(intent.options, PlanOptions::default());
@@ -214,6 +249,12 @@ fn json_fixtures_round_trip_through_rust_types() {
     );
     assert_eq!(frame.machines.len(), 1);
     assert_eq!(frame.containers.len(), 1);
+    let container = frame
+        .containers
+        .first()
+        .expect("runtime_watch_frame fixture has one Container");
+    assert_eq!(container.project_name.as_str(), "app");
+    assert_eq!(container.service_name.as_str(), "api");
     assert_eq!(frame.services.len(), 1);
     assert_eq!(frame.certificates.len(), 2);
     assert_eq!(
@@ -332,8 +373,20 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("| (string & {});"));
     assert!(dts.contains("export type ContainerRuntimeObservation ="));
     assert!(dts.contains("state?: string"));
+    assert!(dts.contains("export type DockerVolume = Additive<{"));
+    assert!(dts.contains("export type DataLoss ="));
+    assert!(dts.contains("DockerVolume: DockerVolumeId"));
+    assert!(dts.contains("export type ObservedDataLoss = Additive<{"));
+    assert!(dts.contains("data_loss: DataLoss[]"));
+    assert!(dts.contains("export type UnconfirmedDataLoss = Additive<{"));
+    assert!(dts.contains("missing: DataLoss[]"));
+    assert!(dts.contains("export type LocalMachineRemoved = Additive<{"));
+    assert!(dts.contains("reset_warning?: string"));
+    assert!(dts.contains("export type MachineTarget = string"));
     assert!(dts.contains("export type ContractDescription = Additive<{"));
+    assert!(dts.contains("readonly __brand: \"ProjectName\""));
     assert!(dts.contains("export type DeployIntent = Additive<{"));
+    assert!(dts.contains("project_name: ProjectName"));
     assert!(dts.contains("target: RequestedServiceSpec[]"));
     assert!(dts.contains("export type RequestedServiceSpec = Additive<{"));
     assert!(dts.contains("export type ResolvedServiceSpec = Additive<{"));
@@ -420,6 +473,10 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("PartialResult"));
     assert!(dts.contains("RemoveVolumesRequest"));
     assert!(dts.contains("RpcError"));
+    assert!(dts.contains("MachineTarget"));
+    assert!(dts.contains("ObservedDataLoss"));
+    assert!(dts.contains("DataLoss"));
+    assert!(dts.contains("LocalMachineRemoved"));
     assert!(dts.contains("RuntimeWatchFrame"));
     assert!(dts.contains("export * from \"./generated/payloads\""));
     assert!(dts.contains("export declare function connect"));
@@ -439,6 +496,14 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("removeVolumes("));
     assert!(dts.contains("RemoveVolumesRequest"));
     assert!(dts.contains("PartialResult<DockerVolumeName, RpcError>"));
+    assert!(
+        dts.contains("dataLossIfMachineRemoved(machine: MachineTarget): Promise<ObservedDataLoss>")
+    );
+    assert!(dts.contains("removeMachine("));
+    assert!(dts.contains("confirmDataLoss: DataLoss[]"));
+    assert!(dts.contains("Promise<LocalMachineRemoved>"));
+    assert!(!dts.contains("confirmAll"));
+    assert!(!dts.contains("removeMachine(machine: MachineTarget):"));
     assert!(dts.contains("close(): Promise<void>"));
     assert!(!dts.contains("connectSsh"));
     assert!(!dts.contains("connectTcp"));

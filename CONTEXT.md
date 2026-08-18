@@ -61,7 +61,7 @@ One Service Name this Deploy will apply from the target. Attempts are implicitly
 _Avoid_: selected-service list as a prune flag
 
 **Service Container**:
-A managed Docker container carrying the Resolved Service Spec from its creation. It is one observed instance of a Service, not a replica identity or the canonical Service definition.
+A managed Docker container carrying the Resolved Service Spec from its creation and the Project that owns it. It is one observed instance of a Service, not a replica identity or the canonical Service definition.
 _Avoid_: Replica, service record
 
 **Healthcheck**:
@@ -77,7 +77,7 @@ A Healthcheck with a non-empty command that probes the container.
 _Avoid_: enabled healthcheck
 
 **Hook Container**:
-A managed Docker container that executes a pre-deploy hook rather than serving as an instance of the Service. Its identity and runtime observation remain distinct from those of Service Containers.
+A managed Docker container that executes a pre-deploy hook rather than serving as an instance of the Service. It records the same owning Project as the Service's regular containers. Its identity and runtime observation remain distinct from those of Service Containers.
 _Avoid_: Service Container, sidecar
 
 **Container ID**:
@@ -99,6 +99,14 @@ _Avoid_: Current service spec, desired state
 **Resolved Service Spec**:
 The exact service configuration attached to a Service Container when it is created. Different observed containers in one Service may legitimately carry different Resolved Service Specs.
 _Avoid_: Current service spec, canonical service spec
+
+**Project**:
+An observer-derived ownership namespace. It is not a persisted resource, a workflow, or the loaded Compose input. `ployz-system` is reserved for Ployz infrastructure.
+_Avoid_: ComposeProject, Compose project, deployment resource
+
+**ComposeProject**:
+The loaded Compose input for one command. It is not a Cluster-side Project.
+_Avoid_: Project
 
 **Deploy**:
 A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow.
@@ -131,6 +139,10 @@ _Avoid_: Bare deployment error, transaction result
 **Docker Volume**:
 A machine-local Docker storage resource and possible placement anchor. Its name is meaningful only together with its Machine.
 _Avoid_: Cluster volume, replicated volume, CSI volume
+
+**Data Loss**:
+One named thing an operation will destroy, carrying the identity that makes it unique. A Data Loss list is Live Observation from one observer, not a complete Cluster view, and it is not a warning, a plan, or an operation.
+_Avoid_: warning, plan, operation
 
 **Machine Pool**:
 A ZFS storage budget on one Machine, chosen when that Machine joins and not addable afterwards. Provisioned Volumes live on it. Docker's data-root, image layers, and build cache do not.

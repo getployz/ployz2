@@ -45,8 +45,8 @@ pub fn artifacts() -> Artifacts {
 /// Write generated files under the napi package root.
 ///
 /// Façade declarations (`connect` / `about` / `preview` / `run` /
-/// `removeVolumes` / `close`) live in handwritten `index.d.ts` and are not
-/// emitted here.
+/// `removeVolumes` / `dataLossIfMachineRemoved` / `removeMachine` / `close`)
+/// live in handwritten `index.d.ts` and are not emitted here.
 ///
 /// # Errors
 ///

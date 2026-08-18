@@ -8,7 +8,12 @@ use ployz_core::ServiceName;
 fn empty_apply_with_nonempty_target_produces_an_empty_plan() {
     let web = spec("web");
     let plan = plan_deploy(
-        &DeployIntent::new(vec![web], Vec::new(), PlanOptions::default()),
+        &DeployIntent::new(
+            ProjectName::parse("app").unwrap(),
+            vec![web],
+            Vec::new(),
+            PlanOptions::default(),
+        ),
         &snapshot(),
     )
     .unwrap();
@@ -19,6 +24,7 @@ fn empty_apply_with_nonempty_target_produces_an_empty_plan() {
 fn apply_all_names_plans_every_service_in_dependency_order() {
     let (db, web, worker, dependencies) = web_db_worker();
     let intent = DeployIntent::new(
+        ProjectName::parse("app").unwrap(),
         vec![db, web, worker],
         vec![attempt("db"), attempt("web"), attempt("worker")],
         PlanOptions::default(),
@@ -33,6 +39,7 @@ fn apply_web_plans_web_and_db_not_worker() {
     let (db, web, mut worker, dependencies) = web_db_worker();
     worker.container.image = "ghcr.io/getployz/worker:old".into();
     let intent = DeployIntent::new(
+        ProjectName::parse("app").unwrap(),
         vec![db, web, spec("worker")],
         vec![attempt("web")],
         PlanOptions::default(),
@@ -57,7 +64,11 @@ fn apply_web_plans_web_and_db_not_worker() {
 #[test]
 fn one_spec_intent_plans_that_name() {
     let plan = plan_deploy(
-        &DeployIntent::apply_one(spec("caddy"), PlanOptions::default()),
+        &DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("caddy"),
+            PlanOptions::default(),
+        ),
         &snapshot(),
     )
     .unwrap();
@@ -72,8 +83,13 @@ fn cyclic_apply_dependencies_are_a_plan_error() {
         (web.name.clone(), vec![db.name.clone()]),
         (db.name.clone(), vec![web.name.clone()]),
     ]);
-    let intent = DeployIntent::new(vec![db, web], vec![attempt("web")], PlanOptions::default())
-        .with_dependencies(dependencies);
+    let intent = DeployIntent::new(
+        ProjectName::parse("app").unwrap(),
+        vec![db, web],
+        vec![attempt("web")],
+        PlanOptions::default(),
+    )
+    .with_dependencies(dependencies);
     assert!(matches!(
         plan_deploy(&intent, &snapshot()),
         Err(PlanError::DependencyCycle { service }) if service == "db"
@@ -84,6 +100,7 @@ fn cyclic_apply_dependencies_are_a_plan_error() {
 fn skip_health_on_options_is_set_on_planned_operations() {
     let plan = plan_deploy(
         &DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
             spec("api"),
             PlanOptions {
                 skip_health_monitor: true,
@@ -149,4 +166,86 @@ fn run_names(plan: &ployz::deploy::DeployPlan) -> Vec<&str> {
             | DeployOperation::RunHook { .. } => None,
         })
         .collect()
+}
+
+fn targets_container(plan: &ployz::deploy::DeployPlan, id: &ContainerId) -> bool {
+    plan.operations.iter().any(|operation| match operation {
+        DeployOperation::StopContainer { container_id, .. }
+        | DeployOperation::RemoveContainer { container_id, .. }
+        | DeployOperation::StopHook { container_id, .. } => container_id == id,
+        DeployOperation::ReplaceContainer(replacement) => &replacement.old_container_id == id,
+        DeployOperation::CreateVolume { .. }
+        | DeployOperation::RunContainer { .. }
+        | DeployOperation::RunHook { .. } => false,
+    })
+}
+
+#[test]
+fn user_project_deploy_does_not_replace_or_remove_system_caddy() {
+    let mut system_caddy = spec("caddy");
+    system_caddy.mode = ServiceMode::Global;
+    system_caddy.container.image = "caddy:2.9.1".into();
+    let mut shop_caddy = spec("caddy");
+    shop_caddy.mode = ServiceMode::Global;
+    shop_caddy.container.image = "caddy:2.10.2".into();
+    let mut system_container = container('c', '1', &system_caddy, &service_id('a'));
+    system_container.project_name = ProjectName::system();
+
+    let shop = plan_deploy(
+        &DeployIntent::apply_one(
+            ProjectName::parse("shop").unwrap(),
+            shop_caddy,
+            PlanOptions::default(),
+        ),
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![system_container],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!targets_container(&shop, &container_id('c')));
+    assert_eq!(run_names(&shop), ["caddy"]);
+
+    let web = spec("web");
+    let mut leftover = container('c', '1', &system_caddy, &service_id('a'));
+    leftover.project_name = ProjectName::system();
+    let full = plan_deploy(
+        &DeployIntent::apply_all(
+            ProjectName::parse("shop").unwrap(),
+            [&web],
+            PlanOptions::default(),
+        ),
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![leftover],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!targets_container(&full, &container_id('c')));
+    assert_eq!(run_names(&full), ["web"]);
+}
+
+#[test]
+fn system_project_deploy_still_replaces_its_own_caddy() {
+    let mut current = spec("caddy");
+    current.mode = ServiceMode::Global;
+    current.container.image = "caddy:2.9.1".into();
+    let mut requested = spec("caddy");
+    requested.mode = ServiceMode::Global;
+    requested.container.image = "caddy:2.10.2".into();
+    let mut system_container = container('c', '1', &current, &service_id('a'));
+    system_container.project_name = ProjectName::system();
+
+    let plan = plan_deploy(
+        &DeployIntent::apply_one(ProjectName::system(), requested, PlanOptions::default()),
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![system_container],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(targets_container(&plan, &container_id('c')));
 }

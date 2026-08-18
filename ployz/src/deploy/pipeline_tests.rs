@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, num::NonZeroU32};
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, Machine, MachineFailure, MachineId, MachineName, MachineSuccess,
-    ManagementAddress, MembershipObservation, PartialResult, RequestedServiceSpec, RpcError,
-    RpcErrorCode, ServiceId, ServiceMode, ServiceSelector, WireGuardPublicKey,
+    ManagementAddress, MembershipObservation, PartialResult, ProjectName, RequestedServiceSpec,
+    RpcError, RpcErrorCode, ServiceId, ServiceMode, ServiceSelector, WireGuardPublicKey,
 };
 use serde_json::Value;
 
@@ -15,6 +15,7 @@ use crate::deploy::{DeployOperation, DeploySnapshot};
 fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     let service_id = ServiceId::random();
     let replicas = |count: u32| NonZeroU32::new(count).unwrap();
+    let project = ProjectName::parse("app").unwrap();
     let snapshot = |containers: Vec<ContainerObservation>| DeploySnapshot {
         machines: vec![machine()],
         containers,
@@ -31,6 +32,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
             )]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(2),
+            &project,
         )
         .unwrap_err()
         .to_string(),
@@ -50,6 +52,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
             )]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(1),
+            &project,
         )
         .unwrap()
         .is_none()
@@ -67,6 +70,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
             )]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(3),
+            &project,
         )
         .unwrap()
         .is_some()
@@ -80,12 +84,17 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
         &mixed_snapshot,
         &ServiceSelector::parse("api").unwrap(),
         replicas(3),
+        &project,
     )
     .unwrap()
     .unwrap();
     assert_eq!(requested.container.image, "v1");
     let mixed = plan_deploy(
-        &DeployIntent::apply_one(requested, PlanOptions::default()),
+        &DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            requested,
+            PlanOptions::default(),
+        ),
         &mixed_snapshot,
     )
     .unwrap();
@@ -116,6 +125,7 @@ fn scale_plan_accepts_only_service_containers() {
     };
     let mut hook = observation(&service_id, replicated.clone(), "hook", '2');
     hook.kind = ContainerKind::PreDeployHook;
+    let project = ProjectName::parse("app").unwrap();
     let snapshot = |containers: Vec<ContainerObservation>| DeploySnapshot {
         machines: vec![machine()],
         containers,
@@ -127,6 +137,7 @@ fn scale_plan_accepts_only_service_containers() {
             &snapshot(vec![hook.clone()]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(2),
+            &project,
         )
         .unwrap_err()
         .to_string(),
@@ -137,9 +148,36 @@ fn scale_plan_accepts_only_service_containers() {
             &snapshot(vec![observation(&service_id, replicated, "v1", '1'), hook]),
             &ServiceSelector::parse("api").unwrap(),
             replicas(1),
+            &project,
         )
         .unwrap()
         .is_none()
+    );
+}
+
+#[test]
+fn scale_does_not_select_a_service_owned_by_another_project() {
+    let service_id = ServiceId::random();
+    let replicated = ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    };
+    let mut system = observation(&service_id, replicated, "v1", '1');
+    system.project_name = ProjectName::system();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine()],
+        containers: vec![system],
+        ..Default::default()
+    };
+    assert_eq!(
+        choose_scale_spec(
+            &snapshot,
+            &ServiceSelector::parse("api").unwrap(),
+            NonZeroU32::new(2).unwrap(),
+            &ProjectName::parse("shop").unwrap(),
+        )
+        .unwrap_err()
+        .to_string(),
+        "Service \"api\" was not found"
     );
 }
 
@@ -269,6 +307,7 @@ fn observation(
         display_name: format!("api-{id}"),
         created_at_unix_nanos: 0,
         machine_id: machine().machine.id,
+        project_name: ProjectName::parse("app").unwrap(),
         service_id: *service_id,
         service_name: requested.name,
         kind: ContainerKind::ServiceContainer,

@@ -1,8 +1,8 @@
 use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
 
 use ployz_core::{
-    CodecError, ContainerSelectorError, MachineSelectorError, MachineUpdateError, RpcError,
-    ServiceSelectorError, StreamProtocolError, ValueError,
+    AmbiguousDataLossName, CodecError, ContainerSelectorError, MachineSelectorError,
+    MachineUpdateError, RpcError, ServiceSelectorError, StreamProtocolError, ValueError,
 };
 
 use crate::{
@@ -14,6 +14,7 @@ use crate::{
     dns::{DomainRequired, Error as DnsError, NoReachableMachines},
     image::PushError,
     operator::OperatorError,
+    project::ProjectError,
     provisioning::ProvisionError,
     volume::AssignmentError,
 };
@@ -133,6 +134,8 @@ from_error!(
     ProvisionError,
     CaddyImageError,
     RpcError,
+    ProjectError,
+    AmbiguousDataLossName,
 );
 
 impl From<ConnectError> for Failure {

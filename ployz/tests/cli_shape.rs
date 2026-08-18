@@ -81,12 +81,15 @@ fn clap_tree_matches_all_frozen_command_pages_and_declared_deviations() {
             "fixed-wireguard-port".to_owned(),
             "images-json-output".to_owned(),
             "local-machine-init-stub".to_owned(),
+            "machine-remove-named-data-loss".to_owned(),
             "native-completion".to_owned(),
             "no-nightly-daemon-channel".to_owned(),
             "plain-caddy-config".to_owned(),
             "product-identity".to_owned(),
+            "project-name-no-short-flag".to_owned(),
             "root-version-flag".to_owned(),
             "scriptable-ctx-connection".to_owned(),
+            "strict-project-name".to_owned(),
             "volume-remove-auto-confirm-env".to_owned(),
         ])
     );
@@ -156,6 +159,9 @@ fn reference_shape(
     if command_path == "ployz volume rm" && deviations.contains("volume-remove-auto-confirm-env") {
         flags.get_mut("yes").expect("volume rm has --yes").env = Some("PLOYZ_AUTO_CONFIRM".into());
     }
+    if command_path == "ployz machine rm" && deviations.contains("machine-remove-named-data-loss") {
+        flags.get_mut("yes").expect("machine rm has --yes").env = Some("PLOYZ_AUTO_CONFIRM".into());
+    }
     if matches!(command_path.as_str(), "ployz images" | "ployz image ls")
         && deviations.contains("images-json-output")
     {
@@ -188,6 +194,25 @@ fn reference_shape(
             }
             "ployz scale" | "ployz service scale" => {
                 flags.insert("skip-health".into(), skip_health);
+            }
+            _ => {}
+        }
+    }
+    if deviations.contains("project-name-no-short-flag") {
+        let project_name = Flag {
+            short: None,
+            default: None,
+            env: Some("COMPOSE_PROJECT_NAME".into()),
+        };
+        match command_path.as_str() {
+            "ployz deploy"
+            | "ployz run"
+            | "ployz service run"
+            | "ployz scale"
+            | "ployz service scale"
+            | "ployz rm"
+            | "ployz service rm" => {
+                flags.insert("project-name".into(), project_name);
             }
             _ => {}
         }
@@ -415,6 +440,15 @@ fn reference_positionals(
             },
         ));
     }
+    if command_path == "ployz machine rm" && deviations.contains("machine-remove-named-data-loss") {
+        positionals.push((
+            "data-loss".into(),
+            Positional {
+                required: false,
+                multiple: true,
+            },
+        ));
+    }
     positionals
         .into_iter()
         .map(|(_, positional)| positional)
@@ -473,6 +507,7 @@ fn ployz_owned_environment_surface_is_frozen() {
             "PLOYZ_AUTO_CONFIRM",
             "COMPOSE_DISABLE_ENV_FILE",
             "COMPOSE_FILE",
+            "COMPOSE_PROJECT_NAME",
             "PLOYZ_CONFIG",
             "PLOYZ_CONNECT",
             "PLOYZ_CONTEXT",

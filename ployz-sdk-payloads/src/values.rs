@@ -10,20 +10,21 @@ use ployz_core::{
     AdvertisedEndpoint, BindPropagation, BindRecursive, CapabilityName, CertificateAvailability,
     CertificateBackoff, CertificateFailureKind, CertificateObservation, ConfiguredHealthcheck,
     ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerResources,
-    ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployEvent,
-    DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning, DockerVolume,
-    DockerVolumeId, DockerVolumeName, ExecutionError, FailedOperation, HealthFailure,
+    ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss,
+    DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
+    DockerVolume, DockerVolumeId, DockerVolumeName, ExecutionError, FailedOperation, HealthFailure,
     HealthObservation, HealthcheckCommand, HealthcheckSpec, HookContainer, HookFailure, HostBind,
-    HttpProtocol, IngressHost, IngressHostname, LogDriver, Machine, MachineAction, MachineFailure,
-    MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime, MachineSuccess,
-    ManagementAddress, MembershipObservation, ObservationKind, OperationPhase, OperationRow,
-    OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication,
-    PreDeployHook, PullPolicy, RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy,
-    RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds,
-    SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId, ServiceMode, ServiceMount,
-    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeReference, TransportProtocol,
-    UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
+    HttpProtocol, IngressHost, IngressHostname, LocalMachineRemoved, LogDriver, Machine,
+    MachineAction, MachineFailure, MachineId, MachineName, MachineObservation, MachinePath,
+    MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind,
+    ObservedDataLoss, OperationPhase, OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult,
+    Placement, PlanOptions, PortPublication, PreDeployHook, ProjectName, PullPolicy,
+    RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation, RequestedServiceSpec,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError,
+    RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint,
+    ServiceAttempt, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceObservation, ServiceVolume, ServiceVolumeReference, TransportProtocol,
+    UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -52,6 +53,28 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     );
     fixtures.insert("rpc_error".into(), to_value(&rpc_error()));
     fixtures.insert("docker_volume".into(), to_value(&docker_volume()));
+    fixtures.insert("data_loss".into(), to_value(&data_loss()));
+    fixtures.insert("observed_data_loss".into(), to_value(&observed_data_loss()));
+    fixtures.insert(
+        "observed_data_loss_empty".into(),
+        to_value(&ObservedDataLoss {
+            data_loss: Vec::new(),
+        }),
+    );
+    fixtures.insert(
+        "unconfirmed_data_loss".into(),
+        to_value(&unconfirmed_data_loss()),
+    );
+    fixtures.insert(
+        "local_machine_removed".into(),
+        to_value(&LocalMachineRemoved::default()),
+    );
+    fixtures.insert(
+        "local_machine_removed_reset_warning".into(),
+        to_value(&LocalMachineRemoved {
+            reset_warning: Some("replicated delete failed".into()),
+        }),
+    );
     fixtures.insert(
         "docker_volume_unknown_fields".into(),
         with_unknown_field(to_value(&docker_volume()), "quota_bytes", json!(1)),
@@ -153,6 +176,14 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ("DockerVolume", to_value(&docker_volume())),
         ("DockerVolumeId", to_value(&docker_volume().id)),
         ("RemoveVolumesRequest", to_value(&remove_volumes_request())),
+        ("ObservedDataLoss", to_value(&observed_data_loss())),
+        ("UnconfirmedDataLoss", to_value(&unconfirmed_data_loss())),
+        (
+            "LocalMachineRemoved",
+            to_value(&LocalMachineRemoved {
+                reset_warning: Some("replicated delete failed".into()),
+            }),
+        ),
         ("DeployIntent", to_value(&deploy_intent())),
         ("DeployPreview", to_value(&deploy_preview())),
         ("RequestedServiceSpec", to_value(&requested_spec())),
@@ -243,6 +274,7 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         panic!("failed fixture is Failed");
     };
     BTreeMap::from([
+        ("DataLoss", vec![to_value(&data_loss())]),
         (
             "DeployOutcome",
             vec![
@@ -544,6 +576,22 @@ fn remove_volumes_request() -> RemoveVolumesRequest {
     }
 }
 
+fn data_loss() -> DataLoss {
+    DataLoss::DockerVolume(docker_volume().id)
+}
+
+fn observed_data_loss() -> ObservedDataLoss {
+    ObservedDataLoss {
+        data_loss: vec![data_loss()],
+    }
+}
+
+fn unconfirmed_data_loss() -> UnconfirmedDataLoss {
+    UnconfirmedDataLoss {
+        missing: vec![data_loss()],
+    }
+}
+
 fn service_attempt() -> ServiceAttempt {
     ServiceAttempt {
         name: ServiceName::parse("web").expect("fixture Service Name is valid"),
@@ -551,7 +599,12 @@ fn service_attempt() -> ServiceAttempt {
 }
 
 fn deploy_intent() -> DeployIntent {
-    DeployIntent::new(Vec::new(), Vec::new(), PlanOptions::default())
+    DeployIntent::new(
+        ProjectName::parse("app").unwrap(),
+        Vec::new(),
+        Vec::new(),
+        PlanOptions::default(),
+    )
 }
 
 fn deploy_preview() -> DeployPreview {
@@ -567,6 +620,7 @@ fn deploy_preview() -> DeployPreview {
             Some(ServiceName::parse("api").expect("fixture Service Name is valid")),
         )],
         deploy_warnings().to_vec(),
+        ProjectName::parse("app").unwrap(),
     )
 }
 
@@ -771,6 +825,7 @@ fn container_observation() -> ContainerObservation {
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
         machine_id: machine_id(MACHINE_ID_HEX),
+        project_name: ProjectName::parse("app").unwrap(),
         service_id: service_id(),
         service_name: ServiceName::parse("api").expect("fixture Service Name is valid"),
         kind: ContainerKind::ServiceContainer,

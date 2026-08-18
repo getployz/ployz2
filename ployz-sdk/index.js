@@ -28,6 +28,14 @@ class Client {
     return this._inner.removeVolumes(request);
   }
 
+  dataLossIfMachineRemoved(machine) {
+    return this._inner.dataLossIfMachineRemoved(machine);
+  }
+
+  removeMachine(machine, confirmDataLoss) {
+    return this._inner.removeMachine(machine, confirmDataLoss);
+  }
+
   close() {
     return this._inner.close();
   }
@@ -36,8 +44,7 @@ class Client {
 function wrapPreview(handle) {
   const payload = handle.payload();
   return {
-    operations: payload.operations,
-    warnings: payload.warnings,
+    ...payload,
     noop: payload.operations.length === 0,
     confirm(options = {}) {
       return wrapRunning(handle.confirm(), options && options.signal);

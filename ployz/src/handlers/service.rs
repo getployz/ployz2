@@ -156,6 +156,11 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+pub fn remove(root: &ArgMatches) -> Result<(), Error> {
+    let _ = crate::project::resolve_explicit(leaf_matches(root))?;
+    change(root, ContainerAction::Remove)
+}
+
 pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let selectors = leaf
@@ -411,6 +416,7 @@ mod tests {
             display_name: name.into(),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(machine.to_string().repeat(32)).unwrap(),
+            project_name: ployz_core::ProjectName::parse("app").unwrap(),
             service_id,
             service_name: service_name.clone(),
             kind: ployz_core::ContainerKind::ServiceContainer,

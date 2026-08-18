@@ -30,6 +30,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ("ContainerId", Shape::Branded),
     ("ServiceId", Shape::Branded),
     ("ServiceName", Shape::Branded),
+    ("ProjectName", Shape::Branded),
     ("MachineName", Shape::Alias("string")),
     ("MachineSubnet", Shape::Alias("string")),
     ("ManagementAddress", Shape::Alias("string")),
@@ -383,6 +384,34 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "DataLoss",
+        Shape::ExternallyTagged {
+            params: "",
+            variants: &[("DockerVolume", Some("DockerVolumeId"))],
+        },
+    ),
+    (
+        "ObservedDataLoss",
+        Shape::Additive {
+            params: "",
+            fields: &[("data_loss", "DataLoss[]")],
+        },
+    ),
+    (
+        "UnconfirmedDataLoss",
+        Shape::Additive {
+            params: "",
+            fields: &[("missing", "DataLoss[]")],
+        },
+    ),
+    (
+        "LocalMachineRemoved",
+        Shape::Additive {
+            params: "",
+            fields: &[("reset_warning", "string?")],
+        },
+    ),
+    (
         "ContractDescription",
         Shape::Additive {
             params: "",
@@ -469,6 +498,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         Shape::Additive {
             params: "",
             fields: &[
+                ("project_name", "ProjectName"),
                 ("target", "RequestedServiceSpec[]"),
                 ("apply", "ServiceAttempt[]"),
                 ("options", "PlanOptions"),
@@ -501,6 +531,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         Shape::Additive {
             params: "",
             fields: &[
+                ("project_name", "ProjectName"),
                 ("operations", "OperationRow[]"),
                 ("warnings", "DeployWarning[]"),
             ],
@@ -833,6 +864,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("display_name", "string"),
                 ("created_at_unix_nanos", "number"),
                 ("machine_id", "MachineId"),
+                ("project_name", "ProjectName"),
                 ("service_id", "ServiceId"),
                 ("service_name", "ServiceName"),
                 ("kind", "ContainerKind"),
