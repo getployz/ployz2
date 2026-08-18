@@ -13,19 +13,23 @@ mod apply;
 mod exec;
 mod pipeline;
 mod planning;
+mod progress;
+mod render;
 
-pub(crate) use apply::{apply_requested, deploy_project, deploy_scale, deploy_spec};
+pub(crate) use apply::{ConfirmGate, apply_requested, deploy_project, deploy_scale, deploy_spec};
 pub use exec::execute_plan;
 pub use pipeline::DeployError;
 pub(crate) use pipeline::{ReconciliationHints, plan_options};
 pub use planning::plan_deploy;
 pub use ployz_core::compare_specs;
 pub use ployz_core::{
-    ComposePruneRefusal, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
+    ComposePruneRefusal, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
     DeployWarning, ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction,
-    ObservationKind, PlanOptions, PruneRefusal, ReplacementCompensation, ReplacementOperation,
-    RestartAttempt, ServiceAttempt,
+    ObservationKind, OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
+    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt,
 };
+
+pub(crate) use progress::pending_rows;
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(

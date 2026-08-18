@@ -19,15 +19,15 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     compose::{BuildService, ComposeProject},
     connect::{Client, ConnectError},
-    dns::{DomainRequired, IngressDnsWarning, resolve_ingress_dns_warnings},
+    dns::{ExpandIngressError, IngressDnsWarning, resolve_ingress_dns_warnings},
     failure::Failure,
     image::PushError,
 };
 
 use super::{
-    ComposePruneRefusal, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
-    DeploySnapshot, DeployWarning, ExecutionError, ObservationKind, PlanError, PlanOptions,
-    exec::execute_operations, plan_deploy,
+    ComposePruneRefusal, DeployEvent, DeployIntent, DeployOutcome, DeployPreview, DeploySnapshot,
+    DeployWarning, ExecutionError, ObservationKind, PlanError, PlanOptions,
+    exec::execute_operation_sequence, pending_rows, plan_deploy,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -46,15 +46,14 @@ pub enum DeployError {
     #[error(transparent)]
     Plan(#[from] PlanError),
     #[error(transparent)]
-    Ingress(#[from] DomainRequired),
+    Ingress(#[from] ExpandIngressError),
 }
 
 impl Client {
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
     /// Reuses the same planner, ingress expansion, and DNS warnings as the CLI.
-    /// The preview is observer-relative and is not a handle: [`Self::deploy`]
-    /// re-plans against a fresh snapshot rather than replaying these operations.
+    /// Confirming executes these operations; it does not re-plan.
     ///
     /// # Errors
     ///
@@ -68,27 +67,41 @@ impl Client {
         prepare_intent(self, snapshot, warnings, &mut intent).await
     }
 
-    /// Submit a Deploy Intent: gather a snapshot, plan, and execute.
+    /// Execute the operations on this Deploy Preview. Does not re-plan.
     ///
-    /// Reuses the same planner and Machine Proxy fan-out as the CLI. Execution
-    /// failure is a [`DeployOutcome::Failed`] with the completed prefix, failed
-    /// operation, and unexecuted suffix. This operation does not prompt, stream
-    /// progress, mint operation IDs, or speak `ops.watch`. Always re-plans
-    /// against a fresh snapshot; it does not replay a prior Deploy Preview.
+    /// Progress events are sent on `progress` when provided. The first event is
+    /// every row `pending` before any Machine RPC. Execution failure is a
+    /// [`DeployOutcome::Failed`], not this error.
+    pub async fn confirm(
+        &self,
+        preview: &DeployPreview,
+        cancellation: &CancellationToken,
+        progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
+    ) -> DeployOutcome<ExecutionError> {
+        execute_operation_sequence(
+            preview.operations.clone(),
+            self,
+            cancellation,
+            progress,
+            &preview.project_name,
+        )
+        .await
+    }
+
+    /// Preview, auto-confirm, and return the Deploy Outcome.
     ///
     /// # Errors
     ///
     /// Returns when snapshot gathering, ingress expansion, or planning fails
     /// before execution starts.
-    pub async fn deploy(
+    pub async fn run(
         &mut self,
-        mut intent: DeployIntent,
+        intent: DeployIntent,
+        cancellation: &CancellationToken,
+        progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> Result<DeployOutcome<ExecutionError>, DeployError> {
-        let machines = self.machines().await?;
-        let snapshot = self.deploy_snapshot(machines).await?;
-        expand_ingress(self, intent.target.iter_mut()).await?;
-        let plan = plan_deploy(&intent, &snapshot)?;
-        Ok(execute_deploy(self, &plan.operations, &intent.project_name).await)
+        let preview = self.preview(intent).await?;
+        Ok(self.confirm(&preview, cancellation, progress).await)
     }
 }
 
@@ -175,11 +188,7 @@ pub(super) async fn plan_scale(
     let choice = choose_scale_spec(&snapshot, selector, replicas)?;
     let Some(requested) = choice.requested else {
         return Ok((
-            DeployPreview {
-                operations: Vec::new(),
-                warnings,
-                ..DeployPreview::default()
-            },
+            DeployPreview::new(Vec::new(), warnings, choice.project_name.clone()),
             choice.project_name,
         ));
     };
@@ -196,23 +205,18 @@ async fn prepare_intent(
     mut warnings: Vec<DeployWarning>,
     intent: &mut DeployIntent,
 ) -> Result<DeployPreview, DeployError> {
-    expand_ingress(client, intent.target.iter_mut()).await?;
+    expand_ingress(client, &intent.project_name, intent.target.iter_mut()).await?;
     warnings.extend(hostname_warnings(intent.target.iter(), &snapshot.machines).await);
     let plan = plan_deploy(intent, &snapshot)?;
-    Ok(DeployPreview {
-        operations: plan.operations,
+    // TODO(UT-085): services absent from this finite project are intentionally not removed.
+    let mut preview = DeployPreview::new(
+        pending_rows(&plan.operations, &snapshot),
         warnings,
-        would_remove: plan.would_remove,
-        prune_refusal: plan.prune_refusal,
-    })
-}
-
-pub(super) async fn execute_deploy(
-    client: &mut Client,
-    operations: &[DeployOperation],
-    project_name: &ProjectName,
-) -> DeployOutcome<ExecutionError> {
-    execute_operations(operations, client, &CancellationToken::new(), project_name).await
+        intent.project_name.clone(),
+    );
+    preview.would_remove = plan.would_remove;
+    preview.prune_refusal = plan.prune_refusal;
+    Ok(preview)
 }
 
 pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
@@ -311,6 +315,7 @@ fn observation_warnings(
 
 async fn expand_ingress<'a>(
     client: &mut Client,
+    project: &ProjectName,
     specs: impl IntoIterator<Item = &'a mut RequestedServiceSpec>,
 ) -> Result<(), DeployError> {
     let specs: Vec<_> = specs.into_iter().collect();
@@ -319,7 +324,7 @@ async fn expand_ingress<'a>(
     }
     let domain = client.domain_if_reserved().await?;
     for spec in specs {
-        crate::dns::expand_ingress_ports(spec, domain.as_deref())?;
+        crate::dns::expand_ingress_ports(spec, project, domain.as_deref())?;
     }
     Ok(())
 }

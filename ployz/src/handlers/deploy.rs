@@ -32,6 +32,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
             force_recreate,
             skip_health_monitor,
             &project.name,
+            context.unwrap_or("default"),
             Some(&project),
         )
         .await
@@ -62,9 +63,12 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             &mut project,
             &builds,
             options,
-            yes,
-            &resolved,
             hints,
+            crate::deploy::ConfirmGate {
+                auto_confirm: yes,
+                context: context.as_deref().unwrap_or("default"),
+                project: &resolved,
+            },
         )
         .await
     })
@@ -192,8 +196,11 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
             &selector,
             replicas,
             skip_health_monitor,
-            yes,
-            &project,
+            crate::deploy::ConfirmGate {
+                auto_confirm: yes,
+                context: context.unwrap_or("default"),
+                project: &project,
+            },
         )
         .await
     })
