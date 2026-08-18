@@ -441,7 +441,7 @@
           "name": "data"
         },
         "labels": {
-          "purpose": "database"
+          "ployz.managed": "false"
         },
         "options": {
           "type": "none"
@@ -707,7 +707,7 @@
           "name": "data"
         },
         "labels": {
-          "purpose": "database"
+          "ployz.managed": "false"
         },
         "options": {
           "type": "none"

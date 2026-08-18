@@ -16,7 +16,8 @@ use ployz_core::{
     PartialResult, PlanOptions, ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec,
     RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
     RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId,
-    ServiceName, ServiceObservation, WireGuardPublicKey,
+    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeReference, VolumeSource,
+    WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -131,6 +132,7 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         .rtt
         .as_ref()
         .expect("RuntimeWatchFrame fixture includes RTT");
+    let partial = partial_result();
     BTreeMap::from([
         ("ContractDescription", to_value(&contract_description())),
         ("DockerVolume", to_value(&docker_volume())),
@@ -140,6 +142,25 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ("ServiceAttempt", to_value(&service_attempt())),
         ("RpcError", to_value(&rpc_error())),
         ("ReplacementOperation", to_value(&replacement_operation())),
+        (
+            "MachineSuccess",
+            to_value(
+                partial
+                    .successes
+                    .first()
+                    .expect("partial_result fixture includes a success"),
+            ),
+        ),
+        (
+            "MachineFailure",
+            to_value(
+                partial
+                    .failures
+                    .first()
+                    .expect("partial_result fixture includes a failure"),
+            ),
+        ),
+        ("PartialResult", to_value(&partial)),
         (
             "MachineRuntime",
             to_value(&machine_observation.machine.runtime),
@@ -160,13 +181,6 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
 }
 
 pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
-    let DeployOutcome::Success { completed } = deploy_outcome() else {
-        panic!("success fixture is Success");
-    };
-    let operation = completed
-        .into_iter()
-        .next()
-        .expect("success fixture includes a Deploy Operation");
     let DeployOutcome::Failed { failed, .. } = deploy_outcome_failed() else {
         panic!("failed fixture is Failed");
     };
@@ -178,8 +192,23 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                 to_value(&deploy_outcome_failed()),
             ],
         ),
-        ("DeployOperation", vec![to_value(&operation)]),
-        ("FailedOperation", vec![to_value(&failed)]),
+        (
+            "DeployOperation",
+            deploy_operations().iter().map(to_value).collect(),
+        ),
+        (
+            "FailedOperation",
+            vec![
+                to_value(&failed),
+                to_value(&FailedOperation::ReplacementHealth {
+                    operation: replacement_operation(),
+                    error: rpc_error(),
+                    compensation: ReplacementCompensation::<RpcError>::StartFirst {
+                        stop_new_container: Ok(()),
+                    },
+                }),
+            ],
+        ),
         (
             "RestartAttempt",
             vec![
@@ -189,9 +218,36 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         ),
         (
             "ReplacementCompensation",
-            vec![to_value(&ReplacementCompensation::<RpcError>::StartFirst {
-                stop_new_container: Ok(()),
-            })],
+            vec![
+                to_value(&ReplacementCompensation::<RpcError>::StartFirst {
+                    stop_new_container: Ok(()),
+                }),
+                to_value(&ReplacementCompensation::<RpcError>::StopFirst {
+                    stop_new_container: Ok(()),
+                    restart_old_container: RestartAttempt::NotAttempted,
+                }),
+            ],
+        ),
+        (
+            "ContainerKind",
+            vec![
+                to_value(&ContainerKind::ServiceContainer),
+                to_value(&ContainerKind::PreDeployHook),
+            ],
+        ),
+        (
+            "ContainerRuntimeObservation",
+            vec![
+                to_value(&ContainerRuntimeObservation::Created),
+                to_value(&ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy,
+                }),
+                to_value(&ContainerRuntimeObservation::Paused),
+                to_value(&ContainerRuntimeObservation::Restarting),
+                to_value(&ContainerRuntimeObservation::Exited { code: 0 }),
+                to_value(&ContainerRuntimeObservation::Removing),
+                to_value(&ContainerRuntimeObservation::Dead),
+            ],
         ),
     ])
 }
@@ -282,6 +338,55 @@ fn replacement_operation() -> ReplacementOperation {
     }
 }
 
+fn deploy_operations() -> [DeployOperation; 7] {
+    let machine_id = machine_id(MACHINE_ID_HEX);
+    let container_id = container_id();
+    [
+        DeployOperation::CreateVolume {
+            machine_id,
+            volume: service_volume(),
+        },
+        DeployOperation::RunContainer {
+            machine_id,
+            spec: resolved_spec(),
+            skip_health_monitor: false,
+        },
+        DeployOperation::StopContainer {
+            machine_id,
+            container_id,
+        },
+        DeployOperation::RemoveContainer {
+            machine_id,
+            container_id,
+        },
+        DeployOperation::ReplaceContainer(replacement_operation()),
+        DeployOperation::StopHook {
+            machine_id,
+            container_id,
+        },
+        DeployOperation::RunHook {
+            machine_id,
+            spec: resolved_spec(),
+            old_hook_containers: vec![(machine_id, container_id)],
+        },
+    ]
+}
+
+fn service_volume() -> ServiceVolume {
+    ServiceVolume {
+        reference: ServiceVolumeReference::parse("data")
+            .expect("fixture volume reference is valid"),
+        source: VolumeSource::Named {
+            name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
+            external: false,
+            driver: None,
+            labels: BTreeMap::new(),
+            no_copy: false,
+            subpath: None,
+        },
+    }
+}
+
 fn runtime_watch_frame() -> RuntimeWatchFrame {
     let container = container_observation();
     RuntimeWatchFrame {
@@ -323,15 +428,7 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
                 .expect("fixture container is a Service Container")],
             hook_containers: Vec::<HookContainer>::new(),
         }],
-        volumes: vec![DockerVolume {
-            id: DockerVolumeId {
-                machine_id: machine_id(MACHINE_ID_HEX),
-                name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
-            },
-            driver: "local".into(),
-            options: BTreeMap::from([("type".into(), "none".into())]),
-            labels: BTreeMap::from([("purpose".into(), "database".into())]),
-        }],
+        volumes: vec![docker_volume()],
         certificates: vec![
             CertificateObservation {
                 hostname: ingress_host("ok.example.com"),

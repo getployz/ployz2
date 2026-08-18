@@ -1,6 +1,7 @@
 //! Deterministic TypeScript and JSON fixtures for `@ployz/sdk` public payloads.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -458,6 +459,8 @@ pub struct Artifacts {
 pub fn artifacts() -> Artifacts {
     check_additive_fields_match_rust();
     check_externally_tagged_variants_match_rust();
+    check_internally_tagged_variants_match_rust();
+    check_closed_strings_match_rust();
     Artifacts {
         index_dts: typescript(),
         fixtures_json: pretty_json(&Value::Object(fixtures().into_iter().collect())),
@@ -644,12 +647,9 @@ fn capability_typescript() -> String {
 fn check_additive_fields_match_rust() {
     let examples = additive_examples();
     for (name, shape) in PAYLOADS {
-        let Shape::Additive { params, fields } = shape else {
+        let Shape::Additive { fields, .. } = shape else {
             continue;
         };
-        if !params.is_empty() {
-            continue;
-        }
         let value = examples
             .get(*name)
             .unwrap_or_else(|| panic!("{name} Additive shape has no serde example"));
@@ -677,46 +677,117 @@ fn check_additive_fields_match_rust() {
 fn check_externally_tagged_variants_match_rust() {
     let examples = tagged_examples();
     for (name, shape) in PAYLOADS {
-        let Shape::ExternallyTagged { params, variants } = shape else {
+        let Shape::ExternallyTagged { variants, .. } = shape else {
             continue;
         };
-        if params.contains("<T") {
+        if *name == "SerdeResult" {
             continue;
         }
-        let values = examples
-            .get(*name)
-            .unwrap_or_else(|| panic!("{name} tagged shape has no serde example"));
-        assert!(
-            !values.is_empty(),
-            "{name} tagged shape has no serde example"
-        );
-        for value in values {
-            match value {
-                Value::String(wire) => {
-                    assert!(
-                        variants
-                            .iter()
-                            .any(|(variant, payload)| { *variant == wire && payload.is_none() }),
-                        "{name} TypeScript is missing unit variant {wire}"
-                    );
-                }
-                Value::Object(object) => {
-                    assert_eq!(
-                        object.len(),
-                        1,
-                        "{name} externally tagged JSON must have one variant key"
-                    );
-                    let key = object
-                        .keys()
-                        .next()
-                        .expect("externally tagged object has a variant key");
-                    assert!(
-                        variants.iter().any(|(variant, _)| variant == key),
-                        "{name} TypeScript is missing variant {key}"
-                    );
-                }
-                other => panic!("{name} serde example is not a tagged enum: {other}"),
+        let mut seen = BTreeSet::new();
+        for value in serde_examples(name, &examples) {
+            let key = external_tag(name, value);
+            let payload = variants
+                .iter()
+                .find_map(|(variant, payload)| (*variant == key).then_some(*payload));
+            assert!(
+                payload.is_some(),
+                "{name} TypeScript is missing variant {key}"
+            );
+            assert_eq!(
+                payload == Some(None),
+                value.is_string(),
+                "{name} variant {key} unit/payload shape does not match serde"
+            );
+            seen.insert(key);
+        }
+        for (variant, _) in *variants {
+            assert!(
+                seen.contains(*variant),
+                "{name} TypeScript variant {variant} has no serde example"
+            );
+        }
+    }
+}
+
+fn check_internally_tagged_variants_match_rust() {
+    let examples = tagged_examples();
+    for (name, shape) in PAYLOADS {
+        let Shape::InternallyTagged { tag, variants, .. } = shape else {
+            continue;
+        };
+        let mut seen = BTreeSet::new();
+        for value in serde_examples(name, &examples) {
+            let object = value
+                .as_object()
+                .unwrap_or_else(|| panic!("{name} serde example is not an object"));
+            let wire = object
+                .get(*tag)
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("{name} serde example is missing tag {tag}"));
+            if variants.iter().any(|(variant, _)| *variant == wire) {
+                seen.insert(wire.to_owned());
             }
+        }
+        for (variant, _) in *variants {
+            assert!(
+                seen.contains(*variant),
+                "{name} TypeScript variant {variant} has no serde example"
+            );
+        }
+    }
+}
+
+fn check_closed_strings_match_rust() {
+    let examples = tagged_examples();
+    for (name, shape) in PAYLOADS {
+        let Shape::ClosedString(known) = shape else {
+            continue;
+        };
+        let mut seen = BTreeSet::new();
+        for value in serde_examples(name, &examples) {
+            let wire = value
+                .as_str()
+                .unwrap_or_else(|| panic!("{name} serde example is not a string"));
+            assert!(
+                known.contains(&wire),
+                "{name} TypeScript is missing closed wire {wire}"
+            );
+            seen.insert(wire.to_owned());
+        }
+        for wire in *known {
+            assert!(
+                seen.contains(*wire),
+                "{name} TypeScript wire {wire} has no serde example"
+            );
+        }
+    }
+}
+
+fn serde_examples<'a>(name: &str, examples: &'a BTreeMap<&'static str, Vec<Value>>) -> &'a [Value] {
+    let values = examples
+        .get(name)
+        .unwrap_or_else(|| panic!("{name} shape has no serde example"));
+    assert!(!values.is_empty(), "{name} shape has no serde example");
+    values
+}
+
+fn external_tag(name: &str, value: &Value) -> String {
+    match value {
+        Value::String(wire) => wire.clone(),
+        Value::Object(object) => {
+            assert_eq!(
+                object.len(),
+                1,
+                "{name} externally tagged JSON must have one variant key"
+            );
+            object
+                .keys()
+                .next()
+                .expect("externally tagged object has a variant key")
+                .clone()
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => {
+            panic!("{name} serde example is not a tagged enum: {value}")
         }
     }
 }
