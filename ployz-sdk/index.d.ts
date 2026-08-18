@@ -24,6 +24,10 @@ export type CapabilityName = string;
 
 export type RequestedServiceSpec = JsonValue;
 
+export type ResolvedServiceSpec = JsonValue;
+
+export type ServiceVolume = JsonValue;
+
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | (string & {});
 
 export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | (string & {});
@@ -97,9 +101,70 @@ export type DeployIntent = Additive<{
   options: PlanOptions;
 }>;
 
+export type SerdeResult<T, E> =
+  | Additive<{ Ok: T }>
+  | Additive<{ Err: E }>;
+
+export type ReplacementOperation = Additive<{
+  machine_id: MachineId;
+  old_container_id: ContainerId;
+  spec: ResolvedServiceSpec;
+  skip_health_monitor: boolean;
+}>;
+
+export type DeployOperation =
+  | Additive<{ CreateVolume: { machine_id: MachineId; volume: ServiceVolume } }>
+  | Additive<{
+      RunContainer: {
+        machine_id: MachineId;
+        spec: ResolvedServiceSpec;
+        skip_health_monitor: boolean;
+      };
+    }>
+  | Additive<{ StopContainer: { machine_id: MachineId; container_id: ContainerId } }>
+  | Additive<{ RemoveContainer: { machine_id: MachineId; container_id: ContainerId } }>
+  | Additive<{ ReplaceContainer: ReplacementOperation }>
+  | Additive<{ StopHook: { machine_id: MachineId; container_id: ContainerId } }>
+  | Additive<{
+      RunHook: {
+        machine_id: MachineId;
+        spec: ResolvedServiceSpec;
+        old_hook_containers: Array<[MachineId, ContainerId]>;
+      };
+    }>;
+
+export type RestartAttempt<E = RpcError> =
+  | "NotAttempted"
+  | Additive<{ Attempted: SerdeResult<null, E> }>;
+
+export type ReplacementCompensation<E = RpcError> =
+  | Additive<{ StartFirst: { stop_new_container: SerdeResult<null, E> } }>
+  | Additive<{
+      StopFirst: {
+        stop_new_container: SerdeResult<null, E>;
+        restart_old_container: RestartAttempt<E>;
+      };
+    }>;
+
+export type FailedOperation<E = RpcError> =
+  | Additive<{ Operation: { operation: DeployOperation; error: E } }>
+  | Additive<{
+      ReplacementHealth: {
+        operation: ReplacementOperation;
+        error: E;
+        compensation: ReplacementCompensation<E>;
+      };
+    }>;
+
 export type DeployOutcome<E = RpcError> =
-  | Additive<{ Success: { completed: JsonValue[] } }>
-  | Additive<{ Failed: { completed: JsonValue[]; failed: JsonValue; unexecuted: JsonValue[] } }>;
+  | Additive<{ Success: { completed: DeployOperation[] } }>
+  | Additive<{
+      Failed: {
+        completed: DeployOperation[];
+        failed: FailedOperation<E>;
+        unexecuted: DeployOperation[];
+      };
+    }>;
 
 export const GET_CADDY_CONFIG_CAPABILITY: CapabilityName = "ployz.caddy.config.v1";
 export const CERTIFICATE_POLICY_CAPABILITY: CapabilityName = "ployz.certificates.policy.v1";

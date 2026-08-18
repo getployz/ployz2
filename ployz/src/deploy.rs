@@ -1,6 +1,6 @@
 use ployz_core::{
-    ContainerId, ContainerObservation, ContainerRuntimeObservation, DockerVolumeId,
-    DockerVolumeName, MachineId, MachineObservation, ResolvedServiceSpec, ServiceId, ServiceVolume,
+    ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
+    MachineObservation, ServiceId,
 };
 use thiserror::Error;
 
@@ -14,7 +14,10 @@ pub use exec::{ExecutionError, HealthFailure, HookFailure, MachineAction, execut
 pub use pipeline::DeployError;
 pub use planning::plan_deploy;
 pub use ployz_core::compare_specs;
-pub use ployz_core::{DeployIntent, PlanOptions, ServiceAttempt};
+pub use ployz_core::{
+    DeployIntent, DeployOperation, DeployOutcome, FailedOperation, PlanOptions,
+    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt,
+};
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
@@ -113,93 +116,6 @@ impl DeployPlan {
             completed: self.operations.clone(),
         }
     }
-}
-
-/// Evidence from executing a Deploy Plan: every operation completed, or the
-/// completed prefix plus the failed operation and the unexecuted rest.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Failed must own the named op and unexecuted rest; boxing would not change the states"
-)]
-pub enum DeployOutcome<E> {
-    /// Every planned operation completed.
-    Success { completed: Vec<DeployOperation> },
-    /// Execution stopped at `failed`; `unexecuted` is the rest of the plan.
-    Failed {
-        completed: Vec<DeployOperation>,
-        failed: FailedOperation<E>,
-        unexecuted: Vec<DeployOperation>,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FailedOperation<E> {
-    Operation {
-        operation: DeployOperation,
-        error: E,
-    },
-    ReplacementHealth {
-        operation: ReplacementOperation,
-        error: E,
-        compensation: ReplacementCompensation<E>,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ReplacementCompensation<E> {
-    StartFirst {
-        stop_new_container: Result<(), E>,
-    },
-    StopFirst {
-        stop_new_container: Result<(), E>,
-        restart_old_container: RestartAttempt<E>,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RestartAttempt<E> {
-    NotAttempted,
-    Attempted(Result<(), E>),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReplacementOperation {
-    pub machine_id: MachineId,
-    pub old_container_id: ContainerId,
-    pub spec: ResolvedServiceSpec,
-    pub skip_health_monitor: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DeployOperation {
-    CreateVolume {
-        machine_id: MachineId,
-        volume: ServiceVolume,
-    },
-    RunContainer {
-        machine_id: MachineId,
-        spec: ResolvedServiceSpec,
-        skip_health_monitor: bool,
-    },
-    StopContainer {
-        machine_id: MachineId,
-        container_id: ContainerId,
-    },
-    RemoveContainer {
-        machine_id: MachineId,
-        container_id: ContainerId,
-    },
-    ReplaceContainer(ReplacementOperation),
-    StopHook {
-        machine_id: MachineId,
-        container_id: ContainerId,
-    },
-    RunHook {
-        machine_id: MachineId,
-        spec: ResolvedServiceSpec,
-        old_hook_containers: Vec<(MachineId, ContainerId)>,
-    },
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

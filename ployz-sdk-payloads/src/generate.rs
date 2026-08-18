@@ -7,8 +7,9 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployIntent, DockerVolume,
-    DockerVolumeId, DockerVolumeName, HealthObservation, MachineFailure, MachineId, MachineSuccess,
+    CapabilityName, ContainerId, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployIntent,
+    DeployOperation, DeployOutcome, DockerVolume, DockerVolumeId, DockerVolumeName,
+    FailedOperation, HealthObservation, MachineFailure, MachineId, MachineSuccess,
     MembershipObservation, PROTOCOL_MAJOR, PartialResult, PlanOptions, RpcError, RpcErrorCode,
     ServiceAttempt, ServiceName,
 };
@@ -49,6 +50,8 @@ const PAYLOADS: &[(&str, Shape)] = &[
     ("DockerVolumeName", Shape::Alias("string")),
     ("CapabilityName", Shape::Alias("string")),
     ("RequestedServiceSpec", Shape::Alias("JsonValue")),
+    ("ResolvedServiceSpec", Shape::Alias("JsonValue")),
+    ("ServiceVolume", Shape::Alias("JsonValue")),
     (
         "MembershipObservation",
         Shape::OpenString(MembershipObservation::known_wires()),
@@ -134,9 +137,45 @@ const PAYLOADS: &[(&str, Shape)] = &[
         ]),
     ),
     (
+        "SerdeResult",
+        Shape::Raw(
+            "export type SerdeResult<T, E> =\n  | Additive<{ Ok: T }>\n  | Additive<{ Err: E }>;\n",
+        ),
+    ),
+    (
+        "ReplacementOperation",
+        Shape::Raw(
+            "export type ReplacementOperation = Additive<{\n  machine_id: MachineId;\n  old_container_id: ContainerId;\n  spec: ResolvedServiceSpec;\n  skip_health_monitor: boolean;\n}>;\n",
+        ),
+    ),
+    (
+        "DeployOperation",
+        Shape::Raw(
+            "export type DeployOperation =\n  | Additive<{ CreateVolume: { machine_id: MachineId; volume: ServiceVolume } }>\n  | Additive<{\n      RunContainer: {\n        machine_id: MachineId;\n        spec: ResolvedServiceSpec;\n        skip_health_monitor: boolean;\n      };\n    }>\n  | Additive<{ StopContainer: { machine_id: MachineId; container_id: ContainerId } }>\n  | Additive<{ RemoveContainer: { machine_id: MachineId; container_id: ContainerId } }>\n  | Additive<{ ReplaceContainer: ReplacementOperation }>\n  | Additive<{ StopHook: { machine_id: MachineId; container_id: ContainerId } }>\n  | Additive<{\n      RunHook: {\n        machine_id: MachineId;\n        spec: ResolvedServiceSpec;\n        old_hook_containers: Array<[MachineId, ContainerId]>;\n      };\n    }>;\n",
+        ),
+    ),
+    (
+        "RestartAttempt",
+        Shape::Raw(
+            "export type RestartAttempt<E = RpcError> =\n  | \"NotAttempted\"\n  | Additive<{ Attempted: SerdeResult<null, E> }>;\n",
+        ),
+    ),
+    (
+        "ReplacementCompensation",
+        Shape::Raw(
+            "export type ReplacementCompensation<E = RpcError> =\n  | Additive<{ StartFirst: { stop_new_container: SerdeResult<null, E> } }>\n  | Additive<{\n      StopFirst: {\n        stop_new_container: SerdeResult<null, E>;\n        restart_old_container: RestartAttempt<E>;\n      };\n    }>;\n",
+        ),
+    ),
+    (
+        "FailedOperation",
+        Shape::Raw(
+            "export type FailedOperation<E = RpcError> =\n  | Additive<{ Operation: { operation: DeployOperation; error: E } }>\n  | Additive<{\n      ReplacementHealth: {\n        operation: ReplacementOperation;\n        error: E;\n        compensation: ReplacementCompensation<E>;\n      };\n    }>;\n",
+        ),
+    ),
+    (
         "DeployOutcome",
         Shape::Raw(
-            "export type DeployOutcome<E = RpcError> =\n  | Additive<{ Success: { completed: JsonValue[] } }>\n  | Additive<{ Failed: { completed: JsonValue[]; failed: JsonValue; unexecuted: JsonValue[] } }>;\n",
+            "export type DeployOutcome<E = RpcError> =\n  | Additive<{ Success: { completed: DeployOperation[] } }>\n  | Additive<{\n      Failed: {\n        completed: DeployOperation[];\n        failed: FailedOperation<E>;\n        unexecuted: DeployOperation[];\n      };\n    }>;\n",
         ),
     ),
 ];
@@ -212,6 +251,15 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     );
     fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
     fixtures.insert("deploy_intent".into(), to_value(&deploy_intent()));
+    fixtures.insert("deploy_outcome".into(), to_value(&deploy_outcome()));
+    fixtures.insert(
+        "deploy_outcome_unknown_fields".into(),
+        with_unknown_field(to_value(&deploy_outcome()), "future_note", json!("ok")),
+    );
+    fixtures.insert(
+        "deploy_outcome_failed".into(),
+        to_value(&deploy_outcome_failed()),
+    );
     fixtures
 }
 
@@ -337,6 +385,15 @@ fn check_additive_fields_match_rust() {
         ("PlanOptions", to_value(&PlanOptions::default())),
         ("ServiceAttempt", to_value(&service_attempt())),
     ];
+    for (name, shape) in PAYLOADS {
+        let Shape::Additive(_) = shape else {
+            continue;
+        };
+        assert!(
+            examples.iter().any(|(example, _)| *example == *name),
+            "{name} Additive shape has no serde example"
+        );
+    }
     for (name, value) in examples {
         let fields = additive_fields(name)
             .unwrap_or_else(|| panic!("{name} is missing from Additive payload shapes"));
@@ -406,6 +463,35 @@ fn service_attempt() -> ServiceAttempt {
 
 fn deploy_intent() -> DeployIntent {
     DeployIntent::new(Vec::new(), Vec::new(), PlanOptions::default())
+}
+
+fn deploy_outcome() -> DeployOutcome<RpcError> {
+    DeployOutcome::Success {
+        completed: vec![DeployOperation::StopContainer {
+            machine_id: machine_id(MACHINE_ID_HEX),
+            container_id: container_id(),
+        }],
+    }
+}
+
+fn deploy_outcome_failed() -> DeployOutcome<RpcError> {
+    DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed: FailedOperation::Operation {
+            operation: DeployOperation::StopContainer {
+                machine_id: machine_id(MACHINE_ID_HEX),
+                container_id: container_id(),
+            },
+            error: rpc_error(),
+        },
+        unexecuted: Vec::new(),
+    }
+}
+
+const CONTAINER_ID_HEX: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn container_id() -> ContainerId {
+    ContainerId::parse(CONTAINER_ID_HEX).expect("fixture Container ID is valid")
 }
 
 fn partial_result() -> PartialResult<DockerVolume, RpcError> {

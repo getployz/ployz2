@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, DeployIntent, DockerVolume, HealthObservation,
+    DESCRIBE_CONTRACT_CAPABILITY, DeployIntent, DeployOutcome, DockerVolume, HealthObservation,
     MembershipObservation, PlanOptions, RpcError, RpcErrorCode, ServiceAttempt,
 };
 use ployz_sdk_payloads::{
@@ -124,6 +124,26 @@ fn json_fixtures_round_trip_through_rust_types() {
 
     let attempt: ServiceAttempt = decode_fixture(fixture(&fixtures, "service_attempt"));
     assert_eq!(attempt.name.as_str(), "web");
+
+    let outcome: DeployOutcome<RpcError> = decode_fixture(fixture(&fixtures, "deploy_outcome"));
+    let DeployOutcome::Success { completed } = &outcome else {
+        panic!("deploy_outcome fixture must be Success");
+    };
+    assert_eq!(completed.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&outcome).unwrap(),
+        *fixture(&fixtures, "deploy_outcome")
+    );
+
+    let failed: DeployOutcome<RpcError> =
+        decode_fixture(fixture(&fixtures, "deploy_outcome_failed"));
+    let DeployOutcome::Failed { .. } = &failed else {
+        panic!("deploy_outcome_failed fixture must be Failed");
+    };
+    assert_eq!(
+        serde_json::to_value(&failed).unwrap(),
+        *fixture(&fixtures, "deploy_outcome_failed")
+    );
 }
 
 #[test]
@@ -138,6 +158,12 @@ fn unknown_fields_are_accepted_on_public_payloads() {
         serde_json::to_value(&volume).unwrap(),
         *fixture(&fixtures, "docker_volume")
     );
+
+    let outcome: DeployOutcome<RpcError> =
+        decode_fixture(fixture(&fixtures, "deploy_outcome_unknown_fields"));
+    let DeployOutcome::Success { .. } = outcome else {
+        panic!("deploy_outcome_unknown_fields must decode as Success");
+    };
 }
 
 #[test]
@@ -186,9 +212,12 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type ContractDescription = Additive<{"));
     assert!(dts.contains("export type DeployIntent = Additive<{"));
     assert!(dts.contains("target: RequestedServiceSpec[]"));
+    assert!(dts.contains("export type DeployOperation ="));
+    assert!(dts.contains("export type FailedOperation<E = RpcError> ="));
     assert!(dts.contains("export type DeployOutcome<E = RpcError> ="));
-    assert!(dts.contains("{ Success: { completed: JsonValue[] } }"));
-    assert!(dts.contains("unexecuted: JsonValue[]"));
+    assert!(dts.contains("{ Success: { completed: DeployOperation[] } }"));
+    assert!(dts.contains("unexecuted: DeployOperation[]"));
+    assert!(dts.contains("failed: FailedOperation<E>"));
     assert!(dts.contains("export const DESCRIBE_CONTRACT_CAPABILITY: CapabilityName"));
     assert!(dts.contains(DESCRIBE_CONTRACT_CAPABILITY));
     assert!(dts.contains(CERTIFICATE_POLICY_CAPABILITY));
