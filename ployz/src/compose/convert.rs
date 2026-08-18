@@ -142,8 +142,10 @@ impl ComposeProject {
     }
 
     pub(crate) fn external_volume_names(&self) -> impl Iterator<Item = DockerVolumeName> {
-        self.volumes.iter().filter_map(|(key, volume)| {
-            is_external(&volume.external).then(|| {
+        self.volumes
+            .iter()
+            .filter(|(_, volume)| is_external(&volume.external))
+            .map(|(key, volume)| {
                 // Compose mapping keys are non-empty. An empty `name:` falls back to the key.
                 let name = volume
                     .name
@@ -152,7 +154,6 @@ impl ComposeProject {
                     .unwrap_or(key.as_str());
                 DockerVolumeName::parse(name).expect("compose mapping keys are non-empty")
             })
-        })
     }
 }
 
