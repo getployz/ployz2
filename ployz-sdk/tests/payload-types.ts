@@ -12,31 +12,22 @@ import type {
 } from "../generated/payloads";
 import fixtures from "../generated/fixtures.json";
 
-const volumeDriver: VolumeDriver = fixtures.volume_driver;
-const configSpec: ConfigSpec = fixtures.config_spec;
-const configMount: ConfigMount = fixtures.config_mount;
-const deviceMapping: DeviceMapping = fixtures.device_mapping;
-const deviceReservation: DeviceReservation = fixtures.device_reservation;
-const ulimit: Ulimit = fixtures.ulimit;
-const requestedConfigs: NonNullable<RequestedServiceSpec["configs"]> =
-  fixtures.requested_service_spec_typed.configs;
-const resolvedConfigs: NonNullable<ResolvedServiceSpec["configs"]> =
-  fixtures.resolved_service_spec_typed.configs;
-const configured: HealthcheckSpec =
-  fixtures.requested_service_spec_typed.container.healthcheck;
-const effective: ContainerObservation["effective_healthcheck"] =
-  fixtures.container_observation_disabled_healthcheck.effective_healthcheck;
-
-void volumeDriver;
-void configSpec;
-void configMount;
-void deviceMapping;
-void deviceReservation;
-void ulimit;
-void requestedConfigs;
-void resolvedConfigs;
-void configured;
-void effective;
+fixtures.volume_driver satisfies VolumeDriver;
+fixtures.config_spec satisfies ConfigSpec;
+fixtures.config_mount satisfies ConfigMount;
+fixtures.device_mapping satisfies DeviceMapping;
+fixtures.device_reservation satisfies DeviceReservation;
+fixtures.ulimit satisfies Ulimit;
+fixtures.requested_service_spec_typed.configs satisfies NonNullable<
+  RequestedServiceSpec["configs"]
+>;
+fixtures.resolved_service_spec_typed.configs satisfies NonNullable<
+  ResolvedServiceSpec["configs"]
+>;
+fixtures.requested_service_spec_typed.container
+  .healthcheck satisfies HealthcheckSpec;
+fixtures.container_observation_disabled_healthcheck
+  .effective_healthcheck satisfies ContainerObservation["effective_healthcheck"];
 
 // @ts-expect-error VolumeDriver options values are strings
 const invalidDriver: VolumeDriver = { name: "nfs", options: { share: 1 } };

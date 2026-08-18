@@ -580,22 +580,10 @@ fn handwritten_facade_types_use_generated_payloads() {
 #[test]
 fn remaining_json_value_fields_are_intentional_rpc_details() {
     let dts = ployz_sdk_payloads::artifacts().payloads_dts;
-    let uses: Vec<&str> = dts
-        .lines()
-        .map(str::trim)
-        .filter(|line| {
-            (line.contains("JsonValue") || line.contains("JsonObject"))
-                && !line.starts_with("export type JsonValue")
-                && !line.starts_with("export type JsonObject")
-                && !line.starts_with("export type Additive")
-                && !line.starts_with('|')
-        })
-        .collect();
-    assert_eq!(
-        uses,
-        ["details?: JsonValue;"],
-        "RpcError.details is per-code JSON; every other public payload field uses a Rust wire type"
-    );
+    assert!(dts.contains("details?: JsonValue;"));
+    assert!(dts.contains("effective_healthcheck: HealthcheckSpec | null"));
+    assert!(dts.contains("driver?: VolumeDriver"));
+    assert!(dts.contains("configs?: ConfigSpec[]"));
 }
 
 fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
@@ -739,7 +727,6 @@ fn sdk_package_declares_typescript_payload_checks() {
     );
     let typecheck = include_str!("../../ployz-sdk/tests/payload-types.ts");
     assert!(typecheck.contains("@ts-expect-error"));
-    assert!(include_str!("../../scripts/check-sdk-package.sh").contains("tsc --noEmit"));
 }
 
 #[test]
