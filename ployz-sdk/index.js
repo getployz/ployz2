@@ -19,42 +19,38 @@ class Client {
   }
 }
 
-function iterateWatch(start, signal) {
-  return {
-    async *[Symbol.asyncIterator]() {
-      if (signal?.aborted) {
+async function* iterateWatch(start, signal) {
+  if (signal?.aborted) {
+    return;
+  }
+  let stream;
+  const stop = () => {
+    if (stream) {
+      stream.cancel();
+    }
+  };
+  if (signal) {
+    signal.addEventListener("abort", stop, { once: true });
+  }
+  try {
+    stream = await start();
+    if (signal?.aborted) {
+      stream.cancel();
+      return;
+    }
+    for (;;) {
+      const value = await stream.next();
+      if (value == null || signal?.aborted) {
         return;
       }
-      let stream;
-      const stop = () => {
-        if (stream) {
-          stream.cancel();
-        }
-      };
-      if (signal) {
-        signal.addEventListener("abort", stop, { once: true });
-      }
-      try {
-        stream = await start();
-        if (signal?.aborted) {
-          stream.cancel();
-          return;
-        }
-        for (;;) {
-          const value = await stream.next();
-          if (value == null || signal?.aborted) {
-            return;
-          }
-          yield value;
-        }
-      } finally {
-        if (signal) {
-          signal.removeEventListener("abort", stop);
-        }
-        stop();
-      }
-    },
-  };
+      yield value;
+    }
+  } finally {
+    if (signal) {
+      signal.removeEventListener("abort", stop);
+    }
+    stop();
+  }
 }
 
 async function connect(options) {
