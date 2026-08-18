@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{
     Container, ContainerObservation, ContainerRef, HookContainer, PartialResult, QualifiedService,
-    ServiceContainer, ServiceId, ServiceName, ServiceSelector,
+    ServiceContainer, ServiceId, ServiceSelector,
 };
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
@@ -20,12 +20,6 @@ pub struct ServiceObservation {
 }
 
 impl ServiceObservation {
-    /// Logical Service Name from the Qualified Service identity.
-    #[must_use]
-    pub fn service_name(&self) -> &ServiceName {
-        &self.identity.name
-    }
-
     /// True when this Service's logical name equals `selector`.
     #[must_use]
     pub fn has_name(&self, selector: &str) -> bool {

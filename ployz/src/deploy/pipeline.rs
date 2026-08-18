@@ -156,29 +156,34 @@ pub(super) async fn plan_project(
     Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 
+pub(super) enum ScalePlan {
+    Unchanged(DeployPreview),
+    Ready {
+        preview: DeployPreview,
+        project_name: ProjectName,
+    },
+}
+
 pub(super) async fn plan_scale(
     client: &mut Client,
     selector: &ServiceSelector,
     replicas: NonZeroU32,
     options: PlanOptions,
-) -> Result<(DeployPreview, Option<ProjectName>), Failure> {
+) -> Result<ScalePlan, Failure> {
     let machines = list_machines(client).await?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     let Some(choice) = choose_scale_spec(&snapshot, selector, replicas)? else {
-        return Ok((
-            DeployPreview {
-                operations: Vec::new(),
-                warnings,
-            },
-            None,
-        ));
+        return Ok(ScalePlan::Unchanged(DeployPreview {
+            operations: Vec::new(),
+            warnings,
+        }));
     };
     let project_name = choice.project_name;
     let mut intent = DeployIntent::apply_one(project_name.clone(), choice.requested, options);
-    Ok((
-        prepare_intent(client, snapshot, warnings, &mut intent).await?,
-        Some(project_name),
-    ))
+    Ok(ScalePlan::Ready {
+        preview: prepare_intent(client, snapshot, warnings, &mut intent).await?,
+        project_name,
+    })
 }
 
 async fn prepare_intent(

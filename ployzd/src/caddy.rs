@@ -354,14 +354,14 @@ async fn generate_caddyfile<A: CaddyAdmin>(
                     Err(error) => {
                         skipped.push(format!(
                             "Service '{}': validation failed: {error}",
-                            system_caddy()
+                            QualifiedService::system_caddy()
                         ));
                     }
                 }
             }
             Err(error) => skipped.push(format!(
                 "Service '{}': rendering failed: {error}",
-                system_caddy()
+                QualifiedService::system_caddy()
             )),
         }
     }
@@ -553,10 +553,6 @@ fn upstreams(
         .join(" ")
 }
 
-fn system_caddy() -> QualifiedService {
-    QualifiedService::system_caddy()
-}
-
 fn automatic_caddyfile(
     local_machine: &MachineId,
     machine_name: &str,
@@ -688,7 +684,7 @@ fn write_global_options(output: &mut String, global_config: Option<&str>) {
             let _ = writeln!(
                 output,
                 "# User-defined global config from Service '{}'.",
-                system_caddy()
+                QualifiedService::system_caddy()
             );
             output.push_str(&merge_auto_https(user));
             output.push_str("\n\n");

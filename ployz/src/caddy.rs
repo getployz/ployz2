@@ -6,13 +6,12 @@ use oci_client::{
 use ployz_core::{
     ContainerObservation, ContainerPath, ContainerResources, HostBind, MachinePath, MachineTarget,
     Placement, PortPublication, PullPolicy, QualifiedService, RequestedServiceSpec, RestartPolicy,
-    ServiceContainer, ServiceContainerSpec, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceContainer, ServiceContainerSpec, ServiceMode, ServiceMount, ServiceVolume,
     ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
 };
 use semver::Version;
 use thiserror::Error;
 
-pub const SERVICE_NAME: &str = "caddy";
 pub const DATA_PATH: &str = "/var/lib/ployz/caddy";
 pub const RUNTIME_PATH: &str = "/run/ployz/caddy";
 
@@ -129,7 +128,7 @@ pub fn service_spec(
     )
     .expect("static Caddy Volume graph is valid");
     RequestedServiceSpec {
-        name: ServiceName::parse(SERVICE_NAME).expect("static Service Name is valid"),
+        name: QualifiedService::system_caddy().name,
         mode: ServiceMode::Global,
         container: ServiceContainerSpec {
             image,
