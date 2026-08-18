@@ -81,8 +81,9 @@ impl Client {
         crate::project::refuse_reserved(project)?;
         let machines = self.machines().await?;
         let (snapshot, warnings) = gather_snapshot(self, machines).await?;
-        let preview = planning::plan_project_removal(project, &snapshot, volumes)?;
-        Ok(attach_leading_warnings(preview, warnings))
+        let mut preview = planning::plan_project_removal(project, &snapshot, volumes)?;
+        preview.warnings.splice(0..0, warnings);
+        Ok(preview)
     }
 
     /// Execute the operations on this Deploy Preview. Does not re-plan.
@@ -216,7 +217,7 @@ async fn preview_gathered(
     } else {
         None
     };
-    let preview = preview_deploy(
+    let mut preview = preview_deploy(
         intent,
         &snapshot,
         IngressContext {
@@ -224,16 +225,8 @@ async fn preview_gathered(
         },
     )?;
     warnings.extend(hostname_warnings(&preview, &snapshot.machines).await);
-    Ok(attach_leading_warnings(preview, warnings))
-}
-
-fn attach_leading_warnings(
-    mut preview: DeployPreview,
-    mut warnings: Vec<DeployWarning>,
-) -> DeployPreview {
-    warnings.extend(std::mem::take(&mut preview.warnings));
-    preview.warnings = warnings;
-    preview
+    preview.warnings.splice(0..0, warnings);
+    Ok(preview)
 }
 
 pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
