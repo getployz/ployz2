@@ -1,0 +1,24 @@
+[package]
+name = "ployz-cli-ui-spike"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+description = "Throwaway CLI look spike. Not a product surface."
+
+[dependencies]
+anstream = "1.0.0"
+anstyle = "1.0.13"
+clap = { version = "4.6.6", features = ["derive"] }
+cliclack = "0.5.6"
+iocraft = "0.8.4"
+miette = { version = "7.6.0", features = ["fancy"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tabled = "0.20.0"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt", "time"] }
+
+[lints]
+workspace = true
