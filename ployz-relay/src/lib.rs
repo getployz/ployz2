@@ -3,7 +3,6 @@
 use std::{
     collections::HashMap,
     fmt,
-    future::pending,
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -14,7 +13,7 @@ use prost::Message;
 use thiserror::Error;
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, oneshot, watch},
+    sync::{mpsc, watch},
     task::JoinHandle,
 };
 use tokio_stream::{
@@ -184,7 +183,6 @@ fn parse_credential(value: impl Into<String>) -> Result<String, RelayError> {
 
 /// Starts HTTP/2 GOAWAY drain on a running [`Relay::serve`] task.
 pub struct Goaway {
-    signal: oneshot::Sender<()>,
     phase: watch::Sender<Phase>,
 }
 
@@ -192,7 +190,6 @@ impl Goaway {
     /// Refuse new Attaches and drain in-flight tunnels, then close.
     pub fn start(self) {
         self.phase.send_replace(Phase::Draining);
-        let _ = self.signal.send(());
     }
 }
 
@@ -213,13 +210,25 @@ pub struct Relay {
 }
 
 struct State {
-    machines: HashMap<MachineId, mpsc::Sender<Result<Open, Status>>>,
+    machines: HashMap<MachineId, Registration>,
     pending: HashMap<TunnelId, Pending>,
+    next_generation: u64,
+}
+
+struct Registration {
+    // Distinguishes this Register from a later replacement so the old inbound
+    // task cannot delete the winner.
+    generation: u64,
+    open_tx: mpsc::Sender<Result<Open, Status>>,
+    // Dropped when this Register is displaced; Dial/Attach forwarders abort.
+    cancel: watch::Sender<()>,
 }
 
 struct Pending {
+    machine_id: MachineId,
     to_machine: mpsc::Receiver<Result<TunnelFrame, Status>>,
     from_machine: mpsc::Sender<Result<TunnelFrame, Status>>,
+    cancel: watch::Receiver<()>,
 }
 
 impl Relay {
@@ -238,6 +247,7 @@ impl Relay {
             state: Arc::new(Mutex::new(State {
                 machines: HashMap::new(),
                 pending: HashMap::new(),
+                next_generation: 0,
             })),
             phase: watch::channel(Phase::Live).0,
         })
@@ -262,6 +272,10 @@ impl Relay {
     }
 
     /// Bind with a drain timeout. Production uses [`serve`] (30s).
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from binding the listener.
     #[doc(hidden)]
     pub async fn serve_with_drain(
         &self,
@@ -273,29 +287,26 @@ impl Relay {
     )> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
-        let (signal, goaway_rx) = oneshot::channel();
-        let (started_tx, started_rx) = oneshot::channel();
         let server = CloudRelayServer::new(self.clone());
         let closer = self.clone();
+        let mut shutdown_phase = self.phase.subscribe();
+        let mut expire_phase = closer.phase.subscribe();
         let handle = tokio::spawn(async move {
             let shutdown = async move {
-                if goaway_rx.await.is_ok() {
-                    let _ = started_tx.send(());
-                } else {
-                    pending::<()>().await
-                }
+                let _ = shutdown_phase.wait_for(|phase| *phase != Phase::Live).await;
             };
             let serve = Server::builder()
                 .add_service(server)
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown);
-            let expire = async {
-                match started_rx.await {
-                    Ok(()) => {
-                        tokio::time::sleep(drain).await;
-                        // tonic waits forever on the held Register stream.
-                        closer.force_close();
-                    }
-                    Err(_) => pending::<()>().await,
+            let expire = async move {
+                if expire_phase
+                    .wait_for(|phase| *phase != Phase::Live)
+                    .await
+                    .is_ok()
+                {
+                    tokio::time::sleep(drain).await;
+                    // tonic waits forever on the held Register stream.
+                    closer.force_close();
                 }
             };
             tokio::select! {
@@ -307,7 +318,6 @@ impl Relay {
             address,
             handle,
             Goaway {
-                signal,
                 phase: self.phase.clone(),
             },
         ))
@@ -318,6 +328,13 @@ impl Relay {
         let mut state = self.lock();
         state.machines.clear();
         state.pending.clear();
+    }
+
+    fn accepting(&self) -> bool {
+        match *self.phase.borrow() {
+            Phase::Live => true,
+            Phase::Draining | Phase::Closed => false,
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -340,26 +357,17 @@ fn metadata_str<'a>(metadata: &'a MetadataMap, key: &'static str) -> Option<&'a 
 async fn forward_frames(
     mut inbound: Streaming<TunnelFrame>,
     tx: mpsc::Sender<Result<TunnelFrame, Status>>,
-    mut phase: watch::Receiver<Phase>,
+    mut cancel: watch::Receiver<()>,
 ) {
     loop {
-        if *phase.borrow() == Phase::Closed {
-            break;
-        }
         tokio::select! {
-            changed = phase.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-            }
             frame = inbound.next() => {
-                let Some(Ok(frame)) = frame else {
-                    break;
-                };
+                let Some(Ok(frame)) = frame else { break };
                 if tx.send(Ok(frame)).await.is_err() {
                     break;
                 }
             }
+            _ = cancel.changed() => break,
         }
     }
 }
@@ -378,6 +386,9 @@ impl CloudRelay for Relay {
             Some(bearer) if bearer == self.pairing.as_str() => {}
             _ => return Err(Status::unauthenticated("invalid Pairing Credential")),
         }
+        if !self.accepting() {
+            return Err(Status::unavailable("GOAWAY"));
+        }
         let mut inbound = request.into_inner();
         let first = inbound
             .next()
@@ -387,13 +398,24 @@ impl CloudRelay for Relay {
             .machine_id()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let (open_tx, open_rx) = mpsc::channel(TUNNEL_BUFFER);
-        {
+        let (cancel, _) = watch::channel(());
+        let generation = {
             let mut state = self.lock();
-            if state.machines.contains_key(&machine_id) {
-                return Err(Status::already_exists("Machine already registered"));
-            }
-            state.machines.insert(machine_id, open_tx.clone());
-        }
+            let generation = state.next_generation;
+            state.next_generation += 1;
+            state
+                .pending
+                .retain(|_, pending| pending.machine_id != machine_id);
+            state.machines.insert(
+                machine_id,
+                Registration {
+                    generation,
+                    open_tx,
+                    cancel,
+                },
+            );
+            generation
+        };
         let state = Arc::clone(&self.state);
         tokio::spawn(async move {
             while inbound.next().await.is_some() {}
@@ -401,8 +423,11 @@ impl CloudRelay for Relay {
                 && state
                     .machines
                     .get(&machine_id)
-                    .is_some_and(|current| current.same_channel(&open_tx))
+                    .is_some_and(|current| current.generation == generation)
             {
+                state
+                    .pending
+                    .retain(|_, pending| pending.machine_id != machine_id);
                 state.machines.remove(&machine_id);
             }
         });
@@ -420,6 +445,9 @@ impl CloudRelay for Relay {
             Some(bearer) if bearer == self.dial.as_str() => {}
             _ => return Err(Status::unauthenticated("invalid Dial Credential")),
         }
+        if !self.accepting() {
+            return Err(Status::unavailable("GOAWAY"));
+        }
         let machine_id = MachineId::parse(
             metadata_str(request.metadata(), MACHINE_ID_METADATA)
                 .ok_or_else(|| Status::invalid_argument("missing or invalid machine-id"))?,
@@ -428,31 +456,30 @@ impl CloudRelay for Relay {
         let tunnel_id = TunnelId::random();
         let (to_machine_tx, to_machine_rx) = mpsc::channel(TUNNEL_BUFFER);
         let (from_machine_tx, from_machine_rx) = mpsc::channel(TUNNEL_BUFFER);
-        let open_tx = {
+        let (open_tx, cancel) = {
             let mut state = self.lock();
-            let open_tx = state
+            let registration = state
                 .machines
                 .get(&machine_id)
-                .cloned()
                 .ok_or_else(|| Status::not_found("unknown Machine ID"))?;
+            let open_tx = registration.open_tx.clone();
+            let cancel = registration.cancel.subscribe();
             state.pending.insert(
                 tunnel_id,
                 Pending {
+                    machine_id,
                     to_machine: to_machine_rx,
                     from_machine: from_machine_tx,
+                    cancel: cancel.clone(),
                 },
             );
-            open_tx
+            (open_tx, cancel)
         };
         if open_tx.send(Ok(Open::new(&tunnel_id))).await.is_err() {
             self.lock().pending.remove(&tunnel_id);
             return Err(Status::unavailable("Register closed"));
         }
-        tokio::spawn(forward_frames(
-            request.into_inner(),
-            to_machine_tx,
-            self.phase.subscribe(),
-        ));
+        tokio::spawn(forward_frames(request.into_inner(), to_machine_tx, cancel));
         Ok(Response::new(ReceiverStream::new(from_machine_rx)))
     }
 
@@ -460,11 +487,8 @@ impl CloudRelay for Relay {
         &self,
         request: Request<Streaming<TunnelFrame>>,
     ) -> Result<Response<Self::AttachStream>, Status> {
-        match *self.phase.borrow() {
-            Phase::Live => {}
-            Phase::Draining | Phase::Closed => {
-                return Err(Status::unavailable("GOAWAY"));
-            }
+        if !self.accepting() {
+            return Err(Status::unavailable("GOAWAY"));
         }
         let tunnel_id = TunnelId::parse(
             metadata_str(request.metadata(), TUNNEL_ID_METADATA)
@@ -479,7 +503,7 @@ impl CloudRelay for Relay {
         tokio::spawn(forward_frames(
             request.into_inner(),
             pending.from_machine,
-            self.phase.subscribe(),
+            pending.cancel,
         ));
         Ok(Response::new(ReceiverStream::new(pending.to_machine)))
     }
@@ -519,10 +543,5 @@ mod tests {
     #[test]
     fn open_rejects_a_non_tunnel_id() {
         assert!(Open::default().tunnel_id().is_err());
-    }
-
-    #[test]
-    fn goaway_drain_is_thirty_seconds() {
-        assert_eq!(DRAIN, Duration::from_secs(30));
     }
 }

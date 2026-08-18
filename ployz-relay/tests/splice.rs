@@ -32,6 +32,64 @@ async fn register_dial_attach_splices_bytes_both_ways() {
 }
 
 #[tokio::test]
+async fn two_dial_attach_pairs_on_one_register_splice_independently() {
+    let mut session = Session::start().await;
+    session.register().await;
+    let (a_dial_tx, mut a_dial_in, a_attach_tx, mut a_attach_in) = session.accept_tunnel().await;
+    let (b_dial_tx, mut b_dial_in, b_attach_tx, mut b_attach_in) = session.accept_tunnel().await;
+
+    a_dial_tx
+        .send(TunnelFrame::new(b"a-cloud".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(recv_frame(&mut a_attach_in).await.data, b"a-cloud");
+
+    b_dial_tx
+        .send(TunnelFrame::new(b"b-cloud".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(recv_frame(&mut b_attach_in).await.data, b"b-cloud");
+
+    a_attach_tx
+        .send(TunnelFrame::new(b"a-machine".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(recv_frame(&mut a_dial_in).await.data, b"a-machine");
+
+    b_attach_tx
+        .send(TunnelFrame::new(b"b-machine".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(recv_frame(&mut b_dial_in).await.data, b"b-machine");
+}
+
+#[tokio::test]
+async fn second_register_for_the_same_machine_replaces_the_first() {
+    let mut session = Session::start().await;
+    session.register().await;
+    let mut old_opens = session.opens.take().unwrap();
+
+    session.register().await;
+
+    assert_stream_closes(&mut old_opens).await;
+
+    let (dial_tx, mut dial_in, attach_tx, mut attach_in) = session.accept_tunnel().await;
+    dial_tx
+        .send(TunnelFrame::new(b"after-replace".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(recv_frame(&mut attach_in).await.data, b"after-replace");
+    attach_tx
+        .send(TunnelFrame::new(b"machine-after-replace".to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(
+        recv_frame(&mut dial_in).await.data,
+        b"machine-after-replace"
+    );
+}
+
+#[tokio::test]
 async fn register_rejects_dial_credential() {
     let mut session = Session::start().await;
     let (tx, rx) = mpsc::channel(4);
@@ -61,17 +119,15 @@ async fn attach_of_unknown_tunnel_id_fails_closed() {
 }
 
 #[tokio::test]
-async fn second_register_for_the_same_machine_is_rejected() {
+async fn tunnels_on_the_replaced_register_close() {
     let mut session = Session::start().await;
     session.register().await;
-    let (tx, rx) = mpsc::channel(4);
-    tx.send(RegisterRequest::new(&session.machine_id))
-        .await
-        .unwrap();
-    let mut request = Request::new(ReceiverStream::new(rx));
-    set_bearer(request.metadata_mut(), PAIRING);
-    let error = session.machine.register(request).await.unwrap_err();
-    assert_eq!(error.code(), tonic::Code::AlreadyExists);
+    let (_dial_tx, mut dial_in, _attach_tx, mut attach_in) = session.accept_tunnel().await;
+
+    session.register().await;
+
+    assert_stream_closes(&mut dial_in).await;
+    assert_stream_closes(&mut attach_in).await;
 }
 
 #[tokio::test]
@@ -184,8 +240,8 @@ async fn in_flight_tunnel_continues_until_drain_then_closes() {
         .unwrap();
     assert_eq!(recv_frame(&mut dial_in).await.data, b"still-open");
 
-    stream_closes(&mut attach_in).await;
-    stream_closes(&mut dial_in).await;
+    assert_stream_closes(&mut attach_in).await;
+    assert_stream_closes(&mut dial_in).await;
 }
 
 #[tokio::test]
@@ -196,8 +252,8 @@ async fn register_after_close_is_a_new_session() {
     let old_tunnel = session.tunnel_id.expect("splice opens a tunnel");
     session.goaway();
     session.wait_closed().await;
-    stream_closes(&mut attach_in).await;
-    stream_closes(&mut dial_in).await;
+    assert_stream_closes(&mut attach_in).await;
+    assert_stream_closes(&mut dial_in).await;
 
     let mut next = Session::start_with_machine(machine_id).await;
     let error = next
@@ -297,6 +353,18 @@ impl Session {
         tonic::Streaming<TunnelFrame>,
     ) {
         self.register().await;
+        let (dial_tx, dial_in, attach_tx, attach_in) = self.accept_tunnel().await;
+        (self, dial_tx, dial_in, attach_tx, attach_in)
+    }
+
+    async fn accept_tunnel(
+        &mut self,
+    ) -> (
+        mpsc::Sender<TunnelFrame>,
+        tonic::Streaming<TunnelFrame>,
+        mpsc::Sender<TunnelFrame>,
+        tonic::Streaming<TunnelFrame>,
+    ) {
         let (dial_tx, dial_rx) = mpsc::channel(4);
         let dial_in = self
             .cloud
@@ -326,7 +394,7 @@ impl Session {
             .unwrap()
             .into_inner();
         self.tunnel_id = Some(open.tunnel_id().expect("Open carries a Tunnel ID"));
-        (self, dial_tx, dial_in, attach_tx, attach_in)
+        (dial_tx, dial_in, attach_tx, attach_in)
     }
 
     fn dial_request(
@@ -385,10 +453,10 @@ fn attach_request(tunnel_id: &TunnelId) -> Request<ReceiverStream<TunnelFrame>> 
     request
 }
 
-async fn stream_closes(stream: &mut tonic::Streaming<TunnelFrame>) {
+async fn assert_stream_closes<T>(stream: &mut tonic::Streaming<T>) {
     match timeout(Duration::from_secs(2), stream.next()).await {
         Ok(None) | Ok(Some(Err(_))) => {}
-        Ok(Some(Ok(_))) => panic!("tunnel still open after drain"),
-        Err(_) => panic!("tunnel did not close after drain"),
+        Ok(Some(Ok(_))) => panic!("stream stayed open"),
+        Err(_) => panic!("stream did not close"),
     }
 }
