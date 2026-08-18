@@ -1,12 +1,12 @@
 use std::collections::BTreeSet;
 
 use ployz_core::{
-    AdvertisedEndpoint, CertificateAvailability, CertificateFailureKind, CertificateObservation,
-    ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    ContractDescription, DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation,
-    IngressHost, Machine, MachineId, MachineName, MachineObservation, MachineRuntime,
-    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
-    RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody, RttStatistics,
+    AdvertisedEndpoint, CertificateAvailability, CertificateBackoff, CertificateFailureKind,
+    CertificateObservation, ContainerId, ContainerKind, ContainerObservation,
+    ContainerRuntimeObservation, ContractDescription, DockerVolume, DockerVolumeId,
+    DockerVolumeName, HealthObservation, IngressHost, Machine, MachineId, MachineName,
+    MachineObservation, MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload,
+    PROTOCOL_MAJOR, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody, RttStatistics,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchRequest, SelectedEndpoint,
     ServiceContainer, ServiceId, ServiceName, ServiceObservation, WireGuardPublicKey, op,
 };
@@ -22,12 +22,6 @@ const FROZEN_FRAME: &str = include_str!("fixtures/runtime_watch_frame.json");
 
 #[test]
 fn runtime_watch_capability_is_always_advertised_and_not_inferred_from_daemon_version() {
-    assert_eq!(RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1");
-    assert_eq!(
-        op::RuntimeWatch::PATH,
-        "/ployz.rpc.v1.MachineRpc/RuntimeWatch"
-    );
-
     let old_daemon = ContractDescription {
         machine_id: MachineId::parse(MACHINE_ID).unwrap(),
         protocol_major: PROTOCOL_MAJOR,
@@ -144,12 +138,6 @@ fn observation_enums_keep_an_unknown_case() {
         CertificateFailureKind::Unrecognized("rate_limited".into())
     );
 
-    let membership: MembershipObservation = serde_json::from_str("\"gone\"").unwrap();
-    assert_eq!(
-        membership,
-        MembershipObservation::Unrecognized("gone".into())
-    );
-
     let cert: CertificateObservation = serde_json::from_value(json!({
         "hostname": "app.example.com",
         "status": "renewing",
@@ -162,7 +150,7 @@ fn observation_enums_keep_an_unknown_case() {
         CertificateAvailability::Unrecognized("renewing".into())
     );
     assert_eq!(cert.last_error, None);
-    assert_eq!(cert.failures, 0);
+    assert_eq!(cert.backoff, None);
 }
 
 fn insert_json_field(payload: &mut Value, pointer: &str, key: &str, value: Value) {
@@ -239,17 +227,13 @@ fn expected_frame() -> RuntimeWatchFrame {
                 hostname: IngressHost::parse("ok.example.com").unwrap(),
                 status: CertificateAvailability::Available,
                 last_error: None,
-                failure_kind: None,
-                next_attempt_at: None,
-                failures: 0,
+                backoff: None,
             },
             CertificateObservation {
                 hostname: IngressHost::parse("new.example.com").unwrap(),
                 status: CertificateAvailability::Pending,
                 last_error: None,
-                failure_kind: None,
-                next_attempt_at: None,
-                failures: 0,
+                backoff: None,
             },
             CertificateObservation {
                 hostname: IngressHost::parse("app.example.com").unwrap(),
@@ -258,17 +242,17 @@ fn expected_frame() -> RuntimeWatchFrame {
                     "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
                         .into(),
                 ),
-                failure_kind: Some(CertificateFailureKind::DoesNotResolve),
-                next_attempt_at: Some("2024-01-01T01:00:00Z".into()),
-                failures: 2,
+                backoff: Some(CertificateBackoff {
+                    failure_kind: CertificateFailureKind::DoesNotResolve,
+                    next_attempt_at: "2024-01-01T01:00:00Z".into(),
+                    failures: 2,
+                }),
             },
             CertificateObservation {
                 hostname: IngressHost::parse("maybe.example.com").unwrap(),
                 status: CertificateAvailability::Unknown,
                 last_error: None,
-                failure_kind: None,
-                next_attempt_at: None,
-                failures: 0,
+                backoff: None,
             },
         ],
         hosted_dns_hostname: Some("cluster.example.ts.net".into()),

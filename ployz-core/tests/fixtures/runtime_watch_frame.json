@@ -106,9 +106,11 @@
       "hostname": "app.example.com",
       "status": "failure",
       "last_error": "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1.",
-      "failure_kind": "does_not_resolve",
-      "next_attempt_at": "2024-01-01T01:00:00Z",
-      "failures": 2
+      "backoff": {
+        "failure_kind": "does_not_resolve",
+        "next_attempt_at": "2024-01-01T01:00:00Z",
+        "failures": 2
+      }
     },
     {
       "hostname": "maybe.example.com",

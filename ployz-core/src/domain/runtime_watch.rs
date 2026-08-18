@@ -20,6 +20,14 @@ crate::value::open_string_enum!(CertificateFailureKind, Unrecognized {
     Authority => "authority",
 });
 
+/// Shared backoff clock after a refusal or an authority failure.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CertificateBackoff {
+    pub failure_kind: CertificateFailureKind,
+    pub next_attempt_at: String,
+    pub failures: u32,
+}
+
 /// Redacted certificate status keyed by Ingress Hostname.
 ///
 /// Never carries Certificate Material or HTTP-01 challenge bytes.
@@ -30,15 +38,7 @@ pub struct CertificateObservation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure_kind: Option<CertificateFailureKind>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_attempt_at: Option<String>,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub failures: u32,
-}
-
-fn is_zero(value: &u32) -> bool {
-    *value == 0
+    pub backoff: Option<CertificateBackoff>,
 }
 
 /// Typed incomplete replicated IDs. An incomplete row is not a delete.

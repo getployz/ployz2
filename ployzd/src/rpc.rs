@@ -439,10 +439,8 @@ impl MachineRpc for MachineService {
 
     async fn runtime_watch(
         &self,
-        request: Request<OpaquePayload>,
+        _request: Request<OpaquePayload>,
     ) -> Result<Response<Self::RuntimeWatchStream>, Status> {
-        let _request =
-            op::RuntimeWatch::from_request_body(request_body(request)?).map_err(invalid_request)?;
         Err(Status::unimplemented(
             "Runtime Watch is catalogued and not served by this daemon yet",
         ))
