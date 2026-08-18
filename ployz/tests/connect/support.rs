@@ -16,11 +16,11 @@ use ployz::{
     context::{Connection, ConnectionSource, SelectedConnections},
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContractDescription, DockerVolume, DockerVolumeId, DockerVolumeName,
-    Machine, MachineId, MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
-    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, VolumeList,
-    WireGuardPublicKey, op,
+    AdvertisedEndpoint, ContainerCreated, ContainerId, ContractDescription, DockerVolume,
+    DockerVolumeId, DockerVolumeName, Machine, MachineId, MachineList, MachineName,
+    MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
+    OpaquePayload, PROTOCOL_MAJOR, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RuntimeWatchFrame, RuntimeWatchRequest, VolumeList, WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -130,6 +130,7 @@ pub(super) struct DiscoveryService {
     pub(super) list_rpc_calls: Arc<AtomicUsize>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
     watch: Arc<WatchHub>,
+    pub(super) machines: Vec<MachineObservation>,
 }
 
 impl DiscoveryService {
@@ -142,6 +143,7 @@ impl DiscoveryService {
             list_rpc_calls: Arc::new(AtomicUsize::new(0)),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
             watch: Arc::new(WatchHub::new()),
+            machines: vec![machine('a', "one")],
         }
     }
 
@@ -280,7 +282,7 @@ impl MachineRpc for DiscoveryService {
         self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
         Ok(Response::new(
             RpcResponse::from(MachineList {
-                machines: vec![machine('a', "one")],
+                machines: self.machines.clone(),
             })
             .encode()
             .unwrap(),
@@ -351,7 +353,14 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        Ok(Response::new(
+            RpcResponse::from(ContainerCreated {
+                container_id: created_container_id(),
+                display_name: "web-1".into(),
+            })
+            .encode()
+            .unwrap(),
+        ))
     }
 
     async fn remove_volume(
@@ -365,7 +374,13 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::ContainerChanged {
+                container_id: created_container_id(),
+            })
+            .encode()
+            .unwrap(),
+        ))
     }
 
     async fn stop_container(
@@ -509,6 +524,10 @@ impl MachineRpc for DiscoveryService {
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
+}
+
+fn created_container_id() -> ContainerId {
+    ContainerId::parse("1".repeat(64)).unwrap()
 }
 
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {

@@ -14,6 +14,10 @@ class Client {
     return this._inner.about();
   }
 
+  deploy(intent) {
+    return this._inner.deploy(intent);
+  }
+
   close() {
     return this._inner.close();
   }

@@ -1,4 +1,11 @@
-import type { ContractDescription, MachineId, RuntimeWatchFrame } from "./generated/payloads";
+import type {
+  ContractDescription,
+  DeployIntent,
+  DeployOutcome,
+  ExecutionError,
+  MachineId,
+  RuntimeWatchFrame,
+} from "./generated/payloads";
 export * from "./generated/payloads";
 
 export type ConnectOptions = {
@@ -18,5 +25,6 @@ export declare class Client {
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>;
   };
+  deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>;
   close(): Promise<void>;
 };

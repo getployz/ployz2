@@ -68,6 +68,9 @@ if (!dts.includes("export declare function connect")) {
 if (!dts.includes("about(): Promise<ContractDescription>")) {
   throw new Error("index.d.ts is missing about()");
 }
+if (!dts.includes("deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>")) {
+  throw new Error("index.d.ts is missing deploy()");
+}
 if (!dts.includes("close(): Promise<void>")) {
   throw new Error("index.d.ts is missing close()");
 }
@@ -77,10 +80,13 @@ if (!dts.includes("readonly runtime:")) {
 if (!dts.includes("watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>")) {
   throw new Error("index.d.ts is missing runtime.watch()");
 }
-for (const needle of ["connectSsh", "connectTcp", "connectUnix", "watchRuntime", "deploy("]) {
+for (const needle of ["connectSsh", "connectTcp", "connectUnix", "watchRuntime"]) {
   if (dts.includes(needle)) {
     throw new Error(`index.d.ts must not declare ${needle}`);
   }
+}
+if (typeof sdk.Client.prototype.deploy !== "function") {
+  throw new Error("Client.deploy must be a method");
 }
 
 async function expectRpc(fn, code) {

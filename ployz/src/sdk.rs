@@ -1,13 +1,15 @@
-//! Relay-only Cloud session: connect, about, runtime.watch, and close.
+//! Relay-only Cloud session: connect, about, runtime.watch, deploy, and close.
 
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
+use crate::deploy::{DeployError, DeployIntent};
 use ployz_core::{
-    ContractDescription, DescribeContractRequest, MachineId, OpaquePayload,
-    RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
+    ContractDescription, DeployOutcome, DescribeContractRequest, ExecutionError, MachineId,
+    OpaquePayload, RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode, RuntimeWatchFrame,
+    RuntimeWatchRequest, op,
 };
 
 /// Connected Cloud session over one Relay Attach.
@@ -104,6 +106,26 @@ impl Session {
         })
     }
 
+    /// Submit a Deploy Intent on the shared Rust Client and return a Deploy Outcome.
+    ///
+    /// Unary: no operation ID, reserve/submit, progress stream, or `ops.watch`.
+    /// Execution failure is [`DeployOutcome::Failed`] with the completed prefix,
+    /// failed operation, and unexecuted suffix. Planning and snapshot errors are
+    /// [`RpcError`], not an outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, snapshot
+    /// gathering fails, ingress expansion fails, or planning fails before
+    /// execution starts.
+    pub async fn deploy(
+        &self,
+        intent: DeployIntent,
+    ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
+        let mut client = self.client().await?;
+        client.deploy(intent).await.map_err(deploy_error)
+    }
+
     /// Drop the Client and Relay tunnel.
     ///
     /// Repeated calls are a no-op.
@@ -167,6 +189,22 @@ fn closed() -> RpcError {
     RpcError {
         code: RpcErrorCode::Unavailable,
         message: "client is closed".into(),
+        details: Value::Null,
+    }
+}
+
+fn deploy_error(error: DeployError) -> RpcError {
+    match error {
+        DeployError::Connect(error) => error.into(),
+        DeployError::Plan(error) => invalid_argument(error.to_string()),
+        DeployError::Ingress(error) => invalid_argument(error.to_string()),
+    }
+}
+
+fn invalid_argument(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::InvalidArgument,
+        message,
         details: Value::Null,
     }
 }
