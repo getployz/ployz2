@@ -10,8 +10,6 @@ use ployz_core::{ProjectName, ValueError};
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::compose::ComposeProject;
-
 /// Why a resolved Project name was chosen.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProjectNameSource {
@@ -61,17 +59,18 @@ pub enum ProjectError {
     InvalidName(#[from] ValueError),
     #[error("Project '{name}' is reserved for Ployz infrastructure")]
     Reserved { name: ProjectName },
-    #[error("no usable Project name in directory '{}'", .0.display())]
-    UnusableDirectory(PathBuf),
+    #[error("no Project name source was provided")]
+    NoSource,
 }
 
 /// Resolve one Project name. The first present source wins; invalid values are
-/// not normalised and do not fall through.
+/// not normalised and do not fall through. A directory with no basename is
+/// skipped.
 ///
 /// # Errors
 ///
-/// Returns when a present source is not a valid Project Name, or a directory
-/// source has no usable basename.
+/// Returns when a present source is not a valid Project Name, or no source
+/// produced a name.
 pub fn resolve_project_name(input: &ProjectNameInput<'_>) -> Result<ResolvedProject, ProjectError> {
     if let Some(value) = input.command_line {
         return parsed(value, ProjectNameSource::CommandLine);
@@ -82,16 +81,20 @@ pub fn resolve_project_name(input: &ProjectNameInput<'_>) -> Result<ResolvedProj
     if let Some(value) = input.compose_name {
         return parsed(value, ProjectNameSource::ComposeName);
     }
-    if let Some(directory) = input.compose_project_directory {
-        return from_directory(directory, ProjectNameSource::ComposeProjectDirectory);
+    if let Some(directory) = input.compose_project_directory
+        && let Some(name) = directory_basename(directory)
+    {
+        return parsed(name, ProjectNameSource::ComposeProjectDirectory);
     }
-    if let Some(directory) = input.current_directory {
-        return from_directory(directory, ProjectNameSource::CurrentDirectory);
+    if let Some(directory) = input.current_directory
+        && let Some(name) = directory_basename(directory)
+    {
+        return parsed(name, ProjectNameSource::CurrentDirectory);
     }
     if input.implicit_default {
         return parsed("default", ProjectNameSource::Default);
     }
-    Err(ProjectError::UnusableDirectory(PathBuf::from(".")))
+    Err(ProjectError::NoSource)
 }
 
 /// Refuse a reserved Project name on deployment and removal commands.
@@ -107,69 +110,95 @@ pub fn refuse_reserved(name: &ProjectName) -> Result<(), ProjectError> {
     }
 }
 
-/// Resolve a Project for `ployz run` / `scale`: CLI, `COMPOSE_PROJECT_NAME`, then `default`.
+fn user_project(resolved: ResolvedProject) -> Result<ResolvedProject, ProjectError> {
+    refuse_reserved(&resolved.name)?;
+    Ok(resolved)
+}
+
+/// Resolve a Project for `ployz run`: CLI, `COMPOSE_PROJECT_NAME`, then `default`.
 ///
 /// # Errors
 ///
-/// Returns when a present source is not a valid Project Name.
-pub fn resolve_for_run(matches: &ArgMatches) -> Result<ResolvedProject, ProjectError> {
+/// Returns when a present source is not a valid Project Name, or the name is reserved.
+pub(crate) fn resolve_for_run(matches: &ArgMatches) -> Result<ResolvedProject, ProjectError> {
     let (command_line, compose_project_name) = cli_sources(matches);
-    resolve_project_name(&ProjectNameInput {
+    user_project(resolve_project_name(&ProjectNameInput {
         command_line,
         compose_project_name,
         implicit_default: true,
         ..ProjectNameInput::default()
-    })
+    })?)
+}
+
+/// Resolve a Project for `scale`: CLI, `COMPOSE_PROJECT_NAME`, then current directory.
+///
+/// # Errors
+///
+/// Returns when a present source is not a valid Project Name, or the name is reserved.
+pub(crate) fn resolve_for_scale(matches: &ArgMatches) -> Result<ResolvedProject, ProjectError> {
+    let (command_line, compose_project_name) = cli_sources(matches);
+    let cwd = std::env::current_dir().ok();
+    user_project(resolve_project_name(&ProjectNameInput {
+        command_line,
+        compose_project_name,
+        current_directory: cwd.as_deref(),
+        ..ProjectNameInput::default()
+    })?)
 }
 
 /// Resolve a Project for Compose `deploy` using full precedence.
 ///
 /// # Errors
 ///
-/// Returns when a present source is not a valid Project Name, or the Compose
-/// project directory has no usable basename.
-pub fn resolve_for_deploy(
+/// Returns when a present source is not a valid Project Name, or the name is reserved.
+pub(crate) fn resolve_for_deploy(
     matches: &ArgMatches,
-    project: &ComposeProject,
+    working_dir: &Path,
     files: &[PathBuf],
 ) -> Result<ResolvedProject, ProjectError> {
     let (command_line, compose_project_name) = cli_sources(matches);
-    let compose_name = top_level_compose_name(files, &project.working_dir);
-    resolve_project_name(&ProjectNameInput {
+    let compose_name = top_level_compose_name(files);
+    let cwd = std::env::current_dir().ok();
+    let compose_dir = match cwd.as_deref() {
+        Some(cwd) => cwd.join(working_dir),
+        None => working_dir.to_path_buf(),
+    };
+    user_project(resolve_project_name(&ProjectNameInput {
         command_line,
         compose_project_name,
         compose_name: compose_name.as_deref(),
-        compose_project_directory: Some(&project.working_dir),
-        current_directory: None,
+        compose_project_directory: Some(&compose_dir),
+        current_directory: cwd.as_deref(),
         implicit_default: false,
-    })
+    })?)
 }
 
 /// Resolve a Project only when CLI or `COMPOSE_PROJECT_NAME` named one.
 ///
 /// # Errors
 ///
-/// Returns when a present source is not a valid Project Name.
-pub fn resolve_explicit(matches: &ArgMatches) -> Result<Option<ResolvedProject>, ProjectError> {
+/// Returns when a present source is not a valid Project Name, or the name is reserved.
+pub(crate) fn resolve_explicit(
+    matches: &ArgMatches,
+) -> Result<Option<ResolvedProject>, ProjectError> {
     let (command_line, compose_project_name) = cli_sources(matches);
     if command_line.is_none() && compose_project_name.is_none() {
         return Ok(None);
     }
-    resolve_project_name(&ProjectNameInput {
+    user_project(resolve_project_name(&ProjectNameInput {
         command_line,
         compose_project_name,
         ..ProjectNameInput::default()
-    })
+    })?)
     .map(Some)
 }
 
-/// Last top-level Compose `name` among the files Compose would load.
+/// Last top-level Compose `name` among the given files. Later files win.
 #[must_use]
-pub fn top_level_compose_name(explicit_files: &[PathBuf], working_dir: &Path) -> Option<String> {
-    let files = compose_files_to_scan(explicit_files, working_dir);
+pub(crate) fn top_level_compose_name(files: &[PathBuf]) -> Option<String> {
     let mut found = None;
     for file in files {
-        let Ok(text) = fs::read_to_string(&file) else {
+        let Ok(text) = fs::read_to_string(file) else {
             continue;
         };
         let Ok(parsed) = serde_norway::from_str::<NamedCompose>(&text) else {
@@ -200,16 +229,6 @@ fn parsed(value: &str, source: ProjectNameSource) -> Result<ResolvedProject, Pro
     })
 }
 
-fn from_directory(
-    directory: &Path,
-    source: ProjectNameSource,
-) -> Result<ResolvedProject, ProjectError> {
-    let Some(name) = directory_basename(directory) else {
-        return Err(ProjectError::UnusableDirectory(directory.to_owned()));
-    };
-    parsed(name, source)
-}
-
 fn directory_basename(path: &Path) -> Option<&str> {
     path.components()
         .rev()
@@ -220,47 +239,6 @@ fn directory_basename(path: &Path) -> Option<&str> {
             | Component::CurDir
             | Component::ParentDir => None,
         })
-}
-
-fn compose_files_to_scan(explicit_files: &[PathBuf], working_dir: &Path) -> Vec<PathBuf> {
-    if !explicit_files.is_empty() {
-        return explicit_files.to_vec();
-    }
-    let from_env = compose_files_from_environment();
-    if !from_env.is_empty() {
-        return from_env;
-    }
-    discovered_compose_files(working_dir)
-}
-
-fn compose_files_from_environment() -> Vec<PathBuf> {
-    let Some(files) = std::env::var_os("COMPOSE_FILE") else {
-        return Vec::new();
-    };
-    let separator = std::env::var_os("COMPOSE_PATH_SEPARATOR")
-        .filter(|separator| !separator.is_empty())
-        .unwrap_or_else(|| ":".into());
-    files
-        .to_string_lossy()
-        .split(separator.to_string_lossy().as_ref())
-        .filter(|file| !file.is_empty())
-        .map(PathBuf::from)
-        .collect()
-}
-
-fn discovered_compose_files(working_dir: &Path) -> Vec<PathBuf> {
-    for name in [
-        "compose.yaml",
-        "compose.yml",
-        "docker-compose.yaml",
-        "docker-compose.yml",
-    ] {
-        let path = working_dir.join(name);
-        if path.is_file() {
-            return vec![path];
-        }
-    }
-    Vec::new()
 }
 
 #[derive(Deserialize)]
@@ -431,17 +409,45 @@ mod tests {
     }
 
     #[test]
+    fn missing_directory_basename_falls_through_to_the_next_source() {
+        assert_eq!(
+            resolve_project_name(&ProjectNameInput {
+                compose_project_directory: Some(Path::new("/")),
+                current_directory: Some(Path::new("/tmp/from-cwd")),
+                ..ProjectNameInput::default()
+            })
+            .unwrap(),
+            resolved("from-cwd", ProjectNameSource::CurrentDirectory)
+        );
+        assert_eq!(
+            resolve_project_name(&ProjectNameInput {
+                compose_project_directory: Some(Path::new(".")),
+                current_directory: Some(Path::new("/tmp/shop/.")),
+                ..ProjectNameInput::default()
+            })
+            .unwrap(),
+            resolved("shop", ProjectNameSource::CurrentDirectory)
+        );
+        assert_eq!(
+            resolve_project_name(&ProjectNameInput::default())
+                .unwrap_err()
+                .to_string(),
+            "no Project name source was provided"
+        );
+    }
+
+    #[test]
     fn top_level_compose_name_uses_the_last_file() {
         let root = unique_dir();
         fs::write(root.join("a.yaml"), "name: first\nservices: {}\n").unwrap();
         fs::write(root.join("b.yaml"), "name: second\nservices: {}\n").unwrap();
         fs::write(root.join("c.yaml"), "services: {}\n").unwrap();
         assert_eq!(
-            top_level_compose_name(&[root.join("a.yaml"), root.join("b.yaml")], &root).as_deref(),
+            top_level_compose_name(&[root.join("a.yaml"), root.join("b.yaml")]).as_deref(),
             Some("second")
         );
         assert_eq!(
-            top_level_compose_name(&[root.join("a.yaml"), root.join("c.yaml")], &root).as_deref(),
+            top_level_compose_name(&[root.join("a.yaml"), root.join("c.yaml")]).as_deref(),
             Some("first")
         );
         fs::write(
@@ -450,7 +456,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            top_level_compose_name(&[], &root).as_deref(),
+            top_level_compose_name(&[root.join("compose.yaml")]).as_deref(),
             Some("discovered")
         );
         let _ = fs::remove_dir_all(&root);

@@ -1,16 +1,15 @@
 use std::num::NonZeroU32;
-use std::path::PathBuf;
 
 use clap::ArgMatches;
 use ployz_core::ServiceSelector;
 
 use crate::{
     compose::{
-        BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, execute_build,
-        load_project, plan_build,
+        BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, compose_input_files,
+        execute_build, load_project, plan_build,
     },
     deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec, plan_options},
-    project::{refuse_reserved, resolve_explicit, resolve_for_deploy, resolve_for_run},
+    project::{resolve_explicit, resolve_for_deploy, resolve_for_run, resolve_for_scale},
 };
 
 use super::{Error, connect_client, leaf_matches, required, runtime, string_values};
@@ -19,7 +18,6 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let requested = run_spec(matches)?;
     let project = resolve_for_run(matches)?;
-    refuse_reserved(&project.name)?;
     let context = matches.get_one::<String>("context").map(String::as_str);
     let force_recreate = matches.get_flag("recreate");
     let skip_health_monitor = matches.get_flag("skip-health");
@@ -38,16 +36,9 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    if let Some(explicit) = resolve_explicit(matches)? {
-        refuse_reserved(&explicit.name)?;
-    }
-    let (mut project, builds, apply) = prepare_deploy(matches)?;
-    let files = string_values(matches, "file")
-        .into_iter()
-        .map(PathBuf::from)
-        .collect::<Vec<_>>();
-    let resolved = resolve_for_deploy(matches, &project, &files)?;
-    refuse_reserved(&resolved.name)?;
+    let _ = resolve_explicit(matches)?;
+    let (mut project, builds, apply, load) = prepare_deploy(matches)?;
+    let resolved = resolve_for_deploy(matches, &project.working_dir, &compose_input_files(&load))?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -74,7 +65,15 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
 
 fn prepare_deploy(
     matches: &ArgMatches,
-) -> Result<(ComposeProject, Vec<BuildService>, Vec<ServiceAttempt>), Error> {
+) -> Result<
+    (
+        ComposeProject,
+        Vec<BuildService>,
+        Vec<ServiceAttempt>,
+        LoadOptions,
+    ),
+    Error,
+> {
     let load = LoadOptions {
         command: "deploy".into(),
         files: string_values(matches, "file")
@@ -104,7 +103,7 @@ fn prepare_deploy(
         execute_build(&builds, &build_options, &load)?;
     }
     let apply = apply_attempts(&project, &selected)?;
-    Ok((project, builds, apply))
+    Ok((project, builds, apply, load))
 }
 
 fn apply_attempts(
@@ -143,8 +142,7 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let selector = ServiceSelector::parse(required(matches, "service")?)?;
     let yes = matches.get_flag("yes");
     let skip_health_monitor = matches.get_flag("skip-health");
-    let project = resolve_for_run(matches)?;
-    refuse_reserved(&project.name)?;
+    let project = resolve_for_scale(matches)?;
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;

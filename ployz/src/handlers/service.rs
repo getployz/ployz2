@@ -158,11 +158,6 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
 
 pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    if action == ContainerAction::Remove
-        && let Some(project) = crate::project::resolve_explicit(leaf)?
-    {
-        crate::project::refuse_reserved(&project.name)?;
-    }
     let selectors = leaf
         .get_many::<String>("service")
         .ok_or_else(|| Error::usage("at least one Service selector is required"))?

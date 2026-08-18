@@ -239,12 +239,33 @@ pub(super) fn compose_command(
 }
 
 pub(super) fn first_compose_file_from_environment() -> Option<PathBuf> {
-    let files = std::env::var_os("COMPOSE_FILE")?;
+    compose_files_from_environment().into_iter().next()
+}
+
+pub(crate) fn compose_input_files(options: &LoadOptions) -> Vec<PathBuf> {
+    if !options.files.is_empty() {
+        return options.files.clone();
+    }
+    let env_files = compose_files_from_environment();
+    if !env_files.is_empty() {
+        return env_files;
+    }
+    discover_default_compose_file(options)
+        .ok()
+        .into_iter()
+        .collect()
+}
+
+fn compose_files_from_environment() -> Vec<PathBuf> {
+    let Some(files) = std::env::var_os("COMPOSE_FILE") else {
+        return Vec::new();
+    };
     files
         .to_string_lossy()
         .split(compose_path_separator().to_string_lossy().as_ref())
-        .find(|file| !file.is_empty())
+        .filter(|file| !file.is_empty())
         .map(PathBuf::from)
+        .collect()
 }
 
 pub(super) fn discover_default_compose_file(
