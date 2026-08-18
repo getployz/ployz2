@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
-use crate::deploy::{DeployError, DeployIntent, DeployPreview, VolumeFate};
+use crate::deploy::{DeployIntent, DeployPreview, VolumeFate};
 use ployz_core::{
     ContractDescription, DataLoss, DeployEvent, DeployOutcome, DescribeContractRequest,
     DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
@@ -153,7 +153,7 @@ impl Session {
     /// gathering fails, ingress expansion fails, or planning fails.
     pub async fn preview(&self, intent: DeployIntent) -> Result<PreparedDeploy, RpcError> {
         let mut client = self.client().await?;
-        let preview = client.preview(intent).await.map_err(deploy_error)?;
+        let preview = client.preview(intent).await?;
         Ok(PreparedDeploy {
             preview,
             client,
@@ -176,8 +176,7 @@ impl Session {
         let mut client = self.client().await?;
         let preview = client
             .preview_project_removal(&project_name, volumes)
-            .await
-            .map_err(deploy_error)?;
+            .await?;
         Ok(PreparedDeploy {
             preview,
             client,
@@ -476,15 +475,6 @@ fn closed() -> RpcError {
         code: RpcErrorCode::Unavailable,
         message: "client is closed".into(),
         details: Value::Null,
-    }
-}
-
-fn deploy_error(error: DeployError) -> RpcError {
-    match error {
-        DeployError::Connect(error) => error.into(),
-        DeployError::Plan(error) => invalid_argument(error.to_string()),
-        DeployError::Ingress(error) => invalid_argument(error.to_string()),
-        DeployError::Project(error) => invalid_argument(error.to_string()),
     }
 }
 

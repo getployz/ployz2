@@ -83,18 +83,9 @@ impl Client {
         project: &ProjectName,
         volumes: super::VolumeFate,
     ) -> Result<DeployPreview, DeployError> {
-        crate::project::refuse_reserved(project)?;
-        let machines = self.machines().await?;
-        let (snapshot, warnings) = gather_snapshot(self, machines).await?;
+        let (snapshot, warnings) = self.project_removal_snapshot(project).await?;
         let plan = planning::plan_project_removal(project, &snapshot, volumes)?;
-        Ok(DeployPreview {
-            project_name: project.clone(),
-            operations: pending_rows(&plan.operations, &snapshot),
-            warnings,
-            would_remove: plan.would_remove,
-            preserved_volumes: plan.preserved_volumes,
-            prune_refusal: plan.prune_refusal,
-        })
+        Ok(removal_preview(project, &snapshot, warnings, plan))
     }
 
     /// Live Observation of Data Loss that destroying `project` would cause.
@@ -111,9 +102,7 @@ impl Client {
         project: &ProjectName,
         volumes: super::VolumeFate,
     ) -> Result<ObservedDataLoss, RpcError> {
-        crate::project::refuse_reserved(project).map_err(|error| as_rpc(error.into()))?;
-        let machines = self.machines().await.map_err(RpcError::from)?;
-        let (snapshot, _) = gather_snapshot(self, machines).await.map_err(as_rpc)?;
+        let (snapshot, _) = self.project_removal_snapshot(project).await?;
         project_data_loss(project, &snapshot, volumes)
     }
 
@@ -143,40 +132,47 @@ impl Client {
     }
 
     /// Execute-time re-read and plan. Confirming runs these operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the Project is reserved or not
+    /// visible, the snapshot is incomplete, planning fails, or the confirmation
+    /// does not cover the fresh Data Loss.
     pub(crate) async fn prepare_project_destroy(
         &mut self,
         project: &ProjectName,
         confirm_data_loss: &[DataLoss],
         volumes: super::VolumeFate,
     ) -> Result<DeployPreview, RpcError> {
-        crate::project::refuse_reserved(project).map_err(|error| as_rpc(error.into()))?;
-        let machines = self.machines().await.map_err(RpcError::from)?;
-        let (snapshot, warnings) = gather_snapshot(self, machines).await.map_err(as_rpc)?;
+        let (snapshot, warnings) = self.project_removal_snapshot(project).await?;
         let missing =
             project_data_loss(project, &snapshot, volumes)?.uncovered_by(confirm_data_loss);
         if !missing.is_empty() {
             return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
         }
         let plan = planning::plan_project_removal(project, &snapshot, volumes)
-            .map_err(|error| as_rpc(error.into()))?;
-        if let Some(reason) = plan.prune_refusal {
+            .map_err(DeployError::from)?;
+        let preview = removal_preview(project, &snapshot, warnings, plan);
+        if let Some(reason) = preview.prune_refusal {
             return Err(invalid_argument(reason.to_string()));
         }
-        if project_not_visible(&plan) {
+        if project_not_found(&preview) {
             return Err(RpcError {
                 code: RpcErrorCode::NotFound,
                 message: format!("Project '{project}' was not found"),
                 details: serde_json::Value::Null,
             });
         }
-        Ok(DeployPreview {
-            project_name: project.clone(),
-            operations: pending_rows(&plan.operations, &snapshot),
-            warnings,
-            would_remove: plan.would_remove,
-            preserved_volumes: plan.preserved_volumes,
-            prune_refusal: plan.prune_refusal,
-        })
+        Ok(preview)
+    }
+
+    async fn project_removal_snapshot(
+        &mut self,
+        project: &ProjectName,
+    ) -> Result<(DeploySnapshot, Vec<DeployWarning>), DeployError> {
+        crate::project::refuse_reserved(project)?;
+        let machines = self.machines().await?;
+        gather_snapshot(self, machines).await
     }
 
     /// Execute the operations on this Deploy Preview. Does not re-plan.
@@ -232,19 +228,37 @@ fn project_data_loss(
     ))
 }
 
-fn project_not_visible(plan: &DeployPlan) -> bool {
-    plan.prune_refusal.is_none()
-        && plan.operations.is_empty()
-        && plan.preserved_volumes.is_empty()
-        && plan.would_remove.is_empty()
+fn removal_preview(
+    project: &ProjectName,
+    snapshot: &DeploySnapshot,
+    warnings: Vec<DeployWarning>,
+    plan: DeployPlan,
+) -> DeployPreview {
+    DeployPreview {
+        project_name: project.clone(),
+        operations: pending_rows(&plan.operations, snapshot),
+        warnings,
+        would_remove: plan.would_remove,
+        preserved_volumes: plan.preserved_volumes,
+        prune_refusal: plan.prune_refusal,
+    }
 }
 
-fn as_rpc(error: DeployError) -> RpcError {
-    match error {
-        DeployError::Connect(error) => error.into(),
-        DeployError::Plan(error) => invalid_argument(error.to_string()),
-        DeployError::Ingress(error) => invalid_argument(error.to_string()),
-        DeployError::Project(error) => invalid_argument(error.to_string()),
+pub(crate) fn project_not_found(preview: &DeployPreview) -> bool {
+    preview.prune_refusal.is_none()
+        && preview.operations.is_empty()
+        && preview.preserved_volumes.is_empty()
+        && preview.would_remove.is_empty()
+}
+
+impl From<DeployError> for RpcError {
+    fn from(error: DeployError) -> Self {
+        match error {
+            DeployError::Connect(error) => error.into(),
+            DeployError::Plan(error) => invalid_argument(error.to_string()),
+            DeployError::Ingress(error) => invalid_argument(error.to_string()),
+            DeployError::Project(error) => invalid_argument(error.to_string()),
+        }
     }
 }
 

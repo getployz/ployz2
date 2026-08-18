@@ -19,7 +19,7 @@ use super::{
     DeployOutcome, DeployPreview, ExecutionError, VolumeFate,
     pipeline::{
         PushOutcome, ReconciliationHints, list_machines, plan_options, plan_project, plan_scale,
-        plan_spec, push_project_images,
+        plan_spec, project_not_found, push_project_images,
     },
     render,
 };
@@ -180,7 +180,7 @@ pub(crate) async fn remove_project(
         return Err(Failure::usage(format!("Project '{name}' was not found")));
     }
     print!("{}", render::removal_plan_text(&preview, context));
-    if preview.operations.is_empty() && volumes == VolumeFate::Preserve {
+    if preview.noop() {
         return Ok(());
     }
     if !auto_confirm && !confirm(&render::confirm_removal_prompt(name, context))? {
@@ -189,7 +189,8 @@ pub(crate) async fn remove_project(
     }
     let preview = client
         .prepare_project_destroy(name, confirm_data_loss, volumes)
-        .await?;
+        .await
+        .map_err(crate::handlers::data_loss::refusal_from_rpc)?;
     finish(
         stream_confirm(
             client,
@@ -198,13 +199,6 @@ pub(crate) async fn remove_project(
         )
         .await,
     )
-}
-
-fn project_not_found(preview: &DeployPreview) -> bool {
-    preview.prune_refusal.is_none()
-        && preview.operations.is_empty()
-        && preview.preserved_volumes.is_empty()
-        && preview.would_remove.is_empty()
 }
 
 async fn stream_confirm(

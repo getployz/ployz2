@@ -6,7 +6,7 @@ use ployz_core::{DataLoss, ObservedDataLoss, RpcError, UnconfirmedDataLoss};
 
 use super::Error;
 
-pub(super) fn collect_data_loss_confirmation(
+pub(crate) fn collect_data_loss_confirmation(
     observed: &ObservedDataLoss,
     named: &[String],
 ) -> Result<Vec<DataLoss>, Error> {
@@ -45,7 +45,7 @@ fn read_data_loss_names(observed: &ObservedDataLoss) -> Result<Vec<String>, Erro
     Ok(answer.split_whitespace().map(str::to_owned).collect())
 }
 
-pub(super) fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
+pub(crate) fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
     format!(
         "Data Loss is not covered by the confirmation; pass the names as arguments: {}",
         missing
@@ -56,7 +56,7 @@ pub(super) fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
     )
 }
 
-pub(super) fn refusal_from_rpc(error: RpcError) -> Error {
+pub(crate) fn refusal_from_rpc(error: RpcError) -> Error {
     match UnconfirmedDataLoss::from_rpc_error(&error) {
         Some(unconfirmed) => Error::usage(pass_data_loss_names_message(&unconfirmed.missing)),
         None => error.into(),
