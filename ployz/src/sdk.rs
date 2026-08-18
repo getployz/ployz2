@@ -171,14 +171,9 @@ impl Session {
     pub async fn preview_project_removal(
         &self,
         project_name: ProjectName,
-        destroy_volumes: bool,
+        volumes: VolumeFate,
     ) -> Result<PreparedDeploy, RpcError> {
         let mut client = self.client().await?;
-        let volumes = if destroy_volumes {
-            VolumeFate::Destroy
-        } else {
-            VolumeFate::Preserve
-        };
         let preview = client
             .preview_project_removal(&project_name, volumes)
             .await

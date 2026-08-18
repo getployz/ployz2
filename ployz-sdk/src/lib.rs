@@ -111,9 +111,14 @@ impl Client {
                 details: serde_json::Value::Null,
             })
         })?;
+        let volumes = if destroy_volumes {
+            ployz::deploy::VolumeFate::Destroy
+        } else {
+            ployz::deploy::VolumeFate::Preserve
+        };
         let inner = self
             .inner
-            .preview_project_removal(project_name, destroy_volumes)
+            .preview_project_removal(project_name, volumes)
             .await
             .map_err(rpc_to_napi)?;
         Ok(DeployPreviewHandle { inner })

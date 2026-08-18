@@ -14,10 +14,10 @@ mod exec;
 mod pipeline;
 mod planning;
 mod progress;
-pub(crate) mod render;
+mod render;
 
 pub(crate) use apply::{
-    ConfirmGate, apply_requested, deploy_project, deploy_scale, deploy_spec, execute_confirmed,
+    ConfirmGate, apply_requested, deploy_project, deploy_scale, deploy_spec, remove_project,
 };
 pub use exec::execute_plan;
 pub use pipeline::DeployError;

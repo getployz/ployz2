@@ -1,10 +1,8 @@
-use std::io::{self, IsTerminal, Write};
-
 use clap::ArgMatches;
 use ployz_core::{ProjectName, derive_projects};
 
 use crate::{
-    deploy::{DeployPreview, DeploySnapshot, VolumeFate, execute_confirmed, render},
+    deploy::{DeploySnapshot, VolumeFate, remove_project},
     project::refuse_reserved,
 };
 
@@ -53,54 +51,8 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         .cloned()
         .unwrap_or_else(|| "default".into());
     with_client(root, move |client| {
-        Box::pin(async move {
-            let preview = client.preview_project_removal(&name, volumes).await?;
-            for warning in &preview.warnings {
-                eprintln!("WARNING: {warning}");
-            }
-            if let Some(reason) = preview.prune_refusal {
-                print!("{}", render::removal_plan_text(&preview, &context));
-                return Err(Error::usage(reason.to_string()));
-            }
-            if project_not_found(&preview) {
-                return Err(Error::usage(format!("Project '{name}' was not found")));
-            }
-            print!("{}", render::removal_plan_text(&preview, &context));
-            if preview.operations.is_empty() {
-                return Ok(());
-            }
-            if !yes && !confirm_removal(&name, &context)? {
-                println!("No changes were made.");
-                return Ok(());
-            }
-            execute_confirmed(
-                client,
-                &preview,
-                format!("Removing Project {name} from {context}"),
-            )
-            .await
-        })
+        Box::pin(async move { remove_project(client, &name, volumes, yes, &context).await })
     })
-}
-
-fn confirm_removal(project: &ProjectName, context: &str) -> Result<bool, Error> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(Error::usage(
-            "confirmation requires a terminal; pass --yes to continue",
-        ));
-    }
-    print!("{}", render::confirm_removal_prompt(project, context));
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
-}
-
-fn project_not_found(preview: &DeployPreview) -> bool {
-    preview.prune_refusal.is_none()
-        && preview.operations.is_empty()
-        && preview.preserved_volumes.is_empty()
-        && preview.would_remove.is_empty()
 }
 
 fn observer_listing_warnings(snapshot: &DeploySnapshot) -> Vec<String> {
@@ -135,9 +87,7 @@ fn observer_listing_warnings(snapshot: &DeploySnapshot) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{
-        MachineFailure, MachineId, ProjectName, PruneRefusal, RpcError, RpcErrorCode,
-    };
+    use ployz_core::{MachineFailure, MachineId, RpcError, RpcErrorCode};
 
     use super::*;
 
@@ -164,14 +114,5 @@ mod tests {
                 format!("WARNING: Machine {machine} was omitted listing volumes"),
             ]
         );
-    }
-
-    #[test]
-    fn incomplete_empty_view_is_not_reported_as_missing() {
-        let mut preview =
-            DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("shop").unwrap());
-        assert!(project_not_found(&preview));
-        preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
-        assert!(!project_not_found(&preview));
     }
 }
