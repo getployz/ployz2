@@ -318,22 +318,22 @@ fn generated_typescript_encodes_additive_evolution_rules() {
 #[test]
 fn handwritten_facade_types_use_generated_payloads() {
     let dts = include_str!("../../ployz-sdk/index.d.ts");
-    assert!(
-        dts.contains(
-            "import type { ContractDescription, MachineId } from \"./generated/payloads\""
-        )
-    );
+    assert!(dts.contains(
+        "import type { ContractDescription, MachineId, RuntimeWatchFrame } from \"./generated/payloads\""
+    ));
     assert!(dts.contains("export * from \"./generated/payloads\""));
     assert!(dts.contains("export declare function connect"));
     assert!(dts.contains("relayUrl: string"));
     assert!(dts.contains("bearer: string"));
     assert!(dts.contains("machineId: MachineId"));
     assert!(dts.contains("about(): Promise<ContractDescription>"));
+    assert!(dts.contains("readonly runtime:"));
+    assert!(dts.contains("watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>"));
     assert!(dts.contains("close(): Promise<void>"));
     assert!(!dts.contains("connectSsh"));
     assert!(!dts.contains("connectTcp"));
     assert!(!dts.contains("connectUnix"));
-    assert!(!dts.contains("watch("));
+    assert!(!dts.contains("watchRuntime"));
     assert!(!dts.contains("deploy("));
     assert!(!dts.contains("export declare function call"));
     assert!(!dts.contains("export declare function request"));
