@@ -38,6 +38,13 @@ fn npm_package_identity_matches_the_napi_crate() {
     assert_eq!(pkg_field(&pkg, "types"), "index.d.ts");
     assert_ne!(pkg.get("private"), Some(&Value::Bool(true)));
     assert_eq!(pkg_field(&pkg, "publishConfig")["access"], "public");
+    assert!(
+        pkg_field(&pkg, "devDependencies")
+            .get("typescript")
+            .and_then(Value::as_str)
+            .is_some(),
+        "TypeScript must be an @ployz/sdk dev dependency"
+    );
 }
 
 #[test]
@@ -435,6 +442,7 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type Ulimit = Additive<{"));
     assert!(dts.contains("ulimits?: { readonly [key: string]: Ulimit }"));
     assert!(dts.contains("effective_healthcheck: HealthcheckSpec | null"));
+    assert!(dts.contains("details?: JsonValue;"));
     assert!(!dts.contains("export type RequestedServiceSpec = JsonValue"));
     assert!(!dts.contains("export type ResolvedServiceSpec = JsonValue"));
     assert!(dts.contains("readonly __brand: \"MachineId\""));
@@ -488,6 +496,7 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains(DESCRIBE_CONTRACT_CAPABILITY));
     assert!(dts.contains(CERTIFICATE_POLICY_CAPABILITY));
     assert!(dts.contains("export declare function packageName(): \"@ployz/sdk\";"));
+    assert!(include_str!("../../ployz-sdk/tests/payload-types.ts").contains("@ts-expect-error"));
     for wire in MembershipObservation::known_wires() {
         assert!(
             dts.contains(&format!("\"{wire}\"")),
@@ -575,15 +584,6 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(!dts.contains("ops.watch"));
     assert!(!dts.contains("export declare function call"));
     assert!(!dts.contains("export declare function request"));
-}
-
-#[test]
-fn remaining_json_value_fields_are_intentional_rpc_details() {
-    let dts = ployz_sdk_payloads::artifacts().payloads_dts;
-    assert!(dts.contains("details?: JsonValue;"));
-    assert!(dts.contains("effective_healthcheck: HealthcheckSpec | null"));
-    assert!(dts.contains("driver?: VolumeDriver"));
-    assert!(dts.contains("configs?: ConfigSpec[]"));
 }
 
 fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
@@ -713,20 +713,6 @@ fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
         serde_json::to_value(&observation).unwrap(),
         *fixture(fixtures, "container_observation_disabled_healthcheck")
     );
-}
-
-#[test]
-fn sdk_package_declares_typescript_payload_checks() {
-    let pkg: Value = serde_json::from_str(include_str!("../../ployz-sdk/package.json")).unwrap();
-    assert!(
-        pkg_field(&pkg, "devDependencies")
-            .get("typescript")
-            .and_then(Value::as_str)
-            .is_some(),
-        "TypeScript must be an @ployz/sdk dev dependency"
-    );
-    let typecheck = include_str!("../../ployz-sdk/tests/payload-types.ts");
-    assert!(typecheck.contains("@ts-expect-error"));
 }
 
 #[test]
