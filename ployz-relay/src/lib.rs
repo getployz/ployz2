@@ -112,6 +112,14 @@ impl TunnelFrame {
     }
 }
 
+/// Dial-authenticated request to revoke this tenant's Pairing Credential.
+#[derive(Clone, PartialEq, Message)]
+pub struct RevokeRequest {}
+
+/// Pairing Credential for this Dial tenant is no longer accepted on Register.
+#[derive(Clone, PartialEq, Message)]
+pub struct RevokeResponse {}
+
 /// Bearer that authenticates Register and is rejected on Dial.
 #[derive(Clone, Eq, PartialEq)]
 pub struct PairingCredential(String);
@@ -226,8 +234,9 @@ struct Slot {
 }
 
 struct TenantIndex {
-    by_pairing: HashMap<String, RelayTenant>,
+    by_pairing: Mutex<HashMap<String, RelayTenant>>,
     by_dial: HashMap<String, RelayTenant>,
+    pairing_of: Mutex<HashMap<RelayTenant, String>>,
 }
 
 impl TenantIndex {
@@ -236,6 +245,7 @@ impl TenantIndex {
     ) -> Result<Self, RelayError> {
         let mut by_pairing = HashMap::new();
         let mut by_dial = HashMap::new();
+        let mut pairing_of = HashMap::new();
         for (id, (pairing, dial)) in (0_u64..).zip(tenants) {
             if pairing.as_str() == dial.as_str()
                 || by_pairing.contains_key(pairing.as_str())
@@ -246,6 +256,7 @@ impl TenantIndex {
                 return Err(RelayError::CredentialCollision);
             }
             let tenant = RelayTenant(id);
+            pairing_of.insert(tenant, pairing.0.clone());
             by_pairing.insert(pairing.0, tenant);
             by_dial.insert(dial.0, tenant);
         }
@@ -253,21 +264,34 @@ impl TenantIndex {
             return Err(RelayError::EmptyTenants);
         }
         Ok(Self {
-            by_pairing,
+            by_pairing: Mutex::new(by_pairing),
             by_dial,
+            pairing_of: Mutex::new(pairing_of),
         })
     }
 
     fn pairing(&self, bearer: &str) -> Option<RelayTenant> {
-        self.by_pairing.get(bearer).copied()
+        self.by_pairing
+            .lock()
+            .expect("pairing map poisoned")
+            .get(bearer)
+            .copied()
     }
 
     fn is_pairing(&self, bearer: &str) -> bool {
-        self.by_pairing.contains_key(bearer)
+        self.pairing(bearer).is_some()
     }
 
     fn dial(&self, bearer: &str) -> Option<RelayTenant> {
         self.by_dial.get(bearer).copied()
+    }
+
+    fn revoke(&self, tenant: RelayTenant) {
+        let mut pairing_of = self.pairing_of.lock().expect("pairing_of map poisoned");
+        let mut by_pairing = self.by_pairing.lock().expect("pairing map poisoned");
+        if let Some(pairing) = pairing_of.remove(&tenant) {
+            by_pairing.remove(&pairing);
+        }
     }
 }
 
@@ -584,6 +608,25 @@ impl CloudRelay for Relay {
             pending.cancel,
         ));
         Ok(Response::new(ReceiverStream::new(pending.to_machine)))
+    }
+
+    async fn revoke(
+        &self,
+        request: Request<RevokeRequest>,
+    ) -> Result<Response<RevokeResponse>, Status> {
+        match bearer(request.metadata()) {
+            Some(bearer) if self.tenants.is_pairing(bearer) => Err(Status::permission_denied(
+                "Pairing Credential cannot Revoke",
+            )),
+            Some(bearer) => match self.tenants.dial(bearer) {
+                Some(tenant) => {
+                    self.tenants.revoke(tenant);
+                    Ok(Response::new(RevokeResponse {}))
+                }
+                None => Err(Status::unauthenticated("invalid Dial Credential")),
+            },
+            None => Err(Status::unauthenticated("invalid Dial Credential")),
+        }
     }
 }
 
