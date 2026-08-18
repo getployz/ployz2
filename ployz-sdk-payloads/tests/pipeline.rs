@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    CERTIFICATE_POLICY_CAPABILITY, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, DeployIntent, DeployOutcome, DockerVolume, HealthObservation,
-    MembershipObservation, PlanOptions, RpcError, RpcErrorCode, ServiceAttempt,
+    CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
+    ContainerRuntimeObservation, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployIntent,
+    DeployOutcome, DockerVolume, HealthObservation, MembershipObservation, PlanOptions,
+    RUNTIME_WATCH_CAPABILITY, RpcError, RpcErrorCode, RuntimeWatchFrame, ServiceAttempt,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -144,6 +145,39 @@ fn json_fixtures_round_trip_through_rust_types() {
         serde_json::to_value(&failed).unwrap(),
         *fixture(&fixtures, "deploy_outcome_failed")
     );
+
+    let frame: RuntimeWatchFrame = decode_fixture(fixture(&fixtures, "runtime_watch_frame"));
+    assert_eq!(frame.observed_at, "2024-01-01T00:00:00Z");
+    assert_eq!(
+        frame
+            .hosted_dns_hostname
+            .as_deref()
+            .expect("hosted DNS hostname"),
+        "cluster.example.ts.net"
+    );
+    assert_eq!(frame.machines.len(), 1);
+    assert_eq!(frame.containers.len(), 1);
+    assert_eq!(frame.services.len(), 1);
+    assert_eq!(frame.certificates.len(), 2);
+    assert_eq!(
+        serde_json::to_value(&frame).unwrap(),
+        *fixture(&fixtures, "runtime_watch_frame")
+    );
+    let text = fixture(&fixtures, "runtime_watch_frame").to_string();
+    for forbidden in [
+        "BEGIN CERTIFICATE",
+        "BEGIN PRIVATE KEY",
+        "private_key",
+        "challenge_token",
+        "challenge_response",
+        "renewal_token",
+        "dns_endpoint",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "{forbidden} must not appear on the Watch frame fixture"
+        );
+    }
 }
 
 #[test]
@@ -167,6 +201,13 @@ fn unknown_fields_are_accepted_on_public_payloads() {
     assert_eq!(
         serde_json::to_value(&outcome).unwrap(),
         *fixture(&fixtures, "deploy_outcome")
+    );
+
+    let frame: RuntimeWatchFrame =
+        decode_fixture(fixture(&fixtures, "runtime_watch_frame_unknown_fields"));
+    assert_eq!(
+        serde_json::to_value(&frame).unwrap(),
+        *fixture(&fixtures, "runtime_watch_frame")
     );
 }
 
@@ -203,6 +244,19 @@ fn observation_enums_keep_an_unknown_case() {
             health: HealthObservation::Healthy
         }
     );
+
+    let availability: CertificateAvailability =
+        decode_fixture(fixture(&fixtures, "certificate_availability_unknown"));
+    assert_eq!(
+        availability,
+        CertificateAvailability::Unrecognized("renewing".into())
+    );
+    let kind: CertificateFailureKind =
+        decode_fixture(fixture(&fixtures, "certificate_failure_kind_unknown"));
+    assert_eq!(
+        kind,
+        CertificateFailureKind::Unrecognized("rate_limited".into())
+    );
 }
 
 #[test]
@@ -219,9 +273,21 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type DeployOperation ="));
     assert!(dts.contains("export type FailedOperation<E = RpcError> ="));
     assert!(dts.contains("export type DeployOutcome<E = RpcError> ="));
-    assert!(dts.contains("{ Success: { completed: DeployOperation[] } }"));
+    assert!(dts.contains("Success: { completed: DeployOperation[] }"));
     assert!(dts.contains("unexecuted: DeployOperation[]"));
     assert!(dts.contains("failed: FailedOperation<E>"));
+    assert!(dts.contains("export type RuntimeWatchFrame = Additive<{"));
+    assert!(dts.contains("incomplete_ids: RuntimeWatchIncompleteIds"));
+    assert!(dts.contains("hosted_dns_hostname?: string"));
+    assert!(dts.contains("export type MachineObservation = Additive<{"));
+    assert!(dts.contains("export type ContainerObservation = Additive<{"));
+    assert!(dts.contains("export type ServiceObservation = Additive<{"));
+    assert!(dts.contains("export type RttStatistics = Additive<{"));
+    assert!(dts.contains("export type CertificateObservation = Additive<{"));
+    assert!(dts.contains("resolved_spec: ResolvedServiceSpec"));
+    assert!(!dts.contains("export declare function connect"));
+    assert!(dts.contains("export const RUNTIME_WATCH_CAPABILITY: CapabilityName"));
+    assert!(dts.contains(RUNTIME_WATCH_CAPABILITY));
     assert!(dts.contains("export const DESCRIBE_CONTRACT_CAPABILITY: CapabilityName"));
     assert!(dts.contains(DESCRIBE_CONTRACT_CAPABILITY));
     assert!(dts.contains(CERTIFICATE_POLICY_CAPABILITY));

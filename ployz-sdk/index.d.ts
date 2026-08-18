@@ -16,11 +16,29 @@ export type MachineId = string;
 
 export type ContainerId = string;
 
+export type ServiceId = string;
+
 export type ServiceName = string;
+
+export type MachineName = string;
+
+export type MachineSubnet = string;
+
+export type ManagementAddress = string;
+
+export type AdvertisedEndpoint = string;
+
+export type SelectedEndpoint = string;
+
+export type ContainerAddress = string;
+
+export type IngressHost = string;
 
 export type DockerVolumeName = string;
 
 export type CapabilityName = string;
+
+export type WireGuardPublicKey = number[];
 
 export type RequestedServiceSpec = JsonValue;
 
@@ -33,6 +51,12 @@ export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | (str
 export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | (string & {});
 
 export type RpcErrorCode = "invalid_argument" | "not_found" | "ambiguous" | "unsupported" | "unavailable" | "conflict" | "internal" | "unauthenticated" | (string & {});
+
+export type CertificateAvailability = "available" | "pending" | "failure" | "unknown" | (string & {});
+
+export type CertificateFailureKind = "does_not_resolve" | "resolves_elsewhere" | "authority" | (string & {});
+
+export type ContainerKind = "service_container" | "pre_deploy_hook";
 
 export type DockerVolumeId = Additive<{
   machine_id: MachineId;
@@ -114,24 +138,12 @@ export type ReplacementOperation = Additive<{
 
 export type DeployOperation =
   | Additive<{ CreateVolume: { machine_id: MachineId; volume: ServiceVolume } }>
-  | Additive<{
-      RunContainer: {
-        machine_id: MachineId;
-        spec: ResolvedServiceSpec;
-        skip_health_monitor: boolean;
-      };
-    }>
+  | Additive<{ RunContainer: { machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean } }>
   | Additive<{ StopContainer: { machine_id: MachineId; container_id: ContainerId } }>
   | Additive<{ RemoveContainer: { machine_id: MachineId; container_id: ContainerId } }>
   | Additive<{ ReplaceContainer: ReplacementOperation }>
   | Additive<{ StopHook: { machine_id: MachineId; container_id: ContainerId } }>
-  | Additive<{
-      RunHook: {
-        machine_id: MachineId;
-        spec: ResolvedServiceSpec;
-        old_hook_containers: Array<[MachineId, ContainerId]>;
-      };
-    }>;
+  | Additive<{ RunHook: { machine_id: MachineId; spec: ResolvedServiceSpec; old_hook_containers: Array<[MachineId, ContainerId]> } }>;
 
 export type RestartAttempt<E = RpcError> =
   | "NotAttempted"
@@ -139,32 +151,103 @@ export type RestartAttempt<E = RpcError> =
 
 export type ReplacementCompensation<E = RpcError> =
   | Additive<{ StartFirst: { stop_new_container: SerdeResult<null, E> } }>
-  | Additive<{
-      StopFirst: {
-        stop_new_container: SerdeResult<null, E>;
-        restart_old_container: RestartAttempt<E>;
-      };
-    }>;
+  | Additive<{ StopFirst: { stop_new_container: SerdeResult<null, E>; restart_old_container: RestartAttempt<E> } }>;
 
 export type FailedOperation<E = RpcError> =
   | Additive<{ Operation: { operation: DeployOperation; error: E } }>
-  | Additive<{
-      ReplacementHealth: {
-        operation: ReplacementOperation;
-        error: E;
-        compensation: ReplacementCompensation<E>;
-      };
-    }>;
+  | Additive<{ ReplacementHealth: { operation: ReplacementOperation; error: E; compensation: ReplacementCompensation<E> } }>;
 
 export type DeployOutcome<E = RpcError> =
   | Additive<{ Success: { completed: DeployOperation[] } }>
-  | Additive<{
-      Failed: {
-        completed: DeployOperation[];
-        failed: FailedOperation<E>;
-        unexecuted: DeployOperation[];
-      };
-    }>;
+  | Additive<{ Failed: { completed: DeployOperation[]; failed: FailedOperation<E>; unexecuted: DeployOperation[] } }>;
+
+export type MachineRuntime = Additive<{
+  daemon_version: string;
+  docker_version: string;
+  hostname: string;
+  architecture: string;
+  os_pretty_name: string;
+  kernel_version: string;
+}>;
+
+export type Machine = Additive<{
+  id: MachineId;
+  name: MachineName;
+  subnet: MachineSubnet;
+  management_address: ManagementAddress;
+  public_key: WireGuardPublicKey;
+  public_ip?: string;
+  advertised_endpoints: AdvertisedEndpoint[];
+  runtime: MachineRuntime;
+}>;
+
+export type RttStatistics = Additive<{
+  median_ns: number;
+  population_stddev_ns: number;
+}>;
+
+export type MachineObservation = Additive<{
+  machine: Machine;
+  membership: MembershipObservation;
+  selected_endpoint: SelectedEndpoint | null;
+  rtt?: RttStatistics;
+}>;
+
+export type ContainerObservation = Additive<{
+  container_id: ContainerId;
+  display_name: string;
+  created_at_unix_nanos: number;
+  machine_id: MachineId;
+  service_id: ServiceId;
+  service_name: ServiceName;
+  kind: ContainerKind;
+  runtime: ContainerRuntimeObservation;
+  effective_healthcheck: JsonValue | null;
+  resolved_spec: ResolvedServiceSpec;
+  address: ContainerAddress | null;
+  labels: { readonly [key: string]: string };
+}>;
+
+export type ServiceContainer = ContainerObservation;
+
+export type HookContainer = ContainerObservation;
+
+export type ServiceObservation = Additive<{
+  service_id: ServiceId;
+  containers: ServiceContainer[];
+  hook_containers: HookContainer[];
+}>;
+
+export type CertificateBackoff = Additive<{
+  failure_kind: CertificateFailureKind;
+  next_attempt_at: string;
+  failures: number;
+}>;
+
+export type CertificateObservation = Additive<{
+  hostname: IngressHost;
+  status: CertificateAvailability;
+  last_error?: string;
+  backoff?: CertificateBackoff;
+}>;
+
+export type RuntimeWatchIncompleteIds = Additive<{
+  machines: MachineId[];
+  containers: ContainerId[];
+  volumes: DockerVolumeId[];
+  certificates: IngressHost[];
+}>;
+
+export type RuntimeWatchFrame = Additive<{
+  machines: MachineObservation[];
+  containers: ContainerObservation[];
+  services: ServiceObservation[];
+  volumes: DockerVolume[];
+  certificates: CertificateObservation[];
+  hosted_dns_hostname?: string;
+  incomplete_ids: RuntimeWatchIncompleteIds;
+  observed_at: string;
+}>;
 
 export const GET_CADDY_CONFIG_CAPABILITY: CapabilityName = "ployz.caddy.config.v1";
 export const CERTIFICATE_POLICY_CAPABILITY: CapabilityName = "ployz.certificates.policy.v1";

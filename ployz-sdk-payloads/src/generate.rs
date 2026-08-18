@@ -1,31 +1,39 @@
 //! Deterministic TypeScript and JSON fixtures for `@ployz/sdk` public payloads.
 
 use std::{
-    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
 
 use ployz_core::{
-    CapabilityName, ContainerId, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployIntent,
-    DeployOperation, DeployOutcome, DockerVolume, DockerVolumeId, DockerVolumeName,
-    FailedOperation, HealthObservation, MachineFailure, MachineId, MachineSuccess,
-    MembershipObservation, PROTOCOL_MAJOR, PartialResult, PlanOptions, RpcError, RpcErrorCode,
-    ServiceAttempt, ServiceName,
+    CertificateAvailability, CertificateFailureKind, HealthObservation, MembershipObservation,
+    RpcErrorCode,
 };
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde_json::Value;
+
+use crate::values::{additive_examples, fixtures};
 
 /// npm package name for this crate's Node artifact.
 pub const PACKAGE_NAME: &str = "@ployz/sdk";
 
-const MACHINE_ID_HEX: &str = "0123456789abcdef0123456789abcdef";
-const OTHER_MACHINE_ID_HEX: &str = "fedcba9876543210fedcba9876543210";
-
 enum Shape {
     Alias(&'static str),
     OpenString(&'static [&'static str]),
-    Additive(&'static [(&'static str, &'static str)]),
+    ClosedString(&'static [&'static str]),
+    Additive {
+        params: &'static str,
+        fields: &'static [(&'static str, &'static str)],
+    },
+    ExternallyTagged {
+        params: &'static str,
+        variants: &'static [(&'static str, Option<&'static str>)],
+    },
+    InternallyTagged {
+        tag: &'static str,
+        variants: &'static [(&'static str, &'static [(&'static str, &'static str)])],
+        unknown: bool,
+    },
     Raw(&'static str),
 }
 
@@ -46,9 +54,18 @@ const PAYLOADS: &[(&str, Shape)] = &[
     ),
     ("MachineId", Shape::Alias("string")),
     ("ContainerId", Shape::Alias("string")),
+    ("ServiceId", Shape::Alias("string")),
     ("ServiceName", Shape::Alias("string")),
+    ("MachineName", Shape::Alias("string")),
+    ("MachineSubnet", Shape::Alias("string")),
+    ("ManagementAddress", Shape::Alias("string")),
+    ("AdvertisedEndpoint", Shape::Alias("string")),
+    ("SelectedEndpoint", Shape::Alias("string")),
+    ("ContainerAddress", Shape::Alias("string")),
+    ("IngressHost", Shape::Alias("string")),
     ("DockerVolumeName", Shape::Alias("string")),
     ("CapabilityName", Shape::Alias("string")),
+    ("WireGuardPublicKey", Shape::Alias("number[]")),
     ("RequestedServiceSpec", Shape::Alias("JsonValue")),
     ("ResolvedServiceSpec", Shape::Alias("JsonValue")),
     ("ServiceVolume", Shape::Alias("JsonValue")),
@@ -65,118 +82,378 @@ const PAYLOADS: &[(&str, Shape)] = &[
         Shape::OpenString(RpcErrorCode::known_wires()),
     ),
     (
+        "CertificateAvailability",
+        Shape::OpenString(CertificateAvailability::known_wires()),
+    ),
+    (
+        "CertificateFailureKind",
+        Shape::OpenString(CertificateFailureKind::known_wires()),
+    ),
+    (
+        "ContainerKind",
+        Shape::ClosedString(&["service_container", "pre_deploy_hook"]),
+    ),
+    (
         "DockerVolumeId",
-        Shape::Additive(&[("machine_id", "MachineId"), ("name", "DockerVolumeName")]),
+        Shape::Additive {
+            params: "",
+            fields: &[("machine_id", "MachineId"), ("name", "DockerVolumeName")],
+        },
     ),
     (
         "DockerVolume",
-        Shape::Additive(&[
-            ("id", "DockerVolumeId"),
-            ("driver", "string"),
-            ("options", "{ readonly [key: string]: string }"),
-            ("labels", "{ readonly [key: string]: string }"),
-        ]),
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("id", "DockerVolumeId"),
+                ("driver", "string"),
+                ("options", "{ readonly [key: string]: string }"),
+                ("labels", "{ readonly [key: string]: string }"),
+            ],
+        },
     ),
     (
         "ContractDescription",
-        Shape::Additive(&[
-            ("machine_id", "MachineId"),
-            ("protocol_major", "number"),
-            ("daemon_version", "string"),
-            ("capabilities", "CapabilityName[]"),
-        ]),
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("machine_id", "MachineId"),
+                ("protocol_major", "number"),
+                ("daemon_version", "string"),
+                ("capabilities", "CapabilityName[]"),
+            ],
+        },
     ),
     (
         "RpcError",
-        Shape::Raw(
-            "export type RpcError = Additive<{\n  code: RpcErrorCode;\n  message: string;\n  details?: JsonValue;\n}>;\n",
-        ),
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("code", "RpcErrorCode"),
+                ("message", "string"),
+                ("details", "JsonValue?"),
+            ],
+        },
     ),
     (
         "MachineSuccess",
-        Shape::Raw(
-            "export type MachineSuccess<T> = Additive<{\n  machine_id: MachineId;\n  value: T;\n}>;\n",
-        ),
+        Shape::Additive {
+            params: "<T>",
+            fields: &[("machine_id", "MachineId"), ("value", "T")],
+        },
     ),
     (
         "MachineFailure",
-        Shape::Raw(
-            "export type MachineFailure<E> = Additive<{\n  machine_id: MachineId;\n  error: E;\n}>;\n",
-        ),
+        Shape::Additive {
+            params: "<E>",
+            fields: &[("machine_id", "MachineId"), ("error", "E")],
+        },
     ),
     (
         "PartialResult",
-        Shape::Raw(
-            "export type PartialResult<T, E> = Additive<{\n  successes: Array<MachineSuccess<T>>;\n  failures: Array<MachineFailure<E>>;\n  omissions: MachineId[];\n}>;\n",
-        ),
+        Shape::Additive {
+            params: "<T, E>",
+            fields: &[
+                ("successes", "Array<MachineSuccess<T>>"),
+                ("failures", "Array<MachineFailure<E>>"),
+                ("omissions", "MachineId[]"),
+            ],
+        },
     ),
     (
         "ContainerRuntimeObservation",
-        Shape::Raw(
-            "export type ContainerRuntimeObservation =\n  | Additive<{ state: \"created\" }>\n  | Additive<{ state: \"running\"; health: HealthObservation }>\n  | Additive<{ state: \"paused\" }>\n  | Additive<{ state: \"restarting\" }>\n  | Additive<{ state: \"exited\"; code: number }>\n  | Additive<{ state: \"removing\" }>\n  | Additive<{ state: \"dead\" }>\n  | Additive<{ state?: string }>;\n",
-        ),
+        Shape::InternallyTagged {
+            tag: "state",
+            variants: &[
+                ("created", &[]),
+                ("running", &[("health", "HealthObservation")]),
+                ("paused", &[]),
+                ("restarting", &[]),
+                ("exited", &[("code", "number")]),
+                ("removing", &[]),
+                ("dead", &[]),
+            ],
+            unknown: true,
+        },
     ),
     (
         "PlanOptions",
-        Shape::Additive(&[
-            ("force_recreate", "boolean"),
-            ("skip_health_monitor", "boolean"),
-            ("placement_seed", "number"),
-        ]),
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("force_recreate", "boolean"),
+                ("skip_health_monitor", "boolean"),
+                ("placement_seed", "number"),
+            ],
+        },
     ),
     (
         "ServiceAttempt",
-        Shape::Additive(&[("name", "ServiceName")]),
+        Shape::Additive {
+            params: "",
+            fields: &[("name", "ServiceName")],
+        },
     ),
     (
         "DeployIntent",
-        Shape::Additive(&[
-            ("target", "RequestedServiceSpec[]"),
-            ("apply", "ServiceAttempt[]"),
-            ("options", "PlanOptions"),
-        ]),
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("target", "RequestedServiceSpec[]"),
+                ("apply", "ServiceAttempt[]"),
+                ("options", "PlanOptions"),
+            ],
+        },
     ),
     (
         "SerdeResult",
-        Shape::Raw(
-            "export type SerdeResult<T, E> =\n  | Additive<{ Ok: T }>\n  | Additive<{ Err: E }>;\n",
-        ),
+        Shape::ExternallyTagged {
+            params: "<T, E>",
+            variants: &[("Ok", Some("T")), ("Err", Some("E"))],
+        },
     ),
     (
         "ReplacementOperation",
-        Shape::Raw(
-            "export type ReplacementOperation = Additive<{\n  machine_id: MachineId;\n  old_container_id: ContainerId;\n  spec: ResolvedServiceSpec;\n  skip_health_monitor: boolean;\n}>;\n",
-        ),
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("machine_id", "MachineId"),
+                ("old_container_id", "ContainerId"),
+                ("spec", "ResolvedServiceSpec"),
+                ("skip_health_monitor", "boolean"),
+            ],
+        },
     ),
     (
         "DeployOperation",
-        Shape::Raw(
-            "export type DeployOperation =\n  | Additive<{ CreateVolume: { machine_id: MachineId; volume: ServiceVolume } }>\n  | Additive<{\n      RunContainer: {\n        machine_id: MachineId;\n        spec: ResolvedServiceSpec;\n        skip_health_monitor: boolean;\n      };\n    }>\n  | Additive<{ StopContainer: { machine_id: MachineId; container_id: ContainerId } }>\n  | Additive<{ RemoveContainer: { machine_id: MachineId; container_id: ContainerId } }>\n  | Additive<{ ReplaceContainer: ReplacementOperation }>\n  | Additive<{ StopHook: { machine_id: MachineId; container_id: ContainerId } }>\n  | Additive<{\n      RunHook: {\n        machine_id: MachineId;\n        spec: ResolvedServiceSpec;\n        old_hook_containers: Array<[MachineId, ContainerId]>;\n      };\n    }>;\n",
-        ),
+        Shape::ExternallyTagged {
+            params: "",
+            variants: &[
+                (
+                    "CreateVolume",
+                    Some("{ machine_id: MachineId; volume: ServiceVolume }"),
+                ),
+                (
+                    "RunContainer",
+                    Some(
+                        "{ machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }",
+                    ),
+                ),
+                (
+                    "StopContainer",
+                    Some("{ machine_id: MachineId; container_id: ContainerId }"),
+                ),
+                (
+                    "RemoveContainer",
+                    Some("{ machine_id: MachineId; container_id: ContainerId }"),
+                ),
+                ("ReplaceContainer", Some("ReplacementOperation")),
+                (
+                    "StopHook",
+                    Some("{ machine_id: MachineId; container_id: ContainerId }"),
+                ),
+                (
+                    "RunHook",
+                    Some(
+                        "{ machine_id: MachineId; spec: ResolvedServiceSpec; old_hook_containers: Array<[MachineId, ContainerId]> }",
+                    ),
+                ),
+            ],
+        },
     ),
     (
         "RestartAttempt",
-        Shape::Raw(
-            "export type RestartAttempt<E = RpcError> =\n  | \"NotAttempted\"\n  | Additive<{ Attempted: SerdeResult<null, E> }>;\n",
-        ),
+        Shape::ExternallyTagged {
+            params: "<E = RpcError>",
+            variants: &[
+                ("NotAttempted", None),
+                ("Attempted", Some("SerdeResult<null, E>")),
+            ],
+        },
     ),
     (
         "ReplacementCompensation",
-        Shape::Raw(
-            "export type ReplacementCompensation<E = RpcError> =\n  | Additive<{ StartFirst: { stop_new_container: SerdeResult<null, E> } }>\n  | Additive<{\n      StopFirst: {\n        stop_new_container: SerdeResult<null, E>;\n        restart_old_container: RestartAttempt<E>;\n      };\n    }>;\n",
-        ),
+        Shape::ExternallyTagged {
+            params: "<E = RpcError>",
+            variants: &[
+                (
+                    "StartFirst",
+                    Some("{ stop_new_container: SerdeResult<null, E> }"),
+                ),
+                (
+                    "StopFirst",
+                    Some(
+                        "{ stop_new_container: SerdeResult<null, E>; restart_old_container: RestartAttempt<E> }",
+                    ),
+                ),
+            ],
+        },
     ),
     (
         "FailedOperation",
-        Shape::Raw(
-            "export type FailedOperation<E = RpcError> =\n  | Additive<{ Operation: { operation: DeployOperation; error: E } }>\n  | Additive<{\n      ReplacementHealth: {\n        operation: ReplacementOperation;\n        error: E;\n        compensation: ReplacementCompensation<E>;\n      };\n    }>;\n",
-        ),
+        Shape::ExternallyTagged {
+            params: "<E = RpcError>",
+            variants: &[
+                (
+                    "Operation",
+                    Some("{ operation: DeployOperation; error: E }"),
+                ),
+                (
+                    "ReplacementHealth",
+                    Some(
+                        "{ operation: ReplacementOperation; error: E; compensation: ReplacementCompensation<E> }",
+                    ),
+                ),
+            ],
+        },
     ),
     (
         "DeployOutcome",
-        Shape::Raw(
-            "export type DeployOutcome<E = RpcError> =\n  | Additive<{ Success: { completed: DeployOperation[] } }>\n  | Additive<{\n      Failed: {\n        completed: DeployOperation[];\n        failed: FailedOperation<E>;\n        unexecuted: DeployOperation[];\n      };\n    }>;\n",
-        ),
+        Shape::ExternallyTagged {
+            params: "<E = RpcError>",
+            variants: &[
+                ("Success", Some("{ completed: DeployOperation[] }")),
+                (
+                    "Failed",
+                    Some(
+                        "{ completed: DeployOperation[]; failed: FailedOperation<E>; unexecuted: DeployOperation[] }",
+                    ),
+                ),
+            ],
+        },
+    ),
+    (
+        "MachineRuntime",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("daemon_version", "string"),
+                ("docker_version", "string"),
+                ("hostname", "string"),
+                ("architecture", "string"),
+                ("os_pretty_name", "string"),
+                ("kernel_version", "string"),
+            ],
+        },
+    ),
+    (
+        "Machine",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("id", "MachineId"),
+                ("name", "MachineName"),
+                ("subnet", "MachineSubnet"),
+                ("management_address", "ManagementAddress"),
+                ("public_key", "WireGuardPublicKey"),
+                ("public_ip", "string?"),
+                ("advertised_endpoints", "AdvertisedEndpoint[]"),
+                ("runtime", "MachineRuntime"),
+            ],
+        },
+    ),
+    (
+        "RttStatistics",
+        Shape::Additive {
+            params: "",
+            fields: &[("median_ns", "number"), ("population_stddev_ns", "number")],
+        },
+    ),
+    (
+        "MachineObservation",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("machine", "Machine"),
+                ("membership", "MembershipObservation"),
+                ("selected_endpoint", "SelectedEndpoint | null"),
+                ("rtt", "RttStatistics?"),
+            ],
+        },
+    ),
+    (
+        "ContainerObservation",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("container_id", "ContainerId"),
+                ("display_name", "string"),
+                ("created_at_unix_nanos", "number"),
+                ("machine_id", "MachineId"),
+                ("service_id", "ServiceId"),
+                ("service_name", "ServiceName"),
+                ("kind", "ContainerKind"),
+                ("runtime", "ContainerRuntimeObservation"),
+                ("effective_healthcheck", "JsonValue | null"),
+                ("resolved_spec", "ResolvedServiceSpec"),
+                ("address", "ContainerAddress | null"),
+                ("labels", "{ readonly [key: string]: string }"),
+            ],
+        },
+    ),
+    ("ServiceContainer", Shape::Alias("ContainerObservation")),
+    ("HookContainer", Shape::Alias("ContainerObservation")),
+    (
+        "ServiceObservation",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("service_id", "ServiceId"),
+                ("containers", "ServiceContainer[]"),
+                ("hook_containers", "HookContainer[]"),
+            ],
+        },
+    ),
+    (
+        "CertificateBackoff",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("failure_kind", "CertificateFailureKind"),
+                ("next_attempt_at", "string"),
+                ("failures", "number"),
+            ],
+        },
+    ),
+    (
+        "CertificateObservation",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("hostname", "IngressHost"),
+                ("status", "CertificateAvailability"),
+                ("last_error", "string?"),
+                ("backoff", "CertificateBackoff?"),
+            ],
+        },
+    ),
+    (
+        "RuntimeWatchIncompleteIds",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("machines", "MachineId[]"),
+                ("containers", "ContainerId[]"),
+                ("volumes", "DockerVolumeId[]"),
+                ("certificates", "IngressHost[]"),
+            ],
+        },
+    ),
+    (
+        "RuntimeWatchFrame",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("machines", "MachineObservation[]"),
+                ("containers", "ContainerObservation[]"),
+                ("services", "ServiceObservation[]"),
+                ("volumes", "DockerVolume[]"),
+                ("certificates", "CertificateObservation[]"),
+                ("hosted_dns_hostname", "string?"),
+                ("incomplete_ids", "RuntimeWatchIncompleteIds"),
+                ("observed_at", "string"),
+            ],
+        },
     ),
 ];
 
@@ -189,83 +466,12 @@ pub struct Artifacts {
 /// Build the checked-in `@ployz/sdk` artifacts from Rust types.
 #[must_use]
 pub fn artifacts() -> Artifacts {
+    check_raw_shapes_are_typescript_helpers();
     check_additive_fields_match_rust();
     Artifacts {
         index_dts: typescript(),
         fixtures_json: pretty_json(&Value::Object(fixtures().into_iter().collect())),
     }
-}
-
-/// JSON fixtures keyed by stable names, produced from Rust values.
-#[must_use]
-pub fn fixtures() -> BTreeMap<String, Value> {
-    let mut fixtures = BTreeMap::new();
-    fixtures.insert(
-        "contract_description".into(),
-        to_value(&contract_description()),
-    );
-    fixtures.insert(
-        "contract_description_unknown_fields".into(),
-        with_unknown_field(
-            to_value(&contract_description()),
-            "build_revision",
-            json!("future"),
-        ),
-    );
-    fixtures.insert("rpc_error".into(), to_value(&rpc_error()));
-    fixtures.insert("docker_volume".into(), to_value(&docker_volume()));
-    fixtures.insert(
-        "docker_volume_unknown_fields".into(),
-        with_unknown_field(to_value(&docker_volume()), "quota_bytes", json!(1)),
-    );
-    fixtures.insert("partial_result".into(), to_value(&partial_result()));
-    fixtures.insert(
-        "membership_observation_unknown".into(),
-        json!("future_membership"),
-    );
-    fixtures.insert("health_observation_unknown".into(), json!("degraded"));
-    fixtures.insert(
-        "container_runtime_unknown".into(),
-        json!({
-            "state": "hibernating",
-            "wake_at": "tomorrow",
-            "vendor": { "reason": 7 }
-        }),
-    );
-    fixtures.insert(
-        "container_runtime_known_unknown_fields".into(),
-        json!({
-            "state": "running",
-            "health": "healthy",
-            "engine_detail": "accepted and ignored"
-        }),
-    );
-    fixtures.insert(
-        "capabilities".into(),
-        Value::Array(
-            capability_rows()
-                .into_iter()
-                .map(|(_, name)| Value::String(name.to_owned()))
-                .collect(),
-        ),
-    );
-    fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
-    fixtures.insert("deploy_intent".into(), to_value(&deploy_intent()));
-    fixtures.insert("deploy_outcome".into(), to_value(&deploy_outcome()));
-    fixtures.insert(
-        "deploy_outcome_unknown_fields".into(),
-        with_unknown_field_in(
-            to_value(&deploy_outcome()),
-            "Success",
-            "future_note",
-            json!("ok"),
-        ),
-    );
-    fixtures.insert(
-        "deploy_outcome_failed".into(),
-        to_value(&deploy_outcome_failed()),
-    );
-    fixtures
 }
 
 /// Write generated files under the napi package root.
@@ -328,27 +534,97 @@ fn emit_shape(name: &str, shape: &Shape) -> String {
     match shape {
         Shape::Alias(ts) => format!("export type {name} = {ts};\n"),
         Shape::OpenString(known) => {
-            let variants = known
-                .iter()
-                .map(|value| format!("\"{value}\""))
-                .collect::<Vec<_>>()
-                .join(" | ");
-            format!("export type {name} = {variants} | (string & {{}});\n")
+            format!(
+                "export type {name} = {} | (string & {{}});\n",
+                quoted_union(known)
+            )
         }
-        Shape::Additive(fields) => {
-            let mut body = format!("export type {name} = Additive<{{\n");
-            for (field, ts) in *fields {
-                body.push_str("  ");
-                body.push_str(field);
-                body.push_str(": ");
-                body.push_str(ts);
-                body.push_str(";\n");
-            }
-            body.push_str("}>;\n");
-            body
+        Shape::ClosedString(known) => {
+            format!("export type {name} = {};\n", quoted_union(known))
         }
+        Shape::Additive { params, fields } => emit_additive(name, params, fields),
+        Shape::ExternallyTagged { params, variants } => {
+            emit_externally_tagged(name, params, variants)
+        }
+        Shape::InternallyTagged {
+            tag,
+            variants,
+            unknown,
+        } => emit_internally_tagged(name, tag, variants, *unknown),
         Shape::Raw(body) => (*body).to_owned(),
     }
+}
+
+fn quoted_union(known: &[&str]) -> String {
+    known
+        .iter()
+        .map(|value| format!("\"{value}\""))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn emit_additive(name: &str, params: &str, fields: &[(&str, &str)]) -> String {
+    let mut body = format!("export type {name}{params} = Additive<{{\n");
+    for (field, ts) in fields {
+        let (ts, optional) = strip_optional(ts);
+        body.push_str("  ");
+        body.push_str(field);
+        if optional {
+            body.push('?');
+        }
+        body.push_str(": ");
+        body.push_str(ts);
+        body.push_str(";\n");
+    }
+    body.push_str("}>;\n");
+    body
+}
+
+fn emit_externally_tagged(name: &str, params: &str, variants: &[(&str, Option<&str>)]) -> String {
+    let mut body = format!("export type {name}{params} =\n");
+    for (index, (variant, payload)) in variants.iter().enumerate() {
+        body.push_str("  | ");
+        match payload {
+            None => {
+                body.push('"');
+                body.push_str(variant);
+                body.push('"');
+            }
+            Some(ts) => {
+                body.push_str("Additive<{ ");
+                body.push_str(variant);
+                body.push_str(": ");
+                body.push_str(ts);
+                body.push_str(" }>");
+            }
+        }
+        if index + 1 == variants.len() {
+            body.push_str(";\n");
+        } else {
+            body.push('\n');
+        }
+    }
+    body
+}
+
+fn emit_internally_tagged(
+    name: &str,
+    tag: &str,
+    variants: &[(&str, &[(&str, &str)])],
+    unknown: bool,
+) -> String {
+    let mut arms = Vec::new();
+    for (tag_value, fields) in variants {
+        let mut members = vec![format!("{tag}: \"{tag_value}\"")];
+        for (field, ts) in *fields {
+            members.push(format!("{field}: {ts}"));
+        }
+        arms.push(format!("Additive<{{ {} }}>", members.join("; ")));
+    }
+    if unknown {
+        arms.push(format!("Additive<{{ {tag}?: string }}>"));
+    }
+    format!("export type {name} =\n  | {};\n", arms.join("\n  | "))
 }
 
 fn capability_typescript() -> String {
@@ -381,27 +657,30 @@ fn capability_rows() -> Vec<(&'static str, &'static str)> {
     rows
 }
 
-fn check_additive_fields_match_rust() {
-    let examples = [
-        ("ContractDescription", to_value(&contract_description())),
-        ("DockerVolume", to_value(&docker_volume())),
-        ("DockerVolumeId", to_value(&docker_volume().id)),
-        ("DeployIntent", to_value(&deploy_intent())),
-        ("PlanOptions", to_value(&PlanOptions::default())),
-        ("ServiceAttempt", to_value(&service_attempt())),
-    ];
+fn check_raw_shapes_are_typescript_helpers() {
     for (name, shape) in PAYLOADS {
-        let Shape::Additive(_) = shape else {
+        let Shape::Raw(_) = shape else {
             continue;
         };
         assert!(
-            examples.iter().any(|(example, _)| *example == *name),
-            "{name} Additive shape has no serde example"
+            matches!(*name, "JsonValue" | "JsonObject" | "Additive"),
+            "{name} must be derived from a typed table, not a Raw TypeScript blob"
         );
     }
-    for (name, value) in examples {
-        let fields = additive_fields(name)
-            .unwrap_or_else(|| panic!("{name} is missing from Additive payload shapes"));
+}
+
+fn check_additive_fields_match_rust() {
+    let examples = additive_examples();
+    for (name, shape) in PAYLOADS {
+        let Shape::Additive { params, fields } = shape else {
+            continue;
+        };
+        if !params.is_empty() {
+            continue;
+        }
+        let value = examples
+            .get(*name)
+            .unwrap_or_else(|| panic!("{name} Additive shape has no serde example"));
         let object = value
             .as_object()
             .unwrap_or_else(|| panic!("{name} serde value is not an object"));
@@ -411,7 +690,10 @@ fn check_additive_fields_match_rust() {
                 "{name} TypeScript fields missing serde key {key}"
             );
         }
-        for (field, _) in fields {
+        for (field, ts) in *fields {
+            if strip_optional(ts).1 {
+                continue;
+            }
             assert!(
                 object.contains_key(*field),
                 "{name} serde value missing field {field}"
@@ -420,124 +702,10 @@ fn check_additive_fields_match_rust() {
     }
 }
 
-fn additive_fields(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
-    PAYLOADS.iter().find_map(|(payload, shape)| {
-        let Shape::Additive(fields) = shape else {
-            return None;
-        };
-        (*payload == name).then_some(*fields)
-    })
+fn strip_optional(ts: &str) -> (&str, bool) {
+    ts.strip_suffix('?')
+        .map_or((ts, false), |inner| (inner, true))
 }
-
-fn contract_description() -> ContractDescription {
-    ContractDescription {
-        machine_id: machine_id(MACHINE_ID_HEX),
-        protocol_major: PROTOCOL_MAJOR,
-        daemon_version: "0.1.0".into(),
-        capabilities: [CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY)
-            .expect("catalogued capability names are valid")]
-        .into(),
-    }
-}
-
-fn rpc_error() -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unsupported,
-        message: "watch is not advertised".into(),
-        details: Value::Null,
-    }
-}
-
-fn docker_volume() -> DockerVolume {
-    DockerVolume {
-        id: DockerVolumeId {
-            machine_id: machine_id(MACHINE_ID_HEX),
-            name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
-        },
-        driver: "local".into(),
-        options: BTreeMap::from([("type".into(), "none".into())]),
-        labels: BTreeMap::from([("ployz.managed".into(), "false".into())]),
-    }
-}
-
-fn service_attempt() -> ServiceAttempt {
-    ServiceAttempt {
-        name: ServiceName::parse("web").expect("fixture Service Name is valid"),
-    }
-}
-
-fn deploy_intent() -> DeployIntent {
-    DeployIntent::new(Vec::new(), Vec::new(), PlanOptions::default())
-}
-
-fn deploy_outcome() -> DeployOutcome<RpcError> {
-    DeployOutcome::Success {
-        completed: vec![DeployOperation::StopContainer {
-            machine_id: machine_id(MACHINE_ID_HEX),
-            container_id: container_id(),
-        }],
-    }
-}
-
-fn deploy_outcome_failed() -> DeployOutcome<RpcError> {
-    DeployOutcome::Failed {
-        completed: Vec::new(),
-        failed: FailedOperation::Operation {
-            operation: DeployOperation::StopContainer {
-                machine_id: machine_id(MACHINE_ID_HEX),
-                container_id: container_id(),
-            },
-            error: rpc_error(),
-        },
-        unexecuted: Vec::new(),
-    }
-}
-
-const CONTAINER_ID_HEX: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
-fn container_id() -> ContainerId {
-    ContainerId::parse(CONTAINER_ID_HEX).expect("fixture Container ID is valid")
-}
-
-fn partial_result() -> PartialResult<DockerVolume, RpcError> {
-    PartialResult {
-        successes: vec![MachineSuccess {
-            machine_id: machine_id(MACHINE_ID_HEX),
-            value: docker_volume(),
-        }],
-        failures: vec![MachineFailure {
-            machine_id: machine_id(OTHER_MACHINE_ID_HEX),
-            error: rpc_error(),
-        }],
-        omissions: vec![machine_id("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")],
-    }
-}
-
-fn machine_id(value: &str) -> MachineId {
-    MachineId::parse(value).expect("fixture Machine ID is valid")
-}
-
-fn to_value<T: serde::Serialize>(value: &T) -> Value {
-    serde_json::to_value(value).expect("SDK fixtures serialize")
-}
-
-fn with_unknown_field(mut value: Value, key: &str, extra: Value) -> Value {
-    value
-        .as_object_mut()
-        .expect("unknown-field fixtures wrap objects")
-        .insert(key.to_owned(), extra);
-    value
-}
-
-fn with_unknown_field_in(mut value: Value, variant: &str, key: &str, extra: Value) -> Value {
-    value
-        .get_mut(variant)
-        .and_then(Value::as_object_mut)
-        .expect("unknown-field fixtures wrap a serde variant object")
-        .insert(key.to_owned(), extra);
-    value
-}
-
 fn pretty_json(value: &Value) -> String {
     let mut encoded = serde_json::to_string_pretty(value).expect("fixtures are valid JSON");
     encoded.push('\n');
