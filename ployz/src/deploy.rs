@@ -112,8 +112,8 @@ pub struct DeployPlan {
     pub would_remove: Vec<QualifiedService>,
     /// Why pruning will not run. `None` still does not remove; this command never prunes.
     pub prune_refusal: Option<PruneRefusal>,
-    /// True when hostname conflict detection ran against an incomplete snapshot.
-    pub observer_relative_hostname_detection: bool,
+    /// Observer-relative warnings produced while planning, including hostname detection.
+    pub warnings: Vec<DeployWarning>,
 }
 
 impl DeployPlan {
@@ -123,7 +123,7 @@ impl DeployPlan {
             operations,
             would_remove: Vec::new(),
             prune_refusal: None,
-            observer_relative_hostname_detection: false,
+            warnings: Vec::new(),
         }
     }
 

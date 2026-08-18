@@ -208,9 +208,7 @@ async fn prepare_intent(
     expand_ingress(client, &intent.project_name, intent.target.iter_mut()).await?;
     warnings.extend(hostname_warnings(intent.target.iter(), &snapshot.machines).await);
     let plan = plan_deploy(intent, &snapshot)?;
-    if plan.observer_relative_hostname_detection {
-        warnings.push(DeployWarning::ObserverRelativeHostnameConflict);
-    }
+    warnings.extend(plan.warnings);
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
     Ok(DeployPreview {
         project_name: intent.project_name.clone(),

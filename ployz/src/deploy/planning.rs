@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
+    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, IngressHost, MachineId,
     MachineObservation, MembershipObservation, PortPublication, ProjectName, QualifiedService,
     RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
     ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
@@ -10,8 +10,8 @@ use ployz_core::{
 };
 
 use super::{
-    DeployIntent, DeployOperation, DeployPlan, DeploySnapshot, EliminatingConstraint, PlanError,
-    PlanOptions, ReplacementOperation,
+    DeployIntent, DeployOperation, DeployPlan, DeploySnapshot, DeployWarning,
+    EliminatingConstraint, PlanError, PlanOptions, ReplacementOperation,
 };
 
 mod volumes;
@@ -43,12 +43,14 @@ pub fn plan_deploy(
         .into_iter()
         .map(normalize)
         .collect::<Vec<_>>();
-    let observer_relative_hostname_detection = !snapshot.is_observer_complete()
+    let mut warnings = Vec::new();
+    reject_custom_hostname_conflicts(&intent.project_name, &requested, snapshot)?;
+    if !snapshot.is_observer_complete()
         && requested
             .iter()
-            .any(|spec| explicit_ingress_hosts(&spec.ports).next().is_some());
-    if snapshot.is_observer_complete() {
-        reject_custom_hostname_conflicts(&intent.project_name, &requested, snapshot)?;
+            .any(|spec| publishes_custom_hostname(&intent.project_name, spec))
+    {
+        warnings.push(DeployWarning::ObserverRelativeHostnameConflict);
     }
     let options = &intent.options;
     let volume_uses = named_volume_uses(&requested);
@@ -81,7 +83,7 @@ pub fn plan_deploy(
         operations,
         would_remove,
         prune_refusal,
-        observer_relative_hostname_detection,
+        warnings,
     })
 }
 
@@ -93,7 +95,7 @@ fn reject_custom_hostname_conflicts(
     let owners = hostname_owners(snapshot.containers.iter());
     for spec in requested {
         let identity = QualifiedService::new(project_name.clone(), spec.name.clone());
-        for hostname in explicit_ingress_hosts(&spec.ports) {
+        for hostname in custom_ingress_hosts(&identity, spec) {
             if let Some(owner) = owners.get(hostname)
                 && *owner != identity
             {
@@ -105,6 +107,28 @@ fn reject_custom_hostname_conflicts(
         }
     }
     Ok(())
+}
+
+fn publishes_custom_hostname(project_name: &ProjectName, spec: &RequestedServiceSpec) -> bool {
+    let identity = QualifiedService::new(project_name.clone(), spec.name.clone());
+    custom_ingress_hosts(&identity, spec).next().is_some()
+}
+
+fn custom_ingress_hosts<'a>(
+    identity: &'a QualifiedService,
+    spec: &'a RequestedServiceSpec,
+) -> impl Iterator<Item = &'a IngressHost> {
+    explicit_ingress_hosts(&spec.ports).filter(|hostname| !generated_for(identity, hostname))
+}
+
+fn generated_for(identity: &QualifiedService, hostname: &IngressHost) -> bool {
+    // Generated names are `{ingress_label()}.{cluster-domain}` (#106); this ticket is custom only.
+    identity.ingress_label().is_ok_and(|label| {
+        hostname
+            .as_str()
+            .strip_prefix(&format!("{label}."))
+            .is_some_and(|rest| !rest.is_empty())
+    })
 }
 
 fn obsolete_services(

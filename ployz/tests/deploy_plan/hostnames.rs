@@ -1,6 +1,7 @@
 use super::support::*;
 use ployz_core::{
-    HttpProtocol, IngressHost, IngressHostname, PortPublication, ProjectName, QualifiedService,
+    DeployWarning, HttpProtocol, IngressHost, IngressHostname, PortPublication, ProjectName,
+    QualifiedService,
 };
 
 #[test]
@@ -22,24 +23,45 @@ fn complete_snapshot_rejects_another_qualified_service_already_publishing_the_cu
 }
 
 #[test]
-fn same_qualified_service_redeploy_keeps_the_custom_hostname() {
-    let spec = custom_web();
-    let existing = container('c', '1', &spec, &service_id('a'));
-    let snapshot = snapshot_with(vec![existing]);
-    let plan = plan_deploy([&spec], &snapshot, PlanOptions::default()).unwrap();
-    assert!(!plan.observer_relative_hostname_detection);
-}
-
-#[test]
-fn incomplete_snapshot_does_not_claim_uniqueness_and_warns_that_detection_is_observer_relative() {
+fn visible_conflict_rejects_even_when_the_snapshot_is_incomplete() {
     let spec = custom_web();
     let snapshot = DeploySnapshot {
         volume_omissions: vec![machine_id('1')],
         ..snapshot_with(vec![other_project_container(&spec, 1)])
     };
     assert!(!snapshot.is_observer_complete());
+    let error = plan_deploy([&spec], &snapshot, PlanOptions::default()).unwrap_err();
+    assert_eq!(
+        error,
+        PlanError::CustomHostnameConflict {
+            hostname: IngressHost::parse("api.example.com").unwrap(),
+            owner: QualifiedService::parse("blog/web").unwrap(),
+        }
+    );
+}
+
+#[test]
+fn same_qualified_service_redeploy_keeps_the_custom_hostname() {
+    let spec = custom_web();
+    let existing = container('c', '1', &spec, &service_id('a'));
+    let snapshot = snapshot_with(vec![existing]);
     let plan = plan_deploy([&spec], &snapshot, PlanOptions::default()).unwrap();
-    assert!(plan.observer_relative_hostname_detection);
+    assert!(plan.warnings.is_empty());
+}
+
+#[test]
+fn incomplete_snapshot_without_a_visible_publisher_warns_that_detection_is_observer_relative() {
+    let spec = custom_web();
+    let snapshot = DeploySnapshot {
+        volume_omissions: vec![machine_id('1')],
+        ..snapshot_with(Vec::new())
+    };
+    assert!(!snapshot.is_observer_complete());
+    let plan = plan_deploy([&spec], &snapshot, PlanOptions::default()).unwrap();
+    assert_eq!(
+        plan.warnings,
+        vec![DeployWarning::ObserverRelativeHostnameConflict]
+    );
     assert!(
         plan.operations
             .iter()
@@ -51,16 +73,37 @@ fn incomplete_snapshot_does_not_claim_uniqueness_and_warns_that_detection_is_obs
 fn complete_snapshot_without_a_conflict_does_not_warn() {
     let spec = custom_web();
     let plan = plan_deploy([&spec], &snapshot_with(Vec::new()), PlanOptions::default()).unwrap();
-    assert!(!plan.observer_relative_hostname_detection);
+    assert!(plan.warnings.is_empty());
+}
+
+#[test]
+fn generated_shaped_hostname_is_not_a_custom_conflict() {
+    let spec = generated_shaped_web();
+    let snapshot = snapshot_with(vec![other_project_container(&spec, 1)]);
+    let plan = plan_deploy([&spec], &snapshot, PlanOptions::default()).unwrap();
+    assert!(plan.warnings.is_empty());
+    assert!(
+        plan.operations
+            .iter()
+            .any(|operation| { matches!(operation, DeployOperation::RunContainer { .. }) })
+    );
 }
 
 fn custom_web() -> RequestedServiceSpec {
+    ingress_web("api.example.com")
+}
+
+fn generated_shaped_web() -> RequestedServiceSpec {
+    ingress_web("web-app.example.com")
+}
+
+fn ingress_web(hostname: &str) -> RequestedServiceSpec {
     let mut spec = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     spec.name = ServiceName::parse("web").unwrap();
     spec.ports = vec![PortPublication::Ingress {
-        hostname: IngressHostname::explicit("api.example.com").unwrap(),
+        hostname: IngressHostname::explicit(hostname).unwrap(),
         load_balancer_port: NonZeroU16::new(80).unwrap(),
         container_port: NonZeroU16::new(80).unwrap(),
         http_protocol: HttpProtocol::Http,

@@ -5,12 +5,6 @@ use std::collections::BTreeMap;
 use super::{ContainerKind, ContainerObservation, IngressHostname, PortPublication};
 use crate::{IngressHost, QualifiedService, ServiceId};
 
-#[derive(Clone, Copy)]
-struct Claim {
-    created_at: i64,
-    service_id: ServiceId,
-}
-
 /// Hostname Owner for each explicit Ingress Hostname in these observations.
 ///
 /// Derived from Service Container observations that already replicate. Not a
@@ -20,41 +14,29 @@ struct Claim {
 pub fn hostname_owners<'a>(
     observations: impl IntoIterator<Item = &'a ContainerObservation>,
 ) -> BTreeMap<IngressHost, QualifiedService> {
-    let mut claims: BTreeMap<IngressHost, BTreeMap<QualifiedService, Claim>> = BTreeMap::new();
+    let mut winners: BTreeMap<IngressHost, (i64, QualifiedService, ServiceId)> = BTreeMap::new();
     for observation in observations {
         if observation.kind != ContainerKind::ServiceContainer {
             continue;
         }
+        let created_at = observation.created_at_unix_nanos;
+        let service_id = observation.service_id;
         let identity = observation.identity();
-        let next = Claim {
-            created_at: observation.created_at_unix_nanos,
-            service_id: observation.service_id,
-        };
         for hostname in explicit_ingress_hosts(&observation.resolved_spec.ports) {
-            let by_identity = claims.entry(hostname.clone()).or_default();
-            if let Some(claim) = by_identity.get_mut(&identity) {
-                if (next.created_at, next.service_id) < (claim.created_at, claim.service_id) {
-                    *claim = next;
+            let better = match winners.get(hostname) {
+                Some((best_at, best_id, best_sid)) => {
+                    (created_at, &identity, service_id) < (*best_at, best_id, *best_sid)
                 }
-            } else {
-                by_identity.insert(identity.clone(), next);
+                None => true,
+            };
+            if better {
+                winners.insert(hostname.clone(), (created_at, identity.clone(), service_id));
             }
         }
     }
-    claims
+    winners
         .into_iter()
-        .filter_map(|(hostname, by_identity)| {
-            by_identity
-                .into_iter()
-                .min_by(|(left_id, left), (right_id, right)| {
-                    (left.created_at, left_id, &left.service_id).cmp(&(
-                        right.created_at,
-                        right_id,
-                        &right.service_id,
-                    ))
-                })
-                .map(|(identity, _)| (hostname, identity))
-        })
+        .map(|(hostname, (_, identity, _))| (hostname, identity))
         .collect()
 }
 
