@@ -36,7 +36,7 @@ pub async fn execute_plan(
     client: &Client,
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
-    execute_operation_sequence(&plan.operations, client, cancellation, Vec::new(), None).await
+    execute_with(plan, client, cancellation).await
 }
 
 pub(crate) async fn execute_operations_with_progress(
@@ -45,8 +45,7 @@ pub(crate) async fn execute_operations_with_progress(
     cancellation: &CancellationToken,
     tx: Option<UnboundedSender<DeployEvent>>,
 ) -> DeployOutcome<ExecutionError> {
-    let operations: Vec<DeployOperation> = rows.iter().map(|row| row.operation.clone()).collect();
-    execute_operation_sequence(&operations, client, cancellation, rows, tx).await
+    execute_operation_sequence(rows, client, cancellation, tx).await
 }
 
 pub(super) trait MachineOperations {
@@ -339,23 +338,43 @@ where
     }
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used by exec_tests"))]
+fn rows_from_operations(operations: &[DeployOperation]) -> Vec<OperationRow> {
+    operations
+        .iter()
+        .enumerate()
+        .map(|(index, operation)| {
+            OperationRow::pending(
+                u32::try_from(index).unwrap_or(u32::MAX),
+                operation.clone(),
+                None,
+                None,
+                None,
+            )
+        })
+        .collect()
+}
+
 async fn execute_with<C: MachineOperations>(
     plan: &DeployPlan,
     client: &C,
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
-    execute_operation_sequence(&plan.operations, client, cancellation, Vec::new(), None).await
+    execute_operation_sequence(
+        rows_from_operations(&plan.operations),
+        client,
+        cancellation,
+        None,
+    )
+    .await
 }
 
 async fn execute_operation_sequence<C: MachineOperations>(
-    operations: impl IntoIterator<Item = &DeployOperation>,
+    rows: Vec<OperationRow>,
     client: &C,
     cancellation: &CancellationToken,
-    rows: Vec<OperationRow>,
     tx: Option<UnboundedSender<DeployEvent>>,
 ) -> DeployOutcome<ExecutionError> {
-    let operations: Vec<DeployOperation> = operations.into_iter().cloned().collect();
+    let operations: Vec<DeployOperation> = rows.iter().map(|row| row.operation.clone()).collect();
     let client = RestartTolerant {
         inner: client,
         cancellation,

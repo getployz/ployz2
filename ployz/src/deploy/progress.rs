@@ -80,46 +80,6 @@ impl Progress {
     }
 
     pub(super) fn emit(&self) {
-        self.emit_progress();
-    }
-
-    pub(super) fn set_running(&mut self, index: usize, phase: OperationPhase) {
-        if let Some(row) = self.rows.get_mut(index) {
-            row.status = OperationStatus::Running { phase };
-        }
-        self.emit_progress();
-    }
-
-    pub(super) fn set_display_name(&mut self, index: usize, display_name: String) {
-        if let Some(row) = self.rows.get_mut(index) {
-            row.display_name = Some(display_name);
-        }
-    }
-
-    pub(super) fn set_completed(&mut self, index: usize) {
-        if let Some(row) = self.rows.get_mut(index) {
-            row.status = OperationStatus::Completed;
-        }
-        self.emit_progress();
-    }
-
-    pub(super) fn fail(&mut self, index: usize, error: ExecutionError) {
-        if let Some(row) = self.rows.get_mut(index) {
-            row.status = OperationStatus::Failed { error };
-        }
-        for row in self.rows.iter_mut().skip(index.saturating_add(1)) {
-            row.status = OperationStatus::Unexecuted;
-        }
-        self.emit_progress();
-    }
-
-    pub(super) fn outcome(&self, outcome: DeployOutcome<ExecutionError>) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(DeployEvent::Outcome { outcome });
-        }
-    }
-
-    fn emit_progress(&self) {
         let Some(tx) = &self.tx else {
             return;
         };
@@ -133,5 +93,41 @@ impl Progress {
             total: u32::try_from(self.rows.len()).unwrap_or(u32::MAX),
             rows: self.rows.clone(),
         });
+    }
+
+    pub(super) fn set_running(&mut self, index: usize, phase: OperationPhase) {
+        if let Some(row) = self.rows.get_mut(index) {
+            row.status = OperationStatus::Running { phase };
+        }
+        self.emit();
+    }
+
+    pub(super) fn set_display_name(&mut self, index: usize, display_name: String) {
+        if let Some(row) = self.rows.get_mut(index) {
+            row.display_name = Some(display_name);
+        }
+    }
+
+    pub(super) fn set_completed(&mut self, index: usize) {
+        if let Some(row) = self.rows.get_mut(index) {
+            row.status = OperationStatus::Completed;
+        }
+        self.emit();
+    }
+
+    pub(super) fn fail(&mut self, index: usize, error: ExecutionError) {
+        if let Some(row) = self.rows.get_mut(index) {
+            row.status = OperationStatus::Failed { error };
+        }
+        for row in self.rows.iter_mut().skip(index.saturating_add(1)) {
+            row.status = OperationStatus::Unexecuted;
+        }
+        self.emit();
+    }
+
+    pub(super) fn outcome(&self, outcome: DeployOutcome<ExecutionError>) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(DeployEvent::Outcome { outcome });
+        }
     }
 }

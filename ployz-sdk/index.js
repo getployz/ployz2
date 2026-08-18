@@ -38,7 +38,7 @@ function wrapPreview(handle) {
   return {
     operations: payload.operations,
     warnings: payload.warnings,
-    noop: handle.noop,
+    noop: payload.operations.length === 0,
     confirm(options = {}) {
       return wrapRunning(handle.confirm(), options && options.signal);
     },
@@ -52,10 +52,12 @@ function wrapRunning(running, signal) {
   } else if (signal) {
     signal.addEventListener("abort", stop, { once: true });
   }
+  let finished;
   return {
     abort: stop,
     get finished() {
-      return running.finished();
+      finished ??= running.finished();
+      return finished;
     },
     async *[Symbol.asyncIterator]() {
       try {

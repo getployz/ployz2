@@ -121,7 +121,7 @@ impl Client {
 
 #[napi]
 impl DeployPreviewHandle {
-    /// Planned rows, warnings, and whether this preview is a noop.
+    /// Planned rows and warnings.
     ///
     /// # Errors
     ///
@@ -129,12 +129,6 @@ impl DeployPreviewHandle {
     #[napi]
     pub fn payload(&self) -> Result<serde_json::Value> {
         serde_json::to_value(&*self.inner).map_err(|error| Error::from_reason(error.to_string()))
-    }
-
-    /// True when this preview planned no operations.
-    #[napi(getter)]
-    pub fn noop(&self) -> bool {
-        self.inner.noop()
     }
 
     /// Execute these operations. Illegal after a previous confirm.
