@@ -34,8 +34,7 @@ use tonic::{Request, Response, Status, Streaming, transport::Server};
 
 #[tokio::test]
 async fn deploy_creates_containers_owned_by_the_intent_project() {
-    let machine = machine('a', "one");
-    let service = DeployService::new(machine.clone());
+    let service = DeployService::new(machine('a', "one"));
     let created = service.created_projects();
     let (mut client, server) = connected(service).await;
     client
