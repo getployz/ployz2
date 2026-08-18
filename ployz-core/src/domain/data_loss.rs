@@ -128,6 +128,6 @@ impl UnconfirmedDataLoss {
         if error.code != RpcErrorCode::InvalidArgument {
             return None;
         }
-        serde_json::from_value(error.details.clone()).ok()
+        Self::deserialize(&error.details).ok()
     }
 }
