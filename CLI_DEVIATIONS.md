@@ -13,3 +13,5 @@
 - `direct-push-reference-boundary` — Reject digest and port-qualified-registry references for direct image push: Docker cannot push a digest or nest a registry-port colon below the temporary loopback registry without changing the reference. Build resolution remains exact, and external `--push-registry` delivery remains supported.
 - `images-json-output` — Add `-o, --output json` to `ployz images` and `ployz image ls` so consumers can still read raw `CREATED` and `SIZE` after the table becomes human-formatted.
 - `scriptable-ctx-connection` — Let `ployz ctx connection [CONNECTION]` print the current default connection when omitted, and select when given, so a scripted caller can read without a TTY.
+- `project-name-no-short-flag` — Expose Project name as `--project-name` only. `-p` stays `--profile` on `build` and `deploy`, and `--publish` on `run`.
+- `strict-project-name` — Reject Project names with underscores or uppercase instead of normalising them. Docker Compose permits underscores and normalisation; Ployz keeps Project names directly DNS-safe.

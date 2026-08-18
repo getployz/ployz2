@@ -375,6 +375,45 @@ mod tests {
     }
 
     #[test]
+    fn reserved_and_invalid_project_names_fail_before_connecting() {
+        let mut command = crate::cli::command();
+        let reserved = command
+            .clone()
+            .try_get_matches_from(["ployz", "run", "--project-name", "ployz-system", "alpine"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&reserved, &mut command).unwrap_err().to_string(),
+            "Project 'ployz-system' is reserved for Ployz infrastructure",
+        );
+        let invalid = command
+            .clone()
+            .try_get_matches_from(["ployz", "deploy", "--project-name", "My_App"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&invalid, &mut command).unwrap_err().to_string(),
+            "invalid Project Name \"My_App\": a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
+        );
+        let remove = command
+            .clone()
+            .try_get_matches_from(["ployz", "rm", "--project-name", "ployz-system", "web"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&remove, &mut command).unwrap_err().to_string(),
+            "Project 'ployz-system' is reserved for Ployz infrastructure",
+        );
+        let implicit_default = command
+            .clone()
+            .try_get_matches_from(["ployz", "run", "alpine"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&implicit_default, &mut command)
+                .unwrap_err()
+                .to_string(),
+            crate::context::ContextError::NoConfig.to_string(),
+        );
+    }
+
+    #[test]
     fn nightly_daemon_channel_is_rejected() {
         let error = crate::cli::command()
             .try_get_matches_from([

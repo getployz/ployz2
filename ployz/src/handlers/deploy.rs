@@ -1,4 +1,5 @@
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 
 use clap::ArgMatches;
 use ployz_core::ServiceSelector;
@@ -8,7 +9,8 @@ use crate::{
         BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, execute_build,
         load_project, plan_build,
     },
-    deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec},
+    deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec, plan_options},
+    project::{refuse_reserved, resolve_explicit, resolve_for_deploy, resolve_for_run},
 };
 
 use super::{Error, connect_client, leaf_matches, required, runtime, string_values};
@@ -16,18 +18,36 @@ use super::{Error, connect_client, leaf_matches, required, runtime, string_value
 pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let requested = run_spec(matches)?;
+    let project = resolve_for_run(matches)?;
+    refuse_reserved(&project.name)?;
     let context = matches.get_one::<String>("context").map(String::as_str);
     let force_recreate = matches.get_flag("recreate");
     let skip_health_monitor = matches.get_flag("skip-health");
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        deploy_spec(&mut client, &requested, force_recreate, skip_health_monitor).await
+        deploy_spec(
+            &mut client,
+            &requested,
+            force_recreate,
+            skip_health_monitor,
+            Some(&project),
+        )
+        .await
     })
 }
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    if let Some(explicit) = resolve_explicit(matches)? {
+        refuse_reserved(&explicit.name)?;
+    }
     let (mut project, builds, apply) = prepare_deploy(matches)?;
+    let files = string_values(matches, "file")
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let resolved = resolve_for_deploy(matches, &project, &files)?;
+    refuse_reserved(&resolved.name)?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -44,9 +64,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             &mut project,
             &builds,
             apply,
-            force_recreate,
-            skip_health_monitor,
+            plan_options(force_recreate, skip_health_monitor),
             yes,
+            &resolved,
         )
         .await
     })
@@ -123,10 +143,20 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let selector = ServiceSelector::parse(required(matches, "service")?)?;
     let yes = matches.get_flag("yes");
     let skip_health_monitor = matches.get_flag("skip-health");
+    let project = resolve_for_run(matches)?;
+    refuse_reserved(&project.name)?;
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        deploy_scale(&mut client, &selector, replicas, skip_health_monitor, yes).await
+        deploy_scale(
+            &mut client,
+            &selector,
+            replicas,
+            skip_health_monitor,
+            yes,
+            &project,
+        )
+        .await
     })
 }
 
