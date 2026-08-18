@@ -105,7 +105,7 @@ impl Connector for SystemConnector {
             Transport::Relay { url, credential } => {
                 let machine_id = connection
                     .machine_id()
-                    .ok_or(ConnectError::UnknownMachine)?;
+                    .expect("Relay connections carry an entry Machine ID");
                 relay::connect_channel(url, credential, machine_id).await
             }
         }

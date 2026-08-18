@@ -49,48 +49,32 @@ async fn dial_tunnel(
     credential: &DialCredential,
     machine_id: &MachineId,
 ) -> Result<TunnelIo, ConnectError> {
-    let channel = Endpoint::from_shared(url.to_owned())?
-        .connect_timeout(Duration::from_secs(5))
-        .connect()
-        .await
-        .map_err(ConnectError::from)?;
-    let mut relay = CloudRelayClient::new(channel);
+    let mut relay = CloudRelayClient::new(super::connect_endpoint(url.to_owned()).await?);
     let (tx, rx) = mpsc::channel(16);
     let mut request = Request::new(ReceiverStream::new(rx));
-    insert_dial_metadata(request.metadata_mut(), credential, machine_id)?;
-    let inbound = match relay.dial(request).await {
-        Ok(response) => response.into_inner(),
-        Err(status) => return Err(dial_status(status)),
-    };
-    Ok(TunnelIo::new(tx, inbound))
-}
-
-fn insert_dial_metadata(
-    metadata: &mut tonic::metadata::MetadataMap,
-    credential: &DialCredential,
-    machine_id: &MachineId,
-) -> Result<(), ConnectError> {
     let bearer = format!("Bearer {}", credential.as_str());
-    metadata.insert(
+    request.metadata_mut().insert(
         AUTHORIZATION_METADATA,
         MetadataValue::try_from(&bearer).map_err(|_| ConnectError::InvalidDialCredential)?,
     );
-    metadata.insert(
+    request.metadata_mut().insert(
         MACHINE_ID_METADATA,
         machine_id
             .as_str()
             .parse()
             .expect("Machine ID is ASCII metadata"),
     );
-    Ok(())
-}
-
-fn dial_status(status: tonic::Status) -> ConnectError {
-    if status.code() == tonic::Code::Unauthenticated {
-        ConnectError::InvalidDialCredential
-    } else if status.code() == tonic::Code::NotFound {
-        ConnectError::UnknownMachine
-    } else {
-        ConnectError::from(status)
-    }
+    let inbound = match relay.dial(request).await {
+        Ok(response) => response.into_inner(),
+        Err(status) => {
+            return Err(if status.code() == tonic::Code::Unauthenticated {
+                ConnectError::InvalidDialCredential
+            } else if status.code() == tonic::Code::NotFound {
+                ConnectError::UnknownMachine
+            } else {
+                ConnectError::from(status)
+            });
+        }
+    };
+    Ok(TunnelIo::new(tx, inbound))
 }
