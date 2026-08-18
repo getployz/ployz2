@@ -195,6 +195,7 @@ export const RESET_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.reset.v1"
 export const MACHINE_TOKEN_CAPABILITY: CapabilityName = "ployz.machine.token.v1";
 export const UPDATE_MACHINE_CAPABILITY: CapabilityName = "ployz.machine.update.v1";
 export const DESCRIBE_CONTRACT_CAPABILITY: CapabilityName = "ployz.rpc.describe-contract.v1";
+export const RUNTIME_WATCH_CAPABILITY: CapabilityName = "ployz.runtime.watch.v1";
 export const CREATE_VOLUME_CAPABILITY: CapabilityName = "ployz.volume.create.v1";
 export const INSPECT_VOLUME_CAPABILITY: CapabilityName = "ployz.volume.inspect.v1";
 export const LIST_VOLUMES_CAPABILITY: CapabilityName = "ployz.volume.list.v1";
@@ -231,6 +232,7 @@ export const CATALOGUED_CAPABILITIES = [
   "ployz.machine.token.v1",
   "ployz.machine.update.v1",
   "ployz.rpc.describe-contract.v1",
+  "ployz.runtime.watch.v1",
   "ployz.volume.create.v1",
   "ployz.volume.inspect.v1",
   "ployz.volume.list.v1",
