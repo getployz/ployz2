@@ -150,17 +150,17 @@ pub enum PlanError {
     #[error("dependency cycle at service '{service}'")]
     DependencyCycle { service: String },
     #[error("external volumes not found: {}", quoted_names(.names))]
-    ExternalVolumesNotFound { names: Vec<String> },
+    ExternalVolumesNotFound { names: Vec<DockerVolumeName> },
 }
 
-fn quoted_names(names: &[String]) -> String {
+fn quoted_names(names: &[DockerVolumeName]) -> String {
     let mut quoted = String::new();
     for (index, name) in names.iter().enumerate() {
         if index > 0 {
             quoted.push_str(", ");
         }
         quoted.push('\'');
-        quoted.push_str(name);
+        quoted.push_str(name.as_str());
         quoted.push('\'');
     }
     quoted
@@ -203,12 +203,11 @@ pub(crate) fn reject_missing_external_volumes(
     let present = snapshot
         .volumes
         .iter()
-        .map(|volume| volume.id.name.as_str())
+        .map(|volume| &volume.id.name)
         .collect::<BTreeSet<_>>();
     let names = project
         .external_volume_names()
         .filter(|name| !present.contains(name))
-        .map(str::to_owned)
         .collect::<Vec<_>>();
     if names.is_empty() {
         Ok(())

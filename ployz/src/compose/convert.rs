@@ -6,10 +6,10 @@ use std::{
 
 use ployz_core::{
     ConfiguredHealthcheck, ContainerPath, ContainerResources, DeviceMapping, DeviceReservation,
-    HEALTHCHECK_DISABLE_SENTINEL, HealthcheckCommand, HealthcheckSpec, LogDriver, MachinePath,
-    MachineTarget, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
-    ServiceConfigGraph, ServiceContainerSpec, ServiceMode, ServiceName, ServiceVolumeGraph, Ulimit,
-    UpdateConfig, UpdateOrder,
+    DockerVolumeName, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckCommand, HealthcheckSpec, LogDriver,
+    MachinePath, MachineTarget, Placement, PortPublication, PullPolicy, RequestedServiceSpec,
+    RestartPolicy, ServiceConfigGraph, ServiceContainerSpec, ServiceMode, ServiceName,
+    ServiceVolumeGraph, Ulimit, UpdateConfig, UpdateOrder,
 };
 use serde_norway::Value;
 
@@ -141,9 +141,17 @@ impl ComposeProject {
         Ok(ordered)
     }
 
-    pub(crate) fn external_volume_names(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn external_volume_names(&self) -> impl Iterator<Item = DockerVolumeName> {
         self.volumes.iter().filter_map(|(key, volume)| {
-            is_external(&volume.external).then_some(volume.name.as_deref().unwrap_or(key.as_str()))
+            is_external(&volume.external).then(|| {
+                // Compose mapping keys are non-empty. An empty `name:` falls back to the key.
+                let name = volume
+                    .name
+                    .as_deref()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(key.as_str());
+                DockerVolumeName::parse(name).expect("compose mapping keys are non-empty")
+            })
         })
     }
 }
