@@ -55,38 +55,20 @@ impl ContainerRuntime {
             return Ok(());
         };
         tokio::try_join!(
-            self.publish_container_observations(&sink, shutdown.clone()),
-            self.publish_volume_observations(&sink, shutdown),
+            self.retry_watch(
+                &sink,
+                shutdown.clone(),
+                "local Docker observation failed, retrying",
+                Self::watch_observations,
+            ),
+            self.retry_watch(
+                &sink,
+                shutdown,
+                "local Docker Volume observation failed, retrying",
+                Self::watch_volume_observations,
+            ),
         )?;
         Ok(())
-    }
-
-    async fn publish_container_observations(
-        &self,
-        sink: &ObservationSink,
-        shutdown: CancellationToken,
-    ) -> Result<(), Error> {
-        self.retry_watch(
-            sink,
-            shutdown,
-            "local Docker observation failed, retrying",
-            Self::watch_observations,
-        )
-        .await
-    }
-
-    async fn publish_volume_observations(
-        &self,
-        sink: &ObservationSink,
-        shutdown: CancellationToken,
-    ) -> Result<(), Error> {
-        self.retry_watch(
-            sink,
-            shutdown,
-            "local Docker Volume observation failed, retrying",
-            Self::watch_volume_observations,
-        )
-        .await
     }
 
     async fn retry_watch<F>(
