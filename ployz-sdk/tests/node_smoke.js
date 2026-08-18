@@ -49,6 +49,35 @@ async function expectRpc(fn, code) {
   if (!about.capabilities.includes("ployz.rpc.describe-contract.v1")) {
     throw new Error("callers must be able to branch on capability names");
   }
+
+  const outcome = await client.deploy({
+    target: [
+      {
+        name: "web",
+        mode: { mode: "replicated", replicas: 1 },
+        container: { image: "nginx", pull_policy: "always" },
+      },
+    ],
+    apply: [{ name: "web" }],
+    options: {
+      force_recreate: false,
+      skip_health_monitor: true,
+      placement_seed: 0,
+    },
+  });
+  if (!outcome.Success || !Array.isArray(outcome.Success.completed)) {
+    throw new Error(`expected Success outcome, got ${JSON.stringify(outcome)}`);
+  }
+  if (outcome.Success.completed.length !== 1) {
+    throw new Error(
+      `expected one completed operation, got ${outcome.Success.completed.length}`,
+    );
+  }
+  const after = await client.about();
+  if (!after.capabilities.includes("ployz.rpc.describe-contract.v1")) {
+    throw new Error("Client must stay usable after deploy");
+  }
+
   await client.close();
   await expectRpc(() => client.about(), "unavailable");
   await client.close();
@@ -79,6 +108,12 @@ async function expectRpc(fn, code) {
     if (Object.hasOwn(sdk, name)) {
       throw new Error(`${name} must not be exported`);
     }
+  }
+  if (typeof sdk.Client.prototype.deploy !== "function") {
+    throw new Error("Client.deploy must be a method");
+  }
+  if (typeof sdk.Client.prototype.watch !== "undefined") {
+    throw new Error("Client.watch must not exist");
   }
   console.log("ok");
 })().catch((error) => {

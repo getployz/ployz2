@@ -1,11 +1,14 @@
-//! Façade tests for Cloud session connect / about / close.
+//! Façade tests for Cloud session connect / about / deploy / close.
 
 use std::{path::PathBuf, process::Command, time::Duration};
 
+use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz::sdk;
 use ployz_core::{
-    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, MachineId, PROTOCOL_MAJOR,
-    RpcErrorCode,
+    CapabilityName, ContainerPath, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
+    DeployOperation, DeployOutcome, DockerVolumeName, ExecutionError, FailedOperation, MachineId,
+    PROTOCOL_MAJOR, RequestedServiceSpec, RpcErrorCode, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, VolumeSource,
 };
 use tokio::time::timeout;
 
@@ -135,13 +138,159 @@ async fn close_drops_the_session_and_repeated_lifecycle_works() {
 }
 
 #[tokio::test]
-async fn node_smoke_covers_connect_about_error_and_close() {
+async fn deploy_returns_success_for_a_completed_run() {
     let description = advertised_description();
     let session = RelaySession::start().await;
     let _machine = session
         .spawn_machine(
             description.machine_id,
-            DiscoveryService::new(description.clone()),
+            DiscoveryService::new(description.clone()).with_deploy(),
+        )
+        .await;
+    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
+        .await
+        .unwrap();
+
+    let outcome = client
+        .deploy(DeployIntent::apply_one(spec("web"), skip_health()))
+        .await
+        .unwrap();
+
+    let json = serde_json::to_value(&outcome).unwrap();
+    let DeployOutcome::Success { completed } = outcome else {
+        panic!("expected success: {outcome:?}");
+    };
+    assert_eq!(completed.len(), 1);
+    assert!(matches!(
+        completed.first(),
+        Some(DeployOperation::RunContainer { spec, skip_health_monitor: true, .. })
+            if spec.name.as_str() == "web"
+    ));
+    assert_eq!(
+        json.get("Success")
+            .and_then(|value| value.get("completed"))
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert!(
+        client
+            .about()
+            .await
+            .unwrap()
+            .supports(DESCRIBE_CONTRACT_CAPABILITY)
+    );
+}
+
+#[tokio::test]
+async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(
+            description.machine_id,
+            DiscoveryService::new(description.clone())
+                .with_deploy()
+                .fail_create_volume("volume create failed"),
+        )
+        .await;
+    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
+        .await
+        .unwrap();
+    let mut spec = spec("web");
+    add_named_volume(&mut spec, "data");
+
+    let outcome = client
+        .deploy(DeployIntent::apply_one(spec, skip_health()))
+        .await
+        .unwrap();
+
+    let json = serde_json::to_value(&outcome).unwrap();
+    let DeployOutcome::Failed {
+        completed,
+        failed,
+        unexecuted,
+    } = outcome
+    else {
+        panic!("expected partial failure: {outcome:?}");
+    };
+    assert!(completed.is_empty());
+    assert!(matches!(
+        failed,
+        FailedOperation::Operation {
+            operation: DeployOperation::CreateVolume { volume, .. },
+            error: ExecutionError::Machine { .. },
+        } if volume.reference.as_str() == "data"
+    ));
+    assert_eq!(unexecuted.len(), 1);
+    assert!(matches!(
+        unexecuted.first(),
+        Some(DeployOperation::RunContainer { spec, .. }) if spec.name.as_str() == "web"
+    ));
+    let failed = json.get("Failed").expect("Failed variant");
+    assert_eq!(
+        failed
+            .get("completed")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(0)
+    );
+    assert!(failed.get("failed").is_some());
+    assert_eq!(
+        failed
+            .get("unexecuted")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert!(
+        client
+            .about()
+            .await
+            .unwrap()
+            .supports(DESCRIBE_CONTRACT_CAPABILITY)
+    );
+}
+
+#[tokio::test]
+async fn deploy_planning_error_is_a_typed_rpc_error() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(
+            description.machine_id,
+            DiscoveryService::new(description.clone())
+                .with_deploy()
+                .with_machines(Vec::new()),
+        )
+        .await;
+    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
+        .await
+        .unwrap();
+
+    let error = client
+        .deploy(DeployIntent::apply_one(spec("web"), skip_health()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        client
+            .about()
+            .await
+            .unwrap()
+            .supports(DESCRIBE_CONTRACT_CAPABILITY)
+    );
+}
+
+#[tokio::test]
+async fn node_smoke_covers_connect_about_deploy_and_close() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(
+            description.machine_id,
+            DiscoveryService::new(description.clone()).with_deploy(),
         )
         .await;
     let addon = native_addon();
@@ -225,4 +374,43 @@ fn native_addon() -> PathBuf {
         "ployz-sdk cdylib was not produced under {}",
         target.join(profile).display()
     );
+}
+
+fn spec(name: &str) -> RequestedServiceSpec {
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "nginx", "pull_policy": "always" }
+    }))
+    .unwrap()
+}
+
+fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str) {
+    let reference = ServiceVolumeReference::parse(name).unwrap();
+    requested.volume_graph = ServiceVolumeGraph::parse(
+        vec![ServiceVolume {
+            reference: reference.clone(),
+            source: VolumeSource::Named {
+                name: DockerVolumeName::parse(name).unwrap(),
+                external: false,
+                driver: None,
+                labels: Default::default(),
+                no_copy: false,
+                subpath: None,
+            },
+        }],
+        vec![ServiceMount {
+            volume: reference,
+            target: ContainerPath::parse(format!("/{name}")).unwrap(),
+            read_only: false,
+        }],
+    )
+    .unwrap();
+}
+
+fn skip_health() -> PlanOptions {
+    PlanOptions {
+        skip_health_monitor: true,
+        ..PlanOptions::default()
+    }
 }
