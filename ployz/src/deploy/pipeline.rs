@@ -209,14 +209,13 @@ async fn prepare_intent(
     warnings.extend(hostname_warnings(intent.target.iter(), &snapshot.machines).await);
     let plan = plan_deploy(intent, &snapshot)?;
     // TODO(UT-085): services absent from this finite project are intentionally not removed.
-    let mut preview = DeployPreview::new(
-        pending_rows(&plan.operations, &snapshot),
+    Ok(DeployPreview {
+        project_name: intent.project_name.clone(),
+        operations: pending_rows(&plan.operations, &snapshot),
         warnings,
-        intent.project_name.clone(),
-    );
-    preview.would_remove = plan.would_remove;
-    preview.prune_refusal = plan.prune_refusal;
-    Ok(preview)
+        would_remove: plan.would_remove,
+        prune_refusal: plan.prune_refusal,
+    })
 }
 
 pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
