@@ -7,6 +7,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     cluster::{Client, evict_machine},
+    connect::revoke_cloud_pairing,
+    context::Transport,
     deploy::{DeploySnapshot, VolumeFate},
 };
 
@@ -32,8 +34,8 @@ impl Client {
     ///
     /// Re-reads Data Loss at execute time. Extra confirmed names are ignored.
     /// User Projects are destroyed with [`VolumeFate::Destroy`]. Every Machine
-    /// is reset. Unreachable Machines are reported. Pairing revoke is the
-    /// session's Relay epilogue. A repeated call can finish leftover work.
+    /// is reset. The Cloud Pairing is revoked when this Client is on Relay.
+    /// Unreachable Machines are reported. A repeated call can finish leftover work.
     ///
     /// # Errors
     ///
@@ -84,10 +86,11 @@ impl Client {
                 Ok(ployz_core::DeployOutcome::Success { .. }) => {
                     destroyed_projects.push(project.name);
                 }
+                Ok(ployz_core::DeployOutcome::Failed { .. }) => {}
                 Err(error) if UnconfirmedDataLoss::from_rpc_error(&error).is_some() => {
                     return Err(error);
                 }
-                _ => {}
+                Err(_) => {}
             }
         }
         let mut result = PartialResult {
@@ -120,10 +123,16 @@ impl Client {
                 }
             }
         }
+        let pairing_revoked = match self.connection().transport() {
+            Transport::Relay { url, credential } => {
+                revoke_cloud_pairing(url, credential).await.is_ok()
+            }
+            Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => false,
+        };
         Ok(ClusterTeardown {
             destroyed_projects,
             machines: result,
-            pairing_revoked: false,
+            pairing_revoked,
         })
     }
 }

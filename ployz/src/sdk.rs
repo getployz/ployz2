@@ -10,8 +10,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::connect::{Client, ConnectError, DialCredential, connect_relay, revoke_cloud_pairing};
-use crate::context::Transport;
+use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
 use crate::deploy::{DeployIntent, DeployPreview, VolumeFate};
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLoss, DeployEvent, DeployOutcome,
@@ -361,16 +360,9 @@ impl Session {
         confirm_data_loss: &[DataLoss],
     ) -> Result<ClusterTeardown, RpcError> {
         let mut client = self.client().await?;
-        let mut teardown = client
+        client
             .destroy_cluster(confirm_data_loss, &self.inner.cancel)
-            .await?;
-        teardown.pairing_revoked = match client.connection().transport() {
-            Transport::Relay { url, credential } => {
-                revoke_cloud_pairing(url, credential).await.is_ok()
-            }
-            Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => false,
-        };
-        Ok(teardown)
+            .await
     }
 
     /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.
