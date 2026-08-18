@@ -600,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn volume_rm_yes_still_reads_auto_confirm_and_takes_volume_names() {
+    fn volume_rm_still_takes_volume_names_with_yes() {
         let matches = super::command()
             .try_get_matches_from(["ployz", "volume", "rm", "data", "logs", "--yes"])
             .unwrap();

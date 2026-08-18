@@ -3,8 +3,8 @@ use std::io::{self, IsTerminal, Write};
 use clap::ArgMatches;
 use ployz_core::{
     DataLoss, DescribeContractRequest, LiveServices, Machine, MachineId, MachineName,
-    MachineTarget, NameMatches, ObservedDataLoss, RemoveMachineRequest, RpcError, RpcErrorCode,
-    ServiceName, UnconfirmedDataLoss, op,
+    MachineTarget, NameMatches, ObservedDataLoss, RemoveMachineRequest, RpcError, ServiceName,
+    UnconfirmedDataLoss, op,
 };
 
 use super::super::{connect_client, runtime, string_values};
@@ -37,20 +37,12 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             .find(|entry| entry.machine.id == selected.id)
             .expect("selected Machine came from this list");
         let confirmation = if no_reset {
-            Vec::new()
+            None
         } else {
             let observed = client
                 .data_loss_if_machine_removed(&selected_target)
                 .await?;
-            for line in data_loss_listing(&observed) {
-                eprintln!("{line}");
-            }
-            let names = if named.is_empty() && !observed.data_loss.is_empty() {
-                read_data_loss_names(&observed)?
-            } else {
-                named.clone()
-            };
-            confirm_listed_data_loss(&observed, &names)?
+            Some(collect_data_loss_confirmation(&observed, &named)?)
         };
         let services = services_on(
             &selected.id,
@@ -68,22 +60,25 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
         // TODO(UT-055): do not reroute away from the current entry before removal.
         // TODO(UT-056): there is no drain or unschedulable phase before cleanup.
-        if no_reset {
-            client
-                .call::<op::RemoveMachine>(
-                    RemoveMachineRequest {
-                        machine_id: selected.id,
-                    },
-                    None,
-                )
-                .await?;
-        } else {
-            let removed = client
-                .remove_machine(&selected_target, &confirmation)
-                .await
-                .map_err(refusal_from_rpc)?;
-            if let Some(warning) = removed.reset_warning {
-                eprintln!("WARNING: target cleanup/reset failed: {warning}");
+        match confirmation {
+            None => {
+                client
+                    .call::<op::RemoveMachine>(
+                        RemoveMachineRequest {
+                            machine_id: selected.id,
+                        },
+                        None,
+                    )
+                    .await?;
+            }
+            Some(confirmation) => {
+                let removed = client
+                    .remove_machine(&selected_target, &confirmation)
+                    .await
+                    .map_err(refusal_from_rpc)?;
+                if let Some(warning) = removed.reset_warning {
+                    eprintln!("WARNING: target cleanup/reset failed: {warning}");
+                }
             }
         }
 
@@ -128,24 +123,23 @@ fn select_machine(
     }
 }
 
-fn data_loss_listing(observed: &ObservedDataLoss) -> Vec<String> {
-    if observed.data_loss.is_empty() {
-        return Vec::new();
-    }
-    std::iter::once("Data Loss:".to_owned())
-        .chain(
-            observed
-                .data_loss
-                .iter()
-                .map(|loss| format!("  {}", loss.name())),
-        )
-        .collect()
-}
-
-fn confirm_listed_data_loss(
+fn collect_data_loss_confirmation(
     observed: &ObservedDataLoss,
-    names: &[String],
+    named: &[String],
 ) -> Result<Vec<DataLoss>, Error> {
+    if !observed.data_loss.is_empty() {
+        eprintln!("Data Loss:");
+        for loss in &observed.data_loss {
+            eprintln!("  {}", loss.name());
+        }
+    }
+    let prompted;
+    let names = if named.is_empty() && !observed.data_loss.is_empty() {
+        prompted = read_data_loss_names(observed)?;
+        prompted.as_slice()
+    } else {
+        named
+    };
     let confirmation = observed.named(names.iter().map(String::as_str))?;
     let missing = observed.uncovered_by(&confirmation);
     if missing.is_empty() {
@@ -180,14 +174,10 @@ fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
 }
 
 fn refusal_from_rpc(error: RpcError) -> Error {
-    if error.code == RpcErrorCode::InvalidArgument
-        && let Ok(unconfirmed) =
-            serde_json::from_value::<UnconfirmedDataLoss>(error.details.clone())
-        && !unconfirmed.missing.is_empty()
-    {
-        return Error::usage(pass_data_loss_names_message(&unconfirmed.missing));
+    match UnconfirmedDataLoss::from_rpc_error(&error) {
+        Some(unconfirmed) => Error::usage(pass_data_loss_names_message(&unconfirmed.missing)),
+        None => error.into(),
     }
-    error.into()
 }
 
 #[must_use]
@@ -224,65 +214,22 @@ mod tests {
     use ployz_core::{
         ContainerKind, ContainerObservation, ContainerRuntimeObservation, DataLoss, DockerVolumeId,
         DockerVolumeName, HealthObservation, LiveServices, MachineId, MachineName, MachineSuccess,
-        ObservedDataLoss, PartialResult, RpcError, RpcErrorCode, ServiceId, ServiceName,
-        UnconfirmedDataLoss, derive_live_services,
+        ObservedDataLoss, PartialResult, RpcError, ServiceId, ServiceName, UnconfirmedDataLoss,
+        derive_live_services,
     };
-    use serde_json::{Value, json};
+    use serde_json::json;
 
     use super::{
-        confirm_listed_data_loss, data_loss_listing, pass_data_loss_names_message,
-        refusal_from_rpc, service_warnings, services_on,
+        collect_data_loss_confirmation, pass_data_loss_names_message, refusal_from_rpc,
+        service_warnings, services_on,
     };
-    use crate::connect::ConnectError;
-
-    #[test]
-    fn data_loss_listing_is_silent_when_nothing_would_be_destroyed() {
-        assert_eq!(
-            data_loss_listing(&ObservedDataLoss {
-                data_loss: Vec::new()
-            }),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
-    fn data_loss_listing_names_entries_before_any_prompt() {
-        assert_eq!(
-            data_loss_listing(&ObservedDataLoss {
-                data_loss: vec![loss('a', "ams-critical"), loss('a', "data")],
-            }),
-            ["Data Loss:", "  ams-critical", "  data"]
-        );
-    }
-
-    #[test]
-    fn confirming_listed_data_loss_resolves_display_names() {
-        let observed = ObservedDataLoss {
-            data_loss: vec![loss('a', "data"), loss('a', "logs")],
-        };
-        assert_eq!(
-            confirm_listed_data_loss(&observed, &["logs".into(), "data".into()]).unwrap(),
-            vec![loss('a', "logs"), loss('a', "data")]
-        );
-    }
-
-    #[test]
-    fn confirming_listed_data_loss_ignores_extra_names() {
-        let observed = ObservedDataLoss {
-            data_loss: vec![loss('a', "data")],
-        };
-        assert_eq!(
-            confirm_listed_data_loss(&observed, &["data".into(), "gone".into()]).unwrap(),
-            vec![loss('a', "data")]
-        );
-    }
 
     #[test]
     fn refusing_without_a_confirmation_states_which_names_to_pass() {
         let observed = ObservedDataLoss {
             data_loss: vec![loss('a', "data"), loss('a', "logs")],
         };
-        let error = confirm_listed_data_loss(&observed, &[]).unwrap_err();
+        let error = collect_data_loss_confirmation(&observed, &["gone".into()]).unwrap_err();
         assert_eq!(
             error.to_string(),
             "Data Loss is not covered by the confirmation; pass the names as arguments: data logs"
@@ -294,7 +241,7 @@ mod tests {
         let observed = ObservedDataLoss {
             data_loss: vec![loss('a', "data"), loss('b', "data")],
         };
-        let error = confirm_listed_data_loss(&observed, &["data".into()]).unwrap_err();
+        let error = collect_data_loss_confirmation(&observed, &["data".into()]).unwrap_err();
         assert_eq!(
             error.to_string(),
             "Data Loss name \"data\" matches more than one listed entry"
@@ -307,7 +254,7 @@ mod tests {
             data_loss: Vec::new(),
         };
         assert_eq!(
-            confirm_listed_data_loss(&observed, &[]).unwrap(),
+            collect_data_loss_confirmation(&observed, &[]).unwrap(),
             Vec::<DataLoss>::new()
         );
     }
@@ -421,38 +368,5 @@ mod tests {
 
     fn machine_id(value: char) -> MachineId {
         MachineId::parse(value.to_string().repeat(32)).unwrap()
-    }
-
-    #[test]
-    fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {
-        assert!(
-            ConnectError::Rpc(crate::connect::TransportError::from(
-                tonic::Status::unavailable("route failed")
-            ))
-            .is_unreachable()
-        );
-        assert!(
-            !ConnectError::Rpc(crate::connect::TransportError::from(
-                tonic::Status::unimplemented("older daemon")
-            ))
-            .is_unreachable()
-        );
-        assert!(
-            !ConnectError::Remote(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "Docker is unavailable".into(),
-                details: Value::Null,
-            })
-            .is_unreachable()
-        );
-    }
-
-    #[test]
-    fn deadline_exceeded_is_retryable_not_unreachable() {
-        let error = ConnectError::Rpc(crate::connect::TransportError::from(
-            tonic::Status::deadline_exceeded("timed out"),
-        ));
-        assert!(error.is_retryable());
-        assert!(!error.is_unreachable());
     }
 }

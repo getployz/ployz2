@@ -2,7 +2,7 @@
 
 use ployz_core::{
     AmbiguousDataLossName, DataLoss, DockerVolumeId, DockerVolumeName, MachineId, ObservedDataLoss,
-    RpcErrorCode, UnconfirmedDataLoss,
+    RpcError, RpcErrorCode, UnconfirmedDataLoss,
 };
 use serde_json::json;
 
@@ -97,8 +97,32 @@ fn unconfirmed_data_loss_names_missing_identities_in_the_rpc_error() {
             machine_id('a')
         )
     );
+    assert_eq!(
+        UnconfirmedDataLoss::from_rpc_error(&error).unwrap().missing,
+        missing
+    );
     let details: UnconfirmedDataLoss = serde_json::from_value(error.details).unwrap();
     assert_eq!(details.missing, missing);
+}
+
+#[test]
+fn from_rpc_error_is_none_when_the_error_is_not_unconfirmed_data_loss() {
+    assert!(
+        UnconfirmedDataLoss::from_rpc_error(&RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: "Machine was not found".into(),
+            details: json!(null),
+        })
+        .is_none()
+    );
+    assert!(
+        UnconfirmedDataLoss::from_rpc_error(&RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "gone".into(),
+            details: json!({ "missing": [] }),
+        })
+        .is_none()
+    );
 }
 
 #[test]

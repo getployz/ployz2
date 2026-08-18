@@ -83,11 +83,10 @@ impl ObservedDataLoss {
                 self.data_loss
                     .iter()
                     .filter(|loss| loss.name() == name)
-                    .cloned()
                     .collect(),
             ) {
                 NameMatches::None => {}
-                NameMatches::One(loss) => confirmed.push(loss),
+                NameMatches::One(loss) => confirmed.push(loss.clone()),
                 NameMatches::Ambiguous(_) => {
                     return Err(AmbiguousDataLossName {
                         name: name.to_owned(),
@@ -121,5 +120,14 @@ impl UnconfirmedDataLoss {
             ),
             details: serde_json::to_value(&self).expect("UnconfirmedDataLoss is JSON"),
         }
+    }
+
+    /// Execute-time refusal payload, when `error` carries one.
+    #[must_use]
+    pub fn from_rpc_error(error: &RpcError) -> Option<Self> {
+        if error.code != RpcErrorCode::InvalidArgument {
+            return None;
+        }
+        serde_json::from_value(error.details.clone()).ok()
     }
 }
