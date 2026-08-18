@@ -5,22 +5,23 @@ use ployz_core::{
     ConfiguredHealthcheck, ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
-    DnsRecordType, Domain, DomainRecords, ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest,
-    FanoutFailure, FanoutOutcome, FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY,
-    GetCaddyConfigRequest, HealthObservation, HealthcheckCommand, HealthcheckSpec, HttpProtocol,
-    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageSummary,
-    IngressHost, IngressHostname, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
-    ListImagesRequest, MachineFailure, MachineGateway, MachineId, MachineImages, MachineName,
-    MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess,
-    MachineTarget, MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROTOCOL_MAJOR,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication, PreDeployHook,
-    ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, PullPolicy,
-    QualifiedService, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
-    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
-    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
-    VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    DnsRecordType, DockerVolumeName, Domain, DomainRecords, ENSURE_IMAGE_INGEST_CAPABILITY,
+    EnsureImageIngestRequest, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
+    GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation, HealthcheckCommand,
+    HealthcheckSpec, HttpProtocol, ImageIngestDestination, ImageIngestOpened, ImageIngestReason,
+    ImagePulled, ImageSummary, IngressHost, IngressHostname, InspectWireGuardRequest,
+    LIST_IMAGES_CAPABILITY, ListImagesRequest, MachineFailure, MachineGateway, MachineId,
+    MachineImages, MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer,
+    MachineSubnet, MachineSuccess, MachineTarget, MachineTokenRequest, MachineUpdate, NameMatches,
+    OpaquePayload, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement,
+    PortPublication, PreDeployHook, ProjectName, PublicIpDiscovery, PublicIpUpdate,
+    PullImageFromMachineRequest, PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
+    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
+    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
+    UpdateMachineRequest, UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames,
+    op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -204,6 +205,33 @@ fn project_name_accepts_lowercase_dns_labels() {
     assert!(ProjectName::parse("ployz-system").unwrap().is_reserved());
     assert_eq!(ProjectName::system().as_str(), "ployz-system");
     assert!(!ProjectName::parse("shop").unwrap().is_reserved());
+}
+
+#[test]
+fn project_volume_name_includes_the_project_and_differs_across_projects() {
+    let logical = DockerVolumeName::parse("data").unwrap();
+    assert_eq!(
+        ProjectName::parse("shop-production")
+            .unwrap()
+            .volume_name(&logical)
+            .as_str(),
+        "shop-production_data"
+    );
+    assert_eq!(
+        ProjectName::parse("shop-staging")
+            .unwrap()
+            .volume_name(&logical)
+            .as_str(),
+        "shop-staging_data"
+    );
+    assert_ne!(
+        ProjectName::parse("shop-production")
+            .unwrap()
+            .volume_name(&logical),
+        ProjectName::parse("shop-staging")
+            .unwrap()
+            .volume_name(&logical)
+    );
 }
 
 #[test]

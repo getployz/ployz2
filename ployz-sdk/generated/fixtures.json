@@ -182,6 +182,7 @@
         }
       }
     ],
+    "preserved_volumes": [],
     "project_name": "app",
     "warnings": [
       {
@@ -222,6 +223,7 @@
         }
       }
     ],
+    "preserved_volumes": [],
     "project_name": "app",
     "warnings": [
       {

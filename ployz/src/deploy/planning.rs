@@ -17,7 +17,7 @@ mod volumes;
 
 use volumes::{
     VolumePins, named_volume_uses, plan_volume_operations, prepare_shared_replicated_volumes,
-    reject_mixed_volume_modes,
+    preserved_owned_volumes, reject_mixed_volume_modes, scope_requested,
 };
 
 /// Plan operations for the Services this Deploy applies from the target.
@@ -40,7 +40,7 @@ pub fn plan_deploy(
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let requested = specs_to_plan(intent)?
         .into_iter()
-        .map(normalize)
+        .map(|spec| scope_requested(normalize(spec), &intent.project_name))
         .collect::<Vec<_>>();
     let options = &intent.options;
     let volume_uses = named_volume_uses(&requested);
@@ -69,9 +69,11 @@ pub fn plan_deploy(
     operations.extend(service_operations);
     let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
+    let preserved_volumes = preserved_owned_volumes(intent, snapshot);
     Ok(DeployPlan {
         operations,
         would_remove,
+        preserved_volumes,
         prune_refusal,
     })
 }

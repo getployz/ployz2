@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeName, MachineId, MachineObservation, MachineTarget, RequestedServiceSpec,
-    ServiceMode, ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target,
+    DockerVolumeName, MANAGED_LABEL, MachineId, MachineObservation, MachineTarget,
+    PROJECT_NAME_LABEL, PreservedVolume, ProjectName, RequestedServiceSpec, ServiceMode,
+    ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target,
 };
 
 use crate::deploy::{
-    DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
+    DeployIntent, DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
 };
 
 /// Planner-internal assignment of Docker Volumes to Machines.
@@ -69,6 +70,108 @@ impl VolumePins {
             .into_iter()
             .map(|(machine_id, volume)| DeployOperation::CreateVolume { machine_id, volume })
             .collect()
+    }
+}
+
+/// Bind non-external named volumes to `project`: physical Docker name and ownership labels.
+pub(super) fn scope_requested(
+    mut spec: RequestedServiceSpec,
+    project: &ProjectName,
+) -> RequestedServiceSpec {
+    let mut volumes = spec.volume_graph.volumes().to_vec();
+    let mounts = spec.volume_graph.mounts().to_vec();
+    for volume in &mut volumes {
+        scope_named_volume(&mut volume.source, project);
+    }
+    spec.volume_graph = ServiceVolumeGraph::parse(volumes, mounts)
+        .expect("scoping Docker Volume names does not change Service Volume References");
+    spec
+}
+
+fn scope_named_volume(source: &mut VolumeSource, project: &ProjectName) {
+    let VolumeSource::Named {
+        name,
+        external,
+        labels,
+        ..
+    } = source
+    else {
+        return;
+    };
+    if *external || owned_by_project(labels, project) {
+        return;
+    }
+    *name = project.volume_name(name);
+    labels.insert(MANAGED_LABEL.into(), String::new());
+    labels.insert(PROJECT_NAME_LABEL.into(), project.to_string());
+}
+
+fn owned_by_project(labels: &BTreeMap<String, String>, project: &ProjectName) -> bool {
+    // Scale rebuilds the Intent from an already-scoped Resolved Service Spec.
+    labels.get(PROJECT_NAME_LABEL).map(String::as_str) == Some(project.as_str())
+}
+
+/// Owned Compose-declared Docker Volumes omitted from this Deploy's target.
+pub(super) fn preserved_owned_volumes(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+) -> Vec<PreservedVolume> {
+    let declared = declared_physical_names(intent);
+    let mut preserved = Vec::new();
+    for volume in &snapshot.volumes {
+        if volume.labels.get(PROJECT_NAME_LABEL).map(String::as_str)
+            != Some(intent.project_name.as_str())
+        {
+            continue;
+        }
+        if declared.contains(&volume.id.name) {
+            continue;
+        }
+        let machine_name = snapshot
+            .machines
+            .iter()
+            .find(|machine| machine.machine.id == volume.id.machine_id)
+            .map(|machine| machine.machine.name.clone());
+        preserved.push(PreservedVolume {
+            id: volume.id.clone(),
+            machine_name,
+        });
+    }
+    preserved.sort_by(|left, right| {
+        left.id
+            .name
+            .cmp(&right.id.name)
+            .then_with(|| left.id.machine_id.cmp(&right.id.machine_id))
+    });
+    preserved
+}
+
+fn declared_physical_names(intent: &DeployIntent) -> BTreeSet<DockerVolumeName> {
+    intent
+        .target
+        .iter()
+        .flat_map(|spec| spec.volume_graph.volumes())
+        .filter_map(|volume| owned_physical_name(&volume.source, &intent.project_name))
+        .collect()
+}
+
+fn owned_physical_name(source: &VolumeSource, project: &ProjectName) -> Option<DockerVolumeName> {
+    let VolumeSource::Named {
+        name,
+        external,
+        labels,
+        ..
+    } = source
+    else {
+        return None;
+    };
+    if *external {
+        return None;
+    }
+    if owned_by_project(labels, project) {
+        Some(name.clone())
+    } else {
+        Some(project.volume_name(name))
     }
 }
 
