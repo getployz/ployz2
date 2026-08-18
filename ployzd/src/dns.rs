@@ -154,7 +154,16 @@ impl Projection {
                 answers: Vec::new(),
             };
         }
-        let mut addresses = self.addresses(&query.target, self.caller_project(source));
+        let target = match query.target {
+            Target::ServiceName(service_name) => self
+                .caller_project(source)
+                .map(|project| {
+                    Target::Identity(QualifiedService::new(project.clone(), service_name))
+                })
+                .unwrap_or(Target::Empty),
+            target => target,
+        };
+        let mut addresses = self.addresses(&target);
         if query.nearest {
             addresses.sort_by_key(|address| !local_subnet.contains(address));
         }
@@ -175,7 +184,7 @@ impl Projection {
         }
     }
 
-    fn addresses(&self, target: &Target, caller: Option<&ProjectName>) -> Vec<Ipv4Addr> {
+    fn addresses(&self, target: &Target) -> Vec<Ipv4Addr> {
         match target {
             Target::Empty => Vec::new(),
             Target::ServiceId(id) => match self.service_id_index(id) {
@@ -188,15 +197,8 @@ impl Projection {
             Target::Identity(identity) => {
                 self.identities.get(identity).cloned().unwrap_or_default()
             }
-            Target::ServiceName(name) => {
-                let Some(project) = caller else {
-                    return Vec::new();
-                };
-                self.identities
-                    .get(&QualifiedService::new(project.clone(), name.clone()))
-                    .cloned()
-                    .unwrap_or_default()
-            }
+            // Short names become Identity or Empty in plan_internal before lookup.
+            Target::ServiceName(_) => Vec::new(),
             Target::MachineIdentity(target) => self
                 .machine_identities
                 .get(target)
