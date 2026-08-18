@@ -41,6 +41,7 @@ pub(crate) struct RuntimeWatchSnapshot {
 }
 
 /// Latest entry-local membership/RTT sample used to assemble a frame.
+#[derive(Clone)]
 struct LatestSample {
     telemetry: Option<RuntimeWatchTelemetry>,
     observed_at: String,
@@ -92,12 +93,13 @@ pub(crate) async fn serve_replicated_runtime_watch(
             let store = store.clone();
             async move { RuntimeWatchSnapshot::from_store(&store).await }
         },
-        move |machines| {
+        move || {
             let local = local.clone();
-            let machines = machines.to_vec();
             async move {
-                let telemetry = local.runtime_watch_telemetry(&machines).await;
-                (telemetry, rfc3339(SystemTime::now()))
+                LatestSample {
+                    telemetry: local.runtime_watch_telemetry().await,
+                    observed_at: rfc3339(SystemTime::now()),
+                }
             }
         },
         changes,
@@ -124,8 +126,8 @@ fn serve_runtime_watch<L, Fut, S, SFut, C, T>(
 where
     L: Fn() -> Fut + Send + 'static,
     Fut: Future<Output = Result<RuntimeWatchSnapshot, Error>> + Send,
-    S: Fn(&[Machine]) -> SFut + Send + 'static,
-    SFut: Future<Output = (Option<RuntimeWatchTelemetry>, String)> + Send,
+    S: Fn() -> SFut + Send + 'static,
+    SFut: Future<Output = LatestSample> + Send,
     C: Stream<Item = Result<(), Error>> + Send + 'static,
     T: Stream<Item = ()> + Send + 'static,
 {
@@ -134,21 +136,10 @@ where
         let mut changes = std::pin::pin!(changes);
         let mut ticks = std::pin::pin!(ticks);
         let mut last = None;
-        let mut latest = None;
+        let mut latest = sample().await;
         loop {
             match load().await {
                 Ok(snapshot) => {
-                    if latest.is_none() {
-                        let (telemetry, observed_at) =
-                            sample(&snapshot.machines.observations).await;
-                        latest = Some(LatestSample {
-                            telemetry,
-                            observed_at,
-                        });
-                    }
-                    let latest = latest
-                        .as_ref()
-                        .expect("Watch samples telemetry before assembling a frame");
                     let frame = assemble_runtime_watch_frame(
                         snapshot,
                         &entry_id,
@@ -183,7 +174,7 @@ where
                 biased;
                 () = sender.closed() => return,
                 Some(()) = ticks.next() => {
-                    latest = None;
+                    latest = sample().await;
                 }
                 changed = changes.next() => match changed {
                     Some(Ok(())) => {}
@@ -209,9 +200,33 @@ where
 }
 
 fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -> bool {
-    let mut comparable = next.clone();
-    comparable.observed_at.clone_from(&previous.observed_at);
-    previous != &comparable
+    let RuntimeWatchFrame {
+        machines,
+        containers,
+        services,
+        volumes,
+        certificates,
+        hosted_dns_hostname,
+        incomplete_ids,
+        observed_at: _,
+    } = previous;
+    let RuntimeWatchFrame {
+        machines: next_machines,
+        containers: next_containers,
+        services: next_services,
+        volumes: next_volumes,
+        certificates: next_certificates,
+        hosted_dns_hostname: next_hosted_dns_hostname,
+        incomplete_ids: next_incomplete_ids,
+        observed_at: _,
+    } = next;
+    machines != next_machines
+        || containers != next_containers
+        || services != next_services
+        || volumes != next_volumes
+        || certificates != next_certificates
+        || hosted_dns_hostname != next_hosted_dns_hostname
+        || incomplete_ids != next_incomplete_ids
 }
 
 /// Assemble one complete Runtime Watch frame.
@@ -229,12 +244,10 @@ pub(crate) fn assemble_runtime_watch_frame(
     telemetry: Option<&RuntimeWatchTelemetry>,
     observed_at: String,
 ) -> RuntimeWatchFrame {
-    let machines = snapshot
-        .machines
-        .observations
-        .into_iter()
-        .map(|machine| observe_machine(machine, entry_id, telemetry))
-        .collect();
+    let machines = match telemetry {
+        Some(telemetry) => telemetry.overlay(snapshot.machines.observations, entry_id),
+        None => unavailable_machine_observations(snapshot.machines.observations, entry_id),
+    };
     let services = derive_services(snapshot.containers.observations.iter().cloned());
     let certificates = snapshot
         .certificates
@@ -259,15 +272,14 @@ pub(crate) fn assemble_runtime_watch_frame(
     }
 }
 
-fn observe_machine(
-    machine: Machine,
+fn unavailable_machine_observations(
+    machines: Vec<Machine>,
     entry_id: &MachineId,
-    telemetry: Option<&RuntimeWatchTelemetry>,
-) -> MachineObservation {
-    let is_entry = &machine.id == entry_id;
-    let Some(telemetry) = telemetry else {
-        return MachineObservation {
-            membership: if is_entry {
+) -> Vec<MachineObservation> {
+    machines
+        .into_iter()
+        .map(|machine| MachineObservation {
+            membership: if &machine.id == entry_id {
                 MembershipObservation::Up
             } else {
                 MembershipObservation::Unknown
@@ -275,22 +287,8 @@ fn observe_machine(
             selected_endpoint: None,
             rtt: None,
             machine,
-        };
-    };
-    MachineObservation {
-        membership: telemetry
-            .membership
-            .get(&machine.id)
-            .cloned()
-            .unwrap_or(if is_entry {
-                MembershipObservation::Up
-            } else {
-                MembershipObservation::Unknown
-            }),
-        selected_endpoint: telemetry.selected_endpoints.get(&machine.id).copied(),
-        rtt: telemetry.rtt.get(&machine.id).cloned(),
-        machine,
-    }
+        })
+        .collect()
 }
 
 fn redact_certificate(hostname: IngressHost, row: &CertificateRow) -> CertificateObservation {

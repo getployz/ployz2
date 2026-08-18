@@ -13,13 +13,14 @@ use ployz_core::{
     ContainerRuntimeObservation, DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation,
     HookContainer, IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName,
     MachineObservation, MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload,
-    ResolvedServiceSpec, RttStatistics, SelectedEndpoint, ServiceContainer, ServiceId, ServiceName,
-    ServiceObservation, WireGuardPublicKey,
+    ResolvedServiceSpec, RttObservation, RttStatistics, SelectedEndpoint, ServiceContainer,
+    ServiceId, ServiceName, ServiceObservation, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
 use super::{
-    RuntimeWatchSnapshot, RuntimeWatchTelemetry, assemble_runtime_watch_frame, serve_runtime_watch,
+    LatestSample, RuntimeWatchSnapshot, RuntimeWatchTelemetry, assemble_runtime_watch_frame,
+    serve_runtime_watch,
 };
 use crate::corrosion::{
     CertificateChallenge, CertificateMaterial, CertificateRow, Error, ReplicatedObservations,
@@ -57,12 +58,11 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
         median_ns: 1_500_000,
         population_stddev_ns: 250_000,
     };
-    let mut telemetry = RuntimeWatchTelemetry::default();
-    telemetry
-        .membership
-        .insert(peer.id, MembershipObservation::Suspect);
-    telemetry.selected_endpoints.insert(entry.id, endpoint);
-    telemetry.rtt.insert(entry.id, rtt.clone());
+    let telemetry = RuntimeWatchTelemetry {
+        states: BTreeMap::from([(peer.management_address, MembershipObservation::Suspect)]),
+        selected_endpoints: BTreeMap::from([(entry.id, endpoint)]),
+        rtts: vec![rtt_on(&entry, rtt.clone())],
+    };
 
     let frame = assemble_runtime_watch_frame(
         RuntimeWatchSnapshot {
@@ -357,6 +357,31 @@ fn machine(name: &str, id: &str, seed: u8) -> Machine {
     }
 }
 
+fn rtt_on(machine: &Machine, statistics: RttStatistics) -> RttObservation {
+    RttObservation {
+        peer_id: machine.name.as_str().into(),
+        address: format!("[{}]:51001", machine.management_address.0)
+            .parse()
+            .unwrap(),
+        machine: None,
+        statistics,
+    }
+}
+
+fn peer_sample(
+    peer: &Machine,
+    membership: MembershipObservation,
+    rtt: Option<RttStatistics>,
+) -> RuntimeWatchTelemetry {
+    RuntimeWatchTelemetry {
+        states: BTreeMap::from([(peer.management_address, membership)]),
+        selected_endpoints: BTreeMap::new(),
+        rtts: rtt
+            .map(|statistics| vec![rtt_on(peer, statistics)])
+            .unwrap_or_default(),
+    }
+}
+
 fn volume_on(machine_id: &str, name: &str) -> DockerVolume {
     DockerVolume {
         id: DockerVolumeId {
@@ -551,11 +576,7 @@ async fn watch_stream_reports_entry_up_and_sampled_rtt() {
         median_ns: 1_500_000,
         population_stddev_ns: 250_000,
     };
-    let mut telemetry = RuntimeWatchTelemetry::default();
-    telemetry
-        .membership
-        .insert(peer.id, MembershipObservation::Up);
-    telemetry.rtt.insert(peer.id, rtt.clone());
+    let telemetry = peer_sample(&peer, MembershipObservation::Up, Some(rtt.clone()));
     let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
     fixture.set_sample(Some(telemetry), OBSERVED_AT);
     let (_wake, changes) = mpsc::channel(1);
@@ -575,12 +596,8 @@ async fn watch_stream_reports_entry_up_and_sampled_rtt() {
 async fn semantic_telemetry_change_yields_a_new_complete_frame() {
     let entry = machine("edge", ENTRY_ID, 1);
     let peer = machine("peer", PEER_ID, 2);
-    let mut first = RuntimeWatchTelemetry::default();
-    first.membership.insert(peer.id, MembershipObservation::Up);
-    let mut second = RuntimeWatchTelemetry::default();
-    second
-        .membership
-        .insert(peer.id, MembershipObservation::Suspect);
+    let first = peer_sample(&peer, MembershipObservation::Up, None);
+    let second = peer_sample(&peer, MembershipObservation::Suspect, None);
     let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
     fixture.set_sample(Some(first), OBSERVED_AT);
     let (_wake, changes) = mpsc::channel(1);
@@ -608,10 +625,7 @@ async fn semantic_telemetry_change_yields_a_new_complete_frame() {
 async fn unchanged_telemetry_sample_does_not_yield_when_observed_at_advances() {
     let entry = machine("edge", ENTRY_ID, 1);
     let peer = machine("peer", PEER_ID, 2);
-    let mut telemetry = RuntimeWatchTelemetry::default();
-    telemetry
-        .membership
-        .insert(peer.id, MembershipObservation::Up);
+    let telemetry = peer_sample(&peer, MembershipObservation::Up, None);
     let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
     fixture.set_sample(Some(telemetry.clone()), OBSERVED_AT);
     let (_wake, changes) = mpsc::channel(1);
@@ -635,10 +649,7 @@ async fn unchanged_telemetry_sample_does_not_yield_when_observed_at_advances() {
 async fn unavailable_sample_after_telemetry_keeps_replicated_rows() {
     let entry = machine("edge", ENTRY_ID, 1);
     let peer = machine("peer", PEER_ID, 2);
-    let mut telemetry = RuntimeWatchTelemetry::default();
-    telemetry
-        .membership
-        .insert(peer.id, MembershipObservation::Up);
+    let telemetry = peer_sample(&peer, MembershipObservation::Up, None);
     let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
     fixture.set_sample(Some(telemetry), OBSERVED_AT);
     let (_wake, changes) = mpsc::channel(1);
@@ -694,8 +705,12 @@ impl WatchFixture {
         }
     }
 
-    fn sample(&self) -> (Option<RuntimeWatchTelemetry>, String) {
-        self.sample.lock().unwrap().clone()
+    fn sample(&self) -> LatestSample {
+        let (telemetry, observed_at) = self.sample.lock().unwrap().clone();
+        LatestSample {
+            telemetry,
+            observed_at,
+        }
     }
 }
 
@@ -721,7 +736,7 @@ fn serve_sampled(
             let fixture = load_fixture.clone();
             async move { fixture.load().await }
         },
-        move |_machines| {
+        move || {
             let fixture = sample_fixture.clone();
             async move { fixture.sample() }
         },
