@@ -254,7 +254,12 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert("deploy_outcome".into(), to_value(&deploy_outcome()));
     fixtures.insert(
         "deploy_outcome_unknown_fields".into(),
-        with_unknown_field(to_value(&deploy_outcome()), "future_note", json!("ok")),
+        with_unknown_field_in(
+            to_value(&deploy_outcome()),
+            "Success",
+            "future_note",
+            json!("ok"),
+        ),
     );
     fixtures.insert(
         "deploy_outcome_failed".into(),
@@ -520,6 +525,15 @@ fn with_unknown_field(mut value: Value, key: &str, extra: Value) -> Value {
     value
         .as_object_mut()
         .expect("unknown-field fixtures wrap objects")
+        .insert(key.to_owned(), extra);
+    value
+}
+
+fn with_unknown_field_in(mut value: Value, variant: &str, key: &str, extra: Value) -> Value {
+    value
+        .get_mut(variant)
+        .and_then(Value::as_object_mut)
+        .expect("unknown-field fixtures wrap a serde variant object")
         .insert(key.to_owned(), extra);
     value
 }

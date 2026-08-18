@@ -161,9 +161,13 @@ fn unknown_fields_are_accepted_on_public_payloads() {
 
     let outcome: DeployOutcome<RpcError> =
         decode_fixture(fixture(&fixtures, "deploy_outcome_unknown_fields"));
-    let DeployOutcome::Success { .. } = outcome else {
+    let DeployOutcome::Success { .. } = &outcome else {
         panic!("deploy_outcome_unknown_fields must decode as Success");
     };
+    assert_eq!(
+        serde_json::to_value(&outcome).unwrap(),
+        *fixture(&fixtures, "deploy_outcome")
+    );
 }
 
 #[test]

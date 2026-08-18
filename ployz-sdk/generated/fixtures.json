@@ -114,9 +114,9 @@
             "machine_id": "0123456789abcdef0123456789abcdef"
           }
         }
-      ]
-    },
-    "future_note": "ok"
+      ],
+      "future_note": "ok"
+    }
   },
   "docker_volume": {
     "driver": "local",
