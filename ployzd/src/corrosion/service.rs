@@ -28,8 +28,6 @@ pub const DEFAULT_API_ADDRESS: &str = "127.0.0.1:51002";
 pub const DEFAULT_GOSSIP_ADDRESS: &str = "127.0.0.1:51001";
 const TOKEN_FILE: &str = ".api-token";
 const SCHEMA: &str = include_str!("schema.sql");
-const SYSTEMD_START_TIMEOUT_EXTENSION: Duration = Duration::from_secs(30);
-const SYSTEMD_START_TIMEOUT_EXTEND_MAX: Duration = Duration::from_secs(5 * 60);
 
 pub struct CorrosionConfig {
     data_dir: PathBuf,
@@ -91,7 +89,6 @@ impl CorrosionConfig {
             data_dir: self.data_dir.clone(),
             run_dir: self.run_dir.clone(),
         };
-        let _extend = extend_systemd_start_timeout();
         service.start().await?;
         wait_ready(|| async {
             api.query(Statement::new("SELECT 1 FROM cluster LIMIT 1", []))
@@ -261,44 +258,6 @@ where
                 warning_at = tokio::time::Instant::now() + warning_interval;
             }
         }
-    }
-}
-
-#[must_use]
-struct SystemdStartTimeoutExtend {
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for SystemdStartTimeoutExtend {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
-    // TimeoutStartSec=20; EXTEND_TIMEOUT keeps the start job alive while Corrosion
-    // pulls and becomes queryable. Uncloud extended only during image pull.
-    let usec = u32::try_from(SYSTEMD_START_TIMEOUT_EXTENSION.as_micros())
-        .expect("30s start-timeout extension fits u32 microseconds");
-    let deadline = tokio::time::Instant::now() + SYSTEMD_START_TIMEOUT_EXTEND_MAX;
-    SystemdStartTimeoutExtend {
-        task: tokio::spawn(async move {
-            loop {
-                if tokio::time::Instant::now() >= deadline {
-                    eprintln!(
-                        "stopped extending the systemd start timeout: Corrosion is taking too long to start"
-                    );
-                    return;
-                }
-                if let Err(error) =
-                    sd_notify::notify(&[sd_notify::NotifyState::ExtendTimeoutUsec(usec)])
-                {
-                    eprintln!("failed to extend the systemd start timeout: {error}");
-                    return;
-                }
-                tokio::time::sleep(SYSTEMD_START_TIMEOUT_EXTENSION).await;
-            }
-        }),
     }
 }
 
