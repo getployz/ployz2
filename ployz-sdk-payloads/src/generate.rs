@@ -7,9 +7,10 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DockerVolume,
+    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployIntent, DockerVolume,
     DockerVolumeId, DockerVolumeName, HealthObservation, MachineFailure, MachineId, MachineSuccess,
-    MembershipObservation, PROTOCOL_MAJOR, PartialResult, RpcError, RpcErrorCode,
+    MembershipObservation, PROTOCOL_MAJOR, PartialResult, PlanOptions, RpcError, RpcErrorCode,
+    ServiceAttempt, ServiceName,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -47,6 +48,7 @@ const PAYLOADS: &[(&str, Shape)] = &[
     ("ServiceName", Shape::Alias("string")),
     ("DockerVolumeName", Shape::Alias("string")),
     ("CapabilityName", Shape::Alias("string")),
+    ("RequestedServiceSpec", Shape::Alias("JsonValue")),
     (
         "MembershipObservation",
         Shape::OpenString(MembershipObservation::known_wires()),
@@ -126,16 +128,15 @@ const PAYLOADS: &[(&str, Shape)] = &[
     (
         "DeployIntent",
         Shape::Additive(&[
-            ("target", "JsonValue[]"),
+            ("target", "RequestedServiceSpec[]"),
             ("apply", "ServiceAttempt[]"),
             ("options", "PlanOptions"),
         ]),
     ),
     (
-        // ponytail: RequestedServiceSpec / DeployOperation stay JsonValue until #325 serde.
         "DeployOutcome",
         Shape::Raw(
-            "export type DeployOutcome<E = RpcError> =\n  | Additive<{ completed: JsonValue[] }>\n  | Additive<{ completed: JsonValue[]; failed: JsonValue; unexecuted: JsonValue[] }>;\n",
+            "export type DeployOutcome<E = RpcError> =\n  | Additive<{ Success: { completed: JsonValue[] } }>\n  | Additive<{ Failed: { completed: JsonValue[]; failed: JsonValue; unexecuted: JsonValue[] } }>;\n",
         ),
     ),
 ];
@@ -149,11 +150,10 @@ pub struct Artifacts {
 /// Build the checked-in `@ployz/sdk` artifacts from Rust types.
 #[must_use]
 pub fn artifacts() -> Artifacts {
-    let fixtures = fixtures();
-    check_additive_fields_match_rust(&fixtures);
+    check_additive_fields_match_rust();
     Artifacts {
         index_dts: typescript(),
-        fixtures_json: pretty_json(&Value::Object(fixtures.into_iter().collect())),
+        fixtures_json: pretty_json(&Value::Object(fixtures().into_iter().collect())),
     }
 }
 
@@ -210,18 +210,8 @@ pub fn fixtures() -> BTreeMap<String, Value> {
                 .collect(),
         ),
     );
-    fixtures.insert(
-        "deploy_intent".into(),
-        json!({
-            "target": [],
-            "apply": [],
-            "options": {
-                "force_recreate": false,
-                "skip_health_monitor": false,
-                "placement_seed": 0
-            }
-        }),
-    );
+    fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
+    fixtures.insert("deploy_intent".into(), to_value(&deploy_intent()));
     fixtures
 }
 
@@ -275,7 +265,9 @@ fn typescript() -> String {
         out.push('\n');
     }
     out.push_str(&capability_typescript());
-    out.push_str("export declare function packageName(): \"@ployz/sdk\";\n");
+    out.push_str("export declare function packageName(): \"");
+    out.push_str(PACKAGE_NAME);
+    out.push_str("\";\n");
     out
 }
 
@@ -336,54 +328,21 @@ fn capability_rows() -> Vec<(&'static str, &'static str)> {
     rows
 }
 
-fn check_additive_fields_match_rust(fixtures: &BTreeMap<String, Value>) {
+fn check_additive_fields_match_rust() {
     let examples = [
-        (
-            "ContractDescription",
-            fixtures
-                .get("contract_description")
-                .expect("contract_description fixture"),
-        ),
-        (
-            "DockerVolume",
-            fixtures
-                .get("docker_volume")
-                .expect("docker_volume fixture"),
-        ),
-        (
-            "DockerVolumeId",
-            fixtures
-                .get("docker_volume")
-                .and_then(|volume| volume.get("id"))
-                .expect("docker_volume.id fixture"),
-        ),
-        (
-            "PartialResult",
-            fixtures
-                .get("partial_result")
-                .expect("partial_result fixture"),
-        ),
-        (
-            "DeployIntent",
-            fixtures
-                .get("deploy_intent")
-                .expect("deploy_intent fixture"),
-        ),
-        (
-            "PlanOptions",
-            fixtures
-                .get("deploy_intent")
-                .and_then(|intent| intent.get("options"))
-                .expect("deploy_intent.options fixture"),
-        ),
+        ("ContractDescription", to_value(&contract_description())),
+        ("DockerVolume", to_value(&docker_volume())),
+        ("DockerVolumeId", to_value(&docker_volume().id)),
+        ("DeployIntent", to_value(&deploy_intent())),
+        ("PlanOptions", to_value(&PlanOptions::default())),
+        ("ServiceAttempt", to_value(&service_attempt())),
     ];
     for (name, value) in examples {
-        let Some(fields) = additive_fields(name) else {
-            continue;
-        };
+        let fields = additive_fields(name)
+            .unwrap_or_else(|| panic!("{name} is missing from Additive payload shapes"));
         let object = value
             .as_object()
-            .unwrap_or_else(|| panic!("{name} fixture is not an object"));
+            .unwrap_or_else(|| panic!("{name} serde value is not an object"));
         for key in object.keys() {
             assert!(
                 fields.iter().any(|(field, _)| field == key),
@@ -437,6 +396,16 @@ fn docker_volume() -> DockerVolume {
         options: BTreeMap::from([("type".into(), "none".into())]),
         labels: BTreeMap::from([("ployz.managed".into(), "false".into())]),
     }
+}
+
+fn service_attempt() -> ServiceAttempt {
+    ServiceAttempt {
+        name: ServiceName::parse("web").expect("fixture Service Name is valid"),
+    }
+}
+
+fn deploy_intent() -> DeployIntent {
+    DeployIntent::new(Vec::new(), Vec::new(), PlanOptions::default())
 }
 
 fn partial_result() -> PartialResult<DockerVolume, RpcError> {

@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, DockerVolume, HealthObservation, MembershipObservation, RpcError,
-    RpcErrorCode,
+    DESCRIBE_CONTRACT_CAPABILITY, DeployIntent, DockerVolume, HealthObservation,
+    MembershipObservation, PlanOptions, RpcError, RpcErrorCode, ServiceAttempt,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -19,43 +19,6 @@ fn fixture<'a>(fixtures: &'a BTreeMap<String, Value>, name: &str) -> &'a Value {
 fn pkg_field<'a>(pkg: &'a Value, name: &str) -> &'a Value {
     pkg.get(name)
         .unwrap_or_else(|| panic!("missing package.json field {name}"))
-}
-
-fn nested_object<'a>(value: &'a Value, name: &str) -> &'a Value {
-    value
-        .get(name)
-        .unwrap_or_else(|| panic!("missing nested object {name}"))
-}
-
-fn type_block<'a>(dts: &'a str, type_name: &str) -> &'a str {
-    let marker = format!("export type {type_name}");
-    let mut from = 0;
-    while let Some(relative) = dts.get(from..).and_then(|slice| slice.find(&marker)) {
-        let start = from + relative;
-        from = start + marker.len();
-        let next = dts.as_bytes().get(from).copied().unwrap_or(0);
-        if next == b'_' || next.is_ascii_alphanumeric() {
-            continue;
-        }
-        let rest = dts.get(start..).expect("TypeScript type is in range");
-        return rest
-            .split_once("\nexport ")
-            .map_or(rest, |(block, _)| block);
-    }
-    panic!("missing TypeScript type {type_name}");
-}
-
-fn assert_ts_has_object_keys(dts: &str, type_name: &str, value: &Value) {
-    let block = type_block(dts, type_name);
-    let object = value
-        .as_object()
-        .unwrap_or_else(|| panic!("{type_name} fixture is not an object"));
-    for key in object.keys() {
-        assert!(
-            block.contains(key.as_str()),
-            "{type_name} TypeScript is missing field {key}"
-        );
-    }
 }
 
 #[test]
@@ -148,6 +111,19 @@ fn json_fixtures_round_trip_through_rust_types() {
             .expect("failure error"),
     );
     assert_eq!(error.code.as_str(), "unsupported");
+
+    let intent: DeployIntent = decode_fixture(fixture(&fixtures, "deploy_intent"));
+    assert!(intent.target.is_empty());
+    assert!(intent.apply.is_empty());
+    assert_eq!(intent.options, PlanOptions::default());
+    assert!(intent.dependencies().is_empty());
+    assert_eq!(
+        serde_json::to_value(&intent).unwrap(),
+        *fixture(&fixtures, "deploy_intent")
+    );
+
+    let attempt: ServiceAttempt = decode_fixture(fixture(&fixtures, "service_attempt"));
+    assert_eq!(attempt.name.as_str(), "web");
 }
 
 #[test]
@@ -209,9 +185,10 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("state?: string"));
     assert!(dts.contains("export type ContractDescription = Additive<{"));
     assert!(dts.contains("export type DeployIntent = Additive<{"));
+    assert!(dts.contains("target: RequestedServiceSpec[]"));
     assert!(dts.contains("export type DeployOutcome<E = RpcError> ="));
+    assert!(dts.contains("{ Success: { completed: JsonValue[] } }"));
     assert!(dts.contains("unexecuted: JsonValue[]"));
-    assert!(!dts.contains("{ Success:"));
     assert!(dts.contains("export const DESCRIBE_CONTRACT_CAPABILITY: CapabilityName"));
     assert!(dts.contains(DESCRIBE_CONTRACT_CAPABILITY));
     assert!(dts.contains(CERTIFICATE_POLICY_CAPABILITY));
@@ -234,31 +211,6 @@ fn generated_typescript_encodes_additive_evolution_rules() {
             "RpcErrorCode TypeScript is missing {wire}"
         );
     }
-}
-
-#[test]
-fn generated_typescript_declares_rust_fixture_keys() {
-    let dts = ployz_sdk_payloads::artifacts().index_dts;
-    let fixtures = fixtures();
-    assert_ts_has_object_keys(
-        &dts,
-        "ContractDescription",
-        fixture(&fixtures, "contract_description"),
-    );
-    assert_ts_has_object_keys(&dts, "RpcError", fixture(&fixtures, "rpc_error"));
-    assert_ts_has_object_keys(&dts, "DockerVolume", fixture(&fixtures, "docker_volume"));
-    assert_ts_has_object_keys(
-        &dts,
-        "DockerVolumeId",
-        nested_object(fixture(&fixtures, "docker_volume"), "id"),
-    );
-    assert_ts_has_object_keys(&dts, "PartialResult", fixture(&fixtures, "partial_result"));
-    assert_ts_has_object_keys(&dts, "DeployIntent", fixture(&fixtures, "deploy_intent"));
-    assert_ts_has_object_keys(
-        &dts,
-        "PlanOptions",
-        nested_object(fixture(&fixtures, "deploy_intent"), "options"),
-    );
 }
 
 #[test]

@@ -22,6 +22,8 @@ export type DockerVolumeName = string;
 
 export type CapabilityName = string;
 
+export type RequestedServiceSpec = JsonValue;
+
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | (string & {});
 
 export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | (string & {});
@@ -90,14 +92,14 @@ export type ServiceAttempt = Additive<{
 }>;
 
 export type DeployIntent = Additive<{
-  target: JsonValue[];
+  target: RequestedServiceSpec[];
   apply: ServiceAttempt[];
   options: PlanOptions;
 }>;
 
 export type DeployOutcome<E = RpcError> =
-  | Additive<{ completed: JsonValue[] }>
-  | Additive<{ completed: JsonValue[]; failed: JsonValue; unexecuted: JsonValue[] }>;
+  | Additive<{ Success: { completed: JsonValue[] } }>
+  | Additive<{ Failed: { completed: JsonValue[]; failed: JsonValue; unexecuted: JsonValue[] } }>;
 
 export const GET_CADDY_CONFIG_CAPABILITY: CapabilityName = "ployz.caddy.config.v1";
 export const CERTIFICATE_POLICY_CAPABILITY: CapabilityName = "ployz.certificates.policy.v1";

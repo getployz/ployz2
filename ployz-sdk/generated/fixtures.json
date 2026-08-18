@@ -137,5 +137,8 @@
   "rpc_error": {
     "code": "unsupported",
     "message": "watch is not advertised"
+  },
+  "service_attempt": {
+    "name": "web"
   }
 }
