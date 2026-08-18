@@ -2,7 +2,6 @@ use std::{
     collections::BTreeSet,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::SystemTime,
 };
 
 use ployz_core::{
@@ -21,9 +20,7 @@ use crate::{
     docker::{ContainerRuntime, Error as DockerError, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
-    runtime_watch::{
-        RuntimeWatchSnapshot, rfc3339, runtime_watch_change_stream, serve_runtime_watch,
-    },
+    runtime_watch::serve_replicated_runtime_watch,
 };
 
 #[derive(Clone)]
@@ -451,19 +448,10 @@ impl MachineRpc for MachineService {
             .map_err(|error| Status::unavailable(error.message))?
             .clone();
         let entry_id = self.local_record()?.id();
-        let changes = store
-            .subscribe_runtime_watch_changes()
+        let stream = serve_replicated_runtime_watch(store, entry_id)
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
-        Ok(Response::new(serve_runtime_watch(
-            entry_id,
-            rfc3339(SystemTime::now()),
-            move || {
-                let store = store.clone();
-                async move { RuntimeWatchSnapshot::from_store(&store).await }
-            },
-            runtime_watch_change_stream(changes),
-        )))
+        Ok(Response::new(stream))
     }
 
     async fn update_machine(

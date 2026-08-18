@@ -15,9 +15,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
 
 use crate::{
-    corrosion::{
-        CertificateRow, Error, ReplicatedObservations, ReplicatedStore, RuntimeWatchChanges,
-    },
+    corrosion::{CertificateRow, Error, ReplicatedObservations, ReplicatedStore},
     hosted_dns::Reservation,
     logs::RpcStream,
 };
@@ -61,16 +59,37 @@ impl RuntimeWatchSnapshot {
     }
 }
 
+/// Serve complete Runtime Watch frames from the replicated store.
+///
+/// Subscribes first, then yields one complete frame immediately. Later frames
+/// are assembled on store wakeups; the notification payload is not the
+/// observation. Unchanged observations do not yield. Store failure ends the
+/// stream. `observed_at` is frozen for the stream. Membership/RTT sampling is #319.
+///
+/// # Errors
+///
+/// Returns if store subscriptions cannot be opened.
+pub(crate) async fn serve_replicated_runtime_watch(
+    store: ReplicatedStore,
+    entry_id: MachineId,
+) -> Result<RpcStream, Error> {
+    let changes = store.subscribe_runtime_watch_changes().await?;
+    Ok(serve_runtime_watch(
+        entry_id,
+        rfc3339(SystemTime::now()),
+        move || {
+            let store = store.clone();
+            async move { RuntimeWatchSnapshot::from_store(&store).await }
+        },
+        changes,
+    ))
+}
+
 /// Serve complete Runtime Watch frames from replicated store reads.
 ///
 /// Yields one complete frame immediately, then another when a store
 /// notification wakes assembly and the assembled observation changed.
-/// The notification payload is not the observation. Unchanged observations
-/// do not yield. Store failure ends the stream.
-///
-/// `observed_at` is frozen for the stream. Membership/RTT sampling is #319.
-#[must_use]
-pub(crate) fn serve_runtime_watch<L, Fut, C>(
+fn serve_runtime_watch<L, Fut, C>(
     entry_id: MachineId,
     observed_at: String,
     load: L,
@@ -115,7 +134,10 @@ where
                     return;
                 }
             }
-            match changes.next().await {
+            match tokio::select! {
+                () = sender.closed() => return,
+                changed = changes.next() => changed,
+            } {
                 Some(Ok(())) => {}
                 Some(Err(error)) => {
                     let _ = sender
@@ -135,15 +157,6 @@ where
         }
     });
     ReceiverStream::new(receiver)
-}
-
-/// Drive [`serve_runtime_watch`] from replicated-store subscriptions.
-pub(crate) fn runtime_watch_change_stream(
-    changes: RuntimeWatchChanges,
-) -> impl Stream<Item = Result<(), Error>> + Send {
-    futures_util::stream::unfold(changes, |mut changes| async {
-        Some((changes.changed().await, changes))
-    })
 }
 
 /// Assemble one complete Runtime Watch frame.
@@ -256,7 +269,7 @@ fn certificate_backoff(clock: IssuanceClock) -> CertificateBackoff {
     }
 }
 
-pub(crate) fn rfc3339(time: SystemTime) -> String {
+fn rfc3339(time: SystemTime) -> String {
     DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
@@ -781,8 +794,9 @@ mod tests {
 
         let _first = next_frame(&mut stream).await;
         drop(stream);
-        drop(wake);
-        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_secs(1), wake.closed())
+            .await
+            .expect("dropping the Watch stream must cancel the store subscription");
     }
 
     #[tokio::test]
