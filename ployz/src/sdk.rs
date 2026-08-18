@@ -1,4 +1,6 @@
-//! Relay-only Cloud session: connect, about, runtime.watch, preview, deploy, remove_volumes, and close.
+//! Relay-only Cloud session: connect, about, runtime.watch, preview, deploy,
+//! remove_volumes, Data Loss for Machine removal, and close.
+
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -7,7 +9,8 @@ use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
 use crate::deploy::{DeployError, DeployIntent, DeployPreview};
 use ployz_core::{
     ContractDescription, DeployOutcome, DescribeContractRequest, DockerVolumeName, ExecutionError,
-    MachineId, OpaquePayload, PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest,
+    MachineId, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
+    RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest,
     RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
 };
 
@@ -153,6 +156,56 @@ impl Session {
     ) -> Result<PartialResult<DockerVolumeName, RpcError>, RpcError> {
         let mut client = self.client().await?;
         client.remove_volumes(request).await
+    }
+
+    /// Live Observation of Data Loss that removing `machine` would cause.
+    ///
+    /// `machine` is a Machine Target. This is not a complete Cluster view.
+    /// Mutates nothing: it is safe to call when the operator then cancels.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine`
+    /// is not a Machine Target, the Machine is not visible or is ambiguous, or
+    /// this observer cannot list Docker Volumes on that Machine.
+    pub async fn data_loss_if_machine_removed(
+        &self,
+        machine: &str,
+    ) -> Result<ObservedDataLoss, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client().await?;
+        let machines = client.machines().await.map_err(RpcError::from)?;
+        let selected = match target.resolve(machines.iter().map(|entry| &entry.machine)) {
+            NameMatches::None => {
+                return Err(RpcError {
+                    code: RpcErrorCode::NotFound,
+                    message: format!("Machine {target:?} was not found"),
+                    details: Value::Null,
+                });
+            }
+            NameMatches::Ambiguous(matches) => {
+                return Err(RpcError {
+                    code: RpcErrorCode::Ambiguous,
+                    message: format!(
+                        "Machine name {target:?} is ambiguous: {}",
+                        matches
+                            .into_iter()
+                            .map(|machine| machine.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    details: Value::Null,
+                });
+            }
+            NameMatches::One(machine) => machine.id,
+        };
+        let observation = machines
+            .iter()
+            .find(|entry| entry.machine.id == selected)
+            .expect("resolved Machine came from this list");
+        let listed = client.list_volumes(std::slice::from_ref(observation)).await;
+        ObservedDataLoss::from_volume_listing(&selected, &listed)
     }
 
     /// Drop the Client and Relay tunnel.
