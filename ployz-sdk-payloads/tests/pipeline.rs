@@ -385,6 +385,8 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type MachineTarget = string"));
     assert!(dts.contains("export type ContractDescription = Additive<{"));
     assert!(dts.contains("readonly __brand: \"ProjectName\""));
+    assert!(dts.contains("export type QualifiedService = string"));
+    assert!(dts.contains("identity: QualifiedService"));
     assert!(dts.contains("export type DeployIntent = Additive<{"));
     assert!(dts.contains("project_name: ProjectName"));
     assert!(dts.contains("target: RequestedServiceSpec[]"));

@@ -26,6 +26,8 @@ export type ServiceName = string & { readonly __brand: "ServiceName" };
 
 export type ProjectName = string & { readonly __brand: "ProjectName" };
 
+export type QualifiedService = string;
+
 export type MachineName = string;
 
 export type MachineSubnet = string;
@@ -461,6 +463,7 @@ export type ServiceContainer = ContainerObservation;
 export type HookContainer = ContainerObservation;
 
 export type ServiceObservation = Additive<{
+  identity: QualifiedService;
   service_id: ServiceId;
   containers: ServiceContainer[];
   hook_containers: HookContainer[];

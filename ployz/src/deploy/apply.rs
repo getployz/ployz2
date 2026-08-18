@@ -118,16 +118,28 @@ pub(crate) async fn deploy_scale(
     skip_health_monitor: bool,
     gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
-    let preview = plan_scale(
+    let (preview, project_name) = plan_scale(
         client,
         selector,
         replicas,
         plan_options(false, skip_health_monitor),
-        &gate.project.name,
     )
     .await?;
     print_warnings(&preview);
-    confirm_and_execute(client, &preview, gate).await
+    let project = ResolvedProject {
+        name: project_name,
+        source: gate.project.source,
+    };
+    confirm_and_execute(
+        client,
+        &preview,
+        ConfirmGate {
+            auto_confirm: gate.auto_confirm,
+            context: gate.context,
+            project: &project,
+        },
+    )
+    .await
 }
 
 async fn confirm_and_execute(
