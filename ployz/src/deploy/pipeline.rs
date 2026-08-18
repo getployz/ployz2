@@ -27,7 +27,7 @@ use crate::{
 use super::{
     DeployEvent, DeployIntent, DeployOutcome, DeployPreview, DeploySnapshot, DeployWarning,
     ExecutionError, ObservationKind, PlanError, PlanOptions, ServiceAttempt,
-    exec::execute_operations_with_progress, pending_rows, plan_deploy,
+    exec::execute_operation_sequence, pending_rows, plan_deploy,
 };
 
 /// Snapshot, planning, or ingress-expansion failure before a Deploy executes.
@@ -72,7 +72,7 @@ impl Client {
         cancellation: &CancellationToken,
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> DeployOutcome<ExecutionError> {
-        execute_operations_with_progress(
+        execute_operation_sequence(
             preview.operations.clone(),
             self,
             cancellation,

@@ -49,7 +49,6 @@ pub struct RunningDeploy {
     cancel: CancellationToken,
     events: Mutex<Option<mpsc::UnboundedReceiver<DeployEvent>>>,
     join: Mutex<Option<tokio::task::JoinHandle<DeployOutcome<ExecutionError>>>>,
-    outcome: Mutex<Option<DeployOutcome<ExecutionError>>>,
 }
 
 /// Open a Machine RPC channel through Cloud Relay.
@@ -297,7 +296,6 @@ impl PreparedDeploy {
             cancel,
             events: Mutex::new(Some(rx)),
             join: Mutex::new(Some(join)),
-            outcome: Mutex::new(None),
         })
     }
 }
@@ -329,17 +327,15 @@ impl RunningDeploy {
 
     /// Wait for the Deploy Outcome. Progress events are still produced.
     pub async fn finished(&self) -> DeployOutcome<ExecutionError> {
-        if let Some(handle) = self.join.lock().await.take() {
-            let outcome = handle.await.expect("deploy task joins");
-            *self.outcome.lock().await = Some(outcome.clone());
-            while self.next().await.is_some() {}
-            return outcome;
-        }
-        self.outcome
+        let handle = self
+            .join
             .lock()
             .await
-            .clone()
-            .expect("deploy already finished")
+            .take()
+            .expect("deploy already finished");
+        let outcome = handle.await.expect("deploy task joins");
+        while self.next().await.is_some() {}
+        outcome
     }
 }
 

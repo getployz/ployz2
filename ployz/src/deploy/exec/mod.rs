@@ -40,16 +40,6 @@ pub async fn execute_plan(
     execute_with(plan, client, cancellation, project_name).await
 }
 
-pub(crate) async fn execute_operations_with_progress(
-    rows: Vec<OperationRow>,
-    client: &Client,
-    cancellation: &CancellationToken,
-    tx: Option<UnboundedSender<DeployEvent>>,
-    project_name: &ProjectName,
-) -> DeployOutcome<ExecutionError> {
-    execute_operation_sequence(rows, client, cancellation, tx, project_name).await
-}
-
 pub(super) trait MachineOperations {
     async fn create_volume(
         &self,
@@ -378,7 +368,7 @@ async fn execute_with<C: MachineOperations>(
     .await
 }
 
-async fn execute_operation_sequence<C: MachineOperations>(
+pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     rows: Vec<OperationRow>,
     client: &C,
     cancellation: &CancellationToken,
