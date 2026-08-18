@@ -56,21 +56,27 @@ pub(super) async fn monitor_container<C: MachineOperations>(
         Some(HealthcheckSpec::Configured(_))
     ) && !monitor.is_zero()
     {
-        tokio::select! {
-            () = cancellation.cancelled() => {
-                return Err(health_error(container_id, HealthFailure::Cancelled));
+        let deadline = started + monitor;
+        loop {
+            tokio::select! {
+                () = cancellation.cancelled() => {
+                    return Err(health_error(container_id, HealthFailure::Cancelled));
+                }
+                () = tokio::time::sleep_until(std::cmp::min(Instant::now() + POLL_INTERVAL, deadline)) => {}
             }
-            () = tokio::time::sleep(monitor) => {}
+            progress.set_running(
+                index,
+                OperationPhase::WaitingForHealth {
+                    container_id: *container_id,
+                    health: None,
+                    elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    deadline_ms,
+                },
+            );
+            if Instant::now() >= deadline {
+                break;
+            }
         }
-        progress.set_running(
-            index,
-            OperationPhase::WaitingForHealth {
-                container_id: *container_id,
-                health: None,
-                elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                deadline_ms,
-            },
-        );
     }
 
     let monitor_deadline = started + monitor;
