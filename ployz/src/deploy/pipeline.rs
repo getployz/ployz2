@@ -210,7 +210,6 @@ async fn prepare_intent(
     warnings.extend(hostname_warnings(intent.target.iter(), &snapshot.machines).await);
     let plan = planning::plan_after_ingress_expansion(intent, &snapshot)?;
     warnings.extend(plan.warnings);
-    // TODO(UT-085): services absent from this finite project are intentionally not removed.
     Ok(DeployPreview {
         project_name: intent.project_name.clone(),
         operations: pending_rows(&plan.operations, &snapshot),

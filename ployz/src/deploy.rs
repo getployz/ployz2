@@ -110,7 +110,7 @@ pub struct DeployPlan {
     pub operations: Vec<DeployOperation>,
     /// Visible Services in the Project that Compose no longer declares.
     pub would_remove: Vec<QualifiedService>,
-    /// Why pruning will not run. `None` still does not remove; this command never prunes.
+    /// Why pruning will not run. `None` means obsolete Services are removed.
     pub prune_refusal: Option<PruneRefusal>,
     /// Observer-relative warnings produced while planning, including hostname detection.
     pub warnings: Vec<DeployWarning>,
