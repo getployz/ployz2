@@ -238,25 +238,10 @@ pub enum MachineSelectorError {
     },
 }
 
-/// Membership Observation of one Machine from the responder's admin view.
+/// Membership Observation of advertised Machines from the responder's admin view.
 ///
-/// The responder is Up. A peer absent from `states` is Down.
-#[must_use]
-pub fn membership_observation(
-    machine: &Machine,
-    responder_id: &MachineId,
-    states: &BTreeMap<ManagementAddress, MembershipObservation>,
-) -> MembershipObservation {
-    if &machine.id == responder_id {
-        MembershipObservation::Up
-    } else {
-        states
-            .get(&machine.management_address)
-            .cloned()
-            .unwrap_or(MembershipObservation::Down)
-    }
-}
-
+/// The responder is Up. A peer absent from `states` is Down. Selected endpoint
+/// and RTT start empty so the caller can overlay live values.
 #[must_use]
 pub fn synthesize_membership(
     machines: Vec<Machine>,
@@ -266,7 +251,14 @@ pub fn synthesize_membership(
     machines
         .into_iter()
         .map(|machine| MachineObservation {
-            membership: membership_observation(&machine, responder_id, states),
+            membership: if &machine.id == responder_id {
+                MembershipObservation::Up
+            } else {
+                states
+                    .get(&machine.management_address)
+                    .cloned()
+                    .unwrap_or(MembershipObservation::Down)
+            },
             selected_endpoint: None,
             rtt: None,
             machine,

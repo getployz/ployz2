@@ -114,8 +114,10 @@ pub(crate) async fn serve_replicated_runtime_watch(
 ///
 /// Yields one complete frame immediately, then another when a store
 /// notification or a telemetry sample wakes assembly and the assembled
-/// observation changed. `observed_at` is the time of the latest membership/RTT
-/// sample and is ignored when deciding whether the observation changed.
+/// observation changed. Ticks resample membership/RTT only. Store wakes
+/// reload the snapshot only. `observed_at` is the time of the latest
+/// membership/RTT sample and is ignored when deciding whether the
+/// observation changed.
 fn serve_runtime_watch<L, Fut, S, SFut, C, T>(
     entry_id: MachineId,
     load: L,
@@ -136,39 +138,39 @@ where
         let mut changes = std::pin::pin!(changes);
         let mut ticks = std::pin::pin!(ticks);
         let mut last = None;
-        let mut latest = sample().await;
+        let (loaded, mut latest) = tokio::join!(load(), sample());
+        let mut snapshot = match loaded {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let _ = sender
+                    .send(Err(Status::unavailable(error.to_string())))
+                    .await;
+                return;
+            }
+        };
         loop {
-            match load().await {
-                Ok(snapshot) => {
-                    let frame = assemble_runtime_watch_frame(
-                        snapshot,
-                        &entry_id,
-                        latest.telemetry.as_ref(),
-                        latest.observed_at.clone(),
-                    );
-                    if last
-                        .as_ref()
-                        .is_none_or(|previous| observation_changed(previous, &frame))
-                    {
-                        let payload = match OpaquePayload::from_json(&frame) {
-                            Ok(payload) => payload,
-                            Err(error) => {
-                                let _ = sender.send(Err(Status::internal(error.to_string()))).await;
-                                return;
-                            }
-                        };
-                        if sender.send(Ok(payload)).await.is_err() {
-                            return;
-                        }
-                        last = Some(frame);
+            // Keep the snapshot so a tick resamples without another store read.
+            let frame = assemble_runtime_watch_frame(
+                snapshot.clone(),
+                &entry_id,
+                latest.telemetry.as_ref(),
+                latest.observed_at.clone(),
+            );
+            if last
+                .as_ref()
+                .is_none_or(|previous| observation_changed(previous, &frame))
+            {
+                let payload = match OpaquePayload::from_json(&frame) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        let _ = sender.send(Err(Status::internal(error.to_string()))).await;
+                        return;
                     }
-                }
-                Err(error) => {
-                    let _ = sender
-                        .send(Err(Status::unavailable(error.to_string())))
-                        .await;
+                };
+                if sender.send(Ok(payload)).await.is_err() {
                     return;
                 }
+                last = Some(frame);
             }
             tokio::select! {
                 biased;
@@ -177,7 +179,15 @@ where
                     latest = sample().await;
                 }
                 changed = changes.next() => match changed {
-                    Some(Ok(())) => {}
+                    Some(Ok(())) => match load().await {
+                        Ok(next) => snapshot = next,
+                        Err(error) => {
+                            let _ = sender
+                                .send(Err(Status::unavailable(error.to_string())))
+                                .await;
+                            return;
+                        }
+                    },
                     Some(Err(error)) => {
                         let _ = sender
                             .send(Err(Status::unavailable(error.to_string())))

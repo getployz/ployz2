@@ -408,15 +408,14 @@ impl LocalMachine {
             None => Vec::new(),
         };
         let states = membership_states_by_address(states);
-        let mut observations = synthesize_membership(machines, &local.id(), &states);
-        for observation in &mut observations {
-            observation.selected_endpoint = local
-                .selected_endpoints
-                .get(&observation.machine.id)
-                .copied();
-        }
+        let entry_id = local.id();
         Ok(MachineList {
-            machines: observations,
+            machines: RuntimeWatchTelemetry {
+                states,
+                selected_endpoints: local.selected_endpoints,
+                rtts: Vec::new(),
+            }
+            .overlay(machines, &entry_id),
         })
     }
 
@@ -556,10 +555,11 @@ async fn machine_rtts(
 ///
 /// Both reads must succeed; otherwise Watch keeps replicated rows.
 async fn read_admin(admin: &AdminClient) -> Option<(Vec<MembershipState>, Vec<RttObservation>)> {
-    let Ok(states) = admin.membership_states().await else {
+    let (states, rtts) = tokio::join!(admin.membership_states(), admin.member_rtts());
+    let Ok(states) = states else {
         return None;
     };
-    let Ok(rtts) = admin.member_rtts().await else {
+    let Ok(rtts) = rtts else {
         return None;
     };
     Some((states, rtts))
