@@ -12,20 +12,20 @@ import type {
 } from "../generated/payloads";
 import fixtures from "../generated/fixtures.json";
 
-fixtures.volume_driver satisfies VolumeDriver;
-fixtures.config_spec satisfies ConfigSpec;
+const spec = fixtures.requested_service_spec_typed;
+const source = spec.volumes[0].source;
+
+source.driver satisfies VolumeDriver;
+spec.configs satisfies NonNullable<RequestedServiceSpec["configs"]>;
+spec.configs[0] satisfies ConfigSpec;
 fixtures.config_mount satisfies ConfigMount;
-fixtures.device_mapping satisfies DeviceMapping;
+spec.container.resources.devices[0] satisfies DeviceMapping;
 fixtures.device_reservation satisfies DeviceReservation;
-fixtures.ulimit satisfies Ulimit;
-fixtures.requested_service_spec_typed.configs satisfies NonNullable<
-  RequestedServiceSpec["configs"]
->;
+spec.container.resources.ulimits.nofile satisfies Ulimit;
+spec.container.healthcheck satisfies HealthcheckSpec;
 fixtures.resolved_service_spec_typed.configs satisfies NonNullable<
   ResolvedServiceSpec["configs"]
 >;
-fixtures.requested_service_spec_typed.container
-  .healthcheck satisfies HealthcheckSpec;
 fixtures.container_observation_disabled_healthcheck
   .effective_healthcheck satisfies ContainerObservation["effective_healthcheck"];
 
@@ -49,12 +49,3 @@ const invalidConfigs: RequestedServiceSpec["configs"] = 1;
 // @ts-expect-error effective_healthcheck is HealthcheckSpec | null, not a string
 const invalidEffective: ContainerObservation["effective_healthcheck"] =
   "disabled";
-
-void invalidDriver;
-void invalidDevice;
-void invalidConfig;
-void invalidUlimit;
-void invalidReservation;
-void invalidHealthcheck;
-void invalidConfigs;
-void invalidEffective;

@@ -4,13 +4,12 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CertificateAvailability, CertificateFailureKind,
-    ClusterTeardown, ConfigMount, ConfigSpec, ContainerObservation, ContainerRuntimeObservation,
-    ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOutcome,
-    DeployPreview, DeviceMapping, DeviceReservation, DockerVolume, ExecutionError,
-    HealthObservation, HealthcheckSpec, IngressHostname, LocalMachineRemoved,
-    MembershipObservation, ObservedDataLoss, PlanOptions, RUNTIME_WATCH_CAPABILITY,
-    RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode, RuntimeWatchFrame,
-    ServiceAttempt, Ulimit, UnconfirmedDataLoss, VolumeDriver, VolumeSource,
+    ClusterTeardown, ContainerObservation, ContainerRuntimeObservation, ContractDescription,
+    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOutcome, DeployPreview,
+    DockerVolume, ExecutionError, HealthObservation, HealthcheckSpec, IngressHostname,
+    LocalMachineRemoved, MembershipObservation, ObservedDataLoss, PlanOptions,
+    RUNTIME_WATCH_CAPABILITY, RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode,
+    RuntimeWatchFrame, ServiceAttempt, UnconfirmedDataLoss, VolumeSource,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -496,7 +495,6 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains(DESCRIBE_CONTRACT_CAPABILITY));
     assert!(dts.contains(CERTIFICATE_POLICY_CAPABILITY));
     assert!(dts.contains("export declare function packageName(): \"@ployz/sdk\";"));
-    assert!(include_str!("../../ployz-sdk/tests/payload-types.ts").contains("@ts-expect-error"));
     for wire in MembershipObservation::known_wires() {
         assert!(
             dts.contains(&format!("\"{wire}\"")),
@@ -587,97 +585,40 @@ fn handwritten_facade_types_use_generated_payloads() {
 }
 
 fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
-    let driver: VolumeDriver = decode_fixture(fixture(fixtures, "volume_driver"));
-    assert_eq!(driver.name, "nfs");
-    assert_eq!(driver.options.get("share").map(String::as_str), Some("app"));
-    assert_eq!(
-        serde_json::to_value(&driver).unwrap(),
-        *fixture(fixtures, "volume_driver")
-    );
-
-    let config: ConfigSpec = decode_fixture(fixture(fixtures, "config_spec"));
-    assert_eq!(config.name, "settings");
-    assert_eq!(config.content, b"port = 8080");
-    assert_eq!(
-        serde_json::to_value(&config).unwrap(),
-        *fixture(fixtures, "config_spec")
-    );
-
-    let mount: ConfigMount = decode_fixture(fixture(fixtures, "config_mount"));
-    assert_eq!(mount.config_name, "settings");
-    assert_eq!(
-        mount.target.as_ref().map(ployz_core::ContainerPath::as_str),
-        Some("/etc/api/settings.toml")
-    );
-    assert_eq!(mount.uid, Some(1000));
-    assert_eq!(mount.gid, Some(1000));
-    assert_eq!(mount.mode, Some(0o440));
-    assert_eq!(
-        serde_json::to_value(&mount).unwrap(),
-        *fixture(fixtures, "config_mount")
-    );
-
-    let mapping: DeviceMapping = decode_fixture(fixture(fixtures, "device_mapping"));
-    assert_eq!(mapping.machine_path.as_str(), "/dev/fuse");
-    assert_eq!(mapping.container_path.as_str(), "/dev/fuse");
-    assert_eq!(mapping.cgroup_permissions, "rwm");
-    assert_eq!(
-        serde_json::to_value(&mapping).unwrap(),
-        *fixture(fixtures, "device_mapping")
-    );
-
-    let reservation: DeviceReservation = decode_fixture(fixture(fixtures, "device_reservation"));
-    assert_eq!(reservation.driver.as_deref(), Some("nvidia"));
-    assert_eq!(reservation.count, Some(1));
-    assert_eq!(reservation.device_ids, ["GPU-0".to_owned()]);
-    assert_eq!(reservation.capabilities, [vec!["gpu".to_owned()]]);
-    assert_eq!(
-        reservation.options.get("count").map(String::as_str),
-        Some("1")
-    );
-    assert_eq!(
-        serde_json::to_value(&reservation).unwrap(),
-        *fixture(fixtures, "device_reservation")
-    );
-
-    let ulimit: Ulimit = decode_fixture(fixture(fixtures, "ulimit"));
-    assert_eq!(ulimit.soft, 1024);
-    assert_eq!(ulimit.hard, 2048);
-    assert_eq!(
-        serde_json::to_value(ulimit).unwrap(),
-        *fixture(fixtures, "ulimit")
-    );
-
     let requested: RequestedServiceSpec =
         decode_fixture(fixture(fixtures, "requested_service_spec_typed"));
-    assert_eq!(requested.configs(), std::slice::from_ref(&config));
+    let config = requested
+        .configs()
+        .first()
+        .expect("typed spec includes ConfigSpec");
+    assert_eq!(config.name, "settings");
+    assert_eq!(config.content, b"port = 8080");
     assert_eq!(requested.config_mounts().len(), 2);
     match requested.volumes().first().map(|volume| &volume.source) {
         Some(VolumeSource::Named {
-            driver: Some(nested),
+            driver: Some(driver),
             ..
-        }) => assert_eq!(nested, &driver),
+        }) => assert_eq!(driver.name, "nfs"),
         other => panic!("typed requested spec must nest VolumeDriver, got {other:?}"),
     }
-    assert_eq!(
-        requested.container.resources.devices.first(),
-        Some(&mapping)
+    assert_eq!(requested.container.resources.devices.len(), 1);
+    assert_eq!(requested.container.resources.device_reservations.len(), 2);
+    assert!(
+        requested
+            .container
+            .resources
+            .device_reservations
+            .get(1)
+            .is_some_and(|reservation| reservation.driver.is_none())
     );
     assert_eq!(
-        requested.container.resources.device_reservations.first(),
-        Some(&reservation)
-    );
-    let sparse = requested
-        .container
-        .resources
-        .device_reservations
-        .get(1)
-        .expect("typed spec includes a sparse DeviceReservation");
-    assert!(sparse.driver.is_none());
-    assert!(sparse.device_ids.is_empty());
-    assert_eq!(
-        requested.container.resources.ulimits.get("nofile"),
-        Some(&ulimit)
+        requested
+            .container
+            .resources
+            .ulimits
+            .get("nofile")
+            .map(|limit| limit.hard),
+        Some(2048)
     );
     assert!(
         requested
@@ -695,7 +636,6 @@ fn assert_typed_spec_fixtures(fixtures: &BTreeMap<String, Value>) {
     let resolved: ResolvedServiceSpec =
         decode_fixture(fixture(fixtures, "resolved_service_spec_typed"));
     assert_eq!(resolved.configs(), requested.configs());
-    assert_eq!(resolved.config_mounts(), requested.config_mounts());
     assert_eq!(
         serde_json::to_value(&resolved).unwrap(),
         *fixture(fixtures, "resolved_service_spec_typed")

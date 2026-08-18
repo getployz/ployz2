@@ -69,22 +69,6 @@
     "target": "/etc/api/settings.toml",
     "uid": 1000
   },
-  "config_spec": {
-    "content": [
-      112,
-      111,
-      114,
-      116,
-      32,
-      61,
-      32,
-      56,
-      48,
-      56,
-      48
-    ],
-    "name": "settings"
-  },
   "container_observation_disabled_healthcheck": {
     "address": null,
     "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -366,11 +350,6 @@
       "ObserverRelativeHostnameConflict"
     ],
     "would_remove": []
-  },
-  "device_mapping": {
-    "cgroup_permissions": "rwm",
-    "container_path": "/dev/fuse",
-    "machine_path": "/dev/fuse"
   },
   "device_reservation": {
     "capabilities": [
@@ -1393,10 +1372,6 @@
   "service_attempt": {
     "name": "web"
   },
-  "ulimit": {
-    "hard": 2048,
-    "soft": 1024
-  },
   "unconfirmed_data_loss": {
     "missing": [
       {
@@ -1406,11 +1381,5 @@
         }
       }
     ]
-  },
-  "volume_driver": {
-    "name": "nfs",
-    "options": {
-      "share": "app"
-    }
   }
 }

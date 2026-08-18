@@ -117,12 +117,9 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
     fixtures.insert("deploy_intent".into(), to_value(&deploy_intent()));
     fixtures.insert("requested_service_spec".into(), to_value(&requested_spec()));
-    fixtures.insert("volume_driver".into(), to_value(&volume_driver()));
-    fixtures.insert("config_spec".into(), to_value(&config_spec()));
+    // serde emits null for Option::None; these leaves stay null-free so tsc can `satisfies`.
     fixtures.insert("config_mount".into(), to_value(&config_mount()));
-    fixtures.insert("device_mapping".into(), to_value(&device_mapping()));
     fixtures.insert("device_reservation".into(), to_value(&device_reservation()));
-    fixtures.insert("ulimit".into(), to_value(&ulimit()));
     fixtures.insert(
         "requested_service_spec_typed".into(),
         to_value(&typed_requested_spec()),
