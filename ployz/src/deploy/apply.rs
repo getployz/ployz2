@@ -3,7 +3,9 @@ use std::{
     num::NonZeroU32,
 };
 
-use ployz_core::{DeployEvent, PlanOptions, ProjectName, RequestedServiceSpec, ServiceSelector};
+use ployz_core::{
+    DataLoss, DeployEvent, PlanOptions, ProjectName, RequestedServiceSpec, ServiceSelector,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -166,6 +168,7 @@ pub(crate) async fn remove_project(
     volumes: VolumeFate,
     auto_confirm: bool,
     context: &str,
+    confirm_data_loss: &[DataLoss],
 ) -> Result<(), Failure> {
     let preview = client.preview_project_removal(name, volumes).await?;
     print_warnings(&preview);
@@ -177,13 +180,16 @@ pub(crate) async fn remove_project(
         return Err(Failure::usage(format!("Project '{name}' was not found")));
     }
     print!("{}", render::removal_plan_text(&preview, context));
-    if preview.operations.is_empty() {
+    if preview.operations.is_empty() && volumes == VolumeFate::Preserve {
         return Ok(());
     }
     if !auto_confirm && !confirm(&render::confirm_removal_prompt(name, context))? {
         println!("No changes were made.");
         return Ok(());
     }
+    let preview = client
+        .prepare_project_destroy(name, confirm_data_loss, volumes)
+        .await?;
     finish(
         stream_confirm(
             client,

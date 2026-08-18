@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
-    MachineObservation, MembershipObservation, PortPublication, ProjectName, QualifiedService,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
-    ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
-    VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners, machine_matches_target,
-    same_service_mode_kind,
+    ContainerAction, ContainerId, ContainerRuntimeObservation, DataLoss, HookContainer, HostBind,
+    MachineId, MachineObservation, MembershipObservation, ObservedDataLoss, PortPublication,
+    ProjectName, QualifiedService, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
+    ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph,
+    SpecChange, UpdateOrder, VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners,
+    machine_matches_target, owned_volume_project, same_service_mode_kind,
 };
 
 use super::{
@@ -56,6 +56,32 @@ pub fn plan_project_removal(
         );
     }
     Ok(plan)
+}
+
+/// Data Loss that destroying `project` would cause for `volumes`.
+///
+/// [`VolumeFate::Preserve`] is empty: keeping managed volumes is not Data Loss.
+/// [`VolumeFate::Destroy`] names each observer-visible owned Docker Volume.
+/// Completeness is the caller's check; this listing is not a Cluster view.
+#[must_use]
+pub fn data_loss_for_project_removal(
+    project: &ProjectName,
+    snapshot: &DeploySnapshot,
+    volumes: VolumeFate,
+) -> ObservedDataLoss {
+    match volumes {
+        VolumeFate::Preserve => ObservedDataLoss {
+            data_loss: Vec::new(),
+        },
+        VolumeFate::Destroy => ObservedDataLoss {
+            data_loss: snapshot
+                .volumes
+                .iter()
+                .filter(|volume| owned_volume_project(&volume.labels).as_ref() == Some(project))
+                .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
+                .collect(),
+        },
+    }
 }
 
 /// Plan operations for the Services this Deploy applies from the target.

@@ -10,8 +10,9 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    MachineFailure, MachineId, MachineObservation, PortPublication, ProjectName,
-    RequestedServiceSpec, RpcError, ServiceMode, ServiceSelector, select_service,
+    DataLoss, MachineFailure, MachineId, MachineObservation, ObservedDataLoss, PortPublication,
+    ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceMode, ServiceSelector,
+    UnconfirmedDataLoss, select_service,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -25,9 +26,9 @@ use crate::{
 };
 
 use super::{
-    ComposePruneRefusal, DeployEvent, DeployIntent, DeployOutcome, DeployPreview, DeploySnapshot,
-    DeployWarning, ExecutionError, ObservationKind, PlanError, PlanOptions,
-    exec::execute_operation_sequence, pending_rows, planning,
+    ComposePruneRefusal, DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview,
+    DeploySnapshot, DeployWarning, ExecutionError, ObservationKind, PlanError, PlanOptions,
+    PruneRefusal, exec::execute_operation_sequence, pending_rows, planning,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -96,6 +97,88 @@ impl Client {
         })
     }
 
+    /// Live Observation of Data Loss that destroying `project` would cause.
+    ///
+    /// [`super::VolumeFate::Preserve`] yields an empty list. Mutates nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the Project is reserved, snapshot
+    /// gathering fails, or destroying volumes is requested against a known
+    /// incomplete snapshot.
+    pub async fn data_loss_if_project_destroyed(
+        &mut self,
+        project: &ProjectName,
+        volumes: super::VolumeFate,
+    ) -> Result<ObservedDataLoss, RpcError> {
+        crate::project::refuse_reserved(project).map_err(|error| as_rpc(error.into()))?;
+        let machines = self.machines().await.map_err(RpcError::from)?;
+        let (snapshot, _) = gather_snapshot(self, machines).await.map_err(as_rpc)?;
+        project_data_loss(project, &snapshot, volumes)
+    }
+
+    /// Re-read Data Loss, refuse when uncovered, then plan and execute removal.
+    ///
+    /// Confirmation is [`ObservedDataLoss::uncovered_by`]. Extra names are
+    /// ignored. Executes the execute-time plan; it does not replay an earlier
+    /// preview.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the Project is reserved or not
+    /// visible, the snapshot is incomplete, or the confirmation does not cover
+    /// the fresh Data Loss. Execution failure is a [`DeployOutcome::Failed`].
+    pub async fn destroy_project(
+        &mut self,
+        project: &ProjectName,
+        confirm_data_loss: &[DataLoss],
+        volumes: super::VolumeFate,
+        cancellation: &CancellationToken,
+        progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
+    ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
+        let preview = self
+            .prepare_project_destroy(project, confirm_data_loss, volumes)
+            .await?;
+        Ok(self.confirm(&preview, cancellation, progress).await)
+    }
+
+    /// Execute-time re-read and plan. Confirming runs these operations.
+    pub(crate) async fn prepare_project_destroy(
+        &mut self,
+        project: &ProjectName,
+        confirm_data_loss: &[DataLoss],
+        volumes: super::VolumeFate,
+    ) -> Result<DeployPreview, RpcError> {
+        crate::project::refuse_reserved(project).map_err(|error| as_rpc(error.into()))?;
+        let machines = self.machines().await.map_err(RpcError::from)?;
+        let (snapshot, warnings) = gather_snapshot(self, machines).await.map_err(as_rpc)?;
+        let missing =
+            project_data_loss(project, &snapshot, volumes)?.uncovered_by(confirm_data_loss);
+        if !missing.is_empty() {
+            return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
+        }
+        let plan = planning::plan_project_removal(project, &snapshot, volumes)
+            .map_err(|error| as_rpc(error.into()))?;
+        if let Some(reason) = plan.prune_refusal {
+            return Err(invalid_argument(reason.to_string()));
+        }
+        if project_not_visible(&plan) {
+            return Err(RpcError {
+                code: RpcErrorCode::NotFound,
+                message: format!("Project '{project}' was not found"),
+                details: serde_json::Value::Null,
+            });
+        }
+        Ok(DeployPreview {
+            project_name: project.clone(),
+            operations: pending_rows(&plan.operations, &snapshot),
+            warnings,
+            would_remove: plan.would_remove,
+            preserved_volumes: plan.preserved_volumes,
+            prune_refusal: plan.prune_refusal,
+        })
+    }
+
     /// Execute the operations on this Deploy Preview. Does not re-plan.
     ///
     /// Progress events are sent on `progress` when provided. The first event is
@@ -131,6 +214,45 @@ impl Client {
     ) -> Result<DeployOutcome<ExecutionError>, DeployError> {
         let preview = self.preview(intent).await?;
         Ok(self.confirm(&preview, cancellation, progress).await)
+    }
+}
+
+fn project_data_loss(
+    project: &ProjectName,
+    snapshot: &DeploySnapshot,
+    volumes: super::VolumeFate,
+) -> Result<ObservedDataLoss, RpcError> {
+    if volumes == super::VolumeFate::Destroy && !snapshot.is_observer_complete() {
+        return Err(invalid_argument(
+            PruneRefusal::IncompleteSnapshot.to_string(),
+        ));
+    }
+    Ok(planning::data_loss_for_project_removal(
+        project, snapshot, volumes,
+    ))
+}
+
+fn project_not_visible(plan: &DeployPlan) -> bool {
+    plan.prune_refusal.is_none()
+        && plan.operations.is_empty()
+        && plan.preserved_volumes.is_empty()
+        && plan.would_remove.is_empty()
+}
+
+fn as_rpc(error: DeployError) -> RpcError {
+    match error {
+        DeployError::Connect(error) => error.into(),
+        DeployError::Plan(error) => invalid_argument(error.to_string()),
+        DeployError::Ingress(error) => invalid_argument(error.to_string()),
+        DeployError::Project(error) => invalid_argument(error.to_string()),
+    }
+}
+
+fn invalid_argument(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::InvalidArgument,
+        message,
+        details: serde_json::Value::Null,
     }
 }
 
