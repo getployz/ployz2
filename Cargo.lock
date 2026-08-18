@@ -2058,6 +2058,7 @@ dependencies = [
 name = "ployz-relay"
 version = "0.1.2-beta.2"
 dependencies = [
+ "clap",
  "ployz-core",
  "prost",
  "thiserror 2.0.20",
