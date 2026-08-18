@@ -555,11 +555,8 @@ async fn machine_rtts(
 ///
 /// Both reads must succeed; otherwise Watch keeps replicated rows.
 async fn read_admin(admin: &AdminClient) -> Option<(Vec<MembershipState>, Vec<RttObservation>)> {
-    let (states, rtts) = tokio::join!(admin.membership_states(), admin.member_rtts());
-    let Ok(states) = states else {
-        return None;
-    };
-    let Ok(rtts) = rtts else {
+    let Ok((states, rtts)) = tokio::try_join!(admin.membership_states(), admin.member_rtts())
+    else {
         return None;
     };
     Some((states, rtts))
