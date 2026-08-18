@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
+    future::Future,
     io::{Read, Write},
     net::SocketAddr,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -27,6 +28,8 @@ pub const DEFAULT_API_ADDRESS: &str = "127.0.0.1:51002";
 pub const DEFAULT_GOSSIP_ADDRESS: &str = "127.0.0.1:51001";
 const TOKEN_FILE: &str = ".api-token";
 const SCHEMA: &str = include_str!("schema.sql");
+const SYSTEMD_START_TIMEOUT_EXTENSION: Duration = Duration::from_secs(30);
+const SYSTEMD_START_TIMEOUT_EXTEND_MAX: Duration = Duration::from_secs(5 * 60);
 
 pub struct CorrosionConfig {
     data_dir: PathBuf,
@@ -88,16 +91,14 @@ impl CorrosionConfig {
             data_dir: self.data_dir.clone(),
             run_dir: self.run_dir.clone(),
         };
+        let _extend = extend_systemd_start_timeout();
         service.start().await?;
-        if let Err(primary) = wait_ready(&api).await {
-            return match service.stop().await {
-                Ok(()) => Err(primary),
-                Err(cleanup) => Err(Error::CleanupAfter {
-                    primary: Box::new(primary),
-                    cleanup: Box::new(cleanup),
-                }),
-            };
-        }
+        wait_ready(|| async {
+            api.query(Statement::new("SELECT 1 FROM cluster LIMIT 1", []))
+                .await
+                .is_ok()
+        })
+        .await;
         Ok(RunningCorrosion {
             store: ReplicatedStore::new(api),
             admin,
@@ -242,22 +243,63 @@ impl DockerService {
     }
 }
 
-async fn wait_ready(api: &ApiClient) -> Result<(), Error> {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            if api
-                .query(Statement::new("SELECT 1 FROM cluster LIMIT 1", []))
-                .await
-                .is_ok()
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+async fn wait_ready<F, Fut>(mut ready: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let warning_interval = Duration::from_secs(5 * 60);
+    let mut warning_at = tokio::time::Instant::now() + warning_interval;
+    loop {
+        if ready().await {
+            return;
         }
-    })
-    .await
-    .map_err(|_| Error::Api("service did not become ready within 15 seconds".into()))?;
-    Ok(())
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_millis(500)) => {}
+            () = tokio::time::sleep_until(warning_at) => {
+                eprintln!("Corrosion is still not ready");
+                warning_at = tokio::time::Instant::now() + warning_interval;
+            }
+        }
+    }
+}
+
+#[must_use]
+struct SystemdStartTimeoutExtend {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for SystemdStartTimeoutExtend {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
+    // TimeoutStartSec=20; EXTEND_TIMEOUT keeps the start job alive while Corrosion
+    // pulls and becomes queryable. Uncloud extended only during image pull.
+    let usec = u32::try_from(SYSTEMD_START_TIMEOUT_EXTENSION.as_micros())
+        .expect("30s start-timeout extension fits u32 microseconds");
+    let deadline = tokio::time::Instant::now() + SYSTEMD_START_TIMEOUT_EXTEND_MAX;
+    SystemdStartTimeoutExtend {
+        task: tokio::spawn(async move {
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    eprintln!(
+                        "stopped extending the systemd start timeout: Corrosion is taking too long to start"
+                    );
+                    return;
+                }
+                if let Err(error) =
+                    sd_notify::notify(&[sd_notify::NotifyState::ExtendTimeoutUsec(usec)])
+                {
+                    eprintln!("failed to extend the systemd start timeout: {error}");
+                    return;
+                }
+                tokio::time::sleep(SYSTEMD_START_TIMEOUT_EXTENSION).await;
+            }
+        }),
+    }
 }
 
 fn create_private_dir(path: &Path) -> Result<(), Error> {
@@ -341,4 +383,21 @@ struct AuthzConfig {
 #[derive(Serialize)]
 struct AdminConfig {
     path: PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::Instant;
+
+    #[tokio::test(start_paused = true)]
+    async fn corrosion_readiness_wait_keeps_polling_after_fifteen_seconds() {
+        let started = Instant::now();
+        wait_ready(|| async { started.elapsed() >= Duration::from_secs(16) }).await;
+        assert!(
+            started.elapsed() >= Duration::from_secs(16),
+            "probe must succeed only after 15 seconds, got {:?}",
+            started.elapsed()
+        );
+    }
 }
