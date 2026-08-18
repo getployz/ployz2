@@ -54,7 +54,7 @@ pub(super) struct DiscoveryService {
     description: ContractDescription,
     pub(super) describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
     pub(super) stream_opens: Arc<AtomicUsize>,
-    machines: Option<Vec<MachineObservation>>,
+    machines: Vec<MachineObservation>,
     containers: Arc<AtomicUsize>,
 }
 
@@ -64,13 +64,13 @@ impl DiscoveryService {
             description,
             describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             stream_opens: Arc::new(AtomicUsize::new(0)),
-            machines: None,
+            machines: vec![machine('a', "one")],
             containers: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     pub(super) fn with_machines(mut self, machines: Vec<MachineObservation>) -> Self {
-        self.machines = Some(machines);
+        self.machines = machines;
         self
     }
 }
@@ -190,14 +190,12 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let machines = self
-            .machines
-            .clone()
-            .unwrap_or_else(|| vec![machine('a', "one")]);
         Ok(Response::new(
-            RpcResponse::from(MachineList { machines })
-                .encode()
-                .unwrap(),
+            RpcResponse::from(MachineList {
+                machines: self.machines.clone(),
+            })
+            .encode()
+            .unwrap(),
         ))
     }
 

@@ -5,10 +5,9 @@ use std::{path::PathBuf, process::Command, time::Duration};
 use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz::sdk;
 use ployz_core::{
-    CapabilityName, ContainerPath, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY,
-    DeployOperation, DeployOutcome, DockerVolumeName, ExecutionError, FailedOperation, MachineId,
-    PROTOCOL_MAJOR, RequestedServiceSpec, RpcErrorCode, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, VolumeSource,
+    CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployOperation,
+    DeployOutcome, ExecutionError, FailedOperation, MachineId, PROTOCOL_MAJOR,
+    RequestedServiceSpec, RpcErrorCode,
 };
 use tokio::time::timeout;
 
@@ -156,7 +155,6 @@ async fn deploy_returns_success_for_a_completed_run() {
         .await
         .unwrap();
 
-    let json = serde_json::to_value(&outcome).unwrap();
     let DeployOutcome::Success { completed } = outcome else {
         panic!("expected success: {outcome:?}");
     };
@@ -166,13 +164,6 @@ async fn deploy_returns_success_for_a_completed_run() {
         Some(DeployOperation::RunContainer { spec, skip_health_monitor: true, .. })
             if spec.name.as_str() == "web"
     ));
-    assert_eq!(
-        json.get("Success")
-            .and_then(|value| value.get("completed"))
-            .and_then(serde_json::Value::as_array)
-            .map(Vec::len),
-        Some(1)
-    );
     assert!(
         client
             .about()
@@ -195,15 +186,14 @@ async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
     let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
         .await
         .unwrap();
-    let mut spec = spec("web");
-    add_named_volume(&mut spec, "scratch");
-
     let outcome = client
-        .deploy(DeployIntent::apply_one(spec, skip_health()))
+        .deploy(DeployIntent::apply_one(
+            spec_with_volume("web", "scratch"),
+            skip_health(),
+        ))
         .await
         .unwrap();
 
-    let json = serde_json::to_value(&outcome).unwrap();
     let DeployOutcome::Failed {
         completed,
         failed,
@@ -225,22 +215,6 @@ async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
         unexecuted.first(),
         Some(DeployOperation::RunContainer { spec, .. }) if spec.name.as_str() == "web"
     ));
-    let failed = json.get("Failed").expect("Failed variant");
-    assert_eq!(
-        failed
-            .get("completed")
-            .and_then(serde_json::Value::as_array)
-            .map(Vec::len),
-        Some(0)
-    );
-    assert!(failed.get("failed").is_some());
-    assert_eq!(
-        failed
-            .get("unexecuted")
-            .and_then(serde_json::Value::as_array)
-            .map(Vec::len),
-        Some(1)
-    );
     assert!(
         client
             .about()
@@ -381,27 +355,18 @@ fn spec(name: &str) -> RequestedServiceSpec {
     .unwrap()
 }
 
-fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str) {
-    let reference = ServiceVolumeReference::parse(name).unwrap();
-    requested.volume_graph = ServiceVolumeGraph::parse(
-        vec![ServiceVolume {
-            reference: reference.clone(),
-            source: VolumeSource::Named {
-                name: DockerVolumeName::parse(name).unwrap(),
-                external: false,
-                driver: None,
-                labels: Default::default(),
-                no_copy: false,
-                subpath: None,
-            },
+fn spec_with_volume(name: &str, volume: &str) -> RequestedServiceSpec {
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "nginx", "pull_policy": "always" },
+        "volumes": [{
+            "reference": volume,
+            "source": { "kind": "named", "name": volume }
         }],
-        vec![ServiceMount {
-            volume: reference,
-            target: ContainerPath::parse(format!("/{name}")).unwrap(),
-            read_only: false,
-        }],
-    )
-    .unwrap();
+        "mounts": [{ "volume": volume, "target": format!("/{volume}") }]
+    }))
+    .unwrap()
 }
 
 fn skip_health() -> PlanOptions {

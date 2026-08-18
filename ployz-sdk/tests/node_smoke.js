@@ -50,7 +50,7 @@ async function expectRpc(fn, code) {
     throw new Error("callers must be able to branch on capability names");
   }
 
-  const outcome = await client.deploy({
+  const intent = {
     target: [
       {
         name: "web",
@@ -64,7 +64,8 @@ async function expectRpc(fn, code) {
       skip_health_monitor: true,
       placement_seed: 0,
     },
-  });
+  };
+  const outcome = await client.deploy(intent);
   if (!outcome.Success || !Array.isArray(outcome.Success.completed)) {
     throw new Error(`expected Success outcome, got ${JSON.stringify(outcome)}`);
   }
@@ -81,19 +82,7 @@ async function expectRpc(fn, code) {
 
   await client.close();
   await expectRpc(() => client.about(), "unavailable");
-  await expectRpc(
-    () =>
-      client.deploy({
-        target: [],
-        apply: [],
-        options: {
-          force_recreate: false,
-          skip_health_monitor: true,
-          placement_seed: 0,
-        },
-      }),
-    "unavailable",
-  );
+  await expectRpc(() => client.deploy(intent), "unavailable");
   await client.close();
 
   const again = await sdk.connect({ relayUrl, bearer, machineId });
