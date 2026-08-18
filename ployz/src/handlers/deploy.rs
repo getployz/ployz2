@@ -5,13 +5,13 @@ use ployz_core::ServiceSelector;
 
 use crate::{
     compose::{
-        BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, compose_input_files,
+        BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, compose_identity,
         execute_build, load_project, plan_build,
     },
     deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec, plan_options},
     project::{
-        ProjectNameInput, compose_directory, resolve_compose_command, resolve_explicit,
-        resolve_from_matches, top_level_compose_name,
+        ProjectNameInput, ResolvedProject, resolve_compose_command, resolve_explicit,
+        resolve_from_matches,
     },
 };
 
@@ -45,20 +45,9 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let explicit = resolve_explicit(matches)?;
-    let (mut project, builds, apply, load) = prepare_deploy(matches)?;
-    let resolved = match explicit {
-        Some(resolved) => resolved,
-        None => {
-            let files = compose_input_files(&load);
-            let compose_name = top_level_compose_name(&files);
-            resolve_compose_command(
-                matches,
-                compose_name.as_deref(),
-                Some(project.working_dir.as_path()),
-            )?
-        }
-    };
+    let load = deploy_load(matches);
+    let resolved = resolve_from_compose_load(matches, &load)?;
+    let (mut project, builds, apply) = prepare_deploy(matches, &load)?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -83,18 +72,8 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn prepare_deploy(
-    matches: &ArgMatches,
-) -> Result<
-    (
-        ComposeProject,
-        Vec<BuildService>,
-        Vec<ServiceAttempt>,
-        LoadOptions,
-    ),
-    Error,
-> {
-    let load = LoadOptions {
+fn deploy_load(matches: &ArgMatches) -> LoadOptions {
+    LoadOptions {
         command: "deploy".into(),
         files: string_values(matches, "file")
             .into_iter()
@@ -102,9 +81,32 @@ fn prepare_deploy(
             .collect(),
         profiles: string_values(matches, "profile"),
         ..Default::default()
-    };
+    }
+}
+
+fn resolve_from_compose_load(
+    matches: &ArgMatches,
+    load: &LoadOptions,
+) -> Result<ResolvedProject, Error> {
+    match resolve_explicit(matches)? {
+        Some(resolved) => Ok(resolved),
+        None => {
+            let identity = compose_identity(load);
+            Ok(resolve_compose_command(
+                matches,
+                identity.name.as_deref(),
+                identity.directory.as_deref(),
+            )?)
+        }
+    }
+}
+
+fn prepare_deploy(
+    matches: &ArgMatches,
+    load: &LoadOptions,
+) -> Result<(ComposeProject, Vec<BuildService>, Vec<ServiceAttempt>), Error> {
     let selected = string_values(matches, "service");
-    let project = load_project(&load)?;
+    let project = load_project(load)?;
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
     }
@@ -120,10 +122,10 @@ fn prepare_deploy(
     if matches.get_flag("no-build") {
         builds.clear();
     } else {
-        execute_build(&builds, &build_options, &load)?;
+        execute_build(&builds, &build_options, load)?;
     }
     let apply = apply_attempts(&project, &selected)?;
-    Ok((project, builds, apply, load))
+    Ok((project, builds, apply))
 }
 
 fn apply_attempts(
@@ -166,11 +168,7 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
         command: "scale".into(),
         ..Default::default()
     };
-    let files = compose_input_files(&load);
-    let compose_name = top_level_compose_name(&files);
-    let compose_dir = compose_directory(&files);
-    let project =
-        resolve_compose_command(matches, compose_name.as_deref(), compose_dir.as_deref())?;
+    let project = resolve_from_compose_load(matches, &load)?;
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;

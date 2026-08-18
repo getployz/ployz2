@@ -1,13 +1,12 @@
 //! Resolve a Cluster-side Project name from Compose project-name precedence.
 
 use std::{
-    fmt, fs,
-    path::{Component, Path, PathBuf},
+    fmt,
+    path::{Component, Path},
 };
 
 use clap::{ArgMatches, parser::ValueSource};
 use ployz_core::{ProjectName, ValueError};
-use serde::Deserialize;
 use thiserror::Error;
 
 /// Why a resolved Project name was chosen.
@@ -179,36 +178,6 @@ pub(crate) fn resolve_explicit(
     resolve_from_matches(matches, ProjectNameInput::default()).map(Some)
 }
 
-/// Directory of the first Compose file, if any.
-#[must_use]
-pub(crate) fn compose_directory(files: &[PathBuf]) -> Option<PathBuf> {
-    let file = files.first()?;
-    Some(
-        file.parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from(".")),
-    )
-}
-
-/// Last top-level Compose `name` among the given files. Later files win.
-#[must_use]
-pub(crate) fn top_level_compose_name(files: &[PathBuf]) -> Option<String> {
-    let mut found = None;
-    for file in files {
-        let Ok(text) = fs::read_to_string(file) else {
-            continue;
-        };
-        let Ok(parsed) = serde_norway::from_str::<NamedCompose>(&text) else {
-            continue;
-        };
-        if let Some(name) = parsed.name {
-            found = Some(name);
-        }
-    }
-    found
-}
-
 fn cli_sources(matches: &ArgMatches) -> (Option<&str>, Option<&str>) {
     let Ok(Some(value)) = matches.try_get_one::<String>("project-name") else {
         return (None, None);
@@ -239,15 +208,8 @@ fn directory_basename(path: &Path) -> Option<&str> {
         })
 }
 
-#[derive(Deserialize)]
-struct NamedCompose {
-    name: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     use super::*;
 
     fn resolved(name: &str, source: ProjectNameSource) -> ResolvedProject {
@@ -435,55 +397,9 @@ mod tests {
     }
 
     #[test]
-    fn top_level_compose_name_uses_the_last_file() {
-        let root = unique_dir();
-        fs::write(root.join("a.yaml"), "name: first\nservices: {}\n").unwrap();
-        fs::write(root.join("b.yaml"), "name: second\nservices: {}\n").unwrap();
-        fs::write(root.join("c.yaml"), "services: {}\n").unwrap();
-        assert_eq!(
-            top_level_compose_name(&[root.join("a.yaml"), root.join("b.yaml")]).as_deref(),
-            Some("second")
-        );
-        assert_eq!(
-            top_level_compose_name(&[root.join("a.yaml"), root.join("c.yaml")]).as_deref(),
-            Some("first")
-        );
-        fs::write(
-            root.join("compose.yaml"),
-            "name: discovered\nservices: {}\n",
-        )
-        .unwrap();
-        assert_eq!(
-            top_level_compose_name(&[root.join("compose.yaml")]).as_deref(),
-            Some("discovered")
-        );
-        assert_eq!(
-            compose_directory(&[root.join("compose.yaml")]).as_deref(),
-            Some(root.as_path())
-        );
-        assert!(compose_directory(&[]).is_none());
-        assert_eq!(
-            compose_directory(&[PathBuf::from("compose.yaml")]).as_deref(),
-            Some(Path::new("."))
-        );
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn relative_dot_directory_has_no_basename_of_its_own() {
         assert!(directory_basename(Path::new(".")).is_none());
         assert_eq!(directory_basename(Path::new("/tmp/shop/.")), Some("shop"));
         assert_eq!(directory_basename(Path::new("/")), None);
-    }
-
-    fn unique_dir() -> PathBuf {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "ployz-project-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
-        path
     }
 }
