@@ -173,9 +173,9 @@ fn scale_does_not_select_a_service_owned_by_another_project() {
         &ServiceSelector::parse("api").unwrap(),
         NonZeroU32::new(2).unwrap(),
     )
-    .unwrap()
     .unwrap();
     assert_eq!(choice.project_name.as_str(), "ployz-system");
+    assert!(choice.requested.is_some());
 }
 
 #[test]
