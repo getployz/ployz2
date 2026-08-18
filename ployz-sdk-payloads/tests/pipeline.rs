@@ -1,3 +1,5 @@
+//! Pipeline tests for `@ployz/sdk` generated TypeScript and JSON fixtures.
+
 use std::collections::BTreeMap;
 
 use ployz_core::{

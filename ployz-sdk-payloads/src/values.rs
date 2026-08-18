@@ -13,9 +13,10 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, FailedOperation, HealthObservation, HookContainer,
     IngressHost, Machine, MachineFailure, MachineId, MachineName, MachineObservation,
     MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, PROTOCOL_MAJOR,
-    PartialResult, PlanOptions, ReplacementOperation, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt,
-    ServiceContainer, ServiceId, ServiceName, ServiceObservation, WireGuardPublicKey,
+    PartialResult, PlanOptions, ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec,
+    RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
+    RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId,
+    ServiceName, ServiceObservation, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -158,10 +159,52 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
     ])
 }
 
-fn capability_wires() -> Vec<Value> {
+pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
+    let DeployOutcome::Success { completed } = deploy_outcome() else {
+        panic!("success fixture is Success");
+    };
+    let operation = completed
+        .into_iter()
+        .next()
+        .expect("success fixture includes a Deploy Operation");
+    let DeployOutcome::Failed { failed, .. } = deploy_outcome_failed() else {
+        panic!("failed fixture is Failed");
+    };
+    BTreeMap::from([
+        (
+            "DeployOutcome",
+            vec![
+                to_value(&deploy_outcome()),
+                to_value(&deploy_outcome_failed()),
+            ],
+        ),
+        ("DeployOperation", vec![to_value(&operation)]),
+        ("FailedOperation", vec![to_value(&failed)]),
+        (
+            "RestartAttempt",
+            vec![
+                to_value(&RestartAttempt::<RpcError>::NotAttempted),
+                to_value(&RestartAttempt::<RpcError>::Attempted(Ok(()))),
+            ],
+        ),
+        (
+            "ReplacementCompensation",
+            vec![to_value(&ReplacementCompensation::<RpcError>::StartFirst {
+                stop_new_container: Ok(()),
+            })],
+        ),
+    ])
+}
+
+pub(super) fn catalogued_capabilities() -> Vec<(&'static str, &'static str)> {
     let mut rows = ployz_core::CATALOGUED_CAPABILITY_BINDINGS.to_vec();
     rows.sort_by_key(|(_, wire)| *wire);
-    rows.into_iter()
+    rows
+}
+
+fn capability_wires() -> Vec<Value> {
+    catalogued_capabilities()
+        .into_iter()
         .map(|(_, name)| Value::String(name.to_owned()))
         .collect()
 }
