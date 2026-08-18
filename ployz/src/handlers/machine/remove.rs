@@ -1,11 +1,13 @@
+use std::io::{self, IsTerminal, Write};
+
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, DockerVolume, DockerVolumeName, LiveServices, Machine, MachineId,
-    MachineName, MachineTarget, NameMatches, PartialResult, RemoveLocalMachineRequest,
-    RemoveMachineRequest, RpcError, ServiceName, op,
+    DataLoss, DescribeContractRequest, LiveServices, Machine, MachineId, MachineName,
+    MachineTarget, NameMatches, ObservedDataLoss, RemoveMachineRequest, RpcError, RpcErrorCode,
+    ServiceName, UnconfirmedDataLoss, op,
 };
 
-use super::super::{connect_client, runtime};
+use super::super::{connect_client, runtime, string_values};
 use super::{ConnectionOptions, helpers, machine_list, target};
 use crate::handlers::{Error, leaf_matches};
 
@@ -15,6 +17,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let selector = target(matches, "machine")?.to_owned();
     let no_reset = matches.get_flag("no-reset");
     let yes = matches.get_flag("yes");
+    let named = string_values(matches, "data-loss");
     runtime()?.block_on(async {
         let mut client = connect_client(matches, options.context()).await?;
         let machines = machine_list(&mut client).await?;
@@ -33,15 +36,21 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             .iter()
             .find(|entry| entry.machine.id == selected.id)
             .expect("selected Machine came from this list");
-        let volumes = if no_reset {
+        let confirmation = if no_reset {
             Vec::new()
         } else {
-            docker_volumes_on(
-                &selected.id,
-                &client
-                    .list_volumes(std::slice::from_ref(selected_observation))
-                    .await,
-            )
+            let observed = client
+                .data_loss_if_machine_removed(&selected_target)
+                .await?;
+            for line in data_loss_listing(&observed) {
+                eprintln!("{line}");
+            }
+            let names = if named.is_empty() && !observed.data_loss.is_empty() {
+                read_data_loss_names(&observed)?
+            } else {
+                named.clone()
+            };
+            confirm_listed_data_loss(&observed, &names)?
         };
         let services = services_on(
             &selected.id,
@@ -49,7 +58,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 .live_services_from(std::slice::from_ref(selected_observation))
                 .await?,
         );
-        for line in removal_warnings(&selected.name, &volumes, &services) {
+        for line in service_warnings(&selected.name, &services) {
             eprintln!("{line}");
         }
         helpers::confirm(
@@ -59,31 +68,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
         // TODO(UT-055): do not reroute away from the current entry before removal.
         // TODO(UT-056): there is no drain or unschedulable phase before cleanup.
-        let mut shared_rows_removed_by_entry = false;
-        if !no_reset {
-            match client
-                .call::<op::RemoveLocalMachine>(
-                    RemoveLocalMachineRequest {
-                        restart_on_cleanup_failure: selected.id != current,
-                    },
-                    Some(&selected_target),
-                )
-                .await
-            {
-                Ok(removed) => {
-                    if let Some(warning) = &removed.reset_warning {
-                        eprintln!("WARNING: target cleanup/reset failed: {warning}");
-                    } else if selected.id == current {
-                        shared_rows_removed_by_entry = true;
-                    }
-                }
-                Err(error) if error.is_unreachable() => {
-                    eprintln!("WARNING: target is unreachable; removing shared rows: {error}");
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-        if !shared_rows_removed_by_entry {
+        if no_reset {
             client
                 .call::<op::RemoveMachine>(
                     RemoveMachineRequest {
@@ -92,6 +77,14 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     None,
                 )
                 .await?;
+        } else {
+            let removed = client
+                .remove_machine(&selected_target, &confirmation)
+                .await
+                .map_err(refusal_from_rpc)?;
+            if let Some(warning) = removed.reset_warning {
+                eprintln!("WARNING: target cleanup/reset failed: {warning}");
+            }
         }
 
         // Drop the local connection before DNS refresh. A refresh failure
@@ -135,18 +128,66 @@ fn select_machine(
     }
 }
 
-#[must_use]
-fn docker_volumes_on(
-    machine_id: &MachineId,
-    listed: &PartialResult<Vec<DockerVolume>, RpcError>,
-) -> Vec<DockerVolumeName> {
-    listed
-        .successes
-        .iter()
-        .filter(|success| success.machine_id == *machine_id)
-        .flat_map(|success| success.value.iter())
-        .map(|volume| volume.id.name.clone())
+fn data_loss_listing(observed: &ObservedDataLoss) -> Vec<String> {
+    if observed.data_loss.is_empty() {
+        return Vec::new();
+    }
+    std::iter::once("Data Loss:".to_owned())
+        .chain(
+            observed
+                .data_loss
+                .iter()
+                .map(|loss| format!("  {}", loss.name())),
+        )
         .collect()
+}
+
+fn confirm_listed_data_loss(
+    observed: &ObservedDataLoss,
+    names: &[String],
+) -> Result<Vec<DataLoss>, Error> {
+    let confirmation = observed.named(names.iter().map(String::as_str))?;
+    let missing = observed.uncovered_by(&confirmation);
+    if missing.is_empty() {
+        Ok(confirmation)
+    } else {
+        Err(Error::usage(pass_data_loss_names_message(&missing)))
+    }
+}
+
+fn read_data_loss_names(observed: &ObservedDataLoss) -> Result<Vec<String>, Error> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(Error::usage(pass_data_loss_names_message(
+            &observed.data_loss,
+        )));
+    }
+    print!("Name the Data Loss to continue: ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(answer.split_whitespace().map(str::to_owned).collect())
+}
+
+fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
+    format!(
+        "Data Loss is not covered by the confirmation; pass the names as arguments: {}",
+        missing
+            .iter()
+            .map(DataLoss::name)
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
+}
+
+fn refusal_from_rpc(error: RpcError) -> Error {
+    if error.code == RpcErrorCode::InvalidArgument
+        && let Ok(unconfirmed) =
+            serde_json::from_value::<UnconfirmedDataLoss>(error.details.clone())
+        && !unconfirmed.missing.is_empty()
+    {
+        return Error::usage(pass_data_loss_names_message(&unconfirmed.missing));
+    }
+    error.into()
 }
 
 #[must_use]
@@ -164,118 +205,145 @@ fn services_on(machine_id: &MachineId, live: &LiveServices<RpcError>) -> Vec<Ser
 }
 
 #[must_use]
-fn removal_warnings(
-    machine: &MachineName,
-    volumes: &[DockerVolumeName],
-    services: &[ServiceName],
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    if !volumes.is_empty() {
-        lines.push(format!(
-            "WARNING: Docker Volumes on Machine {machine} will be destroyed: {}",
-            volumes
-                .iter()
-                .map(DockerVolumeName::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+fn service_warnings(machine: &MachineName, services: &[ServiceName]) -> Vec<String> {
+    if services.is_empty() {
+        return Vec::new();
     }
-    if !services.is_empty() {
-        lines.push(format!(
-            "WARNING: Machine {machine} is running Services: {}",
-            services
-                .iter()
-                .map(ServiceName::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    lines
+    vec![format!(
+        "WARNING: Machine {machine} is running Services: {}",
+        services
+            .iter()
+            .map(ServiceName::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )]
 }
 
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
-        DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineFailure,
-        MachineId, MachineName, MachineSuccess, PartialResult, RpcError, RpcErrorCode, ServiceId,
-        ServiceName, derive_live_services,
+        ContainerKind, ContainerObservation, ContainerRuntimeObservation, DataLoss, DockerVolumeId,
+        DockerVolumeName, HealthObservation, LiveServices, MachineId, MachineName, MachineSuccess,
+        ObservedDataLoss, PartialResult, RpcError, RpcErrorCode, ServiceId, ServiceName,
+        UnconfirmedDataLoss, derive_live_services,
     };
     use serde_json::{Value, json};
 
-    use super::{docker_volumes_on, removal_warnings, services_on};
+    use super::{
+        confirm_listed_data_loss, data_loss_listing, pass_data_loss_names_message,
+        refusal_from_rpc, service_warnings, services_on,
+    };
     use crate::connect::ConnectError;
 
     #[test]
-    fn removal_warnings_are_silent_when_nothing_is_at_stake() {
+    fn data_loss_listing_is_silent_when_nothing_would_be_destroyed() {
         assert_eq!(
-            removal_warnings(&MachineName::parse("ams1").unwrap(), &[], &[]),
+            data_loss_listing(&ObservedDataLoss {
+                data_loss: Vec::new()
+            }),
             Vec::<String>::new()
         );
     }
 
     #[test]
-    fn removal_warnings_name_docker_volumes_that_will_be_destroyed() {
+    fn data_loss_listing_names_entries_before_any_prompt() {
         assert_eq!(
-            removal_warnings(
-                &MachineName::parse("ams1").unwrap(),
-                &[
-                    DockerVolumeName::parse("ams-critical").unwrap(),
-                    DockerVolumeName::parse("data").unwrap(),
-                ],
-                &[],
-            ),
-            vec![
-                "WARNING: Docker Volumes on Machine ams1 will be destroyed: ams-critical, data"
-                    .to_owned()
-            ]
+            data_loss_listing(&ObservedDataLoss {
+                data_loss: vec![loss('a', "ams-critical"), loss('a', "data")],
+            }),
+            ["Data Loss:", "  ams-critical", "  data"]
         );
     }
 
     #[test]
-    fn removal_warnings_name_services_on_the_machine() {
+    fn confirming_listed_data_loss_resolves_display_names() {
+        let observed = ObservedDataLoss {
+            data_loss: vec![loss('a', "data"), loss('a', "logs")],
+        };
         assert_eq!(
-            removal_warnings(
+            confirm_listed_data_loss(&observed, &["logs".into(), "data".into()]).unwrap(),
+            vec![loss('a', "logs"), loss('a', "data")]
+        );
+    }
+
+    #[test]
+    fn confirming_listed_data_loss_ignores_extra_names() {
+        let observed = ObservedDataLoss {
+            data_loss: vec![loss('a', "data")],
+        };
+        assert_eq!(
+            confirm_listed_data_loss(&observed, &["data".into(), "gone".into()]).unwrap(),
+            vec![loss('a', "data")]
+        );
+    }
+
+    #[test]
+    fn refusing_without_a_confirmation_states_which_names_to_pass() {
+        let observed = ObservedDataLoss {
+            data_loss: vec![loss('a', "data"), loss('a', "logs")],
+        };
+        let error = confirm_listed_data_loss(&observed, &[]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Data Loss is not covered by the confirmation; pass the names as arguments: data logs"
+        );
+    }
+
+    #[test]
+    fn typed_names_that_match_more_than_one_listed_entry_are_refused() {
+        let observed = ObservedDataLoss {
+            data_loss: vec![loss('a', "data"), loss('b', "data")],
+        };
+        let error = confirm_listed_data_loss(&observed, &["data".into()]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Data Loss name \"data\" matches more than one listed entry"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_data_loss_needs_no_names() {
+        let observed = ObservedDataLoss {
+            data_loss: Vec::new(),
+        };
+        assert_eq!(
+            confirm_listed_data_loss(&observed, &[]).unwrap(),
+            Vec::<DataLoss>::new()
+        );
+    }
+
+    #[test]
+    fn execute_time_unconfirmed_data_loss_states_which_names_to_pass() {
+        let missing = vec![loss('a', "logs")];
+        let error = UnconfirmedDataLoss {
+            missing: missing.clone(),
+        }
+        .into_rpc_error();
+        assert_eq!(
+            refusal_from_rpc(error).to_string(),
+            pass_data_loss_names_message(&missing)
+        );
+    }
+
+    #[test]
+    fn service_warnings_are_silent_when_nothing_is_at_stake() {
+        assert_eq!(
+            service_warnings(&MachineName::parse("ams1").unwrap(), &[]),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn service_warnings_name_services_on_the_machine() {
+        assert_eq!(
+            service_warnings(
                 &MachineName::parse("ams1").unwrap(),
-                &[],
                 &[
                     ServiceName::parse("api").unwrap(),
                     ServiceName::parse("web").unwrap(),
                 ],
             ),
             vec!["WARNING: Machine ams1 is running Services: api, web".to_owned()]
-        );
-    }
-
-    #[test]
-    fn docker_volumes_on_names_volumes_observed_on_that_machine() {
-        let listed = PartialResult {
-            successes: vec![
-                MachineSuccess {
-                    machine_id: machine_id('a'),
-                    value: vec![volume('a', "data"), volume('a', "ams-critical")],
-                },
-                MachineSuccess {
-                    machine_id: machine_id('b'),
-                    value: vec![volume('b', "data")],
-                },
-            ],
-            failures: vec![MachineFailure {
-                machine_id: machine_id('c'),
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "offline".into(),
-                    details: Value::Null,
-                },
-            }],
-            omissions: vec![machine_id('d')],
-        };
-        assert_eq!(
-            docker_volumes_on(&machine_id('a'), &listed),
-            [
-                DockerVolumeName::parse("data").unwrap(),
-                DockerVolumeName::parse("ams-critical").unwrap(),
-            ]
         );
     }
 
@@ -311,16 +379,11 @@ mod tests {
         );
     }
 
-    fn volume(machine: char, name: &str) -> DockerVolume {
-        DockerVolume {
-            id: DockerVolumeId {
-                machine_id: machine_id(machine),
-                name: DockerVolumeName::parse(name).unwrap(),
-            },
-            driver: "local".into(),
-            options: Default::default(),
-            labels: Default::default(),
-        }
+    fn loss(machine: char, name: &str) -> DataLoss {
+        DataLoss::DockerVolume(DockerVolumeId {
+            machine_id: machine_id(machine),
+            name: DockerVolumeName::parse(name).unwrap(),
+        })
     }
 
     fn observation(

@@ -3,8 +3,9 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::{DockerVolumeId, RpcError, RpcErrorCode};
+use crate::{DockerVolumeId, NameMatches, RpcError, RpcErrorCode};
 
 /// One named thing an operation will destroy.
 ///
@@ -16,6 +17,16 @@ pub enum DataLoss {
     DockerVolume(DockerVolumeId),
 }
 
+impl DataLoss {
+    /// Operator-facing display name. Not the unique identity.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::DockerVolume(id) => id.name.as_str(),
+        }
+    }
+}
+
 impl fmt::Display for DataLoss {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -24,6 +35,13 @@ impl fmt::Display for DataLoss {
             }
         }
     }
+}
+
+/// A typed display name matched more than one listed Data Loss entry.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error("Data Loss name {name:?} matches more than one listed entry")]
+pub struct AmbiguousDataLossName {
+    pub name: String,
 }
 
 /// Live Observation of Data Loss. Not a complete Cluster view.
@@ -44,6 +62,40 @@ impl ObservedDataLoss {
             .filter(|loss| !confirmation.contains(loss))
             .cloned()
             .collect()
+    }
+
+    /// Resolve operator-typed display names against this observation.
+    ///
+    /// Extra names that match nothing are ignored. A name that matches more
+    /// than one listed entry is refused rather than guessed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AmbiguousDataLossName`] when a typed name matches more than
+    /// one listed entry.
+    pub fn named<'name>(
+        &self,
+        names: impl IntoIterator<Item = &'name str>,
+    ) -> Result<Vec<DataLoss>, AmbiguousDataLossName> {
+        let mut confirmed = Vec::new();
+        for name in names {
+            match NameMatches::from_matches(
+                self.data_loss
+                    .iter()
+                    .filter(|loss| loss.name() == name)
+                    .cloned()
+                    .collect(),
+            ) {
+                NameMatches::None => {}
+                NameMatches::One(loss) => confirmed.push(loss),
+                NameMatches::Ambiguous(_) => {
+                    return Err(AmbiguousDataLossName {
+                        name: name.to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(confirmed)
     }
 }
 
