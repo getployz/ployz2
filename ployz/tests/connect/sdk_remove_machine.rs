@@ -10,7 +10,7 @@ use ployz_core::{
 use tokio::time::timeout;
 
 use super::relay::{self, RelaySession};
-use super::support::{machine, native_addon, DiscoveryService};
+use super::support::{DiscoveryService, machine, native_addon};
 
 #[tokio::test]
 async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
@@ -91,9 +91,11 @@ async fn remove_machine_refuses_the_current_entry_while_another_is_visible() {
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    assert!(error
-        .message
-        .contains("the current entry Machine cannot be removed while another Machine is visible"));
+    assert!(
+        error.message.contains(
+            "the current entry Machine cannot be removed while another Machine is visible"
+        )
+    );
     assert!(service.reset_machines.lock().unwrap().is_empty());
     assert!(service.removed_machines.lock().unwrap().is_empty());
 }
@@ -148,7 +150,6 @@ async fn node_remove_machine_covers_volumes_and_unconfirmed_missing_names() {
     let url = session.url.clone();
     let entry = description.machine_id.as_str().to_owned();
     let worker_name = worker.machine.name.as_str().to_owned();
-    let worker_id = worker.machine.id.as_str().to_owned();
     let empty_name = empty.machine.name.as_str().to_owned();
 
     let output = timeout(
@@ -162,7 +163,6 @@ async fn node_remove_machine_covers_volumes_and_unconfirmed_missing_names() {
                 .env("PLOYZ_BEARER", relay::DIAL)
                 .env("PLOYZ_MACHINE_ID", entry)
                 .env("PLOYZ_WORKER_MACHINE", worker_name)
-                .env("PLOYZ_WORKER_MACHINE_ID", worker_id)
                 .env("PLOYZ_EMPTY_MACHINE", empty_name)
                 .output()
         }),

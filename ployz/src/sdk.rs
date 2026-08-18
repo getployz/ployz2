@@ -5,13 +5,13 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::connect::{connect_relay, Client, ConnectError, DialCredential};
+use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
 use crate::deploy::{DeployError, DeployIntent, DeployPreview};
 use ployz_core::{
-    op, ContractDescription, DataLoss, DeployOutcome, DescribeContractRequest, DockerVolumeName,
+    ContractDescription, DataLoss, DeployOutcome, DescribeContractRequest, DockerVolumeName,
     ExecutionError, LocalMachineRemoved, MachineId, MachineTarget, ObservedDataLoss, OpaquePayload,
-    PartialResult, RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame,
-    RuntimeWatchRequest, RUNTIME_WATCH_CAPABILITY,
+    PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest, RpcError, RpcErrorCode,
+    RuntimeWatchFrame, RuntimeWatchRequest, op,
 };
 
 /// Connected Cloud session over one Relay Attach.

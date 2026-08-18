@@ -1,27 +1,27 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use ployz_core::{
-    apply_many_targets, derive_live_services, op, ContainerAction, ContainerCreated, ContainerId,
-    ContainerKind, ContainerObservation, CreateContainerRequest, DataLoss, DescribeContractRequest,
-    DockerVolume, DockerVolumeName, FanoutOutcome, FanoutResponse, FanoutSelector,
-    GetDomainRequest, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
-    ListVolumesRequest, LiveServices, LocalMachineRemoved, MachineFailure, MachineId,
-    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
-    MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
+    ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
+    CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume, DockerVolumeName,
+    FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest, ListContainersRequest,
+    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
+    MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
     RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
     RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
-    StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss,
+    StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, apply_many_targets,
+    derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
 use tokio::task::JoinSet;
-use tonic::{codec::ProstCodec, codegen::http::uri::PathAndQuery, transport::Channel, Streaming};
+use tonic::{Streaming, codec::ProstCodec, codegen::http::uri::PathAndQuery, transport::Channel};
 
 use crate::{
     connect::{
-        apply_timeout, decode_fanout_failure, is_unary_retryable, rpc_error, stop_rpc_timeout,
-        target_request, BoxProxyStream, ConnectError, Connector, TransportError,
-        TARGET_RPC_TIMEOUT, UNARY_RETRY_DELAYS,
+        BoxProxyStream, ConnectError, Connector, TARGET_RPC_TIMEOUT, TransportError,
+        UNARY_RETRY_DELAYS, apply_timeout, decode_fanout_failure, is_unary_retryable, rpc_error,
+        stop_rpc_timeout, target_request,
     },
     context::{Connection, ConnectionSource},
     deploy::{DeploySnapshot, ObservedDockerVolume},
@@ -302,26 +302,7 @@ impl Client {
     ) -> Result<ObservedDataLoss, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let observation = visible_machine(machine, &machines)?;
-        let selected = observation.machine.id;
-        if !observation.membership.invites_rpc() {
-            return Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: format!(
-                    "Machine {selected} did not produce a Volume listing from this observer"
-                ),
-                details: Value::Null,
-            });
-        }
-        let volumes = list_volumes_on_machine(self.clone(), selected)
-            .await
-            .map_err(|failure| failure.error)?;
-        Ok(ObservedDataLoss {
-            data_loss: volumes
-                .value
-                .into_iter()
-                .map(|volume| DataLoss::DockerVolume(volume.id))
-                .collect(),
-        })
+        data_loss_on_machine(self.clone(), observation).await
     }
 
     /// Remove `machine` after a named Data Loss confirmation.
@@ -343,7 +324,8 @@ impl Client {
         confirm_data_loss: &[DataLoss],
     ) -> Result<LocalMachineRemoved, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
-        let selected = visible_machine(machine, &machines)?.machine.id;
+        let observation = visible_machine(machine, &machines)?;
+        let selected = observation.machine.id;
         let current = self
             .call::<op::DescribeContract>(DescribeContractRequest {}, None)
             .await
@@ -358,15 +340,13 @@ impl Client {
                 details: Value::Null,
             });
         }
-        let missing = self
-            .data_loss_if_machine_removed(machine)
+        let missing = data_loss_on_machine(self.clone(), observation)
             .await?
             .uncovered_by(confirm_data_loss);
         if !missing.is_empty() {
-            return Err(unconfirmed_data_loss(missing));
+            return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
         }
         let selected_target = MachineTarget::from(&selected);
-        let mut shared_rows_removed_by_entry = false;
         let reset_warning = match self
             .call::<op::RemoveLocalMachine>(
                 RemoveLocalMachineRequest {
@@ -376,18 +356,13 @@ impl Client {
             )
             .await
         {
-            Ok(removed) => {
-                if removed.reset_warning.is_none() && selected == current {
-                    shared_rows_removed_by_entry = true;
-                }
-                removed.reset_warning
-            }
+            Ok(removed) => removed.reset_warning,
             Err(error) if error.is_unreachable() => Some(format!(
                 "target is unreachable; removing shared rows: {error}"
             )),
             Err(error) => return Err(error.into()),
         };
-        if !shared_rows_removed_by_entry {
+        if reset_warning.is_some() || selected != current {
             self.call::<op::RemoveMachine>(
                 RemoveMachineRequest {
                     machine_id: selected,
@@ -743,24 +718,30 @@ fn visible_machine<'list>(
         .expect("resolved Machine came from this list"))
 }
 
-fn unconfirmed_data_loss(missing: Vec<DataLoss>) -> RpcError {
-    let message = format!(
-        "Data Loss is not covered by the confirmation: {}",
-        missing
-            .iter()
-            .map(|loss| match loss {
-                DataLoss::DockerVolume(id) => {
-                    format!("{} on {}", id.name.as_str(), id.machine_id.as_str())
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message,
-        details: serde_json::to_value(UnconfirmedDataLoss { missing }).unwrap_or(Value::Null),
+async fn data_loss_on_machine(
+    client: Client,
+    observation: &MachineObservation,
+) -> Result<ObservedDataLoss, RpcError> {
+    let selected = observation.machine.id;
+    if !observation.membership.invites_rpc() {
+        return Err(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: format!(
+                "Machine {selected} did not produce a Volume listing from this observer"
+            ),
+            details: Value::Null,
+        });
     }
+    let volumes = list_volumes_on_machine(client, selected)
+        .await
+        .map_err(|failure| failure.error)?;
+    Ok(ObservedDataLoss {
+        data_loss: volumes
+            .value
+            .into_iter()
+            .map(|volume| DataLoss::DockerVolume(volume.id))
+            .collect(),
+    })
 }
 
 async fn list_volumes_on_machine(

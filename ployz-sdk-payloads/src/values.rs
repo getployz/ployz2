@@ -8,19 +8,20 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, CapabilityName, CertificateAvailability, CertificateBackoff,
     CertificateFailureKind, CertificateObservation, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, ContractDescription, DataLoss, DeployIntent,
-    DeployOperation, DeployOutcome, DeployPreview, DeployWarning, DockerVolume, DockerVolumeId,
-    DockerVolumeName, ExecutionError, FailedOperation, HealthFailure, HealthObservation,
-    HookContainer, HookFailure, IngressHost, LocalMachineRemoved, Machine, MachineAction,
-    MachineFailure, MachineId, MachineName, MachineObservation, MachineRuntime, MachineSuccess,
-    ManagementAddress, MembershipObservation, ObservationKind, ObservedDataLoss, PartialResult,
-    PlanOptions, RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation,
-    ResolvedServiceSpec, RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
+    ContainerObservation, ContainerRuntimeObservation, ContractDescription,
+    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOperation, DeployOutcome,
+    DeployPreview, DeployWarning, DockerVolume, DockerVolumeId, DockerVolumeName, ExecutionError,
+    FailedOperation, HealthFailure, HealthObservation, HookContainer, HookFailure, IngressHost,
+    LocalMachineRemoved, Machine, MachineAction, MachineFailure, MachineId, MachineName,
+    MachineObservation, MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation,
+    ObservationKind, ObservedDataLoss, PROTOCOL_MAJOR, PartialResult, PlanOptions,
+    RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec,
+    RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
     RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId,
     ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeReference, UnconfirmedDataLoss,
-    VolumeSource, WireGuardPublicKey, DESCRIBE_CONTRACT_CAPABILITY, PROTOCOL_MAJOR,
+    VolumeSource, WireGuardPublicKey,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const MACHINE_ID_HEX: &str = "0123456789abcdef0123456789abcdef";
 const OTHER_MACHINE_ID_HEX: &str = "fedcba9876543210fedcba9876543210";

@@ -1,6 +1,9 @@
 //! Data Loss identity.
 
-use ployz_core::{DataLoss, DockerVolumeId, DockerVolumeName, MachineId, ObservedDataLoss};
+use ployz_core::{
+    DataLoss, DockerVolumeId, DockerVolumeName, MachineId, ObservedDataLoss, RpcErrorCode,
+    UnconfirmedDataLoss,
+};
 use serde_json::json;
 
 #[test]
@@ -77,6 +80,33 @@ fn uncovered_by_allows_an_empty_confirmation_when_there_is_no_data_loss() {
         data_loss: Vec::new(),
     };
     assert_eq!(observed.uncovered_by(&[]), Vec::<DataLoss>::new());
+}
+
+#[test]
+fn unconfirmed_data_loss_names_missing_identities_in_the_rpc_error() {
+    let missing = vec![volume('a', "logs")];
+    let error = UnconfirmedDataLoss {
+        missing: missing.clone(),
+    }
+    .into_rpc_error();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        error.message,
+        format!(
+            "Data Loss is not covered by the confirmation: logs on {}",
+            machine_id('a')
+        )
+    );
+    let details: UnconfirmedDataLoss = serde_json::from_value(error.details).unwrap();
+    assert_eq!(details.missing, missing);
+}
+
+#[test]
+fn docker_volume_data_loss_display_is_name_on_machine() {
+    assert_eq!(
+        volume('a', "data").to_string(),
+        format!("data on {}", machine_id('a'))
+    );
 }
 
 fn volume(machine: char, name: &str) -> DataLoss {

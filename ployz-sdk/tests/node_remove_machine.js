@@ -10,7 +10,6 @@ const relayUrl = process.env.PLOYZ_RELAY_URL;
 const bearer = process.env.PLOYZ_BEARER;
 const machineId = process.env.PLOYZ_MACHINE_ID;
 const workerMachine = process.env.PLOYZ_WORKER_MACHINE;
-const workerMachineId = process.env.PLOYZ_WORKER_MACHINE_ID;
 const emptyMachine = process.env.PLOYZ_EMPTY_MACHINE;
 
 if (
@@ -20,7 +19,6 @@ if (
   !bearer ||
   !machineId ||
   !workerMachine ||
-  !workerMachineId ||
   !emptyMachine
 ) {
   throw new Error("Node Machine removal is missing environment");

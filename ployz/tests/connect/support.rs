@@ -4,32 +4,32 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
 use ployz::{
     connect::{
-        connect_selected_with, BoxProxyStream, Client, ConnectError, Connector, SystemConnector,
+        BoxProxyStream, Client, ConnectError, Connector, SystemConnector, connect_selected_with,
     },
     context::{Connection, ConnectionSource, SelectedConnections},
 };
 use ployz_core::{
-    op, AdvertisedEndpoint, ContainerCreated, ContainerId, ContractDescription, DockerVolume,
+    AdvertisedEndpoint, ContainerCreated, ContainerId, ContractDescription, DockerVolume,
     DockerVolumeId, DockerVolumeName, LocalMachineRemoved, Machine, MachineId, MachineList,
     MachineName, MachineObservation, MachineRemoved, MachineRpc, MachineRpcServer,
-    ManagementAddress, MembershipObservation, OpaquePayload, RemoveMachineRequest, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, VolumeList,
-    VolumeRemoved, WireGuardPublicKey, PROTOCOL_MAJOR,
+    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RemoveMachineRequest,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
+    VolumeList, VolumeRemoved, WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::{
-    transport::{Channel, Server},
     Request, Response, Status, Streaming,
+    transport::{Channel, Server},
 };
 
 pub(super) async fn serve_discovery(
