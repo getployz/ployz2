@@ -389,7 +389,14 @@ fn no_eligible_shared(
                         }
                     }
                 }
-                volume_anchor(snapshot, pins, name, &requested)
+                if requested.is_empty() {
+                    volume_anchor(snapshot, pins, name, &requested)
+                } else {
+                    Some(EliminatingConstraint::SharedVolumeNoCommonMachine {
+                        volume: (*name).clone(),
+                        requested,
+                    })
+                }
             })
             .collect(),
     )
