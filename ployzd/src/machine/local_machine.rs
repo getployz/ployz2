@@ -10,17 +10,17 @@ use std::{
 use ployz_core::{
     InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase,
     LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
-    MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated, PublicIpDiscovery,
-    RegisterRequest, Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted,
-    RttObservation, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
-    synthesize_membership,
+    MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated, MembershipObservation,
+    PublicIpDiscovery, RegisterRequest, Registered, RemoveLocalMachineRequest,
+    RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics, SelectedEndpoint,
+    UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers, synthesize_membership,
 };
 use thiserror::Error;
 use tokio::sync::watch;
 
 use super::{LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
 use crate::{
-    corrosion::{AdminClient, ReplicatedStore},
+    corrosion::{AdminClient, MembershipState, ReplicatedStore},
     docker::ContainerRuntime,
     network::{
         NetworkError, allocate_machine_subnet, discover_network, inspect_wireguard_device,
@@ -41,6 +41,16 @@ pub struct LocalMachine {
 struct ClusterContext {
     replicated: ReplicatedStore,
     admin: AdminClient,
+}
+
+/// Entry-local membership, selected endpoint, and RTT overlays.
+///
+/// Each field is independent. Missing telemetry is not a delete of the replicated Machine.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RuntimeWatchTelemetry {
+    pub membership: BTreeMap<MachineId, MembershipObservation>,
+    pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+    pub rtt: BTreeMap<MachineId, RttStatistics>,
 }
 
 /// Failures from Local Machine operations. The RPC adapter maps these once.
@@ -124,10 +134,24 @@ impl LocalMachine {
             .ok_or(Error::ClusterStoreUnavailable)
     }
 
-    /// Local Corrosion admin socket used by ListMachines and inspect RTT.
-    #[must_use]
-    pub(crate) fn admin(&self) -> Option<&AdminClient> {
-        self.cluster.as_ref().map(|cluster| &cluster.admin)
+    /// Entry-local membership and RTT from the same admin source as ListMachines
+    /// and inspect RTT.
+    ///
+    /// Returns `None` when the admin socket cannot be read so Watch can keep
+    /// replicated rows.
+    pub(crate) async fn runtime_watch_telemetry(
+        &self,
+        machines: &[Machine],
+    ) -> Option<RuntimeWatchTelemetry> {
+        let cluster = self.cluster.as_ref()?;
+        let local = self.record().ok()?;
+        sample_admin_telemetry(
+            &cluster.admin,
+            machines,
+            &local.id(),
+            local.selected_endpoints,
+        )
+        .await
     }
 
     /// Live Observation of this Machine's identity, Local Machine Phase, and
@@ -361,15 +385,7 @@ impl LocalMachine {
             Some(cluster) => cluster.admin.membership_states().await?,
             None => Vec::new(),
         };
-        let states = states
-            .into_iter()
-            .filter_map(|state| match state.address.ip() {
-                IpAddr::V6(address) => {
-                    Some((ployz_core::ManagementAddress(address), state.membership))
-                }
-                IpAddr::V4(_) => None,
-            })
-            .collect();
+        let states = membership_states_by_address(states);
         let mut observations = synthesize_membership(machines, &local.id(), &states);
         for observation in &mut observations {
             observation.selected_endpoint = local
@@ -514,6 +530,85 @@ async fn machine_rtts(
         .collect())
 }
 
+/// Sample membership and RTT from the local admin socket.
+///
+/// Uses the same Corrosion admin commands as ListMachines and inspect RTT.
+/// Both reads must succeed; otherwise Watch keeps replicated rows.
+pub(crate) async fn sample_admin_telemetry(
+    admin: &AdminClient,
+    machines: &[Machine],
+    entry_id: &MachineId,
+    selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+) -> Option<RuntimeWatchTelemetry> {
+    let states = admin.membership_states().await.ok()?;
+    let rtts = admin.member_rtts().await.ok()?;
+    Some(telemetry_from_admin(
+        machines,
+        entry_id,
+        &states,
+        &rtts,
+        selected_endpoints,
+    ))
+}
+
+/// Map admin membership and RTT onto replicated Machines the way ListMachines
+/// and inspect RTT do.
+pub(crate) fn telemetry_from_admin(
+    machines: &[Machine],
+    entry_id: &MachineId,
+    states: &[MembershipState],
+    rtts: &[RttObservation],
+    selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+) -> RuntimeWatchTelemetry {
+    let states = membership_states_by_address(states.iter().cloned());
+    let membership = machines
+        .iter()
+        .map(|machine| {
+            let membership = if &machine.id == entry_id {
+                MembershipObservation::Up
+            } else {
+                states
+                    .get(&machine.management_address)
+                    .cloned()
+                    .unwrap_or(MembershipObservation::Down)
+            };
+            (machine.id, membership)
+        })
+        .collect();
+    let identities = unique_identities(
+        machines
+            .iter()
+            .map(|machine| (IpAddr::V6(machine.management_address.0), machine.id)),
+    );
+    let rtt = rtts
+        .iter()
+        .filter_map(|observation| {
+            identities
+                .get(&observation.address.ip())
+                .copied()
+                .map(|id| (id, observation.statistics.clone()))
+        })
+        .collect();
+    RuntimeWatchTelemetry {
+        membership,
+        selected_endpoints,
+        rtt,
+    }
+}
+
+fn membership_states_by_address(
+    states: impl IntoIterator<Item = MembershipState>,
+) -> BTreeMap<ployz_core::ManagementAddress, MembershipObservation> {
+    states
+        .into_iter()
+        .filter_map(|state| match state.address.ip() {
+            IpAddr::V6(address) => Some((ployz_core::ManagementAddress(address), state.membership)),
+            IpAddr::V4(_) => None,
+        })
+        .collect()
+}
+
+/// Associate one value per management address; duplicate addresses are dropped.
 pub(crate) fn unique_identities<T: Clone>(
     entries: impl IntoIterator<Item = (IpAddr, T)>,
 ) -> BTreeMap<IpAddr, T> {

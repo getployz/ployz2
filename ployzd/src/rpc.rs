@@ -447,21 +447,10 @@ impl MachineRpc for MachineService {
             .ready_replicated()
             .map_err(|error| Status::unavailable(error.message))?
             .clone();
-        let admin = self
-            .local
-            .admin()
-            .cloned()
-            .ok_or_else(|| Status::unavailable("Cluster is not available"))?;
         let entry_id = self.local_record()?.id();
-        let local = self.local.clone();
-        let stream = serve_replicated_runtime_watch(store, admin, entry_id, move || {
-            local
-                .record()
-                .map(|record| record.selected_endpoints)
-                .unwrap_or_default()
-        })
-        .await
-        .map_err(|error| Status::unavailable(error.to_string()))?;
+        let stream = serve_replicated_runtime_watch(store, self.local.clone(), entry_id)
+            .await
+            .map_err(|error| Status::unavailable(error.to_string()))?;
         Ok(Response::new(stream))
     }
 
