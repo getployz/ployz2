@@ -160,6 +160,14 @@ async fn confirm_and_execute(
     finish(stream_confirm(client, preview, format!("Deploying to {}", gate.context)).await)
 }
 
+pub(crate) async fn execute_confirmed(
+    client: &Client,
+    preview: &DeployPreview,
+    title: String,
+) -> Result<(), Failure> {
+    finish(stream_confirm(client, preview, title).await)
+}
+
 async fn stream_confirm(
     client: &Client,
     preview: &DeployPreview,
