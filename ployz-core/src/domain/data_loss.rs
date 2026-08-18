@@ -19,3 +19,24 @@ pub enum DataLoss {
 pub struct ObservedDataLoss {
     pub data_loss: Vec<DataLoss>,
 }
+
+impl ObservedDataLoss {
+    /// Data Loss in this observation that `confirmation` does not name.
+    ///
+    /// Extra names in `confirmation` are ignored: data that already went away
+    /// is not a surprise.
+    #[must_use]
+    pub fn uncovered_by(&self, confirmation: &[DataLoss]) -> Vec<DataLoss> {
+        self.data_loss
+            .iter()
+            .filter(|loss| !confirmation.contains(loss))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Data Loss a confirmation did not name. The execute-time refusal payload.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UnconfirmedDataLoss {
+    pub missing: Vec<DataLoss>,
+}

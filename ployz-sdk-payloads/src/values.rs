@@ -8,19 +8,19 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, CapabilityName, CertificateAvailability, CertificateBackoff,
     CertificateFailureKind, CertificateObservation, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, ContractDescription,
-    DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployIntent, DeployOperation, DeployOutcome,
-    DeployPreview, DeployWarning, DockerVolume, DockerVolumeId, DockerVolumeName, ExecutionError,
-    FailedOperation, HealthFailure, HealthObservation, HookContainer, HookFailure, IngressHost,
-    Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind,
-    ObservedDataLoss, PROTOCOL_MAJOR, PartialResult, PlanOptions, RemoveVolumesRequest,
-    ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec, RestartAttempt, RpcError,
-    RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, SelectedEndpoint,
-    ServiceAttempt, ServiceContainer, ServiceId, ServiceName, ServiceObservation, ServiceVolume,
-    ServiceVolumeReference, VolumeSource, WireGuardPublicKey,
+    ContainerObservation, ContainerRuntimeObservation, ContractDescription, DataLoss, DeployIntent,
+    DeployOperation, DeployOutcome, DeployPreview, DeployWarning, DockerVolume, DockerVolumeId,
+    DockerVolumeName, ExecutionError, FailedOperation, HealthFailure, HealthObservation,
+    HookContainer, HookFailure, IngressHost, LocalMachineRemoved, Machine, MachineAction,
+    MachineFailure, MachineId, MachineName, MachineObservation, MachineRuntime, MachineSuccess,
+    ManagementAddress, MembershipObservation, ObservationKind, ObservedDataLoss, PartialResult,
+    PlanOptions, RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation,
+    ResolvedServiceSpec, RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
+    RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId,
+    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeReference, UnconfirmedDataLoss,
+    VolumeSource, WireGuardPublicKey, DESCRIBE_CONTRACT_CAPABILITY, PROTOCOL_MAJOR,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const MACHINE_ID_HEX: &str = "0123456789abcdef0123456789abcdef";
 const OTHER_MACHINE_ID_HEX: &str = "fedcba9876543210fedcba9876543210";
@@ -53,6 +53,20 @@ pub fn fixtures() -> BTreeMap<String, Value> {
         "observed_data_loss_empty".into(),
         to_value(&ObservedDataLoss {
             data_loss: Vec::new(),
+        }),
+    );
+    fixtures.insert(
+        "unconfirmed_data_loss".into(),
+        to_value(&unconfirmed_data_loss()),
+    );
+    fixtures.insert(
+        "local_machine_removed".into(),
+        to_value(&LocalMachineRemoved::default()),
+    );
+    fixtures.insert(
+        "local_machine_removed_reset_warning".into(),
+        to_value(&LocalMachineRemoved {
+            reset_warning: Some("replicated delete failed".into()),
         }),
     );
     fixtures.insert(
@@ -157,6 +171,13 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ("DockerVolumeId", to_value(&docker_volume().id)),
         ("RemoveVolumesRequest", to_value(&remove_volumes_request())),
         ("ObservedDataLoss", to_value(&observed_data_loss())),
+        ("UnconfirmedDataLoss", to_value(&unconfirmed_data_loss())),
+        (
+            "LocalMachineRemoved",
+            to_value(&LocalMachineRemoved {
+                reset_warning: Some("replicated delete failed".into()),
+            }),
+        ),
         ("DeployIntent", to_value(&deploy_intent())),
         ("DeployPreview", to_value(&deploy_preview())),
         ("PlanOptions", to_value(&PlanOptions::default())),
@@ -388,6 +409,12 @@ fn data_loss() -> DataLoss {
 fn observed_data_loss() -> ObservedDataLoss {
     ObservedDataLoss {
         data_loss: vec![data_loss()],
+    }
+}
+
+fn unconfirmed_data_loss() -> UnconfirmedDataLoss {
+    UnconfirmedDataLoss {
+        missing: vec![data_loss()],
     }
 }
 
