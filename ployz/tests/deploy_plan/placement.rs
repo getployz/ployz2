@@ -608,12 +608,12 @@ fn named_volumes_split_across_machines_return_no_eligible_machines() {
         &[
             EliminatingConstraint::VolumeAnchor {
                 volume: DockerVolumeName::parse("split_a").unwrap(),
-                on: vec![MachineName::parse("first").unwrap()],
+                located_on: vec![MachineName::parse("first").unwrap()],
                 requested: Vec::new(),
             },
             EliminatingConstraint::VolumeAnchor {
                 volume: DockerVolumeName::parse("split_b").unwrap(),
-                on: vec![MachineName::parse("second").unwrap()],
+                located_on: vec![MachineName::parse("second").unwrap()],
                 requested: Vec::new(),
             },
         ],
@@ -699,7 +699,7 @@ fn volume_on_another_machine_names_the_volume_and_the_conflict() {
         ),
         &[EliminatingConstraint::VolumeAnchor {
             volume: DockerVolumeName::parse("data").unwrap(),
-            on: vec![MachineName::parse("ewr1").unwrap()],
+            located_on: vec![MachineName::parse("ewr1").unwrap()],
             requested: vec![MachineTarget::parse("ord1").unwrap()],
         }],
         &[

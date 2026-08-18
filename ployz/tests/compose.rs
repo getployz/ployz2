@@ -969,9 +969,13 @@ volumes: {data: {name: shared}}
                     PlanError::NoEligibleMachines { constraints }
                         if matches!(
                             constraints.as_slice(),
-                            [EliminatingConstraint::VolumeAnchor { volume, on, requested }]
+                            [EliminatingConstraint::VolumeAnchor {
+                                volume,
+                                located_on,
+                                requested,
+                            }]
                                 if volume.as_str() == "shared"
-                                    && on.is_empty()
+                                    && located_on.is_empty()
                                     && requested.iter().map(|target| target.as_str()).eq(["one", "two"])
                         )
                 )

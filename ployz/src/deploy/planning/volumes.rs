@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     DockerVolumeName, MachineId, MachineName, MachineObservation, MachineTarget,
-    MembershipObservation, RequestedServiceSpec, ServiceMode, ServiceVolume, ServiceVolumeGraph,
-    VolumeSource, machine_matches_target,
+    RequestedServiceSpec, ServiceMode, ServiceVolume, ServiceVolumeGraph, VolumeSource,
+    machine_matches_target,
 };
 
 use crate::deploy::{
@@ -275,7 +275,7 @@ fn volume_eligible_machine_ids(
     pins: &VolumePins,
     options: PlanOptions,
 ) -> Result<Vec<MachineId>, PlanError> {
-    let mut machines = super::eligible_machines(spec, snapshot, options);
+    let mut machines = super::eligible_machines(spec, snapshot, options)?;
     volume_constraints(spec, snapshot, pins, &mut machines)?;
     Ok(machines
         .into_iter()
@@ -331,7 +331,6 @@ fn volume_constraints<'spec>(
     pins: &VolumePins,
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
-    let had_machines = !machines.is_empty();
     let mounted_volumes = mounted_named_volumes(&spec.volume_graph)?;
     let mut missing_volumes = Vec::new();
     for volume in mounted_volumes.iter().copied() {
@@ -361,60 +360,9 @@ fn volume_constraints<'spec>(
     }
     if machines.is_empty() {
         // ponytail: name the filter that emptied the set; no per-Machine matrix.
-        if had_machines {
-            return Err(volume_anchor_error(spec, snapshot, pins, &mounted_volumes));
-        }
-        return Err(placement_error(spec, snapshot));
+        return Err(volume_anchor_error(spec, snapshot, pins, &mounted_volumes));
     }
     Ok((mounted_volumes, missing_volumes))
-}
-
-fn placement_error(spec: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> PlanError {
-    if snapshot.machines.is_empty() {
-        return PlanError::no_eligible_machines(vec![EliminatingConstraint::NoMachines]);
-    }
-    let targets = &spec.placement.machines;
-    if targets.is_empty() {
-        let names = snapshot
-            .machines
-            .iter()
-            .filter(|machine| machine.membership == MembershipObservation::Down)
-            .map(|machine| machine.machine.name.clone())
-            .collect::<Vec<_>>();
-        if names.is_empty() {
-            return PlanError::no_eligible_machines(vec![EliminatingConstraint::NoMachines]);
-        }
-        return PlanError::no_eligible_machines(vec![EliminatingConstraint::MachineDown { names }]);
-    }
-    let mut unknown = Vec::new();
-    let mut down = Vec::new();
-    for target in targets {
-        let matched = snapshot
-            .machines
-            .iter()
-            .filter(|machine| machine_matches_target(&machine.machine, target))
-            .collect::<Vec<_>>();
-        if matched.is_empty() {
-            unknown.push(target.clone());
-        } else if matched
-            .iter()
-            .all(|machine| machine.membership == MembershipObservation::Down)
-        {
-            for machine in matched {
-                if !down.contains(&machine.machine.name) {
-                    down.push(machine.machine.name.clone());
-                }
-            }
-        }
-    }
-    let mut constraints = Vec::new();
-    if !unknown.is_empty() {
-        constraints.push(EliminatingConstraint::UnknownPlacement { targets: unknown });
-    }
-    if !down.is_empty() {
-        constraints.push(EliminatingConstraint::MachineDown { names: down });
-    }
-    PlanError::no_eligible_machines(constraints)
 }
 
 fn volume_anchor_error(
@@ -424,27 +372,13 @@ fn volume_anchor_error(
     mounted: &[&ServiceVolume],
 ) -> PlanError {
     let requested = &spec.placement.machines;
-    let mut constraints = Vec::new();
-    for volume in mounted {
-        let Some(name) = named_volume_name(volume) else {
-            continue;
-        };
-        let on = machine_names(
-            snapshot,
-            pins.observations(snapshot)
-                .filter(|located| located.name == name)
-                .map(|located| located.machine_id),
-        );
-        if on.is_empty() {
-            continue;
-        }
-        constraints.push(EliminatingConstraint::VolumeAnchor {
-            volume: name.clone(),
-            requested: conflicting_targets(&on, requested),
-            on,
-        });
-    }
-    PlanError::no_eligible_machines(constraints)
+    PlanError::no_eligible_machines(
+        mounted
+            .iter()
+            .filter_map(|volume| named_volume_name(volume))
+            .filter_map(|name| volume_anchor(snapshot, pins, name, requested))
+            .collect(),
+    )
 }
 
 fn no_eligible_shared(
@@ -452,40 +386,62 @@ fn no_eligible_shared(
     snapshot: &DeploySnapshot,
     pins: &VolumePins,
 ) -> PlanError {
-    let mut constraints = Vec::new();
-    for (name, uses) in &component.volumes {
-        let on = machine_names(
-            snapshot,
-            pins.observations(snapshot)
-                .filter(|located| located.name == *name)
-                .map(|located| located.machine_id),
-        );
-        let mut requested = Vec::new();
-        for volume_use in uses.iter() {
-            for target in &volume_use.service.placement.machines {
-                if !requested.contains(target) {
-                    requested.push(target.clone());
+    PlanError::no_eligible_machines(
+        component
+            .volumes
+            .iter()
+            .filter_map(|(name, uses)| {
+                let mut requested = Vec::new();
+                for volume_use in uses.iter() {
+                    for target in &volume_use.service.placement.machines {
+                        if !requested.contains(target) {
+                            requested.push(target.clone());
+                        }
+                    }
                 }
-            }
-        }
-        let requested = conflicting_targets(&on, &requested);
-        if on.is_empty() && requested.is_empty() {
-            continue;
-        }
-        constraints.push(EliminatingConstraint::VolumeAnchor {
-            volume: (*name).clone(),
-            requested,
-            on,
-        });
-    }
-    PlanError::no_eligible_machines(constraints)
+                volume_anchor(snapshot, pins, name, &requested)
+            })
+            .collect(),
+    )
 }
 
-fn conflicting_targets(on: &[MachineName], requested: &[MachineTarget]) -> Vec<MachineTarget> {
-    if on.iter().any(|name| {
-        requested
+fn volume_anchor(
+    snapshot: &DeploySnapshot,
+    pins: &VolumePins,
+    name: &DockerVolumeName,
+    requested: &[MachineTarget],
+) -> Option<EliminatingConstraint> {
+    let located_on = machine_names(
+        snapshot,
+        pins.observations(snapshot)
+            .filter(|located| located.name == name)
+            .map(|located| located.machine_id),
+    );
+    let requested = conflicting_targets(snapshot, &located_on, requested);
+    if located_on.is_empty() && requested.is_empty() {
+        return None;
+    }
+    Some(EliminatingConstraint::VolumeAnchor {
+        volume: name.clone(),
+        requested,
+        located_on,
+    })
+}
+
+fn conflicting_targets(
+    snapshot: &DeploySnapshot,
+    located_on: &[MachineName],
+    requested: &[MachineTarget],
+) -> Vec<MachineTarget> {
+    let located = snapshot
+        .machines
+        .iter()
+        .filter(|machine| located_on.contains(&machine.machine.name))
+        .collect::<Vec<_>>();
+    if requested.iter().any(|target| {
+        located
             .iter()
-            .any(|target| target.as_str() == name.as_str())
+            .any(|machine| machine_matches_target(&machine.machine, target))
     }) {
         return Vec::new();
     }

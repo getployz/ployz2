@@ -133,15 +133,17 @@ pub enum EliminatingConstraint {
     },
     VolumeAnchor {
         volume: DockerVolumeName,
-        on: Vec<MachineName>,
+        located_on: Vec<MachineName>,
         requested: Vec<MachineTarget>,
     },
 }
 
+/// Display list of [`EliminatingConstraint`] values for [`PlanError::NoEligibleMachines`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EliminatingConstraints(Vec<EliminatingConstraint>);
 
 impl EliminatingConstraints {
+    /// Build from the constraints that emptied the remaining Machine set.
     #[must_use]
     pub fn new(constraints: Vec<EliminatingConstraint>) -> Self {
         Self(if constraints.is_empty() {
@@ -151,6 +153,7 @@ impl EliminatingConstraints {
         })
     }
 
+    /// Constraints in display order.
     #[must_use]
     pub fn as_slice(&self) -> &[EliminatingConstraint] {
         &self.0
@@ -198,26 +201,23 @@ impl fmt::Display for EliminatingConstraint {
             },
             Self::VolumeAnchor {
                 volume,
-                on,
+                located_on,
                 requested,
-            } => match (on.as_slice(), requested.as_slice()) {
-                ([], []) => write!(f, "Docker Volume '{volume}' eliminated every Machine"),
-                ([], _) => {
+            } => {
+                if located_on.is_empty() {
                     f.write_str("x-machines ")?;
                     write_quoted(f, requested)?;
                     write!(f, " have no Machine in common for Docker Volume '{volume}'")
-                }
-                (_, []) => {
+                } else if requested.is_empty() {
                     write!(f, "Docker Volume '{volume}' is already on ")?;
-                    write_machine_names(f, on)
-                }
-                (_, _) => {
+                    write_machine_names(f, located_on)
+                } else {
                     write!(f, "Docker Volume '{volume}' is already on ")?;
-                    write_machine_names(f, on)?;
+                    write_machine_names(f, located_on)?;
                     f.write_str(", which conflicts with x-machines ")?;
                     write_quoted(f, requested)
                 }
-            },
+            }
         }
     }
 }
