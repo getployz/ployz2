@@ -1,8 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
@@ -10,10 +6,9 @@ use ployz_core::{
     FanoutResponse, FanoutSelector, GetDomainRequest, ListContainersRequest, ListImagesRequest,
     ListMachinesRequest, ListVolumesRequest, LiveServices, MachineFailure, MachineId,
     MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
-    MachineTarget, MembershipObservation, OpaquePayload, PartialResult, RemoveContainerRequest,
-    RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
-    RpcResponseBody, StartContainerRequest, StopContainerRequest, apply_many_targets,
-    derive_live_services, op,
+    MachineTarget, OpaquePayload, PartialResult, RemoveContainerRequest, RemoveVolumeRequest,
+    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
+    StartContainerRequest, StopContainerRequest, apply_many_targets, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -282,13 +277,6 @@ impl Client {
         &mut self,
         request: RemoveVolumesRequest,
     ) -> Result<PartialResult<DockerVolumeName, RpcError>, RpcError> {
-        if request.volumes.is_empty() {
-            return Ok(PartialResult {
-                successes: Vec::new(),
-                failures: Vec::new(),
-                omissions: Vec::new(),
-            });
-        }
         let machines = self
             .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
@@ -552,17 +540,12 @@ async fn remove_volumes_on(
     machines: &[MachineObservation],
     request: RemoveVolumesRequest,
 ) -> PartialResult<DockerVolumeName, RpcError> {
-    let membership = machines
-        .iter()
-        .map(|machine| (machine.machine.id, machine.membership.clone()))
-        .collect::<BTreeMap<_, _>>();
     let mut removals = JoinSet::new();
     let mut omissions = Vec::new();
     for (index, volume) in request.volumes.iter().enumerate() {
-        let probe = membership
-            .get(&volume.machine_id)
-            .is_some_and(MembershipObservation::invites_rpc);
-        if !probe {
+        if !machines.iter().any(|machine| {
+            machine.machine.id == volume.machine_id && machine.membership.invites_rpc()
+        }) {
             if !omissions.contains(&volume.machine_id) {
                 omissions.push(volume.machine_id);
             }
