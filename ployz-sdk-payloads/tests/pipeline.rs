@@ -226,8 +226,12 @@ fn json_fixtures_round_trip_through_rust_types() {
     );
     assert_eq!(frame.machines.len(), 1);
     assert_eq!(frame.containers.len(), 1);
-    assert_eq!(frame.containers[0].project_name.as_str(), "app");
-    assert_eq!(frame.containers[0].service_name.as_str(), "api");
+    let container = frame
+        .containers
+        .first()
+        .expect("runtime_watch_frame fixture has one Container");
+    assert_eq!(container.project_name.as_str(), "app");
+    assert_eq!(container.service_name.as_str(), "api");
     assert_eq!(frame.services.len(), 1);
     assert_eq!(frame.certificates.len(), 2);
     assert_eq!(
