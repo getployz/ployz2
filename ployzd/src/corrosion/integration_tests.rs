@@ -309,7 +309,14 @@ async fn replicated_volumes_round_trip_incomplete_additive_and_machine_removal()
     .await
     .unwrap();
     let store = running.store().clone();
-    let mut volume_changes = store.subscribe_volume_changes().await.unwrap();
+    let mut volume_changes = store
+        .api()
+        .subscribe(Statement::new(
+            "SELECT machine_id, name, volume FROM volumes",
+            [],
+        ))
+        .await
+        .unwrap();
 
     let kept = machine("kept", 1);
     let gone = machine("gone", 2);
