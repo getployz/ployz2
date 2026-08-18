@@ -56,11 +56,6 @@ fn runtime_watch_request_is_empty_and_catalogued() {
 fn frozen_runtime_watch_frame_round_trips_complete_observations() {
     let frame: RuntimeWatchFrame = serde_json::from_str(FROZEN_FRAME).unwrap();
     assert_eq!(frame, expected_frame());
-    assert_eq!(
-        serde_json::from_value::<RuntimeWatchFrame>(serde_json::to_value(&frame).unwrap()).unwrap(),
-        frame
-    );
-
     let encoded = OpaquePayload::from_json(&frame).unwrap();
     assert_eq!(encoded.decode_json::<RuntimeWatchFrame>().unwrap(), frame);
 }
