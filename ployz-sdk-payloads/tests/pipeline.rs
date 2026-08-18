@@ -112,7 +112,6 @@ fn json_fixtures_round_trip_through_rust_types() {
     let empty: ObservedDataLoss = decode_fixture(fixture(&fixtures, "observed_data_loss_empty"));
     assert!(empty.data_loss.is_empty());
 
-
     let encoded = fixture(&fixtures, "partial_result");
     let successes = encoded
         .get("successes")

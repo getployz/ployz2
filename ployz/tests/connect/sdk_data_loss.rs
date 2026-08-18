@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, path::PathBuf, process::Command, time::Duration
 use ployz::sdk;
 use ployz_core::{
     ContractDescription, DataLoss, DockerVolume, DockerVolumeId, DockerVolumeName, MachineId,
-    MachineName, MachineObservation, RpcErrorCode,
+    MachineName, MachineObservation, MembershipObservation, RpcErrorCode,
 };
 use tokio::time::timeout;
 
@@ -84,6 +84,30 @@ async fn failed_volume_listing_is_not_empty_data_loss() {
 
     let error = client
         .data_loss_if_machine_removed("broken")
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+}
+
+#[tokio::test]
+async fn omitted_volume_listing_is_not_empty_data_loss() {
+    let description = super::sdk::advertised_description();
+    let mut down = machine('c', "gone");
+    down.membership = MembershipObservation::Down;
+    let session = RelaySession::start().await;
+    let mut service = DiscoveryService::new(description.clone());
+    service.machines = vec![down];
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    let client = timeout(
+        Duration::from_secs(5),
+        sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str()),
+    )
+    .await
+    .expect("connect must not hang")
+    .unwrap();
+
+    let error = client
+        .data_loss_if_machine_removed("gone")
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Unavailable);

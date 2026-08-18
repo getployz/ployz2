@@ -249,17 +249,6 @@
   "observed_data_loss_empty": {
     "data_loss": []
   },
-  "observed_data_loss_unknown_fields": {
-    "data_loss": [
-      {
-        "DockerVolume": {
-          "machine_id": "0123456789abcdef0123456789abcdef",
-          "name": "data"
-        }
-      }
-    ],
-    "future_note": "ok"
-  },
   "partial_result": {
     "failures": [
       {

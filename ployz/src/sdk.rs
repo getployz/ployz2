@@ -8,10 +8,10 @@ use tokio_util::sync::CancellationToken;
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
 use crate::deploy::{DeployError, DeployIntent, DeployPreview};
 use ployz_core::{
-    ContractDescription, DataLoss, DeployOutcome, DescribeContractRequest, DockerVolumeName,
-    ExecutionError, MachineId, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload,
-    PartialResult, RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest, RpcError, RpcErrorCode,
-    RuntimeWatchFrame, RuntimeWatchRequest, op,
+    ContractDescription, DeployOutcome, DescribeContractRequest, DockerVolumeName, ExecutionError,
+    MachineId, MachineTarget, ObservedDataLoss, OpaquePayload, PartialResult,
+    RUNTIME_WATCH_CAPABILITY, RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame,
+    RuntimeWatchRequest, op,
 };
 
 /// Connected Cloud session over one Relay Attach.
@@ -175,55 +175,7 @@ impl Session {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
         let mut client = self.client().await?;
-        let machines = client.machines().await.map_err(RpcError::from)?;
-        let selected = match target.resolve(machines.iter().map(|entry| &entry.machine)) {
-            NameMatches::None => {
-                return Err(RpcError {
-                    code: RpcErrorCode::NotFound,
-                    message: format!("Machine {target:?} was not found"),
-                    details: Value::Null,
-                });
-            }
-            NameMatches::Ambiguous(matches) => {
-                return Err(RpcError {
-                    code: RpcErrorCode::Ambiguous,
-                    message: format!(
-                        "Machine name {target:?} is ambiguous: {}",
-                        matches
-                            .into_iter()
-                            .map(|machine| machine.id.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                    details: Value::Null,
-                });
-            }
-            NameMatches::One(machine) => machine.id,
-        };
-        let observation = machines
-            .iter()
-            .find(|entry| entry.machine.id == selected)
-            .expect("resolved Machine came from this list");
-        let listed = client.list_volumes(std::slice::from_ref(observation)).await;
-        if let Some(success) = listed.successes.first() {
-            return Ok(ObservedDataLoss {
-                data_loss: success
-                    .value
-                    .iter()
-                    .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
-                    .collect(),
-            });
-        }
-        if let Some(failure) = listed.failures.first() {
-            return Err(failure.error.clone());
-        }
-        Err(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: format!(
-                "Machine {selected} did not produce a Volume listing from this observer"
-            ),
-            details: Value::Null,
-        })
+        client.data_loss_if_machine_removed(&target).await
     }
 
     /// Drop the Client and Relay tunnel.

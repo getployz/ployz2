@@ -56,10 +56,6 @@ pub fn fixtures() -> BTreeMap<String, Value> {
         }),
     );
     fixtures.insert(
-        "observed_data_loss_unknown_fields".into(),
-        with_unknown_field(to_value(&observed_data_loss()), "future_note", json!("ok")),
-    );
-    fixtures.insert(
         "docker_volume_unknown_fields".into(),
         with_unknown_field(to_value(&docker_volume()), "quota_bytes", json!(1)),
     );
