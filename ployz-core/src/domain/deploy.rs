@@ -55,7 +55,7 @@ pub struct DeployIntent {
     #[serde(default, skip)]
     requested_profiles: Vec<String>,
     #[serde(default, skip)]
-    compose_refusal: Option<PruneRefusal>,
+    compose_refusal: Option<ComposePruneRefusal>,
 }
 
 impl DeployIntent {
@@ -154,9 +154,9 @@ impl DeployIntent {
         self
     }
 
-    /// Compose-side reason pruning is refused, if any (`FilteredProfiles` or `GuessedProjectName`).
+    /// Compose-side reason pruning is refused, if any.
     #[must_use]
-    pub fn with_compose_refusal(mut self, compose_refusal: Option<PruneRefusal>) -> Self {
+    pub fn with_compose_refusal(mut self, compose_refusal: Option<ComposePruneRefusal>) -> Self {
         self.compose_refusal = compose_refusal;
         self
     }
@@ -187,7 +187,7 @@ impl DeployIntent {
         } else if !self.options.selected.is_empty() {
             Some(PruneRefusal::SelectedServices)
         } else {
-            self.compose_refusal
+            self.compose_refusal.map(PruneRefusal::from)
         }
     }
 }
@@ -324,6 +324,24 @@ pub struct DeployPreview {
     /// Why pruning will not run. `None` still does not remove; this command never prunes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prune_refusal: Option<PruneRefusal>,
+}
+
+/// Why a loaded Compose Project is incomplete for reconciliation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComposePruneRefusal {
+    /// Profiled Services were removed before planning.
+    FilteredProfiles,
+    /// The Project name was guessed from a directory while a non-default Compose file was named explicitly.
+    GuessedProjectName,
+}
+
+impl From<ComposePruneRefusal> for PruneRefusal {
+    fn from(reason: ComposePruneRefusal) -> Self {
+        match reason {
+            ComposePruneRefusal::FilteredProfiles => Self::FilteredProfiles,
+            ComposePruneRefusal::GuessedProjectName => Self::GuessedProjectName,
+        }
+    }
 }
 
 /// Why a full reconciliation must not remove visible drift.

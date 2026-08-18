@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use super::support::*;
 use ployz::deploy::plan_deploy;
 use ployz_core::{
-    MachineFailure, PruneRefusal, QualifiedService, RpcError, RpcErrorCode, ServiceName,
+    ComposePruneRefusal, MachineFailure, PruneRefusal, QualifiedService, RpcError, RpcErrorCode,
+    ServiceName,
 };
 
 #[test]
@@ -59,7 +60,7 @@ fn filtered_profiles_list_obsolete_services_and_remove_nothing() {
             [&web],
             PlanOptions::default(),
         )
-        .with_compose_refusal(Some(PruneRefusal::FilteredProfiles)),
+        .with_compose_refusal(Some(ComposePruneRefusal::FilteredProfiles)),
         &snapshot,
     )
     .unwrap();
@@ -80,7 +81,7 @@ fn guessed_project_name_lists_obsolete_services_and_removes_nothing() {
             [&web],
             PlanOptions::default(),
         )
-        .with_compose_refusal(Some(PruneRefusal::GuessedProjectName)),
+        .with_compose_refusal(Some(ComposePruneRefusal::GuessedProjectName)),
         &snapshot,
     )
     .unwrap();

@@ -25,15 +25,15 @@ use crate::{
 };
 
 use super::{
-    DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeploySnapshot, DeployWarning,
-    ExecutionError, ObservationKind, PlanError, PlanOptions, PruneRefusal,
+    ComposePruneRefusal, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
+    DeploySnapshot, DeployWarning, ExecutionError, ObservationKind, PlanError, PlanOptions,
     exec::execute_operations, plan_deploy,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ReconciliationHints {
     pub requested_profiles: Vec<String>,
-    pub compose_refusal: Option<PruneRefusal>,
+    pub compose_refusal: Option<ComposePruneRefusal>,
 }
 
 /// Snapshot, planning, or ingress-expansion failure before a Deploy executes.

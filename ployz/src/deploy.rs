@@ -21,9 +21,10 @@ pub(crate) use pipeline::{ReconciliationHints, plan_options};
 pub use planning::plan_deploy;
 pub use ployz_core::compare_specs;
 pub use ployz_core::{
-    DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning, ExecutionError,
-    FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind, PlanOptions,
-    PruneRefusal, ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt,
+    ComposePruneRefusal, DeployIntent, DeployOperation, DeployOutcome, DeployPreview,
+    DeployWarning, ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction,
+    ObservationKind, PlanOptions, PruneRefusal, ReplacementCompensation, ReplacementOperation,
+    RestartAttempt, ServiceAttempt,
 };
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {

@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 
 use clap::ArgMatches;
-use ployz_core::{PruneRefusal, ServiceSelector};
+use ployz_core::{ComposePruneRefusal, ServiceSelector};
 
 use crate::{
     compose::{
@@ -90,11 +90,14 @@ fn reconciliation_hints(load: &LoadOptions, resolved: &ResolvedProject) -> Recon
     }
 }
 
-fn compose_prune_refusal(load: &LoadOptions, resolved: &ResolvedProject) -> Option<PruneRefusal> {
+fn compose_prune_refusal(
+    load: &LoadOptions,
+    resolved: &ResolvedProject,
+) -> Option<ComposePruneRefusal> {
     if !load.all_profiles {
-        Some(PruneRefusal::FilteredProfiles)
+        Some(ComposePruneRefusal::FilteredProfiles)
     } else if resolved.source.is_directory_guess() && has_explicit_nondefault_compose_file(load) {
-        Some(PruneRefusal::GuessedProjectName)
+        Some(ComposePruneRefusal::GuessedProjectName)
     } else {
         None
     }
