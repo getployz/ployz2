@@ -190,6 +190,13 @@ mod tests {
             )
         );
         assert_eq!(
+            query("nearest.web.shop-staging.internal."),
+            internal(
+                Target::Identity(QualifiedService::parse("shop-staging/web").unwrap()),
+                true
+            )
+        );
+        assert_eq!(
             query(&format!("nearest.{machine}.m.api.internal.")),
             internal(
                 Target::MachineServiceName(MachineServiceNameTarget {
@@ -223,7 +230,10 @@ mod tests {
     fn rr_before_nearest_is_not_a_mode() {
         assert_eq!(
             query("rr.nearest.api.internal."),
-            internal(Target::Empty, false)
+            internal(
+                Target::Identity(QualifiedService::parse("api/nearest").unwrap()),
+                false
+            )
         );
     }
 
