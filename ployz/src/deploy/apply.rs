@@ -19,7 +19,7 @@ use super::{
     DeployOutcome, DeployPreview, ExecutionError, VolumeFate,
     pipeline::{
         PushOutcome, ReconciliationHints, list_machines, plan_options, plan_project, plan_scale,
-        plan_spec, project_not_found, push_project_images,
+        plan_spec, push_project_images,
     },
     render,
 };
@@ -170,15 +170,11 @@ pub(crate) async fn remove_project(
     context: &str,
     confirm_data_loss: &[DataLoss],
 ) -> Result<(), Failure> {
-    let preview = client.preview_project_removal(name, volumes).await?;
+    let preview = client
+        .prepare_project_destroy(name, confirm_data_loss, volumes)
+        .await
+        .map_err(crate::failure::refusal_from_rpc)?;
     print_warnings(&preview);
-    if let Some(reason) = preview.prune_refusal {
-        print!("{}", render::removal_plan_text(&preview, context));
-        return Err(Failure::usage(reason.to_string()));
-    }
-    if project_not_found(&preview) {
-        return Err(Failure::usage(format!("Project '{name}' was not found")));
-    }
     print!("{}", render::removal_plan_text(&preview, context));
     if preview.noop() {
         return Ok(());
@@ -187,10 +183,6 @@ pub(crate) async fn remove_project(
         println!("No changes were made.");
         return Ok(());
     }
-    let preview = client
-        .prepare_project_destroy(name, confirm_data_loss, volumes)
-        .await
-        .map_err(crate::failure::refusal_from_rpc)?;
     finish(
         stream_confirm(
             client,
@@ -323,6 +315,7 @@ fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), Failure> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::pipeline::project_not_found;
     use super::*;
     use crate::deploy::DeployWarning;
     use crate::dns::ingress_dns_warnings;

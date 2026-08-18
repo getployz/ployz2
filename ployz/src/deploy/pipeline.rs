@@ -28,7 +28,7 @@ use crate::{
 use super::{
     ComposePruneRefusal, DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview,
     DeploySnapshot, DeployWarning, ExecutionError, ObservationKind, PlanError, PlanOptions,
-    PruneRefusal, exec::execute_operation_sequence, pending_rows, planning,
+    exec::execute_operation_sequence, pending_rows, planning,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -83,9 +83,8 @@ impl Client {
         project: &ProjectName,
         volumes: super::VolumeFate,
     ) -> Result<DeployPreview, DeployError> {
-        let (snapshot, warnings) = self.project_removal_snapshot(project).await?;
-        let plan = planning::plan_project_removal(project, &snapshot, volumes)?;
-        Ok(removal_preview(project, &snapshot, warnings, plan))
+        let removal = self.plan_project_destroy(project, volumes).await?;
+        Ok(removal.preview(project))
     }
 
     /// Live Observation of Data Loss that destroying `project` would cause.
@@ -102,8 +101,8 @@ impl Client {
         project: &ProjectName,
         volumes: super::VolumeFate,
     ) -> Result<ObservedDataLoss, RpcError> {
-        let (snapshot, _) = self.project_removal_snapshot(project).await?;
-        project_data_loss(project, &snapshot, volumes)
+        let removal = self.plan_project_destroy(project, volumes).await?;
+        observed_destroy_loss(&removal.plan, volumes)
     }
 
     /// Re-read Data Loss, refuse when uncovered, then plan and execute removal.
@@ -144,15 +143,13 @@ impl Client {
         confirm_data_loss: &[DataLoss],
         volumes: super::VolumeFate,
     ) -> Result<DeployPreview, RpcError> {
-        let (snapshot, warnings) = self.project_removal_snapshot(project).await?;
+        let removal = self.plan_project_destroy(project, volumes).await?;
         let missing =
-            project_data_loss(project, &snapshot, volumes)?.uncovered_by(confirm_data_loss);
+            observed_destroy_loss(&removal.plan, volumes)?.uncovered_by(confirm_data_loss);
         if !missing.is_empty() {
             return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
         }
-        let plan = planning::plan_project_removal(project, &snapshot, volumes)
-            .map_err(DeployError::from)?;
-        let preview = removal_preview(project, &snapshot, warnings, plan);
+        let preview = removal.preview(project);
         if let Some(reason) = preview.prune_refusal {
             return Err(invalid_argument(reason.to_string()));
         }
@@ -166,13 +163,20 @@ impl Client {
         Ok(preview)
     }
 
-    async fn project_removal_snapshot(
+    async fn plan_project_destroy(
         &mut self,
         project: &ProjectName,
-    ) -> Result<(DeploySnapshot, Vec<DeployWarning>), DeployError> {
+        volumes: super::VolumeFate,
+    ) -> Result<ProjectRemoval, DeployError> {
         crate::project::refuse_reserved(project)?;
         let machines = self.machines().await?;
-        gather_snapshot(self, machines).await
+        let (snapshot, warnings) = gather_snapshot(self, machines).await?;
+        let plan = planning::plan_project_removal(project, &snapshot, volumes)?;
+        Ok(ProjectRemoval {
+            snapshot,
+            warnings,
+            plan,
+        })
     }
 
     /// Execute the operations on this Deploy Preview. Does not re-plan.
@@ -213,35 +217,35 @@ impl Client {
     }
 }
 
-fn project_data_loss(
-    project: &ProjectName,
-    snapshot: &DeploySnapshot,
-    volumes: super::VolumeFate,
-) -> Result<ObservedDataLoss, RpcError> {
-    if volumes == super::VolumeFate::Destroy && !snapshot.is_observer_complete() {
-        return Err(invalid_argument(
-            PruneRefusal::IncompleteSnapshot.to_string(),
-        ));
-    }
-    Ok(planning::data_loss_for_project_removal(
-        project, snapshot, volumes,
-    ))
-}
-
-fn removal_preview(
-    project: &ProjectName,
-    snapshot: &DeploySnapshot,
+struct ProjectRemoval {
+    snapshot: DeploySnapshot,
     warnings: Vec<DeployWarning>,
     plan: DeployPlan,
-) -> DeployPreview {
-    DeployPreview {
-        project_name: project.clone(),
-        operations: pending_rows(&plan.operations, snapshot),
-        warnings,
-        would_remove: plan.would_remove,
-        preserved_volumes: plan.preserved_volumes,
-        prune_refusal: plan.prune_refusal,
+}
+
+impl ProjectRemoval {
+    fn preview(self, project: &ProjectName) -> DeployPreview {
+        DeployPreview {
+            project_name: project.clone(),
+            operations: pending_rows(&self.plan.operations, &self.snapshot),
+            warnings: self.warnings,
+            would_remove: self.plan.would_remove,
+            preserved_volumes: self.plan.preserved_volumes,
+            prune_refusal: self.plan.prune_refusal,
+        }
     }
+}
+
+fn observed_destroy_loss(
+    plan: &DeployPlan,
+    volumes: super::VolumeFate,
+) -> Result<ObservedDataLoss, RpcError> {
+    if volumes == super::VolumeFate::Destroy
+        && let Some(reason) = plan.prune_refusal
+    {
+        return Err(invalid_argument(reason.to_string()));
+    }
+    Ok(planning::data_loss_from_plan(plan))
 }
 
 pub(crate) fn project_not_found(preview: &DeployPreview) -> bool {

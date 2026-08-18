@@ -61,7 +61,7 @@ pub fn plan_project_removal(
 /// Data Loss that destroying `project` would cause for `volumes`.
 ///
 /// [`VolumeFate::Preserve`] is empty: keeping managed volumes is not Data Loss.
-/// [`VolumeFate::Destroy`] names each observer-visible owned Docker Volume.
+/// [`VolumeFate::Destroy`] names each `RemoveVolume` the removal plan would run.
 /// Completeness is the caller's check; this listing is not a Cluster view.
 #[must_use]
 pub fn data_loss_for_project_removal(
@@ -69,20 +69,29 @@ pub fn data_loss_for_project_removal(
     snapshot: &DeploySnapshot,
     volumes: VolumeFate,
 ) -> ObservedDataLoss {
-    match volumes {
-        VolumeFate::Preserve => ObservedDataLoss {
+    let Ok(plan) = plan_project_removal(project, snapshot, volumes) else {
+        return ObservedDataLoss {
             data_loss: Vec::new(),
-        },
-        VolumeFate::Destroy => {
-            let intent = DeployIntent::apply_all(project.clone(), [], PlanOptions::default());
-            ObservedDataLoss {
-                data_loss: preserved_owned_volumes(&intent, snapshot)
-                    .into_iter()
-                    .map(|volume| DataLoss::DockerVolume(volume.id))
-                    .collect(),
-            }
-        }
+        };
+    };
+    data_loss_from_plan(&plan)
+}
+
+pub(crate) fn data_loss_from_plan(plan: &DeployPlan) -> ObservedDataLoss {
+    ObservedDataLoss {
+        data_loss: plan
+            .operations
+            .iter()
+            .filter_map(remove_volume_loss)
+            .collect(),
     }
+}
+
+fn remove_volume_loss(operation: &DeployOperation) -> Option<DataLoss> {
+    let DeployOperation::RemoveVolume { id } = operation else {
+        return None;
+    };
+    Some(DataLoss::DockerVolume(id.clone()))
 }
 
 /// Plan operations for the Services this Deploy applies from the target.
