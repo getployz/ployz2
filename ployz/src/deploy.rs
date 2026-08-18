@@ -131,9 +131,17 @@ pub enum EliminatingConstraint {
     MachineDown {
         names: Vec<MachineName>,
     },
-    VolumeAnchor {
+    VolumeAlreadyOn {
         volume: DockerVolumeName,
         located_on: Vec<MachineName>,
+    },
+    VolumeConflictsWithPlacement {
+        volume: DockerVolumeName,
+        located_on: Vec<MachineName>,
+        requested: Vec<MachineTarget>,
+    },
+    SharedVolumeNoCommonMachine {
+        volume: DockerVolumeName,
         requested: Vec<MachineTarget>,
     },
 }
@@ -191,32 +199,32 @@ impl fmt::Display for EliminatingConstraint {
                 write_quoted(f, targets)?;
                 f.write_str(" matched no Machine")
             }
-            Self::MachineDown { names } => match names.as_slice() {
-                [name] => write!(f, "Machine '{name}' is down"),
-                _ => {
-                    f.write_str("Machines ")?;
-                    write_quoted(f, names)?;
+            Self::MachineDown { names } => {
+                write_machine_names(f, names)?;
+                if names.len() == 1 {
+                    f.write_str(" is down")
+                } else {
                     f.write_str(" are down")
                 }
-            },
-            Self::VolumeAnchor {
+            }
+            Self::VolumeAlreadyOn { volume, located_on } => {
+                write!(f, "Docker Volume '{volume}' is already on ")?;
+                write_machine_names(f, located_on)
+            }
+            Self::VolumeConflictsWithPlacement {
                 volume,
                 located_on,
                 requested,
             } => {
-                if located_on.is_empty() {
-                    f.write_str("x-machines ")?;
-                    write_quoted(f, requested)?;
-                    write!(f, " have no Machine in common for Docker Volume '{volume}'")
-                } else if requested.is_empty() {
-                    write!(f, "Docker Volume '{volume}' is already on ")?;
-                    write_machine_names(f, located_on)
-                } else {
-                    write!(f, "Docker Volume '{volume}' is already on ")?;
-                    write_machine_names(f, located_on)?;
-                    f.write_str(", which conflicts with x-machines ")?;
-                    write_quoted(f, requested)
-                }
+                write!(f, "Docker Volume '{volume}' is already on ")?;
+                write_machine_names(f, located_on)?;
+                f.write_str(", which conflicts with x-machines ")?;
+                write_quoted(f, requested)
+            }
+            Self::SharedVolumeNoCommonMachine { volume, requested } => {
+                f.write_str("x-machines ")?;
+                write_quoted(f, requested)?;
+                write!(f, " have no Machine in common for Docker Volume '{volume}'")
             }
         }
     }

@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeName, MachineId, MachineName, MachineObservation, MachineTarget,
-    RequestedServiceSpec, ServiceMode, ServiceVolume, ServiceVolumeGraph, VolumeSource,
-    machine_matches_target,
+    DockerVolumeName, MachineId, MachineObservation, MachineTarget, RequestedServiceSpec,
+    ServiceMode, ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target,
 };
 
 use crate::deploy::{
@@ -360,25 +359,16 @@ fn volume_constraints<'spec>(
     }
     if machines.is_empty() {
         // ponytail: name the filter that emptied the set; no per-Machine matrix.
-        return Err(volume_anchor_error(spec, snapshot, pins, &mounted_volumes));
+        let requested = &spec.placement.machines;
+        return Err(PlanError::no_eligible_machines(
+            mounted_volumes
+                .iter()
+                .filter_map(|volume| named_volume_name(volume))
+                .filter_map(|name| volume_anchor(snapshot, pins, name, requested))
+                .collect(),
+        ));
     }
     Ok((mounted_volumes, missing_volumes))
-}
-
-fn volume_anchor_error(
-    spec: &RequestedServiceSpec,
-    snapshot: &DeploySnapshot,
-    pins: &VolumePins,
-    mounted: &[&ServiceVolume],
-) -> PlanError {
-    let requested = &spec.placement.machines;
-    PlanError::no_eligible_machines(
-        mounted
-            .iter()
-            .filter_map(|volume| named_volume_name(volume))
-            .filter_map(|name| volume_anchor(snapshot, pins, name, requested))
-            .collect(),
-    )
 }
 
 fn no_eligible_shared(
@@ -411,62 +401,50 @@ fn volume_anchor(
     name: &DockerVolumeName,
     requested: &[MachineTarget],
 ) -> Option<EliminatingConstraint> {
-    let located_on = machine_names(
-        snapshot,
-        pins.observations(snapshot)
-            .filter(|located| located.name == name)
-            .map(|located| located.machine_id),
-    );
-    let requested = conflicting_targets(snapshot, &located_on, requested);
-    if located_on.is_empty() && requested.is_empty() {
-        return None;
-    }
-    Some(EliminatingConstraint::VolumeAnchor {
-        volume: name.clone(),
-        requested,
-        located_on,
-    })
-}
-
-fn conflicting_targets(
-    snapshot: &DeploySnapshot,
-    located_on: &[MachineName],
-    requested: &[MachineTarget],
-) -> Vec<MachineTarget> {
-    let located = snapshot
-        .machines
-        .iter()
-        .filter(|machine| located_on.contains(&machine.machine.name))
-        .collect::<Vec<_>>();
-    if requested.iter().any(|target| {
-        located
-            .iter()
-            .any(|machine| machine_matches_target(&machine.machine, target))
-    }) {
-        return Vec::new();
-    }
-    requested.to_vec()
-}
-
-fn machine_names(
-    snapshot: &DeploySnapshot,
-    ids: impl Iterator<Item = MachineId>,
-) -> Vec<MachineName> {
-    let mut names = Vec::new();
-    for id in ids {
-        let Some(name) = snapshot
+    let mut located_on = Vec::new();
+    for located in pins
+        .observations(snapshot)
+        .filter(|located| located.name == name)
+    {
+        let Some(machine_name) = snapshot
             .machines
             .iter()
-            .find(|machine| machine.machine.id == id)
+            .find(|machine| machine.machine.id == located.machine_id)
             .map(|machine| machine.machine.name.clone())
         else {
             continue;
         };
-        if !names.contains(&name) {
-            names.push(name);
+        if !located_on.contains(&machine_name) {
+            located_on.push(machine_name);
         }
     }
-    names
+    let hits_located = requested.iter().any(|target| {
+        snapshot.machines.iter().any(|machine| {
+            located_on.contains(&machine.machine.name)
+                && machine_matches_target(&machine.machine, target)
+        })
+    });
+    if located_on.is_empty() {
+        if requested.is_empty() {
+            None
+        } else {
+            Some(EliminatingConstraint::SharedVolumeNoCommonMachine {
+                volume: name.clone(),
+                requested: requested.to_vec(),
+            })
+        }
+    } else if requested.is_empty() || hits_located {
+        Some(EliminatingConstraint::VolumeAlreadyOn {
+            volume: name.clone(),
+            located_on,
+        })
+    } else {
+        Some(EliminatingConstraint::VolumeConflictsWithPlacement {
+            volume: name.clone(),
+            located_on,
+            requested: requested.to_vec(),
+        })
+    }
 }
 
 fn named_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {

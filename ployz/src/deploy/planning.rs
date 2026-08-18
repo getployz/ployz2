@@ -262,9 +262,6 @@ fn placement_error(spec: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> Pl
             .filter(|machine| machine.membership == MembershipObservation::Down)
             .map(|machine| machine.machine.name.clone())
             .collect::<Vec<_>>();
-        if names.is_empty() {
-            return PlanError::no_eligible_machines(vec![EliminatingConstraint::NoMachines]);
-        }
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::MachineDown { names }]);
     }
     let mut unknown = Vec::new();

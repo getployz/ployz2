@@ -606,15 +606,13 @@ fn named_volumes_split_across_machines_return_no_eligible_machines() {
     assert_no_eligible(
         plan_deploy([&requested], &snapshot, PlanOptions::default()),
         &[
-            EliminatingConstraint::VolumeAnchor {
+            EliminatingConstraint::VolumeAlreadyOn {
                 volume: DockerVolumeName::parse("split_a").unwrap(),
                 located_on: vec![MachineName::parse("first").unwrap()],
-                requested: Vec::new(),
             },
-            EliminatingConstraint::VolumeAnchor {
+            EliminatingConstraint::VolumeAlreadyOn {
                 volume: DockerVolumeName::parse("split_b").unwrap(),
                 located_on: vec![MachineName::parse("second").unwrap()],
-                requested: Vec::new(),
             },
         ],
         &[
@@ -697,7 +695,7 @@ fn volume_on_another_machine_names_the_volume_and_the_conflict() {
             },
             PlanOptions::default(),
         ),
-        &[EliminatingConstraint::VolumeAnchor {
+        &[EliminatingConstraint::VolumeConflictsWithPlacement {
             volume: DockerVolumeName::parse("data").unwrap(),
             located_on: vec![MachineName::parse("ewr1").unwrap()],
             requested: vec![MachineTarget::parse("ord1").unwrap()],
