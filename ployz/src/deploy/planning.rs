@@ -38,9 +38,15 @@ pub fn plan_deploy(
     snapshot: &DeploySnapshot,
 ) -> Result<DeployPlan, PlanError> {
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
-    let requested = specs_to_plan(intent)?
-        .into_iter()
+    let mut intent = intent.clone();
+    intent.target = intent
+        .target
+        .iter()
         .map(|spec| scope_requested(normalize(spec), &intent.project_name))
+        .collect();
+    let requested = specs_to_plan(&intent)?
+        .into_iter()
+        .cloned()
         .collect::<Vec<_>>();
     let options = &intent.options;
     let volume_uses = named_volume_uses(&requested);
@@ -67,9 +73,9 @@ pub fn plan_deploy(
     }
     let mut operations = pins.into_creates();
     operations.extend(service_operations);
-    let would_remove = obsolete_services(intent, &services);
+    let would_remove = obsolete_services(&intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
-    let preserved_volumes = preserved_owned_volumes(intent, snapshot);
+    let preserved_volumes = preserved_owned_volumes(&intent, snapshot);
     Ok(DeployPlan {
         operations,
         would_remove,

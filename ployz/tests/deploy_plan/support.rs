@@ -187,17 +187,7 @@ pub(super) fn scoped_spec(spec: &RequestedServiceSpec) -> RequestedServiceSpec {
     let mut volumes = spec.volume_graph.volumes().to_vec();
     let mounts = spec.volume_graph.mounts().to_vec();
     for volume in &mut volumes {
-        if let VolumeSource::Named {
-            name,
-            external: false,
-            labels,
-            ..
-        } = &mut volume.source
-        {
-            *name = project.volume_name(name);
-            labels.insert(MANAGED_LABEL.into(), String::new());
-            labels.insert(PROJECT_NAME_LABEL.into(), project.to_string());
-        }
+        volume.source.scope_to_project(&project);
     }
     spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
     spec

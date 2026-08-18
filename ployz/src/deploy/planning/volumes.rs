@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeName, MANAGED_LABEL, MachineId, MachineObservation, MachineTarget,
-    PROJECT_NAME_LABEL, PreservedVolume, ProjectName, RequestedServiceSpec, ServiceMode,
-    ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target,
+    DockerVolumeName, MachineId, MachineObservation, MachineTarget, PROJECT_NAME_LABEL,
+    PreservedVolume, ProjectName, RequestedServiceSpec, ServiceMode, ServiceVolume,
+    ServiceVolumeGraph, VolumeSource, machine_matches_target,
 };
 
 use crate::deploy::{
@@ -81,34 +81,11 @@ pub(super) fn scope_requested(
     let mut volumes = spec.volume_graph.volumes().to_vec();
     let mounts = spec.volume_graph.mounts().to_vec();
     for volume in &mut volumes {
-        scope_named_volume(&mut volume.source, project);
+        volume.source.scope_to_project(project);
     }
     spec.volume_graph = ServiceVolumeGraph::parse(volumes, mounts)
         .expect("scoping Docker Volume names does not change Service Volume References");
     spec
-}
-
-fn scope_named_volume(source: &mut VolumeSource, project: &ProjectName) {
-    let VolumeSource::Named {
-        name,
-        external,
-        labels,
-        ..
-    } = source
-    else {
-        return;
-    };
-    if *external || owned_by_project(labels, project) {
-        return;
-    }
-    *name = project.volume_name(name);
-    labels.insert(MANAGED_LABEL.into(), String::new());
-    labels.insert(PROJECT_NAME_LABEL.into(), project.to_string());
-}
-
-fn owned_by_project(labels: &BTreeMap<String, String>, project: &ProjectName) -> bool {
-    // Scale rebuilds the Intent from an already-scoped Resolved Service Spec.
-    labels.get(PROJECT_NAME_LABEL).map(String::as_str) == Some(project.as_str())
 }
 
 /// Owned Compose-declared Docker Volumes omitted from this Deploy's target.
@@ -151,28 +128,17 @@ fn declared_physical_names(intent: &DeployIntent) -> BTreeSet<DockerVolumeName> 
         .target
         .iter()
         .flat_map(|spec| spec.volume_graph.volumes())
-        .filter_map(|volume| owned_physical_name(&volume.source, &intent.project_name))
+        .filter_map(|volume| match &volume.source {
+            VolumeSource::Named {
+                name,
+                external: false,
+                ..
+            } => Some(name.clone()),
+            VolumeSource::Named { external: true, .. }
+            | VolumeSource::Bind { .. }
+            | VolumeSource::Tmpfs { .. } => None,
+        })
         .collect()
-}
-
-fn owned_physical_name(source: &VolumeSource, project: &ProjectName) -> Option<DockerVolumeName> {
-    let VolumeSource::Named {
-        name,
-        external,
-        labels,
-        ..
-    } = source
-    else {
-        return None;
-    };
-    if *external {
-        return None;
-    }
-    if owned_by_project(labels, project) {
-        Some(name.clone())
-    } else {
-        Some(project.volume_name(name))
-    }
 }
 
 static EMPTY_VOLUME_OPTIONS: BTreeMap<String, String> = BTreeMap::new();
