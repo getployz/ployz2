@@ -39,7 +39,6 @@ enum Shape {
     InternallyTagged {
         tag: &'static str,
         variants: &'static [(&'static str, &'static [(&'static str, &'static str)])],
-        unknown: bool,
     },
 }
 
@@ -165,7 +164,6 @@ const PAYLOADS: &[(&str, Shape)] = &[
                 ("removing", &[]),
                 ("dead", &[]),
             ],
-            unknown: true,
         },
     ),
     (
@@ -534,11 +532,7 @@ fn emit_shape(name: &str, shape: &Shape) -> String {
         Shape::ExternallyTagged { params, variants } => {
             emit_externally_tagged(name, params, variants)
         }
-        Shape::InternallyTagged {
-            tag,
-            variants,
-            unknown,
-        } => emit_internally_tagged(name, tag, variants, *unknown),
+        Shape::InternallyTagged { tag, variants } => emit_internally_tagged(name, tag, variants),
     }
 }
 
@@ -594,12 +588,7 @@ fn emit_externally_tagged(name: &str, params: &str, variants: &[(&str, Option<&s
     body
 }
 
-fn emit_internally_tagged(
-    name: &str,
-    tag: &str,
-    variants: &[(&str, &[(&str, &str)])],
-    unknown: bool,
-) -> String {
+fn emit_internally_tagged(name: &str, tag: &str, variants: &[(&str, &[(&str, &str)])]) -> String {
     let mut arms = Vec::new();
     for (tag_value, fields) in variants {
         let mut members = vec![format!("{tag}: \"{tag_value}\"")];
@@ -608,9 +597,7 @@ fn emit_internally_tagged(
         }
         arms.push(format!("Additive<{{ {} }}>", members.join("; ")));
     }
-    if unknown {
-        arms.push(format!("Additive<{{ {tag}?: string }}>"));
-    }
+    arms.push(format!("Additive<{{ {tag}?: string }}>"));
     format!("export type {name} =\n  | {};\n", arms.join("\n  | "))
 }
 
