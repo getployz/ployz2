@@ -241,7 +241,7 @@ impl ReplicatedStore {
         decode_json_document(text(info, "machine info")?)
     }
 
-    pub async fn machines(&self) -> Result<ReplicatedObservations<Machine>, Error> {
+    pub async fn machines(&self) -> Result<ReplicatedObservations<Machine, MachineId>, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -249,7 +249,9 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        decode_observations(id_and_json(query.rows(["id", "info"])?)?)
+        decode_observations(id_and_json(query.rows(["id", "info"])?, |id| {
+            Ok(MachineId::parse(id)?)
+        })?)
     }
 
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {
@@ -314,7 +316,9 @@ impl ReplicatedStore {
         Ok(snapshot)
     }
 
-    pub async fn containers(&self) -> Result<ReplicatedObservations<ContainerObservation>, Error> {
+    pub async fn containers(
+        &self,
+    ) -> Result<ReplicatedObservations<ContainerObservation, ContainerId>, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -322,7 +326,9 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        decode_observations(id_and_json(query.rows(["id", "container"])?)?)
+        decode_observations(id_and_json(query.rows(["id", "container"])?, |id| {
+            Ok(ContainerId::parse(id)?)
+        })?)
     }
 
     pub(crate) async fn subscribe_container_changes(&self) -> Result<Subscription, Error> {
@@ -612,7 +618,7 @@ fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Err
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct ReplicatedObservations<T, Id = String> {
+pub struct ReplicatedObservations<T, Id> {
     pub observations: Vec<T>,
     pub incomplete_ids: Vec<Id>,
 }
@@ -747,11 +753,14 @@ fn decode_json_document<T: DeserializeOwned>(encoded: &str) -> Result<Option<T>,
     }
 }
 
-fn id_and_json(rows: Vec<[Value; 2]>) -> Result<Vec<(String, String)>, Error> {
+fn id_and_json<Id>(
+    rows: Vec<[Value; 2]>,
+    parse_id: impl Fn(&str) -> Result<Id, Error>,
+) -> Result<Vec<(Id, String)>, Error> {
     rows.into_iter()
         .map(|[id, encoded]| {
             Ok((
-                text(&id, "row ID")?.to_owned(),
+                parse_id(text(&id, "row ID")?)?,
                 text(&encoded, "replicated JSON")?.to_owned(),
             ))
         })

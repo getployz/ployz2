@@ -8,9 +8,9 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    IngressHost, LocalMachinePhase, Machine, MachineId, MachineName, ManagementAddress,
-    WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId,
+    DockerVolumeName, IngressHost, LocalMachinePhase, Machine, MachineId, MachineName,
+    ManagementAddress, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -81,7 +81,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
         .publish_container(&duplicate_service_name)
         .await
         .unwrap();
-    let incomplete_id = format!("{:0<64}", "incomplete");
+    let incomplete_id = ContainerId::parse("a".repeat(64)).unwrap();
     running
         .store()
         .api()
