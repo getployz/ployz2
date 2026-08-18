@@ -422,8 +422,10 @@ fn failed_desired_change_leaves_prune_in_the_unexecuted_suffix() {
         ops.iter().skip(1).any(|operation| {
             matches!(
                 operation,
-                DeployOperation::RemoveContainer { container_id, .. }
-                    if *container_id == container_id('d')
+                DeployOperation::RemoveContainer {
+                    container_id: removed,
+                    ..
+                } if *removed == container_id('d')
             )
         }),
         "prune is after desired work: {ops:?}"
