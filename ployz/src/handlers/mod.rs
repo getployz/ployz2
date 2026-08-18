@@ -69,11 +69,6 @@ fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
     matches
 }
 
-fn refuse_explicit_project(root: &ArgMatches) -> Result<(), Error> {
-    let _ = crate::project::resolve_explicit(leaf_matches(root))?;
-    Ok(())
-}
-
 fn version_text(output: Option<&str>, version: &str) -> Result<String, Error> {
     let Some(template) = output else {
         return Ok(version.to_owned());
@@ -244,20 +239,14 @@ stub_handlers! {
     machine_update(root) { machine::update(root) } => "machine update";
     proxy(root) { operator::proxy(root) } => "proxy";
     process_list(root) { service::processes(root) } => "ps";
-    remove(root) {
-        refuse_explicit_project(root)?;
-        service::change(root, ployz_core::ContainerAction::Remove)
-    } => "rm";
+    remove(root) { service::remove(root) } => "rm";
     run_service(root) { deploy::run(root) } => "run";
     scale(root) { deploy::scale(root) } => "scale";
     service_exec(root) { operator::exec(root) } => "service exec";
     service_inspect(root) { service::inspect(root) } => "service inspect";
     service_logs(root) { operator::service_logs(root) } => "service logs";
     service_list(root) { service::list(root) } => "service ls";
-    service_remove(root) {
-        refuse_explicit_project(root)?;
-        service::change(root, ployz_core::ContainerAction::Remove)
-    } => "service rm";
+    service_remove(root) { service::remove(root) } => "service rm";
     service_run(root) { deploy::run(root) } => "service run";
     service_scale(root) { deploy::scale(root) } => "service scale";
     service_start(root) { service::change(root, ployz_core::ContainerAction::Start) } => "service start";

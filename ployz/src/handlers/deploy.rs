@@ -9,7 +9,10 @@ use crate::{
         execute_build, load_project, plan_build,
     },
     deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec, plan_options},
-    project::{resolve_explicit, resolve_for_deploy, resolve_for_run, resolve_for_scale},
+    project::{
+        ProjectNameInput, compose_directory, resolve_compose_command, resolve_explicit,
+        resolve_from_matches, top_level_compose_name,
+    },
 };
 
 use super::{Error, connect_client, leaf_matches, required, runtime, string_values};
@@ -17,7 +20,13 @@ use super::{Error, connect_client, leaf_matches, required, runtime, string_value
 pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let requested = run_spec(matches)?;
-    let project = resolve_for_run(matches)?;
+    let project = resolve_from_matches(
+        matches,
+        ProjectNameInput {
+            implicit_default: true,
+            ..ProjectNameInput::default()
+        },
+    )?;
     let context = matches.get_one::<String>("context").map(String::as_str);
     let force_recreate = matches.get_flag("recreate");
     let skip_health_monitor = matches.get_flag("skip-health");
@@ -36,9 +45,20 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let _ = resolve_explicit(matches)?;
+    let explicit = resolve_explicit(matches)?;
     let (mut project, builds, apply, load) = prepare_deploy(matches)?;
-    let resolved = resolve_for_deploy(matches, &project.working_dir, &compose_input_files(&load))?;
+    let resolved = match explicit {
+        Some(resolved) => resolved,
+        None => {
+            let files = compose_input_files(&load);
+            let compose_name = top_level_compose_name(&files);
+            resolve_compose_command(
+                matches,
+                compose_name.as_deref(),
+                Some(project.working_dir.as_path()),
+            )?
+        }
+    };
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -142,7 +162,15 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let selector = ServiceSelector::parse(required(matches, "service")?)?;
     let yes = matches.get_flag("yes");
     let skip_health_monitor = matches.get_flag("skip-health");
-    let project = resolve_for_scale(matches)?;
+    let load = LoadOptions {
+        command: "scale".into(),
+        ..Default::default()
+    };
+    let files = compose_input_files(&load);
+    let compose_name = top_level_compose_name(&files);
+    let compose_dir = compose_directory(&files);
+    let project =
+        resolve_compose_command(matches, compose_name.as_deref(), compose_dir.as_deref())?;
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;

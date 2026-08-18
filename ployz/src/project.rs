@@ -115,62 +115,53 @@ fn user_project(resolved: ResolvedProject) -> Result<ResolvedProject, ProjectErr
     Ok(resolved)
 }
 
-/// Resolve a Project for `ployz run`: CLI, `COMPOSE_PROJECT_NAME`, then `default`.
+/// Fill CLI / `COMPOSE_PROJECT_NAME` from `matches`, then resolve `rest`.
 ///
 /// # Errors
 ///
 /// Returns when a present source is not a valid Project Name, or the name is reserved.
-pub(crate) fn resolve_for_run(matches: &ArgMatches) -> Result<ResolvedProject, ProjectError> {
-    let (command_line, compose_project_name) = cli_sources(matches);
-    user_project(resolve_project_name(&ProjectNameInput {
-        command_line,
-        compose_project_name,
-        implicit_default: true,
-        ..ProjectNameInput::default()
-    })?)
-}
-
-/// Resolve a Project for `scale`: CLI, `COMPOSE_PROJECT_NAME`, then current directory.
-///
-/// # Errors
-///
-/// Returns when a present source is not a valid Project Name, or the name is reserved.
-pub(crate) fn resolve_for_scale(matches: &ArgMatches) -> Result<ResolvedProject, ProjectError> {
-    let (command_line, compose_project_name) = cli_sources(matches);
-    let cwd = std::env::current_dir().ok();
-    user_project(resolve_project_name(&ProjectNameInput {
-        command_line,
-        compose_project_name,
-        current_directory: cwd.as_deref(),
-        ..ProjectNameInput::default()
-    })?)
-}
-
-/// Resolve a Project for Compose `deploy` using full precedence.
-///
-/// # Errors
-///
-/// Returns when a present source is not a valid Project Name, or the name is reserved.
-pub(crate) fn resolve_for_deploy(
+pub(crate) fn resolve_from_matches(
     matches: &ArgMatches,
-    working_dir: &Path,
-    files: &[PathBuf],
+    rest: ProjectNameInput<'_>,
 ) -> Result<ResolvedProject, ProjectError> {
     let (command_line, compose_project_name) = cli_sources(matches);
-    let compose_name = top_level_compose_name(files);
-    let cwd = std::env::current_dir().ok();
-    let compose_dir = match cwd.as_deref() {
-        Some(cwd) => cwd.join(working_dir),
-        None => working_dir.to_path_buf(),
-    };
     user_project(resolve_project_name(&ProjectNameInput {
         command_line,
         compose_project_name,
-        compose_name: compose_name.as_deref(),
-        compose_project_directory: Some(&compose_dir),
-        current_directory: cwd.as_deref(),
-        implicit_default: false,
+        compose_name: rest.compose_name,
+        compose_project_directory: rest.compose_project_directory,
+        current_directory: rest.current_directory,
+        implicit_default: rest.implicit_default,
     })?)
+}
+
+/// Resolve remaining Compose sources against the current directory.
+///
+/// `compose_dir` is omitted when there is no Compose project, so the plan
+/// header can still name current directory as the source.
+///
+/// # Errors
+///
+/// Returns when a present source is not a valid Project Name, or the name is reserved.
+pub(crate) fn resolve_compose_command(
+    matches: &ArgMatches,
+    compose_name: Option<&str>,
+    compose_dir: Option<&Path>,
+) -> Result<ResolvedProject, ProjectError> {
+    let cwd = std::env::current_dir().ok();
+    let compose_dir = compose_dir.map(|dir| match cwd.as_deref() {
+        Some(cwd) => cwd.join(dir),
+        None => dir.to_path_buf(),
+    });
+    resolve_from_matches(
+        matches,
+        ProjectNameInput {
+            compose_name,
+            compose_project_directory: compose_dir.as_deref(),
+            current_directory: cwd.as_deref(),
+            ..ProjectNameInput::default()
+        },
+    )
 }
 
 /// Resolve a Project only when CLI or `COMPOSE_PROJECT_NAME` named one.
@@ -185,12 +176,19 @@ pub(crate) fn resolve_explicit(
     if command_line.is_none() && compose_project_name.is_none() {
         return Ok(None);
     }
-    user_project(resolve_project_name(&ProjectNameInput {
-        command_line,
-        compose_project_name,
-        ..ProjectNameInput::default()
-    })?)
-    .map(Some)
+    resolve_from_matches(matches, ProjectNameInput::default()).map(Some)
+}
+
+/// Directory of the first Compose file, if any.
+#[must_use]
+pub(crate) fn compose_directory(files: &[PathBuf]) -> Option<PathBuf> {
+    let file = files.first()?;
+    Some(
+        file.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(".")),
+    )
 }
 
 /// Last top-level Compose `name` among the given files. Later files win.
@@ -458,6 +456,15 @@ mod tests {
         assert_eq!(
             top_level_compose_name(&[root.join("compose.yaml")]).as_deref(),
             Some("discovered")
+        );
+        assert_eq!(
+            compose_directory(&[root.join("compose.yaml")]).as_deref(),
+            Some(root.as_path())
+        );
+        assert!(compose_directory(&[]).is_none());
+        assert_eq!(
+            compose_directory(&[PathBuf::from("compose.yaml")]).as_deref(),
+            Some(Path::new("."))
         );
         let _ = fs::remove_dir_all(&root);
     }
