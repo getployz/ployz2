@@ -161,7 +161,11 @@ impl Projection {
                     Target::Identity(QualifiedService::new(project.clone(), service_name))
                 })
                 .unwrap_or(Target::Empty),
-            target => target,
+            target @ (Target::Empty
+            | Target::ServiceId(_)
+            | Target::Identity(_)
+            | Target::MachineIdentity(_)
+            | Target::MachineServiceName(_)) => target,
         };
         let mut addresses = self.addresses(&target);
         if query.nearest {
