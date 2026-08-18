@@ -88,17 +88,17 @@ impl DiscoveryService {
         self
     }
 
-    pub(super) fn fail_create_volume(mut self, message: &str) -> Self {
-        let deploy = self.deploy.get_or_insert_with(|| DeployHarness {
-            create_volume_error: None,
-            containers: Arc::new(AtomicUsize::new(0)),
-        });
-        deploy.create_volume_error = Some(RpcError {
+    pub(super) fn fail_create_volume(self, message: &str) -> Self {
+        let mut this = self.with_deploy();
+        this.deploy
+            .as_mut()
+            .expect("with_deploy inserts the harness")
+            .create_volume_error = Some(RpcError {
             code: RpcErrorCode::Unavailable,
             message: message.into(),
             details: Value::Null,
         });
-        self
+        this
     }
 }
 
@@ -242,29 +242,16 @@ impl MachineRpc for DiscoveryService {
 
     async fn create_volume(
         &self,
-        request: Request<OpaquePayload>,
+        _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let Some(deploy) = &self.deploy else {
-            return Err(Status::unimplemented("unused"));
-        };
-        if let Some(error) = &deploy.create_volume_error {
-            return encoded(RpcResponse::from(error.clone()));
+        match self
+            .deploy
+            .as_ref()
+            .and_then(|deploy| deploy.create_volume_error.clone())
+        {
+            Some(error) => encoded(RpcResponse::from(error)),
+            None => Err(Status::unimplemented("unused")),
         }
-        let machine_id = machine_from_metadata(&request)?;
-        let RpcRequestBody::CreateVolume(create) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument("expected create_volume"));
-        };
-        encoded(RpcResponse::from(DockerVolume {
-            id: DockerVolumeId {
-                machine_id,
-                name: create.name,
-            },
-            driver: create.driver,
-            options: create.options,
-            labels: create.labels,
-        }))
     }
 
     async fn inspect_container(
@@ -501,20 +488,6 @@ impl MachineRpc for DiscoveryService {
 )]
 fn encoded(response: RpcResponse) -> Result<Response<OpaquePayload>, Status> {
     Ok(Response::new(response.encode().unwrap()))
-}
-
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic Status is the MachineRpc error type"
-)]
-fn machine_from_metadata(request: &Request<OpaquePayload>) -> Result<MachineId, Status> {
-    let value = request
-        .metadata()
-        .get("machine")
-        .ok_or_else(|| Status::invalid_argument("missing machine target"))?
-        .to_str()
-        .map_err(|_| Status::invalid_argument("machine target is not utf-8"))?;
-    MachineId::parse(value).map_err(|error| Status::invalid_argument(error.to_string()))
 }
 
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {

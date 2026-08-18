@@ -73,6 +73,7 @@ async function expectRpc(fn, code) {
       `expected one completed operation, got ${outcome.Success.completed.length}`,
     );
   }
+  await expectRpc(() => client.deploy({ not: "a DeployIntent" }), "invalid_argument");
   const after = await client.about();
   if (!after.capabilities.includes("ployz.rpc.describe-contract.v1")) {
     throw new Error("Client must stay usable after deploy");
@@ -80,6 +81,19 @@ async function expectRpc(fn, code) {
 
   await client.close();
   await expectRpc(() => client.about(), "unavailable");
+  await expectRpc(
+    () =>
+      client.deploy({
+        target: [],
+        apply: [],
+        options: {
+          force_recreate: false,
+          skip_health_monitor: true,
+          placement_seed: 0,
+        },
+      }),
+    "unavailable",
+  );
   await client.close();
 
   const again = await sdk.connect({ relayUrl, bearer, machineId });

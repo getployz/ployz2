@@ -98,15 +98,15 @@ fn closed() -> RpcError {
 fn deploy_error(error: DeployError) -> RpcError {
     match error {
         DeployError::Connect(error) => error.into(),
-        DeployError::Plan(error) => RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: error.to_string(),
-            details: Value::Null,
-        },
-        DeployError::Ingress(error) => RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: error.to_string(),
-            details: Value::Null,
-        },
+        DeployError::Plan(error) => invalid_argument(error.to_string()),
+        DeployError::Ingress(error) => invalid_argument(error.to_string()),
+    }
+}
+
+fn invalid_argument(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::InvalidArgument,
+        message,
+        details: Value::Null,
     }
 }
