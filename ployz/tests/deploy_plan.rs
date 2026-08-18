@@ -2,8 +2,8 @@
 mod comparison;
 #[path = "deploy_plan/intent.rs"]
 mod intent;
-#[path = "deploy_plan/placement.rs"]
-mod placement;
+#[path = "deploy_plan/prune.rs"]
+mod prune;
 #[path = "deploy_plan/rollout.rs"]
 mod rollout;
 #[path = "deploy_plan/stored_data.rs"]

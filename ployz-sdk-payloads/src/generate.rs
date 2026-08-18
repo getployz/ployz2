@@ -212,6 +212,7 @@ const PAYLOADS: &[(&str, Shape)] = &[
                 ("force_recreate", "boolean"),
                 ("skip_health_monitor", "boolean"),
                 ("placement_seed", "number"),
+                ("selected", "ServiceAttempt[]"),
             ],
         },
     ),
@@ -229,7 +230,6 @@ const PAYLOADS: &[(&str, Shape)] = &[
             fields: &[
                 ("project_name", "ProjectName"),
                 ("target", "RequestedServiceSpec[]"),
-                ("apply", "ServiceAttempt[]"),
                 ("options", "PlanOptions"),
             ],
         },
@@ -256,12 +256,23 @@ const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "PruneRefusal",
+        Shape::ClosedString(&[
+            "incomplete_snapshot",
+            "selected_services",
+            "filtered_profiles",
+            "guessed_project_name",
+        ]),
+    ),
+    (
         "DeployPreview",
         Shape::Additive {
             params: "",
             fields: &[
                 ("operations", "DeployOperation[]"),
                 ("warnings", "DeployWarning[]"),
+                ("would_remove", "QualifiedService[]"),
+                ("prune_refusal", "PruneRefusal?"),
             ],
         },
     ),

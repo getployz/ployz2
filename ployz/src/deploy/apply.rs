@@ -15,10 +15,10 @@ use crate::{
 
 use super::{
     DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation,
-    ReplacementOperation, ServiceAttempt,
+    ReplacementOperation,
     pipeline::{
-        PushOutcome, execute_deploy, list_machines, plan_options, plan_project, plan_scale,
-        plan_spec, push_project_images,
+        PushOutcome, ReconciliationHints, execute_deploy, list_machines, plan_options,
+        plan_project, plan_scale, plan_spec, push_project_images,
     },
 };
 
@@ -38,7 +38,7 @@ pub(crate) async fn deploy_spec(
     )
     .await?;
     print_warnings(&preview);
-    render(&preview.operations, client.connection(), header);
+    render(&preview, client.connection(), header);
     finish(execute_deploy(client, &preview.operations, project_name).await)
 }
 
@@ -61,10 +61,10 @@ pub(crate) async fn deploy_project(
     client: &mut Client,
     project: &mut ComposeProject,
     builds: &[BuildService],
-    apply: Vec<ServiceAttempt>,
     options: PlanOptions,
     auto_confirm: bool,
     resolved: &ResolvedProject,
+    hints: ReconciliationHints,
 ) -> Result<(), Failure> {
     let machines = list_machines(client).await?;
     let outcome = push_project_images(client, builds, &machines).await?;
@@ -75,15 +75,15 @@ pub(crate) async fn deploy_project(
             outcome.failures.join("; ")
         )));
     }
-    let preview = plan_project(client, project, machines, apply, options, &resolved.name).await?;
+    let preview = plan_project(client, project, machines, options, &resolved.name, hints).await?;
     print_warnings(&preview);
     if preview.operations.is_empty() {
-        render(&[], client.connection(), Some(resolved));
-        println!("No changes.");
+        render(&preview, client.connection(), Some(resolved));
+        println!("No operations will run.");
         return Ok(());
     }
     // TODO(UT-086): this is a best-effort preview over one observer-relative snapshot.
-    confirm_and_execute(client, &preview.operations, auto_confirm, resolved).await
+    confirm_and_execute(client, &preview, auto_confirm, resolved).await
 }
 
 pub(crate) async fn deploy_scale(
@@ -107,25 +107,25 @@ pub(crate) async fn deploy_scale(
         source: project.source,
     };
     if preview.operations.is_empty() {
-        render(&[], client.connection(), Some(&project));
-        println!("No changes.");
+        render(&preview, client.connection(), Some(&project));
+        println!("No operations will run.");
         return Ok(());
     }
-    confirm_and_execute(client, &preview.operations, auto_confirm, &project).await
+    confirm_and_execute(client, &preview, auto_confirm, &project).await
 }
 
 async fn confirm_and_execute(
     client: &mut Client,
-    operations: &[DeployOperation],
+    preview: &DeployPreview,
     auto_confirm: bool,
     project: &ResolvedProject,
 ) -> Result<(), Failure> {
-    render(operations, client.connection(), Some(project));
+    render(preview, client.connection(), Some(project));
     if !auto_confirm && !confirm()? {
         println!("Cancelled. No changes were made.");
         return Ok(());
     }
-    finish(execute_deploy(client, operations, &project.name).await)
+    finish(execute_deploy(client, &preview.operations, &project.name).await)
 }
 
 fn print_pushed_images(outcome: &PushOutcome) {
@@ -153,14 +153,20 @@ fn confirm() -> Result<bool, Failure> {
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
-fn render(
-    operations: &[DeployOperation],
-    connection: &Connection,
-    project: Option<&ResolvedProject>,
-) {
+fn render(preview: &DeployPreview, connection: &Connection, project: Option<&ResolvedProject>) {
     println!("{}", plan_header(connection, project));
-    for operation in operations {
+    for operation in &preview.operations {
         println!("  {}", operation_summary(operation));
+    }
+    for service in &preview.would_remove {
+        println!("  would remove {service}");
+    }
+    if let Some(reason) = preview.prune_refusal {
+        println!("{reason}");
+    } else if !preview.would_remove.is_empty() {
+        println!(
+            "Ployz will not remove them in this command. Listed drift is from this Machine's current view, not Cluster completeness."
+        );
     }
 }
 
@@ -295,6 +301,7 @@ mod tests {
             .into_iter()
             .map(DeployWarning::from)
             .collect(),
+            ..DeployPreview::default()
         };
         assert_eq!(
             preview
@@ -315,6 +322,37 @@ mod tests {
                 .any(|line| line.contains("plain.example.com")
                     && line.to_ascii_lowercase().contains("certificate"))
         );
+    }
+
+    #[test]
+    fn plan_lists_would_remove_with_observer_relative_refusal() {
+        use ployz_core::{PruneRefusal, QualifiedService};
+        let connection = Connection::tcp("127.0.0.1:1".parse().unwrap());
+        let preview = DeployPreview {
+            would_remove: vec![QualifiedService::parse("shop/debug").unwrap()],
+            prune_refusal: Some(PruneRefusal::IncompleteSnapshot),
+            ..DeployPreview::default()
+        };
+        let mut output = String::new();
+        output.push_str(&plan_header(&connection, None));
+        output.push('\n');
+        for service in &preview.would_remove {
+            output.push_str(&format!("  would remove {service}\n"));
+        }
+        if let Some(reason) = preview.prune_refusal {
+            output.push_str(&format!("{reason}\n"));
+        }
+        assert!(output.contains("would remove shop/debug"), "{output}");
+        assert!(
+            output.contains("incomplete relative to this Machine's current visible fan-out"),
+            "{output}"
+        );
+        assert!(
+            !output.to_ascii_lowercase().contains("cluster completeness")
+                || output.contains("not Cluster completeness"),
+            "{output}"
+        );
+        assert!(!output.contains("authoritative"));
     }
 
     #[test]

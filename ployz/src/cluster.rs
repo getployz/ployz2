@@ -42,12 +42,6 @@ pub struct MachineImagesObservation {
     pub images: MachineImages,
 }
 
-pub(crate) struct DeploySnapshotGather {
-    pub snapshot: DeploySnapshot,
-    pub containers: PartialResult<Vec<ContainerObservation>, RpcError>,
-    pub volumes: PartialResult<Vec<DockerVolume>, RpcError>,
-}
-
 impl Client {
     pub(crate) fn new(
         channel: Channel,
@@ -586,20 +580,15 @@ impl Client {
     }
 
     /// Gather an observer-relative Deploy Snapshot from the given Machines.
-    /// Container and volume fan-out failures stay in the returned Partial
-    /// Results; the snapshot keeps successful observations.
+    /// Target-specific Container and Docker Volume failures and omissions stay
+    /// on the snapshot so planning can derive observer-relative completeness.
     pub(crate) async fn deploy_snapshot(
         &mut self,
         machines: Vec<MachineObservation>,
-    ) -> Result<DeploySnapshotGather, ConnectError> {
+    ) -> Result<DeploySnapshot, ConnectError> {
         let containers = self.live_services_from(&machines).await?.containers;
         let volumes = self.list_volumes(&machines).await;
-        let snapshot = snapshot_from_partial(machines, &containers, &volumes);
-        Ok(DeploySnapshotGather {
-            snapshot,
-            containers,
-            volumes,
-        })
+        Ok(snapshot_from_partial(machines, &containers, &volumes))
     }
 }
 
@@ -625,6 +614,10 @@ pub(crate) fn snapshot_from_partial(
                 options: volume.options,
             })
             .collect(),
+        container_failures: containers.failures.clone(),
+        container_omissions: containers.omissions.clone(),
+        volume_failures: volumes.failures.clone(),
+        volume_omissions: volumes.omissions.clone(),
     }
 }
 

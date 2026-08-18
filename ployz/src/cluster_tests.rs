@@ -50,7 +50,7 @@ fn remove_tolerates_a_missing_preliminary_stop_target() {
 }
 
 #[test]
-fn deploy_snapshot_keeps_successful_observations_and_drops_failures() {
+fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     let machines = vec![machine('a'), machine('b')];
     let container = observation('1', 'a');
     let volume = docker_volume('a', "data");
@@ -88,6 +88,11 @@ fn deploy_snapshot_keeps_successful_observations_and_drops_failures() {
             options: volume.options,
         }]
     );
+    assert_eq!(snapshot.container_failures, containers.failures);
+    assert_eq!(snapshot.container_omissions, containers.omissions);
+    assert_eq!(snapshot.volume_failures, volumes.failures);
+    assert_eq!(snapshot.volume_omissions, volumes.omissions);
+    assert!(!snapshot.is_observer_complete());
 }
 
 fn machine(hex: char) -> MachineObservation {

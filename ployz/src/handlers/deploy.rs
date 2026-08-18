@@ -6,9 +6,12 @@ use ployz_core::ServiceSelector;
 use crate::{
     compose::{
         BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, compose_identity,
-        execute_build, load_project, plan_build,
+        execute_build, load_project, names_explicit_nondefault_compose_file, plan_build,
     },
-    deploy::{ServiceAttempt, deploy_project, deploy_scale, deploy_spec, plan_options},
+    deploy::{
+        ReconciliationHints, ServiceAttempt, deploy_project, deploy_scale, deploy_spec,
+        plan_options,
+    },
     project::{ResolvedProject, resolve_compose_command, resolve_explicit, resolve_run_command},
 };
 
@@ -39,7 +42,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let load = deploy_load(matches);
     let resolved = resolve_from_compose_load(matches, &load)?;
-    let (mut project, builds, apply) = prepare_deploy(matches, &load)?;
+    let (mut project, builds, selected) = prepare_deploy(matches, &load)?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -49,16 +52,19 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let yes = matches.get_flag("yes");
     let force_recreate = matches.get_flag("recreate");
     let skip_health_monitor = matches.get_flag("skip-health");
+    let mut options = plan_options(force_recreate, skip_health_monitor);
+    options.selected = selected;
+    let hints = reconciliation_hints(&load, &resolved);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context.as_deref()).await?;
         deploy_project(
             &mut client,
             &mut project,
             &builds,
-            apply,
-            plan_options(force_recreate, skip_health_monitor),
+            options,
             yes,
             &resolved,
+            hints,
         )
         .await
     })
@@ -72,7 +78,17 @@ fn deploy_load(matches: &ArgMatches) -> LoadOptions {
             .map(Into::into)
             .collect(),
         profiles: string_values(matches, "profile"),
+        all_profiles: true,
         ..Default::default()
+    }
+}
+
+fn reconciliation_hints(load: &LoadOptions, resolved: &ResolvedProject) -> ReconciliationHints {
+    ReconciliationHints {
+        requested_profiles: load.profiles.clone(),
+        profiles_filtered: !load.all_profiles,
+        guessed_project_with_explicit_nondefault_file: resolved.source.is_directory_guess()
+            && names_explicit_nondefault_compose_file(load),
     }
 }
 
@@ -102,12 +118,17 @@ fn prepare_deploy(
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
     }
+    let build_names = if selected.is_empty() {
+        project.enabled_service_names(&load.profiles)
+    } else {
+        selected.clone()
+    };
     let build_options = BuildOptions {
         build_args: string_values(matches, "build-arg"),
         deps: true,
         no_cache: matches.get_flag("no-cache"),
         pull: matches.get_flag("build-pull"),
-        services: selected.clone(),
+        services: build_names,
         ..Default::default()
     };
     let mut builds = plan_build(&project, &build_options)?;
@@ -116,23 +137,14 @@ fn prepare_deploy(
     } else {
         execute_build(&builds, &build_options, load)?;
     }
-    let apply = apply_attempts(&project, &selected)?;
-    Ok((project, builds, apply))
+    let selected = selected_attempts(&project, &selected)?;
+    Ok((project, builds, selected))
 }
 
-fn apply_attempts(
+fn selected_attempts(
     project: &ComposeProject,
     selected: &[String],
 ) -> Result<Vec<ServiceAttempt>, Error> {
-    if selected.is_empty() {
-        return Ok(project
-            .services
-            .values()
-            .map(|spec| ServiceAttempt {
-                name: spec.name.clone(),
-            })
-            .collect());
-    }
     selected
         .iter()
         .map(|name| {

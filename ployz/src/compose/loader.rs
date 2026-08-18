@@ -258,6 +258,29 @@ fn compose_input_files(options: &LoadOptions) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Compose files the user named (`--file` or `COMPOSE_FILE`), not discovered defaults.
+#[must_use]
+pub(crate) fn names_explicit_nondefault_compose_file(options: &LoadOptions) -> bool {
+    explicit_compose_files(options)
+        .iter()
+        .any(|file| !is_default_compose_file_name(file))
+}
+
+fn explicit_compose_files(options: &LoadOptions) -> Vec<PathBuf> {
+    if options.files.is_empty() {
+        compose_files_from_environment()
+    } else {
+        options.files.clone()
+    }
+}
+
+fn is_default_compose_file_name(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("compose.yaml" | "compose.yml" | "docker-compose.yaml" | "docker-compose.yml")
+    )
+}
+
 /// Source-YAML Project identity for Compose commands. This is not `ComposeProject.name`.
 #[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct ComposeIdentity {
@@ -535,6 +558,25 @@ mod tests {
             Some(Path::new("."))
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explicit_nondefault_compose_files_are_not_discovered_defaults() {
+        assert!(names_explicit_nondefault_compose_file(&LoadOptions {
+            files: vec![PathBuf::from("prod.yaml")],
+            ..Default::default()
+        }));
+        assert!(!names_explicit_nondefault_compose_file(&LoadOptions {
+            files: vec![PathBuf::from("compose.yaml")],
+            ..Default::default()
+        }));
+        assert!(!names_explicit_nondefault_compose_file(&LoadOptions {
+            files: vec![PathBuf::from("docker-compose.yml")],
+            ..Default::default()
+        }));
+        assert!(!names_explicit_nondefault_compose_file(
+            &LoadOptions::default()
+        ));
     }
 
     fn unique_dir() -> PathBuf {

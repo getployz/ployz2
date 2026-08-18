@@ -15,8 +15,8 @@ use ployz_core::{
     LocalMachineRemoved, Machine, MachineAction, MachineFailure, MachineId, MachineName,
     MachineObservation, MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation,
     ObservationKind, ObservedDataLoss, PROTOCOL_MAJOR, PartialResult, PlanOptions, ProjectName,
-    RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation, ResolvedServiceSpec,
-    RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
+    PruneRefusal, RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation,
+    ResolvedServiceSpec, RestartAttempt, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
     RuntimeWatchIncompleteIds, SelectedEndpoint, ServiceAttempt, ServiceContainer, ServiceId,
     ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeReference, UnconfirmedDataLoss,
     VolumeSource, WireGuardPublicKey,
@@ -248,6 +248,15 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             ],
         ),
         (
+            "PruneRefusal",
+            vec![
+                to_value(&PruneRefusal::IncompleteSnapshot),
+                to_value(&PruneRefusal::SelectedServices),
+                to_value(&PruneRefusal::FilteredProfiles),
+                to_value(&PruneRefusal::GuessedProjectName),
+            ],
+        ),
+        (
             "DeployWarning",
             deploy_warnings().iter().map(to_value).collect(),
         ),
@@ -429,7 +438,6 @@ fn deploy_intent() -> DeployIntent {
     DeployIntent::new(
         ProjectName::parse("app").unwrap(),
         Vec::new(),
-        Vec::new(),
         PlanOptions::default(),
     )
 }
@@ -441,6 +449,8 @@ fn deploy_preview() -> DeployPreview {
             container_id: container_id(),
         }],
         warnings: deploy_warnings().to_vec(),
+        would_remove: Vec::new(),
+        prune_refusal: None,
     }
 }
 
