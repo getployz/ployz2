@@ -255,6 +255,36 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
 }
 
 #[tokio::test]
+async fn preview_planning_error_is_a_typed_rpc_error() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(description.machine_id, {
+            let mut service = DiscoveryService::new(description.clone());
+            service.machines.clear();
+            service
+        })
+        .await;
+    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
+        .await
+        .unwrap();
+
+    let error = client
+        .preview(DeployIntent::apply_one(spec("web"), skip_health()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        client
+            .about()
+            .await
+            .unwrap()
+            .supports(DESCRIBE_CONTRACT_CAPABILITY)
+    );
+}
+
+#[tokio::test]
 async fn preview_then_deploy_reuses_the_planner_without_a_handle() {
     let description = advertised_description();
     let session = RelaySession::start().await;
