@@ -1,5 +1,5 @@
 use super::support::*;
-use ployz::deploy::{VolumeFate, data_loss_for_project_removal, plan_project_removal};
+use ployz::deploy::{VolumeFate, data_loss_from_plan, plan_project_removal};
 use ployz_core::{DataLoss, PruneRefusal, QualifiedService};
 
 fn project() -> ProjectName {
@@ -195,7 +195,10 @@ fn preserving_volumes_is_empty_data_loss() {
         ..Default::default()
     };
     assert_eq!(
-        data_loss_for_project_removal(&project(), &snapshot, VolumeFate::Preserve).data_loss,
+        data_loss_from_plan(
+            &plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap()
+        )
+        .data_loss,
         Vec::<DataLoss>::new()
     );
 }
@@ -211,7 +214,10 @@ fn destroying_volumes_names_owned_docker_volumes_only() {
         ..Default::default()
     };
     assert_eq!(
-        data_loss_for_project_removal(&project(), &snapshot, VolumeFate::Destroy).data_loss,
+        data_loss_from_plan(
+            &plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap()
+        )
+        .data_loss,
         [DataLoss::DockerVolume(
             owned_volume(machine_id('1'), "data").id
         )]

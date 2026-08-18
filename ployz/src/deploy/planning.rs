@@ -58,26 +58,12 @@ pub fn plan_project_removal(
     Ok(plan)
 }
 
-/// Data Loss that destroying `project` would cause for `volumes`.
+/// Data Loss implied by a Project-removal plan.
 ///
-/// [`VolumeFate::Preserve`] is empty: keeping managed volumes is not Data Loss.
-/// [`VolumeFate::Destroy`] names each `RemoveVolume` the removal plan would run.
-/// Completeness is the caller's check; this listing is not a Cluster view.
+/// Preserve plans are empty. Destroy names each `RemoveVolume`. Completeness is
+/// the caller's check; this listing is not a Cluster view.
 #[must_use]
-pub fn data_loss_for_project_removal(
-    project: &ProjectName,
-    snapshot: &DeploySnapshot,
-    volumes: VolumeFate,
-) -> ObservedDataLoss {
-    let Ok(plan) = plan_project_removal(project, snapshot, volumes) else {
-        return ObservedDataLoss {
-            data_loss: Vec::new(),
-        };
-    };
-    data_loss_from_plan(&plan)
-}
-
-pub(crate) fn data_loss_from_plan(plan: &DeployPlan) -> ObservedDataLoss {
+pub fn data_loss_from_plan(plan: &DeployPlan) -> ObservedDataLoss {
     ObservedDataLoss {
         data_loss: plan
             .operations
