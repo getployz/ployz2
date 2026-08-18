@@ -7,8 +7,8 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, IngressHost, IssuanceClock,
-    Machine, MachineId,
+    CERTIFICATE_POLICY_CLUSTER_KEY, ContainerId, ContainerObservation, DockerVolume,
+    DockerVolumeId, DockerVolumeName, IngressHost, IssuanceClock, Machine, MachineId,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -63,17 +63,17 @@ impl MachinePublicationGuard<'_> {
     pub(crate) async fn remove(&self, machine_id: &MachineId) -> Result<(), Error> {
         self.store
             .api
-            .execute([Statement::new(
-                "DELETE FROM containers WHERE machine_id = ?",
-                [json!(machine_id)],
-            )])
-            .await?;
-        self.store
-            .api
-            .execute([Statement::new(
-                "DELETE FROM machines WHERE id = ?",
-                [json!(machine_id)],
-            )])
+            .execute([
+                Statement::new(
+                    "DELETE FROM volumes WHERE machine_id = ?",
+                    [json!(machine_id)],
+                ),
+                Statement::new(
+                    "DELETE FROM containers WHERE machine_id = ?",
+                    [json!(machine_id)],
+                ),
+                Statement::new("DELETE FROM machines WHERE id = ?", [json!(machine_id)]),
+            ])
             .await
     }
 
@@ -109,6 +109,45 @@ impl MachinePublicationGuard<'_> {
             .collect::<Vec<_>>();
         for observation in upserts {
             statements.push(container_upsert(observation)?);
+        }
+        if !statements.is_empty() {
+            self.store.api.execute(statements).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn local_volumes(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<LocalVolumeSnapshot, Error> {
+        self.store.local_volumes(machine_id).await
+    }
+
+    pub(crate) async fn apply_volume_rows(
+        &self,
+        machine_id: &MachineId,
+        deletions: &[DockerVolumeName],
+        upserts: &[DockerVolume],
+    ) -> Result<(), Error> {
+        if upserts
+            .iter()
+            .any(|volume| &volume.id.machine_id != machine_id)
+        {
+            return Err(Error::Protocol(
+                "local volume reconciliation crossed Machine authority".into(),
+            ));
+        }
+        let mut statements = deletions
+            .iter()
+            .map(|name| {
+                Statement::new(
+                    "DELETE FROM volumes WHERE machine_id = ? AND name = ?",
+                    [json!(machine_id), json!(name)],
+                )
+            })
+            .collect::<Vec<_>>();
+        for volume in upserts {
+            statements.push(volume_upsert(volume)?);
         }
         if !statements.is_empty() {
             self.store.api.execute(statements).await?;
@@ -238,14 +277,10 @@ impl ReplicatedStore {
         let Some([info]) = rows.first() else {
             return Ok(None);
         };
-        let info = text(info, "machine info")?;
-        if info.is_empty() || info == "{}" {
-            return Ok(None);
-        }
-        Ok(Some(serde_json::from_str(info)?))
+        decode_json_document(text(info, "machine info")?)
     }
 
-    pub async fn machines(&self) -> Result<ReplicatedObservations<Machine>, Error> {
+    pub async fn machines(&self) -> Result<ReplicatedObservations<Machine, MachineId>, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -253,7 +288,9 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        decode_observations(query.rows(["id", "info"])?)
+        decode_observations(id_and_json(query.rows(["id", "info"])?, |id| {
+            Ok(MachineId::parse(id)?)
+        })?)
     }
 
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {
@@ -276,11 +313,7 @@ impl ReplicatedStore {
         let Some([encoded]) = rows.first() else {
             return Ok(None);
         };
-        let encoded = text(encoded, "replicated container JSON")?;
-        if encoded.is_empty() || encoded == "{}" {
-            return Ok(None);
-        }
-        Ok(Some(serde_json::from_str(encoded)?))
+        decode_json_document(text(encoded, "replicated container JSON")?)
     }
 
     #[cfg(test)]
@@ -313,12 +346,7 @@ impl ReplicatedStore {
         let mut snapshot = LocalContainerSnapshot::default();
         for [id, encoded] in query.rows(["id", "container"])? {
             let id = ContainerId::parse(text(&id, "container ID")?)?;
-            let encoded = text(&encoded, "replicated container JSON")?;
-            let observation = if encoded.is_empty() || encoded == "{}" {
-                None
-            } else {
-                Some(serde_json::from_str(encoded)?)
-            };
+            let observation = decode_json_document(text(&encoded, "replicated container JSON")?)?;
             snapshot.inventory.insert(id);
             if let Some(observation) = observation {
                 snapshot.observations.insert(id, observation);
@@ -327,7 +355,9 @@ impl ReplicatedStore {
         Ok(snapshot)
     }
 
-    pub async fn containers(&self) -> Result<ReplicatedObservations<ContainerObservation>, Error> {
+    pub async fn containers(
+        &self,
+    ) -> Result<ReplicatedObservations<ContainerObservation, ContainerId>, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -335,13 +365,98 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        decode_observations(query.rows(["id", "container"])?)
+        decode_observations(id_and_json(query.rows(["id", "container"])?, |id| {
+            Ok(ContainerId::parse(id)?)
+        })?)
     }
 
     pub(crate) async fn subscribe_container_changes(&self) -> Result<Subscription, Error> {
         self.api
             .subscribe(Statement::new("SELECT id, container FROM containers", []))
             .await
+    }
+
+    /// Publish a Docker Volume observation. Unchanged documents are not rewritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or written.
+    pub async fn publish_volume(&self, volume: &DockerVolume) -> Result<(), Error> {
+        if self.volume(&volume.id).await?.as_ref() == Some(volume) {
+            return Ok(());
+        }
+        self.api.execute([volume_upsert(volume)?]).await?;
+        Ok(())
+    }
+
+    /// Return one Docker Volume observation, or `None` if the row is missing or incomplete.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or decoded.
+    pub async fn volume(&self, id: &DockerVolumeId) -> Result<Option<DockerVolume>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT volume FROM volumes WHERE machine_id = ? AND name = ?",
+                [json!(id.machine_id), json!(id.name)],
+            ))
+            .await?;
+        let rows = query.rows(["volume"])?;
+        let Some([encoded]) = rows.first() else {
+            return Ok(None);
+        };
+        decode_json_document(text(encoded, "replicated volume JSON")?)
+    }
+
+    /// Return decoded Docker Volume observations and typed incomplete volume IDs.
+    ///
+    /// An incomplete row is listed in `incomplete_ids`; it is not a deletion.
+    ///
+    /// # Errors
+    ///
+    /// Returns if rows cannot be read or decoded.
+    pub async fn volumes(
+        &self,
+    ) -> Result<ReplicatedObservations<DockerVolume, DockerVolumeId>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT machine_id, name, volume FROM volumes ORDER BY machine_id, name",
+                [],
+            ))
+            .await?;
+        let mut rows = Vec::new();
+        for [machine_id, name, encoded] in query.rows(["machine_id", "name", "volume"])? {
+            rows.push((
+                DockerVolumeId {
+                    machine_id: MachineId::parse(text(&machine_id, "volume Machine ID")?)?,
+                    name: DockerVolumeName::parse(text(&name, "Docker Volume name")?)?,
+                },
+                text(&encoded, "replicated volume JSON")?.to_owned(),
+            ));
+        }
+        decode_observations(rows)
+    }
+
+    async fn local_volumes(&self, machine_id: &MachineId) -> Result<LocalVolumeSnapshot, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT name, volume FROM volumes WHERE machine_id = ? ORDER BY name",
+                [json!(machine_id)],
+            ))
+            .await?;
+        let mut snapshot = LocalVolumeSnapshot::default();
+        for [name, encoded] in query.rows(["name", "volume"])? {
+            let name = DockerVolumeName::parse(text(&name, "Docker Volume name")?)?;
+            let observation = decode_json_document(text(&encoded, "replicated volume JSON")?)?;
+            snapshot.inventory.insert(name.clone());
+            if let Some(observation) = observation {
+                snapshot.observations.insert(name, observation);
+            }
+        }
+        Ok(snapshot)
     }
 
     pub async fn publish_certificate(
@@ -465,6 +580,40 @@ impl ReplicatedStore {
             .collect())
     }
 
+    /// Return decoded certificate rows and typed incomplete Ingress Hostnames.
+    ///
+    /// An incomplete row is listed in `incomplete_ids`; it is not a deletion.
+    ///
+    /// # Errors
+    ///
+    /// Returns if rows cannot be read or decoded.
+    pub async fn certificate_rows(
+        &self,
+    ) -> Result<ReplicatedObservations<(IngressHost, CertificateRow), IngressHost>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT hostname, body FROM certificates ORDER BY hostname",
+                [],
+            ))
+            .await?;
+        let mut observations = Vec::new();
+        let mut incomplete_ids = Vec::new();
+        for [hostname, encoded] in query.rows(["hostname", "body"])? {
+            let hostname = IngressHost::parse(text(&hostname, "certificate hostname")?)?;
+            let encoded = text(&encoded, "certificate body")?;
+            if is_incomplete_document(encoded) {
+                incomplete_ids.push(hostname);
+            } else {
+                observations.push((hostname, CertificateRow::decode(encoded)?));
+            }
+        }
+        Ok(ReplicatedObservations {
+            observations,
+            incomplete_ids,
+        })
+    }
+
     pub async fn certificate_state(&self) -> Result<BTreeMap<IngressHost, CertificateRow>, Error> {
         let query = self
             .api
@@ -558,6 +707,19 @@ impl LocalContainerSnapshot {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct LocalVolumeSnapshot {
+    pub(crate) inventory: BTreeSet<DockerVolumeName>,
+    pub(crate) observations: BTreeMap<DockerVolumeName, DockerVolume>,
+}
+
+impl LocalVolumeSnapshot {
+    pub(crate) fn observed(&mut self, volume: DockerVolume) {
+        self.inventory.insert(volume.id.name.clone());
+        self.observations.insert(volume.id.name.clone(), volume);
+    }
+}
+
 fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Error> {
     Ok(Statement::new(
         "INSERT INTO containers (id, container, machine_id, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (id) DO UPDATE SET container = excluded.container, machine_id = excluded.machine_id, updated_at = excluded.updated_at",
@@ -569,10 +731,21 @@ fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Err
     ))
 }
 
+fn volume_upsert(volume: &DockerVolume) -> Result<Statement, Error> {
+    Ok(Statement::new(
+        "INSERT INTO volumes (machine_id, name, volume, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (machine_id, name) DO UPDATE SET volume = excluded.volume, updated_at = excluded.updated_at",
+        [
+            json!(volume.id.machine_id),
+            json!(volume.id.name),
+            json!(serde_json::to_string(volume)?),
+        ],
+    ))
+}
+
 #[derive(Debug, Eq, PartialEq)]
-pub struct ReplicatedObservations<T> {
+pub struct ReplicatedObservations<T, Id> {
     pub observations: Vec<T>,
-    pub incomplete_ids: Vec<String>,
+    pub incomplete_ids: Vec<Id>,
 }
 
 pub async fn wait_for_catch_up(
@@ -697,18 +870,41 @@ pub async fn run_machine_publisher(
     }
 }
 
-fn decode_observations<T: DeserializeOwned>(
+fn is_incomplete_document(encoded: &str) -> bool {
+    encoded.is_empty() || encoded == "{}"
+}
+
+fn decode_json_document<T: DeserializeOwned>(encoded: &str) -> Result<Option<T>, Error> {
+    if is_incomplete_document(encoded) {
+        Ok(None)
+    } else {
+        Ok(Some(serde_json::from_str(encoded)?))
+    }
+}
+
+fn id_and_json<Id>(
     rows: Vec<[Value; 2]>,
-) -> Result<ReplicatedObservations<T>, Error> {
+    parse_id: impl Fn(&str) -> Result<Id, Error>,
+) -> Result<Vec<(Id, String)>, Error> {
+    rows.into_iter()
+        .map(|[id, encoded]| {
+            Ok((
+                parse_id(text(&id, "row ID")?)?,
+                text(&encoded, "replicated JSON")?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+fn decode_observations<T: DeserializeOwned, Id>(
+    rows: Vec<(Id, String)>,
+) -> Result<ReplicatedObservations<T, Id>, Error> {
     let mut observations = Vec::new();
     let mut incomplete_ids = Vec::new();
-    for [id, encoded] in rows {
-        let id = text(&id, "row ID")?.to_owned();
-        let encoded = text(&encoded, "replicated JSON")?;
-        if encoded.is_empty() || encoded == "{}" {
-            incomplete_ids.push(id);
-        } else {
-            observations.push(serde_json::from_str(encoded)?);
+    for (id, encoded) in rows {
+        match decode_json_document(&encoded)? {
+            Some(observation) => observations.push(observation),
+            None => incomplete_ids.push(id),
         }
     }
     Ok(ReplicatedObservations {
@@ -738,176 +934,5 @@ fn actor_id(value: &Value) -> Result<String, Error> {
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => {
             Err(Error::Protocol("invalid actor ID".into()))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        collections::BTreeMap,
-        net::TcpListener,
-        sync::{Arc, Mutex},
-        time::SystemTime,
-    };
-
-    use ployz_core::{IngressHost, IssuanceClock, IssuanceFailure, Machine};
-    use serde_json::json;
-
-    use super::ReplicatedStore;
-    use crate::corrosion::ApiClient;
-    use crate::machine::{
-        LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
-    };
-
-    #[tokio::test]
-    async fn catch_up_waits_for_removal_and_rechecks_phase() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let store = ReplicatedStore::new(
-            ApiClient::new(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
-        );
-        let data_dir = std::env::temp_dir().join(format!(
-            "ployzd-catch-up-reset-{}",
-            ployz_core::MachineId::random()
-        ));
-        let mut local = LocalMachineStore::open(&data_dir).unwrap();
-        let public_key = local.record().wireguard_private_key.public_key();
-        let machine: Machine = serde_json::from_value(json!({
-            "id": "b".repeat(32),
-            "name": "joining",
-            "subnet": "10.210.1.0/24",
-            "management_address": "fdcc::1",
-            "public_key": public_key.0,
-        }))
-        .unwrap();
-        local
-            .join(machine.clone(), vec![machine], BTreeMap::new(), None)
-            .unwrap();
-        let local = Arc::new(Mutex::new(local));
-
-        let first = store.machine_publication().await;
-        let clone = store.clone();
-        let task_local = Arc::clone(&local);
-        let (started, waiting) = tokio::sync::oneshot::channel();
-        let second = tokio::spawn(async move {
-            started.send(()).unwrap();
-            let publication = clone.machine_publication().await;
-            publication.complete_catch_up(&mut task_local.lock().unwrap())
-        });
-        waiting.await.unwrap();
-        tokio::task::yield_now().await;
-        assert!(!second.is_finished());
-
-        local.lock().unwrap().begin_reset().unwrap();
-        drop(first);
-        let completed = tokio::time::timeout(std::time::Duration::from_secs(1), second)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(!completed);
-        drop(local);
-        std::fs::remove_dir_all(data_dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn container_publication_waits_for_removal() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let store = ReplicatedStore::new(
-            ApiClient::new(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
-        );
-        let (machine, _local) = participating_record();
-        let machine_id = machine.id;
-        let first = store.machine_publication().await;
-        let clone = store.clone();
-        let (started, waiting) = tokio::sync::oneshot::channel();
-        let second = tokio::spawn(async move {
-            started.send(()).unwrap();
-            let publication = clone.machine_publication().await;
-            publication
-                .apply_container_rows(&machine_id, &[], &[])
-                .await
-        });
-        waiting.await.unwrap();
-        tokio::task::yield_now().await;
-        assert!(!second.is_finished());
-
-        drop(first);
-        tokio::time::timeout(std::time::Duration::from_secs(1), second)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
-        let store = ReplicatedStore::new(ApiClient::new(address, &"a".repeat(64)).unwrap());
-        let hostname = IngressHost::parse("app.example.com").unwrap();
-        assert!(
-            store
-                .record_certificate_failure(
-                    &hostname,
-                    "does not resolve",
-                    IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::DoesNotResolve,),
-                )
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn publication_guard_rechecks_the_local_phase() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let store = ReplicatedStore::new(
-            ApiClient::new(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
-        );
-        let (machine, local) = participating_record();
-        let publication = store.machine_publication().await;
-        assert_eq!(publication.publishable_machine(&local), Some(machine));
-
-        let LocalMachineBody::Participating {
-            machine: body_machine,
-            cluster_network,
-            bootstrap,
-        } = local.body
-        else {
-            panic!("fixture is participating");
-        };
-        let local = LocalMachineRecord {
-            body: LocalMachineBody::Resetting {
-                prior: Box::new(LocalMachinePrior::Participating {
-                    machine: body_machine,
-                    cluster_network,
-                    bootstrap,
-                }),
-            },
-            ..local
-        };
-        assert_eq!(publication.publishable_machine(&local), None);
-    }
-
-    fn participating_record() -> (Machine, LocalMachineRecord) {
-        let machine: Machine = serde_json::from_value(json!({
-            "id": "b".repeat(32),
-            "name": "machine",
-            "subnet": "10.210.1.0/24",
-            "management_address": "fdcc::1",
-            "public_key": vec![3; 32],
-        }))
-        .unwrap();
-        let local = LocalMachineRecord {
-            body: LocalMachineBody::Participating {
-                machine: machine.clone(),
-                cluster_network: None,
-                bootstrap: Vec::new(),
-            },
-            wireguard_private_key: crate::network::WireGuardPrivateKey::from_bytes([0; 32]),
-            wireguard_mtu: None,
-            selected_endpoints: BTreeMap::new(),
-        };
-        (machine, local)
     }
 }

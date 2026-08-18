@@ -6,6 +6,8 @@ mod store;
 
 #[cfg(test)]
 mod integration_tests;
+#[cfg(test)]
+mod store_tests;
 
 pub use admin::{AdminClient, MembershipState};
 pub(crate) use api::Subscription;
@@ -15,7 +17,7 @@ pub use service::{
     CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, DEFAULT_GOSSIP_ADDRESS,
     RunningCorrosion,
 };
-pub(crate) use store::LocalContainerSnapshot;
+pub(crate) use store::{LocalContainerSnapshot, LocalVolumeSnapshot};
 pub use store::{
     ReplicatedObservations, ReplicatedStore, run_machine_publisher, wait_for_catch_up,
 };

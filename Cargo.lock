@@ -2109,6 +2109,7 @@ dependencies = [
  "oci-client",
  "oci-spec 0.10.0",
  "ployz-core",
+ "ployz-relay",
  "ployz-testkit",
  "reqwest",
  "semver",
@@ -2144,6 +2145,7 @@ dependencies = [
 name = "ployz-relay"
 version = "0.1.2-beta.2"
 dependencies = [
+ "clap",
  "ployz-core",
  "prost",
  "thiserror 2.0.20",
