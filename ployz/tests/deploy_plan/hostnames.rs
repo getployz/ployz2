@@ -77,9 +77,9 @@ fn complete_snapshot_without_a_conflict_does_not_warn() {
 }
 
 #[test]
-fn generated_shaped_hostname_is_not_a_custom_conflict() {
-    let spec = generated_shaped_web();
-    let snapshot = snapshot_with(vec![other_project_container(&spec, 1)]);
+fn assigned_ingress_is_not_a_custom_hostname_conflict() {
+    let spec = assigned_web();
+    let snapshot = snapshot_with(vec![other_project_container(&custom_web(), 1)]);
     let plan = plan_deploy([&spec], &snapshot, PlanOptions::default()).unwrap();
     assert!(plan.warnings.is_empty());
     assert!(
@@ -89,21 +89,33 @@ fn generated_shaped_hostname_is_not_a_custom_conflict() {
     );
 }
 
+#[test]
+fn incomplete_snapshot_with_assigned_ingress_does_not_warn() {
+    let spec = assigned_web();
+    let snapshot = DeploySnapshot {
+        volume_omissions: vec![machine_id('1')],
+        ..snapshot_with(Vec::new())
+    };
+    assert!(!snapshot.is_observer_complete());
+    let plan = plan_deploy([&spec], &snapshot, PlanOptions::default()).unwrap();
+    assert!(plan.warnings.is_empty());
+}
+
 fn custom_web() -> RequestedServiceSpec {
-    ingress_web("api.example.com")
+    ingress_web(IngressHostname::explicit("api.example.com").unwrap())
 }
 
-fn generated_shaped_web() -> RequestedServiceSpec {
-    ingress_web("web-app.example.com")
+fn assigned_web() -> RequestedServiceSpec {
+    ingress_web(IngressHostname::AssignFromClusterDomain)
 }
 
-fn ingress_web(hostname: &str) -> RequestedServiceSpec {
+fn ingress_web(hostname: IngressHostname) -> RequestedServiceSpec {
     let mut spec = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     spec.name = ServiceName::parse("web").unwrap();
     spec.ports = vec![PortPublication::Ingress {
-        hostname: IngressHostname::explicit(hostname).unwrap(),
+        hostname,
         load_balancer_port: NonZeroU16::new(80).unwrap(),
         container_port: NonZeroU16::new(80).unwrap(),
         http_protocol: HttpProtocol::Http,

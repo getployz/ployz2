@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, IngressHost, MachineId,
+    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
     MachineObservation, MembershipObservation, PortPublication, ProjectName, QualifiedService,
     RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
     ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder,
@@ -38,20 +38,56 @@ pub fn plan_deploy(
     intent: &DeployIntent,
     snapshot: &DeploySnapshot,
 ) -> Result<DeployPlan, PlanError> {
-    // TODO(UT-009): preserve the missing within-spec port-conflict validation.
-    let requested = specs_to_plan(intent)?
-        .into_iter()
-        .map(normalize)
-        .collect::<Vec<_>>();
+    let requested = requested_specs(intent)?;
+    let warnings = hostname_policy_for(&intent.project_name, &requested, snapshot)?;
+    assemble_plan(intent, snapshot, requested, warnings)
+}
+
+/// Plan after the CLI has expanded assigned ingress. Hostname policy already ran
+/// on the unexpanded specs, where Explicit still means custom.
+pub(crate) fn plan_after_ingress_expansion(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+) -> Result<DeployPlan, PlanError> {
+    assemble_plan(intent, snapshot, requested_specs(intent)?, Vec::new())
+}
+
+/// Reject visible custom hostname conflicts and warn when the snapshot is incomplete.
+pub(crate) fn hostname_policy(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+) -> Result<Vec<DeployWarning>, PlanError> {
+    hostname_policy_for(&intent.project_name, &requested_specs(intent)?, snapshot)
+}
+
+fn requested_specs(intent: &DeployIntent) -> Result<Vec<RequestedServiceSpec>, PlanError> {
+    Ok(specs_to_plan(intent)?.into_iter().map(normalize).collect())
+}
+
+fn hostname_policy_for(
+    project_name: &ProjectName,
+    requested: &[RequestedServiceSpec],
+    snapshot: &DeploySnapshot,
+) -> Result<Vec<DeployWarning>, PlanError> {
+    reject_custom_hostname_conflicts(project_name, requested, snapshot)?;
     let mut warnings = Vec::new();
-    reject_custom_hostname_conflicts(&intent.project_name, &requested, snapshot)?;
     if !snapshot.is_observer_complete()
         && requested
             .iter()
-            .any(|spec| publishes_custom_hostname(&intent.project_name, spec))
+            .any(|spec| explicit_ingress_hosts(&spec.ports).next().is_some())
     {
         warnings.push(DeployWarning::ObserverRelativeHostnameConflict);
     }
+    Ok(warnings)
+}
+
+fn assemble_plan(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+    requested: Vec<RequestedServiceSpec>,
+    warnings: Vec<DeployWarning>,
+) -> Result<DeployPlan, PlanError> {
+    // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let options = &intent.options;
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
@@ -95,7 +131,7 @@ fn reject_custom_hostname_conflicts(
     let owners = hostname_owners(snapshot.containers.iter());
     for spec in requested {
         let identity = QualifiedService::new(project_name.clone(), spec.name.clone());
-        for hostname in custom_ingress_hosts(&identity, spec) {
+        for hostname in explicit_ingress_hosts(&spec.ports) {
             if let Some(owner) = owners.get(hostname)
                 && *owner != identity
             {
@@ -107,28 +143,6 @@ fn reject_custom_hostname_conflicts(
         }
     }
     Ok(())
-}
-
-fn publishes_custom_hostname(project_name: &ProjectName, spec: &RequestedServiceSpec) -> bool {
-    let identity = QualifiedService::new(project_name.clone(), spec.name.clone());
-    custom_ingress_hosts(&identity, spec).next().is_some()
-}
-
-fn custom_ingress_hosts<'a>(
-    identity: &'a QualifiedService,
-    spec: &'a RequestedServiceSpec,
-) -> impl Iterator<Item = &'a IngressHost> {
-    explicit_ingress_hosts(&spec.ports).filter(|hostname| !generated_for(identity, hostname))
-}
-
-fn generated_for(identity: &QualifiedService, hostname: &IngressHost) -> bool {
-    // Generated names are `{ingress_label()}.{cluster-domain}` (#106); this ticket is custom only.
-    identity.ingress_label().is_ok_and(|label| {
-        hostname
-            .as_str()
-            .strip_prefix(&format!("{label}."))
-            .is_some_and(|rest| !rest.is_empty())
-    })
 }
 
 fn obsolete_services(
