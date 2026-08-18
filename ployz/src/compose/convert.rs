@@ -97,6 +97,7 @@ pub(super) fn convert_raw_project(
         builds,
         dependencies,
         warnings,
+        volumes: raw.volumes,
         secrets,
         environment,
     })
@@ -138,6 +139,12 @@ impl ComposeProject {
             visit(name, self, &mut visiting, &mut visited, &mut ordered)?;
         }
         Ok(ordered)
+    }
+
+    pub(crate) fn external_volume_names(&self) -> impl Iterator<Item = &str> {
+        self.volumes.iter().filter_map(|(key, volume)| {
+            is_external(&volume.external).then_some(volume.name.as_deref().unwrap_or(key.as_str()))
+        })
     }
 }
 
