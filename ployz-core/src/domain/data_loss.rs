@@ -1,10 +1,8 @@
 //! Data Loss: one named thing an operation will destroy.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use super::PartialResult;
-use crate::{DockerVolume, DockerVolumeId, MachineId, RpcError, RpcErrorCode};
+use crate::{DockerVolume, DockerVolumeId};
 
 /// One named thing an operation will destroy.
 ///
@@ -23,36 +21,14 @@ pub struct ObservedDataLoss {
 }
 
 impl ObservedDataLoss {
-    /// Data Loss this observer listed for `machine_id`.
-    ///
-    /// `listed` is the Volume listing for that one Machine.
-    ///
-    /// # Errors
-    ///
-    /// Returns the listing error when that Machine failed, or
-    /// [`RpcErrorCode::Unavailable`] when this observer produced no listing.
-    pub fn from_volume_listing(
-        machine_id: &MachineId,
-        listed: &PartialResult<Vec<DockerVolume>, RpcError>,
-    ) -> Result<Self, RpcError> {
-        if let Some(success) = listed.successes.first() {
-            return Ok(Self {
-                data_loss: success
-                    .value
-                    .iter()
-                    .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
-                    .collect(),
-            });
+    /// Data Loss for each Docker Volume in this observer's listing.
+    #[must_use]
+    pub fn from_volumes(volumes: &[DockerVolume]) -> Self {
+        Self {
+            data_loss: volumes
+                .iter()
+                .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
+                .collect(),
         }
-        if let Some(failure) = listed.failures.first() {
-            return Err(failure.error.clone());
-        }
-        Err(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: format!(
-                "Machine {machine_id} did not produce a Volume listing from this observer"
-            ),
-            details: Value::Null,
-        })
     }
 }

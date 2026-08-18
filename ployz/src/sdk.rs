@@ -205,7 +205,19 @@ impl Session {
             .find(|entry| entry.machine.id == selected)
             .expect("resolved Machine came from this list");
         let listed = client.list_volumes(std::slice::from_ref(observation)).await;
-        ObservedDataLoss::from_volume_listing(&selected, &listed)
+        if let Some(success) = listed.successes.first() {
+            return Ok(ObservedDataLoss::from_volumes(&success.value));
+        }
+        if let Some(failure) = listed.failures.first() {
+            return Err(failure.error.clone());
+        }
+        Err(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: format!(
+                "Machine {selected} did not produce a Volume listing from this observer"
+            ),
+            details: Value::Null,
+        })
     }
 
     /// Drop the Client and Relay tunnel.

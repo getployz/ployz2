@@ -67,6 +67,29 @@ async fn data_loss_if_machine_removed_is_observer_relative() {
 }
 
 #[tokio::test]
+async fn failed_volume_listing_is_not_empty_data_loss() {
+    let description = super::sdk::advertised_description();
+    let failed = machine('b', "broken");
+    let session = RelaySession::start().await;
+    let mut service = DiscoveryService::new(description.clone());
+    service.machines = vec![failed];
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    let client = timeout(
+        Duration::from_secs(5),
+        sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str()),
+    )
+    .await
+    .expect("connect must not hang")
+    .unwrap();
+
+    let error = client
+        .data_loss_if_machine_removed("broken")
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+}
+
+#[tokio::test]
 async fn node_data_loss_reads_a_machine_with_volumes_and_one_with_none() {
     let (description, loaded, empty, service) = two_machine_cluster();
     let session = RelaySession::start().await;

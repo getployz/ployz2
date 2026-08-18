@@ -1,10 +1,9 @@
-//! Data Loss identity and observer-relative listing.
+//! Data Loss identity.
 
 use ployz_core::{
-    DataLoss, DockerVolume, DockerVolumeId, DockerVolumeName, MachineFailure, MachineId,
-    MachineSuccess, ObservedDataLoss, PartialResult, RpcError, RpcErrorCode,
+    DataLoss, DockerVolume, DockerVolumeId, DockerVolumeName, MachineId, ObservedDataLoss,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 #[test]
 fn docker_volume_data_loss_carries_machine_and_name() {
@@ -42,15 +41,10 @@ fn a_kind_cannot_carry_an_identity_that_does_not_belong_to_it() {
 }
 
 #[test]
-fn volume_listing_with_volumes_and_without_are_live_observation() {
+fn from_volumes_names_each_docker_volume_and_none_when_empty() {
     let loaded = machine_id('a');
-    let empty = machine_id('c');
-
-    let observed = ObservedDataLoss::from_volume_listing(
-        &loaded,
-        &listing(loaded, vec![volume(loaded, "data"), volume(loaded, "logs")]),
-    )
-    .unwrap();
+    let observed =
+        ObservedDataLoss::from_volumes(&[volume(loaded, "data"), volume(loaded, "logs")]);
     assert_eq!(
         observed.data_loss,
         [
@@ -64,60 +58,10 @@ fn volume_listing_with_volumes_and_without_are_live_observation() {
             }),
         ]
     );
-
-    let none = ObservedDataLoss::from_volume_listing(&empty, &listing(empty, vec![])).unwrap();
-    assert_eq!(none.data_loss, Vec::<DataLoss>::new());
-}
-
-#[test]
-fn omitted_or_failed_listings_are_not_an_empty_data_loss_list() {
-    let omitted = machine_id('d');
-    let failed = machine_id('b');
-
-    let omitted_error = ObservedDataLoss::from_volume_listing(
-        &omitted,
-        &PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions: vec![omitted],
-        },
-    )
-    .unwrap_err();
-    assert_eq!(omitted_error.code, RpcErrorCode::Unavailable);
-    assert!(omitted_error.message.contains("this observer"));
-
-    let failed_error = ObservedDataLoss::from_volume_listing(
-        &failed,
-        &PartialResult {
-            successes: Vec::new(),
-            failures: vec![MachineFailure {
-                machine_id: failed,
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "target unavailable".into(),
-                    details: Value::Null,
-                },
-            }],
-            omissions: Vec::new(),
-        },
-    )
-    .unwrap_err();
-    assert_eq!(failed_error.code, RpcErrorCode::Unavailable);
-    assert_eq!(failed_error.message, "target unavailable");
-}
-
-fn listing(
-    machine_id: MachineId,
-    volumes: Vec<DockerVolume>,
-) -> PartialResult<Vec<DockerVolume>, RpcError> {
-    PartialResult {
-        successes: vec![MachineSuccess {
-            machine_id,
-            value: volumes,
-        }],
-        failures: Vec::new(),
-        omissions: Vec::new(),
-    }
+    assert_eq!(
+        ObservedDataLoss::from_volumes(&[]).data_loss,
+        Vec::<DataLoss>::new()
+    );
 }
 
 fn volume(machine_id: MachineId, name: &str) -> DockerVolume {
