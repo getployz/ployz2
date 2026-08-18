@@ -2,11 +2,13 @@
 
 use std::io::{self, IsTerminal, Write};
 
-use ployz_core::{DataLoss, ObservedDataLoss, RpcError, UnconfirmedDataLoss};
+use ployz_core::{DataLoss, ObservedDataLoss};
+
+use crate::failure::pass_data_loss_names_message;
 
 use super::Error;
 
-pub(crate) fn collect_data_loss_confirmation(
+pub(super) fn collect_data_loss_confirmation(
     observed: &ObservedDataLoss,
     named: &[String],
 ) -> Result<Vec<DataLoss>, Error> {
@@ -45,27 +47,10 @@ fn read_data_loss_names(observed: &ObservedDataLoss) -> Result<Vec<String>, Erro
     Ok(answer.split_whitespace().map(str::to_owned).collect())
 }
 
-pub(crate) fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
-    format!(
-        "Data Loss is not covered by the confirmation; pass the names as arguments: {}",
-        missing
-            .iter()
-            .map(DataLoss::name)
-            .collect::<Vec<_>>()
-            .join(" ")
-    )
-}
-
-pub(crate) fn refusal_from_rpc(error: RpcError) -> Error {
-    match UnconfirmedDataLoss::from_rpc_error(&error) {
-        Some(unconfirmed) => Error::usage(pass_data_loss_names_message(&unconfirmed.missing)),
-        None => error.into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{collect_data_loss_confirmation, pass_data_loss_names_message, refusal_from_rpc};
+    use super::collect_data_loss_confirmation;
+    use crate::failure::{pass_data_loss_names_message, refusal_from_rpc};
     use ployz_core::{
         DataLoss, DockerVolumeId, DockerVolumeName, MachineId, ObservedDataLoss,
         UnconfirmedDataLoss,

@@ -74,7 +74,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 let removed = client
                     .remove_machine(&selected_target, &confirmation)
                     .await
-                    .map_err(super::super::data_loss::refusal_from_rpc)?;
+                    .map_err(crate::failure::refusal_from_rpc)?;
                 if let Some(warning) = removed.reset_warning {
                     eprintln!("WARNING: target cleanup/reset failed: {warning}");
                 }

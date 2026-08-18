@@ -6,7 +6,7 @@ use ployz_core::{
     ProjectName, QualifiedService, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
     ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph,
     SpecChange, UpdateOrder, VolumeSource, compare_specs, explicit_ingress_hosts, hostname_owners,
-    machine_matches_target, owned_volume_project, same_service_mode_kind,
+    machine_matches_target, same_service_mode_kind,
 };
 
 use super::{
@@ -73,14 +73,15 @@ pub fn data_loss_for_project_removal(
         VolumeFate::Preserve => ObservedDataLoss {
             data_loss: Vec::new(),
         },
-        VolumeFate::Destroy => ObservedDataLoss {
-            data_loss: snapshot
-                .volumes
-                .iter()
-                .filter(|volume| owned_volume_project(&volume.labels).as_ref() == Some(project))
-                .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
-                .collect(),
-        },
+        VolumeFate::Destroy => {
+            let intent = DeployIntent::apply_all(project.clone(), [], PlanOptions::default());
+            ObservedDataLoss {
+                data_loss: preserved_owned_volumes(&intent, snapshot)
+                    .into_iter()
+                    .map(|volume| DataLoss::DockerVolume(volume.id))
+                    .collect(),
+            }
+        }
     }
 }
 

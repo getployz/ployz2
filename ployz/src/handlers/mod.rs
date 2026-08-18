@@ -13,7 +13,7 @@ use crate::failure::Failure;
 mod build;
 mod caddy;
 mod context;
-pub(crate) mod data_loss;
+mod data_loss;
 mod deploy;
 mod dns;
 mod image;

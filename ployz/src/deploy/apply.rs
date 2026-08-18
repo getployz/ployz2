@@ -190,7 +190,7 @@ pub(crate) async fn remove_project(
     let preview = client
         .prepare_project_destroy(name, confirm_data_loss, volumes)
         .await
-        .map_err(crate::handlers::data_loss::refusal_from_rpc)?;
+        .map_err(crate::failure::refusal_from_rpc)?;
     finish(
         stream_confirm(
             client,

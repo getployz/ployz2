@@ -128,6 +128,30 @@ async fn destroy_project_preserves_volumes_with_an_empty_confirmation() {
 }
 
 #[tokio::test]
+async fn data_loss_if_project_destroyed_refuses_the_reserved_project() {
+    let (client, _volumes, _service, _session, _machine) = project_session().await;
+    let error = client
+        .data_loss_if_project_destroyed("ployz-system", VolumeFate::Preserve)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        error.message,
+        "Project 'ployz-system' is reserved for Ployz infrastructure"
+    );
+}
+
+#[tokio::test]
+async fn data_loss_if_project_destroyed_rejects_an_invalid_project_name() {
+    let (client, _volumes, _service, _session, _machine) = project_session().await;
+    let error = client
+        .data_loss_if_project_destroyed("BAD NAME", VolumeFate::Preserve)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+}
+
+#[tokio::test]
 async fn destroy_project_refuses_the_reserved_project() {
     let (client, _volumes, _service, _session, _machine) = project_session().await;
     let error = client
