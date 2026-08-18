@@ -13,6 +13,7 @@ import type {
   DataLoss,
   PartialResult,
   PlanOptions,
+  ProjectName,
   RemoveVolumesRequest,
   RequestedServiceSpec,
   RpcError,
@@ -47,11 +48,13 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
 export declare function connect(options: ConnectOptions): Promise<Client>;
 
 export declare function applyAll(
+  project_name: ProjectName,
   specs: readonly RequestedServiceSpec[],
   options?: PlanOptions,
 ): DeployIntent;
 
 export declare function applyOne(
+  project_name: ProjectName,
   spec: RequestedServiceSpec,
   options?: PlanOptions,
 ): DeployIntent;

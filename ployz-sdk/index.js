@@ -126,16 +126,17 @@ function defaultPlanOptions() {
   };
 }
 
-function applyAll(specs, options = defaultPlanOptions()) {
+function applyAll(project_name, specs, options = defaultPlanOptions()) {
   return {
+    project_name,
     target: specs,
     apply: specs.map((spec) => ({ name: spec.name })),
     options,
   };
 }
 
-function applyOne(spec, options) {
-  return applyAll([spec], options);
+function applyOne(project_name, spec, options) {
+  return applyAll(project_name, [spec], options);
 }
 
 async function connect(options) {

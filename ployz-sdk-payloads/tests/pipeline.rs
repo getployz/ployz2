@@ -492,6 +492,7 @@ fn handwritten_facade_types_use_generated_payloads() {
     assert!(dts.contains("confirm(options?: ConfirmOptions): RunningDeploy"));
     assert!(dts.contains("applyAll("));
     assert!(dts.contains("applyOne("));
+    assert!(dts.contains("applyAll(\n  project_name: ProjectName,"));
     assert!(!dts.contains("deploy(intent: DeployIntent)"));
     assert!(dts.contains("removeVolumes("));
     assert!(dts.contains("RemoveVolumesRequest"));
