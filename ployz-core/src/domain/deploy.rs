@@ -334,7 +334,7 @@ pub struct DeployPreview {
     /// input no longer declares. They are not deleted.
     #[serde(default)]
     pub preserved_volumes: Vec<PreservedVolume>,
-    /// Why pruning will not run. `None` still does not remove; this command never prunes.
+    /// Why pruning will not run. `None` means obsolete Services are removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prune_refusal: Option<PruneRefusal>,
 }

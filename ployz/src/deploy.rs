@@ -114,7 +114,7 @@ pub struct DeployPlan {
     /// Compose-declared Docker Volumes owned by this Project that this Compose
     /// input no longer declares. They are not deleted.
     pub preserved_volumes: Vec<ployz_core::PreservedVolume>,
-    /// Why pruning will not run. `None` still does not remove; this command never prunes.
+    /// Why pruning will not run. `None` means obsolete Services are removed.
     pub prune_refusal: Option<PruneRefusal>,
 }
 
