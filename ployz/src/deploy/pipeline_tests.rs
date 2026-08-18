@@ -40,20 +40,19 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     let replicated = ServiceMode::Replicated {
         replicas: replicas(1),
     };
-    assert!(
-        choose_scale_spec(
-            &snapshot(vec![observation(
-                &service_id,
-                replicated.clone(),
-                "v1",
-                '1'
-            )]),
-            &ServiceSelector::parse("api").unwrap(),
-            replicas(1),
-        )
-        .unwrap()
-        .is_none()
-    );
+    let matching = choose_scale_spec(
+        &snapshot(vec![observation(
+            &service_id,
+            replicated.clone(),
+            "v1",
+            '1',
+        )]),
+        &ServiceSelector::parse("api").unwrap(),
+        replicas(1),
+    )
+    .unwrap();
+    assert_eq!(matching.project_name.as_str(), "app");
+    assert!(matching.requested.is_none());
 
     assert!(
         choose_scale_spec(
@@ -69,6 +68,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
             replicas(3),
         )
         .unwrap()
+        .requested
         .is_some()
     );
 
@@ -76,21 +76,17 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
         observation(&service_id, replicated.clone(), "v1", '1'),
         observation(&service_id, replicated, "v2", '2'),
     ]);
-    let requested = choose_scale_spec(
+    let choice = choose_scale_spec(
         &mixed_snapshot,
         &ServiceSelector::parse("api").unwrap(),
         replicas(3),
     )
-    .unwrap()
     .unwrap();
-    assert_eq!(requested.project_name.as_str(), "app");
-    assert_eq!(requested.requested.container.image, "v1");
+    let requested = choice.requested.unwrap();
+    assert_eq!(choice.project_name.as_str(), "app");
+    assert_eq!(requested.container.image, "v1");
     let mixed = plan_deploy(
-        &DeployIntent::apply_one(
-            requested.project_name,
-            requested.requested,
-            PlanOptions::default(),
-        ),
+        &DeployIntent::apply_one(choice.project_name, requested, PlanOptions::default()),
         &mixed_snapshot,
     )
     .unwrap();
@@ -144,6 +140,7 @@ fn scale_plan_accepts_only_service_containers() {
             replicas(1),
         )
         .unwrap()
+        .requested
         .is_none()
     );
 }
@@ -206,11 +203,11 @@ fn scale_uses_the_selected_qualified_service_project() {
         &ServiceSelector::parse("shop-staging/web").unwrap(),
         replicas(2),
     )
-    .unwrap()
     .unwrap();
+    let requested = choice.requested.unwrap();
     assert_eq!(choice.project_name.as_str(), "shop-staging");
-    assert_eq!(choice.requested.name.as_str(), "web");
-    assert_eq!(choice.requested.container.image, "v1");
+    assert_eq!(requested.name.as_str(), "web");
+    assert_eq!(requested.container.image, "v1");
     assert!(
         choose_scale_spec(
             &snapshot,

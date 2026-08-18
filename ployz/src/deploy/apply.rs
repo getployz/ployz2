@@ -17,8 +17,8 @@ use super::{
     DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation,
     ReplacementOperation, ServiceAttempt,
     pipeline::{
-        PushOutcome, ScalePlan, execute_deploy, list_machines, plan_options, plan_project,
-        plan_scale, plan_spec, push_project_images,
+        PushOutcome, execute_deploy, list_machines, plan_options, plan_project, plan_scale,
+        plan_spec, push_project_images,
     },
 };
 
@@ -94,37 +94,24 @@ pub(crate) async fn deploy_scale(
     auto_confirm: bool,
     project: &ResolvedProject,
 ) -> Result<(), Failure> {
-    match plan_scale(
+    let (preview, project_name) = plan_scale(
         client,
         selector,
         replicas,
         plan_options(false, skip_health_monitor),
     )
-    .await?
-    {
-        ScalePlan::Unchanged(preview) => {
-            print_warnings(&preview);
-            render(&[], client.connection(), Some(project));
-            println!("No changes.");
-            Ok(())
-        }
-        ScalePlan::Ready {
-            preview,
-            project_name,
-        } => {
-            print_warnings(&preview);
-            let project = ResolvedProject {
-                name: project_name,
-                source: project.source,
-            };
-            if preview.operations.is_empty() {
-                render(&[], client.connection(), Some(&project));
-                println!("No changes.");
-                return Ok(());
-            }
-            confirm_and_execute(client, &preview.operations, auto_confirm, &project).await
-        }
+    .await?;
+    print_warnings(&preview);
+    let project = ResolvedProject {
+        name: project_name,
+        source: project.source,
+    };
+    if preview.operations.is_empty() {
+        render(&[], client.connection(), Some(&project));
+        println!("No changes.");
+        return Ok(());
     }
+    confirm_and_execute(client, &preview.operations, auto_confirm, &project).await
 }
 
 async fn confirm_and_execute(

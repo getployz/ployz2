@@ -96,6 +96,10 @@ fn qualified_service_is_project_slash_name() {
     assert_eq!(identity.to_string(), "shop-staging/web");
     assert_eq!(identity.dns_name(), "web.shop-staging");
     assert_eq!(
+        ployz_core::QualifiedService::parse_dns_name(identity.dns_name()).unwrap(),
+        identity
+    );
+    assert_eq!(
         ployz_core::QualifiedService::system_caddy().to_string(),
         "ployz-system/caddy"
     );
@@ -110,6 +114,12 @@ fn qualified_service_is_project_slash_name() {
     for invalid in ["web", "SHOP/web", "shop/web/extra", "/web", "shop/", ""] {
         assert!(
             ployz_core::QualifiedService::parse(invalid).is_err(),
+            "{invalid}"
+        );
+    }
+    for invalid in ["web", "web.SHOP", "web.shop.extra", ".web", "web.", ""] {
+        assert!(
+            ployz_core::QualifiedService::parse_dns_name(invalid).is_err(),
             "{invalid}"
         );
     }

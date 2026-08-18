@@ -1,7 +1,7 @@
 //! Parse an Internal DNS name into a typed query and target.
 
 use hickory_server::proto::rr::Name;
-use ployz_core::{MachineId, ProjectName, QualifiedService, ServiceId, ServiceName};
+use ployz_core::{MachineId, QualifiedService, ServiceId, ServiceName};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Query {
@@ -67,7 +67,7 @@ fn parse_target(selector: &str) -> Target {
     if let Some((machine, rest)) = selector.split_once(".m.")
         && let Ok(machine_id) = MachineId::parse(machine)
     {
-        if let Some(identity) = parse_identity(rest) {
+        if let Ok(identity) = QualifiedService::parse_dns_name(rest) {
             return Target::MachineIdentity(MachineServiceTarget {
                 machine_id,
                 identity,
@@ -84,21 +84,10 @@ fn parse_target(selector: &str) -> Target {
     if let Ok(id) = ServiceId::parse(selector) {
         return Target::ServiceId(id);
     }
-    if let Some(identity) = parse_identity(selector) {
+    if let Ok(identity) = QualifiedService::parse_dns_name(selector) {
         return Target::Identity(identity);
     }
     ServiceName::parse(selector).map_or(Target::Empty, Target::ServiceName)
-}
-
-fn parse_identity(selector: &str) -> Option<QualifiedService> {
-    let (name, project) = selector.split_once('.')?;
-    if project.contains('.') {
-        return None;
-    }
-    Some(QualifiedService::new(
-        ProjectName::parse(project).ok()?,
-        ServiceName::parse(name).ok()?,
-    ))
 }
 
 #[cfg(test)]

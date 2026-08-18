@@ -482,6 +482,24 @@ impl QualifiedService {
         format!("{}.{}", self.name, self.project)
     }
 
+    /// Parse Internal DNS labels `{name}.{project}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when `value` is not exactly one `.` between two DNS labels.
+    pub fn parse_dns_name(value: impl AsRef<str>) -> Result<Self, ValueError> {
+        let value = value.as_ref();
+        let Some((name, project)) = value.split_once('.') else {
+            return Err(dns_name_error(value));
+        };
+        if project.contains('.') {
+            return Err(dns_name_error(value));
+        }
+        let project = ProjectName::parse(project).map_err(|_| dns_name_error(value))?;
+        let name = ServiceName::parse(name).map_err(|_| dns_name_error(value))?;
+        Ok(Self { project, name })
+    }
+
     /// Infrastructure Caddy in the reserved Project.
     #[must_use]
     pub fn system_caddy() -> Self {
@@ -497,6 +515,14 @@ fn qualified_service_error(value: &str) -> ValueError {
         "Qualified Service",
         value,
         "a Project Name, '/', and a Service Name",
+    )
+}
+
+fn dns_name_error(value: &str) -> ValueError {
+    ValueError::new(
+        "Qualified Service DNS name",
+        value,
+        "a Service Name, '.', and a Project Name",
     )
 }
 

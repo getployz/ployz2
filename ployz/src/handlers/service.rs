@@ -208,7 +208,7 @@ fn select_services<'a>(
     let mut selected = Vec::new();
     for selector in selectors {
         let service = select_service(services, selector)?;
-        if seen.insert(service.identity.clone()) {
+        if seen.insert(&service.identity) {
             selected.push(service);
         }
     }
