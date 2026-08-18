@@ -26,6 +26,7 @@ export type SerdeResult<T, E> =\n  | Additive<{ Ok: T }>\n  | Additive<{ Err: E 
 
 enum Shape {
     Alias(&'static str),
+    Branded,
     OpenString(&'static [&'static str]),
     ClosedString(&'static [&'static str]),
     Additive {
@@ -38,15 +39,16 @@ enum Shape {
     },
     InternallyTagged {
         tag: &'static str,
+        params: &'static str,
         variants: &'static [(&'static str, &'static [(&'static str, &'static str)])],
     },
 }
 
 const PAYLOADS: &[(&str, Shape)] = &[
-    ("MachineId", Shape::Alias("string")),
-    ("ContainerId", Shape::Alias("string")),
-    ("ServiceId", Shape::Alias("string")),
-    ("ServiceName", Shape::Alias("string")),
+    ("MachineId", Shape::Branded),
+    ("ContainerId", Shape::Branded),
+    ("ServiceId", Shape::Branded),
+    ("ServiceName", Shape::Branded),
     ("MachineName", Shape::Alias("string")),
     ("MachineSubnet", Shape::Alias("string")),
     ("ManagementAddress", Shape::Alias("string")),
@@ -57,9 +59,298 @@ const PAYLOADS: &[(&str, Shape)] = &[
     ("DockerVolumeName", Shape::Alias("string")),
     ("CapabilityName", Shape::Alias("string")),
     ("WireGuardPublicKey", Shape::Alias("number[]")),
-    ("RequestedServiceSpec", Shape::Alias("JsonValue")),
-    ("ResolvedServiceSpec", Shape::Alias("JsonValue")),
-    ("ServiceVolume", Shape::Alias("JsonValue")),
+    ("MachinePath", Shape::Alias("string")),
+    ("ContainerPath", Shape::Alias("string")),
+    ("ServiceVolumeReference", Shape::Alias("string")),
+    ("MachineTarget", Shape::Alias("string")),
+    ("PidMode", Shape::Alias("string")),
+    (
+        "PullPolicy",
+        Shape::ClosedString(&["always", "missing", "never"]),
+    ),
+    (
+        "UpdateOrder",
+        Shape::ClosedString(&["start_first", "stop_first"]),
+    ),
+    ("HttpProtocol", Shape::ClosedString(&["http", "https"])),
+    ("TransportProtocol", Shape::ClosedString(&["tcp", "udp"])),
+    (
+        "ServiceMode",
+        Shape::InternallyTagged {
+            tag: "mode",
+            params: "",
+            variants: &[("replicated", &[("replicas", "number")]), ("global", &[])],
+        },
+    ),
+    (
+        "IngressHostname",
+        Shape::InternallyTagged {
+            tag: "kind",
+            params: "",
+            variants: &[
+                ("assign_from_cluster_domain", &[]),
+                ("explicit", &[("hostname", "IngressHost")]),
+            ],
+        },
+    ),
+    (
+        "HostBind",
+        Shape::InternallyTagged {
+            tag: "kind",
+            params: "",
+            variants: &[
+                ("all", &[]),
+                ("address", &[("address", "string")]),
+                ("prefix", &[("prefix", "string")]),
+            ],
+        },
+    ),
+    (
+        "PortPublication",
+        Shape::InternallyTagged {
+            tag: "mode",
+            params: "",
+            variants: &[
+                (
+                    "ingress",
+                    &[
+                        ("hostname", "IngressHostname"),
+                        ("load_balancer_port", "number"),
+                        ("container_port", "number"),
+                        ("http_protocol", "HttpProtocol"),
+                    ],
+                ),
+                (
+                    "host",
+                    &[
+                        ("bind", "HostBind"),
+                        ("published_port", "number"),
+                        ("container_port", "number"),
+                        ("transport_protocol", "TransportProtocol"),
+                    ],
+                ),
+            ],
+        },
+    ),
+    (
+        "VolumeSource",
+        Shape::InternallyTagged {
+            tag: "kind",
+            params: "",
+            variants: &[
+                (
+                    "bind",
+                    &[
+                        ("machine_path", "MachinePath"),
+                        ("create_machine_path", "boolean?"),
+                        ("propagation", "string?"),
+                        ("recursive", "string?"),
+                    ],
+                ),
+                (
+                    "named",
+                    &[
+                        ("name", "DockerVolumeName"),
+                        ("external", "boolean?"),
+                        ("driver", "JsonValue?"),
+                        ("labels", "{ readonly [key: string]: string }?"),
+                        ("no_copy", "boolean?"),
+                        ("subpath", "string?"),
+                    ],
+                ),
+                (
+                    "tmpfs",
+                    &[
+                        ("size_bytes", "number?"),
+                        ("mode", "number?"),
+                        ("options", "string[][]?"),
+                    ],
+                ),
+            ],
+        },
+    ),
+    (
+        "HealthcheckSpec",
+        Shape::InternallyTagged {
+            tag: "state",
+            params: "",
+            variants: &[
+                ("disabled", &[]),
+                (
+                    "configured",
+                    &[
+                        ("test", "string[]"),
+                        ("interval_millis", "number?"),
+                        ("timeout_millis", "number?"),
+                        ("start_period_millis", "number?"),
+                        ("start_interval_millis", "number?"),
+                        ("retries", "number?"),
+                    ],
+                ),
+            ],
+        },
+    ),
+    (
+        "RestartPolicy",
+        Shape::InternallyTagged {
+            tag: "name",
+            params: "",
+            variants: &[
+                ("no", &[]),
+                ("always", &[]),
+                ("unless-stopped", &[]),
+                ("on-failure", &[("maximum_retry_count", "number?")]),
+            ],
+        },
+    ),
+    (
+        "LogDriver",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("name", "string"),
+                ("options", "{ readonly [key: string]: string }"),
+            ],
+        },
+    ),
+    (
+        "ContainerResources",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("cpu_nanos", "number?"),
+                ("memory_bytes", "number?"),
+                ("memory_reservation_bytes", "number?"),
+                ("shared_memory_bytes", "number?"),
+                ("devices", "JsonValue[]?"),
+                ("device_reservations", "JsonValue[]?"),
+                ("ulimits", "JsonObject?"),
+            ],
+        },
+    ),
+    (
+        "UpdateConfig",
+        Shape::Additive {
+            params: "",
+            fields: &[("order", "UpdateOrder?"), ("monitor_millis", "number?")],
+        },
+    ),
+    (
+        "ResolvedUpdateConfig",
+        Shape::Additive {
+            params: "",
+            fields: &[("order", "UpdateOrder"), ("monitor_millis", "number?")],
+        },
+    ),
+    (
+        "Placement",
+        Shape::Additive {
+            params: "",
+            fields: &[("machines", "MachineTarget[]?")],
+        },
+    ),
+    (
+        "PreDeployHook",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("command", "string[]"),
+                ("environment", "{ readonly [key: string]: string }?"),
+                ("privileged", "boolean?"),
+                ("timeout_millis", "number?"),
+                ("user", "string?"),
+            ],
+        },
+    ),
+    (
+        "ServiceMount",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("volume", "ServiceVolumeReference"),
+                ("target", "ContainerPath"),
+                ("read_only", "boolean?"),
+            ],
+        },
+    ),
+    (
+        "ServiceVolume",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("reference", "ServiceVolumeReference"),
+                ("source", "VolumeSource"),
+            ],
+        },
+    ),
+    (
+        "ServiceContainerSpec",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("image", "string"),
+                ("command", "string[]?"),
+                ("entrypoint", "string[]?"),
+                ("environment", "{ readonly [key: string]: string }?"),
+                ("cap_add", "string[]?"),
+                ("cap_drop", "string[]?"),
+                ("healthcheck", "HealthcheckSpec?"),
+                ("pull_policy", "PullPolicy"),
+                ("init", "boolean?"),
+                ("user", "string?"),
+                ("working_directory", "ContainerPath?"),
+                ("tty", "boolean?"),
+                ("open_stdin", "boolean?"),
+                ("privileged", "boolean?"),
+                ("pid_mode", "PidMode?"),
+                ("log_driver", "LogDriver?"),
+                ("resources", "ContainerResources?"),
+                ("stop_timeout_secs", "number?"),
+                ("sysctls", "{ readonly [key: string]: string }?"),
+                ("restart", "RestartPolicy?"),
+                ("config_mounts", "JsonValue[]?"),
+            ],
+        },
+    ),
+    (
+        "RequestedServiceSpec",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("name", "ServiceName"),
+                ("mode", "ServiceMode"),
+                ("container", "ServiceContainerSpec"),
+                ("placement", "Placement?"),
+                ("ports", "PortPublication[]?"),
+                ("volumes", "ServiceVolume[]?"),
+                ("mounts", "ServiceMount[]?"),
+                ("configs", "JsonValue[]?"),
+                ("pre_deploy", "PreDeployHook?"),
+                ("caddy_config", "string?"),
+                ("update", "UpdateConfig?"),
+            ],
+        },
+    ),
+    (
+        "ResolvedServiceSpec",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("service_id", "ServiceId"),
+                ("name", "ServiceName"),
+                ("mode", "ServiceMode"),
+                ("container", "ServiceContainerSpec"),
+                ("placement", "Placement?"),
+                ("ports", "PortPublication[]?"),
+                ("volumes", "ServiceVolume[]?"),
+                ("mounts", "ServiceMount[]?"),
+                ("configs", "JsonValue[]?"),
+                ("pre_deploy", "PreDeployHook?"),
+                ("caddy_config", "string?"),
+                ("update", "ResolvedUpdateConfig?"),
+            ],
+        },
+    ),
     (
         "MembershipObservation",
         Shape::OpenString(MembershipObservation::known_wires()),
@@ -162,6 +453,7 @@ const PAYLOADS: &[(&str, Shape)] = &[
         "ContainerRuntimeObservation",
         Shape::InternallyTagged {
             tag: "state",
+            params: "",
             variants: &[
                 ("created", &[]),
                 ("running", &[("health", "HealthObservation")]),
@@ -228,8 +520,88 @@ const PAYLOADS: &[(&str, Shape)] = &[
         Shape::Additive {
             params: "",
             fields: &[
-                ("operations", "DeployOperation[]"),
+                ("operations", "OperationRow[]"),
                 ("warnings", "DeployWarning[]"),
+            ],
+        },
+    ),
+    (
+        "OperationRow",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("index", "number"),
+                ("machine_id", "MachineId"),
+                ("machine_name", "MachineName?"),
+                ("operation", "DeployOperation"),
+                ("display_name", "string?"),
+                ("service_name", "ServiceName?"),
+                ("status", "OperationStatus"),
+            ],
+        },
+    ),
+    (
+        "OperationStatus",
+        Shape::InternallyTagged {
+            tag: "type",
+            params: "",
+            variants: &[
+                ("pending", &[]),
+                ("running", &[("phase", "OperationPhase")]),
+                ("completed", &[]),
+                ("failed", &[("error", "ExecutionError")]),
+                ("unexecuted", &[]),
+            ],
+        },
+    ),
+    (
+        "OperationPhase",
+        Shape::InternallyTagged {
+            tag: "type",
+            params: "",
+            variants: &[
+                ("starting", &[]),
+                ("creating_volume", &[]),
+                ("creating_container", &[]),
+                ("starting_container", &[]),
+                (
+                    "waiting_for_health",
+                    &[
+                        ("container_id", "ContainerId"),
+                        ("health", "HealthObservation?"),
+                        ("elapsed_ms", "number"),
+                        ("deadline_ms", "number"),
+                    ],
+                ),
+                (
+                    "waiting_for_hook",
+                    &[
+                        ("container_id", "ContainerId"),
+                        ("elapsed_ms", "number"),
+                        ("deadline_ms", "number"),
+                    ],
+                ),
+                ("stopping_container", &[]),
+                ("removing_container", &[]),
+                ("compensating", &[]),
+            ],
+        },
+    ),
+    (
+        "DeployEvent",
+        Shape::InternallyTagged {
+            tag: "type",
+            params: "",
+            variants: &[
+                (
+                    "progress",
+                    &[
+                        ("completed", "number"),
+                        ("total", "number"),
+                        ("rows", "OperationRow[]"),
+                    ],
+                ),
+                ("outcome", &[("outcome", "DeployOutcome")]),
             ],
         },
     ),
@@ -247,37 +619,50 @@ const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "DeployOperation",
-        Shape::ExternallyTagged {
+        Shape::InternallyTagged {
+            tag: "type",
             params: "",
             variants: &[
                 (
-                    "CreateVolume",
-                    Some("{ machine_id: MachineId; volume: ServiceVolume }"),
+                    "create_volume",
+                    &[("machine_id", "MachineId"), ("volume", "ServiceVolume")],
                 ),
                 (
-                    "RunContainer",
-                    Some(
-                        "{ machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }",
-                    ),
+                    "run_container",
+                    &[
+                        ("machine_id", "MachineId"),
+                        ("spec", "ResolvedServiceSpec"),
+                        ("skip_health_monitor", "boolean"),
+                    ],
                 ),
                 (
-                    "StopContainer",
-                    Some("{ machine_id: MachineId; container_id: ContainerId }"),
+                    "stop_container",
+                    &[("machine_id", "MachineId"), ("container_id", "ContainerId")],
                 ),
                 (
-                    "RemoveContainer",
-                    Some("{ machine_id: MachineId; container_id: ContainerId }"),
-                ),
-                ("ReplaceContainer", Some("ReplacementOperation")),
-                (
-                    "StopHook",
-                    Some("{ machine_id: MachineId; container_id: ContainerId }"),
+                    "remove_container",
+                    &[("machine_id", "MachineId"), ("container_id", "ContainerId")],
                 ),
                 (
-                    "RunHook",
-                    Some(
-                        "{ machine_id: MachineId; spec: ResolvedServiceSpec; old_hook_containers: Array<[MachineId, ContainerId]> }",
-                    ),
+                    "replace_container",
+                    &[
+                        ("machine_id", "MachineId"),
+                        ("old_container_id", "ContainerId"),
+                        ("spec", "ResolvedServiceSpec"),
+                        ("skip_health_monitor", "boolean"),
+                    ],
+                ),
+                (
+                    "stop_hook",
+                    &[("machine_id", "MachineId"), ("container_id", "ContainerId")],
+                ),
+                (
+                    "run_hook",
+                    &[
+                        ("machine_id", "MachineId"),
+                        ("spec", "ResolvedServiceSpec"),
+                        ("old_hook_containers", "Array<[MachineId, ContainerId]>"),
+                    ],
                 ),
             ],
         },
@@ -295,43 +680,50 @@ const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "HealthFailure",
-        Shape::ExternallyTagged {
+        Shape::InternallyTagged {
+            tag: "type",
             params: "",
             variants: &[
-                ("Cancelled", None),
-                ("TimedOut", None),
-                ("Runtime", Some("ContainerRuntimeObservation")),
+                ("cancelled", &[]),
+                ("timed_out", &[]),
+                ("runtime", &[("observation", "ContainerRuntimeObservation")]),
             ],
         },
     ),
     (
         "HookFailure",
-        Shape::ExternallyTagged {
+        Shape::InternallyTagged {
+            tag: "type",
             params: "",
             variants: &[
-                ("Cancelled", Some("{ stop_error: RpcError | null }")),
-                ("TimedOut", Some("{ stop_error: RpcError | null }")),
-                ("Exit", Some("number")),
+                ("cancelled", &[("stop_error", "RpcError | null")]),
+                ("timed_out", &[("stop_error", "RpcError | null")]),
+                ("exit", &[("code", "number")]),
             ],
         },
     ),
     (
         "ExecutionError",
-        Shape::ExternallyTagged {
+        Shape::InternallyTagged {
+            tag: "type",
             params: "",
             variants: &[
                 (
-                    "Machine",
-                    Some("{ action: MachineAction; error: RpcError }"),
+                    "machine",
+                    &[("action", "MachineAction"), ("error", "RpcError")],
                 ),
                 (
-                    "Health",
-                    Some("{ container_id: ContainerId; failure: HealthFailure }"),
+                    "health",
+                    &[
+                        ("container_id", "ContainerId"),
+                        ("failure", "HealthFailure"),
+                    ],
                 ),
                 (
-                    "Hook",
-                    Some("{ container_id: ContainerId; failure: HookFailure }"),
+                    "hook",
+                    &[("container_id", "ContainerId"), ("failure", "HookFailure")],
                 ),
+                ("cancelled", &[]),
             ],
         },
     ),
@@ -365,33 +757,39 @@ const PAYLOADS: &[(&str, Shape)] = &[
     ),
     (
         "FailedOperation",
-        Shape::ExternallyTagged {
+        Shape::InternallyTagged {
+            tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
                 (
-                    "Operation",
-                    Some("{ operation: DeployOperation; error: E }"),
+                    "operation",
+                    &[("operation", "DeployOperation"), ("error", "E")],
                 ),
                 (
-                    "ReplacementHealth",
-                    Some(
-                        "{ operation: ReplacementOperation; error: E; compensation: ReplacementCompensation<E> }",
-                    ),
+                    "replacement_health",
+                    &[
+                        ("operation", "ReplacementOperation"),
+                        ("error", "E"),
+                        ("compensation", "ReplacementCompensation<E>"),
+                    ],
                 ),
             ],
         },
     ),
     (
         "DeployOutcome",
-        Shape::ExternallyTagged {
+        Shape::InternallyTagged {
+            tag: "type",
             params: "<E = ExecutionError>",
             variants: &[
-                ("Success", Some("{ completed: DeployOperation[] }")),
+                ("success", &[("completed", "DeployOperation[]")]),
                 (
-                    "Failed",
-                    Some(
-                        "{ completed: DeployOperation[]; failed: FailedOperation<E>; unexecuted: DeployOperation[] }",
-                    ),
+                    "failed",
+                    &[
+                        ("completed", "DeployOperation[]"),
+                        ("failed", "FailedOperation<E>"),
+                        ("unexecuted", "DeployOperation[]"),
+                    ],
                 ),
             ],
         },
@@ -552,7 +950,7 @@ pub fn artifacts() -> Artifacts {
 
 /// Write generated files under the napi package root.
 ///
-/// Façade declarations (`connect` / `about` / `preview` / `deploy` /
+/// Façade declarations (`connect` / `about` / `preview` / `run` /
 /// `removeVolumes` / `close`) live in handwritten `index.d.ts` and are not
 /// emitted here.///
 /// # Errors
@@ -613,6 +1011,9 @@ fn typescript() -> String {
 fn emit_shape(name: &str, shape: &Shape) -> String {
     match shape {
         Shape::Alias(ts) => format!("export type {name} = {ts};\n"),
+        Shape::Branded => {
+            format!("export type {name} = string & {{ readonly __brand: \"{name}\" }};\n")
+        }
         Shape::OpenString(known) => {
             format!(
                 "export type {name} = {} | (string & {{}});\n",
@@ -626,7 +1027,11 @@ fn emit_shape(name: &str, shape: &Shape) -> String {
         Shape::ExternallyTagged { params, variants } => {
             emit_externally_tagged(name, params, variants)
         }
-        Shape::InternallyTagged { tag, variants } => emit_internally_tagged(name, tag, variants),
+        Shape::InternallyTagged {
+            tag,
+            params,
+            variants,
+        } => emit_internally_tagged(name, params, tag, variants),
     }
 }
 
@@ -682,17 +1087,30 @@ fn emit_externally_tagged(name: &str, params: &str, variants: &[(&str, Option<&s
     body
 }
 
-fn emit_internally_tagged(name: &str, tag: &str, variants: &[(&str, &[(&str, &str)])]) -> String {
+fn emit_internally_tagged(
+    name: &str,
+    params: &str,
+    tag: &str,
+    variants: &[(&str, &[(&str, &str)])],
+) -> String {
     let mut arms = Vec::new();
     for (tag_value, fields) in variants {
         let mut members = vec![format!("{tag}: \"{tag_value}\"")];
         for (field, ts) in *fields {
-            members.push(format!("{field}: {ts}"));
+            let (ts, optional) = strip_optional(ts);
+            if optional {
+                members.push(format!("{field}?: {ts}"));
+            } else {
+                members.push(format!("{field}: {ts}"));
+            }
         }
         arms.push(format!("Additive<{{ {} }}>", members.join("; ")));
     }
     arms.push(format!("Additive<{{ {tag}?: string }}>"));
-    format!("export type {name} =\n  | {};\n", arms.join("\n  | "))
+    format!(
+        "export type {name}{params} =\n  | {};\n",
+        arms.join("\n  | ")
+    )
 }
 
 fn capability_typescript() -> String {

@@ -21,7 +21,14 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let skip_health_monitor = matches.get_flag("skip-health");
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        deploy_spec(&mut client, &requested, force_recreate, skip_health_monitor).await
+        deploy_spec(
+            &mut client,
+            &requested,
+            force_recreate,
+            skip_health_monitor,
+            context.unwrap_or("default"),
+        )
+        .await
     })
 }
 
@@ -46,7 +53,10 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             apply,
             force_recreate,
             skip_health_monitor,
-            yes,
+            crate::deploy::ConfirmGate {
+                auto_confirm: yes,
+                context: context.as_deref().unwrap_or("default"),
+            },
         )
         .await
     })
@@ -126,7 +136,17 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        deploy_scale(&mut client, &selector, replicas, skip_health_monitor, yes).await
+        deploy_scale(
+            &mut client,
+            &selector,
+            replicas,
+            skip_health_monitor,
+            crate::deploy::ConfirmGate {
+                auto_confirm: yes,
+                context: context.unwrap_or("default"),
+            },
+        )
+        .await
     })
 }
 

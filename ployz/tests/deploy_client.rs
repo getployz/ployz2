@@ -1,4 +1,4 @@
-//! Client.preview / Client.deploy seam: plan-only preview, then execute.
+//! Client.preview / Client.confirm seam: plan-only preview, then execute that plan.
 
 use std::{
     collections::BTreeMap,
@@ -13,23 +13,24 @@ use ployz::{
     connect::{Client, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
     deploy::{
-        DeployError, DeployIntent, DeployOperation, DeployOutcome, DeployWarning, ExecutionError,
-        FailedOperation, PlanError, PlanOptions,
+        DeployError, DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployWarning,
+        ExecutionError, FailedOperation, OperationStatus, PlanError, PlanOptions,
     },
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerKind, ContainerList, ContainerPath,
-    ContainerRuntimeObservation, ContractDescription, DockerVolume, DockerVolumeId,
-    DockerVolumeName, Domain, HealthObservation, Machine, MachineId, MachineList, MachineName,
-    MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
-    OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec, ResolvedUpdateConfig, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeList, VolumeSource,
-    WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerCreated, ContainerDetails, ContainerId, ContainerKind,
+    ContainerList, ContainerPath, ContainerRuntimeObservation, ContractDescription, DockerVolume,
+    DockerVolumeId, DockerVolumeName, Domain, HealthObservation, Machine, MachineId, MachineImages,
+    MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress,
+    MembershipObservation, OpaquePayload, OperationPhase, PROTOCOL_MAJOR, RequestedServiceSpec,
+    ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId,
+    ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder,
+    VolumeList, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
+use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status, Streaming, transport::Server};
 
 #[tokio::test]
@@ -39,7 +40,11 @@ async fn deploy_returns_success_for_a_completed_run() {
     let spec = spec("web");
 
     let outcome = client
-        .deploy(DeployIntent::apply_one(spec, skip_health()))
+        .run(
+            DeployIntent::apply_one(spec, skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
         .await
         .unwrap();
 
@@ -68,7 +73,11 @@ async fn deploy_returns_the_completed_prefix_failed_op_and_unexecuted_suffix() {
     add_named_volume(&mut spec, "data");
 
     let outcome = client
-        .deploy(DeployIntent::apply_one(spec, skip_health()))
+        .run(
+            DeployIntent::apply_one(spec, skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
         .await
         .unwrap();
 
@@ -101,7 +110,11 @@ async fn deploy_surfaces_a_planning_error_instead_of_an_outcome() {
     let (mut client, server) = connected(DeployService::empty()).await;
 
     let error = client
-        .deploy(DeployIntent::apply_one(spec("web"), skip_health()))
+        .run(
+            DeployIntent::apply_one(spec("web"), skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
         .await
         .unwrap_err();
 
@@ -134,7 +147,7 @@ async fn preview_returns_operations_and_mutates_nothing() {
     assert_eq!(mutating.load(Ordering::SeqCst), 0);
     assert_eq!(preview.operations.len(), 1);
     assert!(matches!(
-        preview.operations.first(),
+        preview.operations.first().map(|row| &row.operation),
         Some(DeployOperation::RunContainer {
             machine_id,
             spec,
@@ -145,19 +158,19 @@ async fn preview_returns_operations_and_mutates_nothing() {
 }
 
 #[tokio::test]
-async fn executing_a_previewed_intent_re_plans_against_a_fresh_snapshot() {
+async fn confirm_executes_the_previewed_operations_without_re_planning() {
     let machine = machine('a', "one");
-    let spec = spec_missing_pull("web");
+    let spec = spec("web");
     let service = DeployService::new(machine.clone());
     let mutating = service.mutating_rpcs();
     let listed = service.listed_containers();
     let (mut client, server) = connected(service).await;
     let intent = DeployIntent::apply_one(spec.clone(), skip_health());
 
-    let preview = client.preview(intent.clone()).await.unwrap();
+    let preview = client.preview(intent).await.unwrap();
     assert_eq!(mutating.load(Ordering::SeqCst), 0);
     assert!(matches!(
-        preview.operations.first(),
+        preview.operations.first().map(|row| &row.operation),
         Some(DeployOperation::RunContainer { spec, .. }) if spec.name.as_str() == "web"
     ));
 
@@ -166,14 +179,20 @@ async fn executing_a_previewed_intent_re_plans_against_a_fresh_snapshot() {
         .unwrap()
         .push(running_container(&machine, &spec));
 
-    let outcome = client.deploy(intent).await.unwrap();
-    assert_eq!(mutating.load(Ordering::SeqCst), 0);
+    let outcome = client
+        .confirm(&preview, &CancellationToken::new(), None)
+        .await;
+    assert!(mutating.load(Ordering::SeqCst) > 0);
     let DeployOutcome::Success { completed } = outcome else {
         panic!("expected success: {outcome:?}");
     };
+    assert_eq!(completed.len(), 1);
     assert!(
-        completed.is_empty(),
-        "re-plan must not replay the previewed RunContainer: {completed:?}"
+        matches!(
+            completed.first(),
+            Some(DeployOperation::RunContainer { spec, .. }) if spec.name.as_str() == "web"
+        ),
+        "confirm must execute the previewed RunContainer: {completed:?}"
     );
     server.abort();
 }
@@ -214,7 +233,9 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
         .unwrap();
 
     assert_eq!(mutating.load(Ordering::SeqCst), 0);
-    let Some(DeployOperation::RunContainer { spec, .. }) = preview.operations.first() else {
+    let Some(DeployOperation::RunContainer { spec, .. }) =
+        preview.operations.first().map(|row| &row.operation)
+    else {
         panic!("expected RunContainer: {preview:?}");
     };
     let hostnames: Vec<_> = spec
@@ -273,6 +294,160 @@ async fn preview_surfaces_a_planning_error_instead_of_a_preview() {
     server.abort();
 }
 
+#[tokio::test]
+async fn confirm_emits_all_pending_before_any_machine_rpc() {
+    let machine = machine('a', "one");
+    let (mut client, server) = connected(DeployService::new(machine)).await;
+    let preview = client
+        .preview(DeployIntent::apply_one(spec("web"), skip_health()))
+        .await
+        .unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = client
+        .confirm(&preview, &CancellationToken::new(), Some(tx))
+        .await;
+    let first = rx.recv().await.expect("first progress event");
+    let DeployEvent::Progress {
+        rows, completed, ..
+    } = &first
+    else {
+        panic!("expected progress: {first:?}");
+    };
+    assert_eq!(*completed, 0);
+    assert!(
+        rows.iter()
+            .all(|row| matches!(row.status, OperationStatus::Pending)),
+        "first event must be all pending: {rows:?}"
+    );
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
+    server.abort();
+}
+
+#[tokio::test]
+async fn empty_apply_is_noop_and_confirm_succeeds_with_zero_operations() {
+    let machine = machine('a', "one");
+    let (mut client, server) = connected(DeployService::new(machine)).await;
+    let preview = client
+        .preview(DeployIntent::new(
+            vec![spec("web")],
+            Vec::new(),
+            skip_health(),
+        ))
+        .await
+        .unwrap();
+    assert!(preview.noop());
+    assert!(preview.operations.is_empty());
+    let outcome = client
+        .confirm(&preview, &CancellationToken::new(), None)
+        .await;
+    assert_eq!(
+        outcome,
+        DeployOutcome::Success {
+            completed: Vec::new()
+        }
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn abort_during_health_wait_settles_a_cancelled_outcome() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine).hold_health();
+    let (mut client, server) = connected(service).await;
+    let mut options = skip_health();
+    options.skip_health_monitor = false;
+    let preview = client
+        .preview(DeployIntent::apply_one(health_spec("web"), options))
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let running = client.confirm(&preview, &cancel, Some(tx));
+    tokio::pin!(running);
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                let Some(event) = event else { break };
+                if let DeployEvent::Progress { rows, .. } = &event
+                    && rows.iter().any(|row| {
+                        matches!(
+                            &row.status,
+                            OperationStatus::Running {
+                                phase: OperationPhase::WaitingForHealth { .. },
+                            }
+                        )
+                    })
+                {
+                    cancel.cancel();
+                }
+            }
+            outcome = &mut running => {
+                let DeployOutcome::Failed { failed, .. } = outcome else {
+                    panic!("expected cancelled failure: {outcome:?}");
+                };
+                assert!(matches!(
+                    failed,
+                    FailedOperation::Operation {
+                        error: ExecutionError::Cancelled | ExecutionError::Health { .. },
+                        ..
+                    }
+                ));
+                break;
+            }
+        }
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn wait_phases_carry_elapsed_and_deadline_clocks() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine).hold_health();
+    let (mut client, server) = connected(service).await;
+    let mut options = skip_health();
+    options.skip_health_monitor = false;
+    let preview = client
+        .preview(DeployIntent::apply_one(health_spec("web"), options))
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let running = client.confirm(&preview, &cancel, Some(tx));
+    tokio::pin!(running);
+    let mut saw_clocks = false;
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                let Some(event) = event else { break };
+                if let DeployEvent::Progress { rows, .. } = &event {
+                    saw_clocks |= rows.iter().any(|row| matches!(
+                        &row.status,
+                        OperationStatus::Running {
+                            phase: OperationPhase::WaitingForHealth {
+                                deadline_ms,
+                                ..
+                            },
+                        } if *deadline_ms > 0
+                    ));
+                    if saw_clocks {
+                        cancel.cancel();
+                    }
+                }
+            }
+            outcome = &mut running => {
+                let _ = outcome;
+                break;
+            }
+        }
+    }
+    assert!(
+        saw_clocks,
+        "wait phases must include elapsed_ms/deadline_ms"
+    );
+    server.abort();
+}
+
 #[derive(Clone)]
 struct DeployService {
     machines: Vec<MachineObservation>,
@@ -281,6 +456,7 @@ struct DeployService {
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     mutating_rpcs: Arc<AtomicUsize>,
     domain: Option<String>,
+    hold_health: bool,
 }
 
 impl DeployService {
@@ -292,6 +468,7 @@ impl DeployService {
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
+            hold_health: false,
         }
     }
 
@@ -303,6 +480,7 @@ impl DeployService {
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
+            hold_health: false,
         }
     }
 
@@ -317,6 +495,11 @@ impl DeployService {
 
     fn with_domain(mut self, name: &str) -> Self {
         self.domain = Some(name.into());
+        self
+    }
+
+    fn hold_health(mut self) -> Self {
+        self.hold_health = true;
         self
     }
 
@@ -473,9 +656,45 @@ impl MachineRpc for DeployService {
     }
     async fn inspect_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let RpcRequestBody::InspectContainer(inspect) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected inspect_container"));
+        };
+        let health = if self.hold_health {
+            HealthObservation::Starting
+        } else {
+            HealthObservation::Healthy
+        };
+        let spec = spec("web").to_resolved(
+            ServiceId::random(),
+            ResolvedUpdateConfig {
+                order: UpdateOrder::StartFirst,
+                monitor_millis: None,
+            },
+        );
+        encoded(RpcResponse::from(ContainerDetails {
+            container: ployz_core::ContainerObservation {
+                container_id: inspect.container_id,
+                display_name: "web-1".into(),
+                created_at_unix_nanos: 0,
+                machine_id: self
+                    .machines
+                    .first()
+                    .map(|machine| machine.machine.id)
+                    .unwrap_or_else(MachineId::random),
+                service_id: spec.service_id,
+                service_name: spec.name.clone(),
+                kind: ContainerKind::ServiceContainer,
+                runtime: ContainerRuntimeObservation::Running { health },
+                effective_healthcheck: None,
+                resolved_spec: spec,
+                address: None,
+                labels: BTreeMap::new(),
+            },
+        }))
     }
     async fn inspect_volume(
         &self,
@@ -532,7 +751,10 @@ impl MachineRpc for DeployService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        encoded(RpcResponse::from(MachineImages {
+            containerd_store: false,
+            images: Vec::new(),
+        }))
     }
     async fn ensure_image_ingest(
         &self,
@@ -670,20 +892,25 @@ async fn connected(
     (client, server)
 }
 
+fn health_spec(name: &str) -> RequestedServiceSpec {
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": {
+            "image": "nginx",
+            "pull_policy": "always",
+            "healthcheck": { "state": "configured", "test": ["CMD", "true"] }
+        },
+        "update": { "monitor_millis": 60_000 }
+    }))
+    .unwrap()
+}
+
 fn spec(name: &str) -> RequestedServiceSpec {
     serde_json::from_value(serde_json::json!({
         "name": name,
         "mode": { "mode": "replicated", "replicas": 1 },
         "container": { "image": "nginx", "pull_policy": "always" }
-    }))
-    .unwrap()
-}
-
-fn spec_missing_pull(name: &str) -> RequestedServiceSpec {
-    serde_json::from_value(serde_json::json!({
-        "name": name,
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "nginx", "pull_policy": "missing" }
     }))
     .unwrap()
 }

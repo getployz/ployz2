@@ -3,22 +3,24 @@ use std::{
     num::NonZeroU32,
 };
 
-use ployz_core::{RequestedServiceSpec, ServiceSelector};
+use ployz_core::{
+    DeployEvent, OperationPhase, OperationStatus, RequestedServiceSpec, ServiceSelector,
+};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     compose::{BuildService, ComposeProject},
     connect::Client,
-    context::Connection,
     failure::Failure,
 };
 
 use super::{
-    DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation,
-    ReplacementOperation, ServiceAttempt,
+    DeployOutcome, DeployPreview, ExecutionError, ServiceAttempt,
     pipeline::{
-        PushOutcome, execute_deploy, list_machines, plan_options, plan_project, plan_scale,
-        plan_spec, push_project_images,
+        PushOutcome, list_machines, plan_options, plan_project, plan_scale, plan_spec,
+        push_project_images,
     },
+    render::{self, ProgressStyle},
 };
 
 pub(crate) async fn deploy_spec(
@@ -26,6 +28,7 @@ pub(crate) async fn deploy_spec(
     requested: &RequestedServiceSpec,
     force_recreate: bool,
     skip_health_monitor: bool,
+    context: &str,
 ) -> Result<(), Failure> {
     let preview = plan_spec(
         client,
@@ -34,15 +37,26 @@ pub(crate) async fn deploy_spec(
     )
     .await?;
     print_warnings(&preview);
-    render(&preview.operations, client.connection());
-    finish(execute_deploy(client, &preview.operations).await)
+    if preview.noop() {
+        print!("{}", render::plan_text(&preview, context));
+        return Ok(());
+    }
+    let style = ProgressStyle::Run {
+        service: requested.name.to_string(),
+    };
+    finish(stream_confirm(client, &preview, style).await)
 }
 
 pub(crate) async fn apply_requested(
     client: &mut Client,
     requested: &RequestedServiceSpec,
 ) -> Result<(), Failure> {
-    deploy_spec(client, requested, false, false).await
+    deploy_spec(client, requested, false, false, "default").await
+}
+
+pub(crate) struct ConfirmGate<'a> {
+    pub auto_confirm: bool,
+    pub context: &'a str,
 }
 
 pub(crate) async fn deploy_project(
@@ -52,7 +66,7 @@ pub(crate) async fn deploy_project(
     apply: Vec<ServiceAttempt>,
     force_recreate: bool,
     skip_health_monitor: bool,
-    auto_confirm: bool,
+    gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
     let options = plan_options(force_recreate, skip_health_monitor);
     let machines = list_machines(client).await?;
@@ -66,12 +80,7 @@ pub(crate) async fn deploy_project(
     }
     let preview = plan_project(client, project, machines, apply, options).await?;
     print_warnings(&preview);
-    if preview.operations.is_empty() {
-        println!("No changes.");
-        return Ok(());
-    }
-    // TODO(UT-086): this is a best-effort preview over one observer-relative snapshot.
-    confirm_and_execute(client, &preview.operations, auto_confirm).await
+    confirm_and_execute(client, &preview, gate).await
 }
 
 pub(crate) async fn deploy_scale(
@@ -79,7 +88,7 @@ pub(crate) async fn deploy_scale(
     selector: &ServiceSelector,
     replicas: NonZeroU32,
     skip_health_monitor: bool,
-    auto_confirm: bool,
+    gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
     let preview = plan_scale(
         client,
@@ -89,24 +98,132 @@ pub(crate) async fn deploy_scale(
     )
     .await?;
     print_warnings(&preview);
-    if preview.operations.is_empty() {
-        println!("No changes.");
-        return Ok(());
-    }
-    confirm_and_execute(client, &preview.operations, auto_confirm).await
+    confirm_and_execute(client, &preview, gate).await
 }
 
 async fn confirm_and_execute(
-    client: &mut Client,
-    operations: &[DeployOperation],
-    auto_confirm: bool,
+    client: &Client,
+    preview: &DeployPreview,
+    gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
-    render(operations, client.connection());
-    if !auto_confirm && !confirm()? {
-        println!("Cancelled. No changes were made.");
+    print!("{}", render::plan_text(preview, gate.context));
+    if preview.noop() {
         return Ok(());
     }
-    finish(execute_deploy(client, operations).await)
+    if !gate.auto_confirm && !confirm(gate.context)? {
+        println!("No changes were made.");
+        return Ok(());
+    }
+    finish(
+        stream_confirm(
+            client,
+            preview,
+            ProgressStyle::Deploy {
+                context: gate.context.to_owned(),
+            },
+        )
+        .await,
+    )
+}
+
+async fn stream_confirm(
+    client: &Client,
+    preview: &DeployPreview,
+    style: ProgressStyle,
+) -> DeployOutcome<ExecutionError> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let cancel = CancellationToken::new();
+    let abort = cancel.clone();
+    let ctrl_c = tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        abort.cancel();
+    });
+    let execute = client.confirm(preview, &cancel, Some(tx));
+    tokio::pin!(execute);
+    let mut printer = ProgressPrinter::new(style);
+    let outcome = loop {
+        tokio::select! {
+            event = rx.recv() => {
+                if let Some(event) = event {
+                    printer.print(&event);
+                }
+            }
+            outcome = &mut execute => {
+                while let Ok(event) = rx.try_recv() {
+                    printer.print(&event);
+                }
+                break outcome;
+            }
+        }
+    };
+    ctrl_c.abort();
+    outcome
+}
+
+struct ProgressPrinter {
+    style: ProgressStyle,
+    last_lines: usize,
+    last_signature: Option<String>,
+}
+
+impl ProgressPrinter {
+    fn new(style: ProgressStyle) -> Self {
+        Self {
+            style,
+            last_lines: 0,
+            last_signature: None,
+        }
+    }
+
+    fn print(&mut self, event: &DeployEvent) {
+        let DeployEvent::Progress { .. } = event else {
+            return;
+        };
+        let signature = progress_signature(event);
+        let tty = io::stdout().is_terminal();
+        if !tty && self.last_signature.as_ref() == Some(&signature) {
+            return;
+        }
+        let text = render::progress_text(event, &self.style);
+        if tty && self.last_lines > 0 {
+            print!("\x1b[{}F\x1b[J", self.last_lines);
+        }
+        print!("{text}");
+        let _ = io::stdout().flush();
+        self.last_lines = text.lines().count();
+        self.last_signature = Some(signature);
+    }
+}
+
+fn progress_signature(event: &DeployEvent) -> String {
+    match event {
+        DeployEvent::Progress {
+            rows, completed, ..
+        } => {
+            let kinds: Vec<_> =
+                rows.iter()
+                    .map(|row| match &row.status {
+                        OperationStatus::Pending => "pending",
+                        OperationStatus::Running { phase } => match phase {
+                            OperationPhase::WaitingForHealth { .. } => "health",
+                            OperationPhase::WaitingForHook { .. } => "hook",
+                            OperationPhase::StoppingContainer
+                            | OperationPhase::RemovingContainer => "removing",
+                            OperationPhase::Compensating => "compensating",
+                            OperationPhase::Starting
+                            | OperationPhase::CreatingVolume
+                            | OperationPhase::CreatingContainer
+                            | OperationPhase::StartingContainer => "running",
+                        },
+                        OperationStatus::Completed => "completed",
+                        OperationStatus::Failed { .. } => "failed",
+                        OperationStatus::Unexecuted => "unexecuted",
+                    })
+                    .collect();
+            format!("{completed}:{}", kinds.join(","))
+        }
+        DeployEvent::Outcome { .. } => String::new(),
+    }
 }
 
 fn print_pushed_images(outcome: &PushOutcome) {
@@ -121,104 +238,28 @@ fn print_warnings(preview: &DeployPreview) {
     }
 }
 
-fn confirm() -> Result<bool, Failure> {
+fn confirm(context: &str) -> Result<bool, Failure> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(Failure::usage(
             "confirmation requires a terminal; pass --yes to continue",
         ));
     }
-    print!("Continue? [y/N] ");
+    print!("{}", render::confirm_prompt(context));
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
-fn render(operations: &[DeployOperation], connection: &Connection) {
-    println!("Plan for {connection}:");
-    for operation in operations {
-        println!("  {}", operation_summary(operation));
-    }
-}
-
 fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), Failure> {
+    let text = render::outcome_text(&outcome);
+    if !text.is_empty() {
+        print!("{text}");
+    }
     match outcome {
-        DeployOutcome::Success { completed } => {
-            println!("Completed {} operation(s).", completed.len());
-            Ok(())
-        }
-        DeployOutcome::Failed {
-            completed,
-            failed,
-            unexecuted,
-        } => {
-            println!("Completed {} operation(s).", completed.len());
-            Err(Failure::usage(format!(
-                "Deploy stopped; completed: [{}]; failed: {}; unexecuted: [{}]",
-                operation_list(&completed),
-                failed_summary(&failed),
-                operation_list(&unexecuted),
-            )))
-        }
+        DeployOutcome::Success { .. } => Ok(()),
+        DeployOutcome::Failed { .. } => Err(Failure::usage(text.trim().to_owned())),
     }
-}
-
-fn failed_summary(failed: &FailedOperation<ExecutionError>) -> String {
-    match failed {
-        FailedOperation::Operation { operation, error } => {
-            format!("{}: {error}", operation_summary(operation))
-        }
-        FailedOperation::ReplacementHealth {
-            operation,
-            error,
-            compensation,
-        } => format!(
-            "{}: {error}; compensation: {compensation:?}",
-            replacement_summary(operation),
-        ),
-    }
-}
-
-fn operation_summary(operation: &DeployOperation) -> String {
-    match operation {
-        DeployOperation::CreateVolume { machine_id, volume } => {
-            format!("create volume {} on {machine_id}", volume.reference)
-        }
-        DeployOperation::RunContainer {
-            machine_id, spec, ..
-        } => format!("run {} on {machine_id}", spec.name),
-        DeployOperation::StopContainer {
-            machine_id,
-            container_id,
-        } => format!("stop {container_id} on {machine_id}"),
-        DeployOperation::RemoveContainer {
-            machine_id,
-            container_id,
-        } => format!("remove {container_id} on {machine_id}"),
-        DeployOperation::ReplaceContainer(operation) => replacement_summary(operation),
-        DeployOperation::StopHook {
-            machine_id,
-            container_id,
-        } => format!("stop hook {container_id} on {machine_id}"),
-        DeployOperation::RunHook {
-            machine_id, spec, ..
-        } => format!("run pre-deploy hook for {} on {machine_id}", spec.name),
-    }
-}
-
-fn replacement_summary(operation: &ReplacementOperation) -> String {
-    format!(
-        "replace {} for {} on {}",
-        operation.old_container_id, operation.spec.name, operation.machine_id
-    )
-}
-
-fn operation_list(operations: &[DeployOperation]) -> String {
-    operations
-        .iter()
-        .map(operation_summary)
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 #[cfg(test)]
@@ -226,6 +267,7 @@ mod tests {
     use super::*;
     use crate::deploy::DeployWarning;
     use crate::dns::ingress_dns_warnings;
+    use ployz_core::RequestedServiceSpec;
 
     #[test]
     fn deploy_prints_ingress_misses_as_warning_lines_without_failing() {
@@ -252,9 +294,9 @@ mod tests {
         }))
         .unwrap();
         let cluster = ["192.0.2.1".parse().unwrap()];
-        let preview = DeployPreview {
-            operations: Vec::new(),
-            warnings: ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
+        let preview = DeployPreview::new(
+            Vec::new(),
+            ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
                 "app.example.com" => vec!["198.51.100.10".parse().unwrap()],
                 "plain.example.com" => Vec::new(),
                 other => panic!("unexpected {other}"),
@@ -262,7 +304,7 @@ mod tests {
             .into_iter()
             .map(DeployWarning::from)
             .collect(),
-        };
+        );
         assert_eq!(
             preview
                 .warnings

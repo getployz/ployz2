@@ -14,12 +14,14 @@ class Client {
     return this._inner.about();
   }
 
-  preview(intent) {
-    return this._inner.preview(intent);
+  async preview(intent) {
+    return wrapPreview(await this._inner.preview(intent));
   }
 
-  deploy(intent) {
-    return this._inner.deploy(intent);
+  async run(intent, options = {}) {
+    const preview = await this.preview(intent);
+    const running = preview.confirm(options);
+    return running.finished;
   }
 
   removeVolumes(request) {
@@ -29,6 +31,48 @@ class Client {
   close() {
     return this._inner.close();
   }
+}
+
+function wrapPreview(handle) {
+  const payload = handle.payload();
+  return {
+    operations: payload.operations,
+    warnings: payload.warnings,
+    noop: handle.noop,
+    confirm(options = {}) {
+      return wrapRunning(handle.confirm(), options && options.signal);
+    },
+  };
+}
+
+function wrapRunning(running, signal) {
+  const stop = () => running.abort();
+  if (signal?.aborted) {
+    stop();
+  } else if (signal) {
+    signal.addEventListener("abort", stop, { once: true });
+  }
+  return {
+    abort: stop,
+    get finished() {
+      return running.finished();
+    },
+    async *[Symbol.asyncIterator]() {
+      try {
+        for (;;) {
+          const value = await running.next();
+          if (value == null) {
+            return;
+          }
+          yield value;
+        }
+      } finally {
+        if (signal) {
+          signal.removeEventListener("abort", stop);
+        }
+      }
+    },
+  };
 }
 
 async function* iterateWatch(start, signal) {
@@ -65,6 +109,26 @@ async function* iterateWatch(start, signal) {
   }
 }
 
+function defaultPlanOptions() {
+  return {
+    force_recreate: false,
+    skip_health_monitor: false,
+    placement_seed: 0,
+  };
+}
+
+function applyAll(specs, options = defaultPlanOptions()) {
+  return {
+    target: specs,
+    apply: specs.map((spec) => ({ name: spec.name })),
+    options,
+  };
+}
+
+function applyOne(spec, options) {
+  return applyAll([spec], options);
+}
+
 async function connect(options) {
   return new Client(await native.connect(options));
 }
@@ -73,4 +137,6 @@ module.exports = {
   connect,
   packageName: native.packageName,
   Client,
+  applyAll,
+  applyOne,
 };

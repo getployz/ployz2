@@ -1,5 +1,6 @@
 import type {
   ContractDescription,
+  DeployEvent,
   DeployIntent,
   DeployOutcome,
   DeployPreview,
@@ -7,7 +8,9 @@ import type {
   ExecutionError,
   MachineId,
   PartialResult,
+  PlanOptions,
   RemoveVolumesRequest,
+  RequestedServiceSpec,
   RpcError,
   RuntimeWatchFrame,
 } from "./generated/payloads";
@@ -23,15 +26,46 @@ export type WatchOptions = {
   readonly signal?: AbortSignal;
 };
 
+export type ConfirmOptions = {
+  readonly signal?: AbortSignal;
+};
+
+export type RunOptions = {
+  readonly signal?: AbortSignal;
+};
+
+export type PreparedDeploy = DeployPreview & {
+  readonly noop: boolean;
+  confirm(options?: ConfirmOptions): RunningDeploy;
+};
+
+export type RunningDeploy = AsyncIterable<DeployEvent> & {
+  abort(): void;
+  readonly finished: Promise<DeployOutcome<ExecutionError>>;
+};
+
 export declare function connect(options: ConnectOptions): Promise<Client>;
+
+export declare function applyAll(
+  specs: readonly RequestedServiceSpec[],
+  options?: PlanOptions,
+): DeployIntent;
+
+export declare function applyOne(
+  spec: RequestedServiceSpec,
+  options?: PlanOptions,
+): DeployIntent;
 
 export declare class Client {
   about(): Promise<ContractDescription>;
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchFrame>;
   };
-  preview(intent: DeployIntent): Promise<DeployPreview>;
-  deploy(intent: DeployIntent): Promise<DeployOutcome<ExecutionError>>;
+  preview(intent: DeployIntent): Promise<PreparedDeploy>;
+  run(
+    intent: DeployIntent,
+    options?: RunOptions,
+  ): Promise<DeployOutcome<ExecutionError>>;
   removeVolumes(
     request: RemoveVolumesRequest,
   ): Promise<PartialResult<DockerVolumeName, RpcError>>;

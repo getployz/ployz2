@@ -2,12 +2,13 @@ use std::{future::Future, time::Duration};
 
 use ployz_core::{
     ConfiguredHealthcheck, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, ExecutionError,
-    HealthFailure, HealthObservation, HealthcheckSpec, HookFailure, InspectContainerRequest,
-    MachineAction, MachineId, MachineTarget, RemoveContainerRequest, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, ServiceVolume, StartContainerRequest, StopContainerRequest, UpdateOrder,
-    VolumeSource, op,
+    ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, DeployEvent,
+    ExecutionError, HealthFailure, HealthObservation, HealthcheckSpec, HookFailure,
+    InspectContainerRequest, MachineAction, MachineId, MachineTarget, OperationPhase, OperationRow,
+    RemoveContainerRequest, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume,
+    StartContainerRequest, StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -15,7 +16,7 @@ use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 
 use super::{
     DeployOperation, DeployOutcome, DeployPlan, ReplacementCompensation, ReplacementOperation,
-    RestartAttempt,
+    RestartAttempt, progress::Progress,
 };
 
 const DEFAULT_HEALTH_MONITOR: Duration = Duration::from_secs(5);
@@ -31,7 +32,7 @@ pub async fn execute_plan(
     client: &Client,
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
-    execute_with(plan, client, cancellation).await
+    execute_operation_sequence(&plan.operations, client, cancellation, Vec::new(), None).await
 }
 
 pub(crate) async fn execute_operations(
@@ -39,7 +40,17 @@ pub(crate) async fn execute_operations(
     client: &Client,
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
-    execute_operation_sequence(operations, client, cancellation).await
+    execute_operation_sequence(operations, client, cancellation, Vec::new(), None).await
+}
+
+pub(crate) async fn execute_operations_with_progress(
+    operations: &[DeployOperation],
+    rows: Vec<OperationRow>,
+    client: &Client,
+    cancellation: &CancellationToken,
+    tx: UnboundedSender<DeployEvent>,
+) -> DeployOutcome<ExecutionError> {
+    execute_operation_sequence(operations, client, cancellation, rows, Some(tx)).await
 }
 
 trait MachineOperations {
@@ -338,134 +349,211 @@ where
     }
 }
 
+#[cfg_attr(not(test), expect(dead_code, reason = "used by exec_tests"))]
 async fn execute_with<C: MachineOperations>(
     plan: &DeployPlan,
     client: &C,
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
-    execute_operation_sequence(&plan.operations, client, cancellation).await
+    execute_operation_sequence(&plan.operations, client, cancellation, Vec::new(), None).await
 }
 
 async fn execute_operation_sequence<C: MachineOperations>(
     operations: impl IntoIterator<Item = &DeployOperation>,
     client: &C,
     cancellation: &CancellationToken,
+    rows: Vec<OperationRow>,
+    tx: Option<UnboundedSender<DeployEvent>>,
 ) -> DeployOutcome<ExecutionError> {
     let operations: Vec<DeployOperation> = operations.into_iter().cloned().collect();
     let client = RestartTolerant {
         inner: client,
         cancellation,
     };
+    let mut progress = Progress::new(&operations, rows, tx);
+    progress.emit_pending();
     for (index, operation) in operations.iter().enumerate() {
-        match execute_operation(operation, &client, cancellation).await {
-            Ok(()) => {}
-            Err(OperationFailure::Ordinary(error)) => {
-                return DeployPlan::failure_outcome_from(&operations, index, error)
+        if cancellation.is_cancelled() {
+            progress.fail(index, ExecutionError::Cancelled);
+            let outcome =
+                DeployPlan::failure_outcome_from(&operations, index, ExecutionError::Cancelled)
                     .expect("the failed operation belongs to this plan");
+            progress.outcome(outcome.clone());
+            return outcome;
+        }
+        match execute_operation(operation, index, &mut progress, &client, cancellation).await {
+            Ok(()) => {
+                progress.set_completed(index);
+            }
+            Err(OperationFailure::Ordinary(error)) => {
+                progress.fail(index, error.clone());
+                let outcome = DeployPlan::failure_outcome_from(&operations, index, error)
+                    .expect("the failed operation belongs to this plan");
+                progress.outcome(outcome.clone());
+                return outcome;
             }
             Err(OperationFailure::ReplacementHealth {
                 error,
                 compensation,
             }) => {
-                return DeployPlan::replacement_health_failure_outcome_from(
+                progress.fail(index, error.clone());
+                let outcome = DeployPlan::replacement_health_failure_outcome_from(
                     &operations,
                     index,
                     error,
                     *compensation,
                 )
                 .expect("replacement health failure belongs to the replacement operation");
+                progress.outcome(outcome.clone());
+                return outcome;
             }
         }
     }
-    DeployOutcome::Success {
+    let outcome = DeployOutcome::Success {
         completed: operations,
-    }
+    };
+    progress.outcome(outcome.clone());
+    outcome
 }
 
 async fn execute_operation<C: MachineOperations>(
     operation: &DeployOperation,
+    index: usize,
+    progress: &mut Progress,
     client: &C,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure> {
     match operation {
-        DeployOperation::CreateVolume { machine_id, volume } => client
-            .create_volume(machine_id, volume)
-            .await
-            .map_err(|error| machine_error(MachineAction::CreateVolume, error).into()),
+        DeployOperation::CreateVolume { machine_id, volume } => {
+            progress.set_running(index, OperationPhase::CreatingVolume);
+            client
+                .create_volume(machine_id, volume)
+                .await
+                .map_err(|error| machine_error(MachineAction::CreateVolume, error).into())
+        }
         DeployOperation::RunContainer {
             machine_id,
             spec,
             skip_health_monitor,
-        } => run_container(client, machine_id, spec, *skip_health_monitor, cancellation)
-            .await
-            .map(|_| ())
-            .map_err(Into::into),
+        } => run_container(
+            client,
+            index,
+            progress,
+            machine_id,
+            spec,
+            *skip_health_monitor,
+            cancellation,
+        )
+        .await
+        .map(|_| ())
+        .map_err(Into::into),
         DeployOperation::StopContainer {
             machine_id,
             container_id,
-        } => ignore_not_found(client.stop_container(machine_id, container_id, None).await)
-            .map_err(|error| machine_error(MachineAction::StopContainer, error).into()),
+        } => {
+            progress.set_running(index, OperationPhase::StoppingContainer);
+            ignore_not_found(client.stop_container(machine_id, container_id, None).await)
+                .map_err(|error| machine_error(MachineAction::StopContainer, error).into())
+        }
         DeployOperation::RemoveContainer {
             machine_id,
             container_id,
         } => {
+            progress.set_running(index, OperationPhase::StoppingContainer);
             ignore_not_found(client.stop_container(machine_id, container_id, None).await)
                 .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
+            progress.set_running(index, OperationPhase::RemovingContainer);
             ignore_not_found(client.remove_container(machine_id, container_id).await)
                 .map_err(|error| machine_error(MachineAction::RemoveContainer, error).into())
         }
         DeployOperation::ReplaceContainer(replacement) => {
-            replace_container(client, replacement, cancellation).await
+            replace_container(client, index, progress, replacement, cancellation).await
         }
         DeployOperation::StopHook {
             machine_id,
             container_id,
-        } => ignore_not_found(client.stop_container(machine_id, container_id, None).await)
-            .map_err(|error| machine_error(MachineAction::StopContainer, error).into()),
+        } => {
+            progress.set_running(index, OperationPhase::StoppingContainer);
+            ignore_not_found(client.stop_container(machine_id, container_id, None).await)
+                .map_err(|error| machine_error(MachineAction::StopContainer, error).into())
+        }
         DeployOperation::RunHook {
             machine_id,
             spec,
             old_hook_containers,
-        } => run_hook(client, machine_id, spec, old_hook_containers, cancellation)
-            .await
-            .map_err(Into::into),
+        } => run_hook(
+            client,
+            index,
+            progress,
+            machine_id,
+            spec,
+            old_hook_containers,
+            cancellation,
+        )
+        .await
+        .map_err(Into::into),
     }
 }
 
 async fn create_and_start<C: MachineOperations>(
     client: &C,
+    index: usize,
+    progress: &mut Progress,
     machine_id: &MachineId,
     kind: ContainerKind,
     spec: &ResolvedServiceSpec,
-) -> Result<ContainerId, ExecutionError> {
+) -> Result<ContainerCreated, ExecutionError> {
+    progress.set_running(index, OperationPhase::CreatingContainer);
     let created = client
         .create_container(machine_id, kind, spec)
         .await
         .map_err(|error| machine_error(MachineAction::CreateContainer, error))?;
+    progress.set_display_name(index, created.display_name.clone());
+    progress.set_running(index, OperationPhase::StartingContainer);
     client
         .start_container(machine_id, &created.container_id)
         .await
         .map_err(|error| machine_error(MachineAction::StartContainer, error))?;
-    Ok(created.container_id)
+    Ok(created)
 }
 
 async fn run_container<C: MachineOperations>(
     client: &C,
+    index: usize,
+    progress: &mut Progress,
     machine_id: &MachineId,
     spec: &ResolvedServiceSpec,
     skip_health_monitor: bool,
     cancellation: &CancellationToken,
 ) -> Result<ContainerId, ExecutionError> {
-    let container_id =
-        create_and_start(client, machine_id, ContainerKind::ServiceContainer, spec).await?;
+    let created = create_and_start(
+        client,
+        index,
+        progress,
+        machine_id,
+        ContainerKind::ServiceContainer,
+        spec,
+    )
+    .await?;
     if !skip_health_monitor {
-        monitor_container(client, machine_id, &container_id, spec, cancellation).await?;
+        monitor_container(
+            client,
+            index,
+            progress,
+            machine_id,
+            &created.container_id,
+            spec,
+            cancellation,
+        )
+        .await?;
     }
-    Ok(container_id)
+    Ok(created.container_id)
 }
 
 async fn replace_container<C: MachineOperations>(
     client: &C,
+    index: usize,
+    progress: &mut Progress,
     operation: &ReplacementOperation,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure> {
@@ -483,6 +571,7 @@ async fn replace_container<C: MachineOperations>(
         };
         let active = old.is_some_and(|old| super::is_active_runtime(&old.runtime));
         if active {
+            progress.set_running(index, OperationPhase::StoppingContainer);
             match client
                 .stop_container(&operation.machine_id, &operation.old_container_id, None)
                 .await
@@ -500,17 +589,22 @@ async fn replace_container<C: MachineOperations>(
         false
     };
 
-    let container_id = create_and_start(
+    let created = create_and_start(
         client,
+        index,
+        progress,
         &operation.machine_id,
         ContainerKind::ServiceContainer,
         &operation.spec,
     )
     .await?;
+    let container_id = created.container_id;
 
     if !operation.skip_health_monitor
         && let Err(error) = monitor_container(
             client,
+            index,
+            progress,
             &operation.machine_id,
             &container_id,
             &operation.spec,
@@ -521,6 +615,7 @@ async fn replace_container<C: MachineOperations>(
         if !matches!(&error, ExecutionError::Health { .. }) {
             return Err(error.into());
         }
+        progress.set_running(index, OperationPhase::Compensating);
         let stop_new_container = ignore_not_found(
             client
                 .stop_container(
@@ -557,6 +652,7 @@ async fn replace_container<C: MachineOperations>(
     if !stop_first {
         // TODO(UT-074): Caddy learns about the new container asynchronously, so stopping the old
         // single replica here can still cause a brief interruption.
+        progress.set_running(index, OperationPhase::StoppingContainer);
         ignore_not_found(
             client
                 .stop_container(&operation.machine_id, &operation.old_container_id, None)
@@ -564,6 +660,7 @@ async fn replace_container<C: MachineOperations>(
         )
         .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
     }
+    progress.set_running(index, OperationPhase::RemovingContainer);
     ignore_not_found(
         client
             .remove_container(&operation.machine_id, &operation.old_container_id)
@@ -574,17 +671,34 @@ async fn replace_container<C: MachineOperations>(
 
 async fn monitor_container<C: MachineOperations>(
     client: &C,
+    index: usize,
+    progress: &mut Progress,
     machine_id: &MachineId,
     container_id: &ContainerId,
     spec: &ResolvedServiceSpec,
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {
-    // TODO(UT-032): health monitoring remains silent until its final outcome.
     let monitor = spec
         .update
         .monitor_millis
         .map_or_else(default_health_monitor, Duration::from_millis);
     let started = Instant::now();
+    let deadline_ms = healthcheck_timeout(
+        spec.container
+            .healthcheck
+            .as_ref()
+            .and_then(HealthcheckSpec::as_configured),
+    )
+    .as_millis() as u64;
+    progress.set_running(
+        index,
+        OperationPhase::WaitingForHealth {
+            container_id: *container_id,
+            health: None,
+            elapsed_ms: 0,
+            deadline_ms,
+        },
+    );
 
     if !matches!(
         spec.container.healthcheck,
@@ -597,6 +711,15 @@ async fn monitor_container<C: MachineOperations>(
             }
             () = tokio::time::sleep(monitor) => {}
         }
+        progress.set_running(
+            index,
+            OperationPhase::WaitingForHealth {
+                container_id: *container_id,
+                health: None,
+                elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                deadline_ms,
+            },
+        );
     }
 
     let monitor_deadline = started + monitor;
@@ -608,6 +731,33 @@ async fn monitor_container<C: MachineOperations>(
         let now = Instant::now();
         let health_deadline =
             health_deadline_for(spec.container.healthcheck.as_ref(), &observed, started);
+        let health = match &observed.runtime {
+            ContainerRuntimeObservation::Running { health } => Some(health.clone()),
+            ContainerRuntimeObservation::Created
+            | ContainerRuntimeObservation::Paused
+            | ContainerRuntimeObservation::Restarting
+            | ContainerRuntimeObservation::Exited { .. }
+            | ContainerRuntimeObservation::Removing
+            | ContainerRuntimeObservation::Dead
+            | ContainerRuntimeObservation::Unknown { .. } => None,
+        };
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let deadline_ms = health_deadline
+            .or(Some(monitor_deadline))
+            .map(|deadline| {
+                u64::try_from(deadline.saturating_duration_since(started).as_millis())
+                    .unwrap_or(u64::MAX)
+            })
+            .unwrap_or(deadline_ms);
+        progress.set_running(
+            index,
+            OperationPhase::WaitingForHealth {
+                container_id: *container_id,
+                health,
+                elapsed_ms,
+                deadline_ms,
+            },
+        );
         let wake_deadline =
             match classify_health(&observed.runtime, now, monitor_deadline, health_deadline) {
                 HealthPoll::Complete => return Ok(()),
@@ -645,7 +795,9 @@ fn classify_health(
                 | HealthObservation::Unrecognized(_),
         } => {
             let Some(health_deadline) = health_deadline else {
-                return HealthPoll::Failed(HealthFailure::Runtime(runtime.clone()));
+                return HealthPoll::Failed(HealthFailure::Runtime {
+                    observation: runtime.clone(),
+                });
             };
             if now >= health_deadline {
                 HealthPoll::Failed(HealthFailure::TimedOut)
@@ -655,9 +807,9 @@ fn classify_health(
         }
         // The process already died. Waiting would let a later healthy snapshot
         // during the next start window succeed the deploy.
-        ContainerRuntimeObservation::Restarting => {
-            HealthPoll::Failed(HealthFailure::Runtime(runtime.clone()))
-        }
+        ContainerRuntimeObservation::Restarting => HealthPoll::Failed(HealthFailure::Runtime {
+            observation: runtime.clone(),
+        }),
         ContainerRuntimeObservation::Created
         | ContainerRuntimeObservation::Running {
             health: HealthObservation::Unhealthy,
@@ -668,7 +820,9 @@ fn classify_health(
         | ContainerRuntimeObservation::Dead
         | ContainerRuntimeObservation::Unknown { .. } => {
             if now >= monitor_deadline {
-                HealthPoll::Failed(HealthFailure::Runtime(runtime.clone()))
+                HealthPoll::Failed(HealthFailure::Runtime {
+                    observation: runtime.clone(),
+                })
             } else {
                 HealthPoll::PendingUntil(monitor_deadline)
             }
@@ -678,11 +832,14 @@ fn classify_health(
 
 async fn run_hook<C: MachineOperations>(
     client: &C,
+    index: usize,
+    progress: &mut Progress,
     machine_id: &MachineId,
     spec: &ResolvedServiceSpec,
     old_hook_containers: &[(MachineId, ContainerId)],
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {
+    progress.set_running(index, OperationPhase::RemovingContainer);
     for (old_machine_id, old_container_id) in old_hook_containers {
         ignore_not_found(
             client
@@ -692,16 +849,34 @@ async fn run_hook<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;
     }
 
-    let container_id =
-        create_and_start(client, machine_id, ContainerKind::PreDeployHook, spec).await?;
+    let created = create_and_start(
+        client,
+        index,
+        progress,
+        machine_id,
+        ContainerKind::PreDeployHook,
+        spec,
+    )
+    .await?;
+    let container_id = created.container_id;
 
     let timeout = spec
         .pre_deploy
         .as_ref()
         .and_then(|hook| hook.timeout_millis)
         .map_or(DEFAULT_HOOK_TIMEOUT, Duration::from_millis);
-    let deadline = Instant::now() + timeout;
+    let started = Instant::now();
+    let deadline = started + timeout;
+    let deadline_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
     loop {
+        progress.set_running(
+            index,
+            OperationPhase::WaitingForHook {
+                container_id,
+                elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                deadline_ms,
+            },
+        );
         let observed = tokio::select! {
             biased;
             () = cancellation.cancelled() => {
@@ -727,7 +902,7 @@ async fn run_hook<C: MachineOperations>(
             ContainerRuntimeObservation::Exited { code } => {
                 return Err(ExecutionError::Hook {
                     container_id,
-                    failure: HookFailure::Exit(code),
+                    failure: HookFailure::Exit { code },
                 });
             }
             ContainerRuntimeObservation::Created
