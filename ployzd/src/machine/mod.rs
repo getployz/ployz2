@@ -25,10 +25,8 @@ use crate::network::{allocate_machine_subnet, management_address};
 
 mod local_machine;
 
-pub use local_machine::{Error as LocalMachineError, LocalMachine};
 pub(crate) use local_machine::RuntimeWatchTelemetry;
-#[cfg(test)]
-pub(crate) use local_machine::{sample_admin_telemetry, telemetry_from_admin};
+pub use local_machine::{Error as LocalMachineError, LocalMachine};
 
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
 const STATE_FILE_NAME: &str = "machine.json";

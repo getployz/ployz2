@@ -1,6 +1,8 @@
-use std::sync::{Arc, Mutex};
+//! Tests for complete Runtime Watch frame assembly and sampling.
+
 use std::{
     collections::BTreeMap,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
 
@@ -11,18 +13,16 @@ use ployz_core::{
     ContainerRuntimeObservation, DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation,
     HookContainer, IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, MachineName,
     MachineObservation, MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload,
-    ResolvedServiceSpec, RttObservation, RttStatistics, SelectedEndpoint, ServiceContainer,
-    ServiceId, ServiceName, ServiceObservation, WireGuardPublicKey,
+    ResolvedServiceSpec, RttStatistics, SelectedEndpoint, ServiceContainer, ServiceId, ServiceName,
+    ServiceObservation, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
 use super::{
-    RuntimeWatchSnapshot, RuntimeWatchTelemetry, assemble_runtime_watch_frame,
-    sample_admin_telemetry, serve_runtime_watch, telemetry_from_admin,
+    RuntimeWatchSnapshot, RuntimeWatchTelemetry, assemble_runtime_watch_frame, serve_runtime_watch,
 };
 use crate::corrosion::{
-    AdminClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error, MembershipState,
-    ReplicatedObservations,
+    CertificateChallenge, CertificateMaterial, CertificateRow, Error, ReplicatedObservations,
 };
 use crate::hosted_dns::Reservation;
 use tokio::sync::mpsc;
@@ -325,70 +325,6 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
         ]
     );
     assert_eq!(frame.hosted_dns_hostname, None);
-}
-
-#[test]
-fn sampled_telemetry_marks_entry_up_and_maps_inspect_rtt() {
-    let entry = machine("edge", ENTRY_ID, 1);
-    let peer = machine("peer", PEER_ID, 2);
-    let endpoint = SelectedEndpoint("203.0.113.10:51820".parse().unwrap());
-    let rtt = RttStatistics {
-        median_ns: 1_500_000,
-        population_stddev_ns: 250_000,
-    };
-    let telemetry = telemetry_from_admin(
-        &[entry.clone(), peer.clone()],
-        &entry.id,
-        &[MembershipState {
-            address: format!("[{}]:51001", peer.management_address.0)
-                .parse()
-                .unwrap(),
-            membership: MembershipObservation::Suspect,
-        }],
-        &[RttObservation {
-            peer_id: "peer".into(),
-            address: format!("[{}]:51001", peer.management_address.0)
-                .parse()
-                .unwrap(),
-            machine: None,
-            statistics: rtt.clone(),
-        }],
-        BTreeMap::from([(entry.id, endpoint)]),
-    );
-
-    assert_eq!(
-        telemetry.membership.get(&entry.id),
-        Some(&MembershipObservation::Up)
-    );
-    assert_eq!(
-        telemetry.membership.get(&peer.id),
-        Some(&MembershipObservation::Suspect)
-    );
-    assert_eq!(telemetry.rtt.get(&peer.id), Some(&rtt));
-    assert_eq!(telemetry.selected_endpoints.get(&entry.id), Some(&endpoint));
-}
-
-#[test]
-fn sampled_telemetry_uses_down_for_peers_missing_from_admin() {
-    let entry = machine("edge", ENTRY_ID, 1);
-    let peer = machine("peer", PEER_ID, 2);
-    let telemetry = telemetry_from_admin(
-        &[entry.clone(), peer.clone()],
-        &entry.id,
-        &[],
-        &[],
-        BTreeMap::new(),
-    );
-
-    assert_eq!(
-        telemetry.membership.get(&entry.id),
-        Some(&MembershipObservation::Up)
-    );
-    assert_eq!(
-        telemetry.membership.get(&peer.id),
-        Some(&MembershipObservation::Down)
-    );
-    assert!(telemetry.rtt.is_empty());
 }
 
 fn observations<T, Id>(observations: Vec<T>) -> ReplicatedObservations<T, Id> {
@@ -723,17 +659,6 @@ async fn unavailable_sample_after_telemetry_keeps_replicated_rows() {
         MembershipObservation::Unknown
     );
     assert_eq!(frame.machines.get(1).expect("peer Machine").rtt, None);
-}
-
-#[tokio::test]
-async fn missing_admin_socket_is_unavailable_telemetry() {
-    let entry = machine("edge", ENTRY_ID, 1);
-    let admin = AdminClient::new("/no/such/ployz-admin.sock");
-    assert!(
-            sample_admin_telemetry(&admin, std::slice::from_ref(&entry), &entry.id, BTreeMap::new())
-            .await
-            .is_none()
-    );
 }
 
 #[derive(Clone)]

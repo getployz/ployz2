@@ -25,9 +25,6 @@ use crate::{
     machine::{LocalMachine, RuntimeWatchTelemetry},
 };
 
-#[cfg(test)]
-pub(crate) use crate::machine::{sample_admin_telemetry, telemetry_from_admin};
-
 /// How often Watch samples membership and RTT from the local admin socket.
 const TELEMETRY_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -212,13 +209,9 @@ where
 }
 
 fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -> bool {
-    previous.machines != next.machines
-        || previous.containers != next.containers
-        || previous.services != next.services
-        || previous.volumes != next.volumes
-        || previous.certificates != next.certificates
-        || previous.hosted_dns_hostname != next.hosted_dns_hostname
-        || previous.incomplete_ids != next.incomplete_ids
+    let mut comparable = next.clone();
+    comparable.observed_at.clone_from(&previous.observed_at);
+    previous != &comparable
 }
 
 /// Assemble one complete Runtime Watch frame.
@@ -285,15 +278,15 @@ fn observe_machine(
         };
     };
     MachineObservation {
-        membership: if is_entry {
-            MembershipObservation::Up
-        } else {
-            telemetry
-                .membership
-                .get(&machine.id)
-                .cloned()
-                .unwrap_or(MembershipObservation::Unknown)
-        },
+        membership: telemetry
+            .membership
+            .get(&machine.id)
+            .cloned()
+            .unwrap_or(if is_entry {
+                MembershipObservation::Up
+            } else {
+                MembershipObservation::Unknown
+            }),
         selected_endpoint: telemetry.selected_endpoints.get(&machine.id).copied(),
         rtt: telemetry.rtt.get(&machine.id).cloned(),
         machine,

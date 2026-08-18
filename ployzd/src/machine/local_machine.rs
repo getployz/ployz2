@@ -13,7 +13,8 @@ use ployz_core::{
     MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated, MembershipObservation,
     PublicIpDiscovery, RegisterRequest, Registered, RemoveLocalMachineRequest,
     RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics, SelectedEndpoint,
-    UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers, synthesize_membership,
+    UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers, membership_observation,
+    synthesize_membership,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -143,8 +144,12 @@ impl LocalMachine {
         &self,
         machines: &[Machine],
     ) -> Option<RuntimeWatchTelemetry> {
-        let cluster = self.cluster.as_ref()?;
-        let local = self.record().ok()?;
+        let Some(cluster) = &self.cluster else {
+            return None;
+        };
+        let Ok(local) = self.record() else {
+            return None;
+        };
         sample_admin_telemetry(
             &cluster.admin,
             machines,
@@ -534,14 +539,18 @@ async fn machine_rtts(
 ///
 /// Uses the same Corrosion admin commands as ListMachines and inspect RTT.
 /// Both reads must succeed; otherwise Watch keeps replicated rows.
-pub(crate) async fn sample_admin_telemetry(
+async fn sample_admin_telemetry(
     admin: &AdminClient,
     machines: &[Machine],
     entry_id: &MachineId,
     selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
 ) -> Option<RuntimeWatchTelemetry> {
-    let states = admin.membership_states().await.ok()?;
-    let rtts = admin.member_rtts().await.ok()?;
+    let Ok(states) = admin.membership_states().await else {
+        return None;
+    };
+    let Ok(rtts) = admin.member_rtts().await else {
+        return None;
+    };
     Some(telemetry_from_admin(
         machines,
         entry_id,
@@ -553,7 +562,7 @@ pub(crate) async fn sample_admin_telemetry(
 
 /// Map admin membership and RTT onto replicated Machines the way ListMachines
 /// and inspect RTT do.
-pub(crate) fn telemetry_from_admin(
+fn telemetry_from_admin(
     machines: &[Machine],
     entry_id: &MachineId,
     states: &[MembershipState],
@@ -564,15 +573,10 @@ pub(crate) fn telemetry_from_admin(
     let membership = machines
         .iter()
         .map(|machine| {
-            let membership = if &machine.id == entry_id {
-                MembershipObservation::Up
-            } else {
-                states
-                    .get(&machine.management_address)
-                    .cloned()
-                    .unwrap_or(MembershipObservation::Down)
-            };
-            (machine.id, membership)
+            (
+                machine.id,
+                membership_observation(machine, entry_id, &states),
+            )
         })
         .collect();
     let identities = unique_identities(
@@ -609,9 +613,7 @@ fn membership_states_by_address(
 }
 
 /// Associate one value per management address; duplicate addresses are dropped.
-pub(crate) fn unique_identities<T: Clone>(
-    entries: impl IntoIterator<Item = (IpAddr, T)>,
-) -> BTreeMap<IpAddr, T> {
+fn unique_identities<T>(entries: impl IntoIterator<Item = (IpAddr, T)>) -> BTreeMap<IpAddr, T> {
     let mut identities = BTreeMap::new();
     let mut ambiguous = BTreeSet::new();
     for (address, identity) in entries {
@@ -636,8 +638,20 @@ fn local_removal_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{local_removal_response, unique_identities};
-    use ployz_core::{MachineId, MachineIdentity, MachineName};
+    use std::collections::BTreeMap;
+
+    use super::{
+        local_removal_response, sample_admin_telemetry, telemetry_from_admin, unique_identities,
+    };
+    use crate::corrosion::{AdminClient, MembershipState};
+    use ployz_core::{
+        AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
+        ManagementAddress, MembershipObservation, RttObservation, RttStatistics, SelectedEndpoint,
+        WireGuardPublicKey,
+    };
+
+    const ENTRY_ID: &str = "0123456789abcdef0123456789abcdef";
+    const PEER_ID: &str = "fedcba9876543210fedcba9876543210";
 
     #[test]
     fn failed_local_removal_keeps_the_daemon_available_for_entry_fallback() {
@@ -676,5 +690,100 @@ mod tests {
 
         assert!(!identities.contains_key(&duplicate));
         assert_eq!(identities.get(&unique), Some(&identity('3')));
+    }
+
+    #[test]
+    fn sampled_telemetry_marks_entry_up_and_maps_inspect_rtt() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let peer = machine("peer", PEER_ID, 2);
+        let endpoint = SelectedEndpoint("203.0.113.10:51820".parse().unwrap());
+        let rtt = RttStatistics {
+            median_ns: 1_500_000,
+            population_stddev_ns: 250_000,
+        };
+        let telemetry = telemetry_from_admin(
+            &[entry.clone(), peer.clone()],
+            &entry.id,
+            &[MembershipState {
+                address: format!("[{}]:51001", peer.management_address.0)
+                    .parse()
+                    .unwrap(),
+                membership: MembershipObservation::Suspect,
+            }],
+            &[RttObservation {
+                peer_id: "peer".into(),
+                address: format!("[{}]:51001", peer.management_address.0)
+                    .parse()
+                    .unwrap(),
+                machine: None,
+                statistics: rtt.clone(),
+            }],
+            BTreeMap::from([(entry.id, endpoint)]),
+        );
+
+        assert_eq!(
+            telemetry.membership.get(&entry.id),
+            Some(&MembershipObservation::Up)
+        );
+        assert_eq!(
+            telemetry.membership.get(&peer.id),
+            Some(&MembershipObservation::Suspect)
+        );
+        assert_eq!(telemetry.rtt.get(&peer.id), Some(&rtt));
+        assert_eq!(telemetry.selected_endpoints.get(&entry.id), Some(&endpoint));
+    }
+
+    #[test]
+    fn sampled_telemetry_uses_down_for_peers_missing_from_admin() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let peer = machine("peer", PEER_ID, 2);
+        let telemetry = telemetry_from_admin(
+            &[entry.clone(), peer.clone()],
+            &entry.id,
+            &[],
+            &[],
+            BTreeMap::new(),
+        );
+
+        assert_eq!(
+            telemetry.membership.get(&entry.id),
+            Some(&MembershipObservation::Up)
+        );
+        assert_eq!(
+            telemetry.membership.get(&peer.id),
+            Some(&MembershipObservation::Down)
+        );
+        assert!(telemetry.rtt.is_empty());
+    }
+
+    #[tokio::test]
+    async fn missing_admin_socket_is_unavailable_telemetry() {
+        let entry = machine("edge", ENTRY_ID, 1);
+        let admin = AdminClient::new("/no/such/ployz-admin.sock");
+        assert!(
+            sample_admin_telemetry(
+                &admin,
+                std::slice::from_ref(&entry),
+                &entry.id,
+                BTreeMap::new()
+            )
+            .await
+            .is_none()
+        );
+    }
+
+    fn machine(name: &str, id: &str, seed: u8) -> Machine {
+        Machine {
+            id: MachineId::parse(id).unwrap(),
+            name: MachineName::parse(name).unwrap(),
+            subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
+            management_address: ManagementAddress(format!("fdcc::{seed}").parse().unwrap()),
+            public_key: WireGuardPublicKey([seed; 32]),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint(
+                format!("203.0.113.{seed}:51820").parse().unwrap(),
+            )],
+            runtime: MachineRuntime::default(),
+        }
     }
 }
