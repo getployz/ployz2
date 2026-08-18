@@ -79,7 +79,12 @@ impl Client {
         project: &ProjectName,
         volumes: super::VolumeFate,
     ) -> Result<DeployPreview, DeployError> {
-        self.plan_project_destroy(project, volumes).await
+        crate::project::refuse_reserved(project)?;
+        let machines = self.machines().await?;
+        let (snapshot, warnings) = gather_snapshot(self, machines).await?;
+        let mut preview = planning::plan_project_removal(project, &snapshot, volumes)?;
+        preview.warnings.splice(0..0, warnings);
+        Ok(preview)
     }
 
     /// Live Observation of Data Loss that destroying `project` would cause.
@@ -96,7 +101,7 @@ impl Client {
         project: &ProjectName,
         volumes: super::VolumeFate,
     ) -> Result<ObservedDataLoss, RpcError> {
-        let preview = self.plan_project_destroy(project, volumes).await?;
+        let preview = self.preview_project_removal(project, volumes).await?;
         observed_destroy_loss(&preview, volumes)
     }
 
@@ -138,7 +143,7 @@ impl Client {
         confirm_data_loss: &[DataLoss],
         volumes: super::VolumeFate,
     ) -> Result<DeployPreview, RpcError> {
-        let preview = self.plan_project_destroy(project, volumes).await?;
+        let preview = self.preview_project_removal(project, volumes).await?;
         let missing = observed_destroy_loss(&preview, volumes)?.uncovered_by(confirm_data_loss);
         if !missing.is_empty() {
             return Err(UnconfirmedDataLoss { missing }.into_rpc_error());
@@ -153,19 +158,6 @@ impl Client {
                 details: serde_json::Value::Null,
             });
         }
-        Ok(preview)
-    }
-
-    async fn plan_project_destroy(
-        &mut self,
-        project: &ProjectName,
-        volumes: super::VolumeFate,
-    ) -> Result<DeployPreview, DeployError> {
-        crate::project::refuse_reserved(project)?;
-        let machines = self.machines().await?;
-        let (snapshot, warnings) = gather_snapshot(self, machines).await?;
-        let mut preview = planning::plan_project_removal(project, &snapshot, volumes)?;
-        preview.warnings.splice(0..0, warnings);
         Ok(preview)
     }
 
