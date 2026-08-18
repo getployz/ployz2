@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, RwLock},
@@ -19,8 +19,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, Machine, QualifiedService, ServiceId, ServiceName, service_containers,
-    serving_replicas,
+    ContainerObservation, Machine, ProjectName, QualifiedService, ServiceId, ServiceName,
+    service_containers, serving_replicas,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -54,10 +54,17 @@ enum ServiceIdIndex<'index> {
     Unknown,
 }
 
+/// Observer-relative Caller Project from a source Container Address.
+enum CallerProject {
+    Unique(ProjectName),
+    Ambiguous,
+}
+
 struct Projection {
     service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
     identities: HashMap<QualifiedService, Vec<Ipv4Addr>>,
     machine_identities: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
+    callers: HashMap<Ipv4Addr, CallerProject>,
 }
 
 impl Projection {
@@ -68,11 +75,23 @@ impl Projection {
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut identities = HashMap::<QualifiedService, Vec<Ipv4Addr>>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
+        let mut callers = HashMap::<Ipv4Addr, CallerProject>::new();
         // Known IDs enter the index even with no serving addresses so empty ≠ missing.
+        // Caller matching uses every addressed Service Container, not Serving Containers.
         for container in &containers {
-            service_ids
-                .entry(container.as_observation().service_id)
-                .or_default();
+            let observation = container.as_observation();
+            service_ids.entry(observation.service_id).or_default();
+            let Some(address) = observation.address else {
+                continue;
+            };
+            match callers.entry(address.0) {
+                Entry::Vacant(entry) => {
+                    entry.insert(CallerProject::Unique(observation.project_name.clone()));
+                }
+                Entry::Occupied(mut entry) => {
+                    *entry.get_mut() = CallerProject::Ambiguous;
+                }
+            }
         }
         for container in serving_replicas(&containers) {
             let observation = container.as_observation();
@@ -100,13 +119,22 @@ impl Projection {
             service_ids,
             identities,
             machine_identities,
+            callers,
         }
     }
 
-    fn plan(&self, name: &Name, record_type: RecordType, local_subnet: Ipv4Net) -> ResponsePlan {
+    fn plan(
+        &self,
+        name: &Name,
+        record_type: RecordType,
+        local_subnet: Ipv4Net,
+        source: IpAddr,
+    ) -> ResponsePlan {
         match parse(name) {
             Query::Forward => ResponsePlan::Forward,
-            Query::Internal(query) => self.plan_internal(name, record_type, local_subnet, query),
+            Query::Internal(query) => {
+                self.plan_internal(name, record_type, local_subnet, source, query)
+            }
         }
     }
 
@@ -115,6 +143,7 @@ impl Projection {
         name: &Name,
         record_type: RecordType,
         local_subnet: Ipv4Net,
+        source: IpAddr,
         query: InternalQuery,
     ) -> ResponsePlan {
         if record_type != RecordType::A {
@@ -125,7 +154,7 @@ impl Projection {
                 answers: Vec::new(),
             };
         }
-        let mut addresses = self.addresses(&query.target);
+        let mut addresses = self.addresses(&query.target, self.caller_project(source));
         if query.nearest {
             addresses.sort_by_key(|address| !local_subnet.contains(address));
         }
@@ -146,7 +175,7 @@ impl Projection {
         }
     }
 
-    fn addresses(&self, target: &Target) -> Vec<Ipv4Addr> {
+    fn addresses(&self, target: &Target, caller: Option<&ProjectName>) -> Vec<Ipv4Addr> {
         match target {
             Target::Empty => Vec::new(),
             Target::ServiceId(id) => match self.service_id_index(id) {
@@ -159,13 +188,31 @@ impl Projection {
             Target::Identity(identity) => {
                 self.identities.get(identity).cloned().unwrap_or_default()
             }
-            Target::ServiceName(name) => self.unique_name_addresses(name),
+            Target::ServiceName(name) => {
+                let Some(project) = caller else {
+                    return Vec::new();
+                };
+                self.identities
+                    .get(&QualifiedService::new(project.clone(), name.clone()))
+                    .cloned()
+                    .unwrap_or_default()
+            }
             Target::MachineIdentity(target) => self
                 .machine_identities
                 .get(target)
                 .cloned()
                 .unwrap_or_default(),
             Target::MachineServiceName(target) => self.unique_machine_name_addresses(target),
+        }
+    }
+
+    fn caller_project(&self, source: IpAddr) -> Option<&ProjectName> {
+        let IpAddr::V4(source) = source else {
+            return None;
+        };
+        match self.callers.get(&source) {
+            Some(CallerProject::Unique(project)) => Some(project),
+            Some(CallerProject::Ambiguous) | None => None,
         }
     }
 
@@ -222,6 +269,7 @@ impl RequestHandler for Handler {
                     info.query.original().name(),
                     info.query.query_type(),
                     self.local_subnet,
+                    info.src.ip(),
                 )
             })
             .unwrap_or(ResponsePlan::Internal {
@@ -472,6 +520,8 @@ mod tests {
 
     use super::*;
 
+    const HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+
     #[test]
     fn does_not_publish_hook_container_addresses() {
         let machine = MachineId::parse("a".repeat(32)).unwrap();
@@ -500,9 +550,10 @@ mod tests {
 
         assert_eq!(
             addresses(Projection::from_observations(&observations).plan(
-                &Name::from_ascii("api.internal.").unwrap(),
+                &Name::from_ascii("api.app.internal.").unwrap(),
                 RecordType::A,
                 "10.210.1.0/24".parse().unwrap(),
+                HOST,
             )),
             vec![Ipv4Addr::new(10, 210, 1, 2)]
         );
@@ -572,9 +623,10 @@ mod tests {
 
         assert_eq!(
             addresses(Projection::from_observations(&observations).plan(
-                &Name::from_ascii("api.internal.").unwrap(),
+                &Name::from_ascii("api.app.internal.").unwrap(),
                 RecordType::A,
                 "10.210.1.0/24".parse().unwrap(),
+                HOST,
             )),
             vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 1, 3)]
         );
@@ -609,12 +661,14 @@ mod tests {
         ];
         let projection = Projection::from_observations(&observations);
         let subnet = "10.210.1.0/24".parse().unwrap();
+        let caller = IpAddr::V4(Ipv4Addr::new(10, 210, 1, 2));
 
         assert_eq!(
             address_set(projection.plan(
                 &Name::from_ascii("api.internal.").unwrap(),
                 RecordType::A,
                 subnet,
+                caller,
             )),
             [Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)].into()
         );
@@ -623,6 +677,7 @@ mod tests {
                 &Name::from_ascii(format!("{first}.internal.")).unwrap(),
                 RecordType::A,
                 subnet,
+                HOST,
             )),
             vec![Ipv4Addr::new(10, 210, 2, 2)]
         );
@@ -631,6 +686,7 @@ mod tests {
                 &Name::from_ascii(format!("{local}.m.api.internal.")).unwrap(),
                 RecordType::A,
                 subnet,
+                HOST,
             )),
             vec![Ipv4Addr::new(10, 210, 1, 2)]
         );
@@ -639,6 +695,7 @@ mod tests {
                 &Name::from_ascii("nearest.api.internal.").unwrap(),
                 RecordType::A,
                 subnet,
+                caller,
             )),
             vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
         );
@@ -647,6 +704,7 @@ mod tests {
                 &Name::from_ascii("rr.api.internal.").unwrap(),
                 RecordType::A,
                 subnet,
+                caller,
             )),
             [Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)].into()
         );
@@ -686,6 +744,7 @@ mod tests {
                 &Name::from_ascii("web.internal.").unwrap(),
                 RecordType::A,
                 subnet,
+                HOST,
             ))
             .is_empty()
         );
@@ -694,6 +753,7 @@ mod tests {
                 &Name::from_ascii("web.shop-staging.internal.").unwrap(),
                 RecordType::A,
                 subnet,
+                HOST,
             )),
             vec![Ipv4Addr::new(10, 210, 1, 2)]
         );
@@ -702,6 +762,7 @@ mod tests {
                 &Name::from_ascii("web.shop-prod.internal.").unwrap(),
                 RecordType::A,
                 subnet,
+                HOST,
             )),
             vec![Ipv4Addr::new(10, 210, 1, 3)]
         );
@@ -710,6 +771,7 @@ mod tests {
                 &Name::from_ascii(format!("{machine}.m.web.shop-staging.internal.")).unwrap(),
                 RecordType::A,
                 subnet,
+                HOST,
             )),
             vec![Ipv4Addr::new(10, 210, 1, 2)]
         );
@@ -748,6 +810,7 @@ mod tests {
                 &Name::from_ascii(format!("{selected_id}.internal.")).unwrap(),
                 RecordType::A,
                 "10.210.1.0/24".parse().unwrap(),
+                HOST,
             )),
             vec![Ipv4Addr::new(10, 210, 1, 2)]
         );
@@ -785,6 +848,7 @@ mod tests {
                 &Name::from_ascii(format!("{selected_id}.internal.")).unwrap(),
                 RecordType::A,
                 "10.210.1.0/24".parse().unwrap(),
+                HOST,
             ),
             ResponsePlan::Internal {
                 code: ResponseCode::NXDomain,
@@ -814,6 +878,7 @@ mod tests {
                 &Name::from_ascii(format!("{missing_id}.internal.")).unwrap(),
                 RecordType::A,
                 "10.210.1.0/24".parse().unwrap(),
+                HOST,
             )),
             vec![Ipv4Addr::new(10, 210, 1, 3)]
         );
@@ -829,6 +894,7 @@ mod tests {
                 &Name::from_ascii("internal.").unwrap(),
                 RecordType::A,
                 subnet,
+                HOST,
             ),
             ResponsePlan::Internal {
                 code: ResponseCode::NXDomain,
@@ -840,6 +906,7 @@ mod tests {
                 &Name::from_ascii("missing.internal.").unwrap(),
                 RecordType::A,
                 subnet,
+                HOST,
             ),
             ResponsePlan::Internal {
                 code: ResponseCode::NXDomain,
@@ -852,6 +919,7 @@ mod tests {
                     &Name::from_ascii("missing.internal.").unwrap(),
                     record_type,
                     subnet,
+                    HOST,
                 ),
                 ResponsePlan::Internal {
                     code: ResponseCode::NoError,
@@ -864,8 +932,234 @@ mod tests {
                 &Name::from_ascii("example.com.").unwrap(),
                 RecordType::A,
                 subnet,
+                HOST,
             ),
             ResponsePlan::Forward
+        );
+    }
+
+    #[test]
+    fn short_name_resolves_within_the_uniquely_identified_callers_project() {
+        let machine = MachineId::parse("a".repeat(32)).unwrap();
+        let staging_web = in_project(
+            observation(
+                1,
+                &machine,
+                &ServiceId::parse("b".repeat(32)).unwrap(),
+                &ServiceName::parse("web").unwrap(),
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Unhealthy),
+                Some([10, 210, 1, 2]),
+            ),
+            "shop-staging",
+        );
+        let staging_database = in_project(
+            observation(
+                2,
+                &machine,
+                &ServiceId::parse("c".repeat(32)).unwrap(),
+                &ServiceName::parse("database").unwrap(),
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 10]),
+            ),
+            "shop-staging",
+        );
+        let prod_web = in_project(
+            observation(
+                3,
+                &machine,
+                &ServiceId::parse("d".repeat(32)).unwrap(),
+                &ServiceName::parse("web").unwrap(),
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 3]),
+            ),
+            "shop-prod",
+        );
+        let prod_database = in_project(
+            observation(
+                4,
+                &machine,
+                &ServiceId::parse("e".repeat(32)).unwrap(),
+                &ServiceName::parse("database").unwrap(),
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 11]),
+            ),
+            "shop-prod",
+        );
+        let staging_cache = in_project(
+            observation(
+                5,
+                &machine,
+                &ServiceId::parse("f".repeat(32)).unwrap(),
+                &ServiceName::parse("cache").unwrap(),
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 12]),
+            ),
+            "shop-staging",
+        );
+        let projection = Projection::from_observations(&[
+            staging_web,
+            staging_database,
+            prod_web,
+            prod_database,
+            staging_cache,
+        ]);
+        let subnet = "10.210.1.0/24".parse().unwrap();
+        let staging_caller = IpAddr::V4(Ipv4Addr::new(10, 210, 1, 2));
+        let prod_caller = IpAddr::V4(Ipv4Addr::new(10, 210, 1, 3));
+
+        assert_eq!(
+            addresses(projection.plan(
+                &Name::from_ascii("database.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+                staging_caller,
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 10)]
+        );
+        assert_eq!(
+            addresses(projection.plan(
+                &Name::from_ascii("database.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+                prod_caller,
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 11)]
+        );
+        assert_eq!(
+            addresses(projection.plan(
+                &Name::from_ascii("database.shop-prod.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+                staging_caller,
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 11)]
+        );
+        assert_eq!(
+            addresses(projection.plan(
+                &Name::from_ascii("database.shop-staging.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+                HOST,
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 10)]
+        );
+        assert!(
+            addresses(projection.plan(
+                &Name::from_ascii("database.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+                HOST,
+            ))
+            .is_empty()
+        );
+        assert!(
+            addresses(projection.plan(
+                &Name::from_ascii("cache.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+                HOST,
+            ))
+            .is_empty()
+        );
+        assert_eq!(
+            addresses(projection.plan(
+                &Name::from_ascii("cache.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+                staging_caller,
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 12)]
+        );
+    }
+
+    #[test]
+    fn hook_or_ambiguous_caller_gets_no_project_relative_resolution() {
+        let machine = MachineId::parse("a".repeat(32)).unwrap();
+        let web = ServiceName::parse("web").unwrap();
+        let database = ServiceName::parse("database").unwrap();
+        let staging_web = in_project(
+            observation(
+                1,
+                &machine,
+                &ServiceId::parse("b".repeat(32)).unwrap(),
+                &web,
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 2]),
+            ),
+            "shop-staging",
+        );
+        let staging_database = in_project(
+            observation(
+                2,
+                &machine,
+                &ServiceId::parse("c".repeat(32)).unwrap(),
+                &database,
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 10]),
+            ),
+            "shop-staging",
+        );
+        let hook = in_project(
+            observation(
+                3,
+                &machine,
+                &ServiceId::parse("b".repeat(32)).unwrap(),
+                &web,
+                ContainerKind::PreDeployHook,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 4]),
+            ),
+            "shop-staging",
+        );
+        let colliding = in_project(
+            observation(
+                4,
+                &machine,
+                &ServiceId::parse("d".repeat(32)).unwrap(),
+                &web,
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, 2]),
+            ),
+            "shop-prod",
+        );
+        let projection =
+            Projection::from_observations(&[staging_web, staging_database, hook, colliding]);
+        let subnet = "10.210.1.0/24".parse().unwrap();
+
+        assert!(
+            addresses(projection.plan(
+                &Name::from_ascii("database.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+                IpAddr::V4(Ipv4Addr::new(10, 210, 1, 2)),
+            ))
+            .is_empty()
+        );
+        assert!(
+            addresses(projection.plan(
+                &Name::from_ascii("database.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+                IpAddr::V4(Ipv4Addr::new(10, 210, 1, 4)),
+            ))
+            .is_empty()
+        );
+        assert_eq!(
+            addresses(projection.plan(
+                &Name::from_ascii("database.shop-staging.internal.").unwrap(),
+                RecordType::A,
+                subnet,
+                IpAddr::V4(Ipv4Addr::new(10, 210, 1, 4)),
+            )),
+            vec![Ipv4Addr::new(10, 210, 1, 10)]
         );
     }
 
@@ -928,6 +1222,11 @@ options ndots:1
             address: address.map(|octets| ContainerAddress(octets.into())),
             labels: BTreeMap::new(),
         }
+    }
+
+    fn in_project(mut observation: ContainerObservation, project: &str) -> ContainerObservation {
+        observation.project_name = ProjectName::parse(project).unwrap();
+        observation
     }
 
     fn fixture_spec(service_id: &ServiceId, service_name: &ServiceName) -> ResolvedServiceSpec {
