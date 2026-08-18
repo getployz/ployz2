@@ -664,7 +664,11 @@ fn observation(
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("a".repeat(32)).unwrap(),
-        project_name: ProjectName::parse("app").unwrap(),
+        project_name: if service_name.as_str() == "caddy" {
+            ProjectName::system()
+        } else {
+            ProjectName::parse("app").unwrap()
+        },
         service_id,
         service_name,
         kind: ContainerKind::ServiceContainer,

@@ -471,6 +471,29 @@ api.example { reverse_proxy 10.210.1.2 }"
 }
 
 #[tokio::test]
+async fn user_project_caddy_does_not_supply_global_config() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let mut user = custom_observation(2, 9, &local, "caddy", "{\n\tadmin off\n}", [10, 210, 1, 9]);
+    user.project_name = ployz_core::ProjectName::parse("shop").unwrap();
+    let observations = vec![
+        observation(1, &local, "caddy", Some([10, 210, 1, 1]), Vec::new()),
+        user,
+    ];
+
+    let caddyfile = generate_caddyfile(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        &BTreeMap::new(),
+        Some(&FakeAdmin::default()),
+    )
+    .await;
+
+    assert!(!caddyfile.contains("User-defined global config from Service 'caddy'"));
+}
+
+#[tokio::test]
 async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let remote = MachineId::parse("b".repeat(32)).unwrap();
@@ -814,7 +837,11 @@ fn observation(
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: *machine_id,
-        project_name: ployz_core::ProjectName::parse("app").unwrap(),
+        project_name: if service_name.as_str() == "caddy" {
+            ployz_core::ProjectName::system()
+        } else {
+            ployz_core::ProjectName::parse("app").unwrap()
+        },
         service_id,
         service_name,
         kind: ContainerKind::ServiceContainer,
