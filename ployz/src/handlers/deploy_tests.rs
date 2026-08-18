@@ -243,13 +243,13 @@ fn deploy_loads_every_profile_and_leaves_named_services_for_the_planner() {
     let explicit = crate::cli::command()
         .try_get_matches_from(["ployz", "deploy", "--file", "prod.yaml"])
         .unwrap();
-    assert!(names_explicit_nondefault_compose_file(&deploy_load(
+    assert!(has_explicit_nondefault_compose_file(&deploy_load(
         super::leaf_matches(&explicit)
     )));
     let default_name = crate::cli::command()
         .try_get_matches_from(["ployz", "deploy", "--file", "compose.yaml"])
         .unwrap();
-    assert!(!names_explicit_nondefault_compose_file(&deploy_load(
+    assert!(!has_explicit_nondefault_compose_file(&deploy_load(
         super::leaf_matches(&default_name)
     )));
 }

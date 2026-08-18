@@ -59,7 +59,7 @@ fn filtered_profiles_list_obsolete_services_and_remove_nothing() {
             [&web],
             PlanOptions::default(),
         )
-        .with_profiles_filtered(true),
+        .with_compose_refusal(Some(PruneRefusal::FilteredProfiles)),
         &snapshot,
     )
     .unwrap();
@@ -80,7 +80,7 @@ fn guessed_project_name_lists_obsolete_services_and_removes_nothing() {
             [&web],
             PlanOptions::default(),
         )
-        .with_guessed_project_with_explicit_nondefault_file(true),
+        .with_compose_refusal(Some(PruneRefusal::GuessedProjectName)),
         &snapshot,
     )
     .unwrap();

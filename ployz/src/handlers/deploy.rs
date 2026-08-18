@@ -1,12 +1,12 @@
 use std::num::NonZeroU32;
 
 use clap::ArgMatches;
-use ployz_core::ServiceSelector;
+use ployz_core::{PruneRefusal, ServiceSelector};
 
 use crate::{
     compose::{
         BuildOptions, BuildService, ComposeError, ComposeProject, LoadOptions, compose_identity,
-        execute_build, load_project, names_explicit_nondefault_compose_file, plan_build,
+        execute_build, has_explicit_nondefault_compose_file, load_project, plan_build,
     },
     deploy::{
         ReconciliationHints, ServiceAttempt, deploy_project, deploy_scale, deploy_spec,
@@ -86,9 +86,17 @@ fn deploy_load(matches: &ArgMatches) -> LoadOptions {
 fn reconciliation_hints(load: &LoadOptions, resolved: &ResolvedProject) -> ReconciliationHints {
     ReconciliationHints {
         requested_profiles: load.profiles.clone(),
-        profiles_filtered: !load.all_profiles,
-        guessed_project_with_explicit_nondefault_file: resolved.source.is_directory_guess()
-            && names_explicit_nondefault_compose_file(load),
+        compose_refusal: compose_prune_refusal(load, resolved),
+    }
+}
+
+fn compose_prune_refusal(load: &LoadOptions, resolved: &ResolvedProject) -> Option<PruneRefusal> {
+    if !load.all_profiles {
+        Some(PruneRefusal::FilteredProfiles)
+    } else if resolved.source.is_directory_guess() && has_explicit_nondefault_compose_file(load) {
+        Some(PruneRefusal::GuessedProjectName)
+    } else {
+        None
     }
 }
 

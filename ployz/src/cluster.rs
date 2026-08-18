@@ -588,36 +588,44 @@ impl Client {
     ) -> Result<DeploySnapshot, ConnectError> {
         let containers = self.live_services_from(&machines).await?.containers;
         let volumes = self.list_volumes(&machines).await;
-        Ok(snapshot_from_partial(machines, &containers, &volumes))
+        Ok(snapshot_from_partial(machines, containers, volumes))
     }
 }
 
 pub(crate) fn snapshot_from_partial(
     machines: Vec<MachineObservation>,
-    containers: &PartialResult<Vec<ContainerObservation>, RpcError>,
-    volumes: &PartialResult<Vec<DockerVolume>, RpcError>,
+    containers: PartialResult<Vec<ContainerObservation>, RpcError>,
+    volumes: PartialResult<Vec<DockerVolume>, RpcError>,
 ) -> DeploySnapshot {
+    let PartialResult {
+        successes: container_successes,
+        failures: container_failures,
+        omissions: container_omissions,
+    } = containers;
+    let PartialResult {
+        successes: volume_successes,
+        failures: volume_failures,
+        omissions: volume_omissions,
+    } = volumes;
     DeploySnapshot {
         machines,
-        containers: containers
-            .successes
-            .iter()
-            .flat_map(|success| success.value.iter().cloned())
+        containers: container_successes
+            .into_iter()
+            .flat_map(|success| success.value)
             .collect(),
-        volumes: volumes
-            .successes
-            .iter()
-            .flat_map(|success| success.value.iter().cloned())
+        volumes: volume_successes
+            .into_iter()
+            .flat_map(|success| success.value)
             .map(|volume| ObservedDockerVolume {
                 id: volume.id,
                 driver: volume.driver,
                 options: volume.options,
             })
             .collect(),
-        container_failures: containers.failures.clone(),
-        container_omissions: containers.omissions.clone(),
-        volume_failures: volumes.failures.clone(),
-        volume_omissions: volumes.omissions.clone(),
+        container_failures,
+        container_omissions,
+        volume_failures,
+        volume_omissions,
     }
 }
 

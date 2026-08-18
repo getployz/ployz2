@@ -260,17 +260,16 @@ fn compose_input_files(options: &LoadOptions) -> Vec<PathBuf> {
 
 /// Compose files the user named (`--file` or `COMPOSE_FILE`), not discovered defaults.
 #[must_use]
-pub(crate) fn names_explicit_nondefault_compose_file(options: &LoadOptions) -> bool {
-    explicit_compose_files(options)
-        .iter()
-        .any(|file| !is_default_compose_file_name(file))
-}
-
-fn explicit_compose_files(options: &LoadOptions) -> Vec<PathBuf> {
+pub(crate) fn has_explicit_nondefault_compose_file(options: &LoadOptions) -> bool {
     if options.files.is_empty() {
         compose_files_from_environment()
+            .iter()
+            .any(|file| !is_default_compose_file_name(file))
     } else {
-        options.files.clone()
+        options
+            .files
+            .iter()
+            .any(|file| !is_default_compose_file_name(file))
     }
 }
 
@@ -562,19 +561,19 @@ mod tests {
 
     #[test]
     fn explicit_nondefault_compose_files_are_not_discovered_defaults() {
-        assert!(names_explicit_nondefault_compose_file(&LoadOptions {
+        assert!(has_explicit_nondefault_compose_file(&LoadOptions {
             files: vec![PathBuf::from("prod.yaml")],
             ..Default::default()
         }));
-        assert!(!names_explicit_nondefault_compose_file(&LoadOptions {
+        assert!(!has_explicit_nondefault_compose_file(&LoadOptions {
             files: vec![PathBuf::from("compose.yaml")],
             ..Default::default()
         }));
-        assert!(!names_explicit_nondefault_compose_file(&LoadOptions {
+        assert!(!has_explicit_nondefault_compose_file(&LoadOptions {
             files: vec![PathBuf::from("docker-compose.yml")],
             ..Default::default()
         }));
-        assert!(!names_explicit_nondefault_compose_file(
+        assert!(!has_explicit_nondefault_compose_file(
             &LoadOptions::default()
         ));
     }

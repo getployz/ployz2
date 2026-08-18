@@ -55,9 +55,7 @@ pub struct DeployIntent {
     #[serde(default, skip)]
     requested_profiles: Vec<String>,
     #[serde(default, skip)]
-    profiles_filtered: bool,
-    #[serde(default, skip)]
-    guessed_project_with_explicit_nondefault_file: bool,
+    compose_refusal: Option<PruneRefusal>,
 }
 
 impl DeployIntent {
@@ -79,8 +77,7 @@ impl DeployIntent {
             dependencies: BTreeMap::new(),
             service_profiles: BTreeMap::new(),
             requested_profiles: Vec::new(),
-            profiles_filtered: false,
-            guessed_project_with_explicit_nondefault_file: false,
+            compose_refusal: None,
         }
     }
 
@@ -157,17 +154,10 @@ impl DeployIntent {
         self
     }
 
-    /// Whether profiled Services were removed from the loaded Compose Project before planning.
+    /// Compose-side reason pruning is refused, if any (`FilteredProfiles` or `GuessedProjectName`).
     #[must_use]
-    pub fn with_profiles_filtered(mut self, profiles_filtered: bool) -> Self {
-        self.profiles_filtered = profiles_filtered;
-        self
-    }
-
-    /// Whether the Project name was guessed from a directory while a non-default Compose file was named explicitly.
-    #[must_use]
-    pub fn with_guessed_project_with_explicit_nondefault_file(mut self, guessed: bool) -> Self {
-        self.guessed_project_with_explicit_nondefault_file = guessed;
+    pub fn with_compose_refusal(mut self, compose_refusal: Option<PruneRefusal>) -> Self {
+        self.compose_refusal = compose_refusal;
         self
     }
 
@@ -180,17 +170,13 @@ impl DeployIntent {
     /// Whether `name` starts given the requested profile list.
     #[must_use]
     pub fn service_starts(&self, name: &ServiceName) -> bool {
-        let profiles = self
-            .service_profiles
-            .get(name)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        profiles.is_empty()
-            || profiles.iter().any(|profile| {
-                self.requested_profiles
-                    .iter()
-                    .any(|requested| requested == profile)
-            })
+        profiles_enable_start(
+            self.service_profiles
+                .get(name)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+            &self.requested_profiles,
+        )
     }
 
     /// Why pruning is refused for this Intent and Snapshot completeness.
@@ -200,14 +186,19 @@ impl DeployIntent {
             Some(PruneRefusal::IncompleteSnapshot)
         } else if !self.options.selected.is_empty() {
             Some(PruneRefusal::SelectedServices)
-        } else if self.profiles_filtered {
-            Some(PruneRefusal::FilteredProfiles)
-        } else if self.guessed_project_with_explicit_nondefault_file {
-            Some(PruneRefusal::GuessedProjectName)
         } else {
-            None
+            self.compose_refusal
         }
     }
+}
+
+/// Unprofiled Services always start; otherwise any requested profile match starts them.
+#[must_use]
+pub fn profiles_enable_start(service_profiles: &[String], requested_profiles: &[String]) -> bool {
+    service_profiles.is_empty()
+        || service_profiles
+            .iter()
+            .any(|profile| requested_profiles.contains(profile))
 }
 
 /// Evidence from executing a Deploy Plan: every operation completed, or the

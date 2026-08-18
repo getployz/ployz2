@@ -26,14 +26,14 @@ use crate::{
 
 use super::{
     DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeploySnapshot, DeployWarning,
-    ExecutionError, ObservationKind, PlanError, PlanOptions, exec::execute_operations, plan_deploy,
+    ExecutionError, ObservationKind, PlanError, PlanOptions, PruneRefusal,
+    exec::execute_operations, plan_deploy,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ReconciliationHints {
     pub requested_profiles: Vec<String>,
-    pub profiles_filtered: bool,
-    pub guessed_project_with_explicit_nondefault_file: bool,
+    pub compose_refusal: Option<PruneRefusal>,
 }
 
 /// Snapshot, planning, or ingress-expansion failure before a Deploy executes.
@@ -160,10 +160,7 @@ pub(super) async fn plan_project(
     )
     .with_service_profiles(project.service_profiles())
     .with_requested_profiles(hints.requested_profiles)
-    .with_profiles_filtered(hints.profiles_filtered)
-    .with_guessed_project_with_explicit_nondefault_file(
-        hints.guessed_project_with_explicit_nondefault_file,
-    );
+    .with_compose_refusal(hints.compose_refusal);
     Ok(prepare_intent(client, snapshot, warnings, &mut intent).await?)
 }
 

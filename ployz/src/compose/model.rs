@@ -103,15 +103,13 @@ impl ComposeProject {
         self.services
             .keys()
             .filter(|name| {
-                let profiles = self
-                    .service_profiles
-                    .get(*name)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                profiles.is_empty()
-                    || profiles
-                        .iter()
-                        .any(|profile| requested_profiles.contains(profile))
+                ployz_core::profiles_enable_start(
+                    self.service_profiles
+                        .get(*name)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                    requested_profiles,
+                )
             })
             .cloned()
             .collect()
