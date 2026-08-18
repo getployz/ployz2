@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, fmt};
 
 use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    MachineName, MachineObservation, MachineTarget, ProjectName, ServiceId, ServiceObservation,
+    MachineName, MachineObservation, MachineTarget, ProjectName, ServiceObservation,
     derive_services,
 };
 use thiserror::Error;
