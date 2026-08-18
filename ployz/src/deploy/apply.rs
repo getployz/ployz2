@@ -3,9 +3,7 @@ use std::{
     num::NonZeroU32,
 };
 
-use ployz_core::{
-    DeployEvent, OperationPhase, OperationStatus, RequestedServiceSpec, ServiceSelector,
-};
+use ployz_core::{DeployEvent, RequestedServiceSpec, ServiceSelector};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -20,7 +18,7 @@ use super::{
         PushOutcome, list_machines, plan_options, plan_project, plan_scale, plan_spec,
         push_project_images,
     },
-    render::{self, ProgressStyle},
+    render,
 };
 
 pub(crate) async fn deploy_spec(
@@ -41,10 +39,14 @@ pub(crate) async fn deploy_spec(
         print!("{}", render::plan_text(&preview, context));
         return Ok(());
     }
-    let style = ProgressStyle::Run {
-        service: requested.name.to_string(),
-    };
-    finish(stream_confirm(client, &preview, style).await)
+    finish(
+        stream_confirm(
+            client,
+            &preview,
+            format!("Running service {}", requested.name),
+        )
+        .await,
+    )
 }
 
 pub(crate) async fn apply_requested(
@@ -114,22 +116,13 @@ async fn confirm_and_execute(
         println!("No changes were made.");
         return Ok(());
     }
-    finish(
-        stream_confirm(
-            client,
-            preview,
-            ProgressStyle::Deploy {
-                context: gate.context.to_owned(),
-            },
-        )
-        .await,
-    )
+    finish(stream_confirm(client, preview, format!("Deploying to {}", gate.context)).await)
 }
 
 async fn stream_confirm(
     client: &Client,
     preview: &DeployPreview,
-    style: ProgressStyle,
+    title: String,
 ) -> DeployOutcome<ExecutionError> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
@@ -140,7 +133,7 @@ async fn stream_confirm(
     });
     let execute = client.confirm(preview, &cancel, Some(tx));
     tokio::pin!(execute);
-    let mut printer = ProgressPrinter::new(style);
+    let mut printer = ProgressPrinter::new(title);
     let outcome = loop {
         tokio::select! {
             event = rx.recv() => {
@@ -161,15 +154,15 @@ async fn stream_confirm(
 }
 
 struct ProgressPrinter {
-    style: ProgressStyle,
+    title: String,
     last_lines: usize,
     last_signature: Option<String>,
 }
 
 impl ProgressPrinter {
-    fn new(style: ProgressStyle) -> Self {
+    fn new(title: String) -> Self {
         Self {
-            style,
+            title,
             last_lines: 0,
             last_signature: None,
         }
@@ -184,7 +177,7 @@ impl ProgressPrinter {
         if !tty && self.last_signature.as_ref() == Some(&signature) {
             return;
         }
-        let text = render::progress_text(event, &self.style);
+        let text = render::progress_text(event, &self.title);
         if tty && self.last_lines > 0 {
             print!("\x1b[{}F\x1b[J", self.last_lines);
         }
@@ -200,26 +193,10 @@ fn progress_signature(event: &DeployEvent) -> String {
         DeployEvent::Progress {
             rows, completed, ..
         } => {
-            let kinds: Vec<_> =
-                rows.iter()
-                    .map(|row| match &row.status {
-                        OperationStatus::Pending => "pending",
-                        OperationStatus::Running { phase } => match phase {
-                            OperationPhase::WaitingForHealth { .. } => "health",
-                            OperationPhase::WaitingForHook { .. } => "hook",
-                            OperationPhase::StoppingContainer
-                            | OperationPhase::RemovingContainer => "removing",
-                            OperationPhase::Compensating => "compensating",
-                            OperationPhase::Starting
-                            | OperationPhase::CreatingVolume
-                            | OperationPhase::CreatingContainer
-                            | OperationPhase::StartingContainer => "running",
-                        },
-                        OperationStatus::Completed => "completed",
-                        OperationStatus::Failed { .. } => "failed",
-                        OperationStatus::Unexecuted => "unexecuted",
-                    })
-                    .collect();
+            let kinds: Vec<_> = rows
+                .iter()
+                .map(|row| render::status_kind(&row.status))
+                .collect();
             format!("{completed}:{}", kinds.join(","))
         }
         DeployEvent::Outcome { .. } => String::new(),

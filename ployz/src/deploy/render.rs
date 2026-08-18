@@ -12,12 +12,22 @@ use ployz_core::{
 };
 
 /// How the live task list is titled.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProgressStyle {
-    /// `ployz deploy` / `ployz scale`.
-    Deploy { context: String },
-    /// `ployz run`.
-    Run { service: String },
+#[must_use]
+pub fn progress_text(event: &DeployEvent, title: &str) -> String {
+    match event {
+        DeployEvent::Progress {
+            completed,
+            total,
+            rows,
+        } => {
+            let mut out = format!("[+] {title} {completed}/{total}\n");
+            for row in rows {
+                out.push_str(&row_line(row));
+            }
+            out
+        }
+        DeployEvent::Outcome { outcome } => outcome_text(outcome),
+    }
 }
 
 /// Tree plan plus footer. Empty operations are "No changes."
@@ -39,25 +49,6 @@ pub fn plan_text(preview: &DeployPreview, context: &str) -> String {
 #[must_use]
 pub fn confirm_prompt(context: &str) -> String {
     format!("Proceed with deployment to {context}? [y/N] ")
-}
-
-/// Task-list snapshot for one progress event.
-#[must_use]
-pub fn progress_text(event: &DeployEvent, style: &ProgressStyle) -> String {
-    match event {
-        DeployEvent::Progress {
-            completed,
-            total,
-            rows,
-        } => {
-            let mut out = format!("[+] {} {completed}/{total}\n", progress_title(style));
-            for row in rows {
-                out.push_str(&row_line(row));
-            }
-            out
-        }
-        DeployEvent::Outcome { outcome } => outcome_text(outcome),
-    }
 }
 
 /// Completed-prefix / failed op / unexecuted rest, plus endpoints on success.
@@ -85,13 +76,6 @@ pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
             }
             out
         }
-    }
-}
-
-fn progress_title(style: &ProgressStyle) -> String {
-    match style {
-        ProgressStyle::Deploy { context } => format!("Deploying to {context}"),
-        ProgressStyle::Run { service } => format!("Running service {service}"),
     }
 }
 
@@ -292,6 +276,25 @@ fn machine_label(row: &OperationRow) -> String {
     row.machine_name
         .as_ref()
         .map_or_else(|| row.machine_id.to_string(), ToString::to_string)
+}
+
+pub(super) fn status_kind(status: &OperationStatus) -> &'static str {
+    match status {
+        OperationStatus::Pending => "pending",
+        OperationStatus::Running { phase } => match phase {
+            OperationPhase::WaitingForHealth { .. } => "health",
+            OperationPhase::WaitingForHook { .. } => "hook",
+            OperationPhase::StoppingContainer | OperationPhase::RemovingContainer => "removing",
+            OperationPhase::Compensating => "compensating",
+            OperationPhase::Starting
+            | OperationPhase::CreatingVolume
+            | OperationPhase::CreatingContainer
+            | OperationPhase::StartingContainer => "running",
+        },
+        OperationStatus::Completed => "completed",
+        OperationStatus::Failed { .. } => "failed",
+        OperationStatus::Unexecuted => "unexecuted",
+    }
 }
 
 fn status_columns(row: &OperationRow) -> (&'static str, &'static str, String) {
@@ -513,12 +516,7 @@ mod tests {
             total: 2,
             rows: vec![healthy, removed],
         };
-        let text = progress_text(
-            &event,
-            &ProgressStyle::Deploy {
-                context: "default".into(),
-            },
-        );
+        let text = progress_text(&event, "Deploying to default");
         assert!(text.contains("[+] Deploying to default 2/2\n"));
         assert!(text.contains("Container excalidraw-0z12 on machine-dc3c"));
         assert!(text.contains("Healthy"));
@@ -534,12 +532,7 @@ mod tests {
             total: 1,
             rows: Vec::new(),
         };
-        let text = progress_text(
-            &event,
-            &ProgressStyle::Run {
-                service: "api".into(),
-            },
-        );
+        let text = progress_text(&event, "Running service api");
         assert_eq!(text, "[+] Running service api 0/1\n");
     }
 

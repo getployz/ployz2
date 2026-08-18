@@ -267,11 +267,6 @@ impl DeployPreview {
     pub fn noop(&self) -> bool {
         self.operations.is_empty()
     }
-
-    /// Operations this preview would execute, in plan order.
-    pub fn planned_operations(&self) -> impl Iterator<Item = &DeployOperation> {
-        self.operations.iter().map(|row| &row.operation)
-    }
 }
 
 /// Kind of Machine observation that failed or was omitted while gathering a snapshot.

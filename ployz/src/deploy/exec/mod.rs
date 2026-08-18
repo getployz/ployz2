@@ -1,12 +1,12 @@
 use std::{future::Future, time::Duration};
 
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
+    ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, DeployEvent,
-    ExecutionError, HealthFailure, HealthObservation, HealthcheckSpec, HookFailure,
-    InspectContainerRequest, MachineAction, MachineId, MachineTarget, OperationPhase, OperationRow,
-    RemoveContainerRequest, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume,
-    StartContainerRequest, StopContainerRequest, UpdateOrder, VolumeSource, op,
+    ExecutionError, HookFailure, InspectContainerRequest, MachineAction, MachineId, MachineTarget,
+    OperationPhase, OperationRow, RemoveContainerRequest, ResolvedServiceSpec, RpcError,
+    RpcErrorCode, ServiceVolume, StartContainerRequest, StopContainerRequest, UpdateOrder,
+    VolumeSource, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -16,12 +16,16 @@ use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 
 use super::{
     DeployOperation, DeployOutcome, DeployPlan, ReplacementCompensation, ReplacementOperation,
-    RestartAttempt, progress::Progress,
+    RestartAttempt,
 };
 
-const DEFAULT_HEALTH_MONITOR: Duration = Duration::from_secs(5);
+pub(super) use super::progress::Progress;
+
+mod health;
+use health::monitor_container;
+
 const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const POLL_INTERVAL: Duration = Duration::from_secs(1);
+pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
 const RESTART_POLL: Duration = Duration::from_millis(250);
 
@@ -35,25 +39,17 @@ pub async fn execute_plan(
     execute_operation_sequence(&plan.operations, client, cancellation, Vec::new(), None).await
 }
 
-pub(crate) async fn execute_operations(
-    operations: &[DeployOperation],
-    client: &Client,
-    cancellation: &CancellationToken,
-) -> DeployOutcome<ExecutionError> {
-    execute_operation_sequence(operations, client, cancellation, Vec::new(), None).await
-}
-
 pub(crate) async fn execute_operations_with_progress(
-    operations: &[DeployOperation],
     rows: Vec<OperationRow>,
     client: &Client,
     cancellation: &CancellationToken,
-    tx: UnboundedSender<DeployEvent>,
+    tx: Option<UnboundedSender<DeployEvent>>,
 ) -> DeployOutcome<ExecutionError> {
-    execute_operation_sequence(operations, client, cancellation, rows, Some(tx)).await
+    let operations: Vec<DeployOperation> = rows.iter().map(|row| row.operation.clone()).collect();
+    execute_operation_sequence(&operations, client, cancellation, rows, tx).await
 }
 
-trait MachineOperations {
+pub(super) trait MachineOperations {
     async fn create_volume(
         &self,
         machine_id: &MachineId,
@@ -232,12 +228,6 @@ enum HookInterruption {
     TimedOut,
 }
 
-enum HealthPoll {
-    Complete,
-    PendingUntil(Instant),
-    Failed(HealthFailure),
-}
-
 impl From<ExecutionError> for OperationFailure {
     fn from(error: ExecutionError) -> Self {
         Self::Ordinary(error)
@@ -370,8 +360,8 @@ async fn execute_operation_sequence<C: MachineOperations>(
         inner: client,
         cancellation,
     };
-    let mut progress = Progress::new(&operations, rows, tx);
-    progress.emit_pending();
+    let mut progress = Progress::new(rows, tx);
+    progress.emit();
     for (index, operation) in operations.iter().enumerate() {
         if cancellation.is_cancelled() {
             progress.fail(index, ExecutionError::Cancelled);
@@ -423,6 +413,7 @@ async fn execute_operation<C: MachineOperations>(
     client: &C,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure> {
+    progress.set_running(index, OperationPhase::Starting);
     match operation {
         DeployOperation::CreateVolume { machine_id, volume } => {
             progress.set_running(index, OperationPhase::CreatingVolume);
@@ -669,167 +660,6 @@ async fn replace_container<C: MachineOperations>(
     .map_err(|error| machine_error(MachineAction::RemoveContainer, error).into())
 }
 
-async fn monitor_container<C: MachineOperations>(
-    client: &C,
-    index: usize,
-    progress: &mut Progress,
-    machine_id: &MachineId,
-    container_id: &ContainerId,
-    spec: &ResolvedServiceSpec,
-    cancellation: &CancellationToken,
-) -> Result<(), ExecutionError> {
-    let monitor = spec
-        .update
-        .monitor_millis
-        .map_or_else(default_health_monitor, Duration::from_millis);
-    let started = Instant::now();
-    let deadline_ms = healthcheck_timeout(
-        spec.container
-            .healthcheck
-            .as_ref()
-            .and_then(HealthcheckSpec::as_configured),
-    )
-    .as_millis() as u64;
-    progress.set_running(
-        index,
-        OperationPhase::WaitingForHealth {
-            container_id: *container_id,
-            health: None,
-            elapsed_ms: 0,
-            deadline_ms,
-        },
-    );
-
-    if !matches!(
-        spec.container.healthcheck,
-        Some(HealthcheckSpec::Configured(_))
-    ) && !monitor.is_zero()
-    {
-        tokio::select! {
-            () = cancellation.cancelled() => {
-                return Err(health_error(container_id, HealthFailure::Cancelled));
-            }
-            () = tokio::time::sleep(monitor) => {}
-        }
-        progress.set_running(
-            index,
-            OperationPhase::WaitingForHealth {
-                container_id: *container_id,
-                health: None,
-                elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                deadline_ms,
-            },
-        );
-    }
-
-    let monitor_deadline = started + monitor;
-    loop {
-        if cancellation.is_cancelled() {
-            return Err(health_error(container_id, HealthFailure::Cancelled));
-        }
-        let observed = inspect(client, machine_id, container_id).await?;
-        let now = Instant::now();
-        let health_deadline =
-            health_deadline_for(spec.container.healthcheck.as_ref(), &observed, started);
-        let health = match &observed.runtime {
-            ContainerRuntimeObservation::Running { health } => Some(health.clone()),
-            ContainerRuntimeObservation::Created
-            | ContainerRuntimeObservation::Paused
-            | ContainerRuntimeObservation::Restarting
-            | ContainerRuntimeObservation::Exited { .. }
-            | ContainerRuntimeObservation::Removing
-            | ContainerRuntimeObservation::Dead
-            | ContainerRuntimeObservation::Unknown { .. } => None,
-        };
-        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let deadline_ms = health_deadline
-            .or(Some(monitor_deadline))
-            .map(|deadline| {
-                u64::try_from(deadline.saturating_duration_since(started).as_millis())
-                    .unwrap_or(u64::MAX)
-            })
-            .unwrap_or(deadline_ms);
-        progress.set_running(
-            index,
-            OperationPhase::WaitingForHealth {
-                container_id: *container_id,
-                health,
-                elapsed_ms,
-                deadline_ms,
-            },
-        );
-        let wake_deadline =
-            match classify_health(&observed.runtime, now, monitor_deadline, health_deadline) {
-                HealthPoll::Complete => return Ok(()),
-                HealthPoll::PendingUntil(deadline) => deadline,
-                HealthPoll::Failed(failure) => return Err(health_error(container_id, failure)),
-            };
-        let wake = std::cmp::min(now + POLL_INTERVAL, wake_deadline);
-        tokio::select! {
-            () = cancellation.cancelled() => {
-                return Err(health_error(container_id, HealthFailure::Cancelled));
-            }
-            () = tokio::time::sleep_until(wake) => {}
-        }
-    }
-}
-
-fn classify_health(
-    runtime: &ContainerRuntimeObservation,
-    now: Instant,
-    monitor_deadline: Instant,
-    health_deadline: Option<Instant>,
-) -> HealthPoll {
-    match runtime {
-        ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
-        } => HealthPoll::Complete,
-        ContainerRuntimeObservation::Running {
-            health: HealthObservation::NotConfigured,
-        } if health_deadline.is_none() => HealthPoll::Complete,
-        ContainerRuntimeObservation::Exited { code: 0 } => HealthPoll::Complete,
-        ContainerRuntimeObservation::Running {
-            health:
-                HealthObservation::Starting
-                | HealthObservation::NotConfigured
-                | HealthObservation::Unrecognized(_),
-        } => {
-            let Some(health_deadline) = health_deadline else {
-                return HealthPoll::Failed(HealthFailure::Runtime {
-                    observation: runtime.clone(),
-                });
-            };
-            if now >= health_deadline {
-                HealthPoll::Failed(HealthFailure::TimedOut)
-            } else {
-                HealthPoll::PendingUntil(health_deadline)
-            }
-        }
-        // The process already died. Waiting would let a later healthy snapshot
-        // during the next start window succeed the deploy.
-        ContainerRuntimeObservation::Restarting => HealthPoll::Failed(HealthFailure::Runtime {
-            observation: runtime.clone(),
-        }),
-        ContainerRuntimeObservation::Created
-        | ContainerRuntimeObservation::Running {
-            health: HealthObservation::Unhealthy,
-        }
-        | ContainerRuntimeObservation::Paused
-        | ContainerRuntimeObservation::Exited { .. }
-        | ContainerRuntimeObservation::Removing
-        | ContainerRuntimeObservation::Dead
-        | ContainerRuntimeObservation::Unknown { .. } => {
-            if now >= monitor_deadline {
-                HealthPoll::Failed(HealthFailure::Runtime {
-                    observation: runtime.clone(),
-                })
-            } else {
-                HealthPoll::PendingUntil(monitor_deadline)
-            }
-        }
-    }
-}
-
 async fn run_hook<C: MachineOperations>(
     client: &C,
     index: usize,
@@ -957,7 +787,7 @@ async fn interrupt_hook<C: MachineOperations>(
     }
 }
 
-async fn inspect<C: MachineOperations>(
+pub(super) async fn inspect<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
     container_id: &ContainerId,
@@ -979,81 +809,12 @@ fn ignore_not_found(result: Result<(), RpcError>) -> Result<(), RpcError> {
     }
 }
 
-fn health_error(container_id: &ContainerId, failure: HealthFailure) -> ExecutionError {
-    ExecutionError::Health {
-        container_id: *container_id,
-        failure,
-    }
-}
-
 fn stop_grace_period(spec: &ResolvedServiceSpec) -> Option<i32> {
     spec.container
         .stop_timeout_secs
         .map(|secs| i32::try_from(secs).unwrap_or(i32::MAX))
 }
 
-fn health_deadline_for(
-    spec: Option<&HealthcheckSpec>,
-    observed: &ContainerObservation,
-    started: Instant,
-) -> Option<Instant> {
-    match spec {
-        Some(HealthcheckSpec::Configured(configured)) => {
-            Some(started + healthcheck_timeout(Some(configured)))
-        }
-        Some(HealthcheckSpec::Disabled) => None,
-        None => observed
-            .effective_healthcheck
-            .as_ref()
-            .and_then(HealthcheckSpec::as_configured)
-            .map(|check| started + healthcheck_timeout(Some(check)))
-            .or_else(|| {
-                matches!(
-                    &observed.runtime,
-                    ContainerRuntimeObservation::Running {
-                        health: HealthObservation::Starting | HealthObservation::Unrecognized(_),
-                    }
-                )
-                .then(|| started + healthcheck_timeout(None))
-            }),
-    }
-}
-
-fn default_health_monitor() -> Duration {
-    std::env::var(crate::cli::env::HEALTH_MONITOR_PERIOD)
-        .ok()
-        .and_then(|value| parse_monitor_period(&value))
-        .unwrap_or(DEFAULT_HEALTH_MONITOR)
-}
-
-fn parse_monitor_period(value: &str) -> Option<Duration> {
-    let value = value.trim();
-    if value == "0" {
-        return Some(Duration::ZERO);
-    }
-    crate::compose::duration_millis(Some(value))
-        .ok()
-        .flatten()
-        .map(Duration::from_millis)
-}
-
-fn healthcheck_timeout(healthcheck: Option<&ConfiguredHealthcheck>) -> Duration {
-    let interval = healthcheck
-        .and_then(|check| check.interval_millis)
-        .unwrap_or(30_000);
-    let timeout = healthcheck
-        .and_then(|check| check.timeout_millis)
-        .unwrap_or(30_000);
-    let retries = u64::from(healthcheck.and_then(|check| check.retries).unwrap_or(3));
-    Duration::from_millis(
-        healthcheck
-            .and_then(|check| check.start_period_millis)
-            .unwrap_or_default()
-            .saturating_add(interval.saturating_add(timeout).saturating_mul(retries))
-            .saturating_add(5_000),
-    )
-}
-
 #[cfg(test)]
-#[path = "exec_tests.rs"]
+#[path = "../exec_tests.rs"]
 mod tests;

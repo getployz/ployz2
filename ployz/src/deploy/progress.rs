@@ -1,3 +1,5 @@
+//! Pending operation rows and a progress sink for one Deploy.
+
 use std::collections::BTreeMap;
 
 use ployz_core::{
@@ -73,32 +75,11 @@ pub(super) struct Progress {
 }
 
 impl Progress {
-    pub(super) fn new(
-        operations: &[DeployOperation],
-        rows: Vec<OperationRow>,
-        tx: Option<UnboundedSender<DeployEvent>>,
-    ) -> Self {
-        let rows = if rows.len() == operations.len() {
-            rows
-        } else {
-            operations
-                .iter()
-                .enumerate()
-                .map(|(index, operation)| {
-                    OperationRow::pending(
-                        u32::try_from(index).unwrap_or(u32::MAX),
-                        operation.clone(),
-                        None,
-                        None,
-                        operation.service_name().cloned(),
-                    )
-                })
-                .collect()
-        };
+    pub(super) fn new(rows: Vec<OperationRow>, tx: Option<UnboundedSender<DeployEvent>>) -> Self {
         Self { rows, tx }
     }
 
-    pub(super) fn emit_pending(&self) {
+    pub(super) fn emit(&self) {
         self.emit_progress();
     }
 

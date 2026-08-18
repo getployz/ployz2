@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::connect::{Client, ConnectError, DialCredential, connect_relay};
@@ -47,7 +47,7 @@ pub struct RunningDeploy {
     cancel: CancellationToken,
     events: Mutex<Option<mpsc::UnboundedReceiver<DeployEvent>>>,
     join: Mutex<Option<tokio::task::JoinHandle<DeployOutcome<ExecutionError>>>>,
-    outcome: Mutex<Option<DeployOutcome<ExecutionError>>>,
+    outcome: watch::Sender<Option<DeployOutcome<ExecutionError>>>,
 }
 
 /// Open a Machine RPC channel through Cloud Relay.
@@ -253,11 +253,12 @@ impl PreparedDeploy {
         let preview = self.preview.clone();
         let token = cancel.clone();
         let join = tokio::spawn(async move { client.confirm(&preview, &token, Some(tx)).await });
+        let (outcome, _) = watch::channel(None);
         Ok(RunningDeploy {
             cancel,
             events: Mutex::new(Some(rx)),
             join: Mutex::new(Some(join)),
-            outcome: Mutex::new(None),
+            outcome,
         })
     }
 }
@@ -289,17 +290,20 @@ impl RunningDeploy {
 
     /// Wait for the Deploy Outcome. Progress events are still produced.
     pub async fn finished(&self) -> DeployOutcome<ExecutionError> {
-        let handle = self.join.lock().await.take();
-        if let Some(handle) = handle {
+        if let Some(handle) = self.join.lock().await.take() {
             let outcome = handle.await.expect("deploy task joins");
-            *self.outcome.lock().await = Some(outcome);
+            let _ = self.outcome.send(Some(outcome.clone()));
+            while self.next().await.is_some() {}
+            return outcome;
         }
+        let mut rx = self.outcome.subscribe();
         loop {
-            if let Some(outcome) = self.outcome.lock().await.clone() {
+            let outcome = rx.borrow().clone();
+            if let Some(outcome) = outcome {
                 while self.next().await.is_some() {}
                 return outcome;
             }
-            tokio::task::yield_now().await;
+            rx.changed().await.expect("deploy outcome sender dropped");
         }
     }
 }

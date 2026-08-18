@@ -25,9 +25,9 @@ use crate::{
 };
 
 use super::{
-    DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeploySnapshot,
-    DeployWarning, ExecutionError, ObservationKind, PlanError, PlanOptions, ServiceAttempt,
-    exec::execute_operations, exec::execute_operations_with_progress, pending_rows, plan_deploy,
+    DeployEvent, DeployIntent, DeployOutcome, DeployPreview, DeploySnapshot, DeployWarning,
+    ExecutionError, ObservationKind, PlanError, PlanOptions, ServiceAttempt,
+    exec::execute_operations_with_progress, pending_rows, plan_deploy,
 };
 
 /// Snapshot, planning, or ingress-expansion failure before a Deploy executes.
@@ -72,20 +72,8 @@ impl Client {
         cancellation: &CancellationToken,
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> DeployOutcome<ExecutionError> {
-        let operations: Vec<DeployOperation> = preview.planned_operations().cloned().collect();
-        match progress {
-            Some(tx) => {
-                execute_operations_with_progress(
-                    &operations,
-                    preview.operations.clone(),
-                    self,
-                    cancellation,
-                    tx,
-                )
-                .await
-            }
-            None => execute_operations(&operations, self, cancellation).await,
-        }
+        execute_operations_with_progress(preview.operations.clone(), self, cancellation, progress)
+            .await
     }
 
     /// Preview, auto-confirm, and return the Deploy Outcome.

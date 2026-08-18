@@ -26,13 +26,9 @@ export type WatchOptions = {
   readonly signal?: AbortSignal;
 };
 
-export type ConfirmOptions = {
-  readonly signal?: AbortSignal;
-};
+export type ConfirmOptions = WatchOptions;
 
-export type RunOptions = {
-  readonly signal?: AbortSignal;
-};
+export type RunOptions = WatchOptions;
 
 export type PreparedDeploy = DeployPreview & {
   readonly noop: boolean;
