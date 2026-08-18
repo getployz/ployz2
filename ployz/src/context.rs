@@ -277,11 +277,11 @@ pub enum Transport {
     },
     Tcp(SocketAddr),
     Unix(PathBuf),
-    /// Cloud Relay Attach. Caller supplies the URL, Dial Credential, and Machine ID.
+    /// Cloud Relay Dial. Not persisted. The entry Machine ID lives on
+    /// [`Connection::machine_id`].
     Relay {
         url: String,
         credential: DialCredential,
-        machine_id: MachineId,
     },
 }
 
@@ -335,8 +335,8 @@ impl Connection {
         })
     }
 
-    /// Connect through Cloud Relay Attach with a caller-supplied Dial Credential
-    /// and entry Machine ID.
+    /// Connect through Cloud Relay with a caller-supplied Dial Credential and
+    /// entry Machine ID. Does not mint credentials or choose a Machine.
     #[must_use]
     pub fn relay(
         url: impl Into<String>,
@@ -347,23 +347,14 @@ impl Connection {
             transport: Transport::Relay {
                 url: url.into(),
                 credential,
-                machine_id,
             },
-            machine_id: None,
+            machine_id: Some(machine_id),
         }
     }
 
     #[must_use]
     pub fn with_machine_id(mut self, machine_id: MachineId) -> Self {
-        match &mut self.transport {
-            Transport::Relay {
-                machine_id: relay_id,
-                ..
-            } => *relay_id = machine_id,
-            Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => {
-                self.machine_id = Some(machine_id);
-            }
-        }
+        self.machine_id = Some(machine_id);
         self
     }
 
@@ -390,12 +381,7 @@ impl Connection {
 
     #[must_use]
     pub fn machine_id(&self) -> Option<&MachineId> {
-        match &self.transport {
-            Transport::Relay { machine_id, .. } => Some(machine_id),
-            Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => {
-                self.machine_id.as_ref()
-            }
-        }
+        self.machine_id.as_ref()
     }
 }
 

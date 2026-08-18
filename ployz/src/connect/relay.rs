@@ -1,10 +1,8 @@
-//! Cloud Relay Attach: Dial a Machine and wrap the opaque tunnel as a Channel.
+//! Cloud Relay Dial: wrap the opaque tunnel as a Channel.
 
 use std::{
     io,
-    pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context as TaskContext, Poll},
     time::Duration,
 };
 
@@ -13,7 +11,6 @@ use ployz_core::MachineId;
 use ployz_relay::{
     AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, MACHINE_ID_METADATA, TunnelIo,
 };
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
@@ -51,7 +48,7 @@ async fn dial_tunnel(
     url: &str,
     credential: &DialCredential,
     machine_id: &MachineId,
-) -> Result<RelayIo, ConnectError> {
+) -> Result<TunnelIo, ConnectError> {
     let channel = Endpoint::from_shared(url.to_owned())?
         .connect_timeout(Duration::from_secs(5))
         .connect()
@@ -65,10 +62,7 @@ async fn dial_tunnel(
         Ok(response) => response.into_inner(),
         Err(status) => return Err(dial_status(status)),
     };
-    Ok(RelayIo {
-        io: TunnelIo::new(tx, inbound),
-        _relay: relay,
-    })
+    Ok(TunnelIo::new(tx, inbound))
 }
 
 fn insert_dial_metadata(
@@ -98,41 +92,5 @@ fn dial_status(status: tonic::Status) -> ConnectError {
         ConnectError::UnknownMachine
     } else {
         ConnectError::from(status)
-    }
-}
-
-struct RelayIo {
-    io: TunnelIo,
-    _relay: CloudRelayClient<Channel>,
-}
-
-impl AsyncRead for RelayIo {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        context: &mut TaskContext<'_>,
-        buffer: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_read(context, buffer)
-    }
-}
-
-impl AsyncWrite for RelayIo {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        context: &mut TaskContext<'_>,
-        buffer: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.io).poll_write(context, buffer)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_flush(context)
-    }
-
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        context: &mut TaskContext<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_shutdown(context)
     }
 }

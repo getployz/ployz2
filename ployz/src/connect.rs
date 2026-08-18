@@ -102,11 +102,12 @@ impl Connector for SystemConnector {
                 destination,
                 key_file,
             } => connect_ssh(destination, key_file.as_deref(), &self.ssh_program).await,
-            Transport::Relay {
-                url,
-                credential,
-                machine_id,
-            } => relay::connect_channel(url, credential, machine_id).await,
+            Transport::Relay { url, credential } => {
+                let machine_id = connection
+                    .machine_id()
+                    .ok_or(ConnectError::UnknownMachine)?;
+                relay::connect_channel(url, credential, machine_id).await
+            }
         }
     }
 
@@ -490,10 +491,11 @@ pub async fn connect(
     connect_selected_with(selected, Arc::new(SystemConnector::default())).await
 }
 
-/// Open a Machine RPC channel through Cloud Relay Attach.
+/// Open a Machine RPC channel through Cloud Relay.
 ///
-/// Succeeds only after the selected Machine produces a usable RPC channel.
-/// Does not mint a Dial Credential or choose an entry Machine.
+/// Succeeds only after Relay Dial and Machine Attach produce a usable RPC
+/// channel. Does not mint Attach credentials, perform Cloud Pairing, or choose
+/// an entry Machine.
 ///
 /// # Errors
 ///
