@@ -170,7 +170,6 @@ fn other_project_resources_are_left_alone() {
 }
 
 #[test]
-#[test]
 fn planner_does_not_refuse_reserved_names() {
     let spec = requested(ServiceMode::Global);
     let mut caddy = container('b', '1', &spec, &service_id('a'));
