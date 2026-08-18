@@ -42,6 +42,7 @@ pub struct DomainRequired {
     pub protocol: HttpProtocol,
 }
 
+/// Failure assigning a generated Ingress Hostname before planning mutates ports.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ExpandIngressError {
     #[error(transparent)]
@@ -221,6 +222,18 @@ fn records_from_machines(machines: &[Machine]) -> Result<Vec<DnsRecord>, NoReach
     }
 }
 
+/// Assign generated Ingress Hostnames for ports that still need one.
+///
+/// A generated name is `{service}-{project}.{cluster_domain}`. Custom hostnames
+/// are left unchanged. Generation is skipped when every ingress port already
+/// has a hostname under the Cluster Domain.
+///
+/// # Errors
+///
+/// Returns [`ExpandIngressError::DomainRequired`] when a port asks for
+/// assignment and no Cluster Domain is reserved. Returns
+/// [`ExpandIngressError::LabelTooLong`] when the combined `{service}-{project}`
+/// label exceeds 63 characters, before any port is rewritten.
 pub fn expand_ingress_ports(
     spec: &mut RequestedServiceSpec,
     project: &ProjectName,
