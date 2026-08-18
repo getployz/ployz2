@@ -12,6 +12,10 @@ export type JsonObject = { readonly [key: string]: JsonValue | undefined };
 
 export type Additive<T extends object> = T & JsonObject;
 
+export type SerdeResult<T, E> =
+  | Additive<{ Ok: T }>
+  | Additive<{ Err: E }>;
+
 export type MachineId = string;
 
 export type ContainerId = string;
@@ -124,10 +128,6 @@ export type DeployIntent = Additive<{
   apply: ServiceAttempt[];
   options: PlanOptions;
 }>;
-
-export type SerdeResult<T, E> =
-  | Additive<{ Ok: T }>
-  | Additive<{ Err: E }>;
 
 export type ReplacementOperation = Additive<{
   machine_id: MachineId;

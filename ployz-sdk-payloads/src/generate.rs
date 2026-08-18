@@ -21,7 +21,8 @@ pub const PACKAGE_NAME: &str = "@ployz/sdk";
 const TYPESCRIPT_PREAMBLE: &str = "\
 export type JsonValue =\n  | null\n  | boolean\n  | number\n  | string\n  | JsonValue[]\n  | JsonObject;\n\n\
 export type JsonObject = { readonly [key: string]: JsonValue | undefined };\n\n\
-export type Additive<T extends object> = T & JsonObject;\n\n";
+export type Additive<T extends object> = T & JsonObject;\n\n\
+export type SerdeResult<T, E> =\n  | Additive<{ Ok: T }>\n  | Additive<{ Err: E }>;\n\n";
 
 enum Shape {
     Alias(&'static str),
@@ -194,13 +195,6 @@ const PAYLOADS: &[(&str, Shape)] = &[
                 ("apply", "ServiceAttempt[]"),
                 ("options", "PlanOptions"),
             ],
-        },
-    ),
-    (
-        "SerdeResult",
-        Shape::ExternallyTagged {
-            params: "<T, E>",
-            variants: &[("Ok", Some("T")), ("Err", Some("E"))],
         },
     ),
     (
@@ -680,9 +674,6 @@ fn check_externally_tagged_variants_match_rust() {
         let Shape::ExternallyTagged { variants, .. } = shape else {
             continue;
         };
-        if *name == "SerdeResult" {
-            continue;
-        }
         let mut seen = BTreeSet::new();
         for value in serde_examples(name, &examples) {
             let key = external_tag(name, value);
