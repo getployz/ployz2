@@ -2,7 +2,7 @@
 
 use std::{io, time::Duration};
 
-use ployz_core::{CloudPairing, MachineId};
+use ployz_core::{CloudPairing, MachineId, PairingCredential};
 use ployz_relay::{AUTHORIZATION_METADATA, CloudRelayClient, RegisterRequest};
 use thiserror::Error;
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -36,7 +36,7 @@ pub enum Error {
 /// If the Relay is unreachable or Register is rejected.
 pub async fn hold_register(
     url: &str,
-    pairing: &str,
+    pairing: &PairingCredential,
     machine_id: &MachineId,
 ) -> Result<RegisterHold, Error> {
     let mut relay = CloudRelayClient::new(connect(url).await?);
@@ -76,7 +76,7 @@ pub(crate) async fn run(
 ) -> io::Result<()> {
     let _hold = match pairing {
         Some(pairing) => Some(
-            hold_register(pairing.relay_url(), pairing.secret().as_str(), &machine_id)
+            hold_register(pairing.relay_url(), pairing.secret(), &machine_id)
                 .await
                 .map_err(io::Error::other)?,
         ),
@@ -93,10 +93,10 @@ async fn connect(url: &str) -> Result<Channel, tonic::transport::Error> {
         .await
 }
 
-fn set_bearer(metadata: &mut tonic::metadata::MetadataMap, pairing: &str) {
+fn set_bearer(metadata: &mut tonic::metadata::MetadataMap, pairing: &PairingCredential) {
     metadata.insert(
         AUTHORIZATION_METADATA,
-        MetadataValue::try_from(format!("Bearer {pairing}"))
+        MetadataValue::try_from(format!("Bearer {}", pairing.as_str()))
             .expect("Pairing Credential is ASCII metadata"),
     );
 }
@@ -105,7 +105,7 @@ fn set_bearer(metadata: &mut tonic::metadata::MetadataMap, pairing: &str) {
 mod tests {
     use std::{net::Ipv4Addr, time::Duration};
 
-    use ployz_core::{CloudPairing, MachineId};
+    use ployz_core::{CloudPairing, MachineId, PairingCredential};
     use ployz_relay::{
         AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, ListRequest, MACHINE_ID_METADATA,
         PAIRING_METADATA, Relay, RevokeRequest,
@@ -176,7 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_relay_fails() {
-        let error = match hold_register("not-a-url", PAIRING, &MachineId::random()).await {
+        let error = match hold_register("not-a-url", &secret(), &MachineId::random()).await {
             Ok(_) => panic!("expected unreachable Relay to fail"),
             Err(error) => error,
         };
@@ -189,13 +189,7 @@ mod tests {
         let machine_id = MachineId::random();
         let shutdown = CancellationToken::new();
         let hold = tokio::spawn(run(
-            Some(
-                CloudPairing::parse(
-                    &relay.url,
-                    ployz_core::PairingCredential::parse(PAIRING).unwrap(),
-                )
-                .unwrap(),
-            ),
+            Some(CloudPairing::parse(&relay.url, secret()).unwrap()),
             machine_id,
             shutdown.clone(),
         ));
@@ -217,11 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_cloud_pairing_fails() {
-        let pairing = CloudPairing::parse(
-            "not-a-url",
-            ployz_core::PairingCredential::parse(PAIRING).unwrap(),
-        )
-        .unwrap();
+        let pairing = CloudPairing::parse("not-a-url", secret()).unwrap();
         let error = run(Some(pairing), MachineId::random(), CancellationToken::new())
             .await
             .expect_err("unreachable Relay must fail");
@@ -258,7 +248,7 @@ mod tests {
         async fn start() -> Self {
             let relay = RelayListen::start().await;
             let machine_id = MachineId::random();
-            let hold = hold_register(&relay.url, PAIRING, &machine_id)
+            let hold = hold_register(&relay.url, &secret(), &machine_id)
                 .await
                 .expect("Register hello is accepted");
             Self {
@@ -268,6 +258,10 @@ mod tests {
                 _relay: relay,
             }
         }
+    }
+
+    fn secret() -> PairingCredential {
+        PairingCredential::parse(PAIRING).unwrap()
     }
 
     async fn wait_for_held(url: &str, machine_id: MachineId) {
