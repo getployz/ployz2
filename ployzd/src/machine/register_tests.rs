@@ -623,7 +623,7 @@ async fn isolation_lock_refuses_admit_when_replica_exceeds_three_and_others_are_
         .publish_founder_allocator(&founder.id)
         .await
         .unwrap();
-    let (admin_dir, admin) = serve_membership(&[]).await;
+    let (admin_server, admin, admin_root) = serve_membership(&[]).await;
     let local = LocalMachine::new(store, watch::channel(false).0)
         .with_cluster(Some((replicated.clone(), AdminClient::new(&admin))));
     let error = local
@@ -633,7 +633,8 @@ async fn isolation_lock_refuses_admit_when_replica_exceeds_three_and_others_are_
     assert!(matches!(error, LocalMachineError::IsolationLocked));
     assert_eq!(replicated.machines().await.unwrap().observations.len(), 4);
 
-    admin_dir.close();
+    admin_server.abort();
+    let _ = std::fs::remove_dir_all(admin_root);
     server.abort();
     drop(local);
     let _ = std::fs::remove_dir_all(data_dir);
@@ -651,7 +652,7 @@ async fn isolation_lock_refuses_steal_when_replica_exceeds_three_and_others_are_
         .publish_founder_allocator(&named.id)
         .await
         .unwrap();
-    let (admin_dir, admin) = serve_membership(&[]).await;
+    let (admin_server, admin, admin_root) = serve_membership(&[]).await;
     let local = machine_service_with_admin(store, replicated.clone(), Some(1), &admin);
 
     let error = rpc_register(
@@ -682,59 +683,8 @@ async fn isolation_lock_refuses_steal_when_replica_exceeds_three_and_others_are_
             .all(|machine| machine.name.as_str() != "joiner"),
         "isolation must not steal or assign a Machine Subnet"
     );
-    admin_dir.close();
-    server.abort();
-    drop(local);
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-#[tokio::test]
-async fn isolation_lock_does_not_fire_for_a_replica_of_three() {
-    let (local, replicated, _founder, data_dir, server) = participating().await;
-    publish_peers(&replicated, 2).await;
-    let registered = local
-        .register(request("joiner", WireGuardPublicKey([1; 32])))
-        .await
-        .unwrap();
-    assert_eq!(registered.assigned_machine.name.as_str(), "joiner");
-    assert_eq!(replicated.machines().await.unwrap().observations.len(), 4);
-
-    server.abort();
-    drop(local);
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-#[tokio::test]
-async fn isolation_lock_does_not_block_steal_for_a_replica_of_three() {
-    let (data_dir, store, founder) = open_store("ployzd-register-isolation-bootstrap-steal");
-    let named = unreachable_allocator(MachineId::parse("c".repeat(32)).unwrap());
-    let (replicated, server) = fake_cluster::store().await;
-    replicated.publish_local_machine(&founder).await.unwrap();
-    replicated.publish_local_machine(&named).await.unwrap();
-    publish_peers(&replicated, 1).await;
-    replicated
-        .publish_founder_allocator(&named.id)
-        .await
-        .unwrap();
-    let local = machine_service(store, replicated.clone(), Some(1));
-
-    let error = rpc_register(
-        &local,
-        request("joiner", WireGuardPublicKey([7; 32])),
-        false,
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(error.message, "Allocator is not quiet");
-    assert_eq!(
-        replicated
-            .allocator()
-            .await
-            .unwrap()
-            .map(|row| (row.machine_id, row.quiet)),
-        Some((founder.id, false))
-    );
+    admin_server.abort();
+    let _ = std::fs::remove_dir_all(admin_root);
     server.abort();
     drop(local);
     let _ = std::fs::remove_dir_all(data_dir);
@@ -751,7 +701,7 @@ async fn isolation_lock_does_not_fire_when_a_peer_is_still_up() {
         .await
         .unwrap();
     let visible = peers.first().expect("three peers");
-    let (admin_dir, admin) = serve_membership(&[(visible, "Alive")]).await;
+    let (admin_server, admin, admin_root) = serve_membership(&[(visible, "Alive")]).await;
     let local = LocalMachine::new(store, watch::channel(false).0)
         .with_cluster(Some((replicated.clone(), AdminClient::new(&admin))));
 
@@ -761,47 +711,9 @@ async fn isolation_lock_does_not_fire_when_a_peer_is_still_up() {
         .unwrap();
     assert_eq!(registered.assigned_machine.name.as_str(), "joiner");
 
-    admin_dir.close();
+    admin_server.abort();
+    let _ = std::fs::remove_dir_all(admin_root);
     cluster.abort();
-    drop(local);
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-#[tokio::test]
-async fn isolation_lock_does_not_block_steal_when_a_peer_is_still_up() {
-    let (data_dir, store, founder) = open_store("ployzd-register-isolation-split-steal");
-    let named = unreachable_allocator(MachineId::parse("c".repeat(32)).unwrap());
-    let (replicated, server) = fake_cluster::store().await;
-    replicated.publish_local_machine(&founder).await.unwrap();
-    replicated.publish_local_machine(&named).await.unwrap();
-    let peers = publish_peers(&replicated, 2).await;
-    replicated
-        .publish_founder_allocator(&named.id)
-        .await
-        .unwrap();
-    let visible = peers.first().expect("two peers");
-    let (admin_dir, admin) = serve_membership(&[(visible, "Alive")]).await;
-    let local = machine_service_with_admin(store, replicated.clone(), Some(1), &admin);
-
-    let error = rpc_register(
-        &local,
-        request("joiner", WireGuardPublicKey([7; 32])),
-        false,
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(error.message, "Allocator is not quiet");
-    assert_eq!(
-        replicated
-            .allocator()
-            .await
-            .unwrap()
-            .map(|row| row.machine_id),
-        Some(founder.id)
-    );
-    admin_dir.close();
-    server.abort();
     drop(local);
     let _ = std::fs::remove_dir_all(data_dir);
 }
@@ -902,19 +814,9 @@ async fn publish_peers(replicated: &ReplicatedStore, count: usize) -> Vec<Machin
     peers
 }
 
-struct MembershipAdmin {
-    root: PathBuf,
-    server: tokio::task::JoinHandle<()>,
-}
-
-impl MembershipAdmin {
-    fn close(self) {
-        self.server.abort();
-        let _ = std::fs::remove_dir_all(self.root);
-    }
-}
-
-async fn serve_membership(states: &[(&Machine, &'static str)]) -> (MembershipAdmin, PathBuf) {
+async fn serve_membership(
+    states: &[(&Machine, &'static str)],
+) -> (tokio::task::JoinHandle<()>, PathBuf, PathBuf) {
     let states: Vec<_> = states
         .iter()
         .map(|&(machine, state)| (format!("[{}]:51001", machine.management_address.0), state))
@@ -945,7 +847,7 @@ async fn serve_membership(states: &[(&Machine, &'static str)]) -> (MembershipAdm
             let _ = write_admin_frame(&mut stream, br#""Success""#).await;
         }
     });
-    (MembershipAdmin { root, server }, path)
+    (server, path, root)
 }
 
 async fn read_admin_frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {

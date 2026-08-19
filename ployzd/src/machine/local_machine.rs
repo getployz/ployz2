@@ -360,16 +360,13 @@ impl LocalMachine {
             return Err(Error::ClusterStoreUnavailable);
         };
         let machines = cluster.replicated.machines().await?.observations;
-        if machines.len() <= 3 {
-            return Ok(false);
-        }
         let Ok(states) = cluster.admin.membership_states().await else {
             return Ok(false);
         };
-        Ok(isolated_from_mesh(
+        Ok(isolation_lock(
             &me,
-            machines,
-            membership_states_by_address(states),
+            &machines,
+            &membership_states_by_address(states),
         ))
     }
 
@@ -658,19 +655,18 @@ fn membership_states_by_address(
         .collect()
 }
 
-fn isolated_from_mesh(
+fn isolation_lock(
     me: &MachineId,
-    machines: Vec<Machine>,
-    states: BTreeMap<ManagementAddress, MembershipObservation>,
+    machines: &[Machine],
+    states: &BTreeMap<ManagementAddress, MembershipObservation>,
 ) -> bool {
     machines.len() > 3
-        && RuntimeWatchTelemetry {
-            states,
-            ..Default::default()
-        }
-        .overlay(machines, me)
-        .iter()
-        .all(|observation| observation.machine.id == *me || !observation.membership.invites_rpc())
+        && machines.iter().all(|machine| {
+            machine.id == *me
+                || !states
+                    .get(&machine.management_address)
+                    .is_some_and(MembershipObservation::invites_rpc)
+        })
 }
 
 /// Associate one value per management address; duplicate addresses are dropped.
@@ -701,7 +697,10 @@ fn local_removal_response(
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{RuntimeWatchTelemetry, local_removal_response, read_admin, unique_identities};
+    use super::{
+        RuntimeWatchTelemetry, isolation_lock, local_removal_response, read_admin,
+        unique_identities,
+    };
     use crate::corrosion::AdminClient;
     use ployz_core::{
         AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
@@ -798,10 +797,49 @@ mod tests {
         assert_eq!(peer_row.rtt, None);
     }
 
+    #[test]
+    fn isolation_lock_ignores_replicas_of_three() {
+        let me = machine("edge", ENTRY_ID, 1);
+        let machines = [
+            me.clone(),
+            machine("peer", PEER_ID, 2),
+            machine("third", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3),
+        ];
+        assert!(!isolation_lock(&me.id, &machines, &BTreeMap::new()));
+    }
+
+    #[test]
+    fn isolation_lock_fires_when_every_other_machine_is_uncontactable() {
+        let [me, peer, third, fourth] = four_machines();
+        let machines = [me.clone(), peer.clone(), third, fourth];
+        assert!(isolation_lock(&me.id, &machines, &BTreeMap::new()));
+        let down = BTreeMap::from([(peer.management_address, MembershipObservation::Down)]);
+        assert!(isolation_lock(&me.id, &machines, &down));
+    }
+
+    #[test]
+    fn isolation_lock_does_not_fire_when_a_peer_invites_rpc() {
+        let [me, peer, third, fourth] = four_machines();
+        let machines = [me.clone(), peer.clone(), third, fourth];
+        let up = BTreeMap::from([(peer.management_address, MembershipObservation::Up)]);
+        let suspect = BTreeMap::from([(peer.management_address, MembershipObservation::Suspect)]);
+        assert!(!isolation_lock(&me.id, &machines, &up));
+        assert!(!isolation_lock(&me.id, &machines, &suspect));
+    }
+
     #[tokio::test]
     async fn missing_admin_socket_is_unavailable_telemetry() {
         let admin = AdminClient::new("/no/such/ployz-admin.sock");
         assert!(read_admin(&admin).await.is_none());
+    }
+
+    fn four_machines() -> [Machine; 4] {
+        [
+            machine("edge", ENTRY_ID, 1),
+            machine("peer", PEER_ID, 2),
+            machine("third", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3),
+            machine("fourth", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 4),
+        ]
     }
 
     fn machine(name: &str, id: &str, seed: u8) -> Machine {
