@@ -13,7 +13,8 @@ use serde_json::json;
 
 use super::ReplicatedStore;
 use crate::corrosion::ApiClient;
-use crate::corrosion::store::{CLAIM_FOUNDER_ALLOCATOR, founder_allocator_id};
+use crate::corrosion::publisher::founder_allocator_id;
+use crate::corrosion::store::CLAIM_FOUNDER_ALLOCATOR;
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
 };

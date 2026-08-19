@@ -1,8 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io,
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::Arc,
 };
 
 use futures_util::Stream;
@@ -13,8 +11,6 @@ use ployz_core::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 
 use super::{
     ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error, Statement,
@@ -30,6 +26,10 @@ pub struct ReplicatedStore {
     api: ApiClient,
     machine_publication: Arc<tokio::sync::Mutex<()>>,
 }
+
+// Solo founder backdates so the first Register is already quiet. ON CONFLICT
+// leaves a later steal's `updated_at = now` alone.
+pub(crate) const CLAIM_FOUNDER_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now', '-5 seconds')) ON CONFLICT (key) DO NOTHING";
 
 pub(crate) struct MachinePublicationGuard<'a> {
     store: &'a ReplicatedStore,
@@ -812,155 +812,6 @@ impl RuntimeWatchChanges {
             result = self.certificates.changed() => result,
             result = self.cluster.changed() => result,
         }
-    }
-}
-
-pub async fn wait_for_catch_up(
-    store: &ReplicatedStore,
-    target: &BTreeMap<String, i64>,
-) -> Result<(), Error> {
-    if target.is_empty() {
-        return Ok(());
-    }
-    let warning_interval = Duration::from_secs(5 * 60);
-    let mut warning_at = tokio::time::Instant::now() + warning_interval;
-    loop {
-        let status = match store.version().await {
-            Ok(local) => {
-                let lagging = target
-                    .iter()
-                    .filter(|(actor, target)| {
-                        local.get(*actor).copied().unwrap_or_default() < **target
-                    })
-                    .count();
-                if lagging == 0 {
-                    match store.has_known_missing_changes().await {
-                        Ok(false) => return Ok(()),
-                        Ok(true) => "known bookkeeping gaps remain".to_owned(),
-                        Err(error) => error.to_string(),
-                    }
-                } else {
-                    format!("{lagging} actor(s) remain behind the target")
-                }
-            }
-            Err(error) => error.to_string(),
-        };
-        tokio::select! {
-            () = tokio::time::sleep(Duration::from_millis(500)) => {}
-            () = tokio::time::sleep_until(warning_at) => {
-                eprintln!("cluster store catch-up is still pending: {status}");
-                warning_at = tokio::time::Instant::now() + warning_interval;
-            }
-        }
-    }
-}
-
-pub async fn run_machine_publisher(
-    replicated: Option<ReplicatedStore>,
-    local: Arc<Mutex<LocalMachineStore>>,
-    participating: watch::Sender<bool>,
-    shutdown: CancellationToken,
-) -> io::Result<()> {
-    if let Some(replicated) = &replicated {
-        let (joining, target) = {
-            let local = local
-                .lock()
-                .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-            match &local.record().body {
-                LocalMachineBody::Joining {
-                    min_store_version, ..
-                } => (true, min_store_version.clone()),
-                LocalMachineBody::Uninitialized { .. }
-                | LocalMachineBody::Participating { .. }
-                | LocalMachineBody::Resetting { .. } => (false, BTreeMap::new()),
-            }
-        };
-        if joining {
-            tokio::select! {
-                result = wait_for_catch_up(replicated, &target) => {
-                    result.map_err(io::Error::other)?;
-                }
-                () = shutdown.cancelled() => {
-                    return Ok(());
-                }
-            }
-            let publication = replicated.machine_publication().await;
-            let completed = {
-                let mut local = local
-                    .lock()
-                    .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-                publication
-                    .complete_catch_up(&mut local)
-                    .map_err(io::Error::other)?
-            };
-            if completed {
-                // Join already restarted into Joining. Flip Participating
-                // in-process so DNS/Caddy start; another process restart
-                // kills an in-flight Caddy Deploy against this Machine.
-                tracing::info!("catch-up complete");
-                participating.send_replace(true);
-            }
-        }
-    }
-    loop {
-        if let Some(replicated) = &replicated {
-            let (cluster_network, founder_id) = {
-                let local = local
-                    .lock()
-                    .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-                let record = local.record();
-                (record.cluster_network(), founder_allocator_id(record))
-            };
-            if let Some(network) = cluster_network
-                && let Err(error) = replicated.publish_cluster_network(network).await
-            {
-                eprintln!("failed to publish Cluster network: {error}");
-            }
-            if let Some(id) = founder_id
-                && let Err(error) = replicated.publish_founder_allocator(&id).await
-            {
-                eprintln!("failed to publish Allocator: {error}");
-            }
-            let publication = replicated.machine_publication().await;
-            let machine = {
-                let local = local
-                    .lock()
-                    .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-                publication.publishable_machine(local.record())
-            };
-            if let Some(machine) = machine
-                && let Err(error) = publication.publish(&machine).await
-            {
-                eprintln!("failed to publish local Machine: {error}");
-            }
-        }
-        tokio::select! {
-            () = tokio::time::sleep(Duration::from_secs(60)) => {}
-            () = shutdown.cancelled() => {
-                return Ok(());
-            }
-        }
-    }
-}
-
-// Solo founder backdates so the first Register is already quiet. ON CONFLICT
-// leaves a later steal's `updated_at = now` alone.
-pub(crate) const CLAIM_FOUNDER_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now', '-5 seconds')) ON CONFLICT (key) DO NOTHING";
-
-pub(crate) fn founder_allocator_id(record: &LocalMachineRecord) -> Option<MachineId> {
-    match &record.body {
-        LocalMachineBody::Participating {
-            machine,
-            cluster_network: Some(_),
-            ..
-        } => Some(machine.id),
-        LocalMachineBody::Participating {
-            cluster_network: None,
-            ..
-        }
-        | LocalMachineBody::Uninitialized { .. }
-        | LocalMachineBody::Joining { .. }
-        | LocalMachineBody::Resetting { .. } => None,
     }
 }
 
