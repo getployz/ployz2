@@ -312,16 +312,7 @@ impl Daemon {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
-                let Some(pairing) = cloud_pairing else {
-                    shutdown.cancelled().await;
-                    return Ok(());
-                };
-                let secret = crate::relay::pairing_credential(pairing.secret());
-                let _hold = crate::relay::hold_register(pairing.relay_url(), &secret, &local_id)
-                    .await
-                    .map_err(io::Error::other)?;
-                shutdown.cancelled().await;
-                Ok(())
+                crate::relay::run(cloud_pairing, local_id, shutdown.clone()).await
             };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },

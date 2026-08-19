@@ -1,12 +1,13 @@
 //! Cloud Relay Register client.
 
-use std::time::Duration;
+use std::{io, time::Duration};
 
-use ployz_core::MachineId;
+use ployz_core::{CloudPairing, MachineId};
 use ployz_relay::{AUTHORIZATION_METADATA, CloudRelayClient, PairingCredential, RegisterRequest};
 use thiserror::Error;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use tokio_util::sync::CancellationToken;
 use tonic::{
     Request,
     metadata::MetadataValue,
@@ -63,12 +64,27 @@ impl Drop for RegisterHold {
     }
 }
 
-/// Convert a stored Pairing Credential to the Relay Register bearer.
+/// Hold Register for stored Cloud Pairing, or idle if none.
 ///
-/// Core construction already rejected an empty secret.
-pub(crate) fn pairing_credential(secret: &ployz_core::PairingCredential) -> PairingCredential {
-    PairingCredential::parse(secret.as_str())
-        .expect("core Pairing Credential is a non-empty bearer")
+/// # Errors
+///
+/// If the Relay is unreachable or Register is rejected.
+pub(crate) async fn run(
+    pairing: Option<CloudPairing>,
+    machine_id: MachineId,
+    shutdown: CancellationToken,
+) -> io::Result<()> {
+    let Some(pairing) = pairing else {
+        shutdown.cancelled().await;
+        return Ok(());
+    };
+    let secret = PairingCredential::parse(pairing.secret().as_str())
+        .expect("core Pairing Credential is a non-empty bearer");
+    let _hold = hold_register(pairing.relay_url(), &secret, &machine_id)
+        .await
+        .map_err(io::Error::other)?;
+    shutdown.cancelled().await;
+    Ok(())
 }
 
 async fn connect(url: &str) -> Result<Channel, tonic::transport::Error> {
@@ -88,32 +104,19 @@ fn set_bearer(metadata: &mut tonic::metadata::MetadataMap, pairing: &PairingCred
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        fs,
-        net::Ipv4Addr,
-        path::PathBuf,
-        sync::{Arc, Mutex},
-        time::Duration,
-    };
+    use std::{net::Ipv4Addr, time::Duration};
 
-    use ployz_core::{
-        AdvertisedEndpoint, CloudPairing, InitializeRequest, JoinRequest, Machine, MachineId,
-        MachineName, Registered,
-    };
+    use ployz_core::{CloudPairing, MachineId};
     use ployz_relay::{
         AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, ListRequest, MACHINE_ID_METADATA,
         PAIRING_METADATA, PairingCredential, Relay, RevokeRequest,
     };
-    use tokio::sync::{mpsc, watch};
+    use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
+    use tokio_util::sync::CancellationToken;
     use tonic::{Request, metadata::MetadataValue, transport::Endpoint};
 
-    use super::{Error, hold_register, pairing_credential};
-    use crate::{
-        machine::{LocalMachine, LocalMachineStore},
-        network::management_address,
-    };
+    use super::{Error, hold_register, run};
 
     const PAIRING: &str = "pairing-secret";
     const DIAL: &str = "dial-secret";
@@ -183,114 +186,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_with_cloud_pairing_appears_on_list_held() {
+    async fn cloud_pairing_hold_appears_on_list_held() {
         let relay = RelayListen::start().await;
-        let dir = TestDir::new("ployzd-relay-initialize");
-        let local = local_machine(&dir.0);
-        let pairing = cloud_pairing(&relay.url);
-        let initialized = local
-            .initialize(InitializeRequest {
-                name: MachineName::parse("first").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: endpoint(),
-                wireguard_mtu: None,
-                cloud_pairing: Some(pairing),
-            })
-            .unwrap();
-        let stored = local
-            .record()
-            .unwrap()
-            .cloud_pairing
-            .expect("pairing stored");
-        let _hold = hold_register(
-            stored.relay_url(),
-            &pairing_credential(stored.secret()),
-            &initialized.machine.id,
-        )
-        .await
-        .unwrap();
-        wait_for_held(&relay.url, initialized.machine.id).await;
+        let machine_id = MachineId::random();
+        let shutdown = CancellationToken::new();
+        let hold = tokio::spawn(run(
+            Some(cloud_pairing(&relay.url)),
+            machine_id,
+            shutdown.clone(),
+        ));
+        wait_for_held(&relay.url, machine_id).await;
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
     }
 
     #[tokio::test]
-    async fn join_with_cloud_pairing_appears_on_list_held_after_catch_up() {
+    async fn no_cloud_pairing_stays_off_list_held() {
         let relay = RelayListen::start().await;
-        let first_dir = TestDir::new("ployzd-relay-join-first");
-        let mut first = LocalMachineStore::open(&first_dir.0).unwrap();
-        let peer = first
-            .initialize(
-                MachineName::parse("first").unwrap(),
-                "10.210.0.0/16".parse().unwrap(),
-                None,
-                endpoint(),
-                None,
-                None,
-            )
-            .unwrap();
-
-        let second_dir = TestDir::new("ployzd-relay-join-second");
-        let store = LocalMachineStore::open(&second_dir.0).unwrap();
-        let public_key = store.record().wireguard_private_key.public_key();
-        let assigned = Machine {
-            id: MachineId::random(),
-            name: MachineName::parse("second").unwrap(),
-            subnet: "10.210.1.0/24".parse().unwrap(),
-            management_address: management_address(public_key),
-            public_key,
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
-            runtime: Default::default(),
-        };
-        let pairing = cloud_pairing(&relay.url);
-        let local = LocalMachine::new(Arc::new(Mutex::new(store)), watch::channel(false).0);
-        local
-            .join(JoinRequest {
-                registration: Registered {
-                    assigned_machine: assigned.clone(),
-                    visible_peers: vec![peer],
-                    target_versions: BTreeMap::from([("actor".into(), 4)]),
-                },
-                wireguard_mtu: None,
-                cloud_pairing: Some(pairing),
-            })
-            .unwrap();
-        drop(local);
-
-        let mut store = LocalMachineStore::open(&second_dir.0).unwrap();
-        store.complete_catch_up().unwrap();
-        let stored = store
-            .record()
-            .cloud_pairing
-            .as_ref()
-            .expect("pairing stored");
-        let _hold = hold_register(
-            stored.relay_url(),
-            &pairing_credential(stored.secret()),
-            &assigned.id,
-        )
-        .await
-        .unwrap();
-        wait_for_held(&relay.url, assigned.id).await;
+        let machine_id = MachineId::random();
+        let shutdown = CancellationToken::new();
+        let hold = tokio::spawn(run(None, machine_id, shutdown.clone()));
+        assert_not_held(&relay.url, machine_id).await;
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
     }
 
     #[tokio::test]
-    async fn ssh_only_initialize_stays_off_list_held() {
-        let relay = RelayListen::start().await;
-        let dir = TestDir::new("ployzd-relay-ssh-only");
-        let local = local_machine(&dir.0);
-        let initialized = local
-            .initialize(InitializeRequest {
-                name: MachineName::parse("ssh").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: endpoint(),
-                wireguard_mtu: None,
-                cloud_pairing: None,
-            })
-            .unwrap();
-        assert_eq!(local.record().unwrap().cloud_pairing, None);
-        assert_not_held(&relay.url, initialized.machine.id).await;
+    async fn unreachable_cloud_pairing_fails() {
+        let pairing = CloudPairing::parse(
+            "not-a-url",
+            ployz_core::PairingCredential::parse(PAIRING).unwrap(),
+        )
+        .unwrap();
+        let error = run(Some(pairing), MachineId::random(), CancellationToken::new())
+            .await
+            .expect_err("unreachable Relay must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
     }
 
     struct RelayListen {
@@ -336,37 +267,12 @@ mod tests {
         }
     }
 
-    struct TestDir(PathBuf);
-
-    impl TestDir {
-        fn new(prefix: &str) -> Self {
-            Self(std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random())))
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn local_machine(data_dir: &std::path::Path) -> LocalMachine {
-        LocalMachine::new(
-            Arc::new(Mutex::new(LocalMachineStore::open(data_dir).unwrap())),
-            watch::channel(false).0,
-        )
-    }
-
     fn cloud_pairing(relay_url: &str) -> CloudPairing {
         CloudPairing::parse(
             relay_url,
             ployz_core::PairingCredential::parse(PAIRING).unwrap(),
         )
         .unwrap()
-    }
-
-    fn endpoint() -> Vec<AdvertisedEndpoint> {
-        vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())]
     }
 
     async fn wait_for_held(url: &str, machine_id: MachineId) {
