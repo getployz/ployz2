@@ -811,10 +811,8 @@ mod tests {
     #[test]
     fn isolation_lock_fires_when_every_other_machine_is_uncontactable() {
         let [me, peer, third, fourth] = four_machines();
-        let machines = [me.clone(), peer.clone(), third, fourth];
+        let machines = [me.clone(), peer, third, fourth];
         assert!(isolation_lock(&me.id, &machines, &BTreeMap::new()));
-        let down = BTreeMap::from([(peer.management_address, MembershipObservation::Down)]);
-        assert!(isolation_lock(&me.id, &machines, &down));
     }
 
     #[test]

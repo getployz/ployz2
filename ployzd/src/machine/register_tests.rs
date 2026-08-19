@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     io,
     net::Ipv6Addr,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -653,7 +653,12 @@ async fn isolation_lock_refuses_steal_when_replica_exceeds_three_and_others_are_
         .await
         .unwrap();
     let (admin_server, admin, admin_root) = serve_membership(&[]).await;
-    let local = machine_service_with_admin(store, replicated.clone(), Some(1), &admin);
+    let local = MachineService::with_cluster(
+        store,
+        watch::channel(false).0,
+        Some((replicated.clone(), AdminClient::new(&admin))),
+    )
+    .with_machine_api_port(1);
 
     let error = rpc_register(
         &local,
@@ -772,19 +777,10 @@ fn machine_service(
     replicated: ReplicatedStore,
     port: Option<u16>,
 ) -> MachineService {
-    machine_service_with_admin(store, replicated, port, "/no/such/ployz-admin.sock")
-}
-
-fn machine_service_with_admin(
-    store: Arc<Mutex<LocalMachineStore>>,
-    replicated: ReplicatedStore,
-    port: Option<u16>,
-    admin: impl AsRef<Path>,
-) -> MachineService {
     let service = MachineService::with_cluster(
         store,
         watch::channel(false).0,
-        Some((replicated, AdminClient::new(admin.as_ref()))),
+        Some((replicated, AdminClient::new("/no/such/ployz-admin.sock"))),
     );
     match port {
         Some(port) => service.with_machine_api_port(port),
