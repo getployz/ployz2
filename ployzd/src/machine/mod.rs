@@ -25,8 +25,8 @@ use crate::network::{allocate_machine_subnet, management_address};
 
 mod local_machine;
 
+pub(crate) use local_machine::RuntimeWatchTelemetry;
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
-pub(crate) use local_machine::{REGISTER_FORWARDED_METADATA, RegisterHop, RuntimeWatchTelemetry};
 
 #[cfg(test)]
 mod register_tests;

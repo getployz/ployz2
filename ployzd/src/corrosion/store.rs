@@ -171,11 +171,6 @@ impl ReplicatedStore {
         &self.api
     }
 
-    #[cfg(test)]
-    pub(crate) fn http1(address: std::net::SocketAddr) -> Self {
-        Self::new(ApiClient::http1(address, &"a".repeat(64)).unwrap())
-    }
-
     pub async fn publish_local_machine(&self, machine: &Machine) -> Result<(), Error> {
         self.machine_publication().await.publish(machine).await
     }

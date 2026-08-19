@@ -5,29 +5,27 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     net::IpAddr,
     sync::{Arc, Mutex, MutexGuard},
-    time::Duration,
 };
 
 use ployz_core::{
     InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase,
     LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
-    MachineObservation, MachineRemoved, MachineRpcClient, MachineToken, MachineTokenRequest,
-    MachineUpdated, ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest,
-    Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RpcError,
-    RpcResponseBody, RttObservation, RttStatistics, SelectedEndpoint, UpdateMachineRequest,
-    WireGuardInspected, associate_wireguard_peers, op, synthesize_membership,
+    MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated,
+    ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest, Registered,
+    RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics,
+    SelectedEndpoint, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
+    synthesize_membership,
 };
 use thiserror::Error;
 use tokio::sync::watch;
-use tonic::transport::Endpoint;
 
 use super::{LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore},
     docker::ContainerRuntime,
     network::{
-        MACHINE_API_PORT, NetworkError, allocate_machine_subnet, discover_network,
-        inspect_wireguard_device, management_address,
+        NetworkError, allocate_machine_subnet, discover_network, inspect_wireguard_device,
+        management_address,
     },
 };
 
@@ -44,16 +42,6 @@ pub struct LocalMachine {
 struct ClusterContext {
     replicated: ReplicatedStore,
     admin: AdminClient,
-    machine_api_port: u16,
-}
-
-/// Metadata on a forwarded Machine-to-Machine Register. The named Allocator
-/// admits locally and does not forward again.
-pub(crate) const REGISTER_FORWARDED_METADATA: &str = "x-ployz-register-forwarded";
-
-pub(crate) enum RegisterHop {
-    Origin,
-    Forwarded,
 }
 
 /// Entry-local admin membership, RTT samples, and selected endpoints.
@@ -114,12 +102,6 @@ pub enum Error {
     Docker(#[from] crate::docker::Error),
     #[error("Machine is not the Allocator")]
     NotAllocator,
-    #[error("Allocator is unreachable")]
-    AllocatorUnreachable,
-    #[error(transparent)]
-    Remote(RpcError),
-    #[error(transparent)]
-    Codec(#[from] ployz_core::CodecError),
     #[error("{0}")]
     Cleanup(String),
 }
@@ -138,20 +120,7 @@ impl LocalMachine {
 
     #[must_use]
     pub(crate) fn with_cluster(mut self, cluster: Option<(ReplicatedStore, AdminClient)>) -> Self {
-        self.cluster = cluster.map(|(replicated, admin)| ClusterContext {
-            replicated,
-            admin,
-            machine_api_port: MACHINE_API_PORT,
-        });
-        self
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn with_machine_api_port(mut self, port: u16) -> Self {
-        if let Some(cluster) = &mut self.cluster {
-            cluster.machine_api_port = port;
-        }
+        self.cluster = cluster.map(|(replicated, admin)| ClusterContext { replicated, admin });
         self
     }
 
@@ -338,31 +307,18 @@ impl LocalMachine {
         Ok(Initialized { machine })
     }
 
-    /// Assign a new Machine into the Cluster from this participating Machine.
-    ///
-    /// If cluster KV names another Machine as Allocator, Register is forwarded
-    /// one hop to that Machine and that `Registered` payload is returned.
+    /// Assign a new Machine into the Cluster from this participating Machine
+    /// when cluster KV names this Machine as Allocator.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Store`] when endpoints are missing, [`Error::NotParticipating`]
     /// when this Machine is not participating, [`Error::ClusterStoreUnavailable`]
     /// when the Cluster store is missing, [`Error::NotAllocator`] when this
-    /// Machine is not named as Allocator and must not admit locally,
-    /// [`Error::AllocatorUnreachable`] when the named Allocator cannot be
-    /// reached, [`Error::DuplicateMachine`] when the name or public key already
-    /// exists, [`Error::Network`] when subnet allocation fails,
-    /// [`Error::Remote`] when the Allocator returns a domain error, and
-    /// [`Error::Cluster`] when replicated I/O fails.
+    /// Machine is not named as Allocator, [`Error::DuplicateMachine`] when the
+    /// name or public key already exists, [`Error::Network`] when subnet
+    /// allocation fails, and [`Error::Cluster`] when replicated I/O fails.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
-        self.register_at(request, RegisterHop::Origin).await
-    }
-
-    pub(crate) async fn register_at(
-        &self,
-        request: RegisterRequest,
-        hop: RegisterHop,
-    ) -> Result<Registered, Error> {
         if request.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints.into());
         }
@@ -373,14 +329,9 @@ impl LocalMachine {
             }
             record.id()
         };
-        let replicated = self.replicated()?;
-        match replicated.allocator().await? {
+        match self.replicated()?.allocator().await? {
             Some(allocator) if allocator == me => self.admit_local_register(request).await,
-            Some(allocator) => match hop {
-                RegisterHop::Origin => self.forward_register(allocator, request).await,
-                RegisterHop::Forwarded => Err(Error::NotAllocator),
-            },
-            None => Err(Error::NotAllocator),
+            _ => Err(Error::NotAllocator),
         }
     }
 
@@ -425,46 +376,6 @@ impl LocalMachine {
             visible_peers,
             target_versions,
         })
-    }
-
-    async fn forward_register(
-        &self,
-        allocator: MachineId,
-        request: RegisterRequest,
-    ) -> Result<Registered, Error> {
-        let Some(target) = self.replicated()?.machine(allocator.as_str()).await? else {
-            return Err(Error::AllocatorUnreachable);
-        };
-        let port = self
-            .cluster
-            .as_ref()
-            .expect("forwarding requires the Cluster store used to read the Allocator")
-            .machine_api_port;
-        let endpoint =
-            Endpoint::from_shared(format!("http://[{}]:{}", target.management_address.0, port))
-                .expect("Allocator management address forms a URL")
-                .connect_timeout(Duration::from_secs(10));
-        let mut client = MachineRpcClient::new(
-            endpoint
-                .connect()
-                .await
-                .map_err(|_| Error::AllocatorUnreachable)?,
-        );
-        let mut outbound = tonic::Request::new(op::Register::into_request(request).encode()?);
-        outbound.metadata_mut().insert(
-            REGISTER_FORWARDED_METADATA,
-            "1".parse().expect("ASCII metadata"),
-        );
-        let payload = client
-            .register(outbound)
-            .await
-            .map_err(|_| Error::AllocatorUnreachable)?
-            .into_inner();
-        let response = payload.decode_response()?;
-        if let RpcResponseBody::Error(error) = &response.body {
-            return Err(Error::Remote(error.clone()));
-        }
-        Ok(response.decode::<op::Register>()?)
     }
 
     /// Persist a join assignment and request restart.

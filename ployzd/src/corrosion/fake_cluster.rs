@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
+use super::store::CLAIM_FOUNDER_ALLOCATOR;
 use super::{ApiClient, ReplicatedStore};
 
 #[derive(Clone)]
@@ -24,11 +25,21 @@ struct Statement {
 }
 
 pub(crate) async fn store() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+    bind(None).await
+}
+
+pub(crate) async fn store_with_allocator_value(
+    value: &str,
+) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+    bind(Some(value.to_owned())).await
+}
+
+async fn bind(allocator: Option<String>) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let kv = Arc::new(Mutex::new(ClusterKv {
         network: "10.210.0.0/16".into(),
-        allocator: None,
+        allocator,
         machines: BTreeMap::new(),
     }));
     let server = tokio::spawn(async move {
@@ -95,11 +106,10 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
             );
             continue;
         }
-        if statement.query.contains("cluster") && statement.query.contains("'allocator'") {
-            if statement.query.contains("DO NOTHING") && kv.allocator.is_some() {
-                continue;
+        if statement.query == CLAIM_FOUNDER_ALLOCATOR {
+            if kv.allocator.is_none() {
+                kv.allocator = Some(text_param(&statement.params, 0).to_owned());
             }
-            kv.allocator = Some(text_param(&statement.params, 0).to_owned());
             continue;
         }
         panic!("unexpected statement {}", statement.query);

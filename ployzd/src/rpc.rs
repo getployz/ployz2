@@ -2,29 +2,39 @@ use std::{
     collections::BTreeSet,
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use ployz_core::{
     CaddyConfig, CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerList,
     ContractDescription, Domain, DomainRecords, ImageIngestReason, ImagePulled, LocalMachinePhase,
-    LogMetadata, LogOrigin, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
+    LogMetadata, LogOrigin, MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload,
+    PROTOCOL_MAJOR, RegisterRequest, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RpcResponseBody, VolumeList, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use tonic::transport::Endpoint;
 use tonic::{Request, Response, Status};
 
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
     docker::{ContainerRuntime, Error as DockerError, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
-    machine::{
-        LocalMachine, LocalMachineError, LocalMachineStore, REGISTER_FORWARDED_METADATA,
-        RegisterHop, StoreError,
-    },
+    machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
+    network::MACHINE_API_PORT,
     runtime_watch::serve_replicated_runtime_watch,
 };
+
+/// Metadata on a forwarded Machine-to-Machine Register. The named Allocator
+/// admits locally and does not forward again.
+pub(crate) const REGISTER_FORWARDED_METADATA: &str = "x-ployz-register-forwarded";
+
+enum RegisterHop {
+    Origin,
+    Forwarded,
+}
 
 #[derive(Clone)]
 pub struct MachineService {
@@ -32,6 +42,7 @@ pub struct MachineService {
     hosted_dns: crate::hosted_dns::HostedDns,
     caddyfile: Option<PathBuf>,
     ingest: Arc<ImageIngest>,
+    machine_api_port: u16,
 }
 
 impl MachineService {
@@ -51,6 +62,7 @@ impl MachineService {
             hosted_dns: crate::hosted_dns::HostedDns::new(),
             caddyfile: None,
             ingest: ImageIngest::new(None, CancellationToken::new(), None),
+            machine_api_port: MACHINE_API_PORT,
         }
     }
 
@@ -75,6 +87,13 @@ impl MachineService {
     #[must_use]
     pub fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
         self.ingest = ingest;
+        self
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_machine_api_port(mut self, port: u16) -> Self {
+        self.machine_api_port = port;
         self
     }
 
@@ -107,6 +126,59 @@ impl MachineService {
         self.local
             .containers()
             .ok_or_else(|| unavailable("Docker is not available"))
+    }
+
+    async fn forward_register(
+        &self,
+        request: RegisterRequest,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let replicated = match self.local.replicated() {
+            Ok(store) => store,
+            Err(error) => return local_error(error),
+        };
+        let allocator = match replicated.allocator().await {
+            Ok(Some(id)) => id,
+            Ok(None) => return local_error(LocalMachineError::NotAllocator),
+            Err(error) => return local_error(error.into()),
+        };
+        let target = match replicated.machine(allocator.as_str()).await {
+            Ok(Some(machine)) => machine,
+            Ok(None) => return respond(unavailable("Allocator is unreachable")),
+            Err(error) => return local_error(error.into()),
+        };
+        let endpoint = Endpoint::from_shared(format!(
+            "http://[{}]:{}",
+            target.management_address.0, self.machine_api_port
+        ))
+        .expect("Allocator management address forms a URL")
+        .connect_timeout(Duration::from_secs(10));
+        let mut client = MachineRpcClient::new(match endpoint.connect().await {
+            Ok(channel) => channel,
+            Err(_) => return respond(unavailable("Allocator is unreachable")),
+        });
+        let mut outbound = Request::new(match op::Register::into_request(request).encode() {
+            Ok(payload) => payload,
+            Err(error) => return Err(Status::internal(error.to_string())),
+        });
+        outbound.metadata_mut().insert(
+            REGISTER_FORWARDED_METADATA,
+            "1".parse().expect("ASCII metadata"),
+        );
+        let payload = match client.register(outbound).await {
+            Ok(response) => response.into_inner(),
+            Err(_) => return respond(unavailable("Allocator is unreachable")),
+        };
+        let response = match payload.decode_response() {
+            Ok(response) => response,
+            Err(error) => return Err(Status::internal(error.to_string())),
+        };
+        if let RpcResponseBody::Error(error) = &response.body {
+            return respond(error.clone());
+        }
+        match response.decode::<op::Register>() {
+            Ok(registered) => respond(registered),
+            Err(error) => Err(Status::internal(error.to_string())),
+        }
     }
 }
 
@@ -180,11 +252,14 @@ impl MachineRpc for MachineService {
         } else {
             RegisterHop::Origin
         };
-        finish(
-            self.local
-                .register_at(expect::<op::Register>(request)?, hop)
-                .await,
-        )
+        let decoded = expect::<op::Register>(request)?;
+        match hop {
+            RegisterHop::Forwarded => finish(self.local.register(decoded).await),
+            RegisterHop::Origin => match self.local.register(decoded.clone()).await {
+                Err(LocalMachineError::NotAllocator) => self.forward_register(decoded).await,
+                other => finish(other),
+            },
+        }
     }
 
     async fn join(
@@ -698,9 +773,6 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             details: Value::Null,
         }),
         LocalMachineError::NotAllocator => respond(unavailable("Machine is not the Allocator")),
-        LocalMachineError::AllocatorUnreachable => respond(unavailable("Allocator is unreachable")),
-        LocalMachineError::Remote(error) => respond(error),
-        LocalMachineError::Codec(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::EmptyUpdate => respond(RpcError {
             code: RpcErrorCode::InvalidArgument,
             message: "at least one Machine update is required".into(),

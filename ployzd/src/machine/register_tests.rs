@@ -5,20 +5,18 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineName, MachineRpc, MachineRpcServer,
-    MachineRuntime, MachineSubnet, ManagementAddress, RegisterRequest, WireGuardPublicKey, op,
+    MachineRuntime, MachineSubnet, ManagementAddress, RegisterRequest, Registered, RpcError,
+    RpcResponseBody, WireGuardPublicKey, op,
 };
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Request, transport::Server};
 
-use super::{
-    LocalMachine, LocalMachineError, LocalMachineStore, REGISTER_FORWARDED_METADATA, RegisterHop,
-    StoreError,
-};
+use super::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError};
 use crate::{
     corrosion::{AdminClient, ReplicatedStore, fake_cluster},
-    rpc::MachineService,
+    rpc::{MachineService, REGISTER_FORWARDED_METADATA},
 };
 
 #[tokio::test]
@@ -205,17 +203,23 @@ async fn contact_forwards_register_and_returns_the_allocator_payload() {
         .publish_founder_allocator(&reachable.id)
         .await
         .unwrap();
-    let contact = LocalMachine::new(contact_store, watch::channel(false).0)
-        .with_cluster(Some((
+    let contact = MachineService::with_cluster(
+        contact_store,
+        watch::channel(false).0,
+        Some((
             contact_replica.clone(),
             AdminClient::new("/no/such/ployz-admin.sock"),
-        )))
-        .with_machine_api_port(port);
+        )),
+    )
+    .with_machine_api_port(port);
 
-    let registered = contact
-        .register(request("joiner", WireGuardPublicKey([7; 32])))
-        .await
-        .unwrap();
+    let registered = rpc_register(
+        &contact,
+        request("joiner", WireGuardPublicKey([7; 32])),
+        false,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(registered.assigned_machine.name.as_str(), "joiner");
     assert_eq!(
@@ -244,7 +248,6 @@ async fn contact_forwards_register_and_returns_the_allocator_payload() {
     );
     allocator_cluster.abort();
     contact_cluster.abort();
-    drop(contact);
     let _ = std::fs::remove_dir_all(allocator_dir);
     let _ = std::fs::remove_dir_all(contact_dir);
 }
@@ -262,22 +265,21 @@ async fn forwarded_register_does_not_admit_or_forward_when_kv_names_another_mach
         .publish_founder_allocator(&named.id)
         .await
         .unwrap();
-    let local = LocalMachine::new(store, watch::channel(false).0)
-        .with_cluster(Some((
+    let local = MachineService::with_cluster(
+        store,
+        watch::channel(false).0,
+        Some((
             replicated.clone(),
             AdminClient::new("/no/such/ployz-admin.sock"),
-        )))
-        .with_machine_api_port(1);
+        )),
+    )
+    .with_machine_api_port(1);
 
-    let error = local
-        .register_at(
-            request("joiner", WireGuardPublicKey([7; 32])),
-            RegisterHop::Forwarded,
-        )
+    let error = rpc_register(&local, request("joiner", WireGuardPublicKey([7; 32])), true)
         .await
         .unwrap_err();
 
-    assert!(matches!(error, LocalMachineError::NotAllocator));
+    assert_eq!(error.message, "Machine is not the Allocator");
     assert!(
         replicated
             .machines()
@@ -313,19 +315,25 @@ async fn unreachable_allocator_does_not_steal() {
         .publish_founder_allocator(&named.id)
         .await
         .unwrap();
-    let local = LocalMachine::new(store, watch::channel(false).0)
-        .with_cluster(Some((
+    let local = MachineService::with_cluster(
+        store,
+        watch::channel(false).0,
+        Some((
             replicated.clone(),
             AdminClient::new("/no/such/ployz-admin.sock"),
-        )))
-        .with_machine_api_port(1);
+        )),
+    )
+    .with_machine_api_port(1);
 
-    let error = local
-        .register(request("joiner", WireGuardPublicKey([7; 32])))
-        .await
-        .unwrap_err();
+    let error = rpc_register(
+        &local,
+        request("joiner", WireGuardPublicKey([7; 32])),
+        false,
+    )
+    .await
+    .unwrap_err();
 
-    assert!(matches!(error, LocalMachineError::AllocatorUnreachable));
+    assert_eq!(error.message, "Allocator is unreachable");
     assert_eq!(replicated.allocator().await.unwrap(), Some(allocator_id));
     server.abort();
     drop(local);
@@ -349,25 +357,13 @@ async fn forwarded_rpc_metadata_admits_locally_only() {
             AdminClient::new("/no/such/ployz-admin.sock"),
         )),
     );
-    let mut request = Request::new(
-        op::Register::into_request(request("joiner", WireGuardPublicKey([7; 32])))
-            .encode()
-            .unwrap(),
-    );
-    request.metadata_mut().insert(
-        REGISTER_FORWARDED_METADATA,
-        "1".parse().expect("ASCII metadata"),
-    );
-
-    let registered = service
-        .register(request)
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::Register>()
-        .unwrap();
+    let registered = rpc_register(
+        &service,
+        request("joiner", WireGuardPublicKey([7; 32])),
+        true,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(registered.assigned_machine.name.as_str(), "joiner");
     server.abort();
@@ -430,4 +426,29 @@ fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterRequest {
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],
         runtime: MachineRuntime::default(),
     }
+}
+
+async fn rpc_register(
+    service: &MachineService,
+    body: RegisterRequest,
+    forwarded: bool,
+) -> Result<Registered, RpcError> {
+    let mut request = Request::new(op::Register::into_request(body).encode().unwrap());
+    if forwarded {
+        request.metadata_mut().insert(
+            REGISTER_FORWARDED_METADATA,
+            "1".parse().expect("ASCII metadata"),
+        );
+    }
+    let response = service
+        .register(request)
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    if let RpcResponseBody::Error(error) = &response.body {
+        return Err(error.clone());
+    }
+    Ok(response.decode::<op::Register>().unwrap())
 }
