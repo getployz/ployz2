@@ -791,7 +791,10 @@ fn unavailable(message: &str) -> RpcError {
     }
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic Status is the RPC error type used by every MachineService handler"
+)]
 fn allocator_unreachable() -> Result<Response<OpaquePayload>, Status> {
     respond(unavailable("Allocator is unreachable"))
 }
