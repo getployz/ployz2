@@ -294,6 +294,7 @@ impl LocalMachine {
             request.public_ip,
             request.advertised_endpoints,
             request.wireguard_mtu,
+            request.cloud_pairing,
         )?;
         tracing::info!(
             name = machine.name.as_str(),
@@ -375,6 +376,7 @@ impl LocalMachine {
             request.registration.visible_peers,
             request.registration.target_versions,
             request.wireguard_mtu,
+            request.cloud_pairing,
         )?;
         let machine = store
             .record()

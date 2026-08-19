@@ -13,6 +13,8 @@ use serde_json::json;
 
 use super::ReplicatedStore;
 use crate::corrosion::ApiClient;
+use crate::corrosion::publisher::founder_allocator_id;
+use crate::corrosion::store::CLAIM_FOUNDER_ALLOCATOR;
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
 };
@@ -39,7 +41,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
     }))
     .unwrap();
     local
-        .join(machine.clone(), vec![machine], BTreeMap::new(), None)
+        .join(machine.clone(), vec![machine], BTreeMap::new(), None, None)
         .unwrap();
     let local = Arc::new(Mutex::new(local));
 
@@ -145,6 +147,12 @@ async fn volume_store_is_an_error_when_the_store_is_unreachable() {
     assert!(store.publish_volume(&volume).await.is_err());
     assert!(store.volume(&id).await.is_err());
     assert!(store.volumes().await.is_err());
+    assert!(
+        store
+            .publish_founder_allocator(&id.machine_id)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -189,6 +197,79 @@ async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() 
             .await
             .is_err()
     );
+}
+
+#[test]
+fn founder_allocator_sql_is_quiet_and_does_not_overwrite() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let id = "a".repeat(32);
+    db.execute(CLAIM_FOUNDER_ALLOCATOR, rusqlite::params![id])
+        .unwrap();
+    let (value, quiet): (String, i64) = db
+        .query_row(
+            "SELECT value, updated_at <= datetime('now', '-5 seconds') FROM cluster WHERE key = 'allocator'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(value, id);
+    assert_eq!(quiet, 1);
+
+    db.execute(CLAIM_FOUNDER_ALLOCATOR, rusqlite::params!["b".repeat(32)])
+        .unwrap();
+    let value: String = db
+        .query_row(
+            "SELECT value FROM cluster WHERE key = 'allocator'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, id);
+}
+
+#[test]
+fn only_a_participating_founder_claims_allocator() {
+    let (machine, joined) = participating_record();
+    assert_eq!(founder_allocator_id(&joined), None);
+
+    let founder = LocalMachineRecord {
+        body: LocalMachineBody::Participating {
+            machine: machine.clone(),
+            cluster_network: Some("10.210.0.0/16".parse().unwrap()),
+            bootstrap: Vec::new(),
+        },
+        ..joined.clone()
+    };
+    assert_eq!(founder_allocator_id(&founder), Some(machine.id));
+
+    let resetting = LocalMachineRecord {
+        body: LocalMachineBody::Resetting {
+            prior: Box::new(LocalMachinePrior::Participating {
+                machine: machine.clone(),
+                cluster_network: Some("10.210.0.0/16".parse().unwrap()),
+                bootstrap: Vec::new(),
+            }),
+        },
+        ..joined.clone()
+    };
+    assert_eq!(founder_allocator_id(&resetting), None);
+
+    let uninitialized = LocalMachineRecord {
+        body: LocalMachineBody::Uninitialized { id: machine.id },
+        ..joined.clone()
+    };
+    assert_eq!(founder_allocator_id(&uninitialized), None);
+
+    let joining = LocalMachineRecord {
+        body: LocalMachineBody::Joining {
+            machine,
+            bootstrap: Vec::new(),
+            min_store_version: BTreeMap::new(),
+        },
+        ..joined
+    };
+    assert_eq!(founder_allocator_id(&joining), None);
 }
 
 #[tokio::test]
@@ -239,6 +320,7 @@ fn participating_record() -> (Machine, LocalMachineRecord) {
         },
         wireguard_private_key: crate::network::WireGuardPrivateKey::from_bytes([0; 32]),
         wireguard_mtu: None,
+        cloud_pairing: None,
         selected_endpoints: BTreeMap::new(),
     };
     (machine, local)

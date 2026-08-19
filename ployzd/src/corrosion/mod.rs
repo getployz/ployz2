@@ -1,6 +1,7 @@
 mod admin;
 mod api;
 mod certificate;
+mod publisher;
 mod service;
 mod store;
 
@@ -15,14 +16,13 @@ pub use admin::{AdminClient, MembershipState};
 use api::Statement;
 pub(crate) use api::{ApiClient, Subscription};
 pub use certificate::{CertificateChallenge, CertificateMaterial, CertificateRow};
+pub use publisher::{run_machine_publisher, wait_for_catch_up};
 pub use service::{
     CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, DEFAULT_GOSSIP_ADDRESS,
     RunningCorrosion,
 };
 pub(crate) use store::{LocalContainerSnapshot, LocalVolumeSnapshot};
-pub use store::{
-    ReplicatedObservations, ReplicatedStore, run_machine_publisher, wait_for_catch_up,
-};
+pub use store::{ReplicatedObservations, ReplicatedStore};
 
 use thiserror::Error;
 
