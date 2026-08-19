@@ -194,7 +194,7 @@ async fn node_smoke_covers_list_held_then_register() {
     });
     let _noisy = session.spawn_machine(not_quiet_id, noisy).await;
     wait_held(&session.url, description.machine_id).await;
-    wait_held_among(&session.url, not_quiet_id).await;
+    wait_held(&session.url, not_quiet_id).await;
 
     let addon = native_addon();
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -236,10 +236,6 @@ async fn node_smoke_covers_list_held_then_register() {
 }
 
 async fn wait_held(url: &str, machine_id: MachineId) -> MachineId {
-    wait_held_among(url, machine_id).await
-}
-
-async fn wait_held_among(url: &str, machine_id: MachineId) -> MachineId {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
         let listed = sdk::list_held(url, relay::DIAL, relay::PAIRING)
