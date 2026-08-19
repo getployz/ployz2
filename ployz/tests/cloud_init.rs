@@ -285,13 +285,7 @@ async fn cloud_init_retries_not_yet_then_joins() {
     let posts = enroll.posts();
     assert_eq!(posts.len(), 2);
     assert_eq!(posts.first(), posts.get(1));
-    assert_eq!(
-        enroll.paths(),
-        [
-            format!("/api/enroll/{TOKEN}"),
-            format!("/api/enroll/{TOKEN}")
-        ]
-    );
+    assert_eq!(enroll.paths(), vec![format!("/api/enroll/{TOKEN}"); 2]);
     wait_for_held(&relay.url, machine_id).await;
 }
 
@@ -386,11 +380,10 @@ impl EnrollListen {
     }
 
     async fn script(bodies: impl IntoIterator<Item = serde_json::Value>) -> Self {
-        let queue: VecDeque<Vec<u8>> = bodies
+        let mut remaining: VecDeque<Vec<u8>> = bodies
             .into_iter()
             .map(|body| serde_json::to_vec(&body).unwrap())
             .collect();
-        assert!(!queue.is_empty());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let paths = Arc::new(Mutex::new(Vec::new()));
@@ -398,7 +391,6 @@ impl EnrollListen {
         let recorded_paths = Arc::clone(&paths);
         let recorded_posts = Arc::clone(&posts);
         let server = tokio::spawn(async move {
-            let mut remaining = queue;
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
                     return;
