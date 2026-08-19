@@ -31,7 +31,6 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let yes = matches.get_flag("yes");
     let no_caddy = matches.get_flag("no-caddy");
     let no_dns = matches.get_flag("no-dns");
-    let cloud_url = cloud_url.to_owned();
 
     runtime()?.block_on(async {
         let mut client = connect_client(matches, None).await?;
@@ -102,7 +101,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
                     let domain = ready
                         .call::<op::ReserveDomain>(
                             ReserveDomainRequest {
-                                endpoint: cloud_enroll::dns_endpoint(&cloud_url),
+                                endpoint: cloud_enroll::dns_endpoint(cloud_url),
                             },
                             None,
                         )
