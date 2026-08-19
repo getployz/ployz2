@@ -5,6 +5,8 @@ import type {
   DeviceMapping,
   DeviceReservation,
   HealthcheckSpec,
+  RegisterRequest,
+  Registered,
   RequestedServiceSpec,
   ResolvedServiceSpec,
   Ulimit,
@@ -28,6 +30,8 @@ fixtures.resolved_service_spec_typed.configs satisfies NonNullable<
 >;
 fixtures.container_observation_disabled_healthcheck
   .effective_healthcheck satisfies ContainerObservation["effective_healthcheck"];
+fixtures.register_request satisfies RegisterRequest;
+fixtures.registered satisfies Registered;
 
 // @ts-expect-error VolumeDriver options values are strings
 const invalidDriver: VolumeDriver = { name: "nfs", options: { share: 1 } };
