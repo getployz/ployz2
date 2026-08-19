@@ -5,7 +5,7 @@ use std::time::Duration;
 use clap::ArgMatches;
 use ployz_core::{
     CloudEnrollToken, InitializeRequest, InspectRequest, JoinRequest, LocalMachinePhase,
-    MachineName, MachineTokenRequest, ResetRequest, op,
+    MachineName, MachineTokenRequest, ReserveDomainRequest, ResetRequest, op,
 };
 
 use super::{Error, connect_client, leaf_matches, required, runtime};
@@ -30,6 +30,8 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     let no_caddy = matches.get_flag("no-caddy");
+    let no_dns = matches.get_flag("no-dns");
+    let cloud_url = cloud_url.to_owned();
 
     runtime()?.block_on(async {
         let mut client = connect_client(matches, None).await?;
@@ -96,10 +98,24 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
                     "initial Machine did not become ready",
                 )
                 .await?;
+                if !no_dns {
+                    let domain = ready
+                        .call::<op::ReserveDomain>(
+                            ReserveDomainRequest {
+                                endpoint: cloud_enroll::dns_endpoint(&cloud_url),
+                            },
+                            None,
+                        )
+                        .await?;
+                    println!("Reserved Cluster domain: {}", domain.name);
+                }
                 if !no_caddy {
                     let image = crate::caddy::latest_image().await?;
                     let requested = crate::caddy::service_spec(image, Vec::new(), None);
                     crate::deploy::apply_requested(&mut ready, &requested).await?;
+                    if !no_dns {
+                        crate::dns::update_records_for_caddy(&mut ready).await?;
+                    }
                 }
                 println!("Initialised Machine {} ({})", machine.name, machine.id);
             }

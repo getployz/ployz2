@@ -84,13 +84,22 @@ enum EnrollWire {
 /// Enroll URL: host without a scheme is HTTPS.
 #[must_use]
 pub(crate) fn enroll_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
+    format!("{}/api/enroll/{}", cloud_origin(cloud_url), token.as_str())
+}
+
+/// Hosted DNS API on the same Cloud host as enroll. Not `dns.uncloud.run`.
+#[must_use]
+pub(crate) fn dns_endpoint(cloud_url: &str) -> String {
+    format!("{}/api/dns/v1", cloud_origin(cloud_url))
+}
+
+fn cloud_origin(cloud_url: &str) -> String {
     let host = cloud_url.trim().trim_end_matches('/');
-    let origin = if host.contains("://") {
+    if host.contains("://") {
         host.to_owned()
     } else {
         format!("https://{host}")
-    };
-    format!("{origin}/api/enroll/{}", token.as_str())
+    }
 }
 
 /// POST identity until Cloud returns `initialize` or `join`.
@@ -189,6 +198,16 @@ mod tests {
             enroll_url("http://127.0.0.1:9", &token()),
             "http://127.0.0.1:9/api/enroll/pmet_test"
         );
+    }
+
+    #[test]
+    fn hosted_dns_is_on_the_same_cloud_host_not_uncloud_run() {
+        assert_eq!(dns_endpoint("ployz.dev"), "https://ployz.dev/api/dns/v1");
+        assert_eq!(
+            dns_endpoint("http://127.0.0.1:9"),
+            "http://127.0.0.1:9/api/dns/v1"
+        );
+        assert!(!dns_endpoint("ployz.dev").contains("dns.uncloud.run"));
     }
 
     #[test]
