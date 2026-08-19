@@ -191,6 +191,46 @@ async function expectRpc(fn, code) {
 });
 EOF
 
+# Nitro/Vinxi rewrite CJS as ESM with createRequire and no __dirname polyfill.
+# Railway SSR loads that wrap; __dirname must not appear in the loader.
+ROOT="$ROOT" node --input-type=module <<'EOF'
+import { copyFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const root = process.env.ROOT;
+const src = readFileSync(join(root, "ployz-sdk/index.js"), "utf8");
+const body = src
+  .replace(/^"use strict";\r?\n/, "")
+  .replace(/^module\.exports = /m, "export default ");
+const dir = mkdtempSync(join(tmpdir(), "ployz-sdk-esm-"));
+writeFileSync(
+  join(dir, "ployz__sdk.mjs"),
+  `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+${body}
+`,
+);
+copyFileSync(join(root, "ployz-sdk/ployz-sdk.node"), join(dir, "ployz-sdk.node"));
+
+let sdk;
+try {
+  sdk = (await import(pathToFileURL(join(dir, "ployz__sdk.mjs")).href)).default;
+} catch (error) {
+  if (error instanceof ReferenceError && String(error.message).includes("__dirname")) {
+    throw new Error(
+      "@ployz/sdk must load after a Nitro-style ESM wrap (__dirname is not defined there)",
+    );
+  }
+  throw error;
+}
+if (typeof sdk.packageName !== "function" || sdk.packageName() !== "@ployz/sdk") {
+  throw new Error("esm wrap must load the native binding");
+}
+console.log("esm wrap loaded");
+EOF
+
 cd "$ROOT/ployz-sdk"
 if [ ! -d node_modules/typescript ]; then
   npm ci --ignore-scripts
