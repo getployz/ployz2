@@ -20,7 +20,6 @@ use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
 use crate::{
     ATTACH_PATH, DIAL_PATH, LIST_PATH, MACHINE_ID_HEADER, PAIRING_HEADER, REGISTER_PATH,
     REVOKE_PATH, RegisterRequest, Relay, RevokeResponse, Status, TUNNEL_ID_HEADER, TunnelFrame,
-    bearer_token,
 };
 
 pub(crate) async fn bind(
@@ -224,11 +223,10 @@ fn protobuf(message: impl prost::Message) -> Response {
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
-    bearer_token(
-        headers
-            .get(http::header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok()),
-    )
+    headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {

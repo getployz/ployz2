@@ -36,7 +36,6 @@ pub(crate) const ATTACH_PATH: &str = "/attach";
 pub(crate) const LIST_PATH: &str = "/list";
 pub(crate) const REVOKE_PATH: &str = "/revoke";
 
-const BEARER_PREFIX: &str = "Bearer ";
 const TUNNEL_BUFFER: usize = 16;
 
 /// Fail-closed Relay response (HTTP status before WebSocket upgrade).
@@ -392,13 +391,7 @@ pub(crate) struct StartedRegister {
     pub opens: mpsc::Receiver<Open>,
 }
 
-pub(crate) struct StartedDial {
-    pub inbound: mpsc::Sender<TunnelFrame>,
-    pub outbound: mpsc::Receiver<TunnelFrame>,
-    pub cancel: tokio::sync::watch::Receiver<()>,
-}
-
-pub(crate) struct StartedAttach {
+pub(crate) struct StartedTunnel {
     pub inbound: mpsc::Sender<TunnelFrame>,
     pub outbound: mpsc::Receiver<TunnelFrame>,
     pub cancel: tokio::sync::watch::Receiver<()>,
@@ -609,7 +602,7 @@ impl Relay {
         &self,
         pairing: PairingCredential,
         machine_id: MachineId,
-    ) -> Result<StartedDial, Status> {
+    ) -> Result<StartedTunnel, Status> {
         let slot = Slot {
             pairing,
             machine_id,
@@ -640,21 +633,21 @@ impl Relay {
             self.lock().pending.remove(&tunnel_id);
             return Err(Status::unavailable("Register closed"));
         }
-        Ok(StartedDial {
+        Ok(StartedTunnel {
             inbound: to_machine_tx,
             outbound: from_machine_rx,
             cancel,
         })
     }
 
-    pub(crate) fn start_attach(&self, tunnel_id: TunnelId) -> Result<StartedAttach, Status> {
+    pub(crate) fn start_attach(&self, tunnel_id: TunnelId) -> Result<StartedTunnel, Status> {
         self.require_accepting()?;
         let pending = self
             .lock()
             .pending
             .remove(&tunnel_id)
             .ok_or_else(|| Status::not_found("unknown Tunnel ID"))?;
-        Ok(StartedAttach {
+        Ok(StartedTunnel {
             inbound: pending.from_machine,
             outbound: pending.to_machine,
             cancel: pending.cancel,
@@ -678,10 +671,6 @@ impl Relay {
     pub(crate) fn revoke(&self, pairing: PairingCredential) {
         self.lock().revoked.insert(pairing);
     }
-}
-
-pub(crate) fn bearer_token(value: Option<&str>) -> Option<&str> {
-    value.and_then(|value| value.strip_prefix(BEARER_PREFIX))
 }
 
 fn next_nonce(nonce: u64) -> u64 {

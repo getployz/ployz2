@@ -98,7 +98,7 @@ impl RelayClient {
         bearer: &str,
         machine_id: &MachineId,
     ) -> Result<RelayWs, ClientError> {
-        let mut ws = connect_ws(&self.base, REGISTER_PATH, bearer, "", "", "").await?;
+        let mut ws = connect_ws(&self.base, REGISTER_PATH, Some(bearer), None, None, None).await?;
         ws.send(&RegisterRequest::new(machine_id)).await?;
         Ok(ws)
     }
@@ -114,7 +114,15 @@ impl RelayClient {
         pairing: &str,
         machine_id: &str,
     ) -> Result<RelayWs, ClientError> {
-        connect_ws(&self.base, DIAL_PATH, bearer, pairing, machine_id, "").await
+        connect_ws(
+            &self.base,
+            DIAL_PATH,
+            Some(bearer),
+            nonempty(pairing),
+            nonempty(machine_id),
+            None,
+        )
+        .await
     }
 
     /// Attach a tunnel opened on Register.
@@ -123,7 +131,15 @@ impl RelayClient {
     ///
     /// Returns when the Tunnel ID is missing, invalid, or unknown.
     pub async fn attach(&self, tunnel_id: &str) -> Result<RelayWs, ClientError> {
-        connect_ws(&self.base, ATTACH_PATH, "", "", "", tunnel_id).await
+        connect_ws(
+            &self.base,
+            ATTACH_PATH,
+            None,
+            None,
+            None,
+            nonempty(tunnel_id),
+        )
+        .await
     }
 
     /// List held Registers for one pairing.
@@ -160,7 +176,7 @@ impl RelayClient {
     ) -> Result<T, ClientError> {
         let url = join_url(&self.base, path, false)?;
         let mut request = self.http.post(url).bearer_auth(bearer);
-        if !pairing.is_empty() {
+        if let Some(pairing) = nonempty(pairing) {
             request = request.header(PAIRING_HEADER, pairing);
         }
         let response = request.send().await.map_err(ClientError::transport)?;
@@ -313,10 +329,10 @@ async fn copy_ws_bytes(ws: WsStream, io: DuplexStream) {
 async fn connect_ws(
     base: &Url,
     path: &str,
-    bearer: &str,
-    pairing: &str,
-    machine_id: &str,
-    tunnel_id: &str,
+    bearer: Option<&str>,
+    pairing: Option<&str>,
+    machine_id: Option<&str>,
+    tunnel_id: Option<&str>,
 ) -> Result<RelayWs, ClientError> {
     let url = join_url(base, path, true)?;
     let mut request = url
@@ -324,7 +340,7 @@ async fn connect_ws(
         .into_client_request()
         .map_err(ClientError::transport)?;
     let headers = request.headers_mut();
-    if !bearer.is_empty() {
+    if let Some(bearer) = bearer {
         headers.insert(
             http::header::AUTHORIZATION,
             HeaderValue::try_from(format!("Bearer {bearer}")).map_err(ClientError::transport)?,
@@ -350,16 +366,20 @@ async fn connect_ws(
 fn set_header(
     headers: &mut http::HeaderMap,
     name: &'static str,
-    value: &str,
+    value: Option<&str>,
 ) -> Result<(), ClientError> {
-    if value.is_empty() {
+    let Some(value) = value else {
         return Ok(());
-    }
+    };
     headers.insert(
         HeaderName::from_static(name),
         HeaderValue::try_from(value).map_err(ClientError::transport)?,
     );
     Ok(())
+}
+
+fn nonempty(value: &str) -> Option<&str> {
+    (!value.is_empty()).then_some(value)
 }
 
 fn join_url(base: &Url, path: &str, websocket: bool) -> Result<Url, ClientError> {
