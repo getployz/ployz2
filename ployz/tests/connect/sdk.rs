@@ -165,6 +165,48 @@ async fn bad_credentials_and_unknown_machines_reject_with_typed_errors() {
 }
 
 #[tokio::test]
+async fn list_held_and_revoke_pairing_reject_bad_dial_and_empty_pairing() {
+    let session = RelaySession::start().await;
+
+    let empty_dial = match sdk::list_held(&session.url, "", relay::PAIRING).await {
+        Ok(_) => panic!("expected empty Dial Credential to fail"),
+        Err(error) => error,
+    };
+    assert_eq!(empty_dial.code, RpcErrorCode::Unauthenticated);
+
+    let wrong_dial = match sdk::list_held(&session.url, "wrong-secret", relay::PAIRING).await {
+        Ok(_) => panic!("expected invalid Dial Credential to fail"),
+        Err(error) => error,
+    };
+    assert_eq!(wrong_dial.code, RpcErrorCode::Unauthenticated);
+
+    let empty_pairing = match sdk::list_held(&session.url, relay::DIAL, "").await {
+        Ok(_) => panic!("expected empty pairing to fail"),
+        Err(error) => error,
+    };
+    assert_eq!(empty_pairing.code, RpcErrorCode::InvalidArgument);
+
+    let empty_revoke = match sdk::revoke_pairing(&session.url, "", relay::PAIRING).await {
+        Ok(()) => panic!("expected empty Dial Credential to fail"),
+        Err(error) => error,
+    };
+    assert_eq!(empty_revoke.code, RpcErrorCode::Unauthenticated);
+
+    let wrong_revoke = match sdk::revoke_pairing(&session.url, "wrong-secret", relay::PAIRING).await
+    {
+        Ok(()) => panic!("expected invalid Dial Credential to fail"),
+        Err(error) => error,
+    };
+    assert_eq!(wrong_revoke.code, RpcErrorCode::Unauthenticated);
+
+    let empty_revoke_pairing = match sdk::revoke_pairing(&session.url, relay::DIAL, "").await {
+        Ok(()) => panic!("expected empty pairing to fail"),
+        Err(error) => error,
+    };
+    assert_eq!(empty_revoke_pairing.code, RpcErrorCode::InvalidArgument);
+}
+
+#[tokio::test]
 async fn close_drops_the_session_and_repeated_lifecycle_works() {
     let description = advertised_description();
     let session = RelaySession::start().await;

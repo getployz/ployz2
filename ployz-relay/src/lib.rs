@@ -174,6 +174,12 @@ pub struct HeldRegister {
 }
 
 impl HeldRegister {
+    /// Machine ID as listed on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.machine_id
+    }
+
     /// Parse the Machine ID from this row.
     ///
     /// # Errors
@@ -319,7 +325,6 @@ struct Registration {
     // Dropped when this Register is displaced; Dial/Attach forwarders abort.
     cancel: watch::Sender<()>,
     register_rtt: Option<Duration>,
-    ping_sent: Option<(u64, Instant)>,
 }
 
 struct Pending {
@@ -449,6 +454,30 @@ impl Relay {
     fn is_dial(&self, metadata: &MetadataMap) -> bool {
         bearer(metadata) == Some(self.dial.as_str())
     }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic Status is the Dial/List/Revoke error"
+    )]
+    fn cloud_pairing(&self, metadata: &MetadataMap) -> Result<PairingCredential, Status> {
+        if !self.is_dial(metadata) {
+            return Err(Status::unauthenticated("invalid Dial Credential"));
+        }
+        pairing_metadata(metadata)
+            .ok_or_else(|| Status::invalid_argument("missing or invalid pairing"))
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic Status is the Dial/List error"
+    )]
+    fn cloud_pairing_live(&self, metadata: &MetadataMap) -> Result<PairingCredential, Status> {
+        let pairing = self.cloud_pairing(metadata)?;
+        if !self.accepting() {
+            return Err(Status::unavailable("GOAWAY"));
+        }
+        Ok(pairing)
+    }
 }
 
 fn pairing_metadata(metadata: &MetadataMap) -> Option<PairingCredential> {
@@ -542,64 +571,47 @@ impl CloudRelay for Relay {
                     open_tx: open_tx.clone(),
                     cancel,
                     register_rtt: None,
-                    ping_sent: None,
                 },
             );
             generation
         };
-        let ping_state = Arc::clone(&self.state);
-        let ping_slot = slot.clone();
-        let ping_tx = open_tx;
+        let state = Arc::clone(&self.state);
         tokio::spawn(async move {
+            let mut interval = tokio::time::interval(PING_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut nonce = 0;
+            let mut ping_sent = None;
             loop {
-                nonce = next_nonce(nonce);
-                let sent = Instant::now();
-                {
-                    let Ok(mut state) = ping_state.lock() else {
-                        break;
-                    };
-                    let Some(registration) = state.machines.get_mut(&ping_slot) else {
-                        break;
-                    };
-                    if registration.generation != generation {
-                        break;
-                    }
-                    registration.ping_sent = Some((nonce, sent));
-                }
                 tokio::select! {
-                    result = ping_tx.send(Ok(Open::ping(nonce))) => {
-                        if result.is_err() {
+                    message = inbound.next() => {
+                        let Some(Ok(message)) = message else { break };
+                        if message.echo() == 0 {
+                            continue;
+                        }
+                        let Some((expected, sent)) = ping_sent else {
+                            continue;
+                        };
+                        if expected != message.echo() {
+                            continue;
+                        }
+                        let rtt = Instant::now().saturating_duration_since(sent);
+                        let Ok(mut state) = state.lock() else { break };
+                        let Some(registration) = state.machines.get_mut(&slot) else {
+                            break;
+                        };
+                        if registration.generation != generation {
+                            break;
+                        }
+                        registration.register_rtt = Some(rtt);
+                    }
+                    _ = interval.tick() => {
+                        nonce = next_nonce(nonce);
+                        ping_sent = Some((nonce, Instant::now()));
+                        if open_tx.send(Ok(Open::ping(nonce))).await.is_err() {
                             break;
                         }
                     }
                     _ = ping_cancel.changed() => break,
-                }
-                tokio::select! {
-                    () = tokio::time::sleep(PING_INTERVAL) => {}
-                    _ = ping_cancel.changed() => break,
-                }
-            }
-        });
-        let state = Arc::clone(&self.state);
-        tokio::spawn(async move {
-            while let Some(message) = inbound.next().await {
-                let Ok(message) = message else { break };
-                if message.echo() == 0 {
-                    continue;
-                }
-                let now = Instant::now();
-                let Ok(mut state) = state.lock() else { break };
-                let Some(registration) = state.machines.get_mut(&slot) else {
-                    break;
-                };
-                if registration.generation != generation {
-                    break;
-                }
-                if let Some((nonce, sent)) = registration.ping_sent
-                    && nonce == message.echo()
-                {
-                    registration.register_rtt = Some(now.saturating_duration_since(sent));
                 }
             }
             if let Ok(mut state) = state.lock()
@@ -619,14 +631,7 @@ impl CloudRelay for Relay {
         &self,
         request: Request<Streaming<TunnelFrame>>,
     ) -> Result<Response<Self::DialStream>, Status> {
-        if !self.is_dial(request.metadata()) {
-            return Err(Status::unauthenticated("invalid Dial Credential"));
-        }
-        let pairing = pairing_metadata(request.metadata())
-            .ok_or_else(|| Status::invalid_argument("missing or invalid pairing"))?;
-        if !self.accepting() {
-            return Err(Status::unavailable("GOAWAY"));
-        }
+        let pairing = self.cloud_pairing_live(request.metadata())?;
         let machine_id = MachineId::parse(
             metadata_str(request.metadata(), MACHINE_ID_METADATA)
                 .ok_or_else(|| Status::invalid_argument("missing or invalid machine-id"))?,
@@ -692,14 +697,7 @@ impl CloudRelay for Relay {
     }
 
     async fn list(&self, request: Request<ListRequest>) -> Result<Response<ListResponse>, Status> {
-        if !self.is_dial(request.metadata()) {
-            return Err(Status::unauthenticated("invalid Dial Credential"));
-        }
-        let pairing = pairing_metadata(request.metadata())
-            .ok_or_else(|| Status::invalid_argument("missing or invalid pairing"))?;
-        if !self.accepting() {
-            return Err(Status::unavailable("GOAWAY"));
-        }
+        let pairing = self.cloud_pairing_live(request.metadata())?;
         let registers = self
             .lock()
             .machines
@@ -717,11 +715,7 @@ impl CloudRelay for Relay {
         &self,
         request: Request<RevokeRequest>,
     ) -> Result<Response<RevokeResponse>, Status> {
-        if !self.is_dial(request.metadata()) {
-            return Err(Status::unauthenticated("invalid Dial Credential"));
-        }
-        let pairing = pairing_metadata(request.metadata())
-            .ok_or_else(|| Status::invalid_argument("missing or invalid pairing"))?;
+        let pairing = self.cloud_pairing(request.metadata())?;
         self.lock().revoked.insert(pairing);
         Ok(Response::new(RevokeResponse {}))
     }
@@ -746,6 +740,11 @@ mod tests {
     #[test]
     fn register_request_rejects_a_non_machine_id() {
         assert!(RegisterRequest::default().machine_id().is_err());
+    }
+
+    #[test]
+    fn held_register_rejects_a_non_machine_id() {
+        assert!(HeldRegister::default().machine_id().is_err());
     }
 
     #[test]

@@ -525,7 +525,7 @@ async fn list_without_pong_omits_register_rtt() {
     let mut machine = connect(relay.address).await;
     let mut cloud = connect(relay.address).await;
     let machine_id = MachineId::random();
-    let _hold = hold_register_silent(&mut machine, PAIRING, &machine_id).await;
+    let _hold = start_register(&mut machine, PAIRING, &machine_id).await;
 
     let listed = cloud
         .list(list_request(DIAL, PAIRING))
@@ -711,14 +711,6 @@ async fn hold_register(
     let (tx, stream) = start_register(client, pairing, machine_id).await;
     let opens = forward_opens(tx.clone(), stream);
     (tx, opens)
-}
-
-async fn hold_register_silent(
-    client: &mut CloudRelayClient<tonic::transport::Channel>,
-    pairing: &str,
-    machine_id: &MachineId,
-) -> (mpsc::Sender<RegisterRequest>, tonic::Streaming<Open>) {
-    start_register(client, pairing, machine_id).await
 }
 
 async fn start_register(

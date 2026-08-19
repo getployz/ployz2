@@ -443,17 +443,13 @@ pub async fn list_held(
     let held = sdk::list_held(&relay_url, &bearer, &pairing)
         .await
         .map_err(rpc_to_napi)?;
-    held.into_iter()
-        .map(|row| {
-            Ok(HeldRegister {
-                machine_id: row
-                    .machine_id()
-                    .map_err(|error| Error::from_reason(error.to_string()))?
-                    .to_string(),
-                register_rtt_ns: row.register_rtt_ns,
-            })
+    Ok(held
+        .into_iter()
+        .map(|row| HeldRegister {
+            machine_id: row.as_str().to_string(),
+            register_rtt_ns: row.register_rtt_ns,
         })
-        .collect()
+        .collect())
 }
 
 /// Revoke a Pairing Credential so later Register with that bearer fails.
