@@ -210,6 +210,17 @@ impl ReplicatedStore {
         Ok(())
     }
 
+    /// Write `cluster.allocator` naming this Machine, with `updated_at = now - 5s`.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the Cluster store cannot be written.
+    pub async fn publish_founder_allocator(&self, machine_id: &MachineId) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(CLAIM_FOUNDER_ALLOCATOR, [json!(machine_id)])])
+            .await
+    }
+
     pub async fn cluster_network(&self) -> Result<Ipv4Net, Error> {
         let query = self
             .api
@@ -893,16 +904,22 @@ pub async fn run_machine_publisher(
     }
     loop {
         if let Some(replicated) = &replicated {
-            let cluster_network = {
+            let (cluster_network, founder_id) = {
                 let local = local
                     .lock()
                     .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-                local.record().cluster_network()
+                let record = local.record();
+                (record.cluster_network(), founder_allocator_id(record))
             };
             if let Some(network) = cluster_network
                 && let Err(error) = replicated.publish_cluster_network(network).await
             {
                 eprintln!("failed to publish Cluster network: {error}");
+            }
+            if let Some(id) = founder_id
+                && let Err(error) = replicated.publish_founder_allocator(&id).await
+            {
+                eprintln!("failed to publish Allocator: {error}");
             }
             let publication = replicated.machine_publication().await;
             let machine = {
@@ -923,6 +940,27 @@ pub async fn run_machine_publisher(
                 return Ok(());
             }
         }
+    }
+}
+
+// Solo founder backdates so the first Register is already quiet. ON CONFLICT
+// leaves a later steal's `updated_at = now` alone.
+pub(crate) const CLAIM_FOUNDER_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now', '-5 seconds')) ON CONFLICT (key) DO NOTHING";
+
+pub(crate) fn founder_allocator_id(record: &LocalMachineRecord) -> Option<MachineId> {
+    match &record.body {
+        LocalMachineBody::Participating {
+            machine,
+            cluster_network: Some(_),
+            ..
+        } => Some(machine.id),
+        LocalMachineBody::Participating {
+            cluster_network: None,
+            ..
+        }
+        | LocalMachineBody::Uninitialized { .. }
+        | LocalMachineBody::Joining { .. }
+        | LocalMachineBody::Resetting { .. } => None,
     }
 }
 
