@@ -16,8 +16,7 @@ use crate::corrosion::ApiClient;
 use crate::corrosion::publisher::founder_allocator_id;
 use crate::corrosion::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR};
 use crate::machine::{
-    AllocatorAdmit, LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord,
-    LocalMachineStore, allocator_admit,
+    LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
 };
 use crate::runtime_watch::RuntimeWatchSnapshot;
 
@@ -211,13 +210,8 @@ fn founder_allocator_sql_is_quiet_and_does_not_overwrite() {
     let (value, quiet): (String, i64) = db
         .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap();
-    let me = MachineId::parse(&value).unwrap();
     assert_eq!(value, id);
     assert_eq!(quiet, 1);
-    assert_eq!(
-        allocator_admit(me, Some((me, quiet == 1))),
-        AllocatorAdmit::Local
-    );
 
     db.execute(CLAIM_FOUNDER_ALLOCATOR, rusqlite::params!["b".repeat(32)])
         .unwrap();
@@ -244,13 +238,8 @@ fn allocator_written_at_now_is_not_quiet() {
     let (value, quiet): (String, i64) = db
         .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap();
-    let me = MachineId::parse(&value).unwrap();
     assert_eq!(value, id);
     assert_eq!(quiet, 0);
-    assert_eq!(
-        allocator_admit(me, Some((me, quiet == 1))),
-        AllocatorAdmit::NotQuiet
-    );
 }
 
 #[test]

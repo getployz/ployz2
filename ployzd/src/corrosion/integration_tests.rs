@@ -446,8 +446,9 @@ async fn founder_publisher_backdates_allocator() {
     ));
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if let Ok(Some((id, true))) = store.allocator().await
-                && id == published.id
+            if let Ok(Some(row)) = store.allocator().await
+                && row.machine_id == published.id
+                && row.quiet
             {
                 break;
             }

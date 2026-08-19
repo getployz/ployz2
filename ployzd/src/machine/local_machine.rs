@@ -108,27 +108,6 @@ pub enum Error {
     NotAllocator,
 }
 
-/// Whether this Machine may assign a Machine Subnet for `Register`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AllocatorAdmit {
-    Local,
-    NotQuiet,
-    NotLocal,
-}
-
-/// Admit locally only when cluster KV names this Machine and the row is ≥5s old.
-#[must_use]
-pub(crate) fn allocator_admit(
-    self_id: MachineId,
-    row: Option<(MachineId, bool)>,
-) -> AllocatorAdmit {
-    match row {
-        Some((id, true)) if id == self_id => AllocatorAdmit::Local,
-        Some((id, false)) if id == self_id => AllocatorAdmit::NotQuiet,
-        Some(_) | None => AllocatorAdmit::NotLocal,
-    }
-}
-
 impl LocalMachine {
     /// An uninitialized Local Machine with no Cluster or Docker collaborators.
     #[must_use]
@@ -350,10 +329,10 @@ impl LocalMachine {
             return Err(Error::NotParticipating);
         }
         let replicated = self.replicated()?;
-        match allocator_admit(record.id(), replicated.allocator().await?) {
-            AllocatorAdmit::Local => {}
-            AllocatorAdmit::NotQuiet => return Err(Error::AllocatorNotQuiet),
-            AllocatorAdmit::NotLocal => return Err(Error::NotAllocator),
+        match replicated.allocator().await? {
+            Some(row) if row.machine_id == record.id() && row.quiet => {}
+            Some(row) if row.machine_id == record.id() => return Err(Error::AllocatorNotQuiet),
+            Some(_) | None => return Err(Error::NotAllocator),
         }
         let snapshot = replicated.machines().await?;
         if snapshot
@@ -655,10 +634,7 @@ fn local_removal_response(
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{
-        AllocatorAdmit, RuntimeWatchTelemetry, allocator_admit, local_removal_response, read_admin,
-        unique_identities,
-    };
+    use super::{RuntimeWatchTelemetry, local_removal_response, read_admin, unique_identities};
     use crate::corrosion::AdminClient;
     use ployz_core::{
         AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
@@ -759,41 +735,6 @@ mod tests {
     async fn missing_admin_socket_is_unavailable_telemetry() {
         let admin = AdminClient::new("/no/such/ployz-admin.sock");
         assert!(read_admin(&admin).await.is_none());
-    }
-
-    #[test]
-    fn quiet_self_allocator_admits_locally() {
-        let me = MachineId::parse("a".repeat(32)).unwrap();
-        assert_eq!(allocator_admit(me, Some((me, true))), AllocatorAdmit::Local);
-    }
-
-    #[test]
-    fn young_self_allocator_is_not_quiet() {
-        let me = MachineId::parse("a".repeat(32)).unwrap();
-        assert_eq!(
-            allocator_admit(me, Some((me, false))),
-            AllocatorAdmit::NotQuiet
-        );
-    }
-
-    #[test]
-    fn other_allocator_does_not_admit_locally() {
-        let me = MachineId::parse("a".repeat(32)).unwrap();
-        let other = MachineId::parse("b".repeat(32)).unwrap();
-        assert_eq!(
-            allocator_admit(me, Some((other, true))),
-            AllocatorAdmit::NotLocal
-        );
-        assert_eq!(
-            allocator_admit(me, Some((other, false))),
-            AllocatorAdmit::NotLocal
-        );
-    }
-
-    #[test]
-    fn missing_allocator_does_not_admit_locally() {
-        let me = MachineId::parse("a".repeat(32)).unwrap();
-        assert_eq!(allocator_admit(me, None), AllocatorAdmit::NotLocal);
     }
 
     fn machine(name: &str, id: &str, seed: u8) -> Machine {

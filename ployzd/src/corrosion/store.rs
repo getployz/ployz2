@@ -32,6 +32,11 @@ pub struct ReplicatedStore {
 pub(crate) const CLAIM_FOUNDER_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now', '-5 seconds')) ON CONFLICT (key) DO NOTHING";
 pub(crate) const ALLOCATOR_ROW: &str = "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'";
 
+pub(crate) struct AllocatorRow {
+    pub machine_id: MachineId,
+    pub quiet: bool,
+}
+
 pub(crate) struct MachinePublicationGuard<'a> {
     store: &'a ReplicatedStore,
     _guard: tokio::sync::MutexGuard<'a, ()>,
@@ -227,16 +232,20 @@ impl ReplicatedStore {
     /// # Errors
     ///
     /// Returns if the Cluster store cannot be read or the row is malformed.
-    pub(crate) async fn allocator(&self) -> Result<Option<(MachineId, bool)>, Error> {
+    pub(crate) async fn allocator(&self) -> Result<Option<AllocatorRow>, Error> {
         let query = self.api.query(Statement::new(ALLOCATOR_ROW, [])).await?;
-        let rows = query.rows(["allocator", "quiet"])?;
-        let Some([value, quiet]) = rows.first() else {
-            return Ok(None);
-        };
-        Ok(Some((
-            MachineId::parse(text(value, "Allocator")?)?,
-            sqlite_flag(quiet, "Allocator quiet")?,
-        )))
+        match query.rows(["allocator", "quiet"])?.as_slice() {
+            [] => Ok(None),
+            [[value, Value::Number(quiet)]] => Ok(Some(AllocatorRow {
+                machine_id: MachineId::parse(text(value, "Allocator")?)?,
+                quiet: quiet
+                    .as_u64()
+                    .filter(|value| *value <= 1)
+                    .map(|value| value == 1)
+                    .ok_or_else(|| Error::Protocol("invalid Allocator quiet".into()))?,
+            })),
+            _ => Err(Error::Protocol("invalid Allocator row".into())),
+        }
     }
 
     pub async fn cluster_network(&self) -> Result<Ipv4Net, Error> {
@@ -880,20 +889,6 @@ fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str, Error> {
     value
         .as_str()
         .ok_or_else(|| Error::Protocol(format!("invalid {field}")))
-}
-
-fn sqlite_flag(value: &Value, field: &str) -> Result<bool, Error> {
-    match value {
-        Value::Bool(flag) => Ok(*flag),
-        Value::Number(number) => match number.as_i64() {
-            Some(0) => Ok(false),
-            Some(1) => Ok(true),
-            Some(_) | None => Err(Error::Protocol(format!("invalid {field}"))),
-        },
-        Value::Null | Value::String(_) | Value::Array(_) | Value::Object(_) => {
-            Err(Error::Protocol(format!("invalid {field}")))
-        }
-    }
 }
 
 fn actor_id(value: &Value) -> Result<String, Error> {
