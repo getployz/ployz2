@@ -27,7 +27,12 @@ async fn connect_about_returns_contract_and_branches_on_capability_names() {
 
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str()),
+        sdk::connect(
+            &session.url,
+            relay::DIAL,
+            relay::PAIRING,
+            description.machine_id.as_str(),
+        ),
     )
     .await
     .expect("connect must not hang")
@@ -40,6 +45,52 @@ async fn connect_about_returns_contract_and_branches_on_capability_names() {
         "callers branch on capability names, not daemon_version"
     );
     assert_eq!(about.daemon_version, description.daemon_version);
+}
+
+#[tokio::test]
+async fn list_held_then_connect_dials_the_echoed_machine() {
+    let description = advertised_description();
+    let session = RelaySession::start().await;
+    let _machine = session
+        .spawn_machine(
+            description.machine_id,
+            DiscoveryService::new(description.clone()),
+        )
+        .await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let held = loop {
+        let listed = sdk::list_held(&session.url, relay::DIAL, relay::PAIRING)
+            .await
+            .unwrap();
+        if let [row] = listed.as_slice()
+            && row.machine_id().ok() == Some(description.machine_id)
+            && row.register_rtt_ns.is_some()
+        {
+            break listed;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("List did not return the echoed Machine with path RTT");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        held.first()
+            .expect("List returned the echoed Machine")
+            .machine_id()
+            .unwrap()
+            .as_str(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        client.about().await.unwrap().machine_id,
+        description.machine_id
+    );
 }
 
 #[tokio::test]
@@ -56,7 +107,7 @@ async fn bad_credentials_and_unknown_machines_reject_with_typed_errors() {
 
     let empty = timeout(
         Duration::from_secs(2),
-        sdk::connect(&session.url, "", machine_id),
+        sdk::connect(&session.url, "", relay::PAIRING, machine_id),
     )
     .await
     .expect("empty Dial Credential must not hang");
@@ -68,7 +119,7 @@ async fn bad_credentials_and_unknown_machines_reject_with_typed_errors() {
 
     let bad = timeout(
         Duration::from_secs(2),
-        sdk::connect(&session.url, "wrong-secret", machine_id),
+        sdk::connect(&session.url, "wrong-secret", relay::PAIRING, machine_id),
     )
     .await
     .expect("bad Dial Credential must not hang");
@@ -80,7 +131,12 @@ async fn bad_credentials_and_unknown_machines_reject_with_typed_errors() {
 
     let unknown = timeout(
         Duration::from_secs(2),
-        sdk::connect(&session.url, relay::DIAL, MachineId::random().as_str()),
+        sdk::connect(
+            &session.url,
+            relay::DIAL,
+            relay::PAIRING,
+            MachineId::random().as_str(),
+        ),
     )
     .await
     .expect("unknown Machine ID must not hang");
@@ -92,7 +148,12 @@ async fn bad_credentials_and_unknown_machines_reject_with_typed_errors() {
 
     let invalid = timeout(
         Duration::from_secs(2),
-        sdk::connect(&session.url, relay::DIAL, "not-a-machine-id"),
+        sdk::connect(
+            &session.url,
+            relay::DIAL,
+            relay::PAIRING,
+            "not-a-machine-id",
+        ),
     )
     .await
     .expect("invalid Machine ID must not hang");
@@ -116,7 +177,7 @@ async fn close_drops_the_session_and_repeated_lifecycle_works() {
     let machine_id = description.machine_id.as_str();
 
     for _ in 0..3 {
-        let client = sdk::connect(&session.url, relay::DIAL, machine_id)
+        let client = sdk::connect(&session.url, relay::DIAL, relay::PAIRING, machine_id)
             .await
             .unwrap();
         assert!(
@@ -146,9 +207,14 @@ async fn deploy_returns_success_for_a_completed_run() {
             DiscoveryService::new(description.clone()),
         )
         .await;
-    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
-        .await
-        .unwrap();
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
 
     let outcome = client
         .run(
@@ -190,9 +256,14 @@ async fn deploy_preserves_completed_prefix_failed_op_and_unexecuted_suffix() {
             DiscoveryService::new(description.clone()),
         )
         .await;
-    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
-        .await
-        .unwrap();
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
     let outcome = client
         .run(
             DeployIntent::apply_one(
@@ -246,9 +317,14 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
             service
         })
         .await;
-    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
-        .await
-        .unwrap();
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
 
     let error = client
         .run(
@@ -283,9 +359,14 @@ async fn preview_planning_error_is_a_typed_rpc_error() {
             service
         })
         .await;
-    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
-        .await
-        .unwrap();
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
 
     let error = client
         .preview(DeployIntent::apply_one(
@@ -316,9 +397,14 @@ async fn preview_project_removal_reserved_is_a_typed_rpc_error() {
             DiscoveryService::new(description.clone()),
         )
         .await;
-    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
-        .await
-        .unwrap();
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
 
     let error = client
         .preview_project_removal(ProjectName::system(), ployz::deploy::VolumeFate::Preserve)
@@ -342,9 +428,14 @@ async fn preview_then_confirm_executes_the_shown_plan() {
             DiscoveryService::new(description.clone()),
         )
         .await;
-    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
-        .await
-        .unwrap();
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
     let intent = DeployIntent::apply_one(
         ProjectName::parse("app").unwrap(),
         spec("web"),
@@ -385,9 +476,14 @@ async fn confirm_after_close_fails_closed() {
             DiscoveryService::new(description.clone()),
         )
         .await;
-    let client = sdk::connect(&session.url, relay::DIAL, description.machine_id.as_str())
-        .await
-        .unwrap();
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
     let preview = client
         .preview(DeployIntent::apply_one(
             ProjectName::parse("app").unwrap(),
@@ -431,6 +527,7 @@ async fn node_smoke_covers_connect_about_preview_run_and_close() {
                 .env("PLOYZ_SDK_PACKAGE", package)
                 .env("PLOYZ_RELAY_URL", url)
                 .env("PLOYZ_BEARER", relay::DIAL)
+                .env("PLOYZ_PAIRING", relay::PAIRING)
                 .env("PLOYZ_MACHINE_ID", machine_id)
                 .env("PLOYZ_UNKNOWN_MACHINE_ID", unknown)
                 .output()

@@ -190,8 +190,18 @@ async function connect(options) {
   return new Client(await native.connect(options));
 }
 
+async function listHeld(relayUrl, bearer, pairing) {
+  return native.listHeld(relayUrl, bearer, pairing);
+}
+
+async function revokePairing(relayUrl, bearer, pairing) {
+  return native.revokePairing(relayUrl, bearer, pairing);
+}
+
 module.exports = {
   connect,
+  listHeld,
+  revokePairing,
   packageName: native.packageName,
   Client,
   applyAll,
