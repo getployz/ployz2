@@ -100,10 +100,12 @@ pub enum Error {
     Network(#[from] NetworkError),
     #[error(transparent)]
     Docker(#[from] crate::docker::Error),
-    #[error("Machine is not the Allocator")]
-    NotAllocator,
     #[error("{0}")]
     Cleanup(String),
+    #[error("Allocator is not quiet")]
+    AllocatorNotQuiet,
+    #[error("this Machine is not the Allocator")]
+    NotAllocator,
 }
 
 impl LocalMachine {
@@ -314,10 +316,12 @@ impl LocalMachine {
     ///
     /// Returns [`Error::Store`] when endpoints are missing, [`Error::NotParticipating`]
     /// when this Machine is not participating, [`Error::ClusterStoreUnavailable`]
-    /// when the Cluster store is missing, [`Error::NotAllocator`] when this
-    /// Machine is not named as Allocator, [`Error::DuplicateMachine`] when the
-    /// name or public key already exists, [`Error::Network`] when subnet
-    /// allocation fails, and [`Error::Cluster`] when replicated I/O fails.
+    /// when the Cluster store is missing, [`Error::AllocatorNotQuiet`] when this
+    /// Machine is named Allocator but the row is younger than 5s,
+    /// [`Error::NotAllocator`] when the row names another Machine or is missing,
+    /// [`Error::DuplicateMachine`] when the name or public key already exists,
+    /// [`Error::Network`] when subnet allocation fails, and [`Error::Cluster`]
+    /// when replicated I/O fails.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
         if request.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints.into());
@@ -330,7 +334,7 @@ impl LocalMachine {
             record.id()
         };
         match self.replicated()?.allocator().await? {
-            Some(allocator) if allocator == me => self.admit_local_register(request).await,
+            Some(row) if row.machine_id == me => self.admit_local_register(request).await,
             _ => Err(Error::NotAllocator),
         }
     }
@@ -339,6 +343,14 @@ impl LocalMachine {
         let replicated = self.replicated()?;
         let assigned_machine = {
             let publication = replicated.machine_publication().await;
+            let me = self.record()?.id();
+            match replicated.allocator().await? {
+                Some(row) if row.machine_id == me && row.quiet => {}
+                Some(row) if row.machine_id == me => {
+                    return Err(Error::AllocatorNotQuiet);
+                }
+                Some(_) | None => return Err(Error::NotAllocator),
+            }
             let snapshot = replicated.machines().await?;
             if snapshot.observations.iter().any(|machine| {
                 machine.name == request.name || machine.public_key == request.public_key
