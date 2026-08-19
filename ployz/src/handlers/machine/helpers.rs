@@ -88,26 +88,6 @@ pub(super) async fn reconnect_direct(connection: &Connection) -> Result<Client, 
     Err(last.unwrap_or_else(|| Error::usage("Machine did not become reachable after reset")))
 }
 
-pub(super) async fn wait_direct_participating(connection: &Connection) -> Result<Client, Error> {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if let Ok(mut client) = connect_direct(connection).await
-                && client
-                    .call::<ployz_core::op::Inspect>(ployz_core::InspectRequest::default(), None)
-                    .await
-                    .is_ok_and(|details| {
-                        details.phase == ployz_core::LocalMachinePhase::Participating
-                    })
-            {
-                return client;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    .map_err(|_| Error::usage("initial Machine did not become ready"))
-}
-
 pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {
     if yes {
         return Ok(());

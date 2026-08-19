@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use clap::ArgMatches;
 use ployz_core::{
     InitializeRequest, InspectRequest, LocalMachinePhase, MachineName, ReserveDomainRequest,
@@ -7,6 +9,7 @@ use ployz_core::{
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
 use crate::{
+    connect::Client,
     context::Context,
     handlers::{Error, leaf_matches},
 };
@@ -101,7 +104,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let want_dns = !matches.get_flag("no-dns");
     if want_caddy || want_dns {
         runtime()?.block_on(async {
-            let mut ready = helpers::wait_direct_participating(&connection).await?;
+            let mut ready = wait_direct_participating(&connection).await?;
             if want_dns {
                 let endpoint = matches
                     .get_one::<String>("dns-endpoint")
@@ -125,4 +128,24 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     }
     println!("Initialised Machine {} ({})", machine.name, machine.id);
     Ok(())
+}
+
+async fn wait_direct_participating(
+    connection: &crate::context::Connection,
+) -> Result<Client, Error> {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if let Ok(mut client) = helpers::connect_direct(connection).await
+                && client
+                    .call::<op::Inspect>(InspectRequest::default(), None)
+                    .await
+                    .is_ok_and(|details| details.phase == LocalMachinePhase::Participating)
+            {
+                return client;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .map_err(|_| Error::usage("initial Machine did not become ready"))
 }
