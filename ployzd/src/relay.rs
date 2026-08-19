@@ -51,11 +51,7 @@ pub async fn hold_register(
                 let _ = ws.send(&RegisterRequest::pong(nonce)).await;
                 continue;
             }
-            let client = client.clone();
-            let service = service.clone();
-            tokio::spawn(async move {
-                serve_attach(client, message, service).await;
-            });
+            tokio::spawn(serve_attach(client.clone(), message, service.clone()));
         }
     });
     Ok(RegisterHold { task })
