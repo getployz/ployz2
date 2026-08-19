@@ -2,7 +2,9 @@
 
 Copy-paste `ployz init --cloud` founds or joins through Cloud. Cloud CAS-claims an empty Relay List so only one Machine Initialize; waiters get `not_yet` until List is live, then join. Machine Subnets are assigned by the Machine named in `cluster.allocator`. A stolen Allocator row must be 5s old before it may Register; a solo founder writes that row already 5s in the past so the first joins are immediate. A Machine that sees more than three Machines, all uncontactable, refuses admit and steal. Cloud Dials any held Register and that Machine forwards `Register` to the Allocator.
 
-Rejected: `ployz join`, Cloud IPAM, steal on Membership Observation Down, min-ID Register target, reclaiming a Founding Claim without rotating the Pairing Credential.
+`--cloud-url` is the enroll API host (`ployz.dev`). It is not the Cloud Relay. Enroll `initialize` and `join` both return Cloud Pairing: the Relay endpoint plus Pairing Credential. That is what the Machine dials for Relay Register. The Dial Credential never leaves Cloud.
+
+Rejected: `ployz join`, Cloud IPAM, steal on Membership Observation Down, min-ID Register target, reclaiming a Founding Claim without rotating the Pairing Credential, inferring the Relay URL from `--cloud-url`.
 
 ## Paste
 
@@ -10,7 +12,7 @@ Rejected: `ployz join`, Cloud IPAM, steal on Membership Observation Down, min-ID
 curl -fsSL https://ployz.sh | sh && sudo ployz init --cloud 'pmet_…'
 ```
 
-`--cloud-url` is optional and defaults to `ployz.dev` (HTTPS). `ployz machine init HOST` and `ployz machine add HOST` stay SSH break-glass.
+`--cloud-url` is optional and defaults to `ployz.dev` (HTTPS). That host serves enroll. The Cloud Relay URL comes back in Cloud Pairing, not from this flag. `ployz machine init HOST` and `ployz machine add HOST` stay SSH break-glass.
 
 ## CLI
 
@@ -42,10 +44,18 @@ body: { name, publicKey, advertisedEndpoints, publicIp }
 On each POST, in this order:
 
 1. Relay List for this pairing nonempty → `live` if needed, then `join` (never Initialize).
-2. `founding`, same public key, claim younger than 5 minutes → `initialize` with the **same** pairing (crash retry).
+2. `founding`, same public key, claim younger than 5 minutes → `initialize` with the **same** Cloud Pairing (crash retry).
 3. `founding`, claim younger than 5 minutes → `{ kind: "not_yet", retryAfter: 2 }`.
-4. `founding`, claim older than 5 minutes, List still empty → **revoke that Pairing Credential**, CAS `founding` → `open`, then this POST takes the new claim: `{ kind: "initialize", pairing }` with a **new** pairing.
+4. `founding`, claim older than 5 minutes, List still empty → **revoke that Pairing Credential**, CAS `founding` → `open`, then this POST takes the new claim: `{ kind: "initialize", pairing }` with a **new** Pairing Credential (same Relay endpoint unless Cloud moved PoPs).
 5. `open` → CAS `open` → `founding` (5-minute TTL) → `{ kind: "initialize", pairing }`.
+
+`pairing` on enroll responses is Cloud Pairing:
+
+```
+{ "relayUrl": "https://relay.ployz.dev", "secret": "<Pairing Credential>" }
+```
+
+The Machine Relay-Registers to `relayUrl` with that secret as the Register bearer and its Machine ID as hello. It never receives the Dial Credential. Cloud List/Dial/Revoke keep using `@ployz/sdk`: `listHeld(relayUrl, dial, pairing)` then `connect({ relayUrl, bearer: dial, pairing, machineId })`.
 
 Reclaim without rotating pairing is two Clusters on one tenant. A late first founder fails Relay Register (revoked), retries enroll, and `join`s the winner (or wins the next claim). If it already Initialized locally, `Reset` then POST again.
 
@@ -56,7 +66,7 @@ POST /api/enroll/<token>/callback
 body: { machineId }
 ```
 
-`join` means Cloud Dials any held Register, that Machine forwards `Register` with the POST body, Cloud returns `{ kind: "join", pairing, registration }`. If every Dial/`Register` fails with a retryable Allocator error, respond `not_yet`.
+`join` means Cloud `listHeld` then Dials any held Register, that Machine forwards Machine RPC `Register` with the POST body, Cloud returns `{ kind: "join", pairing, registration }`. `pairing` is the same Cloud Pairing shape so the joiner can Relay-Register after `Join`. If every Dial/Machine `Register` fails with a retryable Allocator error, respond `not_yet`.
 
 ## Local `initialize`
 
@@ -64,10 +74,12 @@ Fixes the UT-049 stub for the Cloud path.
 
 1. `Inspect`. If not uninitialized, confirm and `Reset` (`--yes` skips confirm).
 2. POST enroll until `initialize` or `join`.
-3. **`initialize`:** `Initialize` with name, network, endpoints, optional pairing. Restart. On Corrosion up: publish machine, `cluster.network`, and `cluster.allocator = me` with `updated_at = now - 5s`. Relay Register. Callback. Optional hosted DNS and Caddy.
-4. **`join`:** `Join` with the returned `registration` (and persist pairing). Catch-up. Relay Register.
+3. **`initialize`:** `Initialize` with name, network, endpoints, and Cloud Pairing (`relayUrl` + Pairing Credential). Restart. On Corrosion up: publish machine, `cluster.network`, and `cluster.allocator = me` with `updated_at = now - 5s`. Relay Register to `relayUrl`. Callback. Optional hosted DNS and Caddy.
+4. **`join`:** `Join` with the returned `registration` and persist the returned Cloud Pairing. Catch-up. Relay Register to that `relayUrl`.
 
 Pairing is stored with the local record so every participating Machine dials Relay. `InitializeRequest` / `JoinRequest` carry optional Cloud Pairing.
+
+SSH `machine init HOST` is unchanged: one operator, one destination, no Cloud lock. After it is participating it still writes the Allocator row the same way (backdated), so a later Cloud join can forward `Register` to it.
 
 A Machine that already Initialized and then hits a revoked pairing (Founding Claim expired under it) must `Reset` and POST enroll again: `join` if List is live, else it may win the next claim.
 
@@ -123,6 +135,8 @@ If the key is missing: a participating Machine that is not isolation-locked may 
 
 - No `ployz join`, no `machine add --enroll`.
 - No Cloud IPAM. Cloud never assigns `/24`s.
+- No inferring the Cloud Relay URL from `--cloud-url`. Enroll returns it.
+- No Dial Credential on the Machine.
 - No long-poll. `not_yet` + retry.
 - No majority quorum. 50/50 mesh split can still dual-allocate.
 - Machine Subnet may still overlap (CONTEXT). This makes the copy-paste happy path and same-partition failover not overlap.
