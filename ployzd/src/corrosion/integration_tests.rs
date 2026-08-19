@@ -165,6 +165,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
             },
             wireguard_private_key: WireGuardPrivateKey::generate(),
             wireguard_mtu: None,
+            cloud_pairing: None,
             selected_endpoints: BTreeMap::new(),
         },
     );
@@ -208,6 +209,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
             },
             wireguard_private_key: WireGuardPrivateKey::generate(),
             wireguard_mtu: None,
+            cloud_pairing: None,
             selected_endpoints: BTreeMap::new(),
         },
     );
