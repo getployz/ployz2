@@ -2,7 +2,10 @@
 
 use std::{net::IpAddr, time::Duration};
 
-use ployz_core::{AdvertisedEndpoint, CloudPairing, MachineName, Registered, WireGuardPublicKey};
+use ployz_core::{
+    AdvertisedEndpoint, CloudEnrollToken, CloudPairing, MachineName, MachineToken, Registered,
+    WireGuardPublicKey,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -19,18 +22,27 @@ pub(crate) enum Error {
     Status { status: u16, body: String },
     #[error("enroll initialize is not implemented")]
     Initialize,
-    #[error("unexpected enroll response kind {0:?}")]
-    UnexpectedKind(String),
 }
 
 /// Identity POSTed to `POST /api/enroll/<token>`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EnrollIdentity {
-    pub name: MachineName,
-    pub public_key: WireGuardPublicKey,
-    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
-    pub public_ip: Option<IpAddr>,
+    name: MachineName,
+    public_key: WireGuardPublicKey,
+    advertised_endpoints: Vec<AdvertisedEndpoint>,
+    public_ip: Option<IpAddr>,
+}
+
+impl EnrollIdentity {
+    pub(crate) fn from_machine_token(name: MachineName, token: &MachineToken) -> Self {
+        Self {
+            name,
+            public_key: token.public_key,
+            advertised_endpoints: token.advertised_endpoints.clone(),
+            public_ip: token.public_ip,
+        }
+    }
 }
 
 /// Successful enroll `join` payload.
@@ -48,25 +60,36 @@ pub(crate) enum Response {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EnrollWire {
-    kind: String,
-    pairing: Option<CloudPairing>,
-    registration: Option<Registered>,
-    #[serde(default, rename = "retryAfter")]
-    retry_after: Option<u64>,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum EnrollWire {
+    Join {
+        pairing: CloudPairing,
+        registration: Box<Registered>,
+    },
+    NotYet {
+        #[serde(default, rename = "retryAfter")]
+        retry_after: Option<u64>,
+    },
+    Initialize {
+        #[serde(default)]
+        #[expect(
+            dead_code,
+            reason = "pairing is accepted then ignored; #412 owns Initialize"
+        )]
+        pairing: Option<CloudPairing>,
+    },
 }
 
 /// Enroll URL: host without a scheme is HTTPS.
 #[must_use]
-pub(crate) fn enroll_url(cloud_url: &str, token: &str) -> String {
+pub(crate) fn enroll_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
     let host = cloud_url.trim().trim_end_matches('/');
     let origin = if host.contains("://") {
         host.to_owned()
     } else {
         format!("https://{host}")
     };
-    format!("{origin}/api/enroll/{token}")
+    format!("{origin}/api/enroll/{}", token.as_str())
 }
 
 /// POST identity until Cloud returns `join` or a terminal failure.
@@ -104,32 +127,24 @@ async fn post_once(
 }
 
 fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
-    let wire: EnrollWire = serde_json::from_slice(bytes)?;
-    match wire.kind.as_str() {
-        "join" => {
-            let Some(pairing) = wire.pairing else {
-                return Err(Error::UnexpectedKind("join without pairing".into()));
-            };
-            let Some(registration) = wire.registration else {
-                return Err(Error::UnexpectedKind("join without registration".into()));
-            };
-            Ok(Response::Join(Box::new(Join {
-                pairing,
-                registration,
-            })))
-        }
-        "not_yet" => Ok(Response::NotYet {
-            retry_after: Duration::from_secs(wire.retry_after.unwrap_or(DEFAULT_RETRY_AFTER)),
+    match serde_json::from_slice::<EnrollWire>(bytes)? {
+        EnrollWire::Join {
+            pairing,
+            registration,
+        } => Ok(Response::Join(Box::new(Join {
+            pairing,
+            registration: *registration,
+        }))),
+        EnrollWire::NotYet { retry_after } => Ok(Response::NotYet {
+            retry_after: Duration::from_secs(retry_after.unwrap_or(DEFAULT_RETRY_AFTER)),
         }),
-        "initialize" => Err(Error::Initialize),
-        other => Err(Error::UnexpectedKind(other.to_owned())),
+        EnrollWire::Initialize { .. } => Err(Error::Initialize),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use ployz_core::{Machine, MachineId, MachineName, PairingCredential, Registered};
-    use serde_json::json;
 
     use super::*;
 
@@ -158,21 +173,25 @@ mod tests {
         }
     }
 
+    fn token() -> CloudEnrollToken {
+        CloudEnrollToken::parse("pmet_test").unwrap()
+    }
+
     #[test]
     fn host_without_scheme_is_https_under_ployz_dev() {
         assert_eq!(
-            enroll_url("ployz.dev", "pmet_test"),
+            enroll_url("ployz.dev", &token()),
             "https://ployz.dev/api/enroll/pmet_test"
         );
         assert_eq!(
-            enroll_url("http://127.0.0.1:9", "pmet_test"),
+            enroll_url("http://127.0.0.1:9", &token()),
             "http://127.0.0.1:9/api/enroll/pmet_test"
         );
     }
 
     #[test]
     fn join_payload_is_pairing_plus_registration() {
-        let value = json!({
+        let value = serde_json::json!({
             "kind": "join",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",
@@ -191,7 +210,7 @@ mod tests {
 
     #[test]
     fn pairing_with_a_dial_field_is_rejected() {
-        let value = json!({
+        let value = serde_json::json!({
             "kind": "join",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",
@@ -206,7 +225,7 @@ mod tests {
 
     #[test]
     fn top_level_dial_is_rejected() {
-        let value = json!({
+        let value = serde_json::json!({
             "kind": "join",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",
@@ -221,7 +240,7 @@ mod tests {
 
     #[test]
     fn initialize_is_refused() {
-        let value = json!({
+        let value = serde_json::json!({
             "kind": "initialize",
             "pairing": {
                 "relayUrl": "https://relay.example.invalid",

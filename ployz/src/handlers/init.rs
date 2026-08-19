@@ -1,9 +1,11 @@
+//! `ployz init --cloud`: enroll `join` on this Machine.
+
 use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::{
-    InspectRequest, JoinRequest, LocalMachinePhase, MachineName, MachineTokenRequest, ResetRequest,
-    op,
+    CloudEnrollToken, InspectRequest, JoinRequest, LocalMachinePhase, MachineName,
+    MachineTokenRequest, ResetRequest, op,
 };
 
 use super::{Error, connect_client, leaf_matches, required, runtime};
@@ -11,7 +13,7 @@ use crate::cloud_enroll::{self, EnrollIdentity};
 
 pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let token = required(matches, "cloud")?;
+    let token = CloudEnrollToken::parse(required(matches, "cloud")?)?;
     let cloud_url = matches
         .get_one::<String>("cloud-url")
         .expect("cloud-url has a default");
@@ -34,7 +36,12 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
                 "Reset the Machine before joining this Cluster?",
             )?;
             client.call::<op::Reset>(ResetRequest {}, None).await?;
-            client = wait_uninitialized(matches).await?;
+            client = wait_phase(
+                matches,
+                LocalMachinePhase::Uninitialized,
+                "Machine did not reset",
+            )
+            .await?;
         }
         let machine_token = client
             .call::<op::MachineToken>(MachineTokenRequest::default(), None)
@@ -42,12 +49,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
         let name = crate::handlers::machine::machine_name(requested_name, &machine_token)?;
         let join = cloud_enroll::enroll_join(
             &url,
-            &EnrollIdentity {
-                name,
-                public_key: machine_token.public_key,
-                advertised_endpoints: machine_token.advertised_endpoints,
-                public_ip: machine_token.public_ip,
-            },
+            &EnrollIdentity::from_machine_token(name, &machine_token),
         )
         .await?;
         let assigned = join.registration.assigned_machine.clone();
@@ -61,29 +63,15 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
                 None,
             )
             .await?;
-        wait_participating(matches).await?;
+        wait_phase(
+            matches,
+            LocalMachinePhase::Participating,
+            "joined Machine did not become ready",
+        )
+        .await?;
         println!("Joined Machine {} ({})", assigned.name, assigned.id);
         Ok(())
     })
-}
-
-async fn wait_uninitialized(matches: &ArgMatches) -> Result<crate::connect::Client, Error> {
-    wait_phase(
-        matches,
-        LocalMachinePhase::Uninitialized,
-        "Machine did not reset",
-    )
-    .await
-}
-
-async fn wait_participating(matches: &ArgMatches) -> Result<(), Error> {
-    wait_phase(
-        matches,
-        LocalMachinePhase::Participating,
-        "joined Machine did not become ready",
-    )
-    .await
-    .map(drop)
 }
 
 async fn wait_phase(

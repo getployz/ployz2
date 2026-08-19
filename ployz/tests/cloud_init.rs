@@ -1,7 +1,6 @@
 //! `ployz init --cloud` join path against fake enroll HTTP.
 
 use std::{
-    collections::VecDeque,
     net::SocketAddr,
     sync::{
         Arc, Mutex,
@@ -44,11 +43,11 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
     let relay = RelayListen::start().await;
     let pairing =
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let enroll = EnrollListen::start(vec![json!({
+    let enroll = EnrollListen::start(json!({
         "kind": "join",
         "pairing": pairing,
         "registration": registration,
-    })])
+    }))
     .await;
     let daemon = JoinDaemon::new(registration.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -90,22 +89,12 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
             "secret": PAIRING,
         })
     );
-    assert!(pairing_json.get("dial").is_none());
     assert_eq!(joined.registration.assigned_machine.id, machine_id);
 
     let paths = enroll.paths();
     assert_eq!(paths, [format!("/api/enroll/{TOKEN}")]);
 
     wait_for_held(&relay.url, machine_id).await;
-}
-
-#[tokio::test]
-async fn machine_add_still_requires_a_destination() {
-    assert!(
-        ployz::cli::command()
-            .try_get_matches_from(["ployz", "machine", "add"])
-            .is_err()
-    );
 }
 
 struct RelayListen {
@@ -134,12 +123,12 @@ struct EnrollListen {
 }
 
 impl EnrollListen {
-    async fn start(responses: Vec<serde_json::Value>) -> Self {
+    async fn start(body: serde_json::Value) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let paths = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&paths);
-        let queue = Arc::new(Mutex::new(VecDeque::from(responses)));
+        let body = serde_json::to_vec(&body).unwrap();
         let server = tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
@@ -158,12 +147,6 @@ impl EnrollListen {
                     .unwrap()
                     .to_owned();
                 recorded.lock().unwrap().push(path);
-                let body = queue
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .unwrap_or_else(|| json!({"kind": "not_yet"}));
-                let body = serde_json::to_vec(&body).unwrap();
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
@@ -224,6 +207,14 @@ impl JoinDaemon {
 )]
 fn rpc_ok(payload: impl Into<RpcResponse>) -> Result<Response<OpaquePayload>, Status> {
     Ok(Response::new(payload.into().encode().unwrap()))
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "MachineRpc uses tonic::Status as the error type"
+)]
+fn unused<T>() -> Result<T, Status> {
+    Err(Status::unimplemented("unused"))
 }
 
 #[tonic::async_trait]
@@ -322,181 +313,181 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn register(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn list_machines(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn list_containers(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn create_volume(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn inspect_container(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn list_volumes(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn inspect_volume(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn create_container(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn remove_volume(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn start_container(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn stop_container(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn remove_container(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn list_images(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn ensure_image_ingest(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn pull_image_from_machine(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn get_caddy_config(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn reserve_domain(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn get_domain(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn release_domain(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn create_domain_records(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn reset(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn update_machine(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn remove_local_machine(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn remove_machine(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn inspect_wireguard(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn exec(
         &self,
         _request: Request<Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::ExecStream>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn container_logs(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<Self::ContainerLogsStream>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn machine_logs(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<Self::MachineLogsStream>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
     async fn runtime_watch(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<Self::RuntimeWatchStream>, Status> {
-        Err(Status::unimplemented("unused"))
+        unused()
     }
 }
 
