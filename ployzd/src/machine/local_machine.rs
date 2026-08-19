@@ -321,6 +321,7 @@ impl LocalMachine {
             return Err(Error::NotParticipating);
         }
         let replicated = self.replicated()?;
+        let publication = replicated.machine_publication().await;
         let snapshot = replicated.machines().await?;
         if snapshot
             .observations
@@ -343,8 +344,8 @@ impl LocalMachine {
             advertised_endpoints: request.advertised_endpoints,
             runtime: request.runtime,
         };
-        // TODO(UT-140): the imperative registration is deliberately unfenced and has no rollback.
-        replicated.publish_local_machine(&assigned_machine).await?;
+        // TODO(UT-140): cross-process registration stays unfenced and has no rollback.
+        publication.publish(&assigned_machine).await?;
         let target_versions = replicated.version().await?;
         let visible_peers = replicated
             .machines()
