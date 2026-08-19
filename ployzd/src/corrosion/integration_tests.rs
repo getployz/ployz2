@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     AdminClient, ApiClient, CertificateMaterial, CorrosionConfig, ReplicatedStore, Statement,
-    run_machine_publisher, wait_for_catch_up,
+    fake_cluster, run_machine_publisher, wait_for_catch_up,
 };
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachineError, LocalMachineRecord, LocalMachineStore,
@@ -493,25 +493,20 @@ async fn register_admits_only_a_quiet_self_allocator() {
         Err(LocalMachineError::NotAllocator)
     ));
 
-    upsert_allocator(
-        &store,
-        &MachineId::random(),
-        "datetime('now', '-5 seconds')",
-    )
-    .await;
+    fake_cluster::set_allocator(&store, &MachineId::random(), true).await;
     assert!(matches!(
         local.register(request.clone()).await,
         Err(LocalMachineError::NotAllocator)
     ));
 
-    upsert_allocator(&store, &founder.id, "datetime('now')").await;
+    fake_cluster::set_allocator(&store, &founder.id, false).await;
     assert!(matches!(
         local.register(request.clone()).await,
         Err(LocalMachineError::AllocatorNotQuiet)
     ));
     assert!(store.machines().await.unwrap().observations.is_empty());
 
-    upsert_allocator(&store, &founder.id, "datetime('now', '-5 seconds')").await;
+    fake_cluster::set_allocator(&store, &founder.id, true).await;
     let registered = local.register(request).await.unwrap();
     assert_eq!(
         registered.assigned_machine.subnet,
@@ -599,19 +594,6 @@ fn register_request(name: &str, seed: u8) -> RegisterRequest {
         )],
         runtime: Default::default(),
     }
-}
-
-async fn upsert_allocator(store: &ReplicatedStore, id: &MachineId, updated_at: &str) {
-    store
-        .api()
-        .execute([Statement::new(
-            format!(
-                "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, {updated_at}) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
-            ),
-            [json!(id)],
-        )])
-        .await
-        .unwrap();
 }
 
 fn hex_bytes(actor: &str) -> Vec<u8> {

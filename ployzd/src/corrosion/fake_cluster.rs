@@ -12,6 +12,9 @@ use super::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR};
 use super::{ApiClient, ReplicatedStore};
 use ployz_core::MachineId;
 
+const UPSERT_ALLOCATOR_QUIET: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now', '-5 seconds')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
+const UPSERT_ALLOCATOR_NOW: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
+
 #[derive(Clone)]
 struct ClusterKv {
     network: String,
@@ -95,17 +98,17 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 let id = text_param(&statement.params, 0).to_owned();
                 kv.allocator.get_or_insert((id, true));
             }
+            UPSERT_ALLOCATOR_QUIET => {
+                kv.allocator = Some((text_param(&statement.params, 0).to_owned(), true));
+            }
+            UPSERT_ALLOCATOR_NOW => {
+                kv.allocator = Some((text_param(&statement.params, 0).to_owned(), false));
+            }
             query if query.starts_with("INSERT INTO machines (id, info,") => {
                 kv.machines.insert(
                     text_param(&statement.params, 0).to_owned(),
                     text_param(&statement.params, 1).to_owned(),
                 );
-            }
-            query if query.contains("VALUES ('allocator'") => {
-                kv.allocator = Some((
-                    text_param(&statement.params, 0).to_owned(),
-                    query.contains("-5 seconds"),
-                ));
             }
             query => panic!("unexpected statement {query}"),
         }
@@ -135,19 +138,14 @@ fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>>) -> Bytes
 }
 
 pub(crate) async fn set_allocator(store: &ReplicatedStore, id: &MachineId, quiet: bool) {
-    let updated_at = if quiet {
-        "datetime('now', '-5 seconds')"
+    let sql = if quiet {
+        UPSERT_ALLOCATOR_QUIET
     } else {
-        "datetime('now')"
+        UPSERT_ALLOCATOR_NOW
     };
     store
         .api()
-        .execute([super::Statement::new(
-            format!(
-                "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, {updated_at}) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
-            ),
-            [json!(id)],
-        )])
+        .execute([super::Statement::new(sql, [json!(id)])])
         .await
         .unwrap();
 }
