@@ -9,8 +9,8 @@ use ployz_core::{
     CaddyConfig, CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerList,
     ContractDescription, Domain, DomainRecords, ImageIngestReason, ImagePulled, LocalMachinePhase,
     LogMetadata, LogOrigin, MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload,
-    PROTOCOL_MAJOR, RegisterRequest, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, VolumeList, VolumeRemoved, op,
+    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList,
+    VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -30,11 +30,6 @@ use crate::{
 /// Metadata on a forwarded Machine-to-Machine Register. The named Allocator
 /// admits locally and does not forward again.
 pub(crate) const REGISTER_FORWARDED_METADATA: &str = "x-ployz-register-forwarded";
-
-enum RegisterHop {
-    Origin,
-    Forwarded,
-}
 
 #[derive(Clone)]
 pub struct MachineService {
@@ -130,7 +125,7 @@ impl MachineService {
 
     async fn forward_register(
         &self,
-        request: RegisterRequest,
+        payload: OpaquePayload,
     ) -> Result<Response<OpaquePayload>, Status> {
         let replicated = match self.local.replicated() {
             Ok(store) => store,
@@ -141,43 +136,30 @@ impl MachineService {
             Ok(None) => return local_error(LocalMachineError::NotAllocator),
             Err(error) => return local_error(error.into()),
         };
-        let target = match replicated.machine(allocator.as_str()).await {
-            Ok(Some(machine)) => machine,
-            Ok(None) => return respond(unavailable("Allocator is unreachable")),
+        let Some(target) = (match replicated.machine(allocator.as_str()).await {
+            Ok(machine) => machine,
             Err(error) => return local_error(error.into()),
+        }) else {
+            return allocator_unreachable();
         };
         let endpoint = Endpoint::from_shared(format!(
             "http://[{}]:{}",
             target.management_address.0, self.machine_api_port
         ))
-        .expect("Allocator management address forms a URL")
+        .map_err(|error| Status::internal(error.to_string()))?
         .connect_timeout(Duration::from_secs(10));
         let mut client = MachineRpcClient::new(match endpoint.connect().await {
             Ok(channel) => channel,
-            Err(_) => return respond(unavailable("Allocator is unreachable")),
+            Err(_) => return allocator_unreachable(),
         });
-        let mut outbound = Request::new(match op::Register::into_request(request).encode() {
-            Ok(payload) => payload,
-            Err(error) => return Err(Status::internal(error.to_string())),
-        });
+        let mut outbound = Request::new(payload);
         outbound.metadata_mut().insert(
             REGISTER_FORWARDED_METADATA,
             "1".parse().expect("ASCII metadata"),
         );
-        let payload = match client.register(outbound).await {
-            Ok(response) => response.into_inner(),
-            Err(_) => return respond(unavailable("Allocator is unreachable")),
-        };
-        let response = match payload.decode_response() {
-            Ok(response) => response,
-            Err(error) => return Err(Status::internal(error.to_string())),
-        };
-        if let RpcResponseBody::Error(error) = &response.body {
-            return respond(error.clone());
-        }
-        match response.decode::<op::Register>() {
-            Ok(registered) => respond(registered),
-            Err(error) => Err(Status::internal(error.to_string())),
+        match client.register(outbound).await {
+            Ok(response) => Ok(response),
+            Err(_) => allocator_unreachable(),
         }
     }
 }
@@ -243,22 +225,21 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let hop = if request
+        let forwarded = request
             .metadata()
             .get(REGISTER_FORWARDED_METADATA)
-            .is_some()
-        {
-            RegisterHop::Forwarded
-        } else {
-            RegisterHop::Origin
-        };
-        let decoded = expect::<op::Register>(request)?;
-        match hop {
-            RegisterHop::Forwarded => finish(self.local.register(decoded).await),
-            RegisterHop::Origin => match self.local.register(decoded.clone()).await {
-                Err(LocalMachineError::NotAllocator) => self.forward_register(decoded).await,
-                other => finish(other),
-            },
+            .is_some();
+        let payload = request.into_inner();
+        let decoded = op::Register::from_request_body(
+            payload.decode_request().map_err(invalid_request)?.body,
+        )
+        .map_err(invalid_request)?;
+        if forwarded {
+            return finish(self.local.register(decoded).await);
+        }
+        match self.local.register(decoded).await {
+            Err(LocalMachineError::NotAllocator) => self.forward_register(payload).await,
+            other => finish(other),
         }
     }
 
@@ -808,6 +789,11 @@ fn unavailable(message: &str) -> RpcError {
         message: message.into(),
         details: Value::Null,
     }
+}
+
+#[allow(clippy::result_large_err)]
+fn allocator_unreachable() -> Result<Response<OpaquePayload>, Status> {
+    respond(unavailable("Allocator is unreachable"))
 }
 
 fn hosted_dns_error(error: crate::hosted_dns::Error) -> RpcError {

@@ -182,13 +182,10 @@ async fn contact_forwards_register_and_returns_the_allocator_payload() {
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(
         Server::builder()
-            .add_service(MachineRpcServer::new(MachineService::with_cluster(
+            .add_service(MachineRpcServer::new(machine_service(
                 allocator_store,
-                watch::channel(false).0,
-                Some((
-                    allocator_replica.clone(),
-                    AdminClient::new("/no/such/ployz-admin.sock"),
-                )),
+                allocator_replica.clone(),
+                None,
             )))
             .serve_with_incoming(TcpListenerStream::new(listener)),
     );
@@ -203,15 +200,7 @@ async fn contact_forwards_register_and_returns_the_allocator_payload() {
         .publish_founder_allocator(&reachable.id)
         .await
         .unwrap();
-    let contact = MachineService::with_cluster(
-        contact_store,
-        watch::channel(false).0,
-        Some((
-            contact_replica.clone(),
-            AdminClient::new("/no/such/ployz-admin.sock"),
-        )),
-    )
-    .with_machine_api_port(port);
+    let contact = machine_service(contact_store, contact_replica.clone(), Some(port));
 
     let registered = rpc_register(
         &contact,
@@ -265,15 +254,7 @@ async fn forwarded_register_does_not_admit_or_forward_when_kv_names_another_mach
         .publish_founder_allocator(&named.id)
         .await
         .unwrap();
-    let local = MachineService::with_cluster(
-        store,
-        watch::channel(false).0,
-        Some((
-            replicated.clone(),
-            AdminClient::new("/no/such/ployz-admin.sock"),
-        )),
-    )
-    .with_machine_api_port(1);
+    let local = machine_service(store, replicated.clone(), Some(1));
 
     let error = rpc_register(&local, request("joiner", WireGuardPublicKey([7; 32])), true)
         .await
@@ -315,15 +296,7 @@ async fn unreachable_allocator_does_not_steal() {
         .publish_founder_allocator(&named.id)
         .await
         .unwrap();
-    let local = MachineService::with_cluster(
-        store,
-        watch::channel(false).0,
-        Some((
-            replicated.clone(),
-            AdminClient::new("/no/such/ployz-admin.sock"),
-        )),
-    )
-    .with_machine_api_port(1);
+    let local = machine_service(store, replicated.clone(), Some(1));
 
     let error = rpc_register(
         &local,
@@ -349,14 +322,7 @@ async fn forwarded_rpc_metadata_admits_locally_only() {
         .publish_founder_allocator(&founder.id)
         .await
         .unwrap();
-    let service = MachineService::with_cluster(
-        store,
-        watch::channel(false).0,
-        Some((
-            replicated.clone(),
-            AdminClient::new("/no/such/ployz-admin.sock"),
-        )),
-    );
+    let service = machine_service(store, replicated.clone(), None);
     let registered = rpc_register(
         &service,
         request("joiner", WireGuardPublicKey([7; 32])),
@@ -416,6 +382,22 @@ fn open_store(prefix: &str) -> (std::path::PathBuf, Arc<Mutex<LocalMachineStore>
         )
         .unwrap();
     (data_dir, Arc::new(Mutex::new(store)), founder)
+}
+
+fn machine_service(
+    store: Arc<Mutex<LocalMachineStore>>,
+    replicated: ReplicatedStore,
+    port: Option<u16>,
+) -> MachineService {
+    let service = MachineService::with_cluster(
+        store,
+        watch::channel(false).0,
+        Some((replicated, AdminClient::new("/no/such/ployz-admin.sock"))),
+    );
+    match port {
+        Some(port) => service.with_machine_api_port(port),
+        None => service,
+    }
 }
 
 fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterRequest {
