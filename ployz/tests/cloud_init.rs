@@ -417,14 +417,11 @@ impl EnrollListen {
                     .to_owned();
                 recorded_paths.lock().unwrap().push(path);
                 recorded_posts.lock().unwrap().push(enroll_json_body(raw));
-                let body = {
-                    let mut remaining = remaining.lock().unwrap();
-                    let body = remaining.pop_front().expect("scripted enroll has a body");
-                    if remaining.is_empty() {
-                        remaining.push_back(body.clone());
-                    }
-                    body
-                };
+                let body = remaining
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("scripted enroll has a body");
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
