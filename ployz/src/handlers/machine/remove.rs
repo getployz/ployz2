@@ -90,14 +90,10 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             context.drop_machine(&selected.id);
             config.save()?;
         }
-        if let Err(error) =
-            crate::dns::update_records_after_removal(&mut client, machines, &selected.id).await
-        {
-            return Err(Error::warned(
-                "hosted DNS refresh failed after removing the Machine",
-                error,
-            ));
-        }
+        Error::best_effort(
+            "hosted DNS refresh failed after removing the Machine",
+            crate::dns::update_records_after_removal(&mut client, machines, &selected.id).await,
+        )?;
         println!("Removed Machine {} ({})", selected.name, selected.id);
         Ok::<_, Error>(())
     })

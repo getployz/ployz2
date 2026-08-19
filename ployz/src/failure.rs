@@ -64,8 +64,22 @@ impl Failure {
     }
 
     /// One product line for a follow-on failure. `terminate` prints it once.
+    ///
+    /// Returning this from a handler still fails the command. Best-effort
+    /// follow-on should [`Self::best_effort`] instead.
     pub fn warned(context: impl fmt::Display, cause: impl fmt::Display) -> Self {
         Self::usage(format!("WARNING: {context}: {cause}."))
+    }
+
+    /// Print a follow-on failure as a warning and keep command success.
+    pub fn best_effort(
+        context: impl fmt::Display,
+        result: Result<(), impl fmt::Display>,
+    ) -> Result<(), Self> {
+        if let Err(cause) = result {
+            eprintln!("{}", Self::warned(context, cause));
+        }
+        Ok(())
     }
 }
 
@@ -351,6 +365,24 @@ mod tests {
         );
         assert_eq!(add.to_string().matches(cause).count(), 1);
         assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn best_effort_follow_on_does_not_fail_the_command() {
+        let cause = "Machine RPC returned: Machine is not participating";
+        let remove = Failure::best_effort(
+            "hosted DNS refresh failed after removing the Machine",
+            Err(cause),
+        );
+        let add = Failure::best_effort(
+            "hosted DNS refresh failed after adding the Machine",
+            Err(cause),
+        );
+        assert!(remove.is_ok());
+        assert!(add.is_ok());
+        assert_eq!(terminate(remove), ExitCode::SUCCESS);
+        assert_eq!(terminate(add), ExitCode::SUCCESS);
+        assert!(Failure::best_effort("unused", Ok::<(), &str>(())).is_ok());
     }
 
     #[test]
