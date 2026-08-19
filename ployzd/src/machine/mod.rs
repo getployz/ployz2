@@ -26,7 +26,10 @@ use crate::network::{allocate_machine_subnet, management_address};
 mod local_machine;
 
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
-pub(crate) use local_machine::{REGISTER_FORWARDED_METADATA, RuntimeWatchTelemetry};
+pub(crate) use local_machine::{REGISTER_FORWARDED_METADATA, RegisterHop, RuntimeWatchTelemetry};
+
+#[cfg(test)]
+mod register_tests;
 
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
 const STATE_FILE_NAME: &str = "machine.json";

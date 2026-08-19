@@ -20,7 +20,8 @@ use crate::{
     docker::{ContainerRuntime, Error as DockerError, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        LocalMachine, LocalMachineError, LocalMachineStore, REGISTER_FORWARDED_METADATA, StoreError,
+        LocalMachine, LocalMachineError, LocalMachineStore, REGISTER_FORWARDED_METADATA,
+        RegisterHop, StoreError,
     },
     runtime_watch::serve_replicated_runtime_watch,
 };
@@ -170,16 +171,20 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let forwarded = request
+        let hop = if request
             .metadata()
             .get(REGISTER_FORWARDED_METADATA)
-            .is_some();
-        let request = expect::<op::Register>(request)?;
-        if forwarded {
-            finish(self.local.admit_register(request).await)
+            .is_some()
+        {
+            RegisterHop::Forwarded
         } else {
-            finish(self.local.register(request).await)
-        }
+            RegisterHop::Origin
+        };
+        finish(
+            self.local
+                .register_at(expect::<op::Register>(request)?, hop)
+                .await,
+        )
     }
 
     async fn join(
