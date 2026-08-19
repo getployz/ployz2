@@ -3,183 +3,299 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use axum::{Router, body::Bytes, extract::State, routing::post};
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineName, MachineRpc, MachineRpcServer,
-    MachineRuntime, ManagementAddress, RegisterRequest, WireGuardPublicKey,
+    MachineRuntime, MachineSubnet, ManagementAddress, RegisterRequest, WireGuardPublicKey, op,
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Request, transport::Server};
 
 use super::{
     LocalMachine, LocalMachineError, LocalMachineStore, REGISTER_FORWARDED_METADATA, RegisterHop,
+    StoreError,
 };
 use crate::{
-    corrosion::{AdminClient, ReplicatedStore},
+    corrosion::{AdminClient, ReplicatedStore, fake_cluster},
     rpc::MachineService,
 };
 
 #[tokio::test]
-async fn named_allocator_admits_register_locally() {
-    let (dir, store, founder) = participating("ployzd-register-local");
-    let replica = ClusterReplica::start(Some(founder.id), vec![founder.clone()]).await;
-    let local =
-        LocalMachine::new(store, tokio::sync::watch::channel(false).0).with_cluster(Some((
-            replica.store.clone(),
-            AdminClient::new("/no/such-admin.sock"),
-        )));
+async fn register_rejects_empty_endpoints_and_an_uninitialized_machine() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "ployzd-register-errors-{}",
+        ployz_core::MachineId::random()
+    ));
+    let local = LocalMachine::new(
+        Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap())),
+        watch::channel(false).0,
+    );
+    let empty = local
+        .register(RegisterRequest {
+            advertised_endpoints: Vec::new(),
+            ..request("peer", WireGuardPublicKey([1; 32]))
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        empty,
+        LocalMachineError::Store(StoreError::MissingEndpoints)
+    ));
+    let uninitialized = local
+        .register(request("peer", WireGuardPublicKey([1; 32])))
+        .await
+        .unwrap_err();
+    assert!(matches!(uninitialized, LocalMachineError::NotParticipating));
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
 
-    let registered = local.register(joiner_request()).await.unwrap();
-
-    assert_eq!(registered.assigned_machine.name.as_str(), "joiner");
+#[tokio::test]
+async fn register_assigns_a_free_subnet_publishes_and_rejects_duplicates() {
+    let (local, replicated, founder, data_dir, server) = participating().await;
+    let registered = local
+        .register(request("peer", WireGuardPublicKey([1; 32])))
+        .await
+        .unwrap();
     assert_eq!(
-        registered.assigned_machine.subnet.to_string(),
-        "10.210.1.0/24"
+        registered.assigned_machine.subnet,
+        "10.210.1.0/24".parse().unwrap()
     );
-    assert!(
-        replica
-            .machines
-            .lock()
+    assert_eq!(registered.visible_peers, vec![founder]);
+    assert_eq!(
+        replicated
+            .machine(registered.assigned_machine.id.as_str())
+            .await
             .unwrap()
-            .iter()
-            .any(|machine| machine.name.as_str() == "joiner")
+            .as_ref(),
+        Some(&registered.assigned_machine)
     );
-    let _ = std::fs::remove_dir_all(dir);
+
+    let duplicate_name = local
+        .register(request("peer", WireGuardPublicKey([2; 32])))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        duplicate_name,
+        LocalMachineError::DuplicateMachine
+    ));
+    let duplicate_key = local
+        .register(request("other", WireGuardPublicKey([1; 32])))
+        .await
+        .unwrap_err();
+    assert!(matches!(duplicate_key, LocalMachineError::DuplicateMachine));
+
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn overlapping_registers_on_one_daemon_get_distinct_machine_subnets() {
+    let (local, replicated, _founder, data_dir, server) = participating().await;
+    let publication = replicated.machine_publication().await;
+    let first = {
+        let local = local.clone();
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            started.send(()).unwrap();
+            local
+                .register(request("peer-a", WireGuardPublicKey([1; 32])))
+                .await
+        });
+        (task, waiting)
+    };
+    let second = {
+        let local = local.clone();
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            started.send(()).unwrap();
+            local
+                .register(request("peer-b", WireGuardPublicKey([2; 32])))
+                .await
+        });
+        (task, waiting)
+    };
+    first.1.await.unwrap();
+    second.1.await.unwrap();
+    tokio::task::yield_now().await;
+    assert!(
+        !first.0.is_finished() && !second.0.is_finished(),
+        "both Register calls must still be in flight"
+    );
+    drop(publication);
+    let first = first.0.await.unwrap().unwrap();
+    let second = second.0.await.unwrap().unwrap();
+    assert_ne!(
+        first.assigned_machine.subnet,
+        second.assigned_machine.subnet
+    );
+    let expected = [
+        MachineSubnet::parse("10.210.1.0/24").unwrap(),
+        MachineSubnet::parse("10.210.2.0/24").unwrap(),
+    ];
+    assert!(expected.contains(&first.assigned_machine.subnet));
+    assert!(expected.contains(&second.assigned_machine.subnet));
+
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
 }
 
 #[tokio::test]
 async fn missing_allocator_row_does_not_admit() {
-    let (dir, store, founder) = participating("ployzd-register-missing");
-    let replica = ClusterReplica::start(None, vec![founder]).await;
-    let local =
-        LocalMachine::new(store, tokio::sync::watch::channel(false).0).with_cluster(Some((
-            replica.store.clone(),
-            AdminClient::new("/no/such-admin.sock"),
-        )));
+    let (local, replicated, _founder, data_dir, server) = unclaimed().await;
 
-    let error = local.register(joiner_request()).await.unwrap_err();
+    let error = local
+        .register(request("joiner", WireGuardPublicKey([7; 32])))
+        .await
+        .unwrap_err();
 
     assert!(matches!(error, LocalMachineError::NotAllocator));
     assert!(
-        !replica
-            .machines
-            .lock()
+        !replicated
+            .machines()
+            .await
             .unwrap()
+            .observations
             .iter()
             .any(|machine| machine.name.as_str() == "joiner")
     );
-    let _ = std::fs::remove_dir_all(dir);
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
 }
 
 #[tokio::test]
 async fn contact_forwards_register_and_returns_the_allocator_payload() {
-    let (allocator_dir, allocator_store, mut allocator_machine) =
-        participating("ployzd-register-allocator");
+    let (allocator_dir, allocator_store, mut reachable) = open_store("ployzd-register-allocator");
+    let (allocator_replica, allocator_cluster) = fake_cluster::store().await;
+    reachable.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
+    allocator_replica
+        .publish_local_machine(&reachable)
+        .await
+        .unwrap();
+    allocator_replica
+        .publish_founder_allocator(&reachable.id)
+        .await
+        .unwrap();
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    allocator_machine.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
-    let allocator_replica =
-        ClusterReplica::start(Some(allocator_machine.id), vec![allocator_machine.clone()]).await;
-    let allocator = MachineService::with_cluster(
-        allocator_store,
-        tokio::sync::watch::channel(false).0,
-        Some((
-            allocator_replica.store.clone(),
-            AdminClient::new("/no/such-admin.sock"),
-        )),
-    );
     tokio::spawn(
         Server::builder()
-            .add_service(MachineRpcServer::new(allocator))
+            .add_service(MachineRpcServer::new(MachineService::with_cluster(
+                allocator_store,
+                watch::channel(false).0,
+                Some((
+                    allocator_replica.clone(),
+                    AdminClient::new("/no/such/ployz-admin.sock"),
+                )),
+            )))
             .serve_with_incoming(TcpListenerStream::new(listener)),
     );
 
-    let (contact_dir, contact_store, _contact) = participating("ployzd-register-contact");
-    let contact_replica =
-        ClusterReplica::start(Some(allocator_machine.id), vec![allocator_machine.clone()]).await;
-    let contact = LocalMachine::new(contact_store, tokio::sync::watch::channel(false).0)
+    let (contact_dir, contact_store, _contact) = open_store("ployzd-register-contact");
+    let (contact_replica, contact_cluster) = fake_cluster::store().await;
+    contact_replica
+        .publish_local_machine(&reachable)
+        .await
+        .unwrap();
+    contact_replica
+        .publish_founder_allocator(&reachable.id)
+        .await
+        .unwrap();
+    let contact = LocalMachine::new(contact_store, watch::channel(false).0)
         .with_cluster(Some((
-            contact_replica.store.clone(),
-            AdminClient::new("/no/such-admin.sock"),
+            contact_replica.clone(),
+            AdminClient::new("/no/such/ployz-admin.sock"),
         )))
         .with_machine_api_port(port);
 
-    let registered = contact.register(joiner_request()).await.unwrap();
+    let registered = contact
+        .register(request("joiner", WireGuardPublicKey([7; 32])))
+        .await
+        .unwrap();
 
     assert_eq!(registered.assigned_machine.name.as_str(), "joiner");
     assert_eq!(
-        registered.assigned_machine.subnet.to_string(),
-        "10.210.1.0/24"
+        registered.assigned_machine.subnet,
+        "10.210.1.0/24".parse().unwrap()
     );
     assert!(
         allocator_replica
-            .machines
-            .lock()
+            .machines()
+            .await
             .unwrap()
+            .observations
             .iter()
             .any(|machine| machine.name.as_str() == "joiner"),
         "Allocator admits locally"
     );
     assert!(
-        !contact_replica
-            .machines
-            .lock()
+        contact_replica
+            .machines()
+            .await
             .unwrap()
+            .observations
             .iter()
-            .any(|machine| machine.name.as_str() == "joiner"),
+            .all(|machine| machine.name.as_str() != "joiner"),
         "contact must not allocate locally"
     );
+    allocator_cluster.abort();
+    contact_cluster.abort();
+    drop(contact);
     let _ = std::fs::remove_dir_all(allocator_dir);
     let _ = std::fs::remove_dir_all(contact_dir);
 }
 
 #[tokio::test]
 async fn forwarded_register_does_not_admit_or_forward_when_kv_names_another_machine() {
-    let (dir, store, local_machine) = participating("ployzd-register-one-hop");
+    let (data_dir, store, local_machine) = open_store("ployzd-register-one-hop");
     let other = MachineId::parse("b".repeat(32)).unwrap();
-    let mut named = local_machine.clone();
+    let mut named = local_machine;
     named.id = other;
     named.management_address = ManagementAddress(Ipv6Addr::LOCALHOST);
-    let replica = ClusterReplica::start(Some(other), vec![named]).await;
-    let local = LocalMachine::new(store, tokio::sync::watch::channel(false).0)
+    let (replicated, server) = fake_cluster::store().await;
+    replicated.publish_local_machine(&named).await.unwrap();
+    replicated
+        .publish_founder_allocator(&named.id)
+        .await
+        .unwrap();
+    let local = LocalMachine::new(store, watch::channel(false).0)
         .with_cluster(Some((
-            replica.store.clone(),
-            AdminClient::new("/no/such-admin.sock"),
+            replicated.clone(),
+            AdminClient::new("/no/such/ployz-admin.sock"),
         )))
         .with_machine_api_port(1);
 
     let error = local
-        .register_at(joiner_request(), RegisterHop::Forwarded)
+        .register_at(
+            request("joiner", WireGuardPublicKey([7; 32])),
+            RegisterHop::Forwarded,
+        )
         .await
         .unwrap_err();
 
     assert!(matches!(error, LocalMachineError::NotAllocator));
     assert!(
-        !replica
-            .machines
-            .lock()
+        replicated
+            .machines()
+            .await
             .unwrap()
+            .observations
             .iter()
-            .any(|machine| machine.name.as_str() == "joiner")
+            .all(|machine| machine.name.as_str() != "joiner")
     );
-    assert!(
-        !replica
-            .executes
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|query| query.contains("allocator")),
-        "no steal"
-    );
-    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(replicated.allocator().await.unwrap(), Some(other));
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
 }
 
 #[tokio::test]
 async fn unreachable_allocator_does_not_steal() {
-    let (dir, store, _local_machine) = participating("ployzd-register-unreachable");
+    let (data_dir, store, _local_machine) = open_store("ployzd-register-unreachable");
     let allocator_id = MachineId::parse("c".repeat(32)).unwrap();
     let named = Machine {
         id: allocator_id,
@@ -191,43 +307,50 @@ async fn unreachable_allocator_does_not_steal() {
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.3:51820".parse().unwrap())],
         runtime: MachineRuntime::default(),
     };
-    let replica = ClusterReplica::start(Some(allocator_id), vec![named]).await;
-    let local = LocalMachine::new(store, tokio::sync::watch::channel(false).0)
+    let (replicated, server) = fake_cluster::store().await;
+    replicated.publish_local_machine(&named).await.unwrap();
+    replicated
+        .publish_founder_allocator(&named.id)
+        .await
+        .unwrap();
+    let local = LocalMachine::new(store, watch::channel(false).0)
         .with_cluster(Some((
-            replica.store.clone(),
-            AdminClient::new("/no/such-admin.sock"),
+            replicated.clone(),
+            AdminClient::new("/no/such/ployz-admin.sock"),
         )))
         .with_machine_api_port(1);
 
-    let error = local.register(joiner_request()).await.unwrap_err();
+    let error = local
+        .register(request("joiner", WireGuardPublicKey([7; 32])))
+        .await
+        .unwrap_err();
 
     assert!(matches!(error, LocalMachineError::AllocatorUnreachable));
-    assert!(
-        !replica
-            .executes
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|query| query.contains("allocator")),
-        "no steal"
-    );
-    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(replicated.allocator().await.unwrap(), Some(allocator_id));
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
 }
 
 #[tokio::test]
 async fn forwarded_rpc_metadata_admits_locally_only() {
-    let (dir, store, founder) = participating("ployzd-register-metadata");
-    let replica = ClusterReplica::start(Some(founder.id), vec![founder.clone()]).await;
+    let (data_dir, store, founder) = open_store("ployzd-register-metadata");
+    let (replicated, server) = fake_cluster::store().await;
+    replicated.publish_local_machine(&founder).await.unwrap();
+    replicated
+        .publish_founder_allocator(&founder.id)
+        .await
+        .unwrap();
     let service = MachineService::with_cluster(
         store,
-        tokio::sync::watch::channel(false).0,
+        watch::channel(false).0,
         Some((
-            replica.store.clone(),
-            AdminClient::new("/no/such-admin.sock"),
+            replicated.clone(),
+            AdminClient::new("/no/such/ployz-admin.sock"),
         )),
     );
     let mut request = Request::new(
-        ployz_core::op::Register::into_request(joiner_request())
+        op::Register::into_request(request("joiner", WireGuardPublicKey([7; 32])))
             .encode()
             .unwrap(),
     );
@@ -243,148 +366,68 @@ async fn forwarded_rpc_metadata_admits_locally_only() {
         .into_inner()
         .decode_response()
         .unwrap()
-        .decode::<ployz_core::op::Register>()
+        .decode::<op::Register>()
         .unwrap();
 
     assert_eq!(registered.assigned_machine.name.as_str(), "joiner");
-    let _ = std::fs::remove_dir_all(dir);
+    server.abort();
+    let _ = std::fs::remove_dir_all(data_dir);
 }
 
-fn participating(prefix: &str) -> (std::path::PathBuf, Arc<Mutex<LocalMachineStore>>, Machine) {
-    let dir = std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random()));
-    let mut store = LocalMachineStore::open(&dir).unwrap();
-    let machine = store
+async fn participating() -> (
+    LocalMachine,
+    ReplicatedStore,
+    Machine,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<()>,
+) {
+    let (local, replicated, founder, data_dir, server) = unclaimed().await;
+    replicated
+        .publish_founder_allocator(&founder.id)
+        .await
+        .unwrap();
+    (local, replicated, founder, data_dir, server)
+}
+
+async fn unclaimed() -> (
+    LocalMachine,
+    ReplicatedStore,
+    Machine,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<()>,
+) {
+    let (replicated, server) = fake_cluster::store().await;
+    let (data_dir, store, founder) = open_store("ployzd-register");
+    replicated.publish_local_machine(&founder).await.unwrap();
+    let local = LocalMachine::new(store, watch::channel(false).0).with_cluster(Some((
+        replicated.clone(),
+        AdminClient::new("/no/such/ployz-admin.sock"),
+    )));
+    (local, replicated, founder, data_dir, server)
+}
+
+fn open_store(prefix: &str) -> (std::path::PathBuf, Arc<Mutex<LocalMachineStore>>, Machine) {
+    let data_dir = std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random()));
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    let founder = store
         .initialize(
             MachineName::parse("edge").unwrap(),
             "10.210.0.0/16".parse().unwrap(),
             None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             None,
+            None,
         )
         .unwrap();
-    (dir, Arc::new(Mutex::new(store)), machine)
+    (data_dir, Arc::new(Mutex::new(store)), founder)
 }
 
-fn joiner_request() -> RegisterRequest {
+fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterRequest {
     RegisterRequest {
-        name: MachineName::parse("joiner").unwrap(),
-        public_key: WireGuardPublicKey([7; 32]),
+        name: MachineName::parse(name).unwrap(),
+        public_key,
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],
         runtime: MachineRuntime::default(),
     }
-}
-
-#[derive(Clone)]
-struct ClusterReplica {
-    store: ReplicatedStore,
-    allocator: Arc<Mutex<Option<MachineId>>>,
-    machines: Arc<Mutex<Vec<Machine>>>,
-    executes: Arc<Mutex<Vec<String>>>,
-}
-
-impl ClusterReplica {
-    async fn start(allocator: Option<MachineId>, machines: Vec<Machine>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let replica = Self {
-            store: ReplicatedStore::http1(address),
-            allocator: Arc::new(Mutex::new(allocator)),
-            machines: Arc::new(Mutex::new(machines)),
-            executes: Arc::new(Mutex::new(Vec::new())),
-        };
-        let serving = replica.clone();
-        tokio::spawn(async move {
-            axum::serve(
-                listener,
-                Router::new()
-                    .route("/v1/queries", post(cluster_query))
-                    .route("/v1/transactions", post(cluster_execute))
-                    .with_state(serving),
-            )
-            .await
-            .unwrap();
-        });
-        replica
-    }
-}
-
-#[derive(Deserialize)]
-struct ClusterStatement {
-    query: String,
-    #[serde(default)]
-    params: Vec<Value>,
-}
-
-async fn cluster_query(State(replica): State<ClusterReplica>, body: Bytes) -> Vec<u8> {
-    let statement: ClusterStatement = serde_json::from_slice(&body).unwrap();
-    let query = statement.query.as_str();
-    if query.contains("crsql_db_versions") {
-        return query_body(&["site_id", "db_version"], Vec::new());
-    }
-    if query.contains("key = 'allocator'") {
-        let allocator = replica.allocator.lock().unwrap();
-        return match &*allocator {
-            Some(id) => query_body(&["value"], vec![vec![json!(id.as_str())]]),
-            None => query_body(&["value"], Vec::new()),
-        };
-    }
-    if query.contains("key = 'network'") {
-        return query_body(&["value"], vec![vec![json!("10.210.0.0/16")]]);
-    }
-    if query.contains("FROM machines WHERE id") {
-        let id = statement.params.first().and_then(Value::as_str).unwrap();
-        let machines = replica.machines.lock().unwrap();
-        return match machines.iter().find(|machine| machine.id.as_str() == id) {
-            Some(machine) => query_body(
-                &["info"],
-                vec![vec![json!(serde_json::to_string(machine).unwrap())]],
-            ),
-            None => query_body(&["info"], Vec::new()),
-        };
-    }
-    if query.contains("FROM machines") {
-        let machines = replica.machines.lock().unwrap();
-        let rows = machines
-            .iter()
-            .map(|machine| {
-                vec![
-                    json!(machine.id.as_str()),
-                    json!(serde_json::to_string(machine).unwrap()),
-                ]
-            })
-            .collect();
-        return query_body(&["id", "info"], rows);
-    }
-    query_body(&["value"], Vec::new())
-}
-
-async fn cluster_execute(State(replica): State<ClusterReplica>, body: Bytes) -> String {
-    let statements: Vec<ClusterStatement> = serde_json::from_slice(&body).unwrap();
-    for statement in statements {
-        replica
-            .executes
-            .lock()
-            .unwrap()
-            .push(statement.query.clone());
-        if statement.query.contains("INSERT INTO machines") {
-            let info = statement.params.get(1).and_then(Value::as_str).unwrap();
-            let machine: Machine = serde_json::from_str(info).unwrap();
-            replica.machines.lock().unwrap().push(machine);
-        }
-    }
-    serde_json::to_string(&json!({
-        "results": [{"rows_affected": 1, "time": 0.0}],
-        "time": 0.0
-    }))
-    .unwrap()
-}
-
-fn query_body(columns: &[&str], rows: Vec<Vec<Value>>) -> Vec<u8> {
-    let mut body = serde_json::to_vec(&json!({ "columns": columns })).unwrap();
-    for (index, row) in rows.into_iter().enumerate() {
-        body.extend(serde_json::to_vec(&json!({ "row": [index, row] })).unwrap());
-    }
-    body.extend(serde_json::to_vec(&json!({ "eoq": { "time": 0.0 } })).unwrap());
-    body
 }
