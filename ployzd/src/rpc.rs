@@ -127,53 +127,52 @@ impl MachineService {
         &self,
         payload: OpaquePayload,
     ) -> Result<Response<OpaquePayload>, Status> {
-        match self.contact_named(&payload).await? {
-            Ok(response) => Ok(response),
-            Err(failed_allocator) => {
-                let replicated = match self.local.replicated() {
-                    Ok(store) => store,
-                    Err(error) => return local_error(error),
-                };
-                let named = match replicated.allocator().await {
-                    Ok(row) => row.map(|row| row.machine_id),
-                    Err(error) => return local_error(error.into()),
-                };
-                if named != Some(failed_allocator)
-                    && let Ok(response) = self.contact_named(&payload).await?
-                {
-                    return Ok(response);
-                }
-                let me = match self.local_record() {
-                    Ok(record) => record.id(),
-                    Err(error) => return Err(error),
-                };
-                match replicated.steal_allocator(&me).await {
-                    Ok(()) => local_error(LocalMachineError::AllocatorNotQuiet),
-                    Err(error) => local_error(error.into()),
-                }
-            }
+        let replicated = match self.local.replicated() {
+            Ok(store) => store,
+            Err(error) => return local_error(error),
+        };
+        let first = match replicated.allocator().await {
+            Ok(Some(row)) => row.machine_id,
+            Ok(None) => return local_error(LocalMachineError::NotAllocator),
+            Err(error) => return local_error(error.into()),
+        };
+        if let Some(response) = self.dial_allocator(first, payload.clone()).await? {
+            return Ok(response);
+        }
+        let named = match replicated.allocator().await {
+            Ok(row) => row.map(|row| row.machine_id),
+            Err(error) => return local_error(error.into()),
+        };
+        if named != Some(first)
+            && let Some(allocator) = named
+            && let Some(response) = self.dial_allocator(allocator, payload).await?
+        {
+            return Ok(response);
+        }
+        let me = match self.local_record() {
+            Ok(record) => record.id(),
+            Err(error) => return Err(error),
+        };
+        match replicated.steal_allocator(&me).await {
+            Ok(()) => local_error(LocalMachineError::AllocatorNotQuiet),
+            Err(error) => local_error(error.into()),
         }
     }
 
-    /// Forward to the named Allocator. `Err(id)` means that Machine was unreachable.
-    async fn contact_named(
+    async fn dial_allocator(
         &self,
-        payload: &OpaquePayload,
-    ) -> Result<Result<Response<OpaquePayload>, MachineId>, Status> {
+        allocator: MachineId,
+        payload: OpaquePayload,
+    ) -> Result<Option<Response<OpaquePayload>>, Status> {
         let replicated = match self.local.replicated() {
             Ok(store) => store,
-            Err(error) => return local_error(error).map(Ok),
-        };
-        let allocator = match replicated.allocator().await {
-            Ok(Some(row)) => row.machine_id,
-            Ok(None) => return local_error(LocalMachineError::NotAllocator).map(Ok),
-            Err(error) => return local_error(error.into()).map(Ok),
+            Err(error) => return local_error(error).map(Some),
         };
         let Some(target) = (match replicated.machine(allocator.as_str()).await {
             Ok(machine) => machine,
-            Err(error) => return local_error(error.into()).map(Ok),
+            Err(error) => return local_error(error.into()).map(Some),
         }) else {
-            return Ok(Err(allocator));
+            return Ok(None);
         };
         let endpoint = Endpoint::from_shared(format!(
             "http://[{}]:{}",
@@ -183,16 +182,16 @@ impl MachineService {
         .connect_timeout(Duration::from_secs(10));
         let mut client = MachineRpcClient::new(match endpoint.connect().await {
             Ok(channel) => channel,
-            Err(_) => return Ok(Err(allocator)),
+            Err(_) => return Ok(None),
         });
-        let mut outbound = Request::new(payload.clone());
+        let mut outbound = Request::new(payload);
         outbound.metadata_mut().insert(
             REGISTER_FORWARDED_METADATA,
             "1".parse().expect("ASCII metadata"),
         );
         match client.register(outbound).await {
-            Ok(response) => Ok(Ok(response)),
-            Err(_) => Ok(Err(allocator)),
+            Ok(response) => Ok(Some(response)),
+            Err(_) => Ok(None),
         }
     }
 }
