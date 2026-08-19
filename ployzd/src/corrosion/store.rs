@@ -171,11 +171,6 @@ impl ReplicatedStore {
         &self.api
     }
 
-    #[cfg(test)]
-    pub(crate) fn connect(address: std::net::SocketAddr, token: &str) -> Self {
-        Self::new(ApiClient::new(address, token).expect("test API token is a valid header"))
-    }
-
     pub async fn publish_local_machine(&self, machine: &Machine) -> Result<(), Error> {
         self.machine_publication().await.publish(machine).await
     }

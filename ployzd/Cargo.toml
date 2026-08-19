@@ -43,8 +43,6 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 x509-parser = "0.18.1"
 
 [dev-dependencies]
-hyper = { version = "1.11.0", features = ["http2", "server"] }
-hyper-util = { version = "0.1.20", features = ["tokio"] }
 ployz = { path = "../ployz" }
 ployz-testkit.workspace = true
 tokio = { version = "1.53.1", features = ["test-util"] }

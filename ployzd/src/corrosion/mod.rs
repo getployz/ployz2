@@ -5,13 +5,15 @@ mod service;
 mod store;
 
 #[cfg(test)]
+pub(crate) mod fake_cluster;
+#[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
 mod store_tests;
 
 pub use admin::{AdminClient, MembershipState};
-pub(crate) use api::Subscription;
-use api::{ApiClient, Statement};
+use api::Statement;
+pub(crate) use api::{ApiClient, Subscription};
 pub use certificate::{CertificateChallenge, CertificateMaterial, CertificateRow};
 pub use service::{
     CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, DEFAULT_GOSSIP_ADDRESS,
