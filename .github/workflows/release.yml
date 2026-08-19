@@ -54,7 +54,6 @@ jobs:
     with:
       goreleaser-args: release --clean --skip=publish
       push-relay-image: true
-      checkout-ref: ${{ inputs.tag }}
       release-tag: ${{ inputs.tag }}
 
   publish:
