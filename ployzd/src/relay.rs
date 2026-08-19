@@ -3,7 +3,7 @@
 use std::{io, time::Duration};
 
 use ployz_core::{CloudPairing, MachineId};
-use ployz_relay::{AUTHORIZATION_METADATA, CloudRelayClient, PairingCredential, RegisterRequest};
+use ployz_relay::{AUTHORIZATION_METADATA, CloudRelayClient, RegisterRequest};
 use thiserror::Error;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
@@ -36,7 +36,7 @@ pub enum Error {
 /// If the Relay is unreachable or Register is rejected.
 pub async fn hold_register(
     url: &str,
-    pairing: &PairingCredential,
+    pairing: &str,
     machine_id: &MachineId,
 ) -> Result<RegisterHold, Error> {
     let mut relay = CloudRelayClient::new(connect(url).await?);
@@ -74,15 +74,14 @@ pub(crate) async fn run(
     machine_id: MachineId,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    let Some(pairing) = pairing else {
-        shutdown.cancelled().await;
-        return Ok(());
+    let _hold = match pairing {
+        Some(pairing) => Some(
+            hold_register(pairing.relay_url(), pairing.secret().as_str(), &machine_id)
+                .await
+                .map_err(io::Error::other)?,
+        ),
+        None => None,
     };
-    let secret = PairingCredential::parse(pairing.secret().as_str())
-        .expect("core Pairing Credential is a non-empty bearer");
-    let _hold = hold_register(pairing.relay_url(), &secret, &machine_id)
-        .await
-        .map_err(io::Error::other)?;
     shutdown.cancelled().await;
     Ok(())
 }
@@ -94,10 +93,10 @@ async fn connect(url: &str) -> Result<Channel, tonic::transport::Error> {
         .await
 }
 
-fn set_bearer(metadata: &mut tonic::metadata::MetadataMap, pairing: &PairingCredential) {
+fn set_bearer(metadata: &mut tonic::metadata::MetadataMap, pairing: &str) {
     metadata.insert(
         AUTHORIZATION_METADATA,
-        MetadataValue::try_from(format!("Bearer {}", pairing.as_str()))
+        MetadataValue::try_from(format!("Bearer {pairing}"))
             .expect("Pairing Credential is ASCII metadata"),
     );
 }
@@ -109,7 +108,7 @@ mod tests {
     use ployz_core::{CloudPairing, MachineId};
     use ployz_relay::{
         AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, ListRequest, MACHINE_ID_METADATA,
-        PAIRING_METADATA, PairingCredential, Relay, RevokeRequest,
+        PAIRING_METADATA, Relay, RevokeRequest,
     };
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
@@ -177,8 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_relay_fails() {
-        let pairing = PairingCredential::parse(PAIRING).unwrap();
-        let error = match hold_register("not-a-url", &pairing, &MachineId::random()).await {
+        let error = match hold_register("not-a-url", PAIRING, &MachineId::random()).await {
             Ok(_) => panic!("expected unreachable Relay to fail"),
             Err(error) => error,
         };
@@ -191,7 +189,13 @@ mod tests {
         let machine_id = MachineId::random();
         let shutdown = CancellationToken::new();
         let hold = tokio::spawn(run(
-            Some(cloud_pairing(&relay.url)),
+            Some(
+                CloudPairing::parse(
+                    &relay.url,
+                    ployz_core::PairingCredential::parse(PAIRING).unwrap(),
+                )
+                .unwrap(),
+            ),
             machine_id,
             shutdown.clone(),
         ));
@@ -254,8 +258,7 @@ mod tests {
         async fn start() -> Self {
             let relay = RelayListen::start().await;
             let machine_id = MachineId::random();
-            let pairing = PairingCredential::parse(PAIRING).unwrap();
-            let hold = hold_register(&relay.url, &pairing, &machine_id)
+            let hold = hold_register(&relay.url, PAIRING, &machine_id)
                 .await
                 .expect("Register hello is accepted");
             Self {
@@ -265,14 +268,6 @@ mod tests {
                 _relay: relay,
             }
         }
-    }
-
-    fn cloud_pairing(relay_url: &str) -> CloudPairing {
-        CloudPairing::parse(
-            relay_url,
-            ployz_core::PairingCredential::parse(PAIRING).unwrap(),
-        )
-        .unwrap()
     }
 
     async fn wait_for_held(url: &str, machine_id: MachineId) {
