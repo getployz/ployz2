@@ -1,3 +1,4 @@
+- `cloud-init` — Add `ployz init --cloud TOKEN` for Cloud enroll; not in the frozen Uncloud CLI.
 - `product-identity` — Rename `uc`, `--uncloud-config`, `UNCLOUD_*`, and the config path to Ployz-owned names; product identity must not expose compatibility aliases.
 - `root-version-flag` — Accept `ployz --version` and `ployz -V` on the root command so the CLI version is available without a subcommand. The frozen `uc` page dropped this flag when Uncloud replaced it with `uc version`.
 - `plain-caddy-config` — Drop `ployz caddy config --no-color`; the Machine RPC returns the owned Caddyfile as plain text and Ployz has no coloured mode to disable.
