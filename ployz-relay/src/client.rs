@@ -98,7 +98,15 @@ impl RelayClient {
         bearer: &str,
         machine_id: &MachineId,
     ) -> Result<RelayWs, ClientError> {
-        let mut ws = connect_ws(&self.base, REGISTER_PATH, Some(bearer), None, None, None).await?;
+        let mut ws = connect_ws(
+            &self.base,
+            REGISTER_PATH,
+            nonempty(bearer),
+            None,
+            None,
+            None,
+        )
+        .await?;
         ws.send(&RegisterRequest::new(machine_id)).await?;
         Ok(ws)
     }
@@ -117,7 +125,7 @@ impl RelayClient {
         connect_ws(
             &self.base,
             DIAL_PATH,
-            Some(bearer),
+            nonempty(bearer),
             nonempty(pairing),
             nonempty(machine_id),
             None,
