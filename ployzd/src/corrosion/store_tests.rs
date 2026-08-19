@@ -14,7 +14,7 @@ use serde_json::json;
 use super::ReplicatedStore;
 use crate::corrosion::ApiClient;
 use crate::corrosion::publisher::founder_allocator_id;
-use crate::corrosion::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR};
+use crate::corrosion::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, INSERT_ALLOCATOR_NOW};
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
 };
@@ -230,11 +230,8 @@ fn allocator_written_at_now_is_not_quiet() {
     let db = rusqlite::Connection::open_in_memory().unwrap();
     db.execute_batch(include_str!("schema.sql")).unwrap();
     let id = "a".repeat(32);
-    db.execute(
-        "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now'))",
-        rusqlite::params![id],
-    )
-    .unwrap();
+    db.execute(INSERT_ALLOCATOR_NOW, rusqlite::params![id])
+        .unwrap();
     let (value, quiet): (String, i64) = db
         .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap();

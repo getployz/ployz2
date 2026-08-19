@@ -10,18 +10,16 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId,
     DockerVolumeName, IngressHost, LocalMachinePhase, Machine, MachineId, MachineName,
-    ManagementAddress, RegisterRequest, WireGuardPublicKey,
+    ManagementAddress, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    AdminClient, ApiClient, CertificateMaterial, CorrosionConfig, ReplicatedStore, Statement,
-    fake_cluster, run_machine_publisher, wait_for_catch_up,
+    ApiClient, CertificateMaterial, CorrosionConfig, ReplicatedStore, Statement,
+    run_machine_publisher, wait_for_catch_up,
 };
-use crate::machine::{
-    LocalMachine, LocalMachineBody, LocalMachineError, LocalMachineRecord, LocalMachineStore,
-};
+use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore};
 use crate::network::WireGuardPrivateKey;
 
 #[tokio::test]
@@ -465,65 +463,6 @@ async fn founder_publisher_backdates_allocator() {
     running.cleanup().await.unwrap();
 }
 
-#[tokio::test]
-#[ignore = "requires Docker and the pinned Corrosion image"]
-async fn register_admits_only_a_quiet_self_allocator() {
-    let root = TestRoot::new();
-    let mut running = CorrosionConfig::new(
-        root.0.join("data"),
-        root.0.join("run"),
-        unused_address(),
-        unused_address(),
-        format!("ployz-corrosion-register-allocator-{}", MachineId::random()),
-    )
-    .start()
-    .await
-    .unwrap();
-    let store = running.store().clone();
-    let founder = machine("founder", 1);
-    let local = participating_local(root.0.join("local-machine"), store.clone(), founder.clone());
-    store
-        .publish_cluster_network("10.210.0.0/16".parse().unwrap())
-        .await
-        .unwrap();
-    let request = register_request("joiner", 2);
-
-    assert!(matches!(
-        local.register(request.clone()).await,
-        Err(LocalMachineError::NotAllocator)
-    ));
-
-    fake_cluster::set_allocator(&store, &MachineId::random(), true).await;
-    assert!(matches!(
-        local.register(request.clone()).await,
-        Err(LocalMachineError::NotAllocator)
-    ));
-
-    fake_cluster::set_allocator(&store, &founder.id, false).await;
-    assert!(matches!(
-        local.register(request.clone()).await,
-        Err(LocalMachineError::AllocatorNotQuiet)
-    ));
-    assert!(store.machines().await.unwrap().observations.is_empty());
-
-    fake_cluster::set_allocator(&store, &founder.id, true).await;
-    let registered = local.register(request).await.unwrap();
-    assert_eq!(
-        registered.assigned_machine.subnet,
-        "10.210.0.0/24".parse().unwrap()
-    );
-    assert_eq!(
-        store
-            .machine(registered.assigned_machine.id.as_str())
-            .await
-            .unwrap()
-            .as_ref(),
-        Some(&registered.assigned_machine)
-    );
-
-    running.cleanup().await.unwrap();
-}
-
 struct TestRoot(PathBuf);
 
 impl TestRoot {
@@ -556,44 +495,6 @@ fn write_record(data_dir: &Path, record: &LocalMachineRecord) {
         serde_json::to_vec(record).unwrap(),
     )
     .unwrap();
-}
-
-fn participating_local(
-    data_dir: PathBuf,
-    store: ReplicatedStore,
-    published: Machine,
-) -> LocalMachine {
-    write_record(
-        &data_dir,
-        &LocalMachineRecord {
-            body: LocalMachineBody::Participating {
-                machine: published,
-                cluster_network: Some("10.210.0.0/16".parse().unwrap()),
-                bootstrap: Vec::new(),
-            },
-            wireguard_private_key: WireGuardPrivateKey::generate(),
-            wireguard_mtu: None,
-            cloud_pairing: None,
-            selected_endpoints: BTreeMap::new(),
-        },
-    );
-    LocalMachine::new(
-        Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap())),
-        tokio::sync::watch::channel(false).0,
-    )
-    .with_cluster(Some((store, AdminClient::new("/no/such/ployz-admin.sock"))))
-}
-
-fn register_request(name: &str, seed: u8) -> RegisterRequest {
-    RegisterRequest {
-        name: MachineName::parse(name).unwrap(),
-        public_key: WireGuardPublicKey([seed; 32]),
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint(
-            format!("192.0.2.{seed}:51000").parse().unwrap(),
-        )],
-        runtime: Default::default(),
-    }
 }
 
 fn hex_bytes(actor: &str) -> Vec<u8> {

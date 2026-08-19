@@ -133,8 +133,11 @@ async fn overlapping_registers_on_one_daemon_get_distinct_machine_subnets() {
 
 #[tokio::test]
 async fn register_does_not_allocate_when_this_machine_is_not_the_allocator() {
-    let (local, replicated, _founder, data_dir, server) = participating().await;
-    fake_cluster::set_allocator(&replicated, &ployz_core::MachineId::random(), true).await;
+    let (local, replicated, _founder, data_dir, server) = participating_without_allocator().await;
+    replicated
+        .publish_founder_allocator(&ployz_core::MachineId::random())
+        .await
+        .unwrap();
     let error = local
         .register(request("peer", WireGuardPublicKey([1; 32])))
         .await
@@ -149,8 +152,8 @@ async fn register_does_not_allocate_when_this_machine_is_not_the_allocator() {
 
 #[tokio::test]
 async fn register_is_not_quiet_when_the_allocator_row_is_young() {
-    let (local, replicated, founder, data_dir, server) = participating().await;
-    fake_cluster::set_allocator(&replicated, &founder.id, false).await;
+    let (local, replicated, founder, data_dir, server) = participating_without_allocator().await;
+    fake_cluster::insert_young_allocator(&replicated, &founder.id).await;
     let error = local
         .register(request("peer", WireGuardPublicKey([1; 32])))
         .await

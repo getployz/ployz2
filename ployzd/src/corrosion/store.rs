@@ -30,6 +30,9 @@ pub struct ReplicatedStore {
 // Solo founder backdates so the first Register is already quiet. ON CONFLICT
 // leaves a later steal's `updated_at = now` alone.
 pub(crate) const CLAIM_FOUNDER_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now', '-5 seconds')) ON CONFLICT (key) DO NOTHING";
+#[cfg(test)]
+pub(crate) const INSERT_ALLOCATOR_NOW: &str =
+    "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now'))";
 pub(crate) const ALLOCATOR_ROW: &str = "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'";
 
 pub(crate) struct AllocatorRow {

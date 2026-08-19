@@ -8,12 +8,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
-use super::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR};
+use super::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, INSERT_ALLOCATOR_NOW};
 use super::{ApiClient, ReplicatedStore};
 use ployz_core::MachineId;
-
-const UPSERT_ALLOCATOR_QUIET: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now', '-5 seconds')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
-const UPSERT_ALLOCATOR_NOW: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
 
 #[derive(Clone)]
 struct ClusterKv {
@@ -98,10 +95,7 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 let id = text_param(&statement.params, 0).to_owned();
                 kv.allocator.get_or_insert((id, true));
             }
-            UPSERT_ALLOCATOR_QUIET => {
-                kv.allocator = Some((text_param(&statement.params, 0).to_owned(), true));
-            }
-            UPSERT_ALLOCATOR_NOW => {
+            INSERT_ALLOCATOR_NOW => {
                 kv.allocator = Some((text_param(&statement.params, 0).to_owned(), false));
             }
             query if query.starts_with("INSERT INTO machines (id, info,") => {
@@ -137,15 +131,10 @@ fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>>) -> Bytes
     body.into()
 }
 
-pub(crate) async fn set_allocator(store: &ReplicatedStore, id: &MachineId, quiet: bool) {
-    let sql = if quiet {
-        UPSERT_ALLOCATOR_QUIET
-    } else {
-        UPSERT_ALLOCATOR_NOW
-    };
+pub(crate) async fn insert_young_allocator(store: &ReplicatedStore, id: &MachineId) {
     store
         .api()
-        .execute([super::Statement::new(sql, [json!(id)])])
+        .execute([super::Statement::new(INSERT_ALLOCATOR_NOW, [json!(id)])])
         .await
         .unwrap();
 }
