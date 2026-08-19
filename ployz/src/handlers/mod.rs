@@ -126,7 +126,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, Error> {
         .build()?)
 }
 
-fn config_path(matches: &ArgMatches) -> Result<std::path::PathBuf, Error> {
+pub(super) fn config_path(matches: &ArgMatches) -> Result<std::path::PathBuf, Error> {
     matches
         .get_one::<String>("ployz-config")
         .map(Path::new)
@@ -412,15 +412,7 @@ mod tests {
 
     #[test]
     fn cloud_enroll_without_a_daemon_requires_sudo() {
-        let uid = String::from_utf8(
-            std::process::Command::new("id")
-                .arg("-u")
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap();
-        if uid.trim() == "0" {
+        if crate::provisioning::process_is_root() {
             return;
         }
         let mut command = crate::cli::command();
