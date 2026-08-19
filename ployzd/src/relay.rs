@@ -1,12 +1,16 @@
 //! Cloud Relay Register client.
 
-use std::time::Duration;
+use std::{io, time::Duration};
 
-use ployz_core::MachineId;
+use ployz_core::{CloudPairing, MachineId};
 use ployz_relay::{AUTHORIZATION_METADATA, CloudRelayClient, PairingCredential, RegisterRequest};
 use thiserror::Error;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use tokio_util::sync::CancellationToken;
 use tonic::{
     Request,
     metadata::MetadataValue,
@@ -48,7 +52,7 @@ pub async fn hold_register(
     let mut opens = relay.register(request).await?.into_inner();
     let task = tokio::spawn(async move {
         while let Some(Ok(message)) = opens.next().await {
-            // ponytail: Attach is #408
+            // ponytail: Attach is a later ticket
             if let Some(nonce) = message.ping_nonce() {
                 let _ = tx.send(RegisterRequest::pong(nonce)).await;
             }
@@ -61,6 +65,44 @@ impl Drop for RegisterHold {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+/// Hold Cloud Relay Register after this Machine is participating.
+///
+/// No Cloud Pairing is a no-op: SSH-only Machines stay off List.
+///
+/// # Errors
+///
+/// If participation wait fails, or Register is rejected after participation.
+pub async fn hold_cloud_pairing(
+    pairing: Option<CloudPairing>,
+    machine_id: MachineId,
+    mut participating: watch::Receiver<bool>,
+    shutdown: CancellationToken,
+) -> io::Result<()> {
+    let Some(pairing) = pairing else {
+        shutdown.cancelled().await;
+        return Ok(());
+    };
+    tokio::select! {
+        biased;
+        () = shutdown.cancelled() => return Ok(()),
+        changed = participating.wait_for(|participating| *participating) => {
+            match changed {
+                Ok(_) if shutdown.is_cancelled() => return Ok(()),
+                Ok(_) => {}
+                Err(_) if shutdown.is_cancelled() => return Ok(()),
+                Err(error) => return Err(io::Error::other(error)),
+            }
+        }
+    }
+    let secret = PairingCredential::parse(pairing.secret().as_str())
+        .expect("Cloud Pairing secret is a non-empty Pairing Credential");
+    let _hold = hold_register(pairing.relay_url(), &secret, &machine_id)
+        .await
+        .map_err(io::Error::other)?;
+    shutdown.cancelled().await;
+    Ok(())
 }
 
 async fn connect(url: &str) -> Result<Channel, tonic::transport::Error> {
@@ -80,18 +122,33 @@ fn set_bearer(metadata: &mut tonic::metadata::MetadataMap, pairing: &PairingCred
 
 #[cfg(test)]
 mod tests {
-    use std::{net::Ipv4Addr, time::Duration};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        net::Ipv4Addr,
+        path::PathBuf,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
-    use ployz_core::MachineId;
+    use ployz_core::{
+        AdvertisedEndpoint, CloudPairing, InitializeRequest, JoinRequest, Machine, MachineId,
+        MachineName, Registered,
+    };
     use ployz_relay::{
         AUTHORIZATION_METADATA, CloudRelayClient, DialCredential, ListRequest, MACHINE_ID_METADATA,
         PAIRING_METADATA, PairingCredential, Relay, RevokeRequest,
     };
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, watch};
     use tokio_stream::wrappers::ReceiverStream;
+    use tokio_util::sync::CancellationToken;
     use tonic::{Request, metadata::MetadataValue, transport::Endpoint};
 
-    use super::{Error, hold_register};
+    use super::{Error, hold_cloud_pairing, hold_register};
+    use crate::{
+        machine::{LocalMachine, LocalMachineStore},
+        network::management_address,
+    };
 
     const PAIRING: &str = "pairing-secret";
     const DIAL: &str = "dial-secret";
@@ -173,33 +230,231 @@ mod tests {
         assert!(matches!(error, Error::Transport(_)));
     }
 
-    struct Session {
+    #[tokio::test]
+    async fn initialize_with_cloud_pairing_appears_on_list_held() {
+        let relay = RelayListen::start().await;
+        let dir = TestDir::new("ployzd-relay-initialize");
+        let local = local_machine(&dir.0);
+        let pairing = cloud_pairing(&relay.url);
+        let initialized = local
+            .initialize(InitializeRequest {
+                name: MachineName::parse("first").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: endpoint(),
+                wireguard_mtu: None,
+                cloud_pairing: Some(pairing.clone()),
+            })
+            .unwrap();
+        let record = local.record().unwrap();
+        assert_eq!(record.cloud_pairing.as_ref(), Some(&pairing));
+
+        let shutdown = CancellationToken::new();
+        let hold = tokio::spawn(hold_cloud_pairing(
+            record.cloud_pairing.clone(),
+            initialized.machine.id,
+            watch::channel(true).1,
+            shutdown.clone(),
+        ));
+        wait_for_held(&relay.url, initialized.machine.id, true).await;
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn join_with_cloud_pairing_appears_on_list_held_after_catch_up() {
+        let relay = RelayListen::start().await;
+        let first_dir = TestDir::new("ployzd-relay-join-first");
+        let mut first = LocalMachineStore::open(&first_dir.0).unwrap();
+        let peer = first
+            .initialize(
+                MachineName::parse("first").unwrap(),
+                "10.210.0.0/16".parse().unwrap(),
+                None,
+                endpoint(),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let second_dir = TestDir::new("ployzd-relay-join-second");
+        let store = LocalMachineStore::open(&second_dir.0).unwrap();
+        let public_key = store.record().wireguard_private_key.public_key();
+        let assigned = Machine {
+            id: MachineId::random(),
+            name: MachineName::parse("second").unwrap(),
+            subnet: "10.210.1.0/24".parse().unwrap(),
+            management_address: management_address(public_key),
+            public_key,
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
+            runtime: Default::default(),
+        };
+        let pairing = cloud_pairing(&relay.url);
+        let local = LocalMachine::new(Arc::new(Mutex::new(store)), watch::channel(false).0);
+        local
+            .join(JoinRequest {
+                registration: Registered {
+                    assigned_machine: assigned.clone(),
+                    visible_peers: vec![peer],
+                    target_versions: BTreeMap::from([("actor".into(), 4)]),
+                },
+                wireguard_mtu: None,
+                cloud_pairing: Some(pairing.clone()),
+            })
+            .unwrap();
+        drop(local);
+
+        let (participating, participating_rx) = watch::channel(false);
+        let shutdown = CancellationToken::new();
+        let hold = tokio::spawn(hold_cloud_pairing(
+            Some(pairing),
+            assigned.id,
+            participating_rx,
+            shutdown.clone(),
+        ));
+        assert_not_held(&relay.url, assigned.id).await;
+
+        let mut store = LocalMachineStore::open(&second_dir.0).unwrap();
+        store.complete_catch_up().unwrap();
+        participating.send_replace(true);
+        wait_for_held(&relay.url, assigned.id, true).await;
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn ssh_only_initialize_stays_off_list_held() {
+        let relay = RelayListen::start().await;
+        let dir = TestDir::new("ployzd-relay-ssh-only");
+        let local = local_machine(&dir.0);
+        let initialized = local
+            .initialize(InitializeRequest {
+                name: MachineName::parse("ssh").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: endpoint(),
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            })
+            .unwrap();
+        assert_eq!(local.record().unwrap().cloud_pairing, None);
+
+        let shutdown = CancellationToken::new();
+        let hold = tokio::spawn(hold_cloud_pairing(
+            None,
+            initialized.machine.id,
+            watch::channel(true).1,
+            shutdown.clone(),
+        ));
+        assert_not_held(&relay.url, initialized.machine.id).await;
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    struct RelayListen {
         url: String,
-        machine_id: MachineId,
-        _hold: super::RegisterHold,
         _server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
         _goaway: ployz_relay::Goaway,
     }
 
-    impl Session {
+    impl RelayListen {
         async fn start() -> Self {
             let relay = Relay::new(DialCredential::parse(DIAL).unwrap());
             let listen = (Ipv4Addr::LOCALHOST, 0).into();
             let (address, server, goaway) = relay.serve(listen).await.unwrap();
-            let url = format!("http://{address}");
-            let machine_id = MachineId::random();
-            let pairing = PairingCredential::parse(PAIRING).unwrap();
-            let hold = hold_register(&url, &pairing, &machine_id)
-                .await
-                .expect("Register hello is accepted");
             Self {
-                url,
-                machine_id,
-                _hold: hold,
+                url: format!("http://{address}"),
                 _server: server,
                 _goaway: goaway,
             }
         }
+    }
+
+    struct Session {
+        url: String,
+        machine_id: MachineId,
+        _hold: super::RegisterHold,
+        _relay: RelayListen,
+    }
+
+    impl Session {
+        async fn start() -> Self {
+            let relay = RelayListen::start().await;
+            let machine_id = MachineId::random();
+            let pairing = PairingCredential::parse(PAIRING).unwrap();
+            let hold = hold_register(&relay.url, &pairing, &machine_id)
+                .await
+                .expect("Register hello is accepted");
+            Self {
+                url: relay.url.clone(),
+                machine_id,
+                _hold: hold,
+                _relay: relay,
+            }
+        }
+    }
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(prefix: &str) -> Self {
+            Self(std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random())))
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn local_machine(data_dir: &std::path::Path) -> LocalMachine {
+        LocalMachine::new(
+            Arc::new(Mutex::new(LocalMachineStore::open(data_dir).unwrap())),
+            watch::channel(false).0,
+        )
+    }
+
+    fn cloud_pairing(relay_url: &str) -> CloudPairing {
+        CloudPairing::parse(
+            relay_url,
+            ployz_core::PairingCredential::parse(PAIRING).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn endpoint() -> Vec<AdvertisedEndpoint> {
+        vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())]
+    }
+
+    async fn wait_for_held(url: &str, machine_id: MachineId, want_rtt: bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let listed = list(url, DIAL, PAIRING).await.unwrap();
+            if listed.iter().any(|row| {
+                row.machine_id().ok() == Some(machine_id)
+                    && (!want_rtt || row.register_rtt_ns.is_some())
+            }) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "expected {machine_id} on List, got {listed:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn assert_not_held(url: &str, machine_id: MachineId) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let listed = list(url, DIAL, PAIRING).await.unwrap();
+        assert!(
+            listed
+                .iter()
+                .all(|row| row.machine_id().ok() != Some(machine_id)),
+            "Machine must stay off List, got {listed:?}"
+        );
     }
 
     async fn list(
