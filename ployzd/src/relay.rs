@@ -1,16 +1,12 @@
 //! Cloud Relay Register client.
 
-use std::{io, time::Duration};
+use std::time::Duration;
 
-use ployz_core::{CloudPairing, MachineId};
+use ployz_core::MachineId;
 use ployz_relay::{AUTHORIZATION_METADATA, CloudRelayClient, PairingCredential, RegisterRequest};
 use thiserror::Error;
-use tokio::{
-    sync::{mpsc, watch},
-    task::JoinHandle,
-};
+use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
-use tokio_util::sync::CancellationToken;
 use tonic::{
     Request,
     metadata::MetadataValue,
@@ -67,42 +63,12 @@ impl Drop for RegisterHold {
     }
 }
 
-/// Hold Cloud Relay Register after this Machine is participating.
+/// Convert a stored Pairing Credential to the Relay Register bearer.
 ///
-/// No Cloud Pairing is a no-op: SSH-only Machines stay off List.
-///
-/// # Errors
-///
-/// If participation wait fails, or Register is rejected after participation.
-pub async fn hold_cloud_pairing(
-    pairing: Option<CloudPairing>,
-    machine_id: MachineId,
-    mut participating: watch::Receiver<bool>,
-    shutdown: CancellationToken,
-) -> io::Result<()> {
-    let Some(pairing) = pairing else {
-        shutdown.cancelled().await;
-        return Ok(());
-    };
-    tokio::select! {
-        biased;
-        () = shutdown.cancelled() => return Ok(()),
-        changed = participating.wait_for(|participating| *participating) => {
-            match changed {
-                Ok(_) if shutdown.is_cancelled() => return Ok(()),
-                Ok(_) => {}
-                Err(_) if shutdown.is_cancelled() => return Ok(()),
-                Err(error) => return Err(io::Error::other(error)),
-            }
-        }
-    }
-    let secret = PairingCredential::parse(pairing.secret().as_str())
-        .expect("Cloud Pairing secret is a non-empty Pairing Credential");
-    let _hold = hold_register(pairing.relay_url(), &secret, &machine_id)
-        .await
-        .map_err(io::Error::other)?;
-    shutdown.cancelled().await;
-    Ok(())
+/// Core construction already rejected an empty secret.
+pub(crate) fn pairing_credential(secret: &ployz_core::PairingCredential) -> PairingCredential {
+    PairingCredential::parse(secret.as_str())
+        .expect("core Pairing Credential is a non-empty bearer")
 }
 
 async fn connect(url: &str) -> Result<Channel, tonic::transport::Error> {
@@ -141,10 +107,9 @@ mod tests {
     };
     use tokio::sync::{mpsc, watch};
     use tokio_stream::wrappers::ReceiverStream;
-    use tokio_util::sync::CancellationToken;
     use tonic::{Request, metadata::MetadataValue, transport::Endpoint};
 
-    use super::{Error, hold_cloud_pairing, hold_register};
+    use super::{Error, hold_register, pairing_credential};
     use crate::{
         machine::{LocalMachine, LocalMachineStore},
         network::management_address,
@@ -167,20 +132,7 @@ mod tests {
     #[tokio::test]
     async fn register_pings_are_echoed() {
         let session = Session::start().await;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            let listed = list(&session.url, DIAL, PAIRING).await.unwrap();
-            if listed.iter().any(|row| {
-                row.machine_id().ok() == Some(session.machine_id) && row.register_rtt_ns.is_some()
-            }) {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "path RTT must be present after a pong"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        wait_for_held(&session.url, session.machine_id).await;
     }
 
     #[tokio::test]
@@ -243,22 +195,22 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: endpoint(),
                 wireguard_mtu: None,
-                cloud_pairing: Some(pairing.clone()),
+                cloud_pairing: Some(pairing),
             })
             .unwrap();
-        let record = local.record().unwrap();
-        assert_eq!(record.cloud_pairing.as_ref(), Some(&pairing));
-
-        let shutdown = CancellationToken::new();
-        let hold = tokio::spawn(hold_cloud_pairing(
-            record.cloud_pairing.clone(),
-            initialized.machine.id,
-            watch::channel(true).1,
-            shutdown.clone(),
-        ));
-        wait_for_held(&relay.url, initialized.machine.id, true).await;
-        shutdown.cancel();
-        hold.await.unwrap().unwrap();
+        let stored = local
+            .record()
+            .unwrap()
+            .cloud_pairing
+            .expect("pairing stored");
+        let _hold = hold_register(
+            stored.relay_url(),
+            &pairing_credential(stored.secret()),
+            &initialized.machine.id,
+        )
+        .await
+        .unwrap();
+        wait_for_held(&relay.url, initialized.machine.id).await;
     }
 
     #[tokio::test]
@@ -300,27 +252,26 @@ mod tests {
                     target_versions: BTreeMap::from([("actor".into(), 4)]),
                 },
                 wireguard_mtu: None,
-                cloud_pairing: Some(pairing.clone()),
+                cloud_pairing: Some(pairing),
             })
             .unwrap();
         drop(local);
 
-        let (participating, participating_rx) = watch::channel(false);
-        let shutdown = CancellationToken::new();
-        let hold = tokio::spawn(hold_cloud_pairing(
-            Some(pairing),
-            assigned.id,
-            participating_rx,
-            shutdown.clone(),
-        ));
-        assert_not_held(&relay.url, assigned.id).await;
-
         let mut store = LocalMachineStore::open(&second_dir.0).unwrap();
         store.complete_catch_up().unwrap();
-        participating.send_replace(true);
-        wait_for_held(&relay.url, assigned.id, true).await;
-        shutdown.cancel();
-        hold.await.unwrap().unwrap();
+        let stored = store
+            .record()
+            .cloud_pairing
+            .as_ref()
+            .expect("pairing stored");
+        let _hold = hold_register(
+            stored.relay_url(),
+            &pairing_credential(stored.secret()),
+            &assigned.id,
+        )
+        .await
+        .unwrap();
+        wait_for_held(&relay.url, assigned.id).await;
     }
 
     #[tokio::test]
@@ -339,17 +290,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(local.record().unwrap().cloud_pairing, None);
-
-        let shutdown = CancellationToken::new();
-        let hold = tokio::spawn(hold_cloud_pairing(
-            None,
-            initialized.machine.id,
-            watch::channel(true).1,
-            shutdown.clone(),
-        ));
         assert_not_held(&relay.url, initialized.machine.id).await;
-        shutdown.cancel();
-        hold.await.unwrap().unwrap();
     }
 
     struct RelayListen {
@@ -428,19 +369,18 @@ mod tests {
         vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())]
     }
 
-    async fn wait_for_held(url: &str, machine_id: MachineId, want_rtt: bool) {
+    async fn wait_for_held(url: &str, machine_id: MachineId) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
             let listed = list(url, DIAL, PAIRING).await.unwrap();
             if listed.iter().any(|row| {
-                row.machine_id().ok() == Some(machine_id)
-                    && (!want_rtt || row.register_rtt_ns.is_some())
+                row.machine_id().ok() == Some(machine_id) && row.register_rtt_ns.is_some()
             }) {
                 return;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "expected {machine_id} on List, got {listed:?}"
+                "expected {machine_id} on List with path RTT, got {listed:?}"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
