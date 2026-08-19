@@ -1,4 +1,4 @@
-//! `ployz init --cloud` join path against fake enroll HTTP.
+//! `ployz init --cloud` join and initialize paths against fake enroll HTTP.
 
 use std::{
     net::SocketAddr,
@@ -112,7 +112,7 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     }))
     .await;
     let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder.clone(),
+        assigned_machine: founder,
         visible_peers: Vec::new(),
         target_versions: Default::default(),
     });
@@ -190,7 +190,7 @@ async fn cloud_init_initialize_reserves_cloud_hosted_dns() {
     }))
     .await;
     let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder.clone(),
+        assigned_machine: founder,
         visible_peers: Vec::new(),
         target_versions: Default::default(),
     });
