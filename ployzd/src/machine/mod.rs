@@ -14,8 +14,8 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineUpdate, MachineUpdateError,
-    SelectedEndpoint, apply_machine_update,
+    CloudPairing, LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineUpdate,
+    MachineUpdateError, SelectedEndpoint, apply_machine_update,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -27,6 +27,9 @@ mod local_machine;
 
 pub(crate) use local_machine::RuntimeWatchTelemetry;
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
+
+#[cfg(test)]
+mod register_tests;
 
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
 const STATE_FILE_NAME: &str = "machine.json";
@@ -92,6 +95,8 @@ pub struct LocalMachineRecord {
     pub wireguard_private_key: WireGuardPrivateKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_pairing: Option<CloudPairing>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
 }
@@ -265,6 +270,7 @@ impl LocalMachineRecord {
             },
             wireguard_private_key: self.wireguard_private_key,
             wireguard_mtu: self.wireguard_mtu,
+            cloud_pairing: self.cloud_pairing,
             selected_endpoints: self.selected_endpoints,
         }
     }
@@ -351,6 +357,7 @@ impl LocalMachineStore {
                     },
                     wireguard_private_key: WireGuardPrivateKey::generate(),
                     wireguard_mtu: None,
+                    cloud_pairing: None,
                     selected_endpoints: BTreeMap::new(),
                 };
                 save(&data_dir, &record)?;
@@ -430,6 +437,7 @@ impl LocalMachineStore {
         public_ip: Option<IpAddr>,
         advertised_endpoints: Vec<ployz_core::AdvertisedEndpoint>,
         wireguard_mtu: Option<u32>,
+        cloud_pairing: Option<CloudPairing>,
     ) -> Result<Machine, StoreError> {
         self.require_uninitialized()?;
         if advertised_endpoints.is_empty() {
@@ -454,6 +462,7 @@ impl LocalMachineStore {
             bootstrap: Vec::new(),
         };
         initialized.wireguard_mtu = wireguard_mtu;
+        initialized.cloud_pairing = cloud_pairing;
         save(&self.data_dir, &initialized)?;
         self.record = initialized;
         Ok(machine)
@@ -465,6 +474,7 @@ impl LocalMachineStore {
         visible_peers: Vec<Machine>,
         target_versions: BTreeMap<String, i64>,
         wireguard_mtu: Option<u32>,
+        cloud_pairing: Option<CloudPairing>,
     ) -> Result<(), StoreError> {
         self.require_uninitialized()?;
         if visible_peers.is_empty() {
@@ -481,6 +491,7 @@ impl LocalMachineStore {
             min_store_version: target_versions,
         };
         joining.wireguard_mtu = wireguard_mtu;
+        joining.cloud_pairing = cloud_pairing;
         save(&self.data_dir, &joining)?;
         self.record = joining;
         Ok(())
