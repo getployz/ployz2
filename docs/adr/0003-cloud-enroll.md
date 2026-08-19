@@ -2,7 +2,7 @@
 
 Copy-paste `ployz init --cloud` founds or joins through Cloud. Cloud CAS-claims an empty Relay List so only one Machine Initialize; waiters get `not_yet` until List is live, then join. Machine Subnets are assigned by the Machine named in `cluster.allocator`. A stolen Allocator row must be 5s old before it may Register; a solo founder writes that row already 5s in the past so the first joins are immediate. A Machine that sees more than three Machines, all uncontactable, refuses admit and steal. Cloud Dials any held Register and that Machine forwards `Register` to the Allocator.
 
-Rejected: `ployz join`, Cloud IPAM, steal on Membership Observation Down, min-ID Register target, auto-expiring a Founding Claim back into a second Initialize.
+Rejected: `ployz join`, Cloud IPAM, steal on Membership Observation Down, min-ID Register target, reclaiming a Founding Claim without rotating the Pairing Credential.
 
 ## Paste
 
@@ -24,7 +24,7 @@ Flags that still apply: `--name`, `--network` (default `10.210.0.0/16`), `--no-c
 
 Enroll URL is `https://<cloud-url>/api/enroll/<token>`. Host without a scheme is HTTPS.
 
-Loop: POST identity, honor `not_yet` (`retryAfter` seconds, default 2), until `initialize` or `join`, or give up after 5 minutes.
+Loop: POST identity, honor `not_yet` (`retryAfter` seconds, default 2), until `initialize` or `join`. A waiter that sits through a dead founder gets `initialize` when the 5-minute Founding Claim expires.
 
 Hosted DNS: unless `--no-dns`, Cloud reserves a domain under the same Cloud host after the founder is live. Do not call `dns.uncloud.run` from this command.
 
@@ -39,13 +39,15 @@ POST /api/enroll/<token>
 body: { name, publicKey, advertisedEndpoints, publicIp }
 ```
 
-1. Relay List for this pairing nonempty → `join` (never Initialize).
-2. Else CAS `open` → `founding` → `{ kind: "initialize", pairing }`.
-3. Else `{ kind: "not_yet", retryAfter: 2 }`.
+On each POST, in this order:
 
-The same public key may POST again while `founding` and still get `initialize` (crash retry). Any other key gets `not_yet`.
+1. Relay List for this pairing nonempty → `live` if needed, then `join` (never Initialize).
+2. `founding`, same public key, claim younger than 5 minutes → `initialize` with the **same** pairing (crash retry).
+3. `founding`, claim younger than 5 minutes → `{ kind: "not_yet", retryAfter: 2 }`.
+4. `founding`, claim older than 5 minutes, List still empty → **revoke that Pairing Credential**, CAS `founding` → `open`, then this POST takes the new claim: `{ kind: "initialize", pairing }` with a **new** pairing.
+5. `open` → CAS `open` → `founding` (5-minute TTL) → `{ kind: "initialize", pairing }`.
 
-Founding does **not** expire back to `open`. A dead founder is an operator action (revoke token, issue a new one). Auto-reopen is how you get two Clusters on one pairing.
+Reclaim without rotating pairing is two Clusters on one tenant. A late first founder fails Relay Register (revoked), retries enroll, and `join`s the winner (or wins the next claim). If it already Initialized locally, `Reset` then POST again.
 
 `live` when Relay List is nonempty, or on callback. Callback is UX, not the lock:
 
@@ -67,7 +69,7 @@ Fixes the UT-049 stub for the Cloud path.
 
 Pairing is stored with the local record so every participating Machine dials Relay. `InitializeRequest` / `JoinRequest` carry optional Cloud Pairing.
 
-SSH `machine init HOST` is unchanged: one operator, one destination, no Cloud lock. After it is participating it still writes the Allocator row the same way (backdated), so a later Cloud join can forward `Register` to it.
+A Machine that already Initialized and then hits a revoked pairing (Founding Claim expired under it) must `Reset` and POST enroll again: `join` if List is live, else it may win the next claim.
 
 ## Allocator
 

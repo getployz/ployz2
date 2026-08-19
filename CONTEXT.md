@@ -185,7 +185,7 @@ Cloud's bearer that authorizes copy-paste founding and joining of one Cluster. I
 _Avoid_: pairing token, API key, join URL as identity
 
 **Founding Claim**:
-Cloud's exclusive permission to Initialize for one Cloud Enroll Token while Relay List is empty. It is not a mesh lock and not an Allocator steal.
+Cloud's exclusive, time-bounded permission to Initialize for one Cloud Enroll Token while Relay List is empty. It is not a mesh lock and not an Allocator steal.
 _Avoid_: init mutex, leader election, cluster lock
 
 **Management Address**:
