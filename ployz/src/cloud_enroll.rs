@@ -370,7 +370,9 @@ mod tests {
         let json = serde_json::to_value(&identity).unwrap();
         assert_eq!(
             json.get("publicKey"),
-            Some(&serde_json::json!("XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0="))
+            Some(&serde_json::json!(
+                "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0="
+            ))
         );
     }
 }
