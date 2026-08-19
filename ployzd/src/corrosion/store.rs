@@ -30,6 +30,7 @@ pub struct ReplicatedStore {
 // Solo founder backdates so the first Register is already quiet. ON CONFLICT
 // leaves a later steal's `updated_at = now` alone.
 pub(crate) const CLAIM_FOUNDER_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, datetime('now', '-5 seconds')) ON CONFLICT (key) DO NOTHING";
+pub(crate) const ALLOCATOR_ROW: &str = "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'";
 
 pub(crate) struct MachinePublicationGuard<'a> {
     store: &'a ReplicatedStore,
@@ -219,6 +220,23 @@ impl ReplicatedStore {
         self.api
             .execute([Statement::new(CLAIM_FOUNDER_ALLOCATOR, [json!(machine_id)])])
             .await
+    }
+
+    /// Local Allocator observation: named Machine ID and whether the row is ≥5s old.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the Cluster store cannot be read or the row is malformed.
+    pub(crate) async fn allocator(&self) -> Result<Option<(MachineId, bool)>, Error> {
+        let query = self.api.query(Statement::new(ALLOCATOR_ROW, [])).await?;
+        let rows = query.rows(["allocator", "quiet"])?;
+        let Some([value, quiet]) = rows.first() else {
+            return Ok(None);
+        };
+        Ok(Some((
+            MachineId::parse(text(value, "Allocator")?)?,
+            sqlite_flag(quiet, "Allocator quiet")?,
+        )))
     }
 
     pub async fn cluster_network(&self) -> Result<Ipv4Net, Error> {
@@ -862,6 +880,20 @@ fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str, Error> {
     value
         .as_str()
         .ok_or_else(|| Error::Protocol(format!("invalid {field}")))
+}
+
+fn sqlite_flag(value: &Value, field: &str) -> Result<bool, Error> {
+    match value {
+        Value::Bool(flag) => Ok(*flag),
+        Value::Number(number) => match number.as_i64() {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            Some(_) | None => Err(Error::Protocol(format!("invalid {field}"))),
+        },
+        Value::Null | Value::String(_) | Value::Array(_) | Value::Object(_) => {
+            Err(Error::Protocol(format!("invalid {field}")))
+        }
+    }
 }
 
 fn actor_id(value: &Value) -> Result<String, Error> {

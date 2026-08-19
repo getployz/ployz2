@@ -10,16 +10,18 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId,
     DockerVolumeName, IngressHost, LocalMachinePhase, Machine, MachineId, MachineName,
-    ManagementAddress, WireGuardPublicKey,
+    ManagementAddress, RegisterRequest, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ApiClient, CertificateMaterial, CorrosionConfig, ReplicatedStore, Statement,
+    AdminClient, ApiClient, CertificateMaterial, CorrosionConfig, ReplicatedStore, Statement,
     run_machine_publisher, wait_for_catch_up,
 };
-use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore};
+use crate::machine::{
+    LocalMachine, LocalMachineBody, LocalMachineError, LocalMachineRecord, LocalMachineStore,
+};
 use crate::network::WireGuardPrivateKey;
 
 #[tokio::test]
@@ -444,19 +446,9 @@ async fn founder_publisher_backdates_allocator() {
     ));
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            let query = store
-                .api()
-                .query(Statement::new(
-                    "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'",
-                    [],
-                ))
-                .await
-                .unwrap();
-            if let Ok(rows) = query.rows(["allocator", "quiet"])
-                && let Some([value, quiet]) = rows.first()
+            if let Ok(Some((id, true))) = store.allocator().await
+                && id == published.id
             {
-                assert_eq!(value.as_str(), Some(published.id.as_str()));
-                assert_eq!(quiet, &json!(1));
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -466,6 +458,70 @@ async fn founder_publisher_backdates_allocator() {
     .unwrap();
     shutdown.cancel();
     publisher.await.unwrap().unwrap();
+    running.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires Docker and the pinned Corrosion image"]
+async fn register_admits_only_a_quiet_self_allocator() {
+    let root = TestRoot::new();
+    let mut running = CorrosionConfig::new(
+        root.0.join("data"),
+        root.0.join("run"),
+        unused_address(),
+        unused_address(),
+        format!("ployz-corrosion-register-allocator-{}", MachineId::random()),
+    )
+    .start()
+    .await
+    .unwrap();
+    let store = running.store().clone();
+    let founder = machine("founder", 1);
+    let local = participating_local(root.0.join("local-machine"), store.clone(), founder.clone());
+    store
+        .publish_cluster_network("10.210.0.0/16".parse().unwrap())
+        .await
+        .unwrap();
+    let request = register_request("joiner", 2);
+
+    assert!(matches!(
+        local.register(request.clone()).await,
+        Err(LocalMachineError::NotAllocator)
+    ));
+
+    upsert_allocator(
+        &store,
+        &MachineId::random(),
+        "datetime('now', '-5 seconds')",
+    )
+    .await;
+    assert!(matches!(
+        local.register(request.clone()).await,
+        Err(LocalMachineError::NotAllocator)
+    ));
+
+    upsert_allocator(&store, &founder.id, "datetime('now')").await;
+    assert!(matches!(
+        local.register(request.clone()).await,
+        Err(LocalMachineError::AllocatorNotQuiet)
+    ));
+    assert!(store.machines().await.unwrap().observations.is_empty());
+
+    upsert_allocator(&store, &founder.id, "datetime('now', '-5 seconds')").await;
+    let registered = local.register(request).await.unwrap();
+    assert_eq!(
+        registered.assigned_machine.subnet,
+        "10.210.0.0/24".parse().unwrap()
+    );
+    assert_eq!(
+        store
+            .machine(registered.assigned_machine.id.as_str())
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(&registered.assigned_machine)
+    );
+
     running.cleanup().await.unwrap();
 }
 
@@ -501,6 +557,56 @@ fn write_record(data_dir: &Path, record: &LocalMachineRecord) {
         serde_json::to_vec(record).unwrap(),
     )
     .unwrap();
+}
+
+fn participating_local(
+    data_dir: PathBuf,
+    store: ReplicatedStore,
+    published: Machine,
+) -> LocalMachine {
+    write_record(
+        &data_dir,
+        &LocalMachineRecord {
+            body: LocalMachineBody::Participating {
+                machine: published,
+                cluster_network: Some("10.210.0.0/16".parse().unwrap()),
+                bootstrap: Vec::new(),
+            },
+            wireguard_private_key: WireGuardPrivateKey::generate(),
+            wireguard_mtu: None,
+            selected_endpoints: BTreeMap::new(),
+        },
+    );
+    LocalMachine::new(
+        Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap())),
+        tokio::sync::watch::channel(false).0,
+    )
+    .with_cluster(Some((store, AdminClient::new("/no/such/ployz-admin.sock"))))
+}
+
+fn register_request(name: &str, seed: u8) -> RegisterRequest {
+    RegisterRequest {
+        name: MachineName::parse(name).unwrap(),
+        public_key: WireGuardPublicKey([seed; 32]),
+        public_ip: None,
+        advertised_endpoints: vec![AdvertisedEndpoint(
+            format!("192.0.2.{seed}:51000").parse().unwrap(),
+        )],
+        runtime: Default::default(),
+    }
+}
+
+async fn upsert_allocator(store: &ReplicatedStore, id: &MachineId, updated_at: &str) {
+    store
+        .api()
+        .execute([Statement::new(
+            format!(
+                "INSERT INTO cluster (key, value, updated_at) VALUES ('allocator', ?, {updated_at}) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+            ),
+            [json!(id)],
+        )])
+        .await
+        .unwrap();
 }
 
 fn hex_bytes(actor: &str) -> Vec<u8> {
