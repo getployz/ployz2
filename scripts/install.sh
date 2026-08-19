@@ -196,10 +196,13 @@ main() {
     install_prerequisites
     install_docker
     create_user_and_directories
+    unit=$INSTALL_SYSTEMD_DIR/ployz.service
+    unit_missing=false
+    [ -f "$unit" ] || unit_missing=true
     install_binaries
-    if [ "$DAEMON_REPLACED" = true ]; then
-        install_systemd
-        [ "$INSTALL_ONLY" = true ] || systemctl restart ployz.service
+    install_systemd
+    if [ "$INSTALL_ONLY" != true ] && { [ "$DAEMON_REPLACED" = true ] || [ "$unit_missing" = true ]; }; then
+        systemctl restart ployz.service
     fi
     log "Ployz installed"
 }
