@@ -397,8 +397,8 @@ impl EnrollListen {
         let posts = Arc::new(Mutex::new(Vec::new()));
         let recorded_paths = Arc::clone(&paths);
         let recorded_posts = Arc::clone(&posts);
-        let remaining = Arc::new(Mutex::new(queue));
         let server = tokio::spawn(async move {
+            let mut remaining = queue;
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
                     return;
@@ -417,11 +417,7 @@ impl EnrollListen {
                     .to_owned();
                 recorded_paths.lock().unwrap().push(path);
                 recorded_posts.lock().unwrap().push(enroll_json_body(raw));
-                let body = remaining
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .expect("scripted enroll has a body");
+                let body = remaining.pop_front().expect("scripted enroll has a body");
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
