@@ -17,14 +17,13 @@ use crate::{
 use super::{Error, leaf_matches, string_values, with_client};
 
 mod add;
-mod cloud;
 mod helpers;
 mod init;
 mod inspect;
 mod remove;
 
 pub(super) use add::add;
-pub(super) use cloud::init as cloud_init;
+pub(super) use helpers::{confirm, machine_name};
 pub(super) use init::init;
 pub(super) use inspect::{list, rtt, wireguard_show};
 pub(super) use remove::remove;

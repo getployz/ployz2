@@ -38,7 +38,7 @@ pub(super) fn token_request(matches: &ArgMatches) -> Result<MachineTokenRequest,
     })
 }
 
-pub(super) fn machine_name(
+pub(in crate::handlers) fn machine_name(
     requested: Option<MachineName>,
     token: &MachineToken,
 ) -> Result<MachineName, Error> {
@@ -108,7 +108,7 @@ pub(super) async fn wait_direct_participating(connection: &Connection) -> Result
     .map_err(|_| Error::usage("initial Machine did not become ready"))
 }
 
-pub(super) fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {
+pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {
     if yes {
         return Ok(());
     }

@@ -17,6 +17,7 @@ mod data_loss;
 mod deploy;
 mod dns;
 mod image;
+mod init;
 mod machine;
 mod operator;
 mod project;
@@ -31,13 +32,7 @@ pub fn run() -> Result<(), Error> {
     dispatch(&matches, &mut command)
 }
 
-/// Dispatch a parsed Clap tree to the matching command handler.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the command is unknown, usage is invalid, or the
-/// handler fails.
-pub fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
+fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     if matches.get_flag("version") {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -232,8 +227,8 @@ stub_handlers! {
     image_list(root) { image::list(root) } => "image ls";
     image_push(root) { image::push(root) } => "image push";
     images(root) { image::list(root) } => "images";
+    init(root) { init::run(root) } => "init";
     inspect(root) { service::inspect(root) } => "inspect";
-    init(root) { machine::cloud_init(root) } => "init";
     logs(root) {
         operator::service_logs(root)
     } => "logs";
@@ -328,28 +323,22 @@ mod tests {
             dispatch(&matches, &mut command).unwrap_err().to_string(),
             "local machine initialisation is not implemented; specify a remote machine",
         );
-        let matches = command
-            .clone()
-            .try_get_matches_from(["ployz", "init"])
-            .unwrap();
-        assert_eq!(
-            dispatch(&matches, &mut command).unwrap_err().to_string(),
-            "local machine initialisation is not implemented; pass --cloud",
+    }
+
+    #[test]
+    fn cloud_init_requires_the_cloud_flag() {
+        assert!(
+            crate::cli::command()
+                .try_get_matches_from(["ployz", "init"])
+                .is_err()
         );
-        let matches = command
-            .clone()
-            .try_get_matches_from([
-                "ployz",
-                "init",
-                "--cloud",
-                "pmet_x",
-                "--connect",
-                "root@example.com",
-            ])
+        let parsed = crate::cli::command()
+            .try_get_matches_from(["ployz", "init", "--cloud", "pmet_test"])
             .unwrap();
+        let init = parsed.subcommand_matches("init").unwrap();
         assert_eq!(
-            dispatch(&matches, &mut command).unwrap_err().to_string(),
-            "init --cloud talks to local ployzd; do not use an SSH destination",
+            init.get_one::<String>("cloud-url").map(String::as_str),
+            Some("ployz.dev")
         );
     }
 

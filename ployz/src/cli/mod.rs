@@ -239,6 +239,15 @@ fn images() -> Command {
         .arg(positional("image", false))
 }
 
+fn init() -> Command {
+    base("init", "Found or join a Cluster through Cloud")
+        .arg(value("cloud", None).required(true))
+        .arg(value("cloud-url", None).default_value("ployz.dev"))
+        .arg(value("name", Some('n')))
+        .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
+        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+}
+
 fn inspect(name: &'static str) -> Command {
     base(name, "Inspect a service").arg(positional("service", true))
 }
@@ -341,21 +350,6 @@ fn provisioning_flags(command: Command) -> Command {
 
 fn machine_add() -> Command {
     provisioning_flags(base("add", "Add a remote machine")).arg(positional("destination", true))
-}
-
-fn init() -> Command {
-    Command::new("init")
-        .about("Initialise this Machine through Cloud enroll")
-        .args(connection_args(false))
-        .arg(value("context", Some('c')).default_value("default"))
-        .arg(value("cloud", None))
-        .arg(value("cloud-url", None).default_value(crate::enroll::DEFAULT_CLOUD_HOST))
-        .arg(value("name", Some('n')))
-        .arg(value("network", None).default_value("10.210.0.0/16"))
-        .arg(switch("no-caddy", None))
-        .arg(switch("no-dns", None))
-        .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
 
 fn machine_init() -> Command {
@@ -536,61 +530,6 @@ fn completion() -> Command {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn cloud_init_requires_cloud_and_defaults_cloud_url() {
-        let matches = super::command()
-            .try_get_matches_from(["ployz", "init", "--cloud", "pmet_x"])
-            .unwrap();
-        let init = matches.subcommand_matches("init").unwrap();
-        assert_eq!(init.get_one::<String>("cloud").unwrap(), "pmet_x");
-        assert_eq!(
-            init.get_one::<String>("cloud-url").unwrap(),
-            crate::enroll::DEFAULT_CLOUD_HOST
-        );
-        assert_eq!(init.get_one::<String>("network").unwrap(), "10.210.0.0/16");
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "init", "--cloud", "pmet_x", "root@host"])
-                .is_err()
-        );
-        assert!(
-            super::command()
-                .try_get_matches_from([
-                    "ployz",
-                    "init",
-                    "--cloud",
-                    "pmet_x",
-                    "--ssh-key",
-                    "/tmp/key"
-                ])
-                .is_err()
-        );
-        let flags = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "init",
-                "--cloud",
-                "pmet_x",
-                "--name",
-                "edge",
-                "--network",
-                "10.220.0.0/16",
-                "--no-caddy",
-                "--no-dns",
-                "--yes",
-                "--wg-mtu",
-                "1400",
-            ])
-            .unwrap();
-        let init = flags.subcommand_matches("init").unwrap();
-        assert_eq!(init.get_one::<String>("name").unwrap(), "edge");
-        assert_eq!(init.get_one::<String>("network").unwrap(), "10.220.0.0/16");
-        assert!(init.get_flag("no-caddy"));
-        assert!(init.get_flag("no-dns"));
-        assert!(init.get_flag("yes"));
-        assert_eq!(init.get_one::<u32>("wg-mtu").copied(), Some(1400));
-    }
-
     #[test]
     fn root_version_flags_are_accepted() {
         for flag in ["--version", "-V"] {

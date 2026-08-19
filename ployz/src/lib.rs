@@ -1,5 +1,6 @@
 pub mod caddy;
 pub mod cli;
+mod cloud_enroll;
 mod cluster;
 mod cluster_teardown;
 pub mod compose;
@@ -7,7 +8,6 @@ pub mod connect;
 pub mod context;
 pub mod deploy;
 pub mod dns;
-mod enroll;
 pub mod failure;
 pub mod handlers;
 pub mod image;

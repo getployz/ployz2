@@ -791,7 +791,7 @@ impl From<PairingCredential> for String {
     }
 }
 
-/// Cloud's bearer that authorizes copy-paste founding and joining of one Cluster.
+/// Cloud's bearer that authorizes founding and joining of one Cluster.
 ///
 /// It is not a Pairing Credential and not a Dial Credential.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -845,7 +845,7 @@ impl From<CloudEnrollToken> for String {
 }
 
 #[cfg(test)]
-mod cloud_enroll_token_tests {
+mod tests {
     use super::*;
 
     #[test]

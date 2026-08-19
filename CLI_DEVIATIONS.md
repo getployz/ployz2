@@ -1,9 +1,9 @@
+- `cloud-init` — Add `ployz init --cloud TOKEN` for Cloud enroll; not in the frozen Uncloud CLI.
 - `product-identity` — Rename `uc`, `--uncloud-config`, `UNCLOUD_*`, and the config path to Ployz-owned names; product identity must not expose compatibility aliases.
 - `root-version-flag` — Accept `ployz --version` and `ployz -V` on the root command so the CLI version is available without a subcommand. The frozen `uc` page dropped this flag when Uncloud replaced it with `uc version`.
 - `plain-caddy-config` — Drop `ployz caddy config --no-color`; the Machine RPC returns the owned Caddyfile as plain text and Ployz has no coloured mode to disable.
 - `native-completion` — Add `ployz completion <SHELL>`; completion is preserved through Clap's native shell generators rather than Cobra's hidden protocol.
 - `local-machine-init-stub` — Make `ployz machine init [DESTINATION]` syntactically optional so the preserved local-initialisation path reaches its explicit not-implemented handler.
-- `cloud-init` — Add `ployz init --cloud`; Cloud enroll founds this Machine locally. Frozen Uncloud had no this-box init command.
 - `no-nightly-daemon-channel` — Reject `--version nightly`; Ployz has `stable`, `beta`, and explicit-version installs only.
 - `compose-plugin-scope` — Probe the client-side Docker Compose plugin only for `deploy`, `build`, and bare `logs`; explicit-service `logs` and unrelated commands have no global Compose preflight.
 - `compose-prerequisite-errors` — Report command-specific Ployz prerequisite errors when the Docker CLI or Compose plugin is unavailable, without requiring a reachable Docker daemon.
