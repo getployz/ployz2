@@ -8,15 +8,19 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
-use super::store::{ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, INSERT_ALLOCATOR_NOW};
+use super::store::{AGE_ALLOCATOR, ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, STEAL_ALLOCATOR};
 use super::{ApiClient, ReplicatedStore};
 use ployz_core::MachineId;
+
+const NAME_ALLOCATOR_AFTER_LOOKUP: &str =
+    "UPDATE cluster SET value = ? WHERE key = 'allocator' AFTER LOOKUP";
 
 #[derive(Clone)]
 struct ClusterKv {
     network: String,
     machines: BTreeMap<String, String>,
     allocator: Option<(String, bool)>,
+    pending_allocator: Option<(String, bool)>,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +46,7 @@ async fn bind(allocator: Option<(String, bool)>) -> (ReplicatedStore, tokio::tas
         network: "10.210.0.0/16".into(),
         machines: BTreeMap::new(),
         allocator,
+        pending_allocator: None,
     }));
     let server = tokio::spawn(async move {
         axum::serve(
@@ -69,7 +74,7 @@ async fn transactions(State(kv): State<Arc<Mutex<ClusterKv>>>, body: Bytes) -> V
 }
 
 fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
-    let kv = kv.lock().unwrap();
+    let mut kv = kv.lock().unwrap();
     match statement.query.as_str() {
         "SELECT id, info FROM machines ORDER BY name" => events(
             &["id", "info"],
@@ -79,6 +84,11 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
         ),
         "SELECT info FROM machines WHERE id = ?" => {
             let id = text_param(&statement.params, 0);
+            if kv.allocator.as_ref().is_some_and(|(named, _)| named == id)
+                && let Some(pending) = kv.pending_allocator.take()
+            {
+                kv.allocator = Some(pending);
+            }
             events(&["info"], kv.machines.get(id).map(|info| vec![json!(info)]))
         }
         "SELECT value FROM cluster WHERE key = 'network'" => {
@@ -105,8 +115,17 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 let id = text_param(&statement.params, 0).to_owned();
                 kv.allocator.get_or_insert((id, true));
             }
-            INSERT_ALLOCATOR_NOW => {
+            STEAL_ALLOCATOR => {
                 kv.allocator = Some((text_param(&statement.params, 0).to_owned(), false));
+            }
+            AGE_ALLOCATOR => {
+                if let Some((id, _)) = &kv.allocator {
+                    let id = id.clone();
+                    kv.allocator = Some((id, true));
+                }
+            }
+            NAME_ALLOCATOR_AFTER_LOOKUP => {
+                kv.pending_allocator = Some((text_param(&statement.params, 0).to_owned(), true));
             }
             query if query.starts_with("INSERT INTO machines (id, info,") => {
                 kv.machines.insert(
@@ -142,9 +161,24 @@ fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>>) -> Bytes
 }
 
 pub(crate) async fn insert_young_allocator(store: &ReplicatedStore, id: &MachineId) {
+    store.steal_allocator(id).await.unwrap();
+}
+
+pub(crate) async fn age_allocator(store: &ReplicatedStore) {
     store
         .api()
-        .execute([super::Statement::new(INSERT_ALLOCATOR_NOW, [json!(id)])])
+        .execute([super::Statement::new(AGE_ALLOCATOR, [])])
+        .await
+        .unwrap();
+}
+
+pub(crate) async fn name_allocator_after_lookup(store: &ReplicatedStore, id: &MachineId) {
+    store
+        .api()
+        .execute([super::Statement::new(
+            NAME_ALLOCATOR_AFTER_LOOKUP,
+            [json!(id)],
+        )])
         .await
         .unwrap();
 }
