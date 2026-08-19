@@ -151,6 +151,7 @@ async fn participating() -> (
             None,
             vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             None,
+            None,
         )
         .unwrap();
     replicated.publish_local_machine(&founder).await.unwrap();
