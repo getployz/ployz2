@@ -31,7 +31,13 @@ pub fn run() -> Result<(), Error> {
     dispatch(&matches, &mut command)
 }
 
-fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
+/// Dispatch a parsed Clap tree to the matching command handler.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the command is unknown, usage is invalid, or the
+/// handler fails.
+pub fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     if matches.get_flag("version") {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -227,6 +233,7 @@ stub_handlers! {
     image_push(root) { image::push(root) } => "image push";
     images(root) { image::list(root) } => "images";
     inspect(root) { service::inspect(root) } => "inspect";
+    init(root) { machine::cloud_init(root) } => "init";
     logs(root) {
         operator::service_logs(root)
     } => "logs";
@@ -320,6 +327,29 @@ mod tests {
         assert_eq!(
             dispatch(&matches, &mut command).unwrap_err().to_string(),
             "local machine initialisation is not implemented; specify a remote machine",
+        );
+        let matches = command
+            .clone()
+            .try_get_matches_from(["ployz", "init"])
+            .unwrap();
+        assert_eq!(
+            dispatch(&matches, &mut command).unwrap_err().to_string(),
+            "local machine initialisation is not implemented; pass --cloud",
+        );
+        let matches = command
+            .clone()
+            .try_get_matches_from([
+                "ployz",
+                "init",
+                "--cloud",
+                "pmet_x",
+                "--connect",
+                "root@example.com",
+            ])
+            .unwrap();
+        assert_eq!(
+            dispatch(&matches, &mut command).unwrap_err().to_string(),
+            "init --cloud talks to local ployzd; do not use an SSH destination",
         );
     }
 

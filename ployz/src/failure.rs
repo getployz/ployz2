@@ -156,6 +156,7 @@ from_error!(
     RpcError,
     ProjectError,
     AmbiguousDataLossName,
+    crate::enroll::EnrollError,
 );
 
 impl From<ConnectError> for Failure {

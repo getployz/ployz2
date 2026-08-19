@@ -7,6 +7,7 @@ pub mod connect;
 pub mod context;
 pub mod deploy;
 pub mod dns;
+mod enroll;
 pub mod failure;
 pub mod handlers;
 pub mod image;
