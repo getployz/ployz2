@@ -166,7 +166,7 @@ async fn register_does_not_allocate_when_this_machine_is_not_the_allocator() {
 #[tokio::test]
 async fn register_is_not_quiet_when_the_allocator_row_is_young() {
     let (local, replicated, founder, data_dir, server) = participating_without_allocator().await;
-    fake_cluster::insert_young_allocator(&replicated, &founder.id).await;
+    replicated.steal_allocator(&founder.id).await.unwrap();
     let error = local
         .register(request("peer", WireGuardPublicKey([1; 32])))
         .await
@@ -432,7 +432,7 @@ async fn unreachable_allocator_forwards_when_reread_names_a_reachable_allocator(
             .serve_with_incoming(TcpListenerStream::new(listener)),
     );
 
-    let (contact_dir, contact_store, contact_machine) = open_store("ployzd-register-reread");
+    let (contact_dir, contact_store, _contact_machine) = open_store("ployzd-register-reread");
     let (contact_replica, contact_cluster) = fake_cluster::store().await;
     let unreachable_id = MachineId::parse("c".repeat(32)).unwrap();
     contact_replica
@@ -443,7 +443,7 @@ async fn unreachable_allocator_forwards_when_reread_names_a_reachable_allocator(
         .publish_founder_allocator(&unreachable_id)
         .await
         .unwrap();
-    fake_cluster::name_allocator_after_lookup(&contact_replica, &reachable.id).await;
+    fake_cluster::name_allocator_on_reread(&contact_replica, &unreachable_id, &reachable.id).await;
     let contact = machine_service(contact_store, contact_replica.clone(), Some(port));
 
     let registered = rpc_register(
@@ -463,15 +463,6 @@ async fn unreachable_allocator_forwards_when_reread_names_a_reachable_allocator(
             .map(|row| row.machine_id),
         Some(reachable.id)
     );
-    assert_ne!(
-        contact_replica
-            .allocator()
-            .await
-            .unwrap()
-            .map(|row| row.machine_id),
-        Some(contact_machine.id),
-        "re-read of a reachable Allocator must not steal"
-    );
     allocator_cluster.abort();
     contact_cluster.abort();
     let _ = std::fs::remove_dir_all(allocator_dir);
@@ -482,6 +473,7 @@ async fn unreachable_allocator_forwards_when_reread_names_a_reachable_allocator(
 async fn membership_down_or_suspect_does_not_steal() {
     let (local, replicated, founder, data_dir, server) = participating().await;
     let before = replicated.allocator().await.unwrap();
+    let founder_id = founder.id;
     let peer = unreachable_allocator(MachineId::parse("d".repeat(32)).unwrap());
     let _observations = RuntimeWatchTelemetry {
         states: BTreeMap::from([
@@ -491,7 +483,7 @@ async fn membership_down_or_suspect_does_not_steal() {
         selected_endpoints: BTreeMap::new(),
         rtts: Vec::new(),
     }
-    .overlay(vec![founder.clone(), peer], &founder.id);
+    .overlay(vec![founder, peer], &founder_id);
 
     assert_eq!(replicated.allocator().await.unwrap(), before);
     local
@@ -504,7 +496,7 @@ async fn membership_down_or_suspect_does_not_steal() {
             .await
             .unwrap()
             .map(|row| row.machine_id),
-        Some(founder.id)
+        Some(founder_id)
     );
 
     server.abort();

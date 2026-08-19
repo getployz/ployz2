@@ -8,9 +8,9 @@ use std::{
 use ployz_core::{
     CaddyConfig, CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerList,
     ContractDescription, Domain, DomainRecords, ImageIngestReason, ImagePulled, LocalMachinePhase,
-    LogMetadata, LogOrigin, MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload,
-    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList,
-    VolumeRemoved, op,
+    LogMetadata, LogOrigin, MachineId, MachineLogService, MachineRpc, MachineRpcClient,
+    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    VolumeList, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -127,59 +127,72 @@ impl MachineService {
         &self,
         payload: OpaquePayload,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let replicated = match self.local.replicated() {
-            Ok(store) => store,
-            Err(error) => return local_error(error),
-        };
-        let mut failed = None;
-        loop {
-            let allocator = match replicated.allocator().await {
-                Ok(Some(row)) => row.machine_id,
-                Ok(None) => return local_error(LocalMachineError::NotAllocator),
-                Err(error) => return local_error(error.into()),
-            };
-            if failed == Some(allocator) {
+        match self.contact_named(&payload).await? {
+            Ok(response) => Ok(response),
+            Err(failed_allocator) => {
+                let replicated = match self.local.replicated() {
+                    Ok(store) => store,
+                    Err(error) => return local_error(error),
+                };
+                let named = match replicated.allocator().await {
+                    Ok(row) => row.map(|row| row.machine_id),
+                    Err(error) => return local_error(error.into()),
+                };
+                if named != Some(failed_allocator)
+                    && let Ok(response) = self.contact_named(&payload).await?
+                {
+                    return Ok(response);
+                }
                 let me = match self.local_record() {
                     Ok(record) => record.id(),
                     Err(error) => return Err(error),
                 };
-                return match replicated.steal_allocator(&me).await {
+                match replicated.steal_allocator(&me).await {
                     Ok(()) => local_error(LocalMachineError::AllocatorNotQuiet),
                     Err(error) => local_error(error.into()),
-                };
-            }
-            let Some(target) = (match replicated.machine(allocator.as_str()).await {
-                Ok(machine) => machine,
-                Err(error) => return local_error(error.into()),
-            }) else {
-                failed = Some(allocator);
-                continue;
-            };
-            let endpoint = Endpoint::from_shared(format!(
-                "http://[{}]:{}",
-                target.management_address.0, self.machine_api_port
-            ))
-            .map_err(|error| Status::internal(error.to_string()))?
-            .connect_timeout(Duration::from_secs(10));
-            let mut client = MachineRpcClient::new(match endpoint.connect().await {
-                Ok(channel) => channel,
-                Err(_) => {
-                    failed = Some(allocator);
-                    continue;
-                }
-            });
-            let mut outbound = Request::new(payload.clone());
-            outbound.metadata_mut().insert(
-                REGISTER_FORWARDED_METADATA,
-                "1".parse().expect("ASCII metadata"),
-            );
-            match client.register(outbound).await {
-                Ok(response) => return Ok(response),
-                Err(_) => {
-                    failed = Some(allocator);
-                    continue;
                 }
             }
+        }
+    }
+
+    /// Forward to the named Allocator. `Err(id)` means that Machine was unreachable.
+    async fn contact_named(
+        &self,
+        payload: &OpaquePayload,
+    ) -> Result<Result<Response<OpaquePayload>, MachineId>, Status> {
+        let replicated = match self.local.replicated() {
+            Ok(store) => store,
+            Err(error) => return local_error(error).map(Ok),
+        };
+        let allocator = match replicated.allocator().await {
+            Ok(Some(row)) => row.machine_id,
+            Ok(None) => return local_error(LocalMachineError::NotAllocator).map(Ok),
+            Err(error) => return local_error(error.into()).map(Ok),
+        };
+        let Some(target) = (match replicated.machine(allocator.as_str()).await {
+            Ok(machine) => machine,
+            Err(error) => return local_error(error.into()).map(Ok),
+        }) else {
+            return Ok(Err(allocator));
+        };
+        let endpoint = Endpoint::from_shared(format!(
+            "http://[{}]:{}",
+            target.management_address.0, self.machine_api_port
+        ))
+        .map_err(|error| Status::internal(error.to_string()))?
+        .connect_timeout(Duration::from_secs(10));
+        let mut client = MachineRpcClient::new(match endpoint.connect().await {
+            Ok(channel) => channel,
+            Err(_) => return Ok(Err(allocator)),
+        });
+        let mut outbound = Request::new(payload.clone());
+        outbound.metadata_mut().insert(
+            REGISTER_FORWARDED_METADATA,
+            "1".parse().expect("ASCII metadata"),
+        );
+        match client.register(outbound).await {
+            Ok(response) => Ok(Ok(response)),
+            Err(_) => Ok(Err(allocator)),
         }
     }
 }
