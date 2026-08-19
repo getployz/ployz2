@@ -155,7 +155,19 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{Machine, MachineId, MachineName, PairingCredential, Registered};
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
+
+    use ployz_core::{
+        AdvertisedEndpoint, Machine, MachineId, MachineName, MachineToken, PairingCredential,
+        Registered,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
 
     use super::*;
 
@@ -297,5 +309,152 @@ mod tests {
             panic!("expected not_yet");
         };
         assert_eq!(retry_after, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn not_yet_honors_retry_after_seconds() {
+        let Response::NotYet { retry_after } =
+            parse_enroll(br#"{"kind":"not_yet","retryAfter":5}"#).unwrap()
+        else {
+            panic!("expected not_yet");
+        };
+        assert_eq!(retry_after, Duration::from_secs(5));
+    }
+
+    fn waiter_identity() -> EnrollIdentity {
+        EnrollIdentity::from_machine_token(
+            MachineName::parse("waiter").unwrap(),
+            &MachineToken {
+                public_key: WireGuardPublicKey([7; 32]),
+                public_ip: Some("192.0.2.7".parse().unwrap()),
+                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.7:51820".parse().unwrap())],
+                runtime: Default::default(),
+            },
+        )
+    }
+
+    fn join_body() -> serde_json::Value {
+        serde_json::json!({
+            "kind": "join",
+            "pairing": pairing(),
+            "registration": registration(),
+        })
+    }
+
+    fn initialize_body() -> serde_json::Value {
+        serde_json::json!({
+            "kind": "initialize",
+            "pairing": pairing(),
+        })
+    }
+
+    #[tokio::test]
+    async fn not_yet_retries_until_join_with_the_same_identity() {
+        let script = EnrollScript::start([
+            serde_json::json!({"kind": "not_yet", "retryAfter": 0}),
+            join_body(),
+        ])
+        .await;
+        let identity = waiter_identity();
+        let Outcome::Join(join) = enroll(&script.url, &identity).await.unwrap() else {
+            panic!("expected join");
+        };
+        assert_eq!(join.registration, registration());
+        assert_same_identity(&script.posts(), &identity);
+    }
+
+    #[tokio::test]
+    async fn not_yet_retries_until_initialize_with_the_same_identity() {
+        let script = EnrollScript::start([
+            serde_json::json!({"kind": "not_yet", "retryAfter": 0}),
+            initialize_body(),
+        ])
+        .await;
+        let identity = waiter_identity();
+        let Outcome::Initialize { pairing: got } = enroll(&script.url, &identity).await.unwrap()
+        else {
+            panic!("expected initialize");
+        };
+        assert_eq!(got, pairing());
+        assert_same_identity(&script.posts(), &identity);
+    }
+
+    #[tokio::test]
+    async fn same_public_key_can_receive_initialize_again() {
+        let script = EnrollScript::start([initialize_body()]).await;
+        let identity = waiter_identity();
+        let first = enroll(&script.url, &identity).await.unwrap();
+        let second = enroll(&script.url, &identity).await.unwrap();
+        assert_eq!(first, Outcome::Initialize { pairing: pairing() });
+        assert_eq!(first, second);
+        assert_same_identity(&script.posts(), &identity);
+    }
+
+    fn assert_same_identity(posts: &[serde_json::Value], identity: &EnrollIdentity) {
+        let expected = serde_json::to_value(identity).unwrap();
+        assert_eq!(posts, &[expected.clone(), expected]);
+    }
+
+    struct EnrollScript {
+        url: String,
+        posts: Arc<Mutex<Vec<serde_json::Value>>>,
+        _server: tokio::task::JoinHandle<()>,
+    }
+
+    impl EnrollScript {
+        async fn start(bodies: impl IntoIterator<Item = serde_json::Value>) -> Self {
+            let queue: VecDeque<Vec<u8>> = bodies
+                .into_iter()
+                .map(|body| serde_json::to_vec(&body).unwrap())
+                .collect();
+            assert!(!queue.is_empty());
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let posts = Arc::new(Mutex::new(Vec::new()));
+            let recorded = Arc::clone(&posts);
+            let remaining = Arc::new(Mutex::new(queue));
+            let server = tokio::spawn(async move {
+                loop {
+                    let Ok((mut stream, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let mut buf = vec![0; 8192];
+                    let n = stream.read(&mut buf).await.unwrap();
+                    let raw = buf.get(..n).expect("read count is in bounds");
+                    recorded.lock().unwrap().push(json_body(raw));
+                    let body = {
+                        let mut remaining = remaining.lock().unwrap();
+                        let body = remaining.pop_front().expect("scripted enroll has a body");
+                        if remaining.is_empty() {
+                            remaining.push_back(body.clone());
+                        }
+                        body
+                    };
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(header.as_bytes()).await.unwrap();
+                    stream.write_all(&body).await.unwrap();
+                }
+            });
+            Self {
+                url: format!("http://{address}"),
+                posts,
+                _server: server,
+            }
+        }
+
+        fn posts(&self) -> Vec<serde_json::Value> {
+            self.posts.lock().unwrap().clone()
+        }
+    }
+
+    fn json_body(raw: &[u8]) -> serde_json::Value {
+        let sep = raw
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("HTTP request has a header separator");
+        serde_json::from_slice(raw.get(sep + 4..).expect("body follows headers")).unwrap()
     }
 }
