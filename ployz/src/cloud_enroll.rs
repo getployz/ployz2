@@ -1,4 +1,4 @@
-//! Cloud enroll HTTP: POST identity, consume `join`.
+//! Cloud enroll HTTP: POST identity, consume `initialize` / `join`.
 
 use std::{net::IpAddr, time::Duration};
 
@@ -20,8 +20,6 @@ pub(crate) enum Error {
     Json(#[from] serde_json::Error),
     #[error("enroll HTTP {status}: {body}")]
     Status { status: u16, body: String },
-    #[error("enroll initialize is not implemented")]
-    Initialize,
 }
 
 /// Identity POSTed to `POST /api/enroll/<token>`.
@@ -52,10 +50,18 @@ pub(crate) struct Join {
     pub registration: Registered,
 }
 
-/// Enroll outcome this command understands.
+/// Enroll outcome after `not_yet` retries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Outcome {
+    Join(Box<Join>),
+    Initialize { pairing: CloudPairing },
+}
+
+/// One enroll POST body.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Response {
     Join(Box<Join>),
+    Initialize { pairing: CloudPairing },
     NotYet { retry_after: Duration },
 }
 
@@ -71,12 +77,7 @@ enum EnrollWire {
         retry_after: Option<u64>,
     },
     Initialize {
-        #[serde(default)]
-        #[expect(
-            dead_code,
-            reason = "pairing is accepted then ignored; #412 owns Initialize"
-        )]
-        pairing: Option<CloudPairing>,
+        pairing: CloudPairing,
     },
 }
 
@@ -92,18 +93,19 @@ pub(crate) fn enroll_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
     format!("{origin}/api/enroll/{}", token.as_str())
 }
 
-/// POST identity until Cloud returns `join` or a terminal failure.
+/// POST identity until Cloud returns `initialize` or `join`.
 ///
 /// # Errors
 ///
-/// HTTP, unexpected JSON, or an `initialize` response (sibling ticket).
-pub(crate) async fn enroll_join(url: &str, identity: &EnrollIdentity) -> Result<Join, Error> {
+/// HTTP or unexpected JSON.
+pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outcome, Error> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()?;
     loop {
         match post_once(&http, url, identity).await? {
-            Response::Join(join) => return Ok(*join),
+            Response::Join(join) => return Ok(Outcome::Join(join)),
+            Response::Initialize { pairing } => return Ok(Outcome::Initialize { pairing }),
             Response::NotYet { retry_after } => tokio::time::sleep(retry_after).await,
         }
     }
@@ -138,7 +140,7 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
         EnrollWire::NotYet { retry_after } => Ok(Response::NotYet {
             retry_after: Duration::from_secs(retry_after.unwrap_or(DEFAULT_RETRY_AFTER)),
         }),
-        EnrollWire::Initialize { .. } => Err(Error::Initialize),
+        EnrollWire::Initialize { pairing } => Ok(Response::Initialize { pairing }),
     }
 }
 
@@ -239,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn initialize_is_refused() {
+    fn initialize_payload_is_cloud_pairing() {
         let value = serde_json::json!({
             "kind": "initialize",
             "pairing": {
@@ -247,10 +249,26 @@ mod tests {
                 "secret": "pairing-secret",
             },
         });
-        assert!(matches!(
-            parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err(),
-            Error::Initialize
-        ));
+        let Response::Initialize { pairing: got } =
+            parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
+        else {
+            panic!("expected initialize");
+        };
+        assert_eq!(got, pairing());
+    }
+
+    #[test]
+    fn initialize_pairing_with_a_dial_field_is_rejected() {
+        let value = serde_json::json!({
+            "kind": "initialize",
+            "pairing": {
+                "relayUrl": "https://relay.example.invalid",
+                "secret": "pairing-secret",
+                "dial": "dial-credential",
+            },
+        });
+        let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
+        assert!(error.to_string().contains("unknown field"), "{error}");
     }
 
     #[test]
