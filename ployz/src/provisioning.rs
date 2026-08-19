@@ -28,6 +28,8 @@ pub enum ProvisionError {
     Install(#[source] io::Error),
     #[error("remote Ployz installer exited with {status}")]
     InstallFailed { status: std::process::ExitStatus },
+    #[error("run this command with sudo")]
+    NotRoot,
 }
 
 fn shell_quote(value: &str) -> String {
@@ -151,6 +153,43 @@ pub fn provision(matches: &ArgMatches) -> Result<(), ProvisionError> {
     }
 }
 
+/// Install and start local `ployzd` with the embedded Machine installer.
+pub fn provision_local() -> Result<(), ProvisionError> {
+    if !process_is_root() {
+        return Err(ProvisionError::NotRoot);
+    }
+    let encoded = STANDARD.encode(include_bytes!("../../scripts/install.sh"));
+    let pipeline = install_command(&encoded, "root", env!("CARGO_PKG_VERSION"));
+    let mut install = Command::new("bash");
+    install
+        .arg("-c")
+        .arg(format!("set -o pipefail; {pipeline}"));
+    if let Some(user) = local_group_user() {
+        install.env("PLOYZ_GROUP_ADD_USER", user);
+    }
+    let status = install.status().map_err(ProvisionError::Install)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ProvisionError::InstallFailed { status })
+    }
+}
+
+fn local_group_user() -> Option<String> {
+    std::env::var("SUDO_USER")
+        .ok()
+        .filter(|user| !user.is_empty())
+}
+
+fn process_is_root() -> bool {
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|uid| uid.trim() == "0")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +204,13 @@ mod tests {
             install_command("SCRIPT", "deploy", "1.2.3"),
             "printf '%s' 'SCRIPT' | base64 -d | sudo PLOYZ_GROUP_ADD_USER='deploy' PLOYZ_VERSION='1.2.3' bash"
         );
+    }
+
+    #[test]
+    fn local_provision_requires_root() {
+        if process_is_root() {
+            return;
+        }
+        assert!(matches!(provision_local(), Err(ProvisionError::NotRoot)));
     }
 }

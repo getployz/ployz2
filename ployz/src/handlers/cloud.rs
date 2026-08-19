@@ -1,4 +1,4 @@
-//! `ployz init --cloud`: enroll `initialize` or `join` on this Machine.
+//! `ployz cloud enroll`: enroll `initialize` or `join` on this Machine.
 
 use std::time::Duration;
 
@@ -11,10 +11,11 @@ use ployz_core::{
 use super::{Error, connect_client, leaf_matches, required, runtime};
 use crate::cloud_enroll::{self, EnrollIdentity, Outcome};
 use crate::connect::{Client, ConnectError};
+use crate::context::ContextError;
 
-pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let token = CloudEnrollToken::parse(required(matches, "cloud")?)?;
+    let token = CloudEnrollToken::parse(required(matches, "token")?)?;
     let cloud_url = matches
         .get_one::<String>("cloud-url")
         .expect("cloud-url has a default");
@@ -34,7 +35,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let no_dns = matches.get_flag("no-dns");
 
     runtime()?.block_on(async {
-        let mut client = connect_client(matches, None).await?;
+        let mut client = connect_machine(matches).await?;
         loop {
             client = ensure_uninitialized(matches, yes, client).await?;
             let machine_token = client
@@ -125,6 +126,34 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
             }
         }
     })
+}
+
+async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {
+    match connect_client(matches, None).await {
+        Ok(client) => Ok(client),
+        Err(error) if no_config(&error) => {
+            crate::provisioning::provision_local()?;
+            wait_client(matches).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn no_config(error: &Error) -> bool {
+    error.to_string() == ContextError::NoConfig.to_string()
+}
+
+async fn wait_client(matches: &ArgMatches) -> Result<Client, Error> {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if let Ok(client) = connect_client(matches, None).await {
+                return client;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .map_err(|_| Error::usage("local daemon did not start".to_owned()))
 }
 
 async fn ensure_uninitialized(
