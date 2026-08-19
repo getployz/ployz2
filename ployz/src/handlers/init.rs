@@ -10,7 +10,7 @@ use ployz_core::{
 
 use super::{Error, connect_client, leaf_matches, required, runtime};
 use crate::cloud_enroll::{self, EnrollIdentity, Outcome};
-use crate::connect::ConnectError;
+use crate::connect::{Client, ConnectError};
 
 pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -36,22 +36,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
     runtime()?.block_on(async {
         let mut client = connect_client(matches, None).await?;
         loop {
-            let details = client
-                .call::<op::Inspect>(InspectRequest::default(), None)
-                .await?;
-            if details.phase != LocalMachinePhase::Uninitialized {
-                crate::handlers::machine::confirm(
-                    yes,
-                    "Reset the Machine before joining this Cluster?",
-                )?;
-                client.call::<op::Reset>(ResetRequest {}, None).await?;
-                client = wait_phase(
-                    matches,
-                    LocalMachinePhase::Uninitialized,
-                    "Machine did not reset",
-                )
-                .await?;
-            }
+            client = ensure_uninitialized(matches, yes, client).await?;
             let machine_token = client
                 .call::<op::MachineToken>(MachineTokenRequest::default(), None)
                 .await?;
@@ -81,7 +66,7 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
                     return Ok(());
                 }
                 Outcome::Initialize { pairing } => {
-                    match client
+                    let initialized = match client
                         .call::<op::Initialize>(
                             InitializeRequest {
                                 name,
@@ -95,52 +80,72 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
                         )
                         .await
                     {
-                        Ok(initialized) => {
-                            let machine = initialized.machine;
-                            let mut ready = wait_phase(
-                                matches,
-                                LocalMachinePhase::Participating,
-                                "initial Machine did not become ready",
-                            )
-                            .await?;
-                            if let Err(error) = cloud_enroll::callback(
-                                &cloud_enroll::callback_url(cloud_url, &token),
-                                machine.id,
-                            )
-                            .await
-                            {
-                                // List, not callback, is the lock.
-                                eprintln!("{}", Error::warned("enroll callback failed", error));
-                            }
-                            if !no_dns {
-                                let domain = ready
-                                    .call::<op::ReserveDomain>(
-                                        ReserveDomainRequest {
-                                            endpoint: cloud_enroll::dns_endpoint(cloud_url),
-                                        },
-                                        None,
-                                    )
-                                    .await?;
-                                println!("Reserved Cluster domain: {}", domain.name);
-                            }
-                            if !no_caddy {
-                                let image = crate::caddy::latest_image().await?;
-                                let requested = crate::caddy::service_spec(image, Vec::new(), None);
-                                crate::deploy::apply_requested(&mut ready, &requested).await?;
-                                if !no_dns {
-                                    crate::dns::update_records_for_caddy(&mut ready).await?;
-                                }
-                            }
-                            println!("Initialised Machine {} ({})", machine.name, machine.id);
-                            return Ok(());
-                        }
+                        Ok(initialized) => initialized,
                         Err(error) if pairing_revoked(&error) => continue,
                         Err(error) => return Err(error.into()),
+                    };
+                    let machine = initialized.machine;
+                    let mut ready = wait_phase(
+                        matches,
+                        LocalMachinePhase::Participating,
+                        "initial Machine did not become ready",
+                    )
+                    .await?;
+                    if let Err(error) = cloud_enroll::callback(
+                        &cloud_enroll::callback_url(cloud_url, &token),
+                        machine.id,
+                    )
+                    .await
+                    {
+                        // List, not callback, is the lock.
+                        eprintln!("{}", Error::warned("enroll callback failed", error));
                     }
+                    if !no_dns {
+                        let domain = ready
+                            .call::<op::ReserveDomain>(
+                                ReserveDomainRequest {
+                                    endpoint: cloud_enroll::dns_endpoint(cloud_url),
+                                },
+                                None,
+                            )
+                            .await?;
+                        println!("Reserved Cluster domain: {}", domain.name);
+                    }
+                    if !no_caddy {
+                        let image = crate::caddy::latest_image().await?;
+                        let requested = crate::caddy::service_spec(image, Vec::new(), None);
+                        crate::deploy::apply_requested(&mut ready, &requested).await?;
+                        if !no_dns {
+                            crate::dns::update_records_for_caddy(&mut ready).await?;
+                        }
+                    }
+                    println!("Initialised Machine {} ({})", machine.name, machine.id);
+                    return Ok(());
                 }
             }
         }
     })
+}
+
+async fn ensure_uninitialized(
+    matches: &ArgMatches,
+    yes: bool,
+    mut client: Client,
+) -> Result<Client, Error> {
+    let details = client
+        .call::<op::Inspect>(InspectRequest::default(), None)
+        .await?;
+    if details.phase == LocalMachinePhase::Uninitialized {
+        return Ok(client);
+    }
+    crate::handlers::machine::confirm(yes, "Reset the Machine before joining this Cluster?")?;
+    client.call::<op::Reset>(ResetRequest {}, None).await?;
+    wait_phase(
+        matches,
+        LocalMachinePhase::Uninitialized,
+        "Machine did not reset",
+    )
+    .await
 }
 
 fn pairing_revoked(error: &ConnectError) -> bool {
@@ -154,7 +159,7 @@ async fn wait_phase(
     matches: &ArgMatches,
     phase: LocalMachinePhase,
     timeout_message: &str,
-) -> Result<crate::connect::Client, Error> {
+) -> Result<Client, Error> {
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             if let Ok(mut client) = connect_client(matches, None).await

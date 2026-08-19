@@ -471,26 +471,19 @@ async fn revoked_pairing_resets_and_joins() {
     );
 
     assert_eq!(daemon.reset_count(), 1);
-    assert_eq!(daemon.register_secrets(), [DEAD, PAIRING]);
     assert_eq!(enroll.posts().len(), 2);
     assert!(
         enroll.callbacks().is_empty(),
         "join must not POST enroll callback"
     );
     assert_eq!(
-        serde_json::to_value(
-            daemon
-                .initialize_requests()
-                .first()
-                .and_then(|init| init.cloud_pairing.as_ref())
-        )
-        .unwrap(),
-        json!({ "relayUrl": relay.url, "secret": DEAD })
+        daemon
+            .initialize_requests()
+            .first()
+            .and_then(|init| init.cloud_pairing.as_ref()),
+        Some(&dead)
     );
-    assert_eq!(
-        serde_json::to_value(daemon.join_request().cloud_pairing.as_ref()).unwrap(),
-        json!({ "relayUrl": relay.url, "secret": PAIRING })
-    );
+    assert_eq!(daemon.join_request().cloud_pairing.as_ref(), Some(&live));
 
     assert_not_held(&relay.url, DEAD, machine_id).await;
     wait_for_held(&relay.url, PAIRING, machine_id).await;
@@ -531,7 +524,6 @@ async fn revoked_pairing_resets_and_initializes_with_new_pairing() {
     );
 
     assert_eq!(daemon.reset_count(), 1);
-    assert_eq!(daemon.register_secrets(), [DEAD, PAIRING]);
     assert_eq!(enroll.posts().len(), 2);
     assert_eq!(
         enroll.callbacks(),
@@ -540,17 +532,14 @@ async fn revoked_pairing_resets_and_initializes_with_new_pairing() {
     let requests = daemon.initialize_requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(
-        serde_json::to_value(
-            requests
-                .first()
-                .and_then(|init| init.cloud_pairing.as_ref())
-        )
-        .unwrap(),
-        json!({ "relayUrl": relay.url, "secret": DEAD })
+        requests
+            .first()
+            .and_then(|init| init.cloud_pairing.as_ref()),
+        Some(&dead)
     );
     assert_eq!(
-        serde_json::to_value(requests.get(1).and_then(|init| init.cloud_pairing.as_ref())).unwrap(),
-        json!({ "relayUrl": relay.url, "secret": PAIRING })
+        requests.get(1).and_then(|init| init.cloud_pairing.as_ref()),
+        Some(&live)
     );
 
     assert_not_held(&relay.url, DEAD, machine_id).await;
@@ -564,12 +553,7 @@ async fn revoked_pairing_reset_confirms_unless_yes() {
     let relay = RelayListen::start().await;
     relay.revoke(DEAD).await;
     let dead = pairing_on(&relay, DEAD);
-    let live = pairing_on(&relay, PAIRING);
-    let enroll = EnrollListen::script([
-        json!({ "kind": "initialize", "pairing": dead }),
-        json!({ "kind": "initialize", "pairing": live }),
-    ])
-    .await;
+    let enroll = EnrollListen::start(json!({ "kind": "initialize", "pairing": dead })).await;
     let daemon = JoinDaemon::new(Registered {
         assigned_machine: founder,
         visible_peers: Vec::new(),
@@ -590,6 +574,12 @@ async fn revoked_pairing_reset_confirms_unless_yes() {
     assert_eq!(daemon.reset_count(), 0);
     assert_eq!(enroll.posts().len(), 1);
     assert!(enroll.callbacks().is_empty());
-    assert_eq!(daemon.register_secrets(), [DEAD]);
+    assert_eq!(
+        daemon
+            .initialize_requests()
+            .first()
+            .and_then(|init| init.cloud_pairing.as_ref()),
+        Some(&dead)
+    );
     assert_not_held(&relay.url, DEAD, machine_id).await;
 }

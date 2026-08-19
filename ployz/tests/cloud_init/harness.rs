@@ -179,9 +179,8 @@ struct JoinInner {
     registration: Registered,
     joined: AtomicBool,
     join_request: Mutex<Option<JoinRequest>>,
-    initialize_request: Mutex<Vec<InitializeRequest>>,
+    initialize_requests: Mutex<Vec<InitializeRequest>>,
     reserve_request: Mutex<Option<ReserveDomainRequest>>,
-    register_secrets: Mutex<Vec<String>>,
     resets: AtomicUsize,
     _register: Mutex<Option<mpsc::Sender<RegisterRequest>>>,
 }
@@ -193,9 +192,8 @@ impl JoinDaemon {
                 registration,
                 joined: AtomicBool::new(false),
                 join_request: Mutex::new(None),
-                initialize_request: Mutex::new(Vec::new()),
+                initialize_requests: Mutex::new(Vec::new()),
                 reserve_request: Mutex::new(None),
-                register_secrets: Mutex::new(Vec::new()),
                 resets: AtomicUsize::new(0),
                 _register: Mutex::new(None),
             }),
@@ -219,11 +217,7 @@ impl JoinDaemon {
     }
 
     pub fn initialize_requests(&self) -> Vec<InitializeRequest> {
-        self.inner.initialize_request.lock().unwrap().clone()
-    }
-
-    pub fn register_secrets(&self) -> Vec<String> {
-        self.inner.register_secrets.lock().unwrap().clone()
+        self.inner.initialize_requests.lock().unwrap().clone()
     }
 
     pub fn reset_count(&self) -> usize {
@@ -336,7 +330,6 @@ impl MachineRpc for JoinDaemon {
             pairing.secret(),
             &join.registration.assigned_machine.id,
             &self.inner._register,
-            &self.inner.register_secrets,
         )
         .await?;
         *self.inner.join_request.lock().unwrap() = Some(join);
@@ -361,14 +354,13 @@ impl MachineRpc for JoinDaemon {
             .ok_or_else(|| Status::invalid_argument("Initialize must persist Cloud Pairing"))?;
         let mut machine = self.inner.registration.assigned_machine.clone();
         machine.name = init.name.clone();
-        self.inner.initialize_request.lock().unwrap().push(init);
+        self.inner.initialize_requests.lock().unwrap().push(init);
         self.inner.joined.store(true, Ordering::SeqCst);
         if let Err(status) = hold_register(
             pairing.relay_url(),
             pairing.secret(),
             &machine.id,
             &self.inner._register,
-            &self.inner.register_secrets,
         )
         .await
         {
@@ -588,9 +580,7 @@ async fn hold_register(
     pairing: &PairingCredential,
     machine_id: &MachineId,
     slot: &Mutex<Option<mpsc::Sender<RegisterRequest>>>,
-    secrets: &Mutex<Vec<String>>,
 ) -> Result<(), Status> {
-    secrets.lock().unwrap().push(pairing.as_str().to_owned());
     let channel = Endpoint::from_shared(url.to_owned())
         .unwrap()
         .connect_timeout(Duration::from_secs(5))
