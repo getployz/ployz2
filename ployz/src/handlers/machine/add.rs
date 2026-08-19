@@ -136,10 +136,13 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     if let Some(error) = caddy_error {
         return Err(Error::usage(caddy_follow_on_error(&error)));
     }
-    Error::best_effort(
-        "hosted DNS refresh failed after adding the Machine",
-        dns_result,
-    )
+    if let Err(error) = dns_result {
+        eprintln!(
+            "{}",
+            Error::warned("hosted DNS refresh failed after adding the Machine", error)
+        );
+    }
+    Ok(())
 }
 
 async fn wait_machine_up(entry: &mut Client, machine_id: &MachineId) -> Result<(), Error> {
