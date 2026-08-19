@@ -153,6 +153,7 @@ async fn volume_store_is_an_error_when_the_store_is_unreachable() {
             .await
             .is_err()
     );
+    assert!(store.allocator().await.is_err());
 }
 
 #[tokio::test]
@@ -270,6 +271,68 @@ fn only_a_participating_founder_claims_allocator() {
         ..joined
     };
     assert_eq!(founder_allocator_id(&joining), None);
+}
+
+#[tokio::test]
+async fn allocator_row_names_the_machine() {
+    let id = MachineId::parse("a".repeat(32)).unwrap();
+    let address = serve_query(query_body(
+        &["value"],
+        vec![vec![serde_json::json!(id.as_str())]],
+    ))
+    .await;
+    assert_eq!(
+        ReplicatedStore::http1(address).allocator().await.unwrap(),
+        Some(id)
+    );
+}
+
+#[tokio::test]
+async fn missing_allocator_row_is_none() {
+    let address = serve_query(query_body(&["value"], Vec::new())).await;
+    assert_eq!(
+        ReplicatedStore::http1(address).allocator().await.unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn invalid_allocator_value_is_an_error() {
+    let address = serve_query(query_body(
+        &["value"],
+        vec![vec![serde_json::json!("not-a-machine-id")]],
+    ))
+    .await;
+    assert!(ReplicatedStore::http1(address).allocator().await.is_err());
+}
+
+async fn serve_query(body: Vec<u8>) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            axum::Router::new()
+                .route("/v1/queries", axum::routing::post(fixed_query))
+                .with_state(body),
+        )
+        .await
+        .unwrap();
+    });
+    address
+}
+
+async fn fixed_query(axum::extract::State(body): axum::extract::State<Vec<u8>>) -> Vec<u8> {
+    body
+}
+
+fn query_body(columns: &[&str], rows: Vec<Vec<serde_json::Value>>) -> Vec<u8> {
+    let mut body = serde_json::to_vec(&serde_json::json!({ "columns": columns })).unwrap();
+    for (index, row) in rows.into_iter().enumerate() {
+        body.extend(serde_json::to_vec(&serde_json::json!({ "row": [index, row] })).unwrap());
+    }
+    body.extend(serde_json::to_vec(&serde_json::json!({ "eoq": { "time": 0.0 } })).unwrap());
+    body
 }
 
 #[tokio::test]

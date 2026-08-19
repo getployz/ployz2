@@ -171,6 +171,11 @@ impl ReplicatedStore {
         &self.api
     }
 
+    #[cfg(test)]
+    pub(crate) fn http1(address: std::net::SocketAddr) -> Self {
+        Self::new(ApiClient::http1(address, &"a".repeat(64)).unwrap())
+    }
+
     pub async fn publish_local_machine(&self, machine: &Machine) -> Result<(), Error> {
         self.machine_publication().await.publish(machine).await
     }
@@ -219,6 +224,26 @@ impl ReplicatedStore {
         self.api
             .execute([Statement::new(CLAIM_FOUNDER_ALLOCATOR, [json!(machine_id)])])
             .await
+    }
+
+    /// Machine named as Allocator in cluster KV, if the row exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the Cluster store cannot be read or the value is not a Machine ID.
+    pub async fn allocator(&self) -> Result<Option<MachineId>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT value FROM cluster WHERE key = 'allocator'",
+                [],
+            ))
+            .await?;
+        let rows = query.rows(["value"])?;
+        let Some([value]) = rows.first() else {
+            return Ok(None);
+        };
+        Ok(Some(MachineId::parse(text(value, "Allocator")?)?))
     }
 
     pub async fn cluster_network(&self) -> Result<Ipv4Net, Error> {

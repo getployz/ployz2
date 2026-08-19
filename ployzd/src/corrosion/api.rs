@@ -35,6 +35,15 @@ pub(crate) struct ApiClient {
 
 impl ApiClient {
     pub(crate) fn new(address: SocketAddr, token: &str) -> Result<Self, Error> {
+        Self::build(address, token, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn http1(address: SocketAddr, token: &str) -> Result<Self, Error> {
+        Self::build(address, token, false)
+    }
+
+    fn build(address: SocketAddr, token: &str, http2: bool) -> Result<Self, Error> {
         let base_url = Url::parse(&format!("http://{address}"))
             .map_err(|error| Error::Protocol(error.to_string()))?;
         let mut headers = header::HeaderMap::new();
@@ -52,13 +61,17 @@ impl ApiClient {
                     request.success()
                 }
             });
-        let client = Client::builder()
-            .http2_prior_knowledge()
+        let mut client = Client::builder()
             .connect_timeout(Duration::from_secs(3))
             .default_headers(headers)
-            .retry(retry)
-            .build()?;
-        Ok(Self { base_url, client })
+            .retry(retry);
+        if http2 {
+            client = client.http2_prior_knowledge();
+        }
+        Ok(Self {
+            base_url,
+            client: client.build()?,
+        })
     }
 
     pub(crate) async fn execute(

@@ -19,7 +19,9 @@ use crate::{
     corrosion::{AdminClient, ReplicatedStore},
     docker::{ContainerRuntime, Error as DockerError, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
-    machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
+    machine::{
+        LocalMachine, LocalMachineError, LocalMachineStore, REGISTER_FORWARDED_METADATA, StoreError,
+    },
     runtime_watch::serve_replicated_runtime_watch,
 };
 
@@ -168,7 +170,16 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.register(expect::<op::Register>(request)?).await)
+        let forwarded = request
+            .metadata()
+            .get(REGISTER_FORWARDED_METADATA)
+            .is_some();
+        let request = expect::<op::Register>(request)?;
+        if forwarded {
+            finish(self.local.admit_register(request).await)
+        } else {
+            finish(self.local.register(request).await)
+        }
     }
 
     async fn join(
@@ -681,6 +692,10 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             message: "Machine name or public key already exists".into(),
             details: Value::Null,
         }),
+        LocalMachineError::NotAllocator => respond(unavailable("Machine is not the Allocator")),
+        LocalMachineError::AllocatorUnreachable => respond(unavailable("Allocator is unreachable")),
+        LocalMachineError::Remote(error) => respond(error),
+        LocalMachineError::Codec(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::EmptyUpdate => respond(RpcError {
             code: RpcErrorCode::InvalidArgument,
             message: "at least one Machine update is required".into(),
