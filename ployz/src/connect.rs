@@ -520,12 +520,12 @@ pub(crate) async fn revoke_cloud_pairing(
 ///
 /// Returns [`ConnectError::InvalidDialCredential`] when the bearer is rejected,
 /// or another [`ConnectError`] when the Relay call fails.
-pub async fn list_held(
-    url: impl AsRef<str>,
-    credential: DialCredential,
-    pairing: PairingCredential,
+pub(crate) async fn list_held(
+    url: &str,
+    credential: &DialCredential,
+    pairing: &PairingCredential,
 ) -> Result<Vec<HeldRegister>, ConnectError> {
-    relay::list_held(url.as_ref(), &credential, &pairing).await
+    relay::list_held(url, credential, pairing).await
 }
 
 /// Open a Machine RPC channel through Cloud Relay.

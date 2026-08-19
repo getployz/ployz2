@@ -117,6 +117,18 @@ async fn bad_credentials_and_unknown_machines_reject_with_typed_errors() {
     };
     assert_eq!(empty.code, RpcErrorCode::Unauthenticated);
 
+    let empty_pairing = timeout(
+        Duration::from_secs(2),
+        sdk::connect(&session.url, relay::DIAL, "", machine_id),
+    )
+    .await
+    .expect("empty pairing must not hang");
+    let empty_pairing = match empty_pairing {
+        Ok(_) => panic!("expected empty pairing to fail"),
+        Err(error) => error,
+    };
+    assert_eq!(empty_pairing.code, RpcErrorCode::InvalidArgument);
+
     let bad = timeout(
         Duration::from_secs(2),
         sdk::connect(&session.url, "wrong-secret", relay::PAIRING, machine_id),

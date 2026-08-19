@@ -102,7 +102,7 @@ pub async fn list_held(
 ) -> Result<Vec<HeldRegister>, RpcError> {
     let credential = parse_dial(bearer)?;
     let pairing = parse_pairing(pairing)?;
-    list_held_relay(relay_url, credential, pairing)
+    list_held_relay(relay_url, &credential, &pairing)
         .await
         .map_err(RpcError::from)
 }
