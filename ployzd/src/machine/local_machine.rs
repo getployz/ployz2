@@ -106,6 +106,8 @@ pub enum Error {
     AllocatorNotQuiet,
     #[error("this Machine is not the Allocator")]
     NotAllocator,
+    #[error("this Machine is isolation-locked")]
+    IsolationLocked,
 }
 
 impl LocalMachine {
@@ -316,12 +318,13 @@ impl LocalMachine {
     ///
     /// Returns [`Error::Store`] when endpoints are missing, [`Error::NotParticipating`]
     /// when this Machine is not participating, [`Error::ClusterStoreUnavailable`]
-    /// when the Cluster store is missing, [`Error::AllocatorNotQuiet`] when this
-    /// Machine is named Allocator but the row is younger than 5s,
-    /// [`Error::NotAllocator`] when the row names another Machine or is missing,
-    /// [`Error::DuplicateMachine`] when the name or public key already exists,
-    /// [`Error::Network`] when subnet allocation fails, and [`Error::Cluster`]
-    /// when replicated I/O fails.
+    /// when the Cluster store is missing, [`Error::IsolationLocked`] when the
+    /// machines replica is larger than three and every other Machine is
+    /// uncontactable, [`Error::AllocatorNotQuiet`] when this Machine is named
+    /// Allocator but the row is younger than 5s, [`Error::NotAllocator`] when
+    /// the row names another Machine or is missing, [`Error::DuplicateMachine`]
+    /// when the name or public key already exists, [`Error::Network`] when
+    /// subnet allocation fails, and [`Error::Cluster`] when replicated I/O fails.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
         if request.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints.into());
@@ -333,10 +336,41 @@ impl LocalMachine {
             }
             record.id()
         };
+        if self.isolation_locked().await? {
+            return Err(Error::IsolationLocked);
+        }
         match self.replicated()?.allocator().await? {
             Some(row) if row.machine_id == me => self.admit_local_register(request).await,
             _ => Err(Error::NotAllocator),
         }
+    }
+
+    /// Isolation lock: replica larger than three and every other Machine
+    /// uncontactable on Membership Observation. Mesh membership, not Relay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned,
+    /// [`Error::ClusterStoreUnavailable`] when the Cluster store is missing,
+    /// and [`Error::Cluster`] when the machines replica cannot be read.
+    /// Unreadable Membership Observation does not lock.
+    pub(crate) async fn isolation_locked(&self) -> Result<bool, Error> {
+        let me = self.record()?.id();
+        let Some(cluster) = &self.cluster else {
+            return Err(Error::ClusterStoreUnavailable);
+        };
+        let machines = cluster.replicated.machines().await?.observations;
+        if machines.len() <= 3 {
+            return Ok(false);
+        }
+        let Ok(states) = cluster.admin.membership_states().await else {
+            return Ok(false);
+        };
+        Ok(isolated_from_mesh(
+            &me,
+            machines,
+            membership_states_by_address(states),
+        ))
     }
 
     async fn admit_local_register(&self, request: RegisterRequest) -> Result<Registered, Error> {
@@ -622,6 +656,21 @@ fn membership_states_by_address(
             IpAddr::V4(_) => None,
         })
         .collect()
+}
+
+fn isolated_from_mesh(
+    me: &MachineId,
+    machines: Vec<Machine>,
+    states: BTreeMap<ManagementAddress, MembershipObservation>,
+) -> bool {
+    machines.len() > 3
+        && RuntimeWatchTelemetry {
+            states,
+            ..Default::default()
+        }
+        .overlay(machines, me)
+        .iter()
+        .all(|observation| observation.machine.id == *me || !observation.membership.invites_rpc())
 }
 
 /// Associate one value per management address; duplicate addresses are dropped.
