@@ -248,3 +248,30 @@ fn huge_replica_request_with_an_unknown_existing_host_fails_preflight() {
         Err(PlanError::CapacityUnknown)
     );
 }
+
+#[test]
+fn huge_replica_request_preflights_the_persistent_hook_endpoint() {
+    let replicas = u32::MAX - 1;
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(replicas).unwrap(),
+    });
+    requested.pre_deploy = Some(PreDeployHook {
+        command: vec!["migrate".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    assert_eq!(
+        plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "first")],
+                capacity: capacity([('1', u64::from(replicas))]),
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        Err(PlanError::InsufficientCapacity)
+    );
+}

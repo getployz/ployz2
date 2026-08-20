@@ -17,6 +17,7 @@ pub(super) mod capacity;
 mod placement;
 mod volumes;
 
+use capacity::CapacityBudget;
 use placement::{
     CapacityAdmission, PlacementState, ReplicatedPlacement, is_up_to_date, plan_global,
     plan_replicated,
@@ -214,19 +215,17 @@ fn assemble_plan(
     let mut pins = VolumePins::default();
     let name_errors_with_service = bound.requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
-    let mut placement = PlacementState::from_snapshot(snapshot);
-    let mut anchor_capacity = placement.capacity().clone();
+    let mut capacity = CapacityBudget::from_snapshot(snapshot);
     let reservations = prepare_shared_replicated_volumes(
         &volume_uses,
         snapshot,
         &bound.requested,
         &services,
         &mut pins,
-        &mut anchor_capacity,
+        &mut capacity,
         &intent.options,
     )?;
-    placement.replace_capacity(anchor_capacity);
-    placement.add_reservations(reservations);
+    let mut placement = PlacementState::new(capacity, reservations);
     let mut service_operations = Vec::new();
     for spec in &bound.requested {
         service_operations.extend(
