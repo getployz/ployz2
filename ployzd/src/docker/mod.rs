@@ -612,6 +612,8 @@ fn container_address(inspected: &RawContainerInspect) -> Option<ContainerAddress
 pub enum Error {
     #[error("host telemetry failed: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Ployz Docker bridge has no free endpoint capacity")]
+    EndpointCapacity,
     #[error("Docker operation failed: {0}")]
     Docker(#[from] bollard::errors::Error),
     #[error("Docker inspect JSON failed: {0}")]
@@ -671,6 +673,7 @@ impl Error {
                 ..
             }) => RpcErrorCode::Conflict,
             Self::MissingPreDeployHook
+            | Self::EndpointCapacity
             | Self::DurationOverflow
             | Self::SizeOverflow
             | Self::InvalidContainerConfig(_)

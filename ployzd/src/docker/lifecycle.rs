@@ -170,6 +170,9 @@ impl ContainerRuntime {
             spec.container.pull_policy,
         )
         .await?;
+        if self.docker.telemetry().await?.bridge_free_endpoints == 0 {
+            return Err(Error::EndpointCapacity);
+        }
         let mut config_operation = self.specs.config_operation().await;
         mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
         self.finish_create(
