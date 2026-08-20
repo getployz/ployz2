@@ -260,6 +260,10 @@ impl ContainerRuntime {
     }
 
     /// Read fresh Docker bridge and host telemetry.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker or a required host probe cannot be read.
     pub async fn telemetry(&self) -> Result<MachineTelemetry, Error> {
         self.docker.telemetry().await
     }
