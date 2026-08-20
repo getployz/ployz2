@@ -694,6 +694,40 @@ fn two_services_sharing_a_named_volume_create_it_once() {
 }
 
 #[test]
+fn shared_volume_anchor_skips_machine_without_capacity_for_all_services() {
+    let mut first = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    first.name = ServiceName::parse("first").unwrap();
+    add_named_volume(&mut first, "data");
+    let mut second = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    second.name = ServiceName::parse("second").unwrap();
+    add_named_volume(&mut second, "data");
+
+    let plan = plan_deploy(
+        [&first, &second],
+        &DeploySnapshot {
+            machines: vec![machine('1', "one-slot"), machine('2', "two-slots")],
+            capacity: capacity([('1', 1), ('2', 2)]),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::CreateVolume { machine_id: volume, .. },
+            DeployOperation::RunContainer { machine_id: first, .. },
+            DeployOperation::RunContainer { machine_id: second, .. },
+        ] if volume == &machine_id('2') && first == volume && second == volume
+    ));
+}
+
+#[test]
 fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(2).unwrap(),

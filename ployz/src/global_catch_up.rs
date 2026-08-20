@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use ployz_core::{
     BridgeEndpointCapacity, ContainerRuntimeObservation, EnsureGlobalSlotRequest, InspectRequest,
-    Machine, MachineTarget, QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceMode,
-    ServiceObservation, machine_matches_placement, op,
+    Machine, MachineId, MachineTarget, QualifiedService, ResolvedServiceSpec, RpcError,
+    ServiceContainer, ServiceMode, ServiceObservation, machine_matches_placement, op,
 };
 
 use crate::{
@@ -41,6 +41,59 @@ impl From<CatchUpError> for Failure {
 impl From<ConnectError> for CatchUpError {
     fn from(error: ConnectError) -> Self {
         Self::Other(error.into())
+    }
+}
+
+pub(crate) trait CatchUpClient {
+    async fn observe_services(&mut self) -> Result<(Vec<ServiceObservation>, bool), CatchUpError>;
+
+    async fn bridge_capacity(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<Option<BridgeEndpointCapacity>, CatchUpError>;
+
+    async fn ensure_global_slot(
+        &self,
+        machine_id: &MachineId,
+        request: EnsureGlobalSlotRequest,
+    ) -> Result<(), RpcError>;
+}
+
+impl CatchUpClient for Client {
+    async fn observe_services(&mut self) -> Result<(Vec<ServiceObservation>, bool), CatchUpError> {
+        let live = self.live_services().await?;
+        Ok((live.services(), live.containers.all_targets_succeeded()))
+    }
+
+    async fn bridge_capacity(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<Option<BridgeEndpointCapacity>, CatchUpError> {
+        let details = self
+            .invoke::<op::Inspect>(
+                InspectRequest {
+                    telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
+                    ..Default::default()
+                },
+                &MachineTarget::from(machine_id),
+                None,
+            )
+            .await
+            .map_err(|error| CatchUpError::Other(error.into()))?;
+        Ok(details.telemetry.map(|telemetry| match telemetry {
+            ployz_core::TelemetryObservation::BridgeCapacity { bridge }
+            | ployz_core::TelemetryObservation::Full { bridge, .. } => bridge,
+        }))
+    }
+
+    async fn ensure_global_slot(
+        &self,
+        machine_id: &MachineId,
+        request: EnsureGlobalSlotRequest,
+    ) -> Result<(), RpcError> {
+        self.invoke::<op::EnsureGlobalSlot>(request, &MachineTarget::from(machine_id), None)
+            .await
+            .map(|_| ())
     }
 }
 
@@ -122,15 +175,15 @@ fn caddy_running_on(services: &[ServiceObservation], this_machine: &Machine) -> 
     })
 }
 
-async fn wait_for_observations(
-    client: &mut Client,
+async fn wait_for_observations<C: CatchUpClient>(
+    client: &mut C,
     skip_caddy: bool,
 ) -> Result<Vec<ServiceObservation>, CatchUpError> {
     match tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let live = client.live_services().await?;
-            if live.containers.all_targets_succeeded() {
-                return Ok(live.services());
+            let (services, complete) = client.observe_services().await?;
+            if complete {
+                return Ok(services);
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -158,32 +211,16 @@ async fn wait_for_observations(
 /// capacity is unknown or insufficient, when expected Caddy cannot be placed,
 /// or when Caddy was expected and is still not running after catch-up. Other
 /// Global failures are warnings.
-pub async fn catch_up_globals(
-    client: &mut Client,
+pub(crate) async fn catch_up_globals<C: CatchUpClient>(
+    client: &mut C,
     this_machine: &Machine,
     skip_caddy: bool,
 ) -> Result<(), CatchUpError> {
     let services = wait_for_observations(client, skip_caddy).await?;
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
     if !slots.is_empty() {
-        let details = client
-            .invoke::<op::Inspect>(
-                InspectRequest {
-                    telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
-                    ..Default::default()
-                },
-                &MachineTarget::from(&this_machine.id),
-                None,
-            )
-            .await
-            .map_err(|error| CatchUpError::Other(error.into()))?;
-        if let Some(error) = global_capacity_error(
-            slots.len(),
-            details
-                .telemetry
-                .as_ref()
-                .map(|telemetry| telemetry.bridge()),
-        ) {
+        let capacity = client.bridge_capacity(&this_machine.id).await?;
+        if let Some(error) = global_capacity_error(slots.len(), capacity.as_ref()) {
             return Err(CatchUpError::Other(Failure::usage(error.to_string())));
         }
     }
@@ -194,13 +231,12 @@ pub async fn catch_up_globals(
     for slot in slots {
         let identity = slot.identity.clone();
         match client
-            .invoke::<op::EnsureGlobalSlot>(
+            .ensure_global_slot(
+                &this_machine.id,
                 EnsureGlobalSlotRequest {
                     project_name: slot.identity.project,
                     resolved_spec: slot.spec,
                 },
-                &MachineTarget::from(&this_machine.id),
-                None,
             )
             .await
         {
@@ -219,8 +255,8 @@ pub async fn catch_up_globals(
         }
     }
     if expect_caddy {
-        let live = client.live_services().await?;
-        if !caddy_running_on(&live.services(), this_machine) {
+        let (services, _) = client.observe_services().await?;
+        if !caddy_running_on(&services, this_machine) {
             return Err(CatchUpError::Caddy(Failure::usage(
                 "Caddy is not running on this Machine".to_owned(),
             )));
@@ -244,7 +280,7 @@ fn global_capacity_error(
 
 #[cfg(test)]
 mod tests {
-    use std::{net::Ipv6Addr, num::NonZeroU32};
+    use std::{cell::Cell, net::Ipv6Addr, num::NonZeroU32};
 
     use ployz_core::{
         ContainerId, ContainerKind, ContainerObservation, ContainerResources,
@@ -270,6 +306,59 @@ mod tests {
             global_capacity_error(1, Some(&BridgeEndpointCapacity::new(1, 0))),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn catch_up_rejects_unknown_capacity_before_ensuring_a_slot() {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let mut client = FakeCatchUpClient {
+            services: vec![global_service(
+                qualified("app", "api"),
+                'a',
+                Placement::default(),
+                running_on(&founder, 'a'),
+            )],
+            capacity: None,
+            ensure_calls: Cell::new(0),
+        };
+
+        let error = catch_up_globals(&mut client, &joiner, false)
+            .await
+            .expect_err("unknown capacity must reject catch-up");
+
+        assert!(matches!(error, CatchUpError::Other(_)));
+        assert_eq!(client.ensure_calls.get(), 0);
+    }
+
+    struct FakeCatchUpClient {
+        services: Vec<ServiceObservation>,
+        capacity: Option<BridgeEndpointCapacity>,
+        ensure_calls: Cell<usize>,
+    }
+
+    impl CatchUpClient for FakeCatchUpClient {
+        async fn observe_services(
+            &mut self,
+        ) -> Result<(Vec<ServiceObservation>, bool), CatchUpError> {
+            Ok((self.services.clone(), true))
+        }
+
+        async fn bridge_capacity(
+            &self,
+            _machine_id: &MachineId,
+        ) -> Result<Option<BridgeEndpointCapacity>, CatchUpError> {
+            Ok(self.capacity.clone())
+        }
+
+        async fn ensure_global_slot(
+            &self,
+            _machine_id: &MachineId,
+            _request: EnsureGlobalSlotRequest,
+        ) -> Result<(), RpcError> {
+            self.ensure_calls.set(self.ensure_calls.get() + 1);
+            Ok(())
+        }
     }
 
     #[test]

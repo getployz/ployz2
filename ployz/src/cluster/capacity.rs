@@ -37,10 +37,11 @@ pub(super) async fn observe(
         .await
         .into_iter()
         .filter_map(|(machine_id, response)| {
-            response.ok()?.telemetry.map(|telemetry| {
-                let capacity = telemetry.bridge().clone();
-                (machine_id, capacity)
-            })
+            let bridge = match response.ok()?.telemetry? {
+                ployz_core::TelemetryObservation::BridgeCapacity { bridge }
+                | ployz_core::TelemetryObservation::Full { bridge, .. } => bridge,
+            };
+            Some((machine_id, bridge))
         })
         .collect()
 }

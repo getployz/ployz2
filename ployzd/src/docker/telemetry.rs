@@ -1,7 +1,13 @@
 //! Docker bridge capacity and host telemetry probes.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashSet,
+    net::IpAddr,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
+use bollard::models::IpamConfig;
+use ipnet::IpNet;
 use ployz_core::{BridgeEndpointCapacity, ByteCapacity, MachineTelemetry};
 
 use super::{Error, LocalDocker};
@@ -16,10 +22,9 @@ impl LocalDocker {
             network
                 .ipam
                 .and_then(|ipam| ipam.config)
-                .into_iter()
-                .flatten()
-                .filter_map(|config| config.subnet),
-        );
+                .as_deref()
+                .ok_or(Error::MissingField("Docker bridge IPAM configuration"))?,
+        )?;
         let attached_endpoints = network
             .containers
             .as_ref()
@@ -54,16 +59,71 @@ impl LocalDocker {
     }
 }
 
-fn usable_endpoint_count(subnets: impl IntoIterator<Item = String>) -> u64 {
-    subnets
-        .into_iter()
-        .filter_map(|subnet| subnet.parse::<ipnet::Ipv4Net>().ok())
-        .map(|subnet| {
-            let addresses = 1_u64 << (32 - subnet.prefix_len());
-            // Docker reserves the network, broadcast, and configured gateway.
-            addresses.saturating_sub(3)
-        })
-        .sum()
+fn usable_endpoint_count(configs: &[IpamConfig]) -> Result<u64, Error> {
+    if configs.is_empty() {
+        return Err(Error::MissingField("Docker bridge IPAM configuration"));
+    }
+
+    configs.iter().try_fold(0_u64, |total, config| {
+        total
+            .checked_add(usable_endpoints(config)?)
+            .ok_or(Error::MissingField("representable Docker bridge capacity"))
+    })
+}
+
+fn usable_endpoints(config: &IpamConfig) -> Result<u64, Error> {
+    let invalid = || Error::MissingField("usable Docker bridge IPAM configuration");
+    let subnet_text = config.subnet.as_deref().ok_or_else(invalid)?;
+    let subnet = subnet_text.parse::<IpNet>().map_err(|_| invalid())?;
+    let pool = config
+        .ip_range
+        .as_deref()
+        .unwrap_or(subnet_text)
+        .parse::<IpNet>()
+        .map_err(|_| invalid())?;
+    if !subnet.contains(&pool) {
+        return Err(invalid());
+    }
+
+    let gateway = config
+        .gateway
+        .as_deref()
+        .ok_or_else(invalid)?
+        .parse::<IpAddr>()
+        .map_err(|_| invalid())?;
+    let auxiliary = config
+        .auxiliary_addresses
+        .iter()
+        .flat_map(|addresses| addresses.values())
+        .map(|address| address.parse::<IpAddr>().map_err(|_| invalid()))
+        .collect::<Result<HashSet<_>, _>>()?;
+    if !subnet.contains(&gateway) || auxiliary.iter().any(|address| !subnet.contains(address)) {
+        return Err(invalid());
+    }
+
+    let mut reserved = auxiliary;
+    reserved.insert(gateway);
+    if let IpNet::V4(subnet) = subnet
+        && subnet.prefix_len() < 31
+    {
+        reserved.insert(IpAddr::V4(subnet.network()));
+        reserved.insert(IpAddr::V4(subnet.broadcast()));
+    }
+    let reserved = reserved
+        .iter()
+        .filter(|address| pool.contains(*address))
+        .count() as u128;
+    address_count(pool)
+        .and_then(|addresses| addresses.checked_sub(reserved))
+        .and_then(|addresses| addresses.try_into().ok())
+        .ok_or_else(invalid)
+}
+
+fn address_count(pool: IpNet) -> Option<u128> {
+    match pool {
+        IpNet::V4(pool) => Some(1_u128 << (32 - pool.prefix_len())),
+        IpNet::V6(pool) => 1_u128.checked_shl((128 - pool.prefix_len()).into()),
+    }
 }
 
 fn filesystem_space(path: &str) -> Result<(u64, u64), Error> {
@@ -103,12 +163,37 @@ fn load_average_milli() -> Result<u64, Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
+
+    fn ipam(
+        subnet: &str,
+        ip_range: Option<&str>,
+        gateway: &str,
+        auxiliary: &[(&str, &str)],
+    ) -> IpamConfig {
+        IpamConfig {
+            subnet: Some(subnet.into()),
+            ip_range: ip_range.map(Into::into),
+            gateway: Some(gateway.into()),
+            auxiliary_addresses: (!auxiliary.is_empty()).then(|| {
+                auxiliary
+                    .iter()
+                    .map(|(name, address)| ((*name).into(), (*address).into()))
+                    .collect::<HashMap<_, _>>()
+            }),
+        }
+    }
 
     #[test]
     fn bridge_capacity_comes_from_live_subnets_and_attachments() {
         let attachments = ["endpoint-a", "endpoint-b"];
-        let usable = usable_endpoint_count(["10.0.0.0/29".into(), "10.0.1.0/30".into()]);
+        let usable = usable_endpoint_count(&[
+            ipam("10.0.0.0/29", None, "10.0.0.1", &[]),
+            ipam("10.0.1.0/30", None, "10.0.1.1", &[]),
+        ])
+        .unwrap();
         let capacity = BridgeEndpointCapacity::new(usable, attachments.len() as u64);
 
         assert_eq!(capacity.usable_endpoints(), 6);
@@ -119,11 +204,42 @@ mod tests {
     #[test]
     fn a_full_live_bridge_has_no_free_capacity() {
         let attachments = ["a", "b", "c", "d", "e"];
-        let usable = usable_endpoint_count(["10.0.0.0/29".into()]);
+        let usable = usable_endpoint_count(&[ipam("10.0.0.0/29", None, "10.0.0.1", &[])]).unwrap();
         let capacity = BridgeEndpointCapacity::new(usable, attachments.len() as u64);
 
         assert_eq!(capacity.usable_endpoints(), 5);
         assert_eq!(capacity.attached_endpoints(), 5);
         assert_eq!(capacity.free_endpoints(), 0);
+    }
+
+    #[test]
+    fn restricted_range_and_live_reservations_limit_capacity() {
+        let usable = usable_endpoint_count(&[ipam(
+            "10.0.0.0/24",
+            Some("10.0.0.64/28"),
+            "10.0.0.65",
+            &[("router", "10.0.0.66"), ("outside-range", "10.0.0.10")],
+        )])
+        .unwrap();
+
+        assert_eq!(usable, 14);
+    }
+
+    #[test]
+    fn unusable_ipam_is_not_reported_as_capacity() {
+        assert!(usable_endpoint_count(&[]).is_err());
+        assert!(usable_endpoint_count(&[IpamConfig::default()]).is_err());
+        assert!(usable_endpoint_count(&[ipam("10.0.0.0/24", None, "fd00::1", &[])]).is_err());
+        assert!(
+            usable_endpoint_count(&[ipam("10.0.0.0/24", Some("10.0.1.0/28"), "10.0.0.1", &[],)])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn ipv6_capacity_uses_ipv6_address_rules() {
+        let usable = usable_endpoint_count(&[ipam("fd00::/120", None, "fd00::1", &[])]).unwrap();
+
+        assert_eq!(usable, 255);
     }
 }

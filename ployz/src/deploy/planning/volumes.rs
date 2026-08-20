@@ -2,13 +2,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     DockerVolumeName, MachineId, MachineObservation, MachineTarget, PreservedVolume, ProjectName,
-    RequestedServiceSpec, ServiceMode, ServiceVolume, ServiceVolumeGraph, VolumeSource,
-    machine_matches_target, owned_volume_project,
+    RequestedServiceSpec, ServiceMode, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
+    VolumeSource, machine_matches_target, owned_volume_project,
 };
 
 use crate::deploy::{
     DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
 };
+
+use super::capacity::CapacityBudget;
 
 /// Planner-internal assignment of Docker Volumes to Machines.
 ///
@@ -273,11 +275,20 @@ fn shares_a_service(
 pub(super) fn prepare_shared_replicated_volumes(
     volume_uses: &BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>>,
     snapshot: &DeploySnapshot,
+    observed_services: &[ServiceObservation],
     pins: &mut VolumePins,
+    capacity: &CapacityBudget<'_>,
     options: &PlanOptions,
 ) -> Result<(), PlanError> {
     for component in shared_volume_components(volume_uses) {
-        let machine_id = shared_component_anchor(&component, snapshot, pins, options)?;
+        let machine_id = shared_component_anchor(
+            &component,
+            snapshot,
+            observed_services,
+            pins,
+            capacity,
+            options,
+        )?;
         pin_shared_component(&component, machine_id, snapshot, pins);
     }
     Ok(())
@@ -286,7 +297,9 @@ pub(super) fn prepare_shared_replicated_volumes(
 fn shared_component_anchor(
     component: &SharedVolumeComponent<'_>,
     snapshot: &DeploySnapshot,
+    observed_services: &[ServiceObservation],
     pins: &VolumePins,
+    capacity: &CapacityBudget<'_>,
     options: &PlanOptions,
 ) -> Result<MachineId, PlanError> {
     let services = component
@@ -295,13 +308,13 @@ fn shared_component_anchor(
         .flat_map(|(_, uses)| uses.iter())
         .map(|volume_use| (volume_use.service_name, volume_use.service))
         .collect::<BTreeMap<_, _>>();
-    let mut services = services.into_iter();
-    let (first_service_name, first_service) = services
+    let mut service_iter = services.iter();
+    let (&first_service_name, &first_service) = service_iter
         .next()
         .expect("shared Volume component has at least two services");
     let mut eligible = volume_eligible_machine_ids(first_service, snapshot, pins, options)
         .map_err(|source| super::service_error(true, first_service_name, source))?;
-    for (service_name, service) in services {
+    for (&service_name, &service) in service_iter {
         let other_eligible = volume_eligible_machine_ids(service, snapshot, pins, options)
             .map_err(|source| super::service_error(true, service_name, source))?;
         eligible.retain(|machine_id| other_eligible.contains(machine_id));
@@ -313,7 +326,46 @@ fn shared_component_anchor(
             no_eligible_shared(component, snapshot, pins),
         ));
     }
+    eligible.retain(|machine_id| {
+        capacity.fits(
+            machine_id,
+            shared_net_new_endpoints(&services, observed_services, *machine_id),
+        )
+    });
+    if eligible.is_empty() {
+        return Err(super::service_error(
+            true,
+            first_service_name,
+            capacity.error(first_service),
+        ));
+    }
     Ok(eligible.remove(0))
+}
+
+fn shared_net_new_endpoints(
+    requested: &BTreeMap<&str, &RequestedServiceSpec>,
+    observed: &[ServiceObservation],
+    machine_id: MachineId,
+) -> u64 {
+    requested
+        .iter()
+        .map(|(name, spec)| {
+            let ServiceMode::Replicated { replicas } = spec.mode else {
+                unreachable!("shared replicated Volume components contain replicated services");
+            };
+            let existing = observed
+                .iter()
+                .find(|service| service.identity.name.as_str() == *name)
+                .map_or(0, |service| {
+                    service
+                        .containers
+                        .iter()
+                        .filter(|container| container.as_observation().machine_id == machine_id)
+                        .count()
+                });
+            u64::from(replicas.get()).saturating_sub(existing as u64)
+        })
+        .sum()
 }
 
 fn pin_shared_component(
