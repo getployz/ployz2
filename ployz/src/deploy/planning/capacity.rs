@@ -113,6 +113,9 @@ impl CapacityBudget {
         machine_ids: impl IntoIterator<Item = &'a MachineId>,
         required: usize,
     ) -> bool {
+        if required == 0 {
+            return true;
+        }
         let Some(free) = &self.free else {
             return true;
         };
@@ -120,7 +123,7 @@ impl CapacityBudget {
         let mut available = 0_u64;
         for machine_id in machine_ids {
             let Some(machine_free) = free.get(machine_id) else {
-                return true;
+                continue;
             };
             available = available.saturating_add(*machine_free);
             if available >= required {
