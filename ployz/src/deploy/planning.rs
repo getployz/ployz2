@@ -17,7 +17,10 @@ pub(super) mod capacity;
 mod placement;
 mod volumes;
 
-use placement::{PlacementState, ReplicatedPlacement, is_up_to_date, plan_global, plan_replicated};
+use placement::{
+    CapacityAdmission, PlacementState, ReplicatedPlacement, is_up_to_date, plan_global,
+    plan_replicated,
+};
 use volumes::{
     VolumePins, constrain_volume_candidates, named_volume_uses, plan_volume_operations,
     prepare_shared_replicated_volumes, preserved_owned_volumes, reject_mixed_volume_modes,
@@ -213,7 +216,7 @@ fn assemble_plan(
     let services = snapshot.services_in(&intent.project_name);
     let mut placement = PlacementState::from_snapshot(snapshot);
     let mut anchor_capacity = placement.capacity().clone();
-    prepare_shared_replicated_volumes(
+    let reservations = prepare_shared_replicated_volumes(
         &volume_uses,
         snapshot,
         &bound.requested,
@@ -223,6 +226,7 @@ fn assemble_plan(
         &intent.options,
     )?;
     placement.replace_capacity(anchor_capacity);
+    placement.add_reservations(reservations);
     let mut service_operations = Vec::new();
     for spec in &bound.requested {
         service_operations.extend(
@@ -433,7 +437,7 @@ fn plan_one_service(
     snapshot: &DeploySnapshot,
     services: &[ServiceObservation],
     pins: &mut VolumePins,
-    placement: &mut PlacementState<'_>,
+    placement: &mut PlacementState,
     options: &PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, snapshot, options)?;
@@ -457,9 +461,9 @@ fn plan_one_service(
             )
         }
     };
-    let capacity_hook = pins.capacity_hook(&requested.name);
+    let reservation = placement.reservation(&requested.name);
     let mut capacity_error = None;
-    if matches!(requested.mode, ServiceMode::Replicated { .. }) && capacity_hook.is_none() {
+    if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
         constrain_volume_candidates(requested, snapshot, pins, &mut machines)?;
         let relevant = machines
             .iter()
@@ -485,8 +489,9 @@ fn plan_one_service(
             ReplicatedPlacement {
                 machines,
                 replicas: replicas.get() as usize,
-                capacity_hook,
-                capacity_error,
+                admission: reservation.unwrap_or_else(|| CapacityAdmission::Pending {
+                    error: capacity_error.expect("unreserved capacity has relevant Machines"),
+                }),
             },
             placement,
             options,

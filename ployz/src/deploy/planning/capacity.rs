@@ -2,10 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use ployz_core::{
-    BridgeEndpointCapacity, MachineId, MembershipObservation, RequestedServiceSpec,
-    machine_matches_placement,
-};
+use ployz_core::{BridgeEndpointCapacity, MachineId};
 
 use super::{DeploySnapshot, PlanError};
 
@@ -20,17 +17,6 @@ pub(crate) fn endpoint_capacity_error(
         }
         None | Some(_) => None,
     }
-}
-
-fn has_unknown(requested: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> bool {
-    let Some(capacity) = &snapshot.capacity else {
-        return false;
-    };
-    snapshot.machines.iter().any(|machine| {
-        machine.membership != MembershipObservation::Down
-            && machine_matches_placement(&machine.machine, &requested.placement)
-            && !capacity.contains_key(&machine.machine.id)
-    })
 }
 
 #[derive(Clone, Copy)]
@@ -65,15 +51,13 @@ impl EndpointDemand {
 }
 
 #[derive(Clone)]
-pub(super) struct CapacityBudget<'snapshot> {
-    snapshot: &'snapshot DeploySnapshot,
+pub(super) struct CapacityBudget {
     free: Option<BTreeMap<MachineId, u64>>,
 }
 
-impl<'snapshot> CapacityBudget<'snapshot> {
-    pub(super) fn from_snapshot(snapshot: &'snapshot DeploySnapshot) -> Self {
+impl CapacityBudget {
+    pub(super) fn from_snapshot(snapshot: &DeploySnapshot) -> Self {
         Self {
-            snapshot,
             free: snapshot.capacity.as_ref().map(|capacity| {
                 capacity
                     .iter()
@@ -109,14 +93,6 @@ impl<'snapshot> CapacityBudget<'snapshot> {
         true
     }
 
-    pub(super) fn error(&self, requested: &RequestedServiceSpec) -> PlanError {
-        if has_unknown(requested, self.snapshot) {
-            PlanError::CapacityUnknown
-        } else {
-            PlanError::InsufficientCapacity
-        }
-    }
-
     pub(super) fn error_for<'a>(
         &self,
         machine_ids: impl IntoIterator<Item = &'a MachineId>,
@@ -130,5 +106,27 @@ impl<'snapshot> CapacityBudget<'snapshot> {
         } else {
             PlanError::InsufficientCapacity
         }
+    }
+
+    pub(super) fn can_supply_persistent<'a>(
+        &self,
+        machine_ids: impl IntoIterator<Item = &'a MachineId>,
+        required: usize,
+    ) -> bool {
+        let Some(free) = &self.free else {
+            return true;
+        };
+        let required = u64::try_from(required).unwrap_or(u64::MAX);
+        let mut available = 0_u64;
+        for machine_id in machine_ids {
+            let Some(machine_free) = free.get(machine_id) else {
+                return true;
+            };
+            available = available.saturating_add(*machine_free);
+            if available >= required {
+                return true;
+            }
+        }
+        false
     }
 }

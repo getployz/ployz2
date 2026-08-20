@@ -23,7 +23,6 @@ use super::placement::reserve_replicated_service_demand;
 pub(super) struct VolumePins {
     anchors: BTreeMap<DockerVolumeName, MachineId>,
     creates: Vec<(MachineId, ServiceVolume)>,
-    capacity_hooks: BTreeMap<ServiceName, Option<MachineId>>,
 }
 
 impl VolumePins {
@@ -47,10 +46,6 @@ impl VolumePins {
             return None;
         };
         self.anchors.get(name).copied()
-    }
-
-    pub(super) fn capacity_hook(&self, service: &ServiceName) -> Option<Option<MachineId>> {
-        self.capacity_hooks.get(service).copied()
     }
 
     fn observations<'pins>(
@@ -284,9 +279,10 @@ pub(super) fn prepare_shared_replicated_volumes(
     requested: &[RequestedServiceSpec],
     observed_services: &[ServiceObservation],
     pins: &mut VolumePins,
-    capacity: &mut CapacityBudget<'_>,
+    capacity: &mut CapacityBudget,
     options: &PlanOptions,
-) -> Result<(), PlanError> {
+) -> Result<Vec<(ServiceName, Option<MachineId>)>, PlanError> {
+    let mut reservations = Vec::new();
     for component in shared_volume_components(volume_uses) {
         let anchor = shared_component_anchor(
             &component,
@@ -297,10 +293,10 @@ pub(super) fn prepare_shared_replicated_volumes(
             capacity,
             options,
         )?;
-        pins.capacity_hooks.extend(anchor.capacity_hooks);
+        reservations.extend(anchor.capacity_hooks);
         pin_shared_component(&component, anchor.machine_id, snapshot, pins);
     }
-    Ok(())
+    Ok(reservations)
 }
 
 struct SharedAnchor {
@@ -314,7 +310,7 @@ fn shared_component_anchor(
     requested: &[RequestedServiceSpec],
     observed_services: &[ServiceObservation],
     pins: &VolumePins,
-    capacity: &mut CapacityBudget<'_>,
+    capacity: &mut CapacityBudget,
     options: &PlanOptions,
 ) -> Result<SharedAnchor, PlanError> {
     let services = component

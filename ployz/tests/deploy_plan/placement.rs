@@ -215,7 +215,7 @@ fn huge_replica_request_is_rejected_before_planning_operations() {
             [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "first")],
-                capacity: capacity([('1', 1)]),
+                capacity: capacity([('1', u64::from(u32::MAX) - 1)]),
                 ..Default::default()
             },
             PlanOptions::default(),

@@ -5,23 +5,29 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, HostBind, MachineId, MachineObservation,
     PortPublication, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    ServiceContainer, ServiceId, ServiceMode, ServiceObservation, ServiceVolumeGraph, SpecChange,
-    UpdateOrder, VolumeSource, compare_specs,
+    ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph,
+    SpecChange, UpdateOrder, VolumeSource, compare_specs,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
 use super::{DeployOperation, DeploySnapshot, PlanError, PlanOptions, ReplacementOperation};
 
-pub(super) struct PlacementState<'snapshot> {
+pub(super) struct PlacementState {
     occupancy: BTreeMap<MachineId, usize>,
-    capacity: CapacityBudget<'snapshot>,
+    capacity: CapacityBudget,
+    reservations: BTreeMap<ServiceName, CapacityReservation>,
 }
 
-impl<'snapshot> PlacementState<'snapshot> {
-    pub(super) fn from_snapshot(snapshot: &'snapshot DeploySnapshot) -> Self {
+struct CapacityReservation {
+    hook_machine: Option<MachineId>,
+}
+
+impl PlacementState {
+    pub(super) fn from_snapshot(snapshot: &DeploySnapshot) -> Self {
         Self {
             occupancy: BTreeMap::new(),
             capacity: CapacityBudget::from_snapshot(snapshot),
+            reservations: BTreeMap::new(),
         }
     }
 
@@ -29,12 +35,31 @@ impl<'snapshot> PlacementState<'snapshot> {
         self.capacity.fits(machine_id, peak)
     }
 
-    pub(super) fn capacity(&self) -> &CapacityBudget<'snapshot> {
+    pub(super) fn capacity(&self) -> &CapacityBudget {
         &self.capacity
     }
 
-    pub(super) fn replace_capacity(&mut self, capacity: CapacityBudget<'snapshot>) {
+    pub(super) fn replace_capacity(&mut self, capacity: CapacityBudget) {
         self.capacity = capacity;
+    }
+
+    pub(super) fn add_reservations(
+        &mut self,
+        reservations: impl IntoIterator<Item = (ServiceName, Option<MachineId>)>,
+    ) {
+        self.reservations.extend(
+            reservations
+                .into_iter()
+                .map(|(service, hook_machine)| (service, CapacityReservation { hook_machine })),
+        );
+    }
+
+    pub(super) fn reservation(&self, service: &ServiceName) -> Option<CapacityAdmission> {
+        self.reservations
+            .get(service)
+            .map(|reservation| CapacityAdmission::Reserved {
+                hook_machine: reservation.hook_machine,
+            })
     }
 
     pub(super) fn capacity_error_for<'a>(
@@ -50,9 +75,12 @@ pub(super) fn plan_global(
     service_id: &ServiceId,
     current: &[ServiceContainer],
     machines: Vec<&MachineObservation>,
-    placement: &mut PlacementState<'_>,
+    placement: &mut PlacementState,
     options: &PlanOptions,
 ) -> Result<(Vec<DeployOperation>, Option<MachineId>), PlanError> {
+    let capacity_error = placement
+        .capacity
+        .error_for(machines.iter().map(|machine| &machine.machine.id));
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
     let hook_machine = requested.pre_deploy.as_ref().and_then(|_| {
@@ -76,7 +104,7 @@ pub(super) fn plan_global(
             )
         })
     {
-        return Err(placement.capacity.error(requested));
+        return Err(capacity_error.clone());
     }
 
     for machine in machines {
@@ -98,7 +126,7 @@ pub(super) fn plan_global(
                 hook_machine == Some(machine_id),
             );
             if !placement.capacity.reserve(&machine_id, demand) {
-                return Err(placement.capacity.error(requested));
+                return Err(capacity_error.clone());
             }
             used.insert(observation.container_id);
             for other in on_machine(current, machine_id) {
@@ -131,7 +159,7 @@ pub(super) fn plan_global(
                 hook_machine == Some(machine_id),
             );
             if !placement.capacity.reserve(&machine_id, demand) {
-                return Err(placement.capacity.error(requested));
+                return Err(capacity_error.clone());
             }
             operations.push(DeployOperation::RunContainer {
                 machine_id,
@@ -176,11 +204,15 @@ fn on_machine(
         .filter(move |container| container.as_observation().machine_id == machine_id)
 }
 
+pub(super) enum CapacityAdmission {
+    Pending { error: PlanError },
+    Reserved { hook_machine: Option<MachineId> },
+}
+
 pub(super) struct ReplicatedPlacement<'a> {
     pub(super) machines: Vec<&'a MachineObservation>,
     pub(super) replicas: usize,
-    pub(super) capacity_hook: Option<Option<MachineId>>,
-    pub(super) capacity_error: Option<PlanError>,
+    pub(super) admission: CapacityAdmission,
 }
 
 pub(super) fn plan_replicated(
@@ -188,14 +220,13 @@ pub(super) fn plan_replicated(
     service_id: &ServiceId,
     current: &[ServiceContainer],
     target: ReplicatedPlacement<'_>,
-    placement: &mut PlacementState<'_>,
+    placement: &mut PlacementState,
     options: &PlanOptions,
 ) -> Result<(Vec<DeployOperation>, Option<MachineId>), PlanError> {
     let ReplicatedPlacement {
         mut machines,
         replicas,
-        capacity_hook,
-        capacity_error,
+        admission,
     } = target;
     let mut by_machine = BTreeMap::<MachineId, Vec<&ServiceContainer>>::new();
     for container in current {
@@ -206,6 +237,19 @@ pub(super) fn plan_replicated(
     }
     for containers in by_machine.values_mut() {
         containers.sort_by_key(|container| is_up_to_date(container, requested, options));
+    }
+    if let CapacityAdmission::Pending { error } = &admission {
+        let existing = machines
+            .iter()
+            .map(|machine| by_machine.get(&machine.machine.id).map_or(0, Vec::len))
+            .sum::<usize>();
+        let required = replicas.saturating_sub(existing);
+        if !placement
+            .capacity
+            .can_supply_persistent(machines.iter().map(|machine| &machine.machine.id), required)
+        {
+            return Err(error.clone());
+        }
     }
     machines.sort_by_key(|machine| {
         let containers = by_machine.get(&machine.machine.id);
@@ -228,9 +272,12 @@ pub(super) fn plan_replicated(
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
     let mut cursor = 0;
-    let capacity_reserved = capacity_hook.is_some();
+    let capacity_reserved = matches!(&admission, CapacityAdmission::Reserved { .. });
     let mut hook_pending = requested.pre_deploy.is_some() && !capacity_reserved;
-    let mut hook_machine = capacity_hook.flatten();
+    let mut hook_machine = match &admission {
+        CapacityAdmission::Pending { .. } => None,
+        CapacityAdmission::Reserved { hook_machine } => *hook_machine,
+    };
     for _ in 0..replicas {
         let mut selected = None;
         for _ in 0..machines.len() {
@@ -251,7 +298,10 @@ pub(super) fn plan_replicated(
             }
         }
         let Some((machine, demand)) = selected else {
-            return Err(capacity_error.unwrap_or_else(|| placement.capacity.error(requested)));
+            let CapacityAdmission::Pending { error } = admission else {
+                unreachable!("reserved capacity fits its projected placement")
+            };
+            return Err(error);
         };
         if !capacity_reserved {
             placement.capacity.reserve(&machine.machine.id, demand);
@@ -323,7 +373,7 @@ pub(super) fn is_up_to_date(
 }
 
 pub(super) fn reserve_replicated_service_demand(
-    capacity: &mut CapacityBudget<'_>,
+    capacity: &mut CapacityBudget,
     requested: &RequestedServiceSpec,
     observed: Option<&ServiceObservation>,
     machine_id: MachineId,
