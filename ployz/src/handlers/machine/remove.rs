@@ -75,7 +75,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 let removed = client
                     .remove_machine(&selected_target, &confirmation)
                     .await
-                    .map_err(machine_removal_refusal)?;
+                    .map_err(crate::failure::refusal_from_rpc)?;
                 if let Some(warning) = removed.reset_warning {
                     eprintln!("WARNING: target cleanup/reset failed: {warning}");
                 }
@@ -128,12 +128,12 @@ fn select_machine(
 }
 
 fn machine_removal_refusal(error: RpcError) -> Error {
-    if error.code == RpcErrorCode::Unavailable && error.message.contains("did not respond") {
+    if error.code == RpcErrorCode::Unavailable {
         Error::usage(format!(
             "{error}; use --no-reset to remove it from the Cluster without resetting"
         ))
     } else {
-        crate::failure::refusal_from_rpc(error)
+        error.into()
     }
 }
 
@@ -209,6 +209,19 @@ mod tests {
         assert_eq!(
             machine_removal_refusal(error).to_string(),
             "Machine aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond; use --no-reset to remove it from the Cluster without resetting"
+        );
+    }
+
+    #[test]
+    fn other_data_loss_errors_keep_their_message() {
+        let error = RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "Machine \"gone\" was not found".into(),
+            details: Value::Null,
+        };
+        assert_eq!(
+            machine_removal_refusal(error).to_string(),
+            "Machine \"gone\" was not found"
         );
     }
 
