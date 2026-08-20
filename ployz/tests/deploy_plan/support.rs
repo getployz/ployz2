@@ -5,9 +5,9 @@ pub(super) use std::{
 };
 
 pub(super) use ployz::deploy::{
-    DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, EliminatingConstraint,
-    EliminatingConstraints, IngressContext, ObservedDockerVolume, PlanError, PlanOptions,
-    ReplacementOperation, ServiceAttempt, compare_specs, preview_deploy,
+    CapacityState, DeployIntent, DeployOperation, DeployPreview, DeploySnapshot,
+    EliminatingConstraint, EliminatingConstraints, IngressContext, ObservedDockerVolume, PlanError,
+    PlanOptions, ReplacementOperation, ServiceAttempt, compare_specs, preview_deploy,
 };
 
 pub(super) fn plan_deploy<'a>(
@@ -60,8 +60,8 @@ pub(super) use ployz_core::{
     ContainerResources, ContainerRuntimeObservation, DeviceMapping, DeviceReservation,
     DockerVolumeId, DockerVolumeName, HealthObservation, HostBind, LogDriver, MANAGED_LABEL,
     Machine, MachineId, MachineName, MachineObservation, MachinePath, MachineTarget,
-    ManagementAddress, MembershipObservation, PROJECT_NAME_LABEL, PidMode, Placement,
-    PortPublication, PreDeployHook, ProjectName, PullPolicy, RequestedServiceSpec,
+    MachineTelemetry, ManagementAddress, MembershipObservation, PROJECT_NAME_LABEL, PidMode,
+    Placement, PortPublication, PreDeployHook, ProjectName, PullPolicy, RequestedServiceSpec,
     ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
     ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
     TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
@@ -124,6 +124,27 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
 
 pub(super) fn machine_id(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
+}
+
+pub(super) fn capacity(entries: impl IntoIterator<Item = (char, u64)>) -> CapacityState {
+    CapacityState::observed(entries.into_iter().map(|(machine, free)| {
+        (
+            machine_id(machine),
+            MachineTelemetry {
+                observed_at_unix_seconds: 1,
+                bridge_usable_endpoints: free,
+                bridge_attached_endpoints: 0,
+                bridge_free_endpoints: free,
+                managed_containers: 0,
+                cpu_count: 1,
+                load_average_milli: 0,
+                memory_total_bytes: 0,
+                memory_available_bytes: 0,
+                docker_root_total_bytes: 0,
+                docker_root_free_bytes: 0,
+            },
+        )
+    }))
 }
 
 pub(super) fn service_id(hex: char) -> ServiceId {

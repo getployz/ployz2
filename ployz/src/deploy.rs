@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
@@ -61,14 +64,31 @@ pub struct DeploySnapshot {
     /// Required Docker Volume queries that produced no terminal response.
     pub volume_omissions: Vec<MachineId>,
     /// Fresh targeted bridge observations used only for capacity admission.
-    /// Successful fresh bridge observations by Machine.
-    pub capacities: std::collections::BTreeMap<MachineId, MachineTelemetry>,
-    /// Targeted capacity RPC failures.
-    pub capacity_failures: Vec<MachineFailure<RpcError>>,
-    /// Capacity RPCs with no terminal observation.
-    pub capacity_omissions: Vec<MachineId>,
-    /// Whether this snapshot includes a capacity fan-out.
-    pub capacity_observed: bool,
+    pub capacity: CapacityState,
+}
+
+/// Whether planning received a fresh capacity fan-out and its successful results.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum CapacityState {
+    /// Snapshot paths that cannot create Docker endpoints.
+    #[default]
+    NotObserved,
+    /// Fresh telemetry keyed by Machine. Missing eligible Machines are unknown.
+    Observed(BTreeMap<MachineId, MachineTelemetry>),
+}
+
+impl CapacityState {
+    #[must_use]
+    pub fn observed(telemetry: impl IntoIterator<Item = (MachineId, MachineTelemetry)>) -> Self {
+        Self::Observed(telemetry.into_iter().collect())
+    }
+
+    fn telemetry(&self) -> Option<&BTreeMap<MachineId, MachineTelemetry>> {
+        match self {
+            Self::NotObserved => None,
+            Self::Observed(telemetry) => Some(telemetry),
+        }
+    }
 }
 
 impl DeploySnapshot {

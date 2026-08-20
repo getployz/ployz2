@@ -53,6 +53,59 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
 }
 
 #[test]
+fn replacement_requires_one_temporary_endpoint() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let mut current = requested.clone();
+    current.container.image = "ghcr.io/getployz/api:old".into();
+    requested.update.order = Some(UpdateOrder::StartFirst);
+    let snapshot = |free| DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![container('b', '1', &current, &service_id('a'))],
+        capacity: capacity([('1', free)]),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        plan_deploy([&requested], &snapshot(0), PlanOptions::default()),
+        Err(PlanError::InsufficientCapacity)
+    );
+    assert!(plan_deploy([&requested], &snapshot(1), PlanOptions::default()).is_ok());
+}
+
+#[test]
+fn hook_releases_its_temporary_endpoint_before_replacement() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.pre_deploy = Some(PreDeployHook {
+        command: vec!["db".into(), "migrate".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let mut current = requested.clone();
+    current.container.image = "ghcr.io/getployz/api:old".into();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![container('b', '1', &current, &service_id('a'))],
+        capacity: capacity([('1', 1)]),
+        ..Default::default()
+    };
+
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::RunHook { .. },
+            DeployOperation::ReplaceContainer(_)
+        ]
+    ));
+}
+
+#[test]
 fn planning_does_not_count_hook_containers_toward_replicated_count() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
