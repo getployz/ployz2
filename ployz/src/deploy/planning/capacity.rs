@@ -1,3 +1,5 @@
+//! Endpoint-capacity filtering and plan-wide budgeting.
+
 use std::collections::BTreeMap;
 
 use ployz_core::{
@@ -39,7 +41,8 @@ pub(super) fn reject_impossible_replicas(
         {
             return Err(PlanError::CapacityUnknown);
         }
-        let known = eligible_machines(spec, snapshot, options)?;
+        let mut known = eligible_machines(spec, snapshot, options)?;
+        known.retain(|machine| capacity.contains_key(&machine.machine.id));
         let existing = snapshot
             .containers
             .iter()
@@ -57,7 +60,7 @@ pub(super) fn reject_impossible_replicas(
                 capacity
                     .get(&machine.machine.id)
                     .expect("eligible capacity Machine has telemetry")
-                    .bridge_free_endpoints
+                    .free_endpoints()
             })
             .sum::<u64>();
         if u64::from(replicas.get()) > free.saturating_add(existing) {
@@ -83,7 +86,7 @@ impl<'snapshot> CapacityBudget<'snapshot> {
             free: snapshot.capacity.as_ref().map(|capacity| {
                 capacity
                     .iter()
-                    .map(|(id, telemetry)| (*id, telemetry.bridge_free_endpoints))
+                    .map(|(id, capacity)| (*id, capacity.free_endpoints()))
                     .collect()
             }),
         }
@@ -93,6 +96,12 @@ impl<'snapshot> CapacityBudget<'snapshot> {
         self.free
             .as_ref()
             .is_none_or(|free| free.get(machine_id).is_some_and(|free| *free >= peak))
+    }
+
+    pub(super) fn known(&self, machine_id: &MachineId) -> bool {
+        self.free
+            .as_ref()
+            .is_none_or(|free| free.contains_key(machine_id))
     }
 
     pub(super) fn consume(&mut self, machine_id: &MachineId, persistent: u64) {

@@ -228,6 +228,17 @@ impl LocalMachine {
         } else {
             None
         };
+        let bridge_capacity = if request.include_bridge_capacity || request.include_telemetry {
+            Some(
+                self.containers
+                    .as_ref()
+                    .ok_or(Error::DockerUnavailable)?
+                    .bridge_capacity()
+                    .await?,
+            )
+        } else {
+            None
+        };
         Ok(MachineDetails {
             id: record.id(),
             phase: record.phase(),
@@ -238,6 +249,7 @@ impl LocalMachine {
             rtts,
             cloud_paired: record.cloud_pairing.is_some(),
             telemetry,
+            bridge_capacity,
         })
     }
 

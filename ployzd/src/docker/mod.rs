@@ -20,10 +20,11 @@ use bollard::{
     query_parameters::{ListContainersOptionsBuilder, ListImagesOptionsBuilder},
 };
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation,
-    HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages, MachineTelemetry,
-    ProjectName, QualifiedService, RpcErrorCode, ServiceId, ServiceName, ValueError,
+    BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
+    ContainerObservation, ContainerRuntimeObservation, HEALTHCHECK_DISABLE_SENTINEL,
+    HealthObservation, HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages,
+    MachineTelemetry, ProjectName, QualifiedService, RpcErrorCode, ServiceId, ServiceName,
+    ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -177,6 +178,10 @@ impl ContainerRuntime {
     /// Returns when Docker or a required host probe cannot be read.
     pub(crate) async fn telemetry(&self) -> Result<MachineTelemetry, Error> {
         self.docker.telemetry().await
+    }
+
+    pub(crate) async fn bridge_capacity(&self) -> Result<BridgeEndpointCapacity, Error> {
+        self.docker.bridge_capacity().await
     }
 
     pub async fn inspect_managed(

@@ -1,13 +1,17 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::Duration,
+};
 
 use ployz_core::{
-    ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume, DockerVolumeName,
-    FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest, InspectRequest,
-    ListContainersRequest, ListImagesRequest, ListMachinesRequest, ListVolumesRequest,
-    LiveServices, LocalMachineRemoved, MachineFailure, MachineId, MachineImages, MachineName,
-    MachineObservation, MachineRpcClient, MachineSuccess, MachineTarget, MachineTelemetry,
-    NameMatches, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
+    BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
+    ContainerObservation, CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume,
+    DockerVolumeName, FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest,
+    InspectRequest, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
+    ListVolumesRequest, LiveServices, LocalMachineRemoved, MachineFailure, MachineId,
+    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
+    MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
     RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
     RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
     StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, apply_many_targets,
@@ -601,7 +605,7 @@ pub(crate) fn snapshot_from_partial(
     machines: Vec<MachineObservation>,
     containers: PartialResult<Vec<ContainerObservation>, RpcError>,
     volumes: PartialResult<Vec<DockerVolume>, RpcError>,
-    capacity: PartialResult<MachineTelemetry, RpcError>,
+    capacity: BTreeMap<MachineId, BridgeEndpointCapacity>,
 ) -> DeploySnapshot {
     let PartialResult {
         successes: container_successes,
@@ -633,13 +637,7 @@ pub(crate) fn snapshot_from_partial(
         container_omissions,
         volume_failures,
         volume_omissions,
-        capacity: Some(
-            capacity
-                .successes
-                .into_iter()
-                .map(|success| (success.machine_id, success.value))
-                .collect(),
-        ),
+        capacity: Some(capacity.into_iter().collect()),
     }
 }
 

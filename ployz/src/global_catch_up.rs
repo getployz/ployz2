@@ -3,13 +3,14 @@
 use std::time::Duration;
 
 use ployz_core::{
-    ContainerRuntimeObservation, EnsureGlobalSlotRequest, InspectRequest, Machine, MachineTarget,
-    MachineTelemetry, QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceMode,
+    BridgeEndpointCapacity, ContainerRuntimeObservation, EnsureGlobalSlotRequest, InspectRequest,
+    Machine, MachineTarget, QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceMode,
     ServiceObservation, machine_matches_placement, op,
 };
 
 use crate::{
     connect::{Client, ConnectError},
+    deploy::PlanError,
     failure::Failure,
 };
 
@@ -167,7 +168,7 @@ pub async fn catch_up_globals(
         let details = client
             .invoke::<op::Inspect>(
                 InspectRequest {
-                    include_telemetry: true,
+                    include_bridge_capacity: true,
                     ..Default::default()
                 },
                 &MachineTarget::from(&this_machine.id),
@@ -175,8 +176,8 @@ pub async fn catch_up_globals(
             )
             .await
             .map_err(|error| CatchUpError::Other(error.into()))?;
-        if let Some(message) = global_capacity_error(slots.len(), details.telemetry.as_ref()) {
-            return Err(CatchUpError::Other(Failure::usage(message)));
+        if let Some(error) = global_capacity_error(slots.len(), details.bridge_capacity.as_ref()) {
+            return Err(CatchUpError::Other(Failure::usage(error.to_string())));
         }
     }
     let expect_caddy = caddy_expected(&services, this_machine, skip_caddy, &slots);
@@ -223,12 +224,12 @@ pub async fn catch_up_globals(
 
 fn global_capacity_error(
     required: usize,
-    telemetry: Option<&MachineTelemetry>,
-) -> Option<&'static str> {
-    match telemetry {
-        None if required > 0 => Some("capacity unknown: Machine did not return bridge telemetry"),
-        Some(telemetry) if telemetry.bridge_free_endpoints < required as u64 => {
-            Some("insufficient capacity on observed eligible Machines")
+    capacity: Option<&BridgeEndpointCapacity>,
+) -> Option<PlanError> {
+    match capacity {
+        None if required > 0 => Some(PlanError::CapacityUnknown),
+        Some(capacity) if capacity.free_endpoints() < required as u64 => {
+            Some(PlanError::InsufficientCapacity)
         }
         None | Some(_) => None,
     }
@@ -252,26 +253,14 @@ mod tests {
     fn global_capacity_rejects_unknown_and_insufficient_before_creation() {
         assert_eq!(
             global_capacity_error(1, None),
-            Some("capacity unknown: Machine did not return bridge telemetry")
+            Some(PlanError::CapacityUnknown)
         );
         assert_eq!(
-            global_capacity_error(
-                2,
-                Some(&MachineTelemetry {
-                    bridge_free_endpoints: 1,
-                    ..Default::default()
-                })
-            ),
-            Some("insufficient capacity on observed eligible Machines")
+            global_capacity_error(2, Some(&BridgeEndpointCapacity::new(1, 0))),
+            Some(PlanError::InsufficientCapacity)
         );
         assert_eq!(
-            global_capacity_error(
-                1,
-                Some(&MachineTelemetry {
-                    bridge_free_endpoints: 1,
-                    ..Default::default()
-                })
-            ),
+            global_capacity_error(1, Some(&BridgeEndpointCapacity::new(1, 0))),
             None
         );
     }

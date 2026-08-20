@@ -110,6 +110,39 @@ fn hook_and_replacement_each_require_a_spare_endpoint() {
 }
 
 #[test]
+fn hook_capacity_is_charged_only_to_its_selected_machine() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    requested.pre_deploy = Some(PreDeployHook {
+        command: vec!["db".into(), "migrate".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            capacity: capacity([('1', 2), ('2', 1)]),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::RunHook { machine_id: hook, .. },
+            DeployOperation::RunContainer { machine_id: first, .. },
+            DeployOperation::RunContainer { machine_id: second, .. }
+        ] if hook == first && first != second
+    ));
+}
+
+#[test]
 fn planning_does_not_count_hook_containers_toward_replicated_count() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),

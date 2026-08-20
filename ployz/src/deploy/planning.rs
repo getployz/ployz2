@@ -461,7 +461,11 @@ fn plan_one_service(
             )
         }
     };
-    let change_peak = 1 + u64::from(requested.pre_deploy.is_some());
+    machines.retain(|machine| placement.capacity.known(&machine.machine.id));
+    if machines.is_empty() {
+        return Err(placement.capacity.error(requested));
+    }
+    let change_peak = 1;
     machines.retain(|machine| {
         current.iter().any(|container| {
             container.as_observation().machine_id == machine.machine.id
@@ -517,12 +521,6 @@ fn eligible_machines<'a>(
         .iter()
         .filter(|machine| machine.membership != MembershipObservation::Down)
         .filter(|machine| machine_matches_placement(&machine.machine, &requested.placement))
-        .filter(|machine| {
-            snapshot
-                .capacity
-                .as_ref()
-                .is_none_or(|capacity| capacity.contains_key(&machine.machine.id))
-        })
         .collect::<Vec<_>>();
     if machines.is_empty() {
         return Err(placement_error(requested, snapshot));

@@ -118,6 +118,23 @@ fn capacity_distinguishes_sufficient_known_unknown_and_insufficient() {
 }
 
 #[test]
+fn all_unknown_global_capacity_is_reported_as_unknown() {
+    let requested = requested(ServiceMode::Global);
+    assert_eq!(
+        plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "unknown")],
+                capacity: capacity([]),
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        Err(PlanError::CapacityUnknown)
+    );
+}
+
+#[test]
 fn huge_replica_request_is_rejected_before_planning_operations() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(u32::MAX).unwrap(),

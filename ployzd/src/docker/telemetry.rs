@@ -2,28 +2,12 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ployz_core::MachineTelemetry;
+use ployz_core::{BridgeEndpointCapacity, MachineTelemetry};
 
 use super::{Error, LocalDocker};
 
-pub(super) struct BridgeCapacity {
-    pub(super) usable_endpoints: u64,
-    pub(super) attached_endpoints: u64,
-    pub(super) free_endpoints: u64,
-}
-
-impl BridgeCapacity {
-    fn new(usable_endpoints: u64, attached_endpoints: u64) -> Self {
-        Self {
-            usable_endpoints,
-            attached_endpoints,
-            free_endpoints: usable_endpoints.saturating_sub(attached_endpoints),
-        }
-    }
-}
-
 impl LocalDocker {
-    pub(super) async fn bridge_capacity(&self) -> Result<BridgeCapacity, Error> {
+    pub(super) async fn bridge_capacity(&self) -> Result<BridgeEndpointCapacity, Error> {
         let network = self
             .client
             .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
@@ -40,11 +24,13 @@ impl LocalDocker {
             .containers
             .as_ref()
             .map_or(0, |containers| containers.len() as u64);
-        Ok(BridgeCapacity::new(usable_endpoints, attached_endpoints))
+        Ok(BridgeEndpointCapacity::new(
+            usable_endpoints,
+            attached_endpoints,
+        ))
     }
 
     pub(super) async fn telemetry(&self) -> Result<MachineTelemetry, Error> {
-        let bridge = self.bridge_capacity().await?;
         let info = self.client.info().await?;
         let docker_root = info
             .docker_root_dir
@@ -55,9 +41,6 @@ impl LocalDocker {
             observed_at_unix_seconds: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |duration| duration.as_secs()),
-            bridge_usable_endpoints: bridge.usable_endpoints,
-            bridge_attached_endpoints: bridge.attached_endpoints,
-            bridge_free_endpoints: bridge.free_endpoints,
             managed_containers: self.managed_container_ids().await?.len() as u64,
             cpu_count: std::thread::available_parallelism().map_or(0, |count| count.get() as u64),
             load_average_milli: load_average_milli()?,
@@ -123,10 +106,10 @@ mod tests {
     #[test]
     fn bridge_capacity_comes_from_live_subnets_and_attachments() {
         let usable = usable_endpoint_count(["10.0.0.0/29".into(), "10.0.1.0/30".into()]);
-        let capacity = BridgeCapacity::new(usable, 2);
+        let capacity = BridgeEndpointCapacity::new(usable, 2);
 
-        assert_eq!(capacity.usable_endpoints, 6);
-        assert_eq!(capacity.attached_endpoints, 2);
-        assert_eq!(capacity.free_endpoints, 4);
+        assert_eq!(capacity.usable_endpoints(), 6);
+        assert_eq!(capacity.attached_endpoints(), 2);
+        assert_eq!(capacity.free_endpoints(), 4);
     }
 }

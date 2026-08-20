@@ -277,6 +277,7 @@ impl MachineRpc for DiscoveryService {
                 rtts: Vec::new(),
                 cloud_paired: self.cloud_paired.load(Ordering::SeqCst),
                 telemetry: None,
+                bridge_capacity: None,
             })
             .encode()
             .unwrap(),

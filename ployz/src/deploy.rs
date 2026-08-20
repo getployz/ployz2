@@ -4,9 +4,9 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    IngressHost, IngressLabelTooLong, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachineTarget, MachineTelemetry, ProjectName, QualifiedService, RpcError, ServiceObservation,
+    BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolumeId,
+    DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId, MachineName,
+    MachineObservation, MachineTarget, ProjectName, QualifiedService, RpcError, ServiceObservation,
     derive_services,
 };
 use thiserror::Error;
@@ -65,7 +65,7 @@ pub struct DeploySnapshot {
     pub volume_omissions: Vec<MachineId>,
     /// Fresh targeted bridge observations used only for capacity admission.
     /// Fresh telemetry by Machine, or `None` for snapshot paths that cannot create endpoints.
-    pub capacity: Option<BTreeMap<MachineId, MachineTelemetry>>,
+    pub capacity: Option<BTreeMap<MachineId, BridgeEndpointCapacity>>,
 }
 
 impl DeploySnapshot {

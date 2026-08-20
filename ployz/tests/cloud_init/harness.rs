@@ -307,6 +307,7 @@ impl MachineRpc for JoinDaemon {
             rtts: Vec::new(),
             cloud_paired: false,
             telemetry: None,
+            bridge_capacity: None,
         })
     }
 
