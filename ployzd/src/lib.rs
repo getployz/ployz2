@@ -11,6 +11,7 @@ pub mod dns;
 pub mod docker;
 #[doc(hidden)]
 pub mod filesystem;
+pub mod global_services;
 mod hosted_dns;
 pub mod logs;
 pub mod machine;

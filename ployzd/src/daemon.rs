@@ -314,6 +314,25 @@ impl Daemon {
                 }
                 crate::relay::run(cloud_pairing, local_id, service, shutdown.clone()).await
             };
+            let global_services = async {
+                if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
+                    return Ok(());
+                }
+                match (
+                    local_machine.clone(),
+                    replicated_store.clone(),
+                    containers.clone(),
+                ) {
+                    (Some(machine), Some(replicated), Some(runtime)) => {
+                        crate::global_services::run(machine, replicated, runtime, shutdown.clone())
+                            .await
+                    }
+                    _ => {
+                        shutdown.cancelled().await;
+                        Ok(())
+                    }
+                }
+            };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
                 metrics,
@@ -325,6 +344,7 @@ impl Daemon {
                 caddy,
                 certificates,
                 relay_register,
+                global_services,
             )
             .map(|_| ())
         });

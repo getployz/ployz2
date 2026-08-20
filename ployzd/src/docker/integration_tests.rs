@@ -906,6 +906,53 @@ async fn remove_container(docker: &Docker, container_id: &ContainerId) {
         .unwrap();
 }
 
+#[tokio::test]
+async fn adopting_a_global_service_leaves_it_running_not_merely_created() {
+    let _lock = DOCKER_NETWORK_LOCK.lock().await;
+    let root = TestRoot::new();
+    let specs = MachineSpecStore::open(root.0.join("machine.db"))
+        .await
+        .unwrap();
+    let docker = LocalDocker::connect().unwrap();
+    let runtime = ContainerRuntime::new(docker.clone(), specs.clone());
+    let created_network = ensure_ployz_network(&docker.client).await;
+    let machine_id = MachineId::random();
+    let service_id = ServiceId::random();
+    let service_name = ServiceName::parse("global-caddy").unwrap();
+    let mut spec = fixture_spec(&service_id, &service_name);
+    spec.mode = ployz_core::ServiceMode::Global;
+    spec.container.command = vec!["sleep".into(), "300".into()];
+
+    let missing = crate::global_services::MissingGlobal {
+        project: ProjectName::parse("ployz-system").unwrap(),
+        spec: spec.clone(),
+    };
+    crate::global_services::start(&machine_id, TEST_GATEWAY, &runtime, &missing)
+        .await
+        .unwrap();
+
+    let observed = runtime.list_managed(&machine_id).await.unwrap();
+    let adopted = observed
+        .iter()
+        .find(|observation| observation.service_name == service_name)
+        .expect("adopted Global Service should be observable");
+    // Creating without starting would still observe as present, which is how a
+    // Cluster ends up looking converged while serving nothing.
+    assert!(
+        matches!(adopted.runtime, ContainerRuntimeObservation::Running { .. }),
+        "adopted Global Service must be running, got {:?}",
+        adopted.runtime
+    );
+
+    runtime
+        .remove(&adopted.container_id, true, true)
+        .await
+        .unwrap();
+    if created_network {
+        let _ = docker.client.remove_network("ployz").await;
+    }
+}
+
 fn fixture_spec(service_id: &ServiceId, service_name: &ServiceName) -> ResolvedServiceSpec {
     serde_json::from_value(json!({
         "service_id": service_id,
