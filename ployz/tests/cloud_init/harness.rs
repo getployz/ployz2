@@ -288,11 +288,11 @@ impl MachineRpc for JoinDaemon {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let decoded = request
+        let request = request
             .into_inner()
             .decode_request()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let RpcRequestBody::Inspect(inspect) = decoded.body else {
+        let RpcRequestBody::Inspect(inspect) = request.body else {
             return Err(Status::invalid_argument("expected Inspect"));
         };
         let joined = self.inner.joined.load(Ordering::SeqCst);
