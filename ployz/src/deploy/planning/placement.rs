@@ -3,10 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, HostBind, MachineId, MachineObservation,
-    PortPublication, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation, ServiceVolumeGraph,
-    SpecChange, UpdateOrder, VolumeSource, compare_specs,
+    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId,
+    MachineObservation, PortPublication, RequestedServiceSpec, ResolvedServiceSpec,
+    ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+    ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder, VolumeSource, compare_specs,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
@@ -74,10 +74,15 @@ pub(super) fn plan_global(
     requested: &RequestedServiceSpec,
     service_id: &ServiceId,
     current: &[ServiceContainer],
+    hooks: &[HookContainer],
     machines: Vec<&MachineObservation>,
     placement: &mut PlacementState,
     options: &PlanOptions,
 ) -> Result<(Vec<DeployOperation>, Option<MachineId>), PlanError> {
+    let reclaimable_hooks = hooks
+        .iter()
+        .map(|hook| hook.as_observation().machine_id)
+        .collect::<BTreeSet<_>>();
     let capacity_error = placement
         .capacity
         .error_for(machines.iter().map(|machine| &machine.machine.id));
@@ -90,7 +95,11 @@ pub(super) fn plan_global(
             (!matches!(operation, EndpointOperation::Unchanged)
                 && placement.capacity.fits_demand(
                     &machine.machine.id,
-                    EndpointDemand::for_operation(operation, true),
+                    EndpointDemand::for_operation(
+                        operation,
+                        true,
+                        reclaimable_hooks.contains(&machine.machine.id),
+                    ),
                 ))
             .then_some(machine.machine.id)
         })
@@ -124,6 +133,7 @@ pub(super) fn plan_global(
             let demand = EndpointDemand::for_operation(
                 EndpointOperation::Replace,
                 hook_machine == Some(machine_id),
+                reclaimable_hooks.contains(&machine_id),
             );
             if !placement.capacity.reserve(&machine_id, demand) {
                 return Err(capacity_error.clone());
@@ -157,6 +167,7 @@ pub(super) fn plan_global(
             let demand = EndpointDemand::for_operation(
                 EndpointOperation::Create,
                 hook_machine == Some(machine_id),
+                reclaimable_hooks.contains(&machine_id),
             );
             if !placement.capacity.reserve(&machine_id, demand) {
                 return Err(capacity_error.clone());
@@ -213,6 +224,7 @@ pub(super) struct ReplicatedPlacement<'a> {
     pub(super) machines: Vec<&'a MachineObservation>,
     pub(super) replicas: usize,
     pub(super) admission: CapacityAdmission,
+    pub(super) reclaimable_hooks: BTreeSet<MachineId>,
 }
 
 pub(super) fn plan_replicated(
@@ -227,6 +239,7 @@ pub(super) fn plan_replicated(
         mut machines,
         replicas,
         admission,
+        reclaimable_hooks,
     } = target;
     let mut by_machine = BTreeMap::<MachineId, Vec<&ServiceContainer>>::new();
     for container in current {
@@ -291,7 +304,11 @@ pub(super) fn plan_replicated(
                 .and_then(|containers| containers.last())
                 .copied();
             let operation = replicated_operation(existing, requested, options);
-            let demand = EndpointDemand::for_operation(operation, hook_pending);
+            let demand = EndpointDemand::for_operation(
+                operation,
+                hook_pending,
+                reclaimable_hooks.contains(&machine.machine.id),
+            );
             if capacity_reserved || placement.capacity.fits_demand(&machine.machine.id, demand) {
                 selected = Some((machine, demand));
                 break;
@@ -387,12 +404,21 @@ pub(super) fn reserve_replicated_service_demand(
         .flat_map(|service| &service.containers)
         .filter(|container| container.as_observation().machine_id == machine_id)
         .collect::<Vec<_>>();
+    let reclaimable_hooks = observed
+        .into_iter()
+        .flat_map(|service| service.hook_containers.iter())
+        .map(|hook| hook.as_observation().machine_id)
+        .collect::<BTreeSet<_>>();
     existing.sort_by_key(|container| is_up_to_date(container, requested, options));
     let mut hook_pending = requested.pre_deploy.is_some();
     let mut hook_machine = None;
     for _ in 0..replicas.get() {
         let operation = replicated_operation(existing.pop(), requested, options);
-        let demand = EndpointDemand::for_operation(operation, hook_pending);
+        let demand = EndpointDemand::for_operation(
+            operation,
+            hook_pending,
+            reclaimable_hooks.contains(&machine_id),
+        );
         if !capacity.reserve(&machine_id, demand) {
             return Err(());
         }

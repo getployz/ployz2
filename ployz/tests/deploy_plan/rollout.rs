@@ -110,6 +110,45 @@ fn hook_and_replacement_each_require_a_spare_endpoint() {
 }
 
 #[test]
+fn replaced_hook_reclaims_its_endpoint_before_container_replacement() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.pre_deploy = Some(PreDeployHook {
+        command: vec!["db".into(), "migrate".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let mut current = requested.clone();
+    current.container.image = "ghcr.io/getployz/api:old".into();
+    let current_service_id = service_id('a');
+    let mut old_hook = container('c', '1', &current, &current_service_id);
+    old_hook.kind = ContainerKind::PreDeployHook;
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![container('b', '1', &current, &current_service_id), old_hook],
+            capacity: capacity([('1', 1)]),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::StopHook { .. },
+            DeployOperation::RunHook { .. },
+            DeployOperation::ReplaceContainer(_)
+        ]
+    ));
+}
+
+#[test]
 fn hook_capacity_is_charged_only_to_its_selected_machine() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(2).unwrap(),

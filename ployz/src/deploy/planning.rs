@@ -492,6 +492,10 @@ fn plan_one_service(
                 admission: reservation.unwrap_or_else(|| CapacityAdmission::Pending {
                     error: capacity_error.expect("unreserved capacity has relevant Machines"),
                 }),
+                reclaimable_hooks: hooks
+                    .iter()
+                    .map(|hook| hook.as_observation().machine_id)
+                    .collect(),
             },
             placement,
             options,
@@ -500,6 +504,7 @@ fn plan_one_service(
             requested,
             &service_id,
             current,
+            hooks,
             machines,
             placement,
             options,

@@ -34,13 +34,18 @@ pub(super) enum EndpointOperation {
 }
 
 impl EndpointDemand {
-    pub(super) fn for_operation(operation: EndpointOperation, hook_pending: bool) -> Self {
+    pub(super) fn for_operation(
+        operation: EndpointOperation,
+        hook_pending: bool,
+        reclaims_hook: bool,
+    ) -> Self {
         let changes = !matches!(operation, EndpointOperation::Unchanged);
         let uses_hook = changes && hook_pending;
+        let adds_hook = uses_hook && !reclaims_hook;
         Self {
-            peak: u64::from(changes) + u64::from(uses_hook),
+            peak: u64::from(changes) + u64::from(adds_hook),
             persistent: u64::from(matches!(operation, EndpointOperation::Create))
-                + u64::from(uses_hook),
+                + u64::from(adds_hook),
             uses_hook,
         }
     }
