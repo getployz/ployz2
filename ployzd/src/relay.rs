@@ -378,6 +378,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn closed_cloud_pairing_watch_fails_run() {
+        let pairing = CloudPairing::parse("not-a-url", secret()).unwrap();
+        let shutdown = CancellationToken::new();
+        let (pairing_tx, pairing_rx) = watch::channel(Some(pairing));
+        drop(pairing_tx);
+        let error = run(pairing_rx, MachineId::random(), test_service().1, shutdown)
+            .await
+            .expect_err("closed watch must fail run");
+        assert_eq!(error.to_string(), "cloud pairing watch closed");
+    }
+
+    #[tokio::test]
     async fn register_reconnects_after_stream_end() {
         let relay = RelayListen::start().await;
         let (machine_id, service) = test_service();
