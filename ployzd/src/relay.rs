@@ -580,6 +580,24 @@ mod tests {
     }
 
     async fn assert_not_held(url: &str, machine_id: MachineId) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match list(url, DIAL, PAIRING).await {
+                Ok(listed)
+                    if listed
+                        .iter()
+                        .all(|row| row.machine_id().ok() != Some(machine_id)) =>
+                {
+                    break;
+                }
+                Ok(_) | Err(_) => {}
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "expected {machine_id} off List"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
         let listed = list(url, DIAL, PAIRING).await.unwrap();
         assert!(
