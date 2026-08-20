@@ -18,7 +18,7 @@ use super::{
 mod capacity;
 mod volumes;
 
-use capacity::{CapacityBudget, EndpointDemand};
+use capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
 use volumes::{
     VolumePins, named_volume_uses, plan_volume_operations, prepare_shared_replicated_volumes,
     preserved_owned_volumes, reject_mixed_volume_modes, scope_requested,
@@ -455,17 +455,19 @@ fn plan_one_service(
             )
         }
     };
-    machines.retain(|machine| {
-        current.iter().any(|container| {
-            container.as_observation().machine_id == machine.machine.id
-                && is_up_to_date(container, requested, options)
-        }) || placement.capacity.fits(&machine.machine.id, 1)
-    });
-    if machines.is_empty() {
-        return Err(placement.capacity.error(requested));
+    if matches!(requested.mode, ServiceMode::Replicated { .. }) {
+        machines.retain(|machine| {
+            current.iter().any(|container| {
+                container.as_observation().machine_id == machine.machine.id
+                    && is_up_to_date(container, requested, options)
+            }) || placement.capacity.fits(&machine.machine.id, 1)
+        });
+        if machines.is_empty() {
+            return Err(placement.capacity.error(requested));
+        }
     }
     plan_volume_operations(requested, snapshot, pins, &mut machines)?;
-    let service_operations = match requested.mode {
+    let (service_operations, hook_machine) = match requested.mode {
         ServiceMode::Replicated { replicas } => plan_replicated(
             requested,
             &service_id,
@@ -484,7 +486,8 @@ fn plan_one_service(
             options,
         )?,
     };
-    let mut operations = pre_deploy_operations(requested, hooks, &service_operations);
+    let mut operations =
+        pre_deploy_operations(requested, hooks, &service_operations, hook_machine.as_ref());
     operations.extend(service_operations);
     Ok(operations)
 }
@@ -603,6 +606,7 @@ fn pre_deploy_operations(
     requested: &RequestedServiceSpec,
     hooks: &[HookContainer],
     service_operations: &[DeployOperation],
+    hook_machine: Option<&MachineId>,
 ) -> Vec<DeployOperation> {
     if requested.pre_deploy.is_none() {
         return Vec::new();
@@ -615,7 +619,8 @@ fn pre_deploy_operations(
             }
             | DeployOperation::ReplaceContainer(ReplacementOperation {
                 machine_id, spec, ..
-            }) => Some((machine_id, spec)),
+            }) if hook_machine == Some(machine_id) => Some((machine_id, spec)),
+            DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => None,
             DeployOperation::CreateVolume { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
@@ -666,10 +671,39 @@ fn plan_global(
     machines: Vec<&MachineObservation>,
     placement: &mut PlacementState<'_>,
     options: &PlanOptions,
-) -> Result<Vec<DeployOperation>, PlanError> {
+) -> Result<(Vec<DeployOperation>, Option<MachineId>), PlanError> {
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
-    let mut hook_pending = requested.pre_deploy.is_some();
+    let hook_machine = requested.pre_deploy.as_ref().and_then(|_| {
+        machines.iter().find_map(|machine| {
+            let on_machine = current
+                .iter()
+                .filter(|container| container.as_observation().machine_id == machine.machine.id)
+                .collect::<Vec<_>>();
+            let operation = global_endpoint_operation(&on_machine, requested, options);
+            (!matches!(operation, EndpointOperation::Unchanged)
+                && placement.capacity.fits_demand(
+                    &machine.machine.id,
+                    EndpointDemand::for_operation(operation, true),
+                ))
+            .then_some(machine.machine.id)
+        })
+    });
+    if requested.pre_deploy.is_some()
+        && hook_machine.is_none()
+        && machines.iter().any(|machine| {
+            let on_machine = current
+                .iter()
+                .filter(|container| container.as_observation().machine_id == machine.machine.id)
+                .collect::<Vec<_>>();
+            !matches!(
+                global_endpoint_operation(&on_machine, requested, options),
+                EndpointOperation::Unchanged
+            )
+        })
+    {
+        return Err(placement.capacity.error(requested));
+    }
 
     for machine in machines {
         *placement.occupancy.entry(machine.machine.id).or_default() += 1;
@@ -692,11 +726,13 @@ fn plan_global(
             .find(|container| super::is_active_runtime(&container.as_observation().runtime))
         {
             let observation = container.as_observation();
-            let demand = EndpointDemand::for_operation(true, true, hook_pending);
+            let demand = EndpointDemand::for_operation(
+                EndpointOperation::Replace,
+                hook_machine == Some(machine.machine.id),
+            );
             if !placement.capacity.reserve(&machine.machine.id, demand) {
                 return Err(placement.capacity.error(requested));
             }
-            hook_pending &= !demand.uses_hook();
             used.insert(observation.container_id);
             for other in &on_machine {
                 let other_observation = other.as_observation();
@@ -723,11 +759,13 @@ fn plan_global(
                 skip_health_monitor: options.skip_health_monitor,
             }));
         } else {
-            let demand = EndpointDemand::for_operation(true, false, hook_pending);
+            let demand = EndpointDemand::for_operation(
+                EndpointOperation::Create,
+                hook_machine == Some(machine.machine.id),
+            );
             if !placement.capacity.reserve(&machine.machine.id, demand) {
                 return Err(placement.capacity.error(requested));
             }
-            hook_pending &= !demand.uses_hook();
             operations.push(DeployOperation::RunContainer {
                 machine_id: machine.machine.id,
                 spec: resolve(
@@ -741,7 +779,27 @@ fn plan_global(
     }
 
     remove_unused(&mut operations, current, &used);
-    Ok(operations)
+    Ok((operations, hook_machine))
+}
+
+fn global_endpoint_operation(
+    on_machine: &[&ServiceContainer],
+    requested: &RequestedServiceSpec,
+    options: &PlanOptions,
+) -> EndpointOperation {
+    if on_machine
+        .iter()
+        .any(|container| is_up_to_date(container, requested, options))
+    {
+        EndpointOperation::Unchanged
+    } else if on_machine
+        .iter()
+        .any(|container| super::is_active_runtime(&container.as_observation().runtime))
+    {
+        EndpointOperation::Replace
+    } else {
+        EndpointOperation::Create
+    }
 }
 
 fn plan_replicated(
@@ -752,7 +810,7 @@ fn plan_replicated(
     replicas: usize,
     placement: &mut PlacementState<'_>,
     options: &PlanOptions,
-) -> Result<Vec<DeployOperation>, PlanError> {
+) -> Result<(Vec<DeployOperation>, Option<MachineId>), PlanError> {
     let mut by_machine = BTreeMap::<MachineId, Vec<&ServiceContainer>>::new();
     for container in current {
         by_machine
@@ -785,6 +843,7 @@ fn plan_replicated(
     let mut operations = Vec::new();
     let mut cursor = 0;
     let mut hook_pending = requested.pre_deploy.is_some();
+    let mut hook_machine = None;
     for _ in 0..replicas {
         let mut selected = None;
         for _ in 0..machines.len() {
@@ -797,11 +856,14 @@ fn plan_replicated(
                 .get(&machine.machine.id)
                 .and_then(|containers| containers.last())
                 .copied();
-            let demand = EndpointDemand::for_operation(
-                existing.is_none_or(|container| !is_up_to_date(container, requested, options)),
-                existing.is_some(),
-                hook_pending,
-            );
+            let operation = match existing {
+                Some(container) if is_up_to_date(container, requested, options) => {
+                    EndpointOperation::Unchanged
+                }
+                Some(_) => EndpointOperation::Replace,
+                None => EndpointOperation::Create,
+            };
+            let demand = EndpointDemand::for_operation(operation, hook_pending);
             if placement.capacity.fits_demand(&machine.machine.id, demand) {
                 selected = Some((machine, demand));
                 break;
@@ -811,7 +873,10 @@ fn plan_replicated(
             return Err(placement.capacity.error(requested));
         };
         placement.capacity.reserve(&machine.machine.id, demand);
-        hook_pending &= !demand.uses_hook();
+        if demand.uses_hook() {
+            hook_pending = false;
+            hook_machine = Some(machine.machine.id);
+        }
         *placement.occupancy.entry(machine.machine.id).or_default() += 1;
         let existing = by_machine
             .get_mut(&machine.machine.id)
@@ -842,7 +907,7 @@ fn plan_replicated(
         }
     }
     remove_unused(&mut operations, current, &used);
-    Ok(operations)
+    Ok((operations, hook_machine))
 }
 
 fn remove_unused(

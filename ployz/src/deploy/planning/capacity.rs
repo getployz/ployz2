@@ -26,12 +26,21 @@ pub(super) struct EndpointDemand {
     uses_hook: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum EndpointOperation {
+    Unchanged,
+    Create,
+    Replace,
+}
+
 impl EndpointDemand {
-    pub(super) fn for_operation(changes: bool, replaces: bool, hook_pending: bool) -> Self {
+    pub(super) fn for_operation(operation: EndpointOperation, hook_pending: bool) -> Self {
+        let changes = !matches!(operation, EndpointOperation::Unchanged);
         let uses_hook = changes && hook_pending;
         Self {
             peak: u64::from(changes) + u64::from(uses_hook),
-            persistent: u64::from(changes && !replaces) + u64::from(uses_hook),
+            persistent: u64::from(matches!(operation, EndpointOperation::Create))
+                + u64::from(uses_hook),
             uses_hook,
         }
     }

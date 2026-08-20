@@ -20,12 +20,10 @@ impl LocalDocker {
                 .flatten()
                 .filter_map(|config| config.subnet),
         );
-        let attached_endpoints = attached_endpoint_count(
-            network
-                .containers
-                .as_ref()
-                .map(|containers| containers.values()),
-        );
+        let attached_endpoints = network
+            .containers
+            .as_ref()
+            .map_or(0, |containers| containers.len() as u64);
         Ok(BridgeEndpointCapacity::new(
             usable_endpoints,
             attached_endpoints,
@@ -39,10 +37,10 @@ impl LocalDocker {
             .ok_or(Error::MissingField("Docker root directory"))?;
         let (docker_root_total_bytes, docker_root_free_bytes) = filesystem_space(&docker_root)?;
         let (memory_total_bytes, memory_available_bytes) = memory()?;
-        let memory = ByteCapacity::new(memory_total_bytes, memory_available_bytes)
-            .ok_or(Error::MissingField("consistent host memory capacity"))?;
-        let docker_root = ByteCapacity::new(docker_root_total_bytes, docker_root_free_bytes)
-            .ok_or(Error::MissingField("consistent Docker-root capacity"))?;
+        let memory = ByteCapacity::parse(memory_total_bytes, memory_available_bytes)
+            .map_err(|_| Error::MissingField("consistent host memory capacity"))?;
+        let docker_root = ByteCapacity::parse(docker_root_total_bytes, docker_root_free_bytes)
+            .map_err(|_| Error::MissingField("consistent Docker-root capacity"))?;
         Ok(MachineTelemetry::new(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -66,10 +64,6 @@ fn usable_endpoint_count(subnets: impl IntoIterator<Item = String>) -> u64 {
             addresses.saturating_sub(3)
         })
         .sum()
-}
-
-fn attached_endpoint_count<T>(attachments: Option<impl ExactSizeIterator<Item = T>>) -> u64 {
-    attachments.map_or(0, |attachments| attachments.len() as u64)
 }
 
 fn filesystem_space(path: &str) -> Result<(u64, u64), Error> {
@@ -113,10 +107,9 @@ mod tests {
 
     #[test]
     fn bridge_capacity_comes_from_live_subnets_and_attachments() {
-        let attachments = ["endpoint-a", "endpoint-b"].into_iter();
+        let attachments = ["endpoint-a", "endpoint-b"];
         let usable = usable_endpoint_count(["10.0.0.0/29".into(), "10.0.1.0/30".into()]);
-        let capacity =
-            BridgeEndpointCapacity::new(usable, attached_endpoint_count(Some(attachments)));
+        let capacity = BridgeEndpointCapacity::new(usable, attachments.len() as u64);
 
         assert_eq!(capacity.usable_endpoints(), 6);
         assert_eq!(capacity.attached_endpoints(), 2);
@@ -125,10 +118,9 @@ mod tests {
 
     #[test]
     fn a_full_live_bridge_has_no_free_capacity() {
-        let attachments = ["a", "b", "c", "d", "e"].into_iter();
+        let attachments = ["a", "b", "c", "d", "e"];
         let usable = usable_endpoint_count(["10.0.0.0/29".into()]);
-        let capacity =
-            BridgeEndpointCapacity::new(usable, attached_endpoint_count(Some(attachments)));
+        let capacity = BridgeEndpointCapacity::new(usable, attachments.len() as u64);
 
         assert_eq!(capacity.usable_endpoints(), 5);
         assert_eq!(capacity.attached_endpoints(), 5);

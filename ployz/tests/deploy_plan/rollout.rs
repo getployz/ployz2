@@ -143,6 +143,62 @@ fn hook_capacity_is_charged_only_to_its_selected_machine() {
 }
 
 #[test]
+fn global_hook_uses_a_changed_machine_with_an_extra_slot() {
+    let mut requested = requested(ServiceMode::Global);
+    requested.pre_deploy = Some(PreDeployHook {
+        command: vec!["db".into(), "migrate".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let machines = vec![machine('1', "first"), machine('2', "second")];
+    let baseline = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: machines.clone(),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+    let ordered = operations(&baseline)
+        .into_iter()
+        .filter_map(|operation| match operation {
+            DeployOperation::RunContainer { machine_id, .. } => Some(machine_id),
+            DeployOperation::CreateVolume { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let [first, hook] = ordered.as_slice() else {
+        panic!("Global baseline should create exactly two Containers")
+    };
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines,
+            capacity: Some(BTreeMap::from([
+                (*first, BridgeEndpointCapacity::new(1, 0)),
+                (*hook, BridgeEndpointCapacity::new(2, 0)),
+            ])),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        operations(&plan).first(),
+        Some(DeployOperation::RunHook { machine_id, .. }) if machine_id == hook
+    ));
+}
+
+#[test]
 fn planning_does_not_count_hook_containers_toward_replicated_count() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),

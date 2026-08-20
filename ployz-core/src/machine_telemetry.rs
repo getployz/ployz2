@@ -1,6 +1,7 @@
 //! Fresh operator telemetry from one Machine.
 
 use serde::{Deserialize, Deserializer, Serialize, de};
+use thiserror::Error;
 
 /// Consistent usable, attached, and free endpoint counts for the Ployz bridge.
 ///
@@ -105,6 +106,11 @@ pub struct ByteCapacity {
     available: u64,
 }
 
+/// An available byte count exceeded its resource total.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("available bytes exceed total bytes")]
+pub struct ByteCapacityError;
+
 /// Fresh telemetry returned by a requested Machine inspection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "scope")]
@@ -134,10 +140,15 @@ impl TelemetryObservation {
 }
 
 impl ByteCapacity {
-    /// Build a byte capacity when `available` does not exceed `total`.
-    #[must_use]
-    pub fn new(total: u64, available: u64) -> Option<Self> {
-        (available <= total).then_some(Self { total, available })
+    /// Parse a total byte count and its available subset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ByteCapacityError`] when `available` exceeds `total`.
+    pub fn parse(total: u64, available: u64) -> Result<Self, ByteCapacityError> {
+        (available <= total)
+            .then_some(Self { total, available })
+            .ok_or(ByteCapacityError)
     }
 
     /// Total bytes in the resource.
@@ -216,11 +227,11 @@ impl<'de> Deserialize<'de> for MachineTelemetry {
         }
 
         let wire = Wire::deserialize(deserializer)?;
-        let memory = ByteCapacity::new(wire.memory_total_bytes, wire.memory_available_bytes)
-            .ok_or_else(|| de::Error::custom("Machine memory counts are inconsistent"))?;
+        let memory = ByteCapacity::parse(wire.memory_total_bytes, wire.memory_available_bytes)
+            .map_err(|_| de::Error::custom("Machine memory counts are inconsistent"))?;
         let docker_root =
-            ByteCapacity::new(wire.docker_root_total_bytes, wire.docker_root_free_bytes)
-                .ok_or_else(|| de::Error::custom("Docker-root byte counts are inconsistent"))?;
+            ByteCapacity::parse(wire.docker_root_total_bytes, wire.docker_root_free_bytes)
+                .map_err(|_| de::Error::custom("Docker-root byte counts are inconsistent"))?;
         Ok(Self::new(
             wire.observed_at_unix_seconds,
             wire.managed_containers,
@@ -258,6 +269,6 @@ mod tests {
 
     #[test]
     fn byte_capacity_rejects_available_above_total() {
-        assert_eq!(ByteCapacity::new(1, 2), None);
+        assert_eq!(ByteCapacity::parse(1, 2), Err(ByteCapacityError));
     }
 }

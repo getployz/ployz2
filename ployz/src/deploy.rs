@@ -244,8 +244,10 @@ impl fmt::Display for EliminatingConstraints {
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlanError {
+    /// At least one relevant Machine did not return a fresh capacity observation.
     #[error("capacity unknown: an eligible Machine did not return fresh bridge telemetry")]
     CapacityUnknown,
+    /// Fresh observations confirm the requested operations cannot fit.
     #[error("insufficient capacity on observed eligible Machines")]
     InsufficientCapacity,
     #[error("no machines available that satisfy all constraints: {constraints}")]

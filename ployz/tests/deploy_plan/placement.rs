@@ -157,6 +157,35 @@ fn all_unknown_global_capacity_is_reported_as_unknown() {
 }
 
 #[test]
+fn global_missing_slot_distinguishes_unknown_and_full_capacity() {
+    let requested = requested(ServiceMode::Global);
+    let current_service_id = service_id('a');
+    let snapshot = |capacity| DeploySnapshot {
+        machines: vec![machine('1', "current"), machine('2', "missing")],
+        containers: vec![container('b', '1', &requested, &current_service_id)],
+        capacity,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        plan_deploy(
+            [&requested],
+            &snapshot(capacity([('1', 0)])),
+            PlanOptions::default(),
+        ),
+        Err(PlanError::CapacityUnknown)
+    );
+    assert_eq!(
+        plan_deploy(
+            [&requested],
+            &snapshot(capacity([('1', 0), ('2', 0)])),
+            PlanOptions::default(),
+        ),
+        Err(PlanError::InsufficientCapacity)
+    );
+}
+
+#[test]
 fn huge_replica_request_is_rejected_before_planning_operations() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(u32::MAX).unwrap(),

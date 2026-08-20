@@ -534,8 +534,10 @@ fn container_address(inspected: &RawContainerInspect) -> Option<ContainerAddress
 
 #[derive(Debug, Error)]
 pub enum Error {
+    /// A required host telemetry read failed.
     #[error("host telemetry failed: {0}")]
     Io(#[from] std::io::Error),
+    /// The Ployz bridge has no endpoint available for a new Container.
     #[error("Ployz Docker bridge has no free endpoint capacity")]
     EndpointCapacity,
     #[error("Docker operation failed: {0}")]
