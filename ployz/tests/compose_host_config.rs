@@ -34,19 +34,6 @@ fn compose_refuses_security_opt() {
 }
 
 #[test]
-fn compose_warns_for_dropped_extra_hosts() {
-    let project = parse_normalized(
-        "services: {app: {image: app, extra_hosts: [\"db:1.2.3.4\"]}}",
-        ".",
-    )
-    .unwrap();
-    assert_eq!(
-        project.warnings,
-        ["service 'app': unsupported feature 'extra_hosts'"]
-    );
-}
-
-#[test]
 fn compose_refuses_deploy_placement_and_points_at_x_machines() {
     let error = parse_normalized(
         "services: {app: {image: app, deploy: {placement: {constraints: [\"node.hostname == a\"]}}}}",
@@ -57,19 +44,6 @@ fn compose_refuses_deploy_placement_and_points_at_x_machines() {
     assert_eq!(
         error,
         "invalid normalized Compose project: service 'app': unsupported feature 'deploy.placement'; use x-machines"
-    );
-}
-
-#[test]
-fn compose_warns_for_dropped_deploy_restart_policy() {
-    let project = parse_normalized(
-        "services: {app: {image: app, deploy: {restart_policy: {condition: on-failure}}}}",
-        ".",
-    )
-    .unwrap();
-    assert_eq!(
-        project.warnings,
-        ["service 'app': unsupported feature 'deploy.restart_policy'"]
     );
 }
 

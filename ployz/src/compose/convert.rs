@@ -515,7 +515,7 @@ fn classify(name: &str, service: &RawService) -> Result<Vec<String>, ComposeErro
         "uts",
         "volumes_from",
     ];
-    if service.other.get("read_only").is_some_and(is_true) {
+    if service.other.get("read_only") == Some(&Value::Bool(true)) {
         return Err(invalid(unsupported_feature(name, "read_only")));
     }
     if present(&service.other, "security_opt") {
@@ -567,10 +567,6 @@ fn classify(name: &str, service: &RawService) -> Result<Vec<String>, ComposeErro
 
 fn present(map: &BTreeMap<String, Value>, key: &str) -> bool {
     map.get(key).is_some_and(|value| !value.is_null())
-}
-
-fn is_true(value: &Value) -> bool {
-    matches!(value, Value::Bool(true))
 }
 
 fn unsupported_feature(name: &str, feature: &str) -> String {

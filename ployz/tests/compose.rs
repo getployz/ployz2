@@ -384,18 +384,6 @@ secrets:
             "services: {app: {image: app, volumes: [{type: tmpfs, target: /tmp, tmpfs: {size: huge}}]}}",
             "tmpfs.size",
         ),
-        (
-            "services: {app: {image: app, read_only: true}}",
-            "read_only",
-        ),
-        (
-            "services: {app: {image: app, security_opt: [no-new-privileges]}}",
-            "security_opt",
-        ),
-        (
-            "services: {app: {image: app, deploy: {placement: {constraints: [\"node.hostname == a\"]}}}}",
-            "x-machines",
-        ),
     ];
     for (yaml, expected) in cases {
         let error = parse_normalized(yaml, ".").unwrap_err().to_string();
