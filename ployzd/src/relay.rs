@@ -4,6 +4,7 @@ use std::{
     io,
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use ployz_core::{CloudPairing, MachineId, MachineRpcServer, PairingCredential};
@@ -122,36 +123,86 @@ impl Drop for RegisterHold {
     }
 }
 
+const REGISTER_RETRY_BASE: Duration = Duration::from_secs(1);
+const REGISTER_RETRY_CAP: Duration = Duration::from_secs(30);
+
+fn register_retry_delay(failures: u32) -> Duration {
+    let shift = failures.min(31);
+    let millis = REGISTER_RETRY_BASE
+        .as_millis()
+        .saturating_mul(1u128 << shift)
+        .min(REGISTER_RETRY_CAP.as_millis());
+    Duration::from_millis(u64::try_from(millis).unwrap_or(u64::MAX))
+}
+
 /// Hold Register for stored Cloud Pairing, or idle if none.
+///
+/// Register loss retries with bounded backoff until Cloud Pairing changes or
+/// shutdown. Clearing or replacing pairing cancels the previous retries.
 ///
 /// # Errors
 ///
-/// If the Relay is unreachable or Register is rejected.
+/// If the Cloud Pairing watch closes.
 pub(crate) async fn run(
     mut pairing: watch::Receiver<Option<CloudPairing>>,
     machine_id: MachineId,
     service: MachineService,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
+    let mut failures = 0u32;
     loop {
         let current = pairing.borrow_and_update().clone();
-        let _hold = match current {
-            Some(current) => Some(
-                hold_register(
-                    current.relay_url(),
-                    current.secret(),
-                    &machine_id,
-                    service.clone(),
-                )
-                .await
-                .map_err(io::Error::other)?,
-            ),
-            None => None,
-        };
-        tokio::select! {
-            () = shutdown.cancelled() => return Ok(()),
-            changed = pairing.changed() => {
-                changed.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
+        match current {
+            None => {
+                failures = 0;
+                tokio::select! {
+                    () = shutdown.cancelled() => return Ok(()),
+                    changed = pairing.changed() => {
+                        changed.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
+                    }
+                }
+            }
+            Some(current) => {
+                let hold = tokio::select! {
+                    () = shutdown.cancelled() => return Ok(()),
+                    changed = pairing.changed() => {
+                        changed.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
+                        failures = 0;
+                        continue;
+                    }
+                    result = hold_register(
+                        current.relay_url(),
+                        current.secret(),
+                        &machine_id,
+                        service.clone(),
+                    ) => result,
+                };
+                match hold {
+                    Ok(mut hold) => {
+                        failures = 0;
+                        tokio::select! {
+                            () = shutdown.cancelled() => return Ok(()),
+                            changed = pairing.changed() => {
+                                changed.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
+                                failures = 0;
+                            }
+                            _ = &mut hold.task => {}
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "relay Register retry");
+                        let wait = register_retry_delay(failures);
+                        failures = failures.saturating_add(1);
+                        tokio::select! {
+                            () = shutdown.cancelled() => return Ok(()),
+                            changed = pairing.changed() => {
+                                changed.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
+                                failures = 0;
+                            }
+                            () = tokio::time::sleep(wait) => {}
+                        }
+                    }
+                }
             }
         }
     }
@@ -174,7 +225,7 @@ mod tests {
     use tokio::sync::watch;
     use tokio_util::sync::CancellationToken;
 
-    use super::{Error, hold_register, run};
+    use super::{Error, hold_register, register_retry_delay, run};
     use crate::{machine::LocalMachineStore, rpc::MachineService};
 
     const PAIRING: &str = "pairing-secret";
@@ -331,34 +382,158 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unreachable_cloud_pairing_fails() {
+    async fn unreachable_cloud_pairing_retries_until_shutdown() {
         let pairing = CloudPairing::parse("not-a-url", secret()).unwrap();
-        let error = run(
-            watch::channel(Some(pairing)).1,
+        let shutdown = CancellationToken::new();
+        let (_pairing_tx, pairing_rx) = watch::channel(Some(pairing));
+        let hold = tokio::spawn(run(
+            pairing_rx,
             MachineId::random(),
             test_service().1,
-            CancellationToken::new(),
-        )
-        .await
-        .expect_err("unreachable Relay must fail");
-        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+            shutdown.clone(),
+        ));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!hold.is_finished(), "unreachable Relay must not stop run");
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn register_reconnects_after_stream_end() {
+        let relay = RelayListen::start().await;
+        let (machine_id, service) = test_service();
+        let shutdown = CancellationToken::new();
+        let (_pairing_tx, pairing_rx) =
+            watch::channel(Some(CloudPairing::parse(&relay.url, secret()).unwrap()));
+        let hold = tokio::spawn(run(pairing_rx, machine_id, service, shutdown.clone()));
+        wait_for_held(&relay.url, machine_id).await;
+
+        let displacer = hold_register(&relay.url, &secret(), &machine_id, test_service().1)
+            .await
+            .expect("second Register displaces the held stream");
+        drop(displacer);
+        wait_for_held(&relay.url, machine_id).await;
+
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn register_reconnects_after_relay_restart() {
+        let relay = RelayListen::start().await;
+        let url = relay.url.clone();
+        let (machine_id, service) = test_service();
+        let shutdown = CancellationToken::new();
+        let (_pairing_tx, pairing_rx) =
+            watch::channel(Some(CloudPairing::parse(&url, secret()).unwrap()));
+        let hold = tokio::spawn(run(pairing_rx, machine_id, service, shutdown.clone()));
+        wait_for_held(&url, machine_id).await;
+
+        let relay = relay.restart().await;
+        wait_for_held_within(&relay.url, machine_id, Duration::from_secs(5)).await;
+
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn clearing_cloud_pairing_cancels_register_retries() {
+        let relay = RelayListen::start().await;
+        let (machine_id, service) = test_service();
+        let shutdown = CancellationToken::new();
+        let (pairing_tx, pairing_rx) =
+            watch::channel(Some(CloudPairing::parse(&relay.url, secret()).unwrap()));
+        let hold = tokio::spawn(run(pairing_rx, machine_id, service, shutdown.clone()));
+        wait_for_held(&relay.url, machine_id).await;
+
+        pairing_tx.send_replace(Some(
+            CloudPairing::parse("http://127.0.0.1:1", secret()).unwrap(),
+        ));
+        pairing_tx.send_replace(None);
+        let relay = relay.restart().await;
+        assert_not_held(&relay.url, machine_id).await;
+
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacing_cloud_pairing_cancels_retries_for_the_previous_pairing() {
+        let first = RelayListen::start().await;
+        let second = RelayListen::start().await;
+        let (machine_id, service) = test_service();
+        let shutdown = CancellationToken::new();
+        let (pairing_tx, pairing_rx) =
+            watch::channel(Some(CloudPairing::parse(&first.url, secret()).unwrap()));
+        let hold = tokio::spawn(run(pairing_rx, machine_id, service, shutdown.clone()));
+        wait_for_held(&first.url, machine_id).await;
+
+        pairing_tx.send_replace(Some(
+            CloudPairing::parse("http://127.0.0.1:1", secret()).unwrap(),
+        ));
+        pairing_tx.send_replace(Some(CloudPairing::parse(&second.url, secret()).unwrap()));
+        wait_for_held(&second.url, machine_id).await;
+        let first = first.restart().await;
+        assert_not_held(&first.url, machine_id).await;
+
+        shutdown.cancel();
+        hold.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn register_retry_delay_doubles_until_the_cap() {
+        assert_eq!(register_retry_delay(0), Duration::from_secs(1));
+        assert_eq!(register_retry_delay(1), Duration::from_secs(2));
+        assert_eq!(register_retry_delay(4), Duration::from_secs(16));
+        assert_eq!(register_retry_delay(5), Duration::from_secs(30));
+        assert_eq!(register_retry_delay(100), Duration::from_secs(30));
     }
 
     struct RelayListen {
         url: String,
-        _server: tokio::task::JoinHandle<std::io::Result<()>>,
-        _goaway: ployz_relay::Goaway,
+        address: std::net::SocketAddr,
+        server: tokio::task::JoinHandle<std::io::Result<()>>,
+        goaway: ployz_relay::Goaway,
     }
 
     impl RelayListen {
         async fn start() -> Self {
+            Self::bind((Ipv4Addr::LOCALHOST, 0).into()).await
+        }
+
+        async fn bind(listen: std::net::SocketAddr) -> Self {
             let relay = Relay::new(DialCredential::parse(DIAL).unwrap());
-            let listen = (Ipv4Addr::LOCALHOST, 0).into();
-            let (address, server, goaway) = relay.serve(listen).await.unwrap();
+            let (address, server, goaway) = relay
+                .serve_with_drain(listen, Duration::from_millis(10))
+                .await
+                .unwrap();
             Self {
                 url: format!("http://{address}"),
-                _server: server,
-                _goaway: goaway,
+                address,
+                server,
+                goaway,
+            }
+        }
+
+        async fn restart(self) -> Self {
+            let listen = self.address;
+            self.goaway.start();
+            let _ = self.server.await;
+            loop {
+                match Relay::new(DialCredential::parse(DIAL).unwrap())
+                    .serve_with_drain(listen, Duration::from_millis(10))
+                    .await
+                {
+                    Ok((address, server, goaway)) => {
+                        return Self {
+                            url: format!("http://{address}"),
+                            address,
+                            server,
+                            goaway,
+                        };
+                    }
+                    Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                }
             }
         }
     }
@@ -399,17 +574,25 @@ mod tests {
     }
 
     async fn wait_for_held(url: &str, machine_id: MachineId) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        wait_for_held_within(url, machine_id, Duration::from_secs(2)).await;
+    }
+
+    async fn wait_for_held_within(url: &str, machine_id: MachineId, within: Duration) {
+        let deadline = tokio::time::Instant::now() + within;
         loop {
-            let listed = list(url, DIAL, PAIRING).await.unwrap();
-            if listed.iter().any(|row| {
-                row.machine_id().ok() == Some(machine_id) && row.register_rtt_ns.is_some()
-            }) {
-                return;
+            match list(url, DIAL, PAIRING).await {
+                Ok(listed)
+                    if listed.iter().any(|row| {
+                        row.machine_id().ok() == Some(machine_id) && row.register_rtt_ns.is_some()
+                    }) =>
+                {
+                    return;
+                }
+                Ok(_) | Err(_) => {}
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "expected {machine_id} on List with path RTT, got {listed:?}"
+                "expected {machine_id} on List with path RTT"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
