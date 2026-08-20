@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     net::{Ipv6Addr, SocketAddr},
     path::PathBuf,
     process::Command,
@@ -17,11 +17,12 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
-    DockerVolume, DockerVolumeId, DockerVolumeName, LocalMachineRemoved, Machine, MachineId,
-    MachineList, MachineName, MachineObservation, MachineRemoved, MachineRpc, MachineRpcServer,
-    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered,
-    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
-    RuntimeWatchRequest, VolumeList, VolumeRemoved, WireGuardPublicKey, op,
+    DockerVolume, DockerVolumeId, DockerVolumeName, LocalMachinePhase, LocalMachineRemoved,
+    Machine, MachineDetails, MachineId, MachineList, MachineName, MachineObservation,
+    MachineRemoved, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
+    OpaquePayload, PROTOCOL_MAJOR, Registered, RemoveMachineRequest, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, VolumeList, VolumeRemoved,
+    WireGuardPublicKey, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -138,6 +139,7 @@ pub(super) struct DiscoveryService {
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
+    pub(super) cloud_paired: Arc<Mutex<HashSet<MachineId>>>,
     register_error: Arc<Mutex<Option<RpcError>>>,
 }
 
@@ -158,6 +160,7 @@ impl DiscoveryService {
             reset_warning: Arc::new(Mutex::new(None)),
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
+            cloud_paired: Arc::new(Mutex::new(HashSet::new())),
             register_error: Arc::new(Mutex::new(None)),
         }
     }
@@ -261,9 +264,37 @@ impl MachineRpc for DiscoveryService {
 
     async fn inspect(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let machine_id = request
+            .metadata()
+            .get("machine")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| MachineId::parse(value).ok())
+            .unwrap_or(self.description.machine_id);
+        let observation = self
+            .machines
+            .iter()
+            .find(|observation| observation.machine.id == machine_id);
+        let cloud_paired = self.cloud_paired.lock().unwrap().contains(&machine_id);
+        Ok(Response::new(
+            RpcResponse::from(MachineDetails {
+                id: machine_id,
+                phase: LocalMachinePhase::Participating,
+                machine: observation.map(|observation| observation.machine.clone()),
+                public_key: observation
+                    .map(|observation| observation.machine.public_key)
+                    .unwrap_or(WireGuardPublicKey([0; 32])),
+                advertised_endpoints: observation
+                    .map(|observation| observation.machine.advertised_endpoints.clone())
+                    .unwrap_or_default(),
+                store_version: Default::default(),
+                rtts: Vec::new(),
+                cloud_paired,
+            })
+            .encode()
+            .unwrap(),
+        ))
     }
 
     async fn machine_token(

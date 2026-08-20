@@ -29,6 +29,9 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 "the current entry Machine cannot be removed while another Machine is visible",
             ));
         }
+        client
+            .refuse_last_cloud_paired(&machines, selected.id)
+            .await?;
         let selected_observation = machines
             .iter()
             .find(|entry| entry.machine.id == selected.id)

@@ -3,14 +3,14 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use ployz_core::{
     ContainerAction, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume, DockerVolumeName,
-    FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest, ListContainersRequest,
-    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
-    MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
-    MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
-    ProjectName, RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
-    RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
-    RpcResponseBody, StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss,
-    apply_many_targets, derive_live_services, op,
+    FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest, InspectRequest,
+    ListContainersRequest, ListImagesRequest, ListMachinesRequest, ListVolumesRequest,
+    LiveServices, LocalMachineRemoved, MachineFailure, MachineId, MachineImages, MachineName,
+    MachineObservation, MachineRpcClient, MachineSuccess, MachineTarget, NameMatches,
+    ObservedDataLoss, OpaquePayload, PartialResult, ProjectName, RemoveContainerRequest,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest,
+    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest,
+    StopContainerRequest, UnconfirmedDataLoss, apply_many_targets, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -23,10 +23,13 @@ use crate::{
         UNARY_RETRY_DELAYS, apply_timeout, decode_fanout_failure, is_unary_retryable, rpc_error,
         stop_rpc_timeout, target_request,
     },
-    context::{Connection, ConnectionSource},
+    context::{Connection, ConnectionSource, Transport},
     deploy::{DeploySnapshot, ObservedDockerVolume},
     service::ContainerOperationFailure,
 };
+
+/// Why `machine rm` refuses the last Cloud-paired Machine.
+pub(crate) const LAST_CLOUD_PAIRED_MESSAGE: &str = "the last Cloud-paired Machine cannot be removed with machine rm; tear down this Cluster from Cloud";
 
 #[derive(Clone)]
 pub struct Client {
@@ -304,14 +307,16 @@ impl Client {
     /// Re-reads Data Loss at execute time. Fresh names the confirmation does
     /// not cover refuse the removal. Extra confirmed names are ignored.
     /// Resets the Machine. A reset warning is returned, not swallowed.
+    /// The last Cloud-paired Machine is refused before reset or membership
+    /// mutation; tear down that Cluster from Cloud.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible or is
     /// the current entry while another Machine is visible, when the Machine
-    /// did not respond so Data Loss cannot be listed, when the confirmation
-    /// does not cover the fresh Data Loss, or when reset or shared-row removal
-    /// fails.
+    /// is the last Cloud-paired Machine, when the Machine did not respond so
+    /// Data Loss cannot be listed, when the confirmation does not cover the
+    /// fresh Data Loss, or when reset or shared-row removal fails.
     pub async fn remove_machine(
         &mut self,
         machine: &MachineTarget,
@@ -334,7 +339,46 @@ impl Client {
                 details: Value::Null,
             });
         }
+        self.refuse_last_cloud_paired(&machines, selected).await?;
         evict_machine(self, observation, confirm_data_loss, current).await
+    }
+
+    /// Refuse when `selected` is the only visible Machine and it is Cloud-paired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcErrorCode::InvalidArgument`] when removal would destroy the
+    /// last Cloud-paired Machine.
+    pub(crate) async fn refuse_last_cloud_paired(
+        &self,
+        machines: &[MachineObservation],
+        selected: MachineId,
+    ) -> Result<(), RpcError> {
+        if machines.len() != 1 {
+            return Ok(());
+        }
+        if !self.connected_via_relay() && !self.machine_has_cloud_pairing(selected).await {
+            return Ok(());
+        }
+        Err(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: LAST_CLOUD_PAIRED_MESSAGE.into(),
+            details: Value::Null,
+        })
+    }
+
+    fn connected_via_relay(&self) -> bool {
+        matches!(self.connection.transport(), Transport::Relay { .. })
+    }
+
+    async fn machine_has_cloud_pairing(&self, machine_id: MachineId) -> bool {
+        self.invoke::<op::Inspect>(
+            InspectRequest::default(),
+            &MachineTarget::from(&machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+        .is_ok_and(|details| details.cloud_paired)
     }
 
     pub async fn list_images(
