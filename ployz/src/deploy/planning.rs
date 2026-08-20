@@ -617,8 +617,14 @@ fn admit_operations(
                 },
             );
         }
-        if matches!(operation, DeployOperation::RunContainer { .. }) {
-            *available -= 1;
+        *available -= 1;
+        if matches!(
+            operation,
+            DeployOperation::RunHook { .. } | DeployOperation::ReplaceContainer(_)
+        ) {
+            // Hooks are removed before their following row; replacements remove the old
+            // endpoint in the same operation, so neither retains the consumed slot.
+            *available += 1;
         }
     }
     Ok(())
