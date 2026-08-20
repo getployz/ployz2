@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     DockerVolumeName, MachineId, MachineObservation, MachineTarget, PreservedVolume, ProjectName,
-    RequestedServiceSpec, ServiceMode, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
-    VolumeSource, machine_matches_target, owned_volume_project,
+    RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation, ServiceVolume,
+    ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
 };
 
 use crate::deploy::{
@@ -23,6 +23,7 @@ use super::placement::reserve_replicated_service_demand;
 pub(super) struct VolumePins {
     anchors: BTreeMap<DockerVolumeName, MachineId>,
     creates: Vec<(MachineId, ServiceVolume)>,
+    capacity_hooks: BTreeMap<ServiceName, Option<MachineId>>,
 }
 
 impl VolumePins {
@@ -46,6 +47,10 @@ impl VolumePins {
             return None;
         };
         self.anchors.get(name).copied()
+    }
+
+    pub(super) fn capacity_hook(&self, service: &ServiceName) -> Option<Option<MachineId>> {
+        self.capacity_hooks.get(service).copied()
     }
 
     fn observations<'pins>(
@@ -283,7 +288,7 @@ pub(super) fn prepare_shared_replicated_volumes(
     options: &PlanOptions,
 ) -> Result<(), PlanError> {
     for component in shared_volume_components(volume_uses) {
-        let machine_id = shared_component_anchor(
+        let anchor = shared_component_anchor(
             &component,
             snapshot,
             requested,
@@ -292,9 +297,15 @@ pub(super) fn prepare_shared_replicated_volumes(
             capacity,
             options,
         )?;
-        pin_shared_component(&component, machine_id, snapshot, pins);
+        pins.capacity_hooks.extend(anchor.capacity_hooks);
+        pin_shared_component(&component, anchor.machine_id, snapshot, pins);
     }
     Ok(())
+}
+
+struct SharedAnchor {
+    machine_id: MachineId,
+    capacity_hooks: Vec<(ServiceName, Option<MachineId>)>,
 }
 
 fn shared_component_anchor(
@@ -305,7 +316,7 @@ fn shared_component_anchor(
     pins: &VolumePins,
     capacity: &mut CapacityBudget<'_>,
     options: &PlanOptions,
-) -> Result<MachineId, PlanError> {
+) -> Result<SharedAnchor, PlanError> {
     let services = component
         .volumes
         .iter()
@@ -330,12 +341,13 @@ fn shared_component_anchor(
             no_eligible_shared(component, snapshot, pins),
         ));
     }
+    let capacity_error = capacity.error_for(&eligible);
     for machine_id in eligible {
         let mut projected = capacity.clone();
-        let fits = requested
+        let projected_services = requested
             .iter()
             .filter(|spec| services.contains_key(spec.name.as_str()))
-            .all(|spec| {
+            .map(|spec| {
                 let observed = observed_services
                     .iter()
                     .find(|service| service.identity.name == spec.name);
@@ -346,16 +358,21 @@ fn shared_component_anchor(
                     machine_id,
                     options,
                 )
-            });
-        if fits {
+                .map(|hook_machine| (spec.name.clone(), hook_machine))
+            })
+            .collect::<Result<Vec<_>, _>>();
+        if let Ok(capacity_hooks) = projected_services {
             *capacity = projected;
-            return Ok(machine_id);
+            return Ok(SharedAnchor {
+                machine_id,
+                capacity_hooks,
+            });
         }
     }
     Err(super::service_error(
         true,
         first_service_name,
-        capacity.error(first_service),
+        capacity_error,
     ))
 }
 
@@ -432,6 +449,15 @@ pub(super) fn plan_volume_operations(
         ServiceMode::Replicated { .. } => {}
     }
     Ok(())
+}
+
+pub(super) fn constrain_volume_candidates(
+    spec: &RequestedServiceSpec,
+    snapshot: &DeploySnapshot,
+    pins: &VolumePins,
+    machines: &mut Vec<&MachineObservation>,
+) -> Result<(), PlanError> {
+    volume_constraints(spec, snapshot, pins, machines).map(|_| ())
 }
 
 fn volume_constraints<'spec>(

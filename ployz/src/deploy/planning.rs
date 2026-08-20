@@ -13,14 +13,15 @@ use super::{
     EliminatingConstraint, PlanError, PlanOptions, ReplacementOperation,
 };
 
-mod capacity;
+pub(super) mod capacity;
 mod placement;
 mod volumes;
 
-use placement::{PlacementState, is_up_to_date, plan_global, plan_replicated};
+use placement::{PlacementState, ReplicatedPlacement, is_up_to_date, plan_global, plan_replicated};
 use volumes::{
-    VolumePins, named_volume_uses, plan_volume_operations, prepare_shared_replicated_volumes,
-    preserved_owned_volumes, reject_mixed_volume_modes, scope_requested,
+    VolumePins, constrain_volume_candidates, named_volume_uses, plan_volume_operations,
+    prepare_shared_replicated_volumes, preserved_owned_volumes, reject_mixed_volume_modes,
+    scope_requested,
 };
 
 /// Whether Project removal keeps or destroys observer-visible managed volumes.
@@ -221,6 +222,7 @@ fn assemble_plan(
         &mut anchor_capacity,
         &intent.options,
     )?;
+    placement.replace_capacity(anchor_capacity);
     let mut service_operations = Vec::new();
     for spec in &bound.requested {
         service_operations.extend(
@@ -455,7 +457,15 @@ fn plan_one_service(
             )
         }
     };
-    if matches!(requested.mode, ServiceMode::Replicated { .. }) {
+    let capacity_hook = pins.capacity_hook(&requested.name);
+    let mut capacity_error = None;
+    if matches!(requested.mode, ServiceMode::Replicated { .. }) && capacity_hook.is_none() {
+        constrain_volume_candidates(requested, snapshot, pins, &mut machines)?;
+        let relevant = machines
+            .iter()
+            .map(|machine| machine.machine.id)
+            .collect::<Vec<_>>();
+        capacity_error = Some(placement.capacity_error_for(&relevant));
         machines.retain(|machine| {
             current.iter().any(|container| {
                 container.as_observation().machine_id == machine.machine.id
@@ -463,7 +473,7 @@ fn plan_one_service(
             }) || placement.capacity_fits(&machine.machine.id, 1)
         });
         if machines.is_empty() {
-            return Err(placement.capacity_error(requested));
+            return Err(placement.capacity_error_for(&relevant));
         }
     }
     plan_volume_operations(requested, snapshot, pins, &mut machines)?;
@@ -472,8 +482,12 @@ fn plan_one_service(
             requested,
             &service_id,
             current,
-            machines,
-            replicas.get() as usize,
+            ReplicatedPlacement {
+                machines,
+                replicas: replicas.get() as usize,
+                capacity_hook,
+                capacity_error,
+            },
             placement,
             options,
         )?,

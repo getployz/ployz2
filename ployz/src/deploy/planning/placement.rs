@@ -33,8 +33,15 @@ impl<'snapshot> PlacementState<'snapshot> {
         &self.capacity
     }
 
-    pub(super) fn capacity_error(&self, requested: &RequestedServiceSpec) -> PlanError {
-        self.capacity.error(requested)
+    pub(super) fn replace_capacity(&mut self, capacity: CapacityBudget<'snapshot>) {
+        self.capacity = capacity;
+    }
+
+    pub(super) fn capacity_error_for<'a>(
+        &self,
+        machine_ids: impl IntoIterator<Item = &'a MachineId>,
+    ) -> PlanError {
+        self.capacity.error_for(machine_ids)
     }
 }
 
@@ -169,15 +176,27 @@ fn on_machine(
         .filter(move |container| container.as_observation().machine_id == machine_id)
 }
 
+pub(super) struct ReplicatedPlacement<'a> {
+    pub(super) machines: Vec<&'a MachineObservation>,
+    pub(super) replicas: usize,
+    pub(super) capacity_hook: Option<Option<MachineId>>,
+    pub(super) capacity_error: Option<PlanError>,
+}
+
 pub(super) fn plan_replicated(
     requested: &RequestedServiceSpec,
     service_id: &ServiceId,
     current: &[ServiceContainer],
-    mut machines: Vec<&MachineObservation>,
-    replicas: usize,
+    target: ReplicatedPlacement<'_>,
     placement: &mut PlacementState<'_>,
     options: &PlanOptions,
 ) -> Result<(Vec<DeployOperation>, Option<MachineId>), PlanError> {
+    let ReplicatedPlacement {
+        mut machines,
+        replicas,
+        capacity_hook,
+        capacity_error,
+    } = target;
     let mut by_machine = BTreeMap::<MachineId, Vec<&ServiceContainer>>::new();
     for container in current {
         by_machine
@@ -209,8 +228,9 @@ pub(super) fn plan_replicated(
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
     let mut cursor = 0;
-    let mut hook_pending = requested.pre_deploy.is_some();
-    let mut hook_machine = None;
+    let capacity_reserved = capacity_hook.is_some();
+    let mut hook_pending = requested.pre_deploy.is_some() && !capacity_reserved;
+    let mut hook_machine = capacity_hook.flatten();
     for _ in 0..replicas {
         let mut selected = None;
         for _ in 0..machines.len() {
@@ -225,18 +245,20 @@ pub(super) fn plan_replicated(
                 .copied();
             let operation = replicated_operation(existing, requested, options);
             let demand = EndpointDemand::for_operation(operation, hook_pending);
-            if placement.capacity.fits_demand(&machine.machine.id, demand) {
+            if capacity_reserved || placement.capacity.fits_demand(&machine.machine.id, demand) {
                 selected = Some((machine, demand));
                 break;
             }
         }
         let Some((machine, demand)) = selected else {
-            return Err(placement.capacity.error(requested));
+            return Err(capacity_error.unwrap_or_else(|| placement.capacity.error(requested)));
         };
-        placement.capacity.reserve(&machine.machine.id, demand);
-        if demand.uses_hook() {
-            hook_pending = false;
-            hook_machine = Some(machine.machine.id);
+        if !capacity_reserved {
+            placement.capacity.reserve(&machine.machine.id, demand);
+            if demand.uses_hook() {
+                hook_pending = false;
+                hook_machine = Some(machine.machine.id);
+            }
         }
         *placement.occupancy.entry(machine.machine.id).or_default() += 1;
         let existing = by_machine
@@ -306,9 +328,9 @@ pub(super) fn reserve_replicated_service_demand(
     observed: Option<&ServiceObservation>,
     machine_id: MachineId,
     options: &PlanOptions,
-) -> bool {
+) -> Result<Option<MachineId>, ()> {
     let ServiceMode::Replicated { replicas } = requested.mode else {
-        return false;
+        return Err(());
     };
     let mut existing = observed
         .into_iter()
@@ -317,15 +339,19 @@ pub(super) fn reserve_replicated_service_demand(
         .collect::<Vec<_>>();
     existing.sort_by_key(|container| is_up_to_date(container, requested, options));
     let mut hook_pending = requested.pre_deploy.is_some();
+    let mut hook_machine = None;
     for _ in 0..replicas.get() {
         let operation = replicated_operation(existing.pop(), requested, options);
         let demand = EndpointDemand::for_operation(operation, hook_pending);
         if !capacity.reserve(&machine_id, demand) {
-            return false;
+            return Err(());
+        }
+        if demand.uses_hook() {
+            hook_machine = Some(machine_id);
         }
         hook_pending &= !demand.uses_hook();
     }
-    true
+    Ok(hook_machine)
 }
 
 fn replicated_operation(

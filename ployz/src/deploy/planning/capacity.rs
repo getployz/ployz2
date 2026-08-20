@@ -3,10 +3,24 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    MachineId, MembershipObservation, RequestedServiceSpec, machine_matches_placement,
+    BridgeEndpointCapacity, MachineId, MembershipObservation, RequestedServiceSpec,
+    machine_matches_placement,
 };
 
 use super::{DeploySnapshot, PlanError};
+
+pub(crate) fn endpoint_capacity_error(
+    required: usize,
+    capacity: Option<&BridgeEndpointCapacity>,
+) -> Option<PlanError> {
+    match capacity {
+        None if required > 0 => Some(PlanError::CapacityUnknown),
+        Some(capacity) if capacity.free_endpoints() < required as u64 => {
+            Some(PlanError::InsufficientCapacity)
+        }
+        None | Some(_) => None,
+    }
+}
 
 fn has_unknown(requested: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> bool {
     let Some(capacity) = &snapshot.capacity else {
@@ -97,6 +111,21 @@ impl<'snapshot> CapacityBudget<'snapshot> {
 
     pub(super) fn error(&self, requested: &RequestedServiceSpec) -> PlanError {
         if has_unknown(requested, self.snapshot) {
+            PlanError::CapacityUnknown
+        } else {
+            PlanError::InsufficientCapacity
+        }
+    }
+
+    pub(super) fn error_for<'a>(
+        &self,
+        machine_ids: impl IntoIterator<Item = &'a MachineId>,
+    ) -> PlanError {
+        if self.free.as_ref().is_some_and(|free| {
+            machine_ids
+                .into_iter()
+                .any(|machine_id| !free.contains_key(machine_id))
+        }) {
             PlanError::CapacityUnknown
         } else {
             PlanError::InsufficientCapacity

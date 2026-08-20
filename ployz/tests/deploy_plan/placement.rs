@@ -70,6 +70,26 @@ fn capacity_filters_before_new_volume_placement() {
 }
 
 #[test]
+fn unknown_machine_excluded_by_volume_does_not_make_capacity_unknown() {
+    let mut requested = replicated("api", 1);
+    add_named_volume(&mut requested, "data");
+
+    assert_eq!(
+        plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "full-volume-host"), machine('2', "unknown")],
+                volumes: vec![observed_volume(machine_id('1'), "data")],
+                capacity: capacity([('1', 0)]),
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        Err(PlanError::InsufficientCapacity)
+    );
+}
+
+#[test]
 fn capacity_distinguishes_sufficient_known_unknown_and_insufficient() {
     let one = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),

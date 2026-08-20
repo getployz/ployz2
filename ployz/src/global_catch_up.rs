@@ -10,7 +10,7 @@ use ployz_core::{
 
 use crate::{
     connect::{Client, ConnectError},
-    deploy::PlanError,
+    deploy::endpoint_capacity_error,
     failure::Failure,
 };
 
@@ -217,7 +217,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
     if !slots.is_empty() {
         let capacity = client.bridge_capacity(&this_machine.id).await?;
-        if let Some(error) = global_capacity_error(slots.len(), capacity.as_ref()) {
+        if let Some(error) = endpoint_capacity_error(slots.len(), capacity.as_ref()) {
             return Err(CatchUpError::Other(Failure::usage(error.to_string())));
         }
     }
@@ -262,19 +262,6 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     Ok(())
 }
 
-fn global_capacity_error(
-    required: usize,
-    capacity: Option<&BridgeEndpointCapacity>,
-) -> Option<PlanError> {
-    match capacity {
-        None if required > 0 => Some(PlanError::CapacityUnknown),
-        Some(capacity) if capacity.free_endpoints() < required as u64 => {
-            Some(PlanError::InsufficientCapacity)
-        }
-        None | Some(_) => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{cell::Cell, net::Ipv6Addr, num::NonZeroU32};
@@ -292,15 +279,15 @@ mod tests {
     #[test]
     fn global_capacity_rejects_unknown_and_insufficient_before_creation() {
         assert_eq!(
-            global_capacity_error(1, None),
-            Some(PlanError::CapacityUnknown)
+            endpoint_capacity_error(1, None),
+            Some(crate::deploy::PlanError::CapacityUnknown)
         );
         assert_eq!(
-            global_capacity_error(2, Some(&BridgeEndpointCapacity::new(1, 0))),
-            Some(PlanError::InsufficientCapacity)
+            endpoint_capacity_error(2, Some(&BridgeEndpointCapacity::new(1, 0))),
+            Some(crate::deploy::PlanError::InsufficientCapacity)
         );
         assert_eq!(
-            global_capacity_error(1, Some(&BridgeEndpointCapacity::new(1, 0))),
+            endpoint_capacity_error(1, Some(&BridgeEndpointCapacity::new(1, 0))),
             None
         );
     }
