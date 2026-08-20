@@ -3,7 +3,8 @@ use std::{collections::BTreeSet, fmt};
 use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
     IngressHost, IngressLabelTooLong, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachineTarget, ProjectName, QualifiedService, RpcError, ServiceObservation, derive_services,
+    MachineTarget, MachineTelemetry, ProjectName, QualifiedService, RpcError, ServiceObservation,
+    derive_services,
 };
 use thiserror::Error;
 
@@ -59,6 +60,11 @@ pub struct DeploySnapshot {
     pub volume_failures: Vec<MachineFailure<RpcError>>,
     /// Required Docker Volume queries that produced no terminal response.
     pub volume_omissions: Vec<MachineId>,
+    /// Fresh targeted bridge observations used only for capacity admission.
+    pub capacities: std::collections::BTreeMap<MachineId, MachineTelemetry>,
+    pub capacity_failures: Vec<MachineFailure<RpcError>>,
+    pub capacity_omissions: Vec<MachineId>,
+    pub capacity_observed: bool,
 }
 
 impl DeploySnapshot {
@@ -237,6 +243,10 @@ impl fmt::Display for EliminatingConstraints {
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlanError {
+    #[error("capacity unknown: an eligible Machine did not return fresh bridge telemetry")]
+    CapacityUnknown,
+    #[error("insufficient capacity on observed eligible Machines")]
+    InsufficientCapacity,
     #[error("no machines available that satisfy all constraints: {constraints}")]
     NoEligibleMachines { constraints: EliminatingConstraints },
     #[error("service mode cannot be changed")]

@@ -203,6 +203,7 @@ fn assemble_plan(
     snapshot: &DeploySnapshot,
     warnings: Vec<DeployWarning>,
 ) -> Result<Planned, PlanError> {
+    reject_impossible_replicas(&bound.requested, snapshot, &intent.options)?;
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let volume_uses = named_volume_uses(&bound.requested);
     reject_mixed_volume_modes(&volume_uses)?;
@@ -236,6 +237,7 @@ fn assemble_plan(
     if prune_refusal.is_none() {
         operations.extend(removal_operations(&services, &would_remove));
     }
+    admit_operations(&operations, &bound.requested, snapshot)?;
     Ok(Planned {
         operations,
         would_remove,
@@ -491,6 +493,9 @@ fn eligible_machines<'a>(
         .iter()
         .filter(|machine| machine.membership != MembershipObservation::Down)
         .filter(|machine| machine_matches_placement(&machine.machine, &requested.placement))
+        .filter(|machine| {
+            !snapshot.capacity_observed || snapshot.capacities.contains_key(&machine.machine.id)
+        })
         .collect::<Vec<_>>();
     if machines.is_empty() {
         return Err(placement_error(requested, snapshot));
@@ -500,6 +505,115 @@ fn eligible_machines<'a>(
         placement_state(options.placement_seed, &requested.name),
     );
     Ok(machines)
+}
+
+fn has_unknown_capacity(requested: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> bool {
+    snapshot.machines.iter().any(|machine| {
+        machine.membership != MembershipObservation::Down
+            && machine_matches_placement(&machine.machine, &requested.placement)
+            && !snapshot.capacities.contains_key(&machine.machine.id)
+    })
+}
+
+fn reject_impossible_replicas(
+    requested: &[RequestedServiceSpec],
+    snapshot: &DeploySnapshot,
+    options: &PlanOptions,
+) -> Result<(), PlanError> {
+    if !snapshot.capacity_observed {
+        return Ok(());
+    }
+    for spec in requested {
+        let ServiceMode::Replicated { replicas } = spec.mode else {
+            continue;
+        };
+        let known = eligible_machines(spec, snapshot, options)?;
+        let existing = snapshot
+            .containers
+            .iter()
+            .filter(|container| {
+                container.resolved_spec.name == spec.name
+                    && known
+                        .iter()
+                        .any(|machine| machine.machine.id == container.machine_id)
+            })
+            .count() as u64;
+        let free = known
+            .iter()
+            .map(|machine| {
+                snapshot
+                    .capacities
+                    .get(&machine.machine.id)
+                    .expect("eligible capacity Machine has telemetry")
+                    .bridge_free_endpoints
+            })
+            .sum::<u64>();
+        if u64::from(replicas.get()) > free.saturating_add(existing) {
+            return Err(if has_unknown_capacity(spec, snapshot) {
+                PlanError::CapacityUnknown
+            } else {
+                PlanError::InsufficientCapacity
+            });
+        }
+    }
+    Ok(())
+}
+
+fn admit_operations(
+    operations: &[DeployOperation],
+    requested: &[RequestedServiceSpec],
+    snapshot: &DeploySnapshot,
+) -> Result<(), PlanError> {
+    if !snapshot.capacity_observed {
+        return Ok(());
+    }
+    let mut free = snapshot
+        .capacities
+        .iter()
+        .map(|(id, telemetry)| (*id, telemetry.bridge_free_endpoints))
+        .collect::<BTreeMap<_, _>>();
+    for operation in operations {
+        let machine_id = match operation {
+            DeployOperation::RunContainer { machine_id, .. }
+            | DeployOperation::RunHook { machine_id, .. } => machine_id,
+            DeployOperation::ReplaceContainer(replacement) => &replacement.machine_id,
+            DeployOperation::CreateVolume { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RemoveVolume { .. } => continue,
+        };
+        let Some(available) = free.get_mut(machine_id) else {
+            return Err(PlanError::CapacityUnknown);
+        };
+        if *available == 0 {
+            let spec = match operation {
+                DeployOperation::RunContainer { spec, .. }
+                | DeployOperation::RunHook { spec, .. } => requested
+                    .iter()
+                    .find(|requested| requested.name == spec.name),
+                DeployOperation::ReplaceContainer(replacement) => requested
+                    .iter()
+                    .find(|requested| requested.name == replacement.spec.name),
+                DeployOperation::CreateVolume { .. }
+                | DeployOperation::StopContainer { .. }
+                | DeployOperation::RemoveContainer { .. }
+                | DeployOperation::StopHook { .. }
+                | DeployOperation::RemoveVolume { .. } => None,
+            };
+            return Err(
+                if spec.is_some_and(|spec| has_unknown_capacity(spec, snapshot)) {
+                    PlanError::CapacityUnknown
+                } else {
+                    PlanError::InsufficientCapacity
+                },
+            );
+        }
+        if matches!(operation, DeployOperation::RunContainer { .. }) {
+            *available -= 1;
+        }
+    }
+    Ok(())
 }
 
 fn placement_error(spec: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> PlanError {

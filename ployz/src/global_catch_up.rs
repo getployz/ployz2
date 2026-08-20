@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use ployz_core::{
-    ContainerRuntimeObservation, EnsureGlobalSlotRequest, Machine, MachineTarget, QualifiedService,
-    ResolvedServiceSpec, ServiceContainer, ServiceMode, ServiceObservation,
+    ContainerRuntimeObservation, EnsureGlobalSlotRequest, InspectRequest, Machine, MachineTarget,
+    QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceMode, ServiceObservation,
     machine_matches_placement, op,
 };
 
@@ -163,6 +163,29 @@ pub async fn catch_up_globals(
 ) -> Result<(), CatchUpError> {
     let services = wait_for_observations(client, skip_caddy).await?;
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
+    if !slots.is_empty() {
+        let details = client
+            .invoke::<op::Inspect>(
+                InspectRequest {
+                    include_telemetry: true,
+                    ..Default::default()
+                },
+                &MachineTarget::from(&this_machine.id),
+                None,
+            )
+            .await
+            .map_err(|error| CatchUpError::Other(error.into()))?;
+        let telemetry = details.telemetry.ok_or_else(|| {
+            CatchUpError::Other(Failure::usage(
+                "capacity unknown: Machine did not return bridge telemetry",
+            ))
+        })?;
+        if telemetry.bridge_free_endpoints < slots.len() as u64 {
+            return Err(CatchUpError::Other(Failure::usage(
+                "insufficient capacity on observed eligible Machines",
+            )));
+        }
+    }
     let expect_caddy = caddy_expected(&services, this_machine, skip_caddy, &slots);
     if !slots.is_empty() {
         eprintln!("Placing Global Services on this Machine.");

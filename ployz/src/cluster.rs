@@ -6,11 +6,12 @@ use ployz_core::{
     FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest, InspectRequest,
     ListContainersRequest, ListImagesRequest, ListMachinesRequest, ListVolumesRequest,
     LiveServices, LocalMachineRemoved, MachineFailure, MachineId, MachineImages, MachineName,
-    MachineObservation, MachineRpcClient, MachineSuccess, MachineTarget, NameMatches,
-    ObservedDataLoss, OpaquePayload, PartialResult, ProjectName, RemoveContainerRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest,
-    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest,
-    StopContainerRequest, UnconfirmedDataLoss, apply_many_targets, derive_live_services, op,
+    MachineObservation, MachineRpcClient, MachineSuccess, MachineTarget, MachineTelemetry,
+    NameMatches, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
+    RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
+    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
+    StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, apply_many_targets,
+    derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -587,7 +588,76 @@ impl Client {
     ) -> Result<DeploySnapshot, ConnectError> {
         let containers = self.live_services_from(&machines).await?.containers;
         let volumes = self.list_volumes(&machines).await;
-        Ok(snapshot_from_partial(machines, containers, volumes))
+        let capacity = self.capacity_from(&machines).await;
+        Ok(snapshot_from_partial(
+            machines, containers, volumes, capacity,
+        ))
+    }
+
+    async fn capacity_from(
+        &self,
+        machines: &[MachineObservation],
+    ) -> PartialResult<MachineTelemetry, RpcError> {
+        let mut tasks = JoinSet::new();
+        let mut task_targets = HashMap::new();
+        let mut result = PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        };
+        for machine in machines {
+            let machine_id = machine.machine.id;
+            if !machine.membership.invites_rpc() {
+                result.omissions.push(machine_id);
+                continue;
+            }
+            let client = self.clone();
+            let task = tasks.spawn(async move {
+                let result = client
+                    .invoke::<op::Inspect>(
+                        InspectRequest {
+                            include_telemetry: true,
+                            ..Default::default()
+                        },
+                        &MachineTarget::from(&machine_id),
+                        Some(TARGET_RPC_TIMEOUT),
+                    )
+                    .await;
+                (machine_id, result)
+            });
+            task_targets.insert(task.id(), machine_id);
+        }
+        while let Some(joined) = tasks.join_next_with_id().await {
+            match joined {
+                Ok((task_id, (machine_id, Ok(details)))) => {
+                    task_targets.remove(&task_id);
+                    match details.telemetry {
+                        Some(telemetry) => result.successes.push(MachineSuccess {
+                            machine_id,
+                            value: telemetry,
+                        }),
+                        None => result.omissions.push(machine_id),
+                    }
+                }
+                Ok((task_id, (machine_id, Err(error)))) => {
+                    task_targets.remove(&task_id);
+                    result.failures.push(MachineFailure { machine_id, error });
+                }
+                Err(error) => {
+                    if let Some(machine_id) = task_targets.remove(&error.id()) {
+                        result.failures.push(MachineFailure {
+                            machine_id,
+                            error: RpcError {
+                                code: RpcErrorCode::Unavailable,
+                                message: error.to_string(),
+                                details: Value::Null,
+                            },
+                        });
+                    }
+                }
+            }
+        }
+        result
     }
 }
 
@@ -595,6 +665,7 @@ pub(crate) fn snapshot_from_partial(
     machines: Vec<MachineObservation>,
     containers: PartialResult<Vec<ContainerObservation>, RpcError>,
     volumes: PartialResult<Vec<DockerVolume>, RpcError>,
+    capacity: PartialResult<MachineTelemetry, RpcError>,
 ) -> DeploySnapshot {
     let PartialResult {
         successes: container_successes,
@@ -606,6 +677,11 @@ pub(crate) fn snapshot_from_partial(
         failures: volume_failures,
         omissions: volume_omissions,
     } = volumes;
+    let PartialResult {
+        successes: capacity_successes,
+        failures: capacity_failures,
+        omissions: capacity_omissions,
+    } = capacity;
     DeploySnapshot {
         machines,
         containers: container_successes
@@ -626,6 +702,13 @@ pub(crate) fn snapshot_from_partial(
         container_omissions,
         volume_failures,
         volume_omissions,
+        capacities: capacity_successes
+            .into_iter()
+            .map(|success| (success.machine_id, success.value))
+            .collect(),
+        capacity_failures,
+        capacity_omissions,
+        capacity_observed: true,
     }
 }
 
