@@ -1,7 +1,6 @@
 //! Cloud Relay Register client.
 
 use std::{
-    future::Future,
     io,
     pin::Pin,
     task::{Context, Poll},
@@ -128,28 +127,6 @@ fn register_retry_delay(failures: u32) -> Duration {
     Duration::from_secs((1u64 << failures.min(5)).min(30))
 }
 
-enum HoldWait<T> {
-    Done(T),
-    PairingChanged,
-    Shutdown,
-}
-
-async fn hold_wait<T>(
-    pairing: &mut watch::Receiver<Option<CloudPairing>>,
-    shutdown: &CancellationToken,
-    work: impl Future<Output = T>,
-) -> io::Result<HoldWait<T>> {
-    tokio::select! {
-        biased;
-        () = shutdown.cancelled() => Ok(HoldWait::Shutdown),
-        result = pairing.changed() => {
-            result.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
-            Ok(HoldWait::PairingChanged)
-        }
-        value = work => Ok(HoldWait::Done(value)),
-    }
-}
-
 /// Hold Register for stored Cloud Pairing, or idle if none.
 ///
 /// Register loss retries with bounded backoff until Cloud Pairing changes or
@@ -167,47 +144,45 @@ pub(crate) async fn run(
     let mut failures = 0u32;
     loop {
         let current = pairing.borrow_and_update().clone();
-        match current {
-            None => {
+        tokio::select! {
+            biased;
+            () = shutdown.cancelled() => return Ok(()),
+            result = pairing.changed() => {
+                result.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
                 failures = 0;
-                match hold_wait(&mut pairing, &shutdown, std::future::pending::<()>()).await? {
-                    HoldWait::Shutdown => return Ok(()),
-                    HoldWait::PairingChanged | HoldWait::Done(()) => {}
-                }
             }
-            Some(current) => match hold_wait(
-                &mut pairing,
-                &shutdown,
-                hold_register(
-                    current.relay_url(),
-                    current.secret(),
-                    &machine_id,
-                    service.clone(),
-                ),
-            )
-            .await?
-            {
-                HoldWait::Shutdown => return Ok(()),
-                HoldWait::PairingChanged => failures = 0,
-                HoldWait::Done(Ok(mut hold)) => {
-                    failures = 0;
-                    match hold_wait(&mut pairing, &shutdown, &mut hold.task).await? {
-                        HoldWait::Shutdown => return Ok(()),
-                        HoldWait::PairingChanged => failures = 0,
-                        HoldWait::Done(_) => {}
-                    }
-                }
-                HoldWait::Done(Err(error)) => {
-                    tracing::warn!(error = %error, "relay Register retry");
-                    let wait = register_retry_delay(failures);
-                    failures = failures.saturating_add(1);
-                    match hold_wait(&mut pairing, &shutdown, tokio::time::sleep(wait)).await? {
-                        HoldWait::Shutdown => return Ok(()),
-                        HoldWait::PairingChanged => failures = 0,
-                        HoldWait::Done(()) => {}
-                    }
-                }
-            },
+            new_failures = hold_current(current, &machine_id, &service, failures) => {
+                failures = new_failures;
+            }
+        }
+    }
+}
+
+async fn hold_current(
+    current: Option<CloudPairing>,
+    machine_id: &MachineId,
+    service: &MachineService,
+    failures: u32,
+) -> u32 {
+    let Some(current) = current else {
+        return std::future::pending().await;
+    };
+    match hold_register(
+        current.relay_url(),
+        current.secret(),
+        machine_id,
+        service.clone(),
+    )
+    .await
+    {
+        Ok(mut hold) => {
+            let _ = (&mut hold.task).await;
+            0
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "relay Register retry");
+            tokio::time::sleep(register_retry_delay(failures)).await;
+            failures.saturating_add(1)
         }
     }
 }
@@ -506,23 +481,6 @@ mod tests {
         }
 
         async fn bind(listen: std::net::SocketAddr) -> Self {
-            let relay = Relay::new(DialCredential::parse(DIAL).unwrap());
-            let (address, server, goaway) = relay
-                .serve_with_drain(listen, Duration::from_millis(10))
-                .await
-                .unwrap();
-            Self {
-                url: format!("http://{address}"),
-                address,
-                server,
-                goaway,
-            }
-        }
-
-        async fn restart(self) -> Self {
-            let listen = self.address;
-            self.goaway.start();
-            let _ = self.server.await;
             loop {
                 match Relay::new(DialCredential::parse(DIAL).unwrap())
                     .serve_with_drain(listen, Duration::from_millis(10))
@@ -539,6 +497,13 @@ mod tests {
                     Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
                 }
             }
+        }
+
+        async fn restart(self) -> Self {
+            let listen = self.address;
+            self.goaway.start();
+            let _ = self.server.await;
+            Self::bind(listen).await
         }
     }
 

@@ -1,6 +1,8 @@
 //! Façade tests for Cloud session Machine removal with named Data Loss.
 
-use std::{collections::BTreeMap, path::PathBuf, process::Command, time::Duration};
+use std::{
+    collections::BTreeMap, path::PathBuf, process::Command, sync::atomic::Ordering, time::Duration,
+};
 
 use ployz::sdk;
 use ployz_core::{
@@ -180,11 +182,7 @@ async fn remove_machine_refuses_the_last_cloud_paired_machine_before_mutation() 
 #[tokio::test]
 async fn remove_machine_refuses_the_last_machine_with_stored_cloud_pairing() {
     let (_description, entry, service) = last_machine_cluster();
-    service
-        .cloud_paired
-        .lock()
-        .unwrap()
-        .insert(entry.machine.id);
+    service.cloud_paired.store(true, Ordering::SeqCst);
     let (mut client, server, _) = connected_client(service.clone()).await;
 
     let error = client
@@ -205,11 +203,7 @@ async fn remove_machine_refuses_the_last_machine_with_stored_cloud_pairing() {
 #[tokio::test]
 async fn remove_machine_membership_refuses_the_last_machine_with_stored_cloud_pairing() {
     let (_description, entry, service) = last_machine_cluster();
-    service
-        .cloud_paired
-        .lock()
-        .unwrap()
-        .insert(entry.machine.id);
+    service.cloud_paired.store(true, Ordering::SeqCst);
     let (mut client, server, _) = connected_client(service.clone()).await;
 
     let error = client

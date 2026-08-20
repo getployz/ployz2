@@ -1,11 +1,11 @@
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     net::{Ipv6Addr, SocketAddr},
     path::PathBuf,
     process::Command,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -139,7 +139,7 @@ pub(super) struct DiscoveryService {
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
-    pub(super) cloud_paired: Arc<Mutex<HashSet<MachineId>>>,
+    pub(super) cloud_paired: Arc<AtomicBool>,
     register_error: Arc<Mutex<Option<RpcError>>>,
 }
 
@@ -160,7 +160,7 @@ impl DiscoveryService {
             reset_warning: Arc::new(Mutex::new(None)),
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
-            cloud_paired: Arc::new(Mutex::new(HashSet::new())),
+            cloud_paired: Arc::new(AtomicBool::new(false)),
             register_error: Arc::new(Mutex::new(None)),
         }
     }
@@ -264,25 +264,18 @@ impl MachineRpc for DiscoveryService {
 
     async fn inspect(
         &self,
-        request: Request<OpaquePayload>,
+        _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let machine_id = request
-            .metadata()
-            .get("machine")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| MachineId::parse(value).ok())
-            .unwrap_or(self.description.machine_id);
-        let cloud_paired = self.cloud_paired.lock().unwrap().contains(&machine_id);
         Ok(Response::new(
             RpcResponse::from(MachineDetails {
-                id: machine_id,
+                id: self.description.machine_id,
                 phase: LocalMachinePhase::Participating,
                 machine: None,
                 public_key: WireGuardPublicKey([0; 32]),
                 advertised_endpoints: Vec::new(),
                 store_version: Default::default(),
                 rtts: Vec::new(),
-                cloud_paired,
+                cloud_paired: self.cloud_paired.load(Ordering::SeqCst),
             })
             .encode()
             .unwrap(),

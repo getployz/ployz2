@@ -695,15 +695,21 @@ async fn refuse_last_cloud_paired(
     if machines.len() != 1 {
         return Ok(());
     }
-    let paired = matches!(client.connection.transport(), Transport::Relay { .. })
-        || client
-            .invoke::<op::Inspect>(
-                InspectRequest::default(),
-                &MachineTarget::from(&selected),
-                Some(TARGET_RPC_TIMEOUT),
-            )
-            .await
-            .is_ok_and(|details| details.cloud_paired);
+    let paired = match client.connection.transport() {
+        Transport::Relay { .. } => true,
+        Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => {
+            // Inspect errors must not block unpaired last-Machine removal.
+            client
+                .invoke::<op::Inspect>(
+                    InspectRequest::default(),
+                    &MachineTarget::from(&selected),
+                    Some(TARGET_RPC_TIMEOUT),
+                )
+                .await
+                .map(|details| details.cloud_paired)
+                .unwrap_or(false)
+        }
+    };
     if !paired {
         return Ok(());
     }
