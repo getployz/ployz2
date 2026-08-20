@@ -142,6 +142,41 @@ fn apply_one_run_and_scale_path_rejects_full_capacity() {
 }
 
 #[test]
+fn scale_down_releases_capacity_before_a_later_service_creates() {
+    let scaled = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let mut later = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    later.name = ServiceName::parse("later").unwrap();
+    let scaled_id = service_id('a');
+    let plan = plan_deploy(
+        [&scaled, &later],
+        &DeploySnapshot {
+            machines: vec![machine('1', "full")],
+            containers: vec![
+                container('b', '1', &scaled, &scaled_id),
+                container('c', '1', &scaled, &scaled_id),
+            ],
+            capacity: capacity([('1', 0)]),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .expect("the scale-down removal frees one endpoint for the later Service");
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [DeployOperation::RemoveContainer { machine_id: removed_from, .. },
+         DeployOperation::RunContainer { machine_id: created_on, spec, .. }]
+            if removed_from == &machine_id('1')
+                && created_on == &machine_id('1')
+                && spec.name == ServiceName::parse("later").unwrap()
+    ));
+}
+
+#[test]
 fn all_unknown_global_capacity_is_reported_as_unknown() {
     let requested = requested(ServiceMode::Global);
     assert_eq!(
