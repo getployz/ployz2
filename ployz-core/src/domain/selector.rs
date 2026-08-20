@@ -45,7 +45,7 @@ impl ServiceSelector {
             return Ok(self);
         }
         let name = ServiceName::parse(self.as_str())?;
-        Self::parse(QualifiedService::new(project.clone(), name).to_string())
+        Ok(Self::from(&QualifiedService::new(project.clone(), name)))
     }
 }
 
