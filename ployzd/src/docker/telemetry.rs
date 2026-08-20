@@ -1,12 +1,12 @@
 //! Docker bridge capacity and host telemetry probes.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::IpAddr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use bollard::models::IpamConfig;
+use bollard::{models::IpamConfig, query_parameters::ListContainersOptionsBuilder};
 use ipnet::IpNet;
 use ployz_core::{BridgeEndpointCapacity, ByteCapacity, MachineTelemetry};
 
@@ -25,10 +25,19 @@ impl LocalDocker {
                 .as_deref()
                 .ok_or(Error::MissingField("Docker bridge IPAM configuration"))?,
         )?;
-        let attached_endpoints = network
-            .containers
-            .as_ref()
-            .map_or(0, |containers| containers.len() as u64);
+        let attached_endpoints = self
+            .client
+            .list_containers(Some(
+                ListContainersOptionsBuilder::default()
+                    .all(true)
+                    .filters(&HashMap::from([(
+                        "network",
+                        vec![crate::network::DOCKER_NETWORK_NAME],
+                    )]))
+                    .build(),
+            ))
+            .await?
+            .len() as u64;
         Ok(BridgeEndpointCapacity::new(
             usable_endpoints,
             attached_endpoints,
