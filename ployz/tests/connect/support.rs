@@ -16,12 +16,13 @@ use ployz::{
     context::{Connection, ConnectionSource, SelectedConnections},
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
-    DockerVolume, DockerVolumeId, DockerVolumeName, LocalMachinePhase, LocalMachineRemoved,
-    Machine, MachineDetails, MachineId, MachineList, MachineName, MachineObservation,
-    MachineRemoved, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
-    OpaquePayload, PROTOCOL_MAJOR, Registered, RemoveMachineRequest, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, VolumeList, VolumeRemoved,
+    AdvertisedEndpoint, BridgeEndpointCapacity, ByteCapacity, ContainerCreated, ContainerId,
+    ContainerList, ContractDescription, DockerVolume, DockerVolumeId, DockerVolumeName,
+    InspectTelemetry, LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId,
+    MachineList, MachineName, MachineObservation, MachineRemoved, MachineRpc, MachineRpcServer,
+    MachineTelemetry, ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
+    Registered, RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RuntimeWatchFrame, RuntimeWatchRequest, TelemetryObservation, VolumeList, VolumeRemoved,
     WireGuardPublicKey, op,
 };
 use serde_json::Value;
@@ -264,8 +265,33 @@ impl MachineRpc for DiscoveryService {
 
     async fn inspect(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::Inspect(inspect) = request.body else {
+            return Err(Status::invalid_argument("expected Inspect"));
+        };
+        let bridge = BridgeEndpointCapacity::new(1_024, 0);
+        let telemetry = match inspect.telemetry {
+            InspectTelemetry::None => None,
+            InspectTelemetry::BridgeCapacity => {
+                Some(TelemetryObservation::BridgeCapacity { bridge })
+            }
+            InspectTelemetry::Full => Some(TelemetryObservation::Full {
+                host: MachineTelemetry::new(
+                    0,
+                    0,
+                    1,
+                    0,
+                    ByteCapacity::default(),
+                    ByteCapacity::default(),
+                ),
+                bridge,
+            }),
+        };
         Ok(Response::new(
             RpcResponse::from(MachineDetails {
                 id: self.description.machine_id,
@@ -276,7 +302,7 @@ impl MachineRpc for DiscoveryService {
                 store_version: Default::default(),
                 rtts: Vec::new(),
                 cloud_paired: self.cloud_paired.load(Ordering::SeqCst),
-                telemetry: None,
+                telemetry,
             })
             .encode()
             .unwrap(),
