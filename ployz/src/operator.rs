@@ -275,6 +275,15 @@ pub fn parse_tail(value: &str) -> Result<i32, OperatorError> {
         .ok_or_else(|| OperatorError::InvalidTail(value.to_owned()))
 }
 
+/// Parse a `--since` / `--until` value, keeping the original text for the wire.
+///
+/// Empty means no bound. A non-empty value must be a relative duration, RFC 3339
+/// date/time, local date or date-time, or Unix timestamp.
+///
+/// # Errors
+///
+/// Returns [`OperatorError::InvalidLogTime`] when the value is not one of those
+/// forms.
 pub fn parse_log_time(value: &str) -> Result<String, OperatorError> {
     if value.is_empty() || log_time_is_valid(value) {
         return Ok(value.to_owned());
