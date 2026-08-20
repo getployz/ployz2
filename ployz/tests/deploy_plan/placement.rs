@@ -676,10 +676,10 @@ fn cluster(ids: impl IntoIterator<Item = char>) -> Vec<MachineObservation> {
 }
 
 fn run_machine_ids(plan: &DeployPreview) -> Vec<MachineId> {
-    operations(plan)
-        .into_iter()
-        .filter_map(|operation| match operation {
-            DeployOperation::RunContainer { machine_id, .. } => Some(machine_id),
+    plan.operations
+        .iter()
+        .filter_map(|row| match &row.operation {
+            DeployOperation::RunContainer { machine_id, .. } => Some(*machine_id),
             DeployOperation::CreateVolume { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
