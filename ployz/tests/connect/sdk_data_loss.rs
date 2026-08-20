@@ -95,9 +95,7 @@ async fn failed_volume_listing_is_not_empty_data_loss() {
     assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert_eq!(
         error.message,
-        format!(
-            "Machine {machine_id} did not respond; use --no-reset to remove it from the Cluster without resetting"
-        )
+        format!("Machine {machine_id} did not respond")
     );
 }
 
@@ -131,9 +129,7 @@ async fn omitted_volume_listing_is_not_empty_data_loss() {
     assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert_eq!(
         error.message,
-        format!(
-            "Machine {machine_id} did not respond; use --no-reset to remove it from the Cluster without resetting"
-        )
+        format!("Machine {machine_id} did not respond")
     );
 }
 

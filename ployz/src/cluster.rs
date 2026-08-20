@@ -762,9 +762,7 @@ async fn data_loss_on_machine(
 fn machine_did_not_respond(machine_id: MachineId) -> RpcError {
     RpcError {
         code: RpcErrorCode::Unavailable,
-        message: format!(
-            "Machine {machine_id} did not respond; use --no-reset to remove it from the Cluster without resetting"
-        ),
+        message: format!("Machine {machine_id} did not respond"),
         details: Value::Null,
     }
 }
