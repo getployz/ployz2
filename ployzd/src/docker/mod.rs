@@ -12,7 +12,7 @@ mod volume;
 #[cfg(test)]
 mod integration_tests;
 
-use std::{collections::HashMap, net::Ipv4Addr, path::PathBuf};
+use std::{collections::HashMap, net::Ipv4Addr, path::PathBuf, sync::Arc};
 
 use bollard::{
     Docker,
@@ -29,6 +29,7 @@ use ployz_core::{
 use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 use observe::ObservationSink;
 
@@ -50,21 +51,29 @@ pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 #[derive(Clone)]
 pub struct LocalDocker {
     client: Docker,
+    endpoint_creates: Arc<Mutex<()>>,
 }
 
 impl LocalDocker {
     pub fn connect() -> Result<Self, Error> {
-        Ok(Self {
-            client: Docker::connect_with_defaults()?,
-        })
+        Ok(Self::from_client(Docker::connect_with_defaults()?))
+    }
+
+    fn from_client(client: Docker) -> Self {
+        Self {
+            client,
+            endpoint_creates: Arc::new(Mutex::new(())),
+        }
     }
 
     #[cfg(test)]
     fn connect_socket(socket: &str) -> Result<Self, Error> {
         let socket = socket.trim_start_matches("unix://");
-        Ok(Self {
-            client: Docker::connect_with_socket(socket, 120, bollard::API_DEFAULT_VERSION)?,
-        })
+        Ok(Self::from_client(Docker::connect_with_socket(
+            socket,
+            120,
+            bollard::API_DEFAULT_VERSION,
+        )?))
     }
 
     async fn uses_containerd_store(&self) -> Result<bool, Error> {

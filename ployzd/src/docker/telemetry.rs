@@ -37,6 +37,7 @@ impl LocalDocker {
 
     pub(super) async fn telemetry(&self) -> Result<MachineTelemetry, Error> {
         let info = self.client.info().await?;
+        let cpu_count = logical_cpu_count(info.ncpu)?;
         let docker_root = info
             .docker_root_dir
             .ok_or(Error::MissingField("Docker root directory"))?;
@@ -51,12 +52,18 @@ impl LocalDocker {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |duration| duration.as_secs()),
             self.managed_container_ids().await?.len() as u64,
-            std::thread::available_parallelism().map_or(0, |count| count.get() as u64),
+            cpu_count,
             load_average_milli()?,
             memory,
             docker_root,
         ))
     }
+}
+
+fn logical_cpu_count(ncpu: Option<i64>) -> Result<u64, Error> {
+    ncpu.filter(|count| *count > 0)
+        .and_then(|count| u64::try_from(count).ok())
+        .ok_or(Error::MissingField("host logical CPU count"))
 }
 
 fn usable_endpoint_count(configs: &[IpamConfig]) -> Result<u64, Error> {
@@ -182,6 +189,17 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    #[test]
+    fn host_logical_cpu_count_requires_a_positive_docker_value() {
+        assert_eq!(logical_cpu_count(Some(8)).unwrap(), 8);
+        for count in [None, Some(0), Some(-1)] {
+            assert!(matches!(
+                logical_cpu_count(count),
+                Err(Error::MissingField("host logical CPU count"))
+            ));
+        }
+    }
 
     fn ipam(
         subnet: &str,

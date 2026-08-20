@@ -1,11 +1,9 @@
 //! Global catch-up: place observed eligible Globals onto this Machine only.
 
-use std::time::Duration;
-
 use ployz_core::{
     BridgeEndpointCapacity, ContainerRuntimeObservation, EnsureGlobalSlotRequest, InspectRequest,
-    Machine, MachineId, MachineTarget, QualifiedService, ResolvedServiceSpec, RpcError,
-    ServiceContainer, ServiceMode, ServiceObservation, machine_matches_placement, op,
+    LiveServices, Machine, MachineId, MachineTarget, QualifiedService, ResolvedServiceSpec,
+    RpcError, ServiceContainer, ServiceMode, ServiceObservation, machine_matches_placement, op,
 };
 
 use crate::{
@@ -19,7 +17,6 @@ use crate::{
 pub struct GlobalCatchUpSlot {
     pub identity: QualifiedService,
     pub spec: ResolvedServiceSpec,
-    creates_endpoint: bool,
 }
 
 /// Catch-up failed. Caddy failures fail the membership command.
@@ -46,13 +43,11 @@ impl From<ConnectError> for CatchUpError {
 }
 
 pub(crate) trait CatchUpClient {
-    async fn observe_services(&mut self) -> Result<(Vec<ServiceObservation>, bool), CatchUpError>;
-
+    async fn live_services(&mut self) -> Result<LiveServices<RpcError>, CatchUpError>;
     async fn bridge_capacity(
         &self,
         machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, CatchUpError>;
-
     async fn ensure_global_slot(
         &self,
         machine_id: &MachineId,
@@ -61,9 +56,8 @@ pub(crate) trait CatchUpClient {
 }
 
 impl CatchUpClient for Client {
-    async fn observe_services(&mut self) -> Result<(Vec<ServiceObservation>, bool), CatchUpError> {
-        let live = self.live_services().await?;
-        Ok((live.services(), live.containers.all_targets_succeeded()))
+    async fn live_services(&mut self) -> Result<LiveServices<RpcError>, CatchUpError> {
+        Client::live_services(self).await.map_err(Into::into)
     }
 
     async fn bridge_capacity(
@@ -124,17 +118,17 @@ fn slot_for(
     if !machine_matches_placement(this_machine, &spec.placement) {
         return None;
     }
-    let local = service.containers.iter().find(|container| {
+    if service.containers.iter().any(|container| {
         let observation = container.as_observation();
         observation.machine_id == this_machine.id
-    });
-    if local.is_some_and(|container| is_running(&container.as_observation().runtime)) {
+            && observation.service_id == spec.service_id
+            && is_running(&observation.runtime)
+    }) {
         return None;
     }
     Some(GlobalCatchUpSlot {
         identity: service.identity.clone(),
         spec: spec.clone(),
-        creates_endpoint: local.is_none(),
     })
 }
 
@@ -175,50 +169,33 @@ fn caddy_running_on(services: &[ServiceObservation], this_machine: &Machine) -> 
     })
 }
 
-async fn wait_for_observations<C: CatchUpClient>(
-    client: &mut C,
-    skip_caddy: bool,
-) -> Result<Vec<ServiceObservation>, CatchUpError> {
-    match tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            let (services, complete) = client.observe_services().await?;
-            if complete {
-                return Ok(services);
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => Err(if skip_caddy {
-            CatchUpError::Other(Failure::usage(
-                "timed out waiting for Cluster Service observations".to_owned(),
-            ))
-        } else {
-            CatchUpError::Caddy(Failure::usage(
-                "timed out waiting for Caddy to become observable".to_owned(),
-            ))
-        }),
-    }
+fn partial_observation_warning(live: &LiveServices<RpcError>) -> Option<String> {
+    (!live.containers.all_targets_succeeded())
+        .then(|| crate::failure::partial_failure_details(&live.containers))
 }
 
 /// Copy every observed eligible Global onto `this_machine` only.
 ///
 /// # Errors
 ///
-/// Fails when listing Services or live bridge capacity fails, when observed
-/// capacity is unknown or insufficient, when expected Caddy cannot be placed,
-/// or when Caddy was expected and is still not running after catch-up. Other
+/// Fails when listing Services fails, when expected Caddy cannot be placed, or
+/// when Caddy was expected and is still not running after catch-up. Other
 /// Global failures are warnings.
 pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     client: &mut C,
     this_machine: &Machine,
     skip_caddy: bool,
 ) -> Result<(), CatchUpError> {
-    let services = wait_for_observations(client, skip_caddy).await?;
+    let live = client.live_services().await?;
+    if let Some(warning) = partial_observation_warning(&live) {
+        eprintln!("WARNING: Global catch-up used partial Service observations: {warning}");
+    }
+    let services = live.services();
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
-    let endpoint_creates = slots.iter().filter(|slot| slot.creates_endpoint).count();
+    let endpoint_creates = slots
+        .iter()
+        .filter(|slot| !service_has_slot(&services, this_machine, &slot.spec.service_id))
+        .count();
     if endpoint_creates > 0 {
         let capacity = client.bridge_capacity(&this_machine.id).await?;
         if let Some(error) = endpoint_capacity_error(endpoint_creates, capacity.as_ref()) {
@@ -256,14 +233,28 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         }
     }
     if expect_caddy {
-        let (services, _) = client.observe_services().await?;
-        if !caddy_running_on(&services, this_machine) {
+        let live = client.live_services().await?;
+        if !caddy_running_on(&live.services(), this_machine) {
             return Err(CatchUpError::Caddy(Failure::usage(
                 "Caddy is not running on this Machine".to_owned(),
             )));
         }
     }
     Ok(())
+}
+
+fn service_has_slot(
+    services: &[ServiceObservation],
+    machine: &Machine,
+    service_id: &ployz_core::ServiceId,
+) -> bool {
+    services
+        .iter()
+        .flat_map(|service| &service.containers)
+        .any(|container| {
+            let observation = container.as_observation();
+            observation.machine_id == machine.id && observation.service_id == *service_id
+        })
 }
 
 #[cfg(test)]
@@ -281,64 +272,108 @@ mod tests {
     use super::*;
 
     #[test]
-    fn global_capacity_rejects_unknown_and_insufficient_before_creation() {
-        assert_eq!(
-            endpoint_capacity_error(1, None),
-            Some(crate::deploy::PlanError::CapacityUnknown)
+    fn partial_observation_names_failures_and_omissions() {
+        let joiner = machine('1', "joiner");
+        let reachable = machine('2', "reachable");
+        let failed = MachineId::parse("a".repeat(32)).unwrap();
+        let omitted = MachineId::parse("b".repeat(32)).unwrap();
+        let caddy = global_service(
+            QualifiedService::system_caddy(),
+            'c',
+            Placement::default(),
+            running_on(&reachable, 'c'),
         );
+        let live = LiveServices {
+            containers: ployz_core::PartialResult {
+                successes: vec![ployz_core::MachineSuccess {
+                    machine_id: reachable.id,
+                    value: caddy
+                        .containers
+                        .iter()
+                        .cloned()
+                        .map(ServiceContainer::into_observation)
+                        .collect(),
+                }],
+                failures: vec![ployz_core::MachineFailure {
+                    machine_id: failed,
+                    error: RpcError {
+                        code: ployz_core::RpcErrorCode::Unavailable,
+                        message: "unreachable".to_owned(),
+                        details: serde_json::Value::Null,
+                    },
+                }],
+                omissions: vec![omitted],
+            },
+        };
+        let warning = partial_observation_warning(&live).unwrap();
+        assert!(warning.contains("unreachable"));
+        assert!(warning.contains("no terminal response"));
         assert_eq!(
-            endpoint_capacity_error(2, Some(&BridgeEndpointCapacity::new(1, 0))),
-            Some(crate::deploy::PlanError::InsufficientCapacity)
-        );
-        assert_eq!(
-            endpoint_capacity_error(1, Some(&BridgeEndpointCapacity::new(1, 0))),
-            None
+            identities(&plan_global_catch_up(&live.services(), &joiner, false)),
+            ["ployz-system/caddy"]
         );
     }
 
     #[tokio::test]
-    async fn catch_up_rejects_unknown_capacity_before_ensuring_a_slot() {
+    async fn stale_local_generation_checks_capacity_before_ensuring_current_slot() {
         let joiner = machine('1', "joiner");
         let founder = machine('f', "founder");
+        let stale = global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            created_on(&joiner, 'a'),
+        );
+        let current = global_service(
+            qualified("app", "api"),
+            'b',
+            Placement::default(),
+            running_on(&founder, 'b'),
+        );
         let mut client = FakeCatchUpClient {
-            services: vec![global_service(
-                qualified("app", "api"),
-                'a',
-                Placement::default(),
-                running_on(&founder, 'a'),
-            )],
+            machine_id: joiner.id,
+            services: vec![stale, current],
             capacity: None,
-            capacity_calls: Cell::new(0),
             ensure_calls: Cell::new(0),
         };
 
-        let error = catch_up_globals(&mut client, &joiner, false)
-            .await
-            .expect_err("unknown capacity must reject catch-up");
-
-        assert!(matches!(error, CatchUpError::Other(_)));
+        assert!(matches!(
+            catch_up_globals(&mut client, &joiner, true).await,
+            Err(CatchUpError::Other(_))
+        ));
         assert_eq!(client.ensure_calls.get(), 0);
     }
 
     struct FakeCatchUpClient {
+        machine_id: MachineId,
         services: Vec<ServiceObservation>,
         capacity: Option<BridgeEndpointCapacity>,
-        capacity_calls: Cell<usize>,
         ensure_calls: Cell<usize>,
     }
 
     impl CatchUpClient for FakeCatchUpClient {
-        async fn observe_services(
-            &mut self,
-        ) -> Result<(Vec<ServiceObservation>, bool), CatchUpError> {
-            Ok((self.services.clone(), true))
+        async fn live_services(&mut self) -> Result<LiveServices<RpcError>, CatchUpError> {
+            Ok(LiveServices {
+                containers: ployz_core::PartialResult {
+                    successes: vec![ployz_core::MachineSuccess {
+                        machine_id: self.machine_id,
+                        value: self
+                            .services
+                            .iter()
+                            .flat_map(|service| service.containers.iter().cloned())
+                            .map(ServiceContainer::into_observation)
+                            .collect(),
+                    }],
+                    failures: Vec::new(),
+                    omissions: Vec::new(),
+                },
+            })
         }
 
         async fn bridge_capacity(
             &self,
             _machine_id: &MachineId,
         ) -> Result<Option<BridgeEndpointCapacity>, CatchUpError> {
-            self.capacity_calls.set(self.capacity_calls.get() + 1);
             Ok(self.capacity.clone())
         }
 
@@ -350,27 +385,6 @@ mod tests {
             self.ensure_calls.set(self.ensure_calls.get() + 1);
             Ok(())
         }
-    }
-
-    #[tokio::test]
-    async fn restart_only_catch_up_does_not_require_a_free_endpoint() {
-        let joiner = machine('1', "joiner");
-        let mut client = FakeCatchUpClient {
-            services: vec![global_service(
-                qualified("app", "api"),
-                'a',
-                Placement::default(),
-                created_on(&joiner, 'a'),
-            )],
-            capacity: None,
-            capacity_calls: Cell::new(0),
-            ensure_calls: Cell::new(0),
-        };
-
-        catch_up_globals(&mut client, &joiner, true).await.unwrap();
-
-        assert_eq!(client.capacity_calls.get(), 0);
-        assert_eq!(client.ensure_calls.get(), 1);
     }
 
     #[test]

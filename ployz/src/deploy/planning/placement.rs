@@ -163,7 +163,7 @@ pub(super) fn plan_global(
         }
     }
 
-    remove_unused(&mut operations, current, &used);
+    remove_unused(&mut operations, current, &used, &mut placement.capacity);
     Ok((operations, hook_machine))
 }
 
@@ -368,7 +368,7 @@ pub(super) fn plan_replicated(
             }
         }
     }
-    remove_unused(&mut operations, current, &used);
+    remove_unused(&mut operations, current, &used, &mut placement.capacity);
     Ok((operations, hook_machine))
 }
 
@@ -376,6 +376,7 @@ fn remove_unused(
     operations: &mut Vec<DeployOperation>,
     current: &[ServiceContainer],
     used: &BTreeSet<ContainerId>,
+    capacity: &mut CapacityBudget,
 ) {
     for container in current {
         let observation = container.as_observation();
@@ -386,6 +387,7 @@ fn remove_unused(
                 machine_id: observation.machine_id,
                 container_id: observation.container_id,
             });
+            capacity.release(&observation.machine_id);
         }
     }
 }
