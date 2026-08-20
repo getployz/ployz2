@@ -22,7 +22,7 @@ pub(super) async fn observe(
                 let result = client
                     .invoke::<op::Inspect>(
                         InspectRequest {
-                            include_bridge_capacity: true,
+                            telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
                             ..Default::default()
                         },
                         &MachineTarget::from(&machine_id),

@@ -78,7 +78,7 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
             let details = client
                 .invoke::<op::Inspect>(
                     InspectRequest {
-                        include_telemetry: true,
+                        telemetry: ployz_core::InspectTelemetry::Full,
                         ..Default::default()
                     },
                     &selector,

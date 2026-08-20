@@ -118,6 +118,28 @@ fn capacity_distinguishes_sufficient_known_unknown_and_insufficient() {
 }
 
 #[test]
+fn apply_one_run_and_scale_path_rejects_full_capacity() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "full")],
+        capacity: capacity([('1', 0)]),
+        ..Default::default()
+    };
+    let intent = DeployIntent::apply_one(
+        ProjectName::parse("app").unwrap(),
+        requested,
+        PlanOptions::default(),
+    );
+
+    assert_eq!(
+        preview_deploy(&intent, &snapshot, IngressContext::default()),
+        Err(PlanError::InsufficientCapacity)
+    );
+}
+
+#[test]
 fn all_unknown_global_capacity_is_reported_as_unknown() {
     let requested = requested(ServiceMode::Global);
     assert_eq!(
@@ -869,6 +891,47 @@ fn ample_capacity_preserves_the_existing_shuffle_order() {
     assert_eq!(
         run_machine_ids(&with_capacity),
         run_machine_ids(&without_capacity)
+    );
+}
+
+#[test]
+fn ample_capacity_preserves_plan_wide_occupancy() {
+    let specs = [replicated("alpha", 1), replicated("bravo", 1)];
+    let machines = cluster(['1', '2']);
+    let options = PlanOptions {
+        placement_seed: 0,
+        ..PlanOptions::default()
+    };
+    let without_capacity = plan_deploy(
+        specs.iter(),
+        &DeploySnapshot {
+            machines: machines.clone(),
+            ..Default::default()
+        },
+        options.clone(),
+    )
+    .unwrap();
+    let with_capacity = plan_deploy(
+        specs.iter(),
+        &DeploySnapshot {
+            machines,
+            capacity: capacity([('1', 10), ('2', 10)]),
+            ..Default::default()
+        },
+        options,
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_machine_ids(&with_capacity),
+        run_machine_ids(&without_capacity)
+    );
+    assert_eq!(
+        run_machine_ids(&with_capacity)
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .len(),
+        2
     );
 }
 

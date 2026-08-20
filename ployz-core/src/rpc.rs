@@ -183,12 +183,22 @@ pub struct InspectRequest {
     pub wireguard_port: u16,
     #[serde(default)]
     pub include_rtts: bool,
-    /// Request only fresh Ployz bridge capacity for targeted admission.
+    /// Fresh telemetry to collect for this inspection.
     #[serde(default)]
-    pub include_bridge_capacity: bool,
-    /// Request fresh host telemetry plus bridge capacity for targeted Inspect.
-    #[serde(default)]
-    pub include_telemetry: bool,
+    pub telemetry: InspectTelemetry,
+}
+
+/// Fresh telemetry requested from a Machine inspection.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectTelemetry {
+    /// Do not probe telemetry.
+    #[default]
+    None,
+    /// Probe only Ployz bridge endpoint capacity for admission.
+    BridgeCapacity,
+    /// Probe host telemetry and Ployz bridge endpoint capacity.
+    Full,
 }
 
 impl Default for InspectRequest {
@@ -198,8 +208,7 @@ impl Default for InspectRequest {
             public_ip_override: None,
             wireguard_port: default_wireguard_port(),
             include_rtts: false,
-            include_bridge_capacity: false,
-            include_telemetry: false,
+            telemetry: InspectTelemetry::None,
         }
     }
 }

@@ -168,7 +168,7 @@ pub async fn catch_up_globals(
         let details = client
             .invoke::<op::Inspect>(
                 InspectRequest {
-                    include_bridge_capacity: true,
+                    telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
                     ..Default::default()
                 },
                 &MachineTarget::from(&this_machine.id),

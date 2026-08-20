@@ -18,7 +18,7 @@ use super::{
 mod capacity;
 mod volumes;
 
-use capacity::{CapacityBudget, reject_impossible_replicas};
+use capacity::{CapacityBudget, EndpointDemand};
 use volumes::{
     VolumePins, named_volume_uses, plan_volume_operations, prepare_shared_replicated_volumes,
     preserved_owned_volumes, reject_mixed_volume_modes, scope_requested,
@@ -210,12 +210,6 @@ fn assemble_plan(
     snapshot: &DeploySnapshot,
     warnings: Vec<DeployWarning>,
 ) -> Result<Planned, PlanError> {
-    reject_impossible_replicas(
-        &intent.project_name,
-        &bound.requested,
-        snapshot,
-        &intent.options,
-    )?;
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let volume_uses = named_volume_uses(&bound.requested);
     reject_mixed_volume_modes(&volume_uses)?;
@@ -465,12 +459,11 @@ fn plan_one_service(
     if machines.is_empty() {
         return Err(placement.capacity.error(requested));
     }
-    let change_peak = 1;
     machines.retain(|machine| {
         current.iter().any(|container| {
             container.as_observation().machine_id == machine.machine.id
                 && is_up_to_date(container, requested, options)
-        }) || placement.capacity.fits(&machine.machine.id, change_peak)
+        }) || placement.capacity.fits(&machine.machine.id, 1)
     });
     if machines.is_empty() {
         return Err(placement.capacity.error(requested));
@@ -703,12 +696,11 @@ fn plan_global(
             .find(|container| super::is_active_runtime(&container.as_observation().runtime))
         {
             let observation = container.as_observation();
-            let hook = u64::from(hook_pending);
-            if !placement.capacity.fits(&machine.machine.id, 1 + hook) {
+            let demand = EndpointDemand::for_operation(true, true, hook_pending);
+            if !placement.capacity.reserve(&machine.machine.id, demand) {
                 return Err(placement.capacity.error(requested));
             }
-            placement.capacity.consume(&machine.machine.id, hook);
-            hook_pending = false;
+            hook_pending &= !demand.uses_hook();
             used.insert(observation.container_id);
             for other in &on_machine {
                 let other_observation = other.as_observation();
@@ -735,12 +727,11 @@ fn plan_global(
                 skip_health_monitor: options.skip_health_monitor,
             }));
         } else {
-            let hook = u64::from(hook_pending);
-            if !placement.capacity.fits(&machine.machine.id, 1 + hook) {
+            let demand = EndpointDemand::for_operation(true, false, hook_pending);
+            if !placement.capacity.reserve(&machine.machine.id, demand) {
                 return Err(placement.capacity.error(requested));
             }
-            placement.capacity.consume(&machine.machine.id, 1 + hook);
-            hook_pending = false;
+            hook_pending &= !demand.uses_hook();
             operations.push(DeployOperation::RunContainer {
                 machine_id: machine.machine.id,
                 spec: resolve(
@@ -810,23 +801,21 @@ fn plan_replicated(
                 .get(&machine.machine.id)
                 .and_then(|containers| containers.last())
                 .copied();
-            let changes =
-                existing.is_none_or(|container| !is_up_to_date(container, requested, options));
-            let hook = u64::from(changes && hook_pending);
-            let persistent = hook + u64::from(changes && existing.is_none());
-            let peak = hook + u64::from(changes);
-            if placement.capacity.fits(&machine.machine.id, peak) {
-                selected = Some((machine, changes, persistent));
+            let demand = EndpointDemand::for_operation(
+                existing.is_none_or(|container| !is_up_to_date(container, requested, options)),
+                existing.is_some(),
+                hook_pending,
+            );
+            if placement.capacity.fits_demand(&machine.machine.id, demand) {
+                selected = Some((machine, demand));
                 break;
             }
         }
-        let Some((machine, changes, persistent)) = selected else {
+        let Some((machine, demand)) = selected else {
             return Err(placement.capacity.error(requested));
         };
-        placement.capacity.consume(&machine.machine.id, persistent);
-        if changes {
-            hook_pending = false;
-        }
+        placement.capacity.reserve(&machine.machine.id, demand);
+        hook_pending &= !demand.uses_hook();
         *placement.occupancy.entry(machine.machine.id).or_default() += 1;
         let existing = by_machine
             .get_mut(&machine.machine.id)

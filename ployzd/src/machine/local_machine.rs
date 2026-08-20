@@ -217,27 +217,18 @@ impl LocalMachine {
         } else {
             Vec::new()
         };
-        let telemetry = if request.include_telemetry {
-            Some(
-                self.containers
-                    .as_ref()
-                    .ok_or(Error::DockerUnavailable)?
-                    .telemetry()
-                    .await?,
-            )
-        } else {
-            None
-        };
-        let bridge_capacity = if request.include_bridge_capacity || request.include_telemetry {
-            Some(
-                self.containers
-                    .as_ref()
-                    .ok_or(Error::DockerUnavailable)?
-                    .bridge_capacity()
-                    .await?,
-            )
-        } else {
-            None
+        let (telemetry, bridge_capacity) = match request.telemetry {
+            ployz_core::InspectTelemetry::None => (None, None),
+            ployz_core::InspectTelemetry::BridgeCapacity => {
+                let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                (None, Some(containers.bridge_capacity().await?))
+            }
+            ployz_core::InspectTelemetry::Full => {
+                let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                let (telemetry, bridge_capacity) =
+                    tokio::try_join!(containers.telemetry(), containers.bridge_capacity())?;
+                (Some(telemetry), Some(bridge_capacity))
+            }
         };
         Ok(MachineDetails {
             id: record.id(),
