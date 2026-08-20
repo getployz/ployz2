@@ -192,6 +192,16 @@ fn set_cloud_pairing_after_initialize_persists() {
 }
 
 #[test]
+fn set_cloud_pairing_before_initialize_is_not_participating() {
+    let dir = TestDir::new("ployzd-set-cloud-pairing-uninitialized");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    let (reset, _) = tokio::sync::watch::channel(false);
+    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+    let error = local.set_cloud_pairing(sample_cloud_pairing()).unwrap_err();
+    assert!(matches!(error, LocalMachineError::NotParticipating));
+}
+
+#[test]
 fn join_with_cloud_pairing_stores_the_same_two_fields() {
     let first_dir = TestDir::new("ployzd-join-cloud-pairing-first");
     let mut first = LocalMachineStore::open(&first_dir.0).unwrap();

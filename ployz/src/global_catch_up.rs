@@ -1,18 +1,46 @@
 //! Global catch-up: place observed eligible Globals onto this Machine only.
 
+use std::time::Duration;
+
 use ployz_core::{
     ContainerRuntimeObservation, EnsureGlobalSlotRequest, Machine, MachineTarget, QualifiedService,
     ResolvedServiceSpec, ServiceContainer, ServiceMode, ServiceObservation,
     machine_matches_placement, op,
 };
 
-use crate::{connect::Client, failure::Failure};
+use crate::{
+    connect::{Client, ConnectError},
+    failure::Failure,
+};
 
 /// One Global slot this Machine still needs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GlobalCatchUpSlot {
     pub identity: QualifiedService,
     pub spec: ResolvedServiceSpec,
+}
+
+/// Catch-up failed. Caddy failures fail the membership command.
+#[derive(Debug)]
+pub enum CatchUpError {
+    /// Eligible Caddy could not be observed, placed, or confirmed running.
+    Caddy(Failure),
+    /// Listing or a non-Caddy Global failed hard.
+    Other(Failure),
+}
+
+impl From<CatchUpError> for Failure {
+    fn from(error: CatchUpError) -> Self {
+        match error {
+            CatchUpError::Caddy(failure) | CatchUpError::Other(failure) => failure,
+        }
+    }
+}
+
+impl From<ConnectError> for CatchUpError {
+    fn from(error: ConnectError) -> Self {
+        Self::Other(error.into())
+    }
 }
 
 /// Globals this Machine is eligible for and does not already run.
@@ -74,16 +102,13 @@ fn caddy_expected(
     services: &[ServiceObservation],
     this_machine: &Machine,
     skip_caddy: bool,
+    slots: &[GlobalCatchUpSlot],
 ) -> bool {
     !skip_caddy
-        && services.iter().any(|service| {
-            service.identity == QualifiedService::system_caddy()
-                && newest_service_container(service).is_some_and(|container| {
-                    let spec = &container.as_observation().resolved_spec;
-                    spec.mode == ServiceMode::Global
-                        && machine_matches_placement(this_machine, &spec.placement)
-                })
-        })
+        && (slots
+            .iter()
+            .any(|slot| slot.identity == QualifiedService::system_caddy())
+            || caddy_running_on(services, this_machine))
 }
 
 fn caddy_running_on(services: &[ServiceObservation], this_machine: &Machine) -> bool {
@@ -94,6 +119,42 @@ fn caddy_running_on(services: &[ServiceObservation], this_machine: &Machine) -> 
                 observation.machine_id == this_machine.id && is_running(&observation.runtime)
             })
     })
+}
+
+fn observations_ready(skip_caddy: bool, expect_caddy: bool, complete: bool) -> bool {
+    skip_caddy || expect_caddy || complete
+}
+
+async fn wait_for_observations(
+    client: &mut Client,
+    this_machine: &Machine,
+    skip_caddy: bool,
+) -> Result<Vec<ServiceObservation>, CatchUpError> {
+    if skip_caddy {
+        return Ok(client.live_services().await?.services());
+    }
+    match tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let live = client.live_services().await?;
+            let services = live.services();
+            let slots = plan_global_catch_up(&services, this_machine, false);
+            if observations_ready(
+                skip_caddy,
+                caddy_expected(&services, this_machine, skip_caddy, &slots),
+                live.containers.all_targets_succeeded(),
+            ) {
+                return Ok(services);
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(CatchUpError::Caddy(Failure::usage(
+            "timed out waiting for Caddy to become observable".to_owned(),
+        ))),
+    }
 }
 
 /// Copy every observed eligible Global onto `this_machine` only.
@@ -107,11 +168,10 @@ pub async fn catch_up_globals(
     client: &mut Client,
     this_machine: &Machine,
     skip_caddy: bool,
-) -> Result<(), Failure> {
-    let live = client.live_services().await?;
-    let services = live.services();
+) -> Result<(), CatchUpError> {
+    let services = wait_for_observations(client, this_machine, skip_caddy).await?;
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
-    let expect_caddy = caddy_expected(&services, this_machine, skip_caddy);
+    let expect_caddy = caddy_expected(&services, this_machine, skip_caddy, &slots);
     if !slots.is_empty() {
         eprintln!("Placing Global Services on this Machine.");
     }
@@ -130,9 +190,9 @@ pub async fn catch_up_globals(
         {
             Ok(_) => {}
             Err(error) if identity == QualifiedService::system_caddy() => {
-                return Err(Failure::usage(format!(
+                return Err(CatchUpError::Caddy(Failure::usage(format!(
                     "Caddy is not running on this Machine: {error}"
-                )));
+                ))));
             }
             Err(error) => {
                 eprintln!(
@@ -145,9 +205,9 @@ pub async fn catch_up_globals(
     if expect_caddy {
         let live = client.live_services().await?;
         if !caddy_running_on(&live.services(), this_machine) {
-            return Err(Failure::usage(
+            return Err(CatchUpError::Caddy(Failure::usage(
                 "Caddy is not running on this Machine".to_owned(),
-            ));
+            )));
         }
     }
     Ok(())
@@ -360,9 +420,19 @@ mod tests {
             Placement::default(),
             running_on(&founder, 'a'),
         )];
-        assert!(caddy_expected(&services, &joiner, false));
-        assert!(!caddy_expected(&services, &joiner, true));
+        let slots = plan_global_catch_up(&services, &joiner, false);
+        assert!(caddy_expected(&services, &joiner, false, &slots));
+        let skipped = plan_global_catch_up(&services, &joiner, true);
+        assert!(!caddy_expected(&services, &joiner, true, &skipped));
         assert!(!caddy_running_on(&services, &joiner));
+    }
+
+    #[test]
+    fn incomplete_listing_without_caddy_is_not_ready() {
+        assert!(!observations_ready(false, false, false));
+        assert!(observations_ready(false, true, false));
+        assert!(observations_ready(false, false, true));
+        assert!(observations_ready(true, false, false));
     }
 
     fn identities(slots: &[GlobalCatchUpSlot]) -> Vec<String> {

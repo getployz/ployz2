@@ -179,6 +179,7 @@ struct JoinInner {
     resets: AtomicUsize,
     containers: Mutex<Vec<ContainerObservation>>,
     ensure_requests: Mutex<Vec<EnsureGlobalSlotRequest>>,
+    fail_ensure: AtomicBool,
     _register: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -194,6 +195,7 @@ impl JoinDaemon {
                 resets: AtomicUsize::new(0),
                 containers: Mutex::new(Vec::new()),
                 ensure_requests: Mutex::new(Vec::new()),
+                fail_ensure: AtomicBool::new(false),
                 _register: Mutex::new(None),
             }),
         }
@@ -229,6 +231,11 @@ impl JoinDaemon {
 
     pub fn with_containers(self, containers: Vec<ContainerObservation>) -> Self {
         *self.inner.containers.lock().unwrap() = containers;
+        self
+    }
+
+    pub fn fail_ensure(self) -> Self {
+        self.inner.fail_ensure.store(true, Ordering::SeqCst);
         self
     }
 
@@ -473,6 +480,13 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::EnsureGlobalSlot(ensure) = decoded.body else {
             return Err(Status::invalid_argument("expected EnsureGlobalSlot"));
         };
+        if self.inner.fail_ensure.load(Ordering::SeqCst) {
+            return rpc_ok(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "ensure failed".into(),
+                details: serde_json::Value::Null,
+            });
+        }
         self.inner
             .ensure_requests
             .lock()

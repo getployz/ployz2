@@ -106,14 +106,17 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let catch_up = runtime()?.block_on(async {
         let mut entry = connect_client(matches, options.context()).await?;
         wait_machine_up(&mut entry, &assigned.id).await?;
-        crate::global_catch_up::catch_up_globals(&mut entry, &assigned, !deploy_caddy).await
-    });
+        Ok::<_, Error>(
+            crate::global_catch_up::catch_up_globals(&mut entry, &assigned, !deploy_caddy).await,
+        )
+    })?;
     if let Err(error) = catch_up {
-        let message = error.to_string();
-        if message.contains("Caddy") {
-            return Err(Error::usage(caddy_follow_on_error(&message)));
-        }
-        return Err(error);
+        return Err(match error {
+            crate::global_catch_up::CatchUpError::Caddy(error) => {
+                Error::usage(caddy_follow_on_error(&error.to_string()))
+            }
+            crate::global_catch_up::CatchUpError::Other(error) => error,
+        });
     }
     let dns_result = runtime()?.block_on(async {
         let mut entry = connect_client(matches, options.context()).await?;

@@ -991,7 +991,10 @@ fn internal_response(error: impl std::fmt::Display) -> Status {
 mod tests {
     use super::{MachineService, local_error, store_error};
     use crate::machine::{LocalMachineError, LocalMachineStore, StoreError};
-    use ployz_core::{MachineRpc, RpcErrorCode, RpcResponseBody, RuntimeWatchRequest, op};
+    use ployz_core::{
+        MachineRpc, ProjectName, QualifiedService, RpcErrorCode, RpcResponseBody,
+        RuntimeWatchRequest, ServiceName, op,
+    };
     use std::sync::{Arc, Mutex};
     use tokio::sync::watch;
     use tonic::{Code, Request};
@@ -1052,6 +1055,28 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), Code::Unavailable);
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn global_slot_lock_is_per_qualified_service() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "ployzd-slot-lock-{}",
+            ployz_core::MachineId::random()
+        ));
+        let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+        let (restart, _) = watch::channel(false);
+        let service = MachineService::new(store, restart);
+        let caddy = QualifiedService::system_caddy();
+        let other = QualifiedService::new(
+            ProjectName::parse("app").unwrap(),
+            ServiceName::parse("api").unwrap(),
+        );
+        let first = service.slot_lock(&caddy);
+        let again = service.slot_lock(&caddy);
+        let different = service.slot_lock(&other);
+        assert!(Arc::ptr_eq(&first, &again));
+        assert!(!Arc::ptr_eq(&first, &different));
         let _ = std::fs::remove_dir_all(data_dir);
     }
 }

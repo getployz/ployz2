@@ -66,6 +66,11 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
     );
     assert_eq!(joined.registration.assigned_machine.id, machine_id);
 
+    assert!(
+        daemon.ensure_requests().is_empty(),
+        "Join without observed Globals must not place slots"
+    );
+
     let paths = enroll.paths();
     assert_eq!(paths, [format!("/api/enroll/{TOKEN}")]);
     assert!(
@@ -721,6 +726,166 @@ async fn join_no_caddy_skips_caddy_and_still_places_other_globals() {
     );
     let ensured = daemon.ensure_requests();
     assert_eq!(ensure_names(&ensured), [("app", "api")]);
+}
+
+#[tokio::test]
+async fn join_fails_visibly_when_expected_caddy_cannot_be_placed() {
+    let founder = founder_machine();
+    let mut registration = registration();
+    registration.visible_peers = vec![founder.clone()];
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "pairing": pairing,
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration.clone())
+        .with_containers(vec![caddy_on(&founder)])
+        .fail_ensure();
+    let machine_addr = serve_machine(daemon).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "Join must fail when Caddy cannot be placed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.contains("Joined Machine"),
+        "success must not print when Caddy is missing, got {stdout}"
+    );
+    assert!(
+        stderr.contains("Caddy is not running on this Machine"),
+        "stderr: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn join_starts_created_caddy_before_success() {
+    let founder = founder_machine();
+    let mut registration = registration();
+    let joiner = registration.assigned_machine.clone();
+    registration.visible_peers = vec![founder.clone()];
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "pairing": pairing,
+        "registration": registration,
+    }))
+    .await;
+    let mut created = caddy_on(&joiner);
+    created.runtime = ployz_core::ContainerRuntimeObservation::Created;
+    let daemon = JoinDaemon::new(registration).with_containers(vec![caddy_on(&founder), created]);
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        ensure_names(&daemon.ensure_requests()),
+        [("ployz-system", "caddy")]
+    );
+}
+
+#[tokio::test]
+async fn two_concurrent_joins_each_ensure_caddy_locally() {
+    let founder = founder_machine();
+    let (first, second) = tokio::join!(
+        join_against_founder(&founder),
+        join_against_founder(&founder),
+    );
+    assert_eq!(
+        ensure_names(&first),
+        [("ployz-system", "caddy")],
+        "first Joiner must place Caddy here"
+    );
+    assert_eq!(
+        ensure_names(&second),
+        [("ployz-system", "caddy")],
+        "second Joiner must place Caddy here"
+    );
+}
+
+async fn join_against_founder(
+    founder: &ployz_core::Machine,
+) -> Vec<ployz_core::EnsureGlobalSlotRequest> {
+    let mut registration = registration();
+    registration.assigned_machine.id = ployz_core::MachineId::random();
+    registration.visible_peers = vec![founder.clone()];
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "pairing": pairing,
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration.clone()).with_containers(vec![caddy_on(founder)]);
+    let machine_addr = serve_machine(daemon.clone()).await;
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    daemon.ensure_requests()
 }
 
 fn ensure_names(requests: &[ployz_core::EnsureGlobalSlotRequest]) -> Vec<(&str, &str)> {
