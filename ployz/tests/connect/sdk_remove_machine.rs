@@ -203,6 +203,48 @@ async fn remove_machine_refuses_the_last_machine_with_stored_cloud_pairing() {
 }
 
 #[tokio::test]
+async fn remove_machine_membership_refuses_the_last_machine_with_stored_cloud_pairing() {
+    let (_description, entry, service) = last_machine_cluster();
+    service
+        .cloud_paired
+        .lock()
+        .unwrap()
+        .insert(entry.machine.id);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    let error = client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&entry.machine.id))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        error.message.contains("tear down this Cluster from Cloud"),
+        "{}",
+        error.message
+    );
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn remove_machine_membership_removes_the_final_unpaired_machine() {
+    let (_description, entry, service) = last_machine_cluster();
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&entry.machine.id))
+        .await
+        .unwrap();
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    assert_eq!(
+        service.removed_machines.lock().unwrap().as_slice(),
+        &[entry.machine.id]
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn remove_machine_removes_the_final_unpaired_machine() {
     let (_description, entry, service) = last_machine_cluster();
     let (mut client, server, _) = connected_client(service.clone()).await;

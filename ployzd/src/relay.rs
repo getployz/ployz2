@@ -1,6 +1,7 @@
 //! Cloud Relay Register client.
 
 use std::{
+    future::Future,
     io,
     pin::Pin,
     task::{Context, Poll},
@@ -123,16 +124,30 @@ impl Drop for RegisterHold {
     }
 }
 
-const REGISTER_RETRY_BASE: Duration = Duration::from_secs(1);
-const REGISTER_RETRY_CAP: Duration = Duration::from_secs(30);
-
 fn register_retry_delay(failures: u32) -> Duration {
-    let shift = failures.min(31);
-    let millis = REGISTER_RETRY_BASE
-        .as_millis()
-        .saturating_mul(1u128 << shift)
-        .min(REGISTER_RETRY_CAP.as_millis());
-    Duration::from_millis(u64::try_from(millis).unwrap_or(u64::MAX))
+    Duration::from_secs((1u64 << failures.min(5)).min(30))
+}
+
+enum HoldWait<T> {
+    Done(T),
+    PairingChanged,
+    Shutdown,
+}
+
+async fn hold_wait<T>(
+    pairing: &mut watch::Receiver<Option<CloudPairing>>,
+    shutdown: &CancellationToken,
+    work: impl Future<Output = T>,
+) -> io::Result<HoldWait<T>> {
+    tokio::select! {
+        biased;
+        () = shutdown.cancelled() => Ok(HoldWait::Shutdown),
+        result = pairing.changed() => {
+            result.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
+            Ok(HoldWait::PairingChanged)
+        }
+        value = work => Ok(HoldWait::Done(value)),
+    }
 }
 
 /// Hold Register for stored Cloud Pairing, or idle if none.
@@ -155,55 +170,44 @@ pub(crate) async fn run(
         match current {
             None => {
                 failures = 0;
-                tokio::select! {
-                    () = shutdown.cancelled() => return Ok(()),
-                    changed = pairing.changed() => {
-                        changed.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
-                    }
+                match hold_wait(&mut pairing, &shutdown, std::future::pending::<()>()).await? {
+                    HoldWait::Shutdown => return Ok(()),
+                    HoldWait::PairingChanged | HoldWait::Done(()) => {}
                 }
             }
-            Some(current) => {
-                let hold = tokio::select! {
-                    () = shutdown.cancelled() => return Ok(()),
-                    changed = pairing.changed() => {
-                        changed.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
-                        failures = 0;
-                        continue;
-                    }
-                    result = hold_register(
-                        current.relay_url(),
-                        current.secret(),
-                        &machine_id,
-                        service.clone(),
-                    ) => result,
-                };
-                match hold {
-                    Ok(mut hold) => {
-                        failures = 0;
-                        tokio::select! {
-                            () = shutdown.cancelled() => return Ok(()),
-                            changed = pairing.changed() => {
-                                changed.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
-                                failures = 0;
-                            }
-                            _ = &mut hold.task => {}
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(error = %error, "relay Register retry");
-                        let wait = register_retry_delay(failures);
-                        failures = failures.saturating_add(1);
-                        tokio::select! {
-                            () = shutdown.cancelled() => return Ok(()),
-                            changed = pairing.changed() => {
-                                changed.map_err(|_| io::Error::other("cloud pairing watch closed"))?;
-                                failures = 0;
-                            }
-                            () = tokio::time::sleep(wait) => {}
-                        }
+            Some(current) => match hold_wait(
+                &mut pairing,
+                &shutdown,
+                hold_register(
+                    current.relay_url(),
+                    current.secret(),
+                    &machine_id,
+                    service.clone(),
+                ),
+            )
+            .await?
+            {
+                HoldWait::Shutdown => return Ok(()),
+                HoldWait::PairingChanged => failures = 0,
+                HoldWait::Done(Ok(mut hold)) => {
+                    failures = 0;
+                    match hold_wait(&mut pairing, &shutdown, &mut hold.task).await? {
+                        HoldWait::Shutdown => return Ok(()),
+                        HoldWait::PairingChanged => failures = 0,
+                        HoldWait::Done(_) => {}
                     }
                 }
-            }
+                HoldWait::Done(Err(error)) => {
+                    tracing::warn!(error = %error, "relay Register retry");
+                    let wait = register_retry_delay(failures);
+                    failures = failures.saturating_add(1);
+                    match hold_wait(&mut pairing, &shutdown, tokio::time::sleep(wait)).await? {
+                        HoldWait::Shutdown => return Ok(()),
+                        HoldWait::PairingChanged => failures = 0,
+                        HoldWait::Done(()) => {}
+                    }
+                }
+            },
         }
     }
 }

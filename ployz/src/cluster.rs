@@ -28,9 +28,6 @@ use crate::{
     service::ContainerOperationFailure,
 };
 
-/// Why `machine rm` refuses the last Cloud-paired Machine.
-pub(crate) const LAST_CLOUD_PAIRED_MESSAGE: &str = "the last Cloud-paired Machine cannot be removed with machine rm; tear down this Cluster from Cloud";
-
 #[derive(Clone)]
 pub struct Client {
     channel: Channel,
@@ -339,46 +336,36 @@ impl Client {
                 details: Value::Null,
             });
         }
-        self.refuse_last_cloud_paired(&machines, selected).await?;
+        refuse_last_cloud_paired(self, &machines, selected).await?;
         evict_machine(self, observation, confirm_data_loss, current).await
     }
 
-    /// Refuse when `selected` is the only visible Machine and it is Cloud-paired.
+    /// Remove Cluster membership for `machine` without resetting it.
+    ///
+    /// The last Cloud-paired Machine is refused before membership mutation;
+    /// tear down that Cluster from Cloud.
     ///
     /// # Errors
     ///
-    /// Returns [`RpcErrorCode::InvalidArgument`] when removal would destroy the
-    /// last Cloud-paired Machine.
-    pub(crate) async fn refuse_last_cloud_paired(
-        &self,
-        machines: &[MachineObservation],
-        selected: MachineId,
+    /// Returns a generated [`RpcError`] when the Machine is not visible, when
+    /// it is the last Cloud-paired Machine, or when shared-row removal fails.
+    pub async fn remove_machine_membership(
+        &mut self,
+        machine: &MachineTarget,
     ) -> Result<(), RpcError> {
-        if machines.len() != 1 {
-            return Ok(());
-        }
-        if !self.connected_via_relay() && !self.machine_has_cloud_pairing(selected).await {
-            return Ok(());
-        }
-        Err(RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: LAST_CLOUD_PAIRED_MESSAGE.into(),
-            details: Value::Null,
-        })
-    }
-
-    fn connected_via_relay(&self) -> bool {
-        matches!(self.connection.transport(), Transport::Relay { .. })
-    }
-
-    async fn machine_has_cloud_pairing(&self, machine_id: MachineId) -> bool {
-        self.invoke::<op::Inspect>(
-            InspectRequest::default(),
-            &MachineTarget::from(&machine_id),
-            Some(TARGET_RPC_TIMEOUT),
+        let machines = self.machines().await.map_err(RpcError::from)?;
+        let observation = visible_machine(machine, &machines)?;
+        let selected = observation.machine.id;
+        refuse_last_cloud_paired(self, &machines, selected).await?;
+        self.call::<op::RemoveMachine>(
+            RemoveMachineRequest {
+                machine_id: selected,
+            },
+            None,
         )
         .await
-        .is_ok_and(|details| details.cloud_paired)
+        .map_err(RpcError::from)?;
+        Ok(())
     }
 
     pub async fn list_images(
@@ -698,6 +685,33 @@ async fn remove_volumes_on(
         }
     }
     result
+}
+
+async fn refuse_last_cloud_paired(
+    client: &Client,
+    machines: &[MachineObservation],
+    selected: MachineId,
+) -> Result<(), RpcError> {
+    if machines.len() != 1 {
+        return Ok(());
+    }
+    let paired = matches!(client.connection.transport(), Transport::Relay { .. })
+        || client
+            .invoke::<op::Inspect>(
+                InspectRequest::default(),
+                &MachineTarget::from(&selected),
+                Some(TARGET_RPC_TIMEOUT),
+            )
+            .await
+            .is_ok_and(|details| details.cloud_paired);
+    if !paired {
+        return Ok(());
+    }
+    Err(RpcError {
+        code: RpcErrorCode::InvalidArgument,
+        message: "the last Cloud-paired Machine cannot be removed with machine rm; tear down this Cluster from Cloud".into(),
+        details: Value::Null,
+    })
 }
 
 fn visible_machine<'list>(

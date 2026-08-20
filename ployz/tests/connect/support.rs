@@ -272,22 +272,14 @@ impl MachineRpc for DiscoveryService {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| MachineId::parse(value).ok())
             .unwrap_or(self.description.machine_id);
-        let observation = self
-            .machines
-            .iter()
-            .find(|observation| observation.machine.id == machine_id);
         let cloud_paired = self.cloud_paired.lock().unwrap().contains(&machine_id);
         Ok(Response::new(
             RpcResponse::from(MachineDetails {
                 id: machine_id,
                 phase: LocalMachinePhase::Participating,
-                machine: observation.map(|observation| observation.machine.clone()),
-                public_key: observation
-                    .map(|observation| observation.machine.public_key)
-                    .unwrap_or(WireGuardPublicKey([0; 32])),
-                advertised_endpoints: observation
-                    .map(|observation| observation.machine.advertised_endpoints.clone())
-                    .unwrap_or_default(),
+                machine: None,
+                public_key: WireGuardPublicKey([0; 32]),
+                advertised_endpoints: Vec::new(),
                 store_version: Default::default(),
                 rtts: Vec::new(),
                 cloud_paired,
