@@ -6,7 +6,9 @@ use harness::{
     CLUSTER_DOMAIN, EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, assert_not_held,
     founder_machine, registration, serve_machine, wait_for_held,
 };
-use ployz_core::{CloudPairing, PairingCredential, Registered};
+use ployz_core::{
+    CloudPairing, InitializeRequest, PairingCredential, Registered, SetCloudPairingRequest, op,
+};
 use serde_json::json;
 
 #[tokio::test]
@@ -586,4 +588,218 @@ async fn revoked_pairing_reset_confirms_unless_yes() {
         Some(&dead)
     );
     assert_not_held(&relay.url, DEAD, machine_id).await;
+}
+
+#[tokio::test]
+async fn initialize_without_pairing_stays_off_list_until_set_cloud_pairing() {
+    let founder = founder_machine();
+    let machine_id = founder.id;
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder.clone(),
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let machine_addr = serve_machine(daemon).await;
+    let mut client = connect_daemon(machine_addr).await;
+
+    client
+        .call::<op::Initialize>(
+            InitializeRequest {
+                name: founder.name.clone(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: founder.advertised_endpoints.clone(),
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_not_held(&relay.url, PAIRING, machine_id).await;
+
+    client
+        .call::<op::SetCloudPairing>(
+            SetCloudPairingRequest {
+                cloud_pairing: pairing,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    wait_for_held(&relay.url, PAIRING, machine_id).await;
+}
+
+#[tokio::test]
+async fn join_places_observed_caddy_on_this_machine() {
+    let founder = founder_machine();
+    let mut registration = registration();
+    registration.visible_peers = vec![founder.clone()];
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "pairing": pairing,
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration.clone()).with_containers(vec![caddy_on(&founder)]);
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Joined Machine joiner"), "{stdout}");
+    let ensured = daemon.ensure_requests();
+    assert_eq!(ensure_names(&ensured), [("ployz-system", "caddy")]);
+}
+
+#[tokio::test]
+async fn join_no_caddy_skips_caddy_and_still_places_other_globals() {
+    let founder = founder_machine();
+    let mut registration = registration();
+    registration.visible_peers = vec![founder.clone()];
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "pairing": pairing,
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration)
+        .with_containers(vec![caddy_on(&founder), global_on(&founder, "app", "api")]);
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--no-caddy",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let ensured = daemon.ensure_requests();
+    assert_eq!(ensure_names(&ensured), [("app", "api")]);
+}
+
+fn ensure_names(requests: &[ployz_core::EnsureGlobalSlotRequest]) -> Vec<(&str, &str)> {
+    requests
+        .iter()
+        .map(|request| {
+            (
+                request.project_name.as_str(),
+                request.resolved_spec.name.as_str(),
+            )
+        })
+        .collect()
+}
+
+async fn connect_daemon(address: std::net::SocketAddr) -> ployz::connect::Client {
+    ployz::connect::connect_selected_with(
+        ployz::context::SelectedConnections {
+            source: ployz::context::ConnectionSource::Direct,
+            connections: vec![ployz::context::Connection::tcp(address)],
+        },
+        std::sync::Arc::new(ployz::connect::SystemConnector::default()),
+    )
+    .await
+    .unwrap()
+}
+
+fn caddy_on(machine: &ployz_core::Machine) -> ployz_core::ContainerObservation {
+    let spec = ployz::caddy::service_spec("caddy:2.10.0".into(), Vec::new(), None);
+    container_on(
+        machine,
+        spec.to_resolved(
+            ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+            ployz_core::ResolvedUpdateConfig::default(),
+        ),
+        ployz_core::ProjectName::system(),
+        'a',
+    )
+}
+
+fn global_on(
+    machine: &ployz_core::Machine,
+    project: &str,
+    name: &str,
+) -> ployz_core::ContainerObservation {
+    let mut spec = ployz::caddy::service_spec("caddy:2.10.0".into(), Vec::new(), None);
+    spec.name = ployz_core::ServiceName::parse(name).unwrap();
+    spec.ports.clear();
+    container_on(
+        machine,
+        spec.to_resolved(
+            ployz_core::ServiceId::parse("a".repeat(32)).unwrap(),
+            ployz_core::ResolvedUpdateConfig::default(),
+        ),
+        ployz_core::ProjectName::parse(project).unwrap(),
+        'b',
+    )
+}
+
+fn container_on(
+    machine: &ployz_core::Machine,
+    spec: ployz_core::ResolvedServiceSpec,
+    project: ployz_core::ProjectName,
+    hex: char,
+) -> ployz_core::ContainerObservation {
+    ployz_core::ContainerObservation {
+        container_id: ployz_core::ContainerId::parse(hex.to_string().repeat(64)).unwrap(),
+        display_name: format!("{}-{hex}", spec.name),
+        created_at_unix_nanos: 1,
+        machine_id: machine.id,
+        project_name: project,
+        service_id: spec.service_id,
+        service_name: spec.name.clone(),
+        kind: ployz_core::ContainerKind::ServiceContainer,
+        runtime: ployz_core::ContainerRuntimeObservation::Running {
+            health: ployz_core::HealthObservation::Healthy,
+        },
+        effective_healthcheck: None,
+        resolved_spec: spec,
+        address: None,
+        labels: Default::default(),
+    }
 }

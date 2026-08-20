@@ -7,8 +7,8 @@ use bollard::{
     },
 };
 use ployz_core::{
-    ContainerCreated, ContainerId, ContainerKind, MachineGateway, MachineId, ProjectName,
-    ResolvedServiceSpec,
+    ContainerCreated, ContainerId, ContainerKind, ContainerRuntimeObservation, CreateVolumeRequest,
+    MachineGateway, MachineId, ProjectName, ResolvedServiceSpec, VolumeSource,
 };
 
 use crate::docker_image::prepare_image;
@@ -100,6 +100,206 @@ impl ContainerRuntime {
             eprintln!("failed to reclaim materialized configs: {error}");
         }
         result
+    }
+
+    /// One running Service Container for this Global on this Machine. No loop after return.
+    pub async fn ensure_global_slot(
+        &self,
+        machine_id: &MachineId,
+        gateway: MachineGateway,
+        project_name: &ProjectName,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerCreated, Error> {
+        if let Some(existing) = self.existing_global_slot(machine_id, spec).await? {
+            if !matches!(
+                existing.runtime,
+                ContainerRuntimeObservation::Running { .. }
+            ) {
+                self.start(&existing.container_id).await?;
+            }
+            return Ok(ContainerCreated {
+                container_id: existing.container_id,
+                display_name: existing.display_name,
+            });
+        }
+        self.ensure_named_volumes(machine_id, spec).await?;
+        let created = self
+            .create_named(
+                machine_id,
+                gateway,
+                ContainerKind::ServiceContainer,
+                project_name,
+                spec,
+                global_slot_name(spec),
+            )
+            .await?;
+        self.start(&created.container_id).await?;
+        Ok(created)
+    }
+
+    async fn existing_global_slot(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<Option<ployz_core::ContainerObservation>, Error> {
+        let mut found = None;
+        for observation in self.list_managed(machine_id).await? {
+            if observation.kind != ContainerKind::ServiceContainer
+                || observation.service_id != spec.service_id
+            {
+                continue;
+            }
+            let running = matches!(
+                observation.runtime,
+                ContainerRuntimeObservation::Running { .. }
+            );
+            match found {
+                Some(_) if !running => {}
+                _ => found = Some(observation),
+            }
+            if running {
+                break;
+            }
+        }
+        Ok(found)
+    }
+
+    async fn ensure_named_volumes(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), Error> {
+        for volume in spec.volume_graph.volumes() {
+            let VolumeSource::Named {
+                name,
+                external,
+                driver,
+                labels,
+                ..
+            } = &volume.source
+            else {
+                continue;
+            };
+            if *external {
+                continue;
+            }
+            match self.inspect_volume(machine_id, name).await {
+                Ok(_) => {}
+                Err(error) if volume_missing(&error) => {
+                    match self
+                        .create_volume(
+                            machine_id,
+                            CreateVolumeRequest {
+                                name: name.clone(),
+                                driver: driver
+                                    .as_ref()
+                                    .map_or_else(|| "local".into(), |driver| driver.name.clone()),
+                                options: driver
+                                    .as_ref()
+                                    .map_or_else(Default::default, |driver| driver.options.clone()),
+                                labels: labels.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(error) if volume_conflict(&error) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    async fn create_named(
+        &self,
+        machine_id: &MachineId,
+        gateway: MachineGateway,
+        kind: ContainerKind,
+        project_name: &ProjectName,
+        spec: &ResolvedServiceSpec,
+        display_name: String,
+    ) -> Result<ContainerCreated, Error> {
+        let mut body =
+            create::container_create_body(machine_id, gateway, kind, project_name, spec)?;
+        let mounts = body
+            .host_config
+            .get_or_insert_default()
+            .mounts
+            .get_or_insert_default();
+        preflight_named_volumes(&self.docker.client, mounts).await?;
+        prepare_image(
+            &self.docker.client,
+            &spec.container.image,
+            spec.container.pull_policy,
+        )
+        .await?;
+        let mut config_operation = self.specs.config_operation().await;
+        mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
+        let options = CreateContainerOptionsBuilder::default()
+            .name(&display_name)
+            .build();
+        let result = async {
+            match self
+                .docker
+                .client
+                .create_container(Some(options), body)
+                .await
+            {
+                Ok(created) => {
+                    let container_id =
+                        ContainerId::parse(created.id).map_err(|source| Error::InvalidValue {
+                            field: "container ID",
+                            source,
+                        })?;
+                    if let Err(error) = config_operation.put(&container_id, spec).await {
+                        self.force_remove_container(&container_id).await?;
+                        return Err(error.into());
+                    }
+                    Ok(ContainerCreated {
+                        container_id,
+                        display_name: display_name.clone(),
+                    })
+                }
+                Err(DockerError::DockerResponseServerError {
+                    status_code: 409, ..
+                }) => {
+                    let existing = self
+                        .inspect_managed_by_name(machine_id, &display_name)
+                        .await?;
+                    Ok(ContainerCreated {
+                        container_id: existing.container_id,
+                        display_name: existing.display_name,
+                    })
+                }
+                Err(error) => Err(error.into()),
+            }
+        };
+        let result = result.await;
+        if result.is_err()
+            && let Err(error) = config_operation.garbage_collect_configs().await
+        {
+            eprintln!("failed to reclaim materialized configs: {error}");
+        }
+        result
+    }
+
+    async fn inspect_managed_by_name(
+        &self,
+        machine_id: &MachineId,
+        name: &str,
+    ) -> Result<ployz_core::ContainerObservation, Error> {
+        let inspected = self.docker.client.inspect_container(name, None).await?;
+        let container_id = ContainerId::parse(
+            inspected.id.ok_or(Error::MissingField("container ID"))?,
+        )
+        .map_err(|source| Error::InvalidValue {
+            field: "container ID",
+            source,
+        })?;
+        self.inspect_managed(&container_id, machine_id).await
     }
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
@@ -297,6 +497,32 @@ fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
                 ..
             }
         )
+}
+
+fn global_slot_name(spec: &ResolvedServiceSpec) -> String {
+    let id = spec.service_id.as_str();
+    let suffix = id.get(..8).unwrap_or(id);
+    format!("{}-{suffix}", spec.name)
+}
+
+fn volume_missing(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Docker(DockerError::DockerResponseServerError {
+            status_code: 404,
+            ..
+        })
+    )
+}
+
+fn volume_conflict(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Docker(DockerError::DockerResponseServerError {
+            status_code: 409,
+            ..
+        })
+    )
 }
 
 #[cfg(test)]
