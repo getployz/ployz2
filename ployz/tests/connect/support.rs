@@ -16,13 +16,12 @@ use ployz::{
     context::{Connection, ConnectionSource, SelectedConnections},
 };
 use ployz_core::{
-    AdvertisedEndpoint, BridgeEndpointCapacity, ByteCapacity, ContainerCreated, ContainerId,
-    ContainerList, ContractDescription, DockerVolume, DockerVolumeId, DockerVolumeName,
-    InspectTelemetry, LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId,
-    MachineList, MachineName, MachineObservation, MachineRemoved, MachineRpc, MachineRpcServer,
-    MachineTelemetry, ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
-    Registered, RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RuntimeWatchFrame, RuntimeWatchRequest, TelemetryObservation, VolumeList, VolumeRemoved,
+    AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
+    DockerVolume, DockerVolumeId, DockerVolumeName, LocalMachinePhase, LocalMachineRemoved,
+    Machine, MachineDetails, MachineId, MachineList, MachineName, MachineObservation,
+    MachineRemoved, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
+    OpaquePayload, PROTOCOL_MAJOR, Registered, RemoveMachineRequest, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, VolumeList, VolumeRemoved,
     WireGuardPublicKey, op,
 };
 use serde_json::Value;
@@ -33,6 +32,9 @@ use tonic::{
     Request, Response, Status, Streaming,
     transport::{Channel, Server},
 };
+
+#[path = "../support/inspect_telemetry.rs"]
+mod inspect_telemetry_fixture;
 
 pub(super) async fn serve_discovery(
     service: DiscoveryService,
@@ -274,24 +276,7 @@ impl MachineRpc for DiscoveryService {
         let RpcRequestBody::Inspect(inspect) = request.body else {
             return Err(Status::invalid_argument("expected Inspect"));
         };
-        let bridge = BridgeEndpointCapacity::new(1_024, 0);
-        let telemetry = match inspect.telemetry {
-            InspectTelemetry::None => None,
-            InspectTelemetry::BridgeCapacity => {
-                Some(TelemetryObservation::BridgeCapacity { bridge })
-            }
-            InspectTelemetry::Full => Some(TelemetryObservation::Full {
-                host: MachineTelemetry::new(
-                    0,
-                    0,
-                    1,
-                    0,
-                    ByteCapacity::default(),
-                    ByteCapacity::default(),
-                ),
-                bridge,
-            }),
-        };
+        let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         Ok(Response::new(
             RpcResponse::from(MachineDetails {
                 id: self.description.machine_id,

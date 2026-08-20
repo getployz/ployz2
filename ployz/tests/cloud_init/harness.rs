@@ -12,15 +12,14 @@ use std::{
 
 use ployz::sdk;
 use ployz_core::{
-    AdvertisedEndpoint, BridgeEndpointCapacity, ByteCapacity, CloudPairingSet, ContainerCreated,
-    ContainerId, ContainerKind, ContainerList, ContainerObservation, ContainerRuntimeObservation,
-    ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, Domain, EnsureGlobalSlotRequest,
-    HealthObservation, InitializeRequest, Initialized, InspectTelemetry, JoinAccepted, JoinRequest,
-    LocalMachinePhase, Machine, MachineDetails, MachineId, MachineList, MachineName,
-    MachineObservation, MachineRpc, MachineRpcServer, MachineTelemetry, MachineToken,
-    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, PairingCredential,
-    Registered, ReserveDomainRequest, ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, TelemetryObservation, WireGuardPublicKey,
+    AdvertisedEndpoint, CloudPairingSet, ContainerCreated, ContainerId, ContainerKind,
+    ContainerList, ContainerObservation, ContainerRuntimeObservation, ContractDescription,
+    DESCRIBE_CONTRACT_CAPABILITY, Domain, EnsureGlobalSlotRequest, HealthObservation,
+    InitializeRequest, Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine,
+    MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachineRpc,
+    MachineRpcServer, MachineToken, ManagementAddress, MembershipObservation, OpaquePayload,
+    PROTOCOL_MAJOR, PairingCredential, Registered, ReserveDomainRequest, ResetAccepted, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, WireGuardPublicKey,
 };
 use ployz_relay::{ClientError, DialCredential, Open, RegisterRequest, Relay, RelayClient};
 use tokio::{
@@ -29,6 +28,9 @@ use tokio::{
     task::JoinHandle,
 };
 use tonic::{Request, Response, Status, Streaming, transport::Server};
+
+#[path = "../support/inspect_telemetry.rs"]
+mod inspect_telemetry_fixture;
 
 pub const TOKEN: &str = "pmet_test";
 pub const PAIRING: &str = "pairing-secret";
@@ -296,24 +298,7 @@ impl MachineRpc for JoinDaemon {
             return Err(Status::invalid_argument("expected Inspect"));
         };
         let joined = self.inner.joined.load(Ordering::SeqCst);
-        let bridge = BridgeEndpointCapacity::new(1_024, 0);
-        let telemetry = match inspect.telemetry {
-            InspectTelemetry::None => None,
-            InspectTelemetry::BridgeCapacity => {
-                Some(TelemetryObservation::BridgeCapacity { bridge })
-            }
-            InspectTelemetry::Full => Some(TelemetryObservation::Full {
-                host: MachineTelemetry::new(
-                    0,
-                    0,
-                    1,
-                    0,
-                    ByteCapacity::default(),
-                    ByteCapacity::default(),
-                ),
-                bridge,
-            }),
-        };
+        let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         rpc_ok(MachineDetails {
             id: self.inner.registration.assigned_machine.id,
             phase: if joined {

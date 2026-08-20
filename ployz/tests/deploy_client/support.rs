@@ -15,21 +15,23 @@ use ployz::{
     deploy::PlanOptions,
 };
 use ployz_core::{
-    AdvertisedEndpoint, BridgeEndpointCapacity, ByteCapacity, ContainerCreated, ContainerDetails,
-    ContainerId, ContainerKind, ContainerList, ContainerPath, ContainerRuntimeObservation,
-    ContractDescription, DockerVolume, DockerVolumeId, DockerVolumeName, Domain, HealthObservation,
-    InspectTelemetry, LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages,
-    MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer, MachineTelemetry,
-    ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, ProjectName,
-    RequestedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference, TelemetryObservation, UpdateOrder, VolumeList, VolumeSource,
+    AdvertisedEndpoint, ContainerCreated, ContainerDetails, ContainerId, ContainerKind,
+    ContainerList, ContainerPath, ContainerRuntimeObservation, ContractDescription, DockerVolume,
+    DockerVolumeId, DockerVolumeName, Domain, HealthObservation, LocalMachinePhase, Machine,
+    MachineDetails, MachineId, MachineImages, MachineList, MachineName, MachineObservation,
+    MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation, OpaquePayload,
+    PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec, ResolvedUpdateConfig, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeList, VolumeSource,
     WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Request, Response, Status, Streaming, transport::Server};
+
+#[path = "../support/inspect_telemetry.rs"]
+mod inspect_telemetry_fixture;
 
 #[derive(Clone)]
 pub(super) struct DeployService {
@@ -237,24 +239,7 @@ impl MachineRpc for DeployService {
         let RpcRequestBody::Inspect(inspect) = request.body else {
             return Err(Status::invalid_argument("expected Inspect"));
         };
-        let bridge = BridgeEndpointCapacity::new(1_024, 0);
-        let telemetry = match inspect.telemetry {
-            InspectTelemetry::None => None,
-            InspectTelemetry::BridgeCapacity => {
-                Some(TelemetryObservation::BridgeCapacity { bridge })
-            }
-            InspectTelemetry::Full => Some(TelemetryObservation::Full {
-                host: MachineTelemetry::new(
-                    0,
-                    0,
-                    1,
-                    0,
-                    ByteCapacity::default(),
-                    ByteCapacity::default(),
-                ),
-                bridge,
-            }),
-        };
+        let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         encoded(RpcResponse::from(MachineDetails {
             id: machine_id,
             phase: LocalMachinePhase::Participating,
