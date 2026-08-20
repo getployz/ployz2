@@ -11,7 +11,12 @@ mod volume;
 #[cfg(test)]
 mod integration_tests;
 
-use std::{collections::HashMap, net::Ipv4Addr, path::PathBuf};
+use std::{
+    collections::HashMap,
+    net::Ipv4Addr,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use bollard::{
     Docker,
@@ -21,8 +26,8 @@ use bollard::{
 use ployz_core::{
     ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation,
-    HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages, ProjectName,
-    QualifiedService, RpcErrorCode, ServiceId, ServiceName, ValueError,
+    HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages, MachineTelemetry,
+    ProjectName, QualifiedService, RpcErrorCode, ServiceId, ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -97,6 +102,93 @@ impl LocalDocker {
             })
             .collect()
     }
+
+    async fn telemetry(&self) -> Result<MachineTelemetry, Error> {
+        let network = self
+            .client
+            .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
+            .await?;
+        let value = serde_json::to_value(network)?;
+        let configs = value
+            .pointer("/IPAM/Config")
+            .and_then(serde_json::Value::as_array);
+        let bridge_usable_endpoints = configs
+            .into_iter()
+            .flatten()
+            .filter_map(|config| {
+                config
+                    .get("Subnet")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|subnet| subnet.parse::<ipnet::Ipv4Net>().ok())
+                    .map(|subnet| {
+                        let addresses = 1_u64 << (32 - subnet.prefix_len());
+                        // Docker reserves the network, broadcast, and configured gateway.
+                        addresses.saturating_sub(3)
+                    })
+            })
+            .sum();
+        let bridge_attached_endpoints = value
+            .pointer("/Containers")
+            .and_then(serde_json::Value::as_object)
+            .map_or(0, |containers| containers.len() as u64);
+        let info = self.client.info().await?;
+        let docker_root = info
+            .docker_root_dir
+            .ok_or(Error::MissingField("Docker root directory"))?;
+        let (docker_root_total_bytes, docker_root_free_bytes) = filesystem_space(&docker_root)?;
+        let (memory_total_bytes, memory_available_bytes) = memory()?;
+        Ok(MachineTelemetry {
+            observed_at_unix_seconds: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_secs()),
+            bridge_usable_endpoints,
+            bridge_attached_endpoints,
+            bridge_free_endpoints: bridge_usable_endpoints
+                .saturating_sub(bridge_attached_endpoints),
+            managed_containers: self.managed_container_ids().await?.len() as u64,
+            cpu_count: std::thread::available_parallelism().map_or(0, |count| count.get() as u64),
+            load_average_milli: load_average_milli()?,
+            memory_total_bytes,
+            memory_available_bytes,
+            docker_root_total_bytes,
+            docker_root_free_bytes,
+        })
+    }
+}
+
+fn filesystem_space(path: &str) -> Result<(u64, u64), Error> {
+    let stat = nix::sys::statvfs::statvfs(path).map_err(std::io::Error::other)?;
+    Ok((
+        stat.blocks().saturating_mul(stat.fragment_size()),
+        stat.blocks_available().saturating_mul(stat.fragment_size()),
+    ))
+}
+
+fn memory() -> Result<(u64, u64), Error> {
+    let memory = std::fs::read_to_string("/proc/meminfo")?;
+    let value = |key| {
+        memory
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix(key)
+                    .and_then(|line| line.split_whitespace().next()?.parse::<u64>().ok())
+            })
+            .map(|kib| kib * 1024)
+            .ok_or(Error::MissingField(key))
+    };
+    Ok((value("MemTotal:")?, value("MemAvailable:")?))
+}
+
+fn load_average_milli() -> Result<u64, Error> {
+    let load = std::fs::read_to_string("/proc/loadavg")?;
+    let load = load
+        .split_whitespace()
+        .next()
+        .ok_or(Error::MissingField("load average"))?;
+    Ok((load
+        .parse::<f64>()
+        .map_err(|_| Error::MissingField("load average"))?
+        * 1000.0) as u64)
 }
 
 #[derive(Clone)]
@@ -167,6 +259,10 @@ impl ContainerRuntime {
             }
         }
         Ok(observations)
+    }
+
+    pub async fn telemetry(&self) -> Result<MachineTelemetry, Error> {
+        self.docker.telemetry().await
     }
 
     pub async fn inspect_managed(
@@ -514,6 +610,8 @@ fn container_address(inspected: &RawContainerInspect) -> Option<ContainerAddress
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("host telemetry failed: {0}")]
+    Io(#[from] std::io::Error),
     #[error("Docker operation failed: {0}")]
     Docker(#[from] bollard::errors::Error),
     #[error("Docker inspect JSON failed: {0}")]
@@ -582,6 +680,7 @@ impl Error {
             | Self::InvalidValue { .. }
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
+            | Self::Io(_)
             | Self::Json(_)
             | Self::Network(_)
             | Self::SpecStore(_)

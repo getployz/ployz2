@@ -182,6 +182,7 @@ pub struct InspectRequest {
     pub wireguard_port: u16,
     #[serde(default)]
     pub include_rtts: bool,
+    pub include_telemetry: bool,
 }
 
 impl Default for InspectRequest {
@@ -191,6 +192,7 @@ impl Default for InspectRequest {
             public_ip_override: None,
             wireguard_port: default_wireguard_port(),
             include_rtts: false,
+            include_telemetry: false,
         }
     }
 }
@@ -228,7 +230,7 @@ pub struct InitializeRequest {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub wireguard_mtu: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cloud_pairing: Option<CloudPairing>,
 }
 
@@ -634,6 +636,25 @@ pub struct MachineDetails {
     /// Stored Cloud Pairing is present. The Pairing Credential is not returned.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cloud_paired: bool,
+    /// Fresh host and Docker bridge telemetry, requested only by targeted inspect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<MachineTelemetry>,
+}
+
+/// Fresh operator telemetry from one Machine. It is not placement scoring data.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MachineTelemetry {
+    pub observed_at_unix_seconds: u64,
+    pub bridge_usable_endpoints: u64,
+    pub bridge_attached_endpoints: u64,
+    pub bridge_free_endpoints: u64,
+    pub managed_containers: u64,
+    pub cpu_count: u64,
+    pub load_average_milli: u64,
+    pub memory_total_bytes: u64,
+    pub memory_available_bytes: u64,
+    pub docker_root_total_bytes: u64,
+    pub docker_root_free_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
