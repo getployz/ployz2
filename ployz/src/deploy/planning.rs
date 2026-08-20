@@ -18,7 +18,7 @@ use super::{
 mod capacity;
 mod volumes;
 
-use capacity::{admit_operations, reject_impossible_replicas};
+use capacity::{CapacityBudget, reject_impossible_replicas};
 use volumes::{
     VolumePins, named_volume_uses, plan_volume_operations, prepare_shared_replicated_volumes,
     preserved_owned_volumes, reject_mixed_volume_modes, scope_requested,
@@ -53,6 +53,11 @@ struct Planned {
     preserved_volumes: Vec<PreservedVolume>,
     prune_refusal: Option<PruneRefusal>,
     warnings: Vec<DeployWarning>,
+}
+
+struct PlacementState<'snapshot> {
+    occupancy: BTreeMap<MachineId, usize>,
+    capacity: CapacityBudget<'snapshot>,
 }
 
 /// Plan removal of observer-visible compute for `project`.
@@ -205,7 +210,12 @@ fn assemble_plan(
     snapshot: &DeploySnapshot,
     warnings: Vec<DeployWarning>,
 ) -> Result<Planned, PlanError> {
-    reject_impossible_replicas(&bound.requested, snapshot, &intent.options)?;
+    reject_impossible_replicas(
+        &intent.project_name,
+        &bound.requested,
+        snapshot,
+        &intent.options,
+    )?;
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let volume_uses = named_volume_uses(&bound.requested);
     reject_mixed_volume_modes(&volume_uses)?;
@@ -213,7 +223,10 @@ fn assemble_plan(
     prepare_shared_replicated_volumes(&volume_uses, snapshot, &mut pins, &intent.options)?;
     let name_errors_with_service = bound.requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
-    let mut occupancy = BTreeMap::<MachineId, usize>::new();
+    let mut placement = PlacementState {
+        occupancy: BTreeMap::new(),
+        capacity: CapacityBudget::from_snapshot(snapshot),
+    };
     let mut service_operations = Vec::new();
     for spec in &bound.requested {
         service_operations.extend(
@@ -223,7 +236,7 @@ fn assemble_plan(
                 snapshot,
                 &services,
                 &mut pins,
-                &mut occupancy,
+                &mut placement,
                 &intent.options,
             )
             .map_err(|source| {
@@ -239,7 +252,6 @@ fn assemble_plan(
     if prune_refusal.is_none() {
         operations.extend(removal_operations(&services, &would_remove));
     }
-    admit_operations(&operations, &bound.requested, snapshot)?;
     Ok(Planned {
         operations,
         would_remove,
@@ -425,11 +437,10 @@ fn plan_one_service(
     snapshot: &DeploySnapshot,
     services: &[ServiceObservation],
     pins: &mut VolumePins,
-    occupancy: &mut BTreeMap<MachineId, usize>,
+    placement: &mut PlacementState<'_>,
     options: &PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, snapshot, options)?;
-    plan_volume_operations(requested, snapshot, pins, &mut machines)?;
     let identity = QualifiedService::new(project_name.clone(), requested.name.clone());
     let existing = services.iter().find(|service| service.identity == identity);
     let (service_id, current, hooks) = match existing {
@@ -450,6 +461,17 @@ fn plan_one_service(
             )
         }
     };
+    let change_peak = 1 + u64::from(requested.pre_deploy.is_some());
+    machines.retain(|machine| {
+        current.iter().any(|container| {
+            container.as_observation().machine_id == machine.machine.id
+                && is_up_to_date(container, requested, options)
+        }) || placement.capacity.fits(&machine.machine.id, change_peak)
+    });
+    if machines.is_empty() {
+        return Err(placement.capacity.error(requested));
+    }
+    plan_volume_operations(requested, snapshot, pins, &mut machines)?;
     let service_operations = match requested.mode {
         ServiceMode::Replicated { replicas } => plan_replicated(
             requested,
@@ -457,17 +479,17 @@ fn plan_one_service(
             current,
             machines,
             replicas.get() as usize,
-            occupancy,
+            placement,
             options,
-        ),
+        )?,
         ServiceMode::Global => plan_global(
             requested,
             &service_id,
             current,
             machines,
-            occupancy,
+            placement,
             options,
-        ),
+        )?,
     };
     let mut operations = pre_deploy_operations(requested, hooks, &service_operations);
     operations.extend(service_operations);
@@ -498,7 +520,7 @@ fn eligible_machines<'a>(
         .filter(|machine| {
             snapshot
                 .capacity
-                .telemetry()
+                .as_ref()
                 .is_none_or(|capacity| capacity.contains_key(&machine.machine.id))
         })
         .collect::<Vec<_>>();
@@ -655,14 +677,15 @@ fn plan_global(
     service_id: &ServiceId,
     current: &[ServiceContainer],
     machines: Vec<&MachineObservation>,
-    occupancy: &mut BTreeMap<MachineId, usize>,
+    placement: &mut PlacementState<'_>,
     options: &PlanOptions,
-) -> Vec<DeployOperation> {
+) -> Result<Vec<DeployOperation>, PlanError> {
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
+    let mut hook_pending = requested.pre_deploy.is_some();
 
     for machine in machines {
-        *occupancy.entry(machine.machine.id).or_default() += 1;
+        *placement.occupancy.entry(machine.machine.id).or_default() += 1;
         let on_machine = current
             .iter()
             .filter(|container| container.as_observation().machine_id == machine.machine.id)
@@ -682,6 +705,12 @@ fn plan_global(
             .find(|container| super::is_active_runtime(&container.as_observation().runtime))
         {
             let observation = container.as_observation();
+            let hook = u64::from(hook_pending);
+            if !placement.capacity.fits(&machine.machine.id, 1 + hook) {
+                return Err(placement.capacity.error(requested));
+            }
+            placement.capacity.consume(&machine.machine.id, hook);
+            hook_pending = false;
             used.insert(observation.container_id);
             for other in &on_machine {
                 let other_observation = other.as_observation();
@@ -708,6 +737,12 @@ fn plan_global(
                 skip_health_monitor: options.skip_health_monitor,
             }));
         } else {
+            let hook = u64::from(hook_pending);
+            if !placement.capacity.fits(&machine.machine.id, 1 + hook) {
+                return Err(placement.capacity.error(requested));
+            }
+            placement.capacity.consume(&machine.machine.id, 1 + hook);
+            hook_pending = false;
             operations.push(DeployOperation::RunContainer {
                 machine_id: machine.machine.id,
                 spec: resolve(
@@ -721,7 +756,7 @@ fn plan_global(
     }
 
     remove_unused(&mut operations, current, &used);
-    operations
+    Ok(operations)
 }
 
 fn plan_replicated(
@@ -730,9 +765,9 @@ fn plan_replicated(
     current: &[ServiceContainer],
     mut machines: Vec<&MachineObservation>,
     replicas: usize,
-    occupancy: &mut BTreeMap<MachineId, usize>,
+    placement: &mut PlacementState<'_>,
     options: &PlanOptions,
-) -> Vec<DeployOperation> {
+) -> Result<Vec<DeployOperation>, PlanError> {
     let mut by_machine = BTreeMap::<MachineId, Vec<&ServiceContainer>>::new();
     for container in current {
         by_machine
@@ -753,14 +788,48 @@ fn plan_replicated(
         (
             std::cmp::Reverse(up_to_date),
             std::cmp::Reverse(containers.map_or(0, Vec::len)),
-            occupancy.get(&machine.machine.id).copied().unwrap_or(0),
+            placement
+                .occupancy
+                .get(&machine.machine.id)
+                .copied()
+                .unwrap_or(0),
         )
     });
 
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
-    for machine in machines.iter().cycle().take(replicas) {
-        *occupancy.entry(machine.machine.id).or_default() += 1;
+    let mut cursor = 0;
+    let mut hook_pending = requested.pre_deploy.is_some();
+    for _ in 0..replicas {
+        let mut selected = None;
+        for _ in 0..machines.len() {
+            let machine = machines
+                .get(cursor % machines.len())
+                .copied()
+                .expect("eligible Machines are non-empty");
+            cursor += 1;
+            let existing = by_machine
+                .get(&machine.machine.id)
+                .and_then(|containers| containers.last())
+                .copied();
+            let changes =
+                existing.is_none_or(|container| !is_up_to_date(container, requested, options));
+            let hook = u64::from(changes && hook_pending);
+            let persistent = hook + u64::from(changes && existing.is_none());
+            let peak = hook + u64::from(changes);
+            if placement.capacity.fits(&machine.machine.id, peak) {
+                selected = Some((machine, changes, persistent));
+                break;
+            }
+        }
+        let Some((machine, changes, persistent)) = selected else {
+            return Err(placement.capacity.error(requested));
+        };
+        placement.capacity.consume(&machine.machine.id, persistent);
+        if changes {
+            hook_pending = false;
+        }
+        *placement.occupancy.entry(machine.machine.id).or_default() += 1;
         let existing = by_machine
             .get_mut(&machine.machine.id)
             .and_then(Vec::pop)
@@ -790,7 +859,7 @@ fn plan_replicated(
         }
     }
     remove_unused(&mut operations, current, &used);
-    operations
+    Ok(operations)
 }
 
 fn remove_unused(

@@ -12,8 +12,9 @@ use thiserror::Error;
 use crate::{
     AdvertisedEndpoint, CapabilityName, CloudPairing, ContainerId, ContainerKind,
     ContainerObservation, DockerVolume, LocalMachinePhase, Machine, MachineId, MachineLogService,
-    MachineName, MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
-    PublicIpDiscovery, ResolvedServiceSpec, RttObservation, WireGuardDevice, WireGuardPublicKey,
+    MachineName, MachineObservation, MachineRuntime, MachineTelemetry, MachineToken, MachineUpdate,
+    ProjectName, PublicIpDiscovery, ResolvedServiceSpec, RttObservation, WireGuardDevice,
+    WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
 
@@ -182,6 +183,7 @@ pub struct InspectRequest {
     pub wireguard_port: u16,
     #[serde(default)]
     pub include_rtts: bool,
+    /// Request fresh host and Docker bridge telemetry for targeted Inspect.
     #[serde(default)]
     pub include_telemetry: bool,
 }
@@ -640,33 +642,6 @@ pub struct MachineDetails {
     /// Fresh host and Docker bridge telemetry, requested only by targeted inspect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<MachineTelemetry>,
-}
-
-/// Fresh operator telemetry from one Machine. It is not placement scoring data.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct MachineTelemetry {
-    /// Unix timestamp when this observation began.
-    pub observed_at_unix_seconds: u64,
-    /// IPAM-derived bridge endpoints available to Containers.
-    pub bridge_usable_endpoints: u64,
-    /// Endpoints currently attached to the bridge.
-    pub bridge_attached_endpoints: u64,
-    /// Usable bridge endpoints not currently attached.
-    pub bridge_free_endpoints: u64,
-    /// Ployz-managed Docker Container count.
-    pub managed_containers: u64,
-    /// Host logical CPU count.
-    pub cpu_count: u64,
-    /// One-minute host load average multiplied by 1,000.
-    pub load_average_milli: u64,
-    /// Host memory total in bytes.
-    pub memory_total_bytes: u64,
-    /// Host memory available in bytes.
-    pub memory_available_bytes: u64,
-    /// Docker-root filesystem size in bytes.
-    pub docker_root_total_bytes: u64,
-    /// Docker-root filesystem free bytes.
-    pub docker_root_free_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

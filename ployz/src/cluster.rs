@@ -25,7 +25,7 @@ use crate::{
         stop_rpc_timeout, target_request,
     },
     context::{Connection, ConnectionSource, Transport},
-    deploy::{CapacityState, DeploySnapshot, ObservedDockerVolume},
+    deploy::{DeploySnapshot, ObservedDockerVolume},
     service::ContainerOperationFailure,
 };
 
@@ -633,11 +633,12 @@ pub(crate) fn snapshot_from_partial(
         container_omissions,
         volume_failures,
         volume_omissions,
-        capacity: CapacityState::observed(
+        capacity: Some(
             capacity
                 .successes
                 .into_iter()
-                .map(|success| (success.machine_id, success.value)),
+                .map(|success| (success.machine_id, success.value))
+                .collect(),
         ),
     }
 }

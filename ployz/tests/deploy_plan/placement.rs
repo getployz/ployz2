@@ -25,6 +25,118 @@ fn new_replicated_service_runs_the_requested_count_across_available_machines() {
 }
 
 #[test]
+fn capacity_filters_a_full_machine_without_rescoring_the_rest() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "full"), machine('2', "free")],
+            capacity: capacity([('1', 0), ('2', 1)]),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(run_machine_ids(&plan), [machine_id('2')]);
+}
+
+#[test]
+fn capacity_filters_before_new_volume_placement() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut requested, "data");
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "full"), machine('2', "free")],
+            capacity: capacity([('1', 0), ('2', 1)]),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::CreateVolume { machine_id: volume, .. },
+            DeployOperation::RunContainer { machine_id: container, .. }
+        ] if volume == &machine_id('2') && container == volume
+    ));
+}
+
+#[test]
+fn capacity_distinguishes_sufficient_known_unknown_and_insufficient() {
+    let one = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let two = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    let machines = vec![machine('1', "known"), machine('2', "unknown")];
+
+    assert!(
+        plan_deploy(
+            [&one],
+            &DeploySnapshot {
+                machines: machines.clone(),
+                capacity: capacity([('1', 1)]),
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        plan_deploy(
+            [&two],
+            &DeploySnapshot {
+                machines: machines.clone(),
+                capacity: capacity([('1', 1)]),
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        Err(PlanError::CapacityUnknown)
+    );
+    assert_eq!(
+        plan_deploy(
+            [&one],
+            &DeploySnapshot {
+                machines,
+                capacity: capacity([('1', 0), ('2', 0)]),
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        Err(PlanError::InsufficientCapacity)
+    );
+}
+
+#[test]
+fn huge_replica_request_is_rejected_before_planning_operations() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(u32::MAX).unwrap(),
+    });
+    assert_eq!(
+        plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "first")],
+                capacity: capacity([('1', 1)]),
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        Err(PlanError::InsufficientCapacity)
+    );
+}
+
+#[test]
 fn new_container_keeps_an_explicit_stop_first_order_in_its_resolved_spec() {
     let mut requested = requested(ServiceMode::Global);
     requested.update.order = Some(UpdateOrder::StopFirst);
@@ -707,6 +819,40 @@ fn service_identity_changes_equal_priority_machine_order() {
     };
 
     assert_ne!(order("alpha"), order("bravo"));
+}
+
+#[test]
+fn ample_capacity_preserves_the_existing_shuffle_order() {
+    let requested = replicated("api", 3);
+    let machines = cluster(['1', '2', '3', '4']);
+    let options = PlanOptions {
+        placement_seed: 7,
+        ..PlanOptions::default()
+    };
+    let without_capacity = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: machines.clone(),
+            ..Default::default()
+        },
+        options.clone(),
+    )
+    .unwrap();
+    let with_capacity = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines,
+            capacity: capacity([('1', 10), ('2', 10), ('3', 10), ('4', 10)]),
+            ..Default::default()
+        },
+        options,
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_machine_ids(&with_capacity),
+        run_machine_ids(&without_capacity)
+    );
 }
 
 #[test]

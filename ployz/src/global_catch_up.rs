@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use ployz_core::{
     ContainerRuntimeObservation, EnsureGlobalSlotRequest, InspectRequest, Machine, MachineTarget,
-    QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceMode, ServiceObservation,
-    machine_matches_placement, op,
+    MachineTelemetry, QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceMode,
+    ServiceObservation, machine_matches_placement, op,
 };
 
 use crate::{
@@ -175,15 +175,8 @@ pub async fn catch_up_globals(
             )
             .await
             .map_err(|error| CatchUpError::Other(error.into()))?;
-        let telemetry = details.telemetry.ok_or_else(|| {
-            CatchUpError::Other(Failure::usage(
-                "capacity unknown: Machine did not return bridge telemetry",
-            ))
-        })?;
-        if telemetry.bridge_free_endpoints < slots.len() as u64 {
-            return Err(CatchUpError::Other(Failure::usage(
-                "insufficient capacity on observed eligible Machines",
-            )));
+        if let Some(message) = global_capacity_error(slots.len(), details.telemetry.as_ref()) {
+            return Err(CatchUpError::Other(Failure::usage(message)));
         }
     }
     let expect_caddy = caddy_expected(&services, this_machine, skip_caddy, &slots);
@@ -228,6 +221,19 @@ pub async fn catch_up_globals(
     Ok(())
 }
 
+fn global_capacity_error(
+    required: usize,
+    telemetry: Option<&MachineTelemetry>,
+) -> Option<&'static str> {
+    match telemetry {
+        None if required > 0 => Some("capacity unknown: Machine did not return bridge telemetry"),
+        Some(telemetry) if telemetry.bridge_free_endpoints < required as u64 => {
+            Some("insufficient capacity on observed eligible Machines")
+        }
+        None | Some(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{net::Ipv6Addr, num::NonZeroU32};
@@ -241,6 +247,34 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn global_capacity_rejects_unknown_and_insufficient_before_creation() {
+        assert_eq!(
+            global_capacity_error(1, None),
+            Some("capacity unknown: Machine did not return bridge telemetry")
+        );
+        assert_eq!(
+            global_capacity_error(
+                2,
+                Some(&MachineTelemetry {
+                    bridge_free_endpoints: 1,
+                    ..Default::default()
+                })
+            ),
+            Some("insufficient capacity on observed eligible Machines")
+        );
+        assert_eq!(
+            global_capacity_error(
+                1,
+                Some(&MachineTelemetry {
+                    bridge_free_endpoints: 1,
+                    ..Default::default()
+                })
+            ),
+            None
+        );
+    }
 
     #[test]
     fn two_joiners_each_plan_only_their_own_slot() {

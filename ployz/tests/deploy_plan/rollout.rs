@@ -75,7 +75,7 @@ fn replacement_requires_one_temporary_endpoint() {
 }
 
 #[test]
-fn hook_releases_its_temporary_endpoint_before_replacement() {
+fn hook_and_replacement_each_require_a_spare_endpoint() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
@@ -88,14 +88,18 @@ fn hook_releases_its_temporary_endpoint_before_replacement() {
     });
     let mut current = requested.clone();
     current.container.image = "ghcr.io/getployz/api:old".into();
-    let snapshot = DeploySnapshot {
+    let snapshot = |free| DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![container('b', '1', &current, &service_id('a'))],
-        capacity: capacity([('1', 1)]),
+        capacity: capacity([('1', free)]),
         ..Default::default()
     };
 
-    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+    assert_eq!(
+        plan_deploy([&requested], &snapshot(1), PlanOptions::default()),
+        Err(PlanError::InsufficientCapacity)
+    );
+    let plan = plan_deploy([&requested], &snapshot(2), PlanOptions::default()).unwrap();
     assert!(matches!(
         operations(&plan).as_slice(),
         [

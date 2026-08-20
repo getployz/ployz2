@@ -5,9 +5,9 @@ pub(super) use std::{
 };
 
 pub(super) use ployz::deploy::{
-    CapacityState, DeployIntent, DeployOperation, DeployPreview, DeploySnapshot,
-    EliminatingConstraint, EliminatingConstraints, IngressContext, ObservedDockerVolume, PlanError,
-    PlanOptions, ReplacementOperation, ServiceAttempt, compare_specs, preview_deploy,
+    DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, EliminatingConstraint,
+    EliminatingConstraints, IngressContext, ObservedDockerVolume, PlanError, PlanOptions,
+    ReplacementOperation, ServiceAttempt, compare_specs, preview_deploy,
 };
 
 pub(super) fn plan_deploy<'a>(
@@ -126,25 +126,24 @@ pub(super) fn machine_id(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
 }
 
-pub(super) fn capacity(entries: impl IntoIterator<Item = (char, u64)>) -> CapacityState {
-    CapacityState::observed(entries.into_iter().map(|(machine, free)| {
-        (
-            machine_id(machine),
-            MachineTelemetry {
-                observed_at_unix_seconds: 1,
-                bridge_usable_endpoints: free,
-                bridge_attached_endpoints: 0,
-                bridge_free_endpoints: free,
-                managed_containers: 0,
-                cpu_count: 1,
-                load_average_milli: 0,
-                memory_total_bytes: 0,
-                memory_available_bytes: 0,
-                docker_root_total_bytes: 0,
-                docker_root_free_bytes: 0,
-            },
-        )
-    }))
+pub(super) fn capacity(
+    entries: impl IntoIterator<Item = (char, u64)>,
+) -> Option<BTreeMap<MachineId, MachineTelemetry>> {
+    Some(
+        entries
+            .into_iter()
+            .map(|(machine, free)| {
+                (
+                    machine_id(machine),
+                    MachineTelemetry {
+                        bridge_usable_endpoints: free,
+                        bridge_free_endpoints: free,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect(),
+    )
 }
 
 pub(super) fn service_id(hex: char) -> ServiceId {
