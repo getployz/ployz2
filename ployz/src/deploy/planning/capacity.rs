@@ -60,26 +60,24 @@ impl<'snapshot> CapacityBudget<'snapshot> {
     }
 
     pub(super) fn fits(&self, machine_id: &MachineId, peak: u64) -> bool {
-        self.free
-            .as_ref()
-            .is_none_or(|free| free.get(machine_id).is_some_and(|free| *free >= peak))
+        peak == 0
+            || self
+                .free
+                .as_ref()
+                .is_none_or(|free| free.get(machine_id).is_some_and(|free| *free >= peak))
     }
 
     pub(super) fn fits_demand(&self, machine_id: &MachineId, demand: EndpointDemand) -> bool {
         self.fits(machine_id, demand.peak)
     }
 
-    pub(super) fn known(&self, machine_id: &MachineId) -> bool {
-        self.free
-            .as_ref()
-            .is_none_or(|free| free.contains_key(machine_id))
-    }
-
     pub(super) fn reserve(&mut self, machine_id: &MachineId, demand: EndpointDemand) -> bool {
         if !self.fits_demand(machine_id, demand) {
             return false;
         }
-        if let Some(free) = self.free.as_mut() {
+        if demand.persistent > 0
+            && let Some(free) = self.free.as_mut()
+        {
             *free
                 .get_mut(machine_id)
                 .expect("capacity candidates have fresh telemetry") -= demand.persistent;

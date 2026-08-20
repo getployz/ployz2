@@ -455,10 +455,6 @@ fn plan_one_service(
             )
         }
     };
-    machines.retain(|machine| placement.capacity.known(&machine.machine.id));
-    if machines.is_empty() {
-        return Err(placement.capacity.error(requested));
-    }
     machines.retain(|machine| {
         current.iter().any(|container| {
             container.as_observation().machine_id == machine.machine.id

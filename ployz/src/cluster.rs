@@ -637,7 +637,7 @@ pub(crate) fn snapshot_from_partial(
         container_omissions,
         volume_failures,
         volume_omissions,
-        capacity: Some(capacity.into_iter().collect()),
+        capacity: Some(capacity),
     }
 }
 

@@ -37,10 +37,10 @@ pub(super) async fn observe(
         .await
         .into_iter()
         .filter_map(|(machine_id, response)| {
-            response
-                .ok()?
-                .bridge_capacity
-                .map(|capacity| (machine_id, capacity))
+            response.ok()?.telemetry.map(|telemetry| {
+                let capacity = telemetry.bridge().clone();
+                (machine_id, capacity)
+            })
         })
         .collect()
 }

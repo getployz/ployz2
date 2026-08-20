@@ -10,11 +10,11 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    AdvertisedEndpoint, BridgeEndpointCapacity, CapabilityName, CloudPairing, ContainerId,
-    ContainerKind, ContainerObservation, DockerVolume, LocalMachinePhase, Machine, MachineId,
-    MachineLogService, MachineName, MachineObservation, MachineRuntime, MachineTelemetry,
-    MachineToken, MachineUpdate, ProjectName, PublicIpDiscovery, ResolvedServiceSpec,
-    RttObservation, WireGuardDevice, WireGuardPublicKey,
+    AdvertisedEndpoint, CapabilityName, CloudPairing, ContainerId, ContainerKind,
+    ContainerObservation, DockerVolume, InspectTelemetry, LocalMachinePhase, Machine, MachineId,
+    MachineLogService, MachineName, MachineObservation, MachineRuntime, MachineToken,
+    MachineUpdate, ProjectName, PublicIpDiscovery, ResolvedServiceSpec, RttObservation,
+    TelemetryObservation, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
 
@@ -186,19 +186,6 @@ pub struct InspectRequest {
     /// Fresh telemetry to collect for this inspection.
     #[serde(default)]
     pub telemetry: InspectTelemetry,
-}
-
-/// Fresh telemetry requested from a Machine inspection.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InspectTelemetry {
-    /// Do not probe telemetry.
-    #[default]
-    None,
-    /// Probe only Ployz bridge endpoint capacity for admission.
-    BridgeCapacity,
-    /// Probe host telemetry and Ployz bridge endpoint capacity.
-    Full,
 }
 
 impl Default for InspectRequest {
@@ -652,12 +639,9 @@ pub struct MachineDetails {
     /// Stored Cloud Pairing is present. The Pairing Credential is not returned.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cloud_paired: bool,
-    /// Fresh host telemetry, requested only by targeted inspect.
+    /// Fresh telemetry requested only by targeted inspect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub telemetry: Option<MachineTelemetry>,
-    /// Fresh Ployz bridge capacity, requested only by targeted inspect.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bridge_capacity: Option<BridgeEndpointCapacity>,
+    pub telemetry: Option<TelemetryObservation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

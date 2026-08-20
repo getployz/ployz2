@@ -154,8 +154,9 @@ async fn wait_for_observations(
 ///
 /// # Errors
 ///
-/// Fails when listing Services fails, when expected Caddy cannot be placed, or
-/// when Caddy was expected and is still not running after catch-up. Other
+/// Fails when listing Services or live bridge capacity fails, when observed
+/// capacity is unknown or insufficient, when expected Caddy cannot be placed,
+/// or when Caddy was expected and is still not running after catch-up. Other
 /// Global failures are warnings.
 pub async fn catch_up_globals(
     client: &mut Client,
@@ -176,7 +177,13 @@ pub async fn catch_up_globals(
             )
             .await
             .map_err(|error| CatchUpError::Other(error.into()))?;
-        if let Some(error) = global_capacity_error(slots.len(), details.bridge_capacity.as_ref()) {
+        if let Some(error) = global_capacity_error(
+            slots.len(),
+            details
+                .telemetry
+                .as_ref()
+                .map(|telemetry| telemetry.bridge()),
+        ) {
             return Err(CatchUpError::Other(Failure::usage(error.to_string())));
         }
     }

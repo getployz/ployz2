@@ -180,6 +180,11 @@ impl ContainerRuntime {
         self.docker.telemetry().await
     }
 
+    /// Read fresh Ployz bridge endpoint capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Ployz bridge.
     pub(crate) async fn bridge_capacity(&self) -> Result<BridgeEndpointCapacity, Error> {
         self.docker.bridge_capacity().await
     }

@@ -190,7 +190,9 @@ impl LocalMachine {
     /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned,
     /// [`Error::Network`] when endpoint discovery fails, [`Error::Cluster`]
     /// when store version or RTT lookup fails, and [`Error::ClusterUnavailable`]
-    /// when RTTs are requested without a Cluster.
+    /// when RTTs are requested without a Cluster. Returns
+    /// [`Error::DockerUnavailable`] when requested telemetry cannot reach Docker,
+    /// or a Docker error when a requested telemetry probe fails.
     pub async fn inspect(&self, request: InspectRequest) -> Result<MachineDetails, Error> {
         let record = self.record()?;
         let advertised_endpoints = if !request.advertised_endpoints.is_empty() {
@@ -217,17 +219,19 @@ impl LocalMachine {
         } else {
             Vec::new()
         };
-        let (telemetry, bridge_capacity) = match request.telemetry {
-            ployz_core::InspectTelemetry::None => (None, None),
+        let telemetry = match request.telemetry {
+            ployz_core::InspectTelemetry::None => None,
             ployz_core::InspectTelemetry::BridgeCapacity => {
                 let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-                (None, Some(containers.bridge_capacity().await?))
+                Some(ployz_core::TelemetryObservation::BridgeCapacity {
+                    bridge: containers.bridge_capacity().await?,
+                })
             }
             ployz_core::InspectTelemetry::Full => {
                 let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-                let (telemetry, bridge_capacity) =
+                let (host, bridge) =
                     tokio::try_join!(containers.telemetry(), containers.bridge_capacity())?;
-                (Some(telemetry), Some(bridge_capacity))
+                Some(ployz_core::TelemetryObservation::Full { host, bridge })
             }
         };
         Ok(MachineDetails {
@@ -240,7 +244,6 @@ impl LocalMachine {
             rtts,
             cloud_paired: record.cloud_pairing.is_some(),
             telemetry,
-            bridge_capacity,
         })
     }
 

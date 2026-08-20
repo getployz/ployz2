@@ -5,8 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 /// Consistent usable, attached, and free endpoint counts for the Ployz bridge.
 ///
 /// Attached endpoints may exceed the currently usable IPAM range when live
-/// Docker state is overcommitted. In that state free capacity is zero and
-/// [`Self::overcommitted_endpoints`] reports the excess.
+/// Docker state is overcommitted. In that state free capacity is zero.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct BridgeEndpointCapacity {
     #[serde(rename = "bridge_usable_endpoints")]
@@ -45,13 +44,19 @@ impl BridgeEndpointCapacity {
     pub fn free_endpoints(&self) -> u64 {
         self.free_endpoints
     }
+}
 
-    /// Attached endpoints beyond the currently usable IPAM range.
-    #[must_use]
-    pub fn overcommitted_endpoints(&self) -> u64 {
-        self.attached_endpoints
-            .saturating_sub(self.usable_endpoints)
-    }
+/// Fresh telemetry requested from a Machine inspection.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectTelemetry {
+    /// Do not probe telemetry.
+    #[default]
+    None,
+    /// Probe only Ployz bridge endpoint capacity for admission.
+    BridgeCapacity,
+    /// Probe host telemetry and Ployz bridge endpoint capacity.
+    Full,
 }
 
 impl<'de> Deserialize<'de> for BridgeEndpointCapacity {
@@ -98,6 +103,34 @@ pub struct MachineTelemetry {
 pub struct ByteCapacity {
     total: u64,
     available: u64,
+}
+
+/// Fresh telemetry returned by a requested Machine inspection.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "scope")]
+pub enum TelemetryObservation {
+    /// Only bridge endpoint capacity was requested.
+    BridgeCapacity {
+        /// Fresh Ployz bridge endpoint capacity.
+        bridge: BridgeEndpointCapacity,
+    },
+    /// Host telemetry and bridge endpoint capacity were requested together.
+    Full {
+        /// Fresh host telemetry.
+        host: MachineTelemetry,
+        /// Fresh Ployz bridge endpoint capacity.
+        bridge: BridgeEndpointCapacity,
+    },
+}
+
+impl TelemetryObservation {
+    /// Fresh Ployz bridge endpoint capacity included in either observation.
+    #[must_use]
+    pub fn bridge(&self) -> &BridgeEndpointCapacity {
+        match self {
+            Self::BridgeCapacity { bridge } | Self::Full { bridge, .. } => bridge,
+        }
+    }
 }
 
 impl ByteCapacity {
@@ -214,13 +247,6 @@ mod tests {
     }
 
     #[test]
-    fn overcommitted_endpoint_counts_are_explicit() {
-        let capacity = BridgeEndpointCapacity::new(1, 3);
-        assert_eq!(capacity.free_endpoints(), 0);
-        assert_eq!(capacity.overcommitted_endpoints(), 2);
-    }
-
-    #[test]
     fn inconsistent_machine_byte_counts_cannot_deserialize() {
         assert!(
             serde_json::from_str::<MachineTelemetry>(
@@ -228,5 +254,10 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn byte_capacity_rejects_available_above_total() {
+        assert_eq!(ByteCapacity::new(1, 2), None);
     }
 }

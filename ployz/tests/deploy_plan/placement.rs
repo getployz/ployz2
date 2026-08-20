@@ -214,6 +214,27 @@ fn matching_running_container_is_left_untouched() {
 }
 
 #[test]
+fn unchanged_replica_needs_no_capacity_observation() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let current_service_id = service_id('a');
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "unknown")],
+        containers: vec![container('b', '1', &requested, &current_service_id)],
+        capacity: capacity([]),
+        ..Default::default()
+    };
+
+    assert!(
+        plan_deploy([&requested], &snapshot, PlanOptions::default())
+            .unwrap()
+            .operations
+            .is_empty()
+    );
+}
+
+#[test]
 fn changed_running_container_is_replaced_on_its_machine() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
