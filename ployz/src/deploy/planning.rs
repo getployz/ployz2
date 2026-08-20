@@ -461,10 +461,25 @@ fn plan_one_service(
             )
         }
     };
-    let reservation = placement.reservation(&requested.name);
+    let reservation = placement.take_reservation(&requested.name);
     let mut capacity_error = None;
     if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
         constrain_volume_candidates(requested, snapshot, pins, &mut machines)?;
+        let ServiceMode::Replicated { replicas } = requested.mode else {
+            unreachable!("replicated branch has replicated mode")
+        };
+        let up_to_date = current
+            .iter()
+            .filter(|container| {
+                machines
+                    .iter()
+                    .any(|machine| machine.machine.id == container.as_observation().machine_id)
+                    && is_up_to_date(container, requested, options)
+            })
+            .count();
+        if requested.pre_deploy.is_some() && up_to_date < replicas.get() as usize {
+            placement.release_hooks(hooks);
+        }
         let relevant = machines
             .iter()
             .map(|machine| machine.machine.id)
@@ -492,10 +507,6 @@ fn plan_one_service(
                 admission: reservation.unwrap_or_else(|| CapacityAdmission::Pending {
                     error: capacity_error.expect("unreserved capacity has relevant Machines"),
                 }),
-                reclaimable_hooks: hooks
-                    .iter()
-                    .map(|hook| hook.as_observation().machine_id)
-                    .collect(),
             },
             placement,
             options,

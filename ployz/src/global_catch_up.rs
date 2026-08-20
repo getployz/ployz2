@@ -19,6 +19,7 @@ use crate::{
 pub struct GlobalCatchUpSlot {
     pub identity: QualifiedService,
     pub spec: ResolvedServiceSpec,
+    creates_endpoint: bool,
 }
 
 /// Catch-up failed. Caddy failures fail the membership command.
@@ -123,15 +124,17 @@ fn slot_for(
     if !machine_matches_placement(this_machine, &spec.placement) {
         return None;
     }
-    if service.containers.iter().any(|container| {
+    let local = service.containers.iter().find(|container| {
         let observation = container.as_observation();
-        observation.machine_id == this_machine.id && is_running(&observation.runtime)
-    }) {
+        observation.machine_id == this_machine.id
+    });
+    if local.is_some_and(|container| is_running(&container.as_observation().runtime)) {
         return None;
     }
     Some(GlobalCatchUpSlot {
         identity: service.identity.clone(),
         spec: spec.clone(),
+        creates_endpoint: local.is_none(),
     })
 }
 
@@ -215,9 +218,10 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
 ) -> Result<(), CatchUpError> {
     let services = wait_for_observations(client, skip_caddy).await?;
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
-    if !slots.is_empty() {
+    let endpoint_creates = slots.iter().filter(|slot| slot.creates_endpoint).count();
+    if endpoint_creates > 0 {
         let capacity = client.bridge_capacity(&this_machine.id).await?;
-        if let Some(error) = endpoint_capacity_error(slots.len(), capacity.as_ref()) {
+        if let Some(error) = endpoint_capacity_error(endpoint_creates, capacity.as_ref()) {
             return Err(CatchUpError::Other(Failure::usage(error.to_string())));
         }
     }
@@ -304,6 +308,7 @@ mod tests {
                 running_on(&founder, 'a'),
             )],
             capacity: None,
+            capacity_calls: Cell::new(0),
             ensure_calls: Cell::new(0),
         };
 
@@ -318,6 +323,7 @@ mod tests {
     struct FakeCatchUpClient {
         services: Vec<ServiceObservation>,
         capacity: Option<BridgeEndpointCapacity>,
+        capacity_calls: Cell<usize>,
         ensure_calls: Cell<usize>,
     }
 
@@ -332,6 +338,7 @@ mod tests {
             &self,
             _machine_id: &MachineId,
         ) -> Result<Option<BridgeEndpointCapacity>, CatchUpError> {
+            self.capacity_calls.set(self.capacity_calls.get() + 1);
             Ok(self.capacity.clone())
         }
 
@@ -343,6 +350,27 @@ mod tests {
             self.ensure_calls.set(self.ensure_calls.get() + 1);
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn restart_only_catch_up_does_not_require_a_free_endpoint() {
+        let joiner = machine('1', "joiner");
+        let mut client = FakeCatchUpClient {
+            services: vec![global_service(
+                qualified("app", "api"),
+                'a',
+                Placement::default(),
+                created_on(&joiner, 'a'),
+            )],
+            capacity: None,
+            capacity_calls: Cell::new(0),
+            ensure_calls: Cell::new(0),
+        };
+
+        catch_up_globals(&mut client, &joiner, true).await.unwrap();
+
+        assert_eq!(client.capacity_calls.get(), 0);
+        assert_eq!(client.ensure_calls.get(), 1);
     }
 
     #[test]

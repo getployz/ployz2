@@ -15,11 +15,7 @@ use super::{DeployOperation, DeploySnapshot, PlanError, PlanOptions, Replacement
 pub(super) struct PlacementState {
     occupancy: BTreeMap<MachineId, usize>,
     capacity: CapacityBudget,
-    reservations: BTreeMap<ServiceName, CapacityReservation>,
-}
-
-struct CapacityReservation {
-    hook_machine: Option<MachineId>,
+    reservations: BTreeMap<ServiceName, ReplicatedCapacityReservation>,
 }
 
 impl PlacementState {
@@ -45,21 +41,15 @@ impl PlacementState {
 
     pub(super) fn add_reservations(
         &mut self,
-        reservations: impl IntoIterator<Item = (ServiceName, Option<MachineId>)>,
+        reservations: impl IntoIterator<Item = (ServiceName, ReplicatedCapacityReservation)>,
     ) {
-        self.reservations.extend(
-            reservations
-                .into_iter()
-                .map(|(service, hook_machine)| (service, CapacityReservation { hook_machine })),
-        );
+        self.reservations.extend(reservations);
     }
 
-    pub(super) fn reservation(&self, service: &ServiceName) -> Option<CapacityAdmission> {
+    pub(super) fn take_reservation(&mut self, service: &ServiceName) -> Option<CapacityAdmission> {
         self.reservations
-            .get(service)
-            .map(|reservation| CapacityAdmission::Reserved {
-                hook_machine: reservation.hook_machine,
-            })
+            .remove(service)
+            .map(|reservation| CapacityAdmission::Reserved { reservation })
     }
 
     pub(super) fn capacity_error_for<'a>(
@@ -67,6 +57,10 @@ impl PlacementState {
         machine_ids: impl IntoIterator<Item = &'a MachineId>,
     ) -> PlanError {
         self.capacity.error_for(machine_ids)
+    }
+
+    pub(super) fn release_hooks(&mut self, hooks: &[HookContainer]) {
+        release_hooks(&mut self.capacity, hooks);
     }
 }
 
@@ -79,13 +73,24 @@ pub(super) fn plan_global(
     placement: &mut PlacementState,
     options: &PlanOptions,
 ) -> Result<(Vec<DeployOperation>, Option<MachineId>), PlanError> {
-    let reclaimable_hooks = hooks
-        .iter()
-        .map(|hook| hook.as_observation().machine_id)
-        .collect::<BTreeSet<_>>();
+    let has_changes = machines.iter().any(|machine| {
+        !matches!(
+            global_endpoint_operation(current, machine.machine.id, requested, options),
+            EndpointOperation::Unchanged
+        )
+    });
+    if requested.pre_deploy.is_some() && has_changes {
+        release_hooks(&mut placement.capacity, hooks);
+    }
     let capacity_error = placement
         .capacity
-        .error_for(machines.iter().map(|machine| &machine.machine.id));
+        .error_for(machines.iter().filter_map(|machine| {
+            (!matches!(
+                global_endpoint_operation(current, machine.machine.id, requested, options),
+                EndpointOperation::Unchanged
+            ))
+            .then_some(&machine.machine.id)
+        }));
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
     let hook_machine = requested.pre_deploy.as_ref().and_then(|_| {
@@ -95,24 +100,12 @@ pub(super) fn plan_global(
             (!matches!(operation, EndpointOperation::Unchanged)
                 && placement.capacity.fits_demand(
                     &machine.machine.id,
-                    EndpointDemand::for_operation(
-                        operation,
-                        true,
-                        reclaimable_hooks.contains(&machine.machine.id),
-                    ),
+                    EndpointDemand::for_operation(operation, true),
                 ))
             .then_some(machine.machine.id)
         })
     });
-    if requested.pre_deploy.is_some()
-        && hook_machine.is_none()
-        && machines.iter().any(|machine| {
-            !matches!(
-                global_endpoint_operation(current, machine.machine.id, requested, options),
-                EndpointOperation::Unchanged
-            )
-        })
-    {
+    if requested.pre_deploy.is_some() && hook_machine.is_none() && has_changes {
         return Err(capacity_error.clone());
     }
 
@@ -133,7 +126,6 @@ pub(super) fn plan_global(
             let demand = EndpointDemand::for_operation(
                 EndpointOperation::Replace,
                 hook_machine == Some(machine_id),
-                reclaimable_hooks.contains(&machine_id),
             );
             if !placement.capacity.reserve(&machine_id, demand) {
                 return Err(capacity_error.clone());
@@ -167,7 +159,6 @@ pub(super) fn plan_global(
             let demand = EndpointDemand::for_operation(
                 EndpointOperation::Create,
                 hook_machine == Some(machine_id),
-                reclaimable_hooks.contains(&machine_id),
             );
             if !placement.capacity.reserve(&machine_id, demand) {
                 return Err(capacity_error.clone());
@@ -216,15 +207,29 @@ fn on_machine(
 }
 
 pub(super) enum CapacityAdmission {
-    Pending { error: PlanError },
-    Reserved { hook_machine: Option<MachineId> },
+    Pending {
+        error: PlanError,
+    },
+    Reserved {
+        reservation: ReplicatedCapacityReservation,
+    },
+}
+
+pub(super) struct ReplicatedCapacityReservation {
+    slots: Vec<ReservedReplica>,
+    hook_machine: Option<MachineId>,
+}
+
+struct ReservedReplica {
+    machine_id: MachineId,
+    operation: EndpointOperation,
+    demand: EndpointDemand,
 }
 
 pub(super) struct ReplicatedPlacement<'a> {
     pub(super) machines: Vec<&'a MachineObservation>,
     pub(super) replicas: usize,
     pub(super) admission: CapacityAdmission,
-    pub(super) reclaimable_hooks: BTreeSet<MachineId>,
 }
 
 pub(super) fn plan_replicated(
@@ -239,7 +244,6 @@ pub(super) fn plan_replicated(
         mut machines,
         replicas,
         admission,
-        reclaimable_hooks,
     } = target;
     let mut by_machine = BTreeMap::<MachineId, Vec<&ServiceContainer>>::new();
     for container in current {
@@ -285,40 +289,50 @@ pub(super) fn plan_replicated(
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
     let mut cursor = 0;
-    let capacity_reserved = matches!(&admission, CapacityAdmission::Reserved { .. });
-    let mut hook_pending = requested.pre_deploy.is_some() && !capacity_reserved;
-    let mut hook_machine = match &admission {
-        CapacityAdmission::Pending { .. } => None,
-        CapacityAdmission::Reserved { hook_machine } => *hook_machine,
+    let (pending_error, mut reserved_slots, mut hook_machine) = match admission {
+        CapacityAdmission::Pending { error } => (Some(error), None, None),
+        CapacityAdmission::Reserved { reservation } => (
+            None,
+            Some(reservation.slots.into_iter()),
+            reservation.hook_machine,
+        ),
     };
+    let capacity_reserved = reserved_slots.is_some();
+    let mut hook_pending = requested.pre_deploy.is_some() && !capacity_reserved;
     for _ in 0..replicas {
-        let mut selected = None;
-        for _ in 0..machines.len() {
+        let selected = if let Some(slots) = reserved_slots.as_mut() {
+            let slot = slots
+                .next()
+                .expect("capacity reservation has one slot per replica");
             let machine = machines
-                .get(cursor % machines.len())
+                .iter()
+                .find(|machine| machine.machine.id == slot.machine_id)
                 .copied()
-                .expect("eligible Machines are non-empty");
-            cursor += 1;
-            let existing = by_machine
-                .get(&machine.machine.id)
-                .and_then(|containers| containers.last())
-                .copied();
-            let operation = replicated_operation(existing, requested, options);
-            let demand = EndpointDemand::for_operation(
-                operation,
-                hook_pending,
-                reclaimable_hooks.contains(&machine.machine.id),
-            );
-            if capacity_reserved || placement.capacity.fits_demand(&machine.machine.id, demand) {
-                selected = Some((machine, demand));
-                break;
+                .expect("reserved Machine remains volume-eligible");
+            Some((machine, slot.operation, slot.demand))
+        } else {
+            let mut selected = None;
+            for _ in 0..machines.len() {
+                let machine = machines
+                    .get(cursor % machines.len())
+                    .copied()
+                    .expect("eligible Machines are non-empty");
+                cursor += 1;
+                let existing = by_machine
+                    .get(&machine.machine.id)
+                    .and_then(|containers| containers.last())
+                    .copied();
+                let operation = replicated_operation(existing, requested, options);
+                let demand = EndpointDemand::for_operation(operation, hook_pending);
+                if placement.capacity.fits_demand(&machine.machine.id, demand) {
+                    selected = Some((machine, operation, demand));
+                    break;
+                }
             }
-        }
-        let Some((machine, demand)) = selected else {
-            let CapacityAdmission::Pending { error } = admission else {
-                unreachable!("reserved capacity fits its projected placement")
-            };
-            return Err(error);
+            selected
+        };
+        let Some((machine, operation, demand)) = selected else {
+            return Err(pending_error.expect("only unreserved placement can exhaust capacity"));
         };
         if !capacity_reserved {
             placement.capacity.reserve(&machine.machine.id, demand);
@@ -334,9 +348,9 @@ pub(super) fn plan_replicated(
             .inspect(|container| {
                 used.insert(container.as_observation().container_id);
             });
-        match existing {
-            Some(container) if is_up_to_date(container, requested, options) => {}
-            Some(container) => {
+        match (operation, existing) {
+            (EndpointOperation::Unchanged, Some(_)) => {}
+            (EndpointOperation::Replace, Some(container)) => {
                 let order = determine_update_order(container, requested);
                 operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
                     machine_id: machine.machine.id,
@@ -345,7 +359,7 @@ pub(super) fn plan_replicated(
                     skip_health_monitor: options.skip_health_monitor,
                 }));
             }
-            None => operations.push(DeployOperation::RunContainer {
+            (EndpointOperation::Create, None) => operations.push(DeployOperation::RunContainer {
                 machine_id: machine.machine.id,
                 spec: resolve(
                     requested,
@@ -354,6 +368,11 @@ pub(super) fn plan_replicated(
                 ),
                 skip_health_monitor: options.skip_health_monitor,
             }),
+            (EndpointOperation::Unchanged, None)
+            | (EndpointOperation::Replace, None)
+            | (EndpointOperation::Create, Some(_)) => {
+                unreachable!("replica projection agrees with existing containers")
+            }
         }
     }
     remove_unused(&mut operations, current, &used);
@@ -395,7 +414,7 @@ pub(super) fn reserve_replicated_service_demand(
     observed: Option<&ServiceObservation>,
     machine_id: MachineId,
     options: &PlanOptions,
-) -> Result<Option<MachineId>, ()> {
+) -> Result<ReplicatedCapacityReservation, ()> {
     let ServiceMode::Replicated { replicas } = requested.mode else {
         return Err(());
     };
@@ -404,21 +423,30 @@ pub(super) fn reserve_replicated_service_demand(
         .flat_map(|service| &service.containers)
         .filter(|container| container.as_observation().machine_id == machine_id)
         .collect::<Vec<_>>();
-    let reclaimable_hooks = observed
-        .into_iter()
-        .flat_map(|service| service.hook_containers.iter())
-        .map(|hook| hook.as_observation().machine_id)
-        .collect::<BTreeSet<_>>();
     existing.sort_by_key(|container| is_up_to_date(container, requested, options));
+    let has_changes = existing
+        .iter()
+        .filter(|container| is_up_to_date(container, requested, options))
+        .count()
+        < replicas.get() as usize;
+    if requested.pre_deploy.is_some() && has_changes {
+        release_hooks(
+            capacity,
+            observed
+                .into_iter()
+                .flat_map(|service| service.hook_containers.iter()),
+        );
+    }
+    let required = replicas.get() as usize - existing.len().min(replicas.get() as usize);
+    if !capacity.can_supply_persistent([&machine_id], required) {
+        return Err(());
+    }
     let mut hook_pending = requested.pre_deploy.is_some();
     let mut hook_machine = None;
+    let mut slots = Vec::new();
     for _ in 0..replicas.get() {
         let operation = replicated_operation(existing.pop(), requested, options);
-        let demand = EndpointDemand::for_operation(
-            operation,
-            hook_pending,
-            reclaimable_hooks.contains(&machine_id),
-        );
+        let demand = EndpointDemand::for_operation(operation, hook_pending);
         if !capacity.reserve(&machine_id, demand) {
             return Err(());
         }
@@ -426,8 +454,25 @@ pub(super) fn reserve_replicated_service_demand(
             hook_machine = Some(machine_id);
         }
         hook_pending &= !demand.uses_hook();
+        slots.push(ReservedReplica {
+            machine_id,
+            operation,
+            demand,
+        });
     }
-    Ok(hook_machine)
+    Ok(ReplicatedCapacityReservation {
+        slots,
+        hook_machine,
+    })
+}
+
+fn release_hooks<'a>(
+    capacity: &mut CapacityBudget,
+    hooks: impl IntoIterator<Item = &'a HookContainer>,
+) {
+    for hook in hooks {
+        capacity.release(&hook.as_observation().machine_id);
+    }
 }
 
 fn replicated_operation(

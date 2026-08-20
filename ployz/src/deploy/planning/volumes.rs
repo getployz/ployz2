@@ -11,7 +11,7 @@ use crate::deploy::{
 };
 
 use super::capacity::CapacityBudget;
-use super::placement::reserve_replicated_service_demand;
+use super::placement::{ReplicatedCapacityReservation, reserve_replicated_service_demand};
 
 /// Planner-internal assignment of Docker Volumes to Machines.
 ///
@@ -281,7 +281,7 @@ pub(super) fn prepare_shared_replicated_volumes(
     pins: &mut VolumePins,
     capacity: &mut CapacityBudget,
     options: &PlanOptions,
-) -> Result<Vec<(ServiceName, Option<MachineId>)>, PlanError> {
+) -> Result<Vec<(ServiceName, ReplicatedCapacityReservation)>, PlanError> {
     let mut reservations = Vec::new();
     for component in shared_volume_components(volume_uses) {
         let anchor = shared_component_anchor(
@@ -293,7 +293,7 @@ pub(super) fn prepare_shared_replicated_volumes(
             capacity,
             options,
         )?;
-        reservations.extend(anchor.capacity_hooks);
+        reservations.extend(anchor.capacity_reservations);
         pin_shared_component(&component, anchor.machine_id, snapshot, pins);
     }
     Ok(reservations)
@@ -301,7 +301,7 @@ pub(super) fn prepare_shared_replicated_volumes(
 
 struct SharedAnchor {
     machine_id: MachineId,
-    capacity_hooks: Vec<(ServiceName, Option<MachineId>)>,
+    capacity_reservations: Vec<(ServiceName, ReplicatedCapacityReservation)>,
 }
 
 fn shared_component_anchor(
@@ -354,14 +354,14 @@ fn shared_component_anchor(
                     machine_id,
                     options,
                 )
-                .map(|hook_machine| (spec.name.clone(), hook_machine))
+                .map(|reservation| (spec.name.clone(), reservation))
             })
             .collect::<Result<Vec<_>, _>>();
-        if let Ok(capacity_hooks) = projected_services {
+        if let Ok(capacity_reservations) = projected_services {
             *capacity = projected;
             return Ok(SharedAnchor {
                 machine_id,
-                capacity_hooks,
+                capacity_reservations,
             });
         }
     }

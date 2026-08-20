@@ -110,7 +110,7 @@ fn hook_and_replacement_each_require_a_spare_endpoint() {
 }
 
 #[test]
-fn replaced_hook_reclaims_its_endpoint_before_container_replacement() {
+fn replaced_hooks_credit_all_reclaimed_endpoints() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
@@ -126,12 +126,18 @@ fn replaced_hook_reclaims_its_endpoint_before_container_replacement() {
     let current_service_id = service_id('a');
     let mut old_hook = container('c', '1', &current, &current_service_id);
     old_hook.kind = ContainerKind::PreDeployHook;
+    let mut other_old_hook = container('d', '1', &current, &current_service_id);
+    other_old_hook.kind = ContainerKind::PreDeployHook;
     let plan = plan_deploy(
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            containers: vec![container('b', '1', &current, &current_service_id), old_hook],
-            capacity: capacity([('1', 1)]),
+            containers: vec![
+                container('b', '1', &current, &current_service_id),
+                old_hook,
+                other_old_hook,
+            ],
+            capacity: capacity([('1', 0)]),
             ..Default::default()
         },
         PlanOptions::default(),
@@ -141,6 +147,7 @@ fn replaced_hook_reclaims_its_endpoint_before_container_replacement() {
     assert!(matches!(
         operations(&plan).as_slice(),
         [
+            DeployOperation::StopHook { .. },
             DeployOperation::StopHook { .. },
             DeployOperation::RunHook { .. },
             DeployOperation::ReplaceContainer(_)

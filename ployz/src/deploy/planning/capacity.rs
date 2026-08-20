@@ -34,18 +34,13 @@ pub(super) enum EndpointOperation {
 }
 
 impl EndpointDemand {
-    pub(super) fn for_operation(
-        operation: EndpointOperation,
-        hook_pending: bool,
-        reclaims_hook: bool,
-    ) -> Self {
+    pub(super) fn for_operation(operation: EndpointOperation, hook_pending: bool) -> Self {
         let changes = !matches!(operation, EndpointOperation::Unchanged);
         let uses_hook = changes && hook_pending;
-        let adds_hook = uses_hook && !reclaims_hook;
         Self {
-            peak: u64::from(changes) + u64::from(adds_hook),
+            peak: u64::from(changes) + u64::from(uses_hook),
             persistent: u64::from(matches!(operation, EndpointOperation::Create))
-                + u64::from(adds_hook),
+                + u64::from(uses_hook),
             uses_hook,
         }
     }
@@ -96,6 +91,12 @@ impl CapacityBudget {
                 .expect("capacity candidates have fresh telemetry") -= demand.persistent;
         }
         true
+    }
+
+    pub(super) fn release(&mut self, machine_id: &MachineId) {
+        if let Some(free) = self.free.as_mut().and_then(|free| free.get_mut(machine_id)) {
+            *free = free.saturating_add(1);
+        }
     }
 
     pub(super) fn error_for<'a>(
