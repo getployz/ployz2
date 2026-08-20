@@ -121,29 +121,15 @@ fn caddy_running_on(services: &[ServiceObservation], this_machine: &Machine) -> 
     })
 }
 
-fn observations_ready(skip_caddy: bool, expect_caddy: bool, complete: bool) -> bool {
-    skip_caddy || expect_caddy || complete
-}
-
 async fn wait_for_observations(
     client: &mut Client,
-    this_machine: &Machine,
     skip_caddy: bool,
 ) -> Result<Vec<ServiceObservation>, CatchUpError> {
-    if skip_caddy {
-        return Ok(client.live_services().await?.services());
-    }
     match tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let live = client.live_services().await?;
-            let services = live.services();
-            let slots = plan_global_catch_up(&services, this_machine, false);
-            if observations_ready(
-                skip_caddy,
-                caddy_expected(&services, this_machine, skip_caddy, &slots),
-                live.containers.all_targets_succeeded(),
-            ) {
-                return Ok(services);
+            if live.containers.all_targets_succeeded() {
+                return Ok(live.services());
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -151,9 +137,15 @@ async fn wait_for_observations(
     .await
     {
         Ok(result) => result,
-        Err(_) => Err(CatchUpError::Caddy(Failure::usage(
-            "timed out waiting for Caddy to become observable".to_owned(),
-        ))),
+        Err(_) => Err(if skip_caddy {
+            CatchUpError::Other(Failure::usage(
+                "timed out waiting for Cluster Service observations".to_owned(),
+            ))
+        } else {
+            CatchUpError::Caddy(Failure::usage(
+                "timed out waiting for Caddy to become observable".to_owned(),
+            ))
+        }),
     }
 }
 
@@ -169,7 +161,7 @@ pub async fn catch_up_globals(
     this_machine: &Machine,
     skip_caddy: bool,
 ) -> Result<(), CatchUpError> {
-    let services = wait_for_observations(client, this_machine, skip_caddy).await?;
+    let services = wait_for_observations(client, skip_caddy).await?;
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
     let expect_caddy = caddy_expected(&services, this_machine, skip_caddy, &slots);
     if !slots.is_empty() {
@@ -425,14 +417,6 @@ mod tests {
         let skipped = plan_global_catch_up(&services, &joiner, true);
         assert!(!caddy_expected(&services, &joiner, true, &skipped));
         assert!(!caddy_running_on(&services, &joiner));
-    }
-
-    #[test]
-    fn incomplete_listing_without_caddy_is_not_ready() {
-        assert!(!observations_ready(false, false, false));
-        assert!(observations_ready(false, true, false));
-        assert!(observations_ready(false, false, true));
-        assert!(observations_ready(true, false, false));
     }
 
     fn identities(slots: &[GlobalCatchUpSlot]) -> Vec<String> {

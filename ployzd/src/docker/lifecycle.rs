@@ -123,30 +123,24 @@ impl ContainerRuntime {
             if *external {
                 continue;
             }
-            match self.inspect_volume(machine_id, name).await {
+            match self
+                .create_volume(
+                    machine_id,
+                    CreateVolumeRequest {
+                        name: name.clone(),
+                        driver: driver
+                            .as_ref()
+                            .map_or_else(|| "local".into(), |driver| driver.name.clone()),
+                        options: driver
+                            .as_ref()
+                            .map_or_else(Default::default, |driver| driver.options.clone()),
+                        labels: labels.clone(),
+                    },
+                )
+                .await
+            {
                 Ok(_) => {}
-                Err(error) if volume_missing(&error) => {
-                    match self
-                        .create_volume(
-                            machine_id,
-                            CreateVolumeRequest {
-                                name: name.clone(),
-                                driver: driver
-                                    .as_ref()
-                                    .map_or_else(|| "local".into(), |driver| driver.name.clone()),
-                                options: driver
-                                    .as_ref()
-                                    .map_or_else(Default::default, |driver| driver.options.clone()),
-                                labels: labels.clone(),
-                            },
-                        )
-                        .await
-                    {
-                        Ok(_) => {}
-                        Err(error) if volume_conflict(&error) => {}
-                        Err(error) => return Err(error),
-                    }
-                }
+                Err(error) if volume_conflict(&error) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -500,16 +494,6 @@ fn global_slot_name(spec: &ResolvedServiceSpec) -> String {
     format!("{}-{suffix}", spec.name)
 }
 
-fn volume_missing(error: &Error) -> bool {
-    matches!(
-        error,
-        Error::Docker(DockerError::DockerResponseServerError {
-            status_code: 404,
-            ..
-        })
-    )
-}
-
 fn volume_conflict(error: &Error) -> bool {
     matches!(
         error,
@@ -541,17 +525,15 @@ mod tests {
     }
 
     #[test]
-    fn named_volume_404_is_missing_and_409_is_conflict() {
-        let missing = Error::Docker(DockerError::DockerResponseServerError {
-            status_code: 404,
-            message: "no such volume".into(),
-        });
+    fn named_volume_409_is_conflict() {
         let conflict = Error::Docker(DockerError::DockerResponseServerError {
             status_code: 409,
             message: "already exists".into(),
         });
-        assert!(volume_missing(&missing));
-        assert!(!volume_missing(&conflict));
+        let missing = Error::Docker(DockerError::DockerResponseServerError {
+            status_code: 404,
+            message: "no such volume".into(),
+        });
         assert!(volume_conflict(&conflict));
         assert!(!volume_conflict(&missing));
     }
