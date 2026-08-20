@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use clap::ArgMatches;
 use ployz_core::{
     ContainerAction, ContainerRef, ContainerRuntimeObservation, HealthObservation, LiveServices,
-    ProjectName, QualifiedService, RpcError, ServiceId, ServiceSelector, select_service,
+    RpcError, ServiceSelector, select_service,
 };
 
 use super::{Error, leaf_matches, with_client};
@@ -199,23 +199,11 @@ fn change_selectors(matches: &ArgMatches) -> Result<Vec<ServiceSelector>, Error>
         .map(|selector| {
             let selector = ServiceSelector::parse(selector.as_str())?;
             match project.as_ref() {
-                Some(project) => qualify_with_project(selector, &project.name),
+                Some(project) => selector.with_project(&project.name).map_err(Into::into),
                 None => Ok(selector),
             }
         })
         .collect()
-}
-
-fn qualify_with_project(
-    selector: ServiceSelector,
-    project: &ProjectName,
-) -> Result<ServiceSelector, Error> {
-    if ServiceId::parse(selector.as_str()).is_ok()
-        || QualifiedService::parse(selector.as_str()).is_ok()
-    {
-        return Ok(selector);
-    }
-    Ok(ServiceSelector::parse(format!("{project}/{selector}"))?)
 }
 
 fn select_services<'a>(
