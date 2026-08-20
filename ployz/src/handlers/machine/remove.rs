@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
     DescribeContractRequest, LiveServices, Machine, MachineId, MachineName, MachineTarget,
-    NameMatches, QualifiedService, RemoveMachineRequest, RpcError, RpcErrorCode, ServiceMode, op,
+    NameMatches, QualifiedService, RpcError, RpcErrorCode, ServiceMode, op,
 };
 
 use super::super::{connect_client, runtime, string_values};
@@ -61,14 +61,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         // TODO(UT-056): there is no drain or unschedulable phase before cleanup.
         match confirmation {
             None => {
-                client
-                    .call::<op::RemoveMachine>(
-                        RemoveMachineRequest {
-                            machine_id: selected.id,
-                        },
-                        None,
-                    )
-                    .await?;
+                client.remove_machine_membership(&selected_target).await?;
             }
             Some(confirmation) => {
                 let removed = client
