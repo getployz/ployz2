@@ -554,10 +554,13 @@ fn classify(name: &str, service: &RawService) -> Result<Vec<String>, ComposeErro
         warnings.push(unsupported_feature(name, "secrets"));
     }
     if let Some(deploy) = &service.deploy {
-        warnings.extend(deploy.other.iter().filter_map(|(feature, value)| {
-            (!feature.starts_with("x-") && !value.is_null())
-                .then(|| unsupported_feature(name, &format!("deploy.{feature}")))
-        }));
+        warnings.extend(
+            deploy
+                .other
+                .iter()
+                .filter(|(feature, value)| !feature.starts_with("x-") && !value.is_null())
+                .map(|(feature, _)| unsupported_feature(name, &format!("deploy.{feature}"))),
+        );
     }
     Ok(warnings)
 }
