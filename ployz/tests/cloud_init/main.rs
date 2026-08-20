@@ -789,6 +789,57 @@ async fn join_places_observed_caddy_on_this_machine() {
 }
 
 #[tokio::test]
+async fn unreachable_peer_does_not_block_observed_caddy_catch_up() {
+    let founder = founder_machine();
+    let mut unreachable = founder.clone();
+    unreachable.id = ployz_core::MachineId::parse("d".repeat(32)).unwrap();
+    unreachable.name = ployz_core::MachineName::parse("unreachable").unwrap();
+    let mut registration = registration();
+    registration.visible_peers = vec![founder.clone(), unreachable.clone()];
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "pairing": pairing,
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration)
+        .with_containers(vec![caddy_on(&founder)])
+        .fail_list_on(unreachable.id);
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("partial Service observations"));
+    assert_eq!(
+        ensure_names(&daemon.ensure_requests()),
+        [("ployz-system", "caddy")]
+    );
+}
+
+#[tokio::test]
 async fn join_no_caddy_skips_caddy_and_still_places_other_globals() {
     let founder = founder_machine();
     let mut registration = registration();

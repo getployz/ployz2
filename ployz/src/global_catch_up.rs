@@ -120,20 +120,8 @@ fn caddy_running_on(services: &[ServiceObservation], this_machine: &Machine) -> 
 }
 
 fn partial_observation_warning(live: &LiveServices<RpcError>) -> Option<String> {
-    (!live.containers.all_targets_succeeded()).then(|| {
-        live.containers
-            .failures
-            .iter()
-            .map(|failure| format!("{}: {}", failure.machine_id, failure.error.message))
-            .chain(
-                live.containers
-                    .omissions
-                    .iter()
-                    .map(|machine_id| format!("{machine_id}: no terminal response")),
-            )
-            .collect::<Vec<_>>()
-            .join("; ")
-    })
+    (!live.containers.all_targets_succeeded())
+        .then(|| crate::failure::partial_failure_details(&live.containers))
 }
 
 /// Copy every observed eligible Global onto `this_machine` only.

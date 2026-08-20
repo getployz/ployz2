@@ -191,7 +191,12 @@ async fn ensure_uninitialized(
     if details.phase == LocalMachinePhase::Uninitialized {
         return Ok(client);
     }
-    reset_authorized(reset)?;
+    if !reset {
+        return Err(Error::usage(
+            "Machine is already initialised; rerun with --reset to reset it before enrollment"
+                .to_owned(),
+        ));
+    }
     crate::handlers::machine::confirm(yes, "Reset the Machine before joining this Cluster?")?;
     client.call::<op::Reset>(ResetRequest {}, None).await?;
     wait_phase(
@@ -200,15 +205,6 @@ async fn ensure_uninitialized(
         "Machine did not reset",
     )
     .await
-}
-
-fn reset_authorized(reset: bool) -> Result<(), Error> {
-    reset.then_some(()).ok_or_else(|| {
-        Error::usage(
-            "Machine is already initialised; rerun with --reset to reset it before enrollment"
-                .to_owned(),
-        )
-    })
 }
 
 fn joined_catch_up_error(error: crate::global_catch_up::CatchUpError) -> String {
@@ -276,12 +272,6 @@ mod tests {
             ContextError::NoCurrentContext(PathBuf::from("config.yaml"))
         )));
         assert!(!retry_local_connect(&ConnectError::InvalidDialCredential));
-    }
-
-    #[test]
-    fn initialized_machine_requires_explicit_reset_even_with_yes() {
-        assert!(reset_authorized(false).is_err());
-        assert!(reset_authorized(true).is_ok());
     }
 
     #[test]
