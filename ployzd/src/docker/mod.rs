@@ -108,17 +108,15 @@ impl LocalDocker {
             .client
             .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
             .await?;
-        let value = serde_json::to_value(network)?;
-        let configs = value
-            .pointer("/IPAM/Config")
-            .and_then(serde_json::Value::as_array);
-        let bridge_usable_endpoints = configs
+        let bridge_usable_endpoints = network
+            .ipam
+            .and_then(|ipam| ipam.config)
             .into_iter()
             .flatten()
             .filter_map(|config| {
                 config
-                    .get("Subnet")
-                    .and_then(serde_json::Value::as_str)
+                    .subnet
+                    .as_deref()
                     .and_then(|subnet| subnet.parse::<ipnet::Ipv4Net>().ok())
                     .map(|subnet| {
                         let addresses = 1_u64 << (32 - subnet.prefix_len());
@@ -127,9 +125,9 @@ impl LocalDocker {
                     })
             })
             .sum();
-        let bridge_attached_endpoints = value
-            .pointer("/Containers")
-            .and_then(serde_json::Value::as_object)
+        let bridge_attached_endpoints = network
+            .containers
+            .as_ref()
             .map_or(0, |containers| containers.len() as u64);
         let info = self.client.info().await?;
         let docker_root = info
@@ -261,6 +259,7 @@ impl ContainerRuntime {
         Ok(observations)
     }
 
+    /// Read fresh Docker bridge and host telemetry.
     pub async fn telemetry(&self) -> Result<MachineTelemetry, Error> {
         self.docker.telemetry().await
     }

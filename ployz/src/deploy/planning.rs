@@ -527,6 +527,14 @@ fn reject_impossible_replicas(
         let ServiceMode::Replicated { replicas } = spec.mode else {
             continue;
         };
+        if !snapshot.machines.iter().any(|machine| {
+            machine.membership != MembershipObservation::Down
+                && machine_matches_placement(&machine.machine, &spec.placement)
+                && snapshot.capacities.contains_key(&machine.machine.id)
+        }) && has_unknown_capacity(spec, snapshot)
+        {
+            return Err(PlanError::CapacityUnknown);
+        }
         let known = eligible_machines(spec, snapshot, options)?;
         let existing = snapshot
             .containers

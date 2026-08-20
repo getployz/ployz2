@@ -218,23 +218,15 @@ impl LocalMachine {
             Vec::new()
         };
         let telemetry = if request.include_telemetry {
-            self.containers
-                .as_ref()
-                .ok_or(Error::DockerUnavailable)?
-                .telemetry()
-                .await?
+            Some(
+                self.containers
+                    .as_ref()
+                    .ok_or(Error::DockerUnavailable)?
+                    .telemetry()
+                    .await?,
+            )
         } else {
-            return Ok(MachineDetails {
-                id: record.id(),
-                phase: record.phase(),
-                machine: record.machine().cloned(),
-                public_key: record.wireguard_private_key.public_key(),
-                advertised_endpoints,
-                store_version,
-                rtts,
-                cloud_paired: record.cloud_pairing.is_some(),
-                telemetry: None,
-            });
+            None
         };
         Ok(MachineDetails {
             id: record.id(),
@@ -245,7 +237,7 @@ impl LocalMachine {
             store_version,
             rtts,
             cloud_paired: record.cloud_pairing.is_some(),
-            telemetry: Some(telemetry),
+            telemetry,
         })
     }
 
