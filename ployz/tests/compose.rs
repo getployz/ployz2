@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -638,20 +638,36 @@ volumes:
         },
     )
     .unwrap();
+    let ops = operations(&plan);
     assert!(matches!(
-        operations(&plan).as_slice(),
+        ops.as_slice(),
         [
             DeployOperation::CreateVolume { machine_id: volume_machine, volume },
-            DeployOperation::RunContainer { machine_id: first_machine, .. },
-            DeployOperation::RunContainer { machine_id: second_machine, .. },
+            DeployOperation::RunContainer { .. },
+            DeployOperation::RunContainer { .. },
         ] if volume_machine == &second.machine.id
             && matches!(&volume.source, VolumeSource::Named { name, external: true, labels, .. }
                 if name.as_str() == "shared"
                     && !labels.contains_key(MANAGED_LABEL)
                     && !labels.contains_key(PROJECT_NAME_LABEL))
-            && first_machine == &first.machine.id
-            && second_machine == &second.machine.id
     ));
+    let run_on = ops
+        .iter()
+        .filter_map(|operation| match operation {
+            DeployOperation::RunContainer { machine_id, .. } => Some(*machine_id),
+            DeployOperation::CreateVolume { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        run_on,
+        BTreeSet::from([first.machine.id, second.machine.id])
+    );
 }
 
 #[test]
