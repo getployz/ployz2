@@ -80,10 +80,7 @@ impl CatchUpClient for Client {
             )
             .await
             .map_err(|error| CatchUpError::Other(error.into()))?;
-        Ok(details.telemetry.map(|telemetry| match telemetry {
-            ployz_core::TelemetryObservation::BridgeCapacity { bridge }
-            | ployz_core::TelemetryObservation::Full { bridge, .. } => bridge,
-        }))
+        Ok(details.telemetry.map(|telemetry| telemetry.into_bridge()))
     }
 
     async fn ensure_global_slot(

@@ -50,6 +50,7 @@ impl EndpointDemand {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct CapacityBudget<'snapshot> {
     snapshot: &'snapshot DeploySnapshot,
     free: Option<BTreeMap<MachineId, u64>>,

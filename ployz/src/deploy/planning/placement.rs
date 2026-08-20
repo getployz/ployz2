@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, HostBind, MachineId, MachineObservation,
     PortPublication, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    ServiceContainer, ServiceId, ServiceMode, ServiceVolumeGraph, SpecChange, UpdateOrder,
-    VolumeSource, compare_specs,
+    ServiceContainer, ServiceId, ServiceMode, ServiceObservation, ServiceVolumeGraph, SpecChange,
+    UpdateOrder, VolumeSource, compare_specs,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
@@ -223,13 +223,7 @@ pub(super) fn plan_replicated(
                 .get(&machine.machine.id)
                 .and_then(|containers| containers.last())
                 .copied();
-            let operation = match existing {
-                Some(container) if is_up_to_date(container, requested, options) => {
-                    EndpointOperation::Unchanged
-                }
-                Some(_) => EndpointOperation::Replace,
-                None => EndpointOperation::Create,
-            };
+            let operation = replicated_operation(existing, requested, options);
             let demand = EndpointDemand::for_operation(operation, hook_pending);
             if placement.capacity.fits_demand(&machine.machine.id, demand) {
                 selected = Some((machine, demand));
@@ -304,6 +298,48 @@ pub(super) fn is_up_to_date(
     !options.force_recreate
         && is_running(&observation.runtime)
         && compare_specs(&observation.resolved_spec, requested) == SpecChange::UpToDate
+}
+
+pub(super) fn reserve_replicated_service_demand(
+    capacity: &mut CapacityBudget<'_>,
+    requested: &RequestedServiceSpec,
+    observed: Option<&ServiceObservation>,
+    machine_id: MachineId,
+    options: &PlanOptions,
+) -> bool {
+    let ServiceMode::Replicated { replicas } = requested.mode else {
+        return false;
+    };
+    let mut existing = observed
+        .into_iter()
+        .flat_map(|service| &service.containers)
+        .filter(|container| container.as_observation().machine_id == machine_id)
+        .collect::<Vec<_>>();
+    existing.sort_by_key(|container| is_up_to_date(container, requested, options));
+    let mut hook_pending = requested.pre_deploy.is_some();
+    for _ in 0..replicas.get() {
+        let operation = replicated_operation(existing.pop(), requested, options);
+        let demand = EndpointDemand::for_operation(operation, hook_pending);
+        if !capacity.reserve(&machine_id, demand) {
+            return false;
+        }
+        hook_pending &= !demand.uses_hook();
+    }
+    true
+}
+
+fn replicated_operation(
+    existing: Option<&ServiceContainer>,
+    requested: &RequestedServiceSpec,
+    options: &PlanOptions,
+) -> EndpointOperation {
+    match existing {
+        Some(container) if is_up_to_date(container, requested, options) => {
+            EndpointOperation::Unchanged
+        }
+        Some(_) => EndpointOperation::Replace,
+        None => EndpointOperation::Create,
+    }
 }
 
 fn is_running(runtime: &ContainerRuntimeObservation) -> bool {

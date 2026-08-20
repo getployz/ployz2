@@ -11,6 +11,7 @@ use crate::deploy::{
 };
 
 use super::capacity::CapacityBudget;
+use super::placement::reserve_replicated_service_demand;
 
 /// Planner-internal assignment of Docker Volumes to Machines.
 ///
@@ -275,15 +276,17 @@ fn shares_a_service(
 pub(super) fn prepare_shared_replicated_volumes(
     volume_uses: &BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'_>>>,
     snapshot: &DeploySnapshot,
+    requested: &[RequestedServiceSpec],
     observed_services: &[ServiceObservation],
     pins: &mut VolumePins,
-    capacity: &CapacityBudget<'_>,
+    capacity: &mut CapacityBudget<'_>,
     options: &PlanOptions,
 ) -> Result<(), PlanError> {
     for component in shared_volume_components(volume_uses) {
         let machine_id = shared_component_anchor(
             &component,
             snapshot,
+            requested,
             observed_services,
             pins,
             capacity,
@@ -297,9 +300,10 @@ pub(super) fn prepare_shared_replicated_volumes(
 fn shared_component_anchor(
     component: &SharedVolumeComponent<'_>,
     snapshot: &DeploySnapshot,
+    requested: &[RequestedServiceSpec],
     observed_services: &[ServiceObservation],
     pins: &VolumePins,
-    capacity: &CapacityBudget<'_>,
+    capacity: &mut CapacityBudget<'_>,
     options: &PlanOptions,
 ) -> Result<MachineId, PlanError> {
     let services = component
@@ -326,46 +330,33 @@ fn shared_component_anchor(
             no_eligible_shared(component, snapshot, pins),
         ));
     }
-    eligible.retain(|machine_id| {
-        capacity.fits(
-            machine_id,
-            shared_net_new_endpoints(&services, observed_services, *machine_id),
-        )
-    });
-    if eligible.is_empty() {
-        return Err(super::service_error(
-            true,
-            first_service_name,
-            capacity.error(first_service),
-        ));
+    for machine_id in eligible {
+        let mut projected = capacity.clone();
+        let fits = requested
+            .iter()
+            .filter(|spec| services.contains_key(spec.name.as_str()))
+            .all(|spec| {
+                let observed = observed_services
+                    .iter()
+                    .find(|service| service.identity.name == spec.name);
+                reserve_replicated_service_demand(
+                    &mut projected,
+                    spec,
+                    observed,
+                    machine_id,
+                    options,
+                )
+            });
+        if fits {
+            *capacity = projected;
+            return Ok(machine_id);
+        }
     }
-    Ok(eligible.remove(0))
-}
-
-fn shared_net_new_endpoints(
-    requested: &BTreeMap<&str, &RequestedServiceSpec>,
-    observed: &[ServiceObservation],
-    machine_id: MachineId,
-) -> u64 {
-    requested
-        .iter()
-        .map(|(name, spec)| {
-            let ServiceMode::Replicated { replicas } = spec.mode else {
-                unreachable!("shared replicated Volume components contain replicated services");
-            };
-            let existing = observed
-                .iter()
-                .find(|service| service.identity.name.as_str() == *name)
-                .map_or(0, |service| {
-                    service
-                        .containers
-                        .iter()
-                        .filter(|container| container.as_observation().machine_id == machine_id)
-                        .count()
-                });
-            u64::from(replicas.get()).saturating_sub(existing as u64)
-        })
-        .sum()
+    Err(super::service_error(
+        true,
+        first_service_name,
+        capacity.error(first_service),
+    ))
 }
 
 fn pin_shared_component(

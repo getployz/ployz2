@@ -211,12 +211,14 @@ fn assemble_plan(
     let name_errors_with_service = bound.requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
     let mut placement = PlacementState::from_snapshot(snapshot);
+    let mut anchor_capacity = placement.capacity().clone();
     prepare_shared_replicated_volumes(
         &volume_uses,
         snapshot,
+        &bound.requested,
         &services,
         &mut pins,
-        placement.capacity(),
+        &mut anchor_capacity,
         &intent.options,
     )?;
     let mut service_operations = Vec::new();

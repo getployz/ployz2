@@ -728,6 +728,56 @@ fn shared_volume_anchor_skips_machine_without_capacity_for_all_services() {
 }
 
 #[test]
+fn shared_volume_anchor_accounts_for_replacements_and_hooks() {
+    let mut first = replicated("first", 1);
+    let mut second = replicated("second", 1);
+    let mut old_first = first.clone();
+    let mut old_second = second.clone();
+    old_first.container.image = "old:first".into();
+    old_second.container.image = "old:second".into();
+    for spec in [&mut first, &mut second] {
+        add_named_volume(spec, "data");
+        spec.pre_deploy = Some(PreDeployHook {
+            command: vec!["prepare".into()],
+            environment: Default::default(),
+            privileged: None,
+            timeout_millis: None,
+            user: None,
+        });
+    }
+    let plan = plan_deploy(
+        [&first, &second],
+        &DeploySnapshot {
+            machines: vec![
+                machine('1', "old-containers"),
+                machine('2', "enough-capacity"),
+            ],
+            containers: vec![
+                container('b', '1', &old_first, &service_id('a')),
+                container('c', '1', &old_second, &service_id('d')),
+            ],
+            capacity: capacity([('1', 1), ('2', 4)]),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(operations(&plan).iter().any(|operation| {
+        matches!(
+            operation,
+            DeployOperation::CreateVolume { machine_id: target, .. } if target == &machine_id('2')
+        )
+    }));
+    assert!(operations(&plan).iter().filter(|operation| {
+        matches!(
+            operation,
+            DeployOperation::RunHook { machine_id: target, .. } if target == &machine_id('2')
+        )
+    }).count() == 2);
+}
+
+#[test]
 fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(2).unwrap(),

@@ -130,9 +130,9 @@ pub enum TelemetryObservation {
 }
 
 impl TelemetryObservation {
-    /// Fresh Ployz bridge endpoint capacity included in either observation.
+    /// Take the fresh Ployz bridge endpoint capacity from either observation.
     #[must_use]
-    pub fn bridge(&self) -> &BridgeEndpointCapacity {
+    pub fn into_bridge(self) -> BridgeEndpointCapacity {
         match self {
             Self::BridgeCapacity { bridge } | Self::Full { bridge, .. } => bridge,
         }

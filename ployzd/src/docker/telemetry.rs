@@ -64,14 +64,29 @@ fn usable_endpoint_count(configs: &[IpamConfig]) -> Result<u64, Error> {
         return Err(Error::MissingField("Docker bridge IPAM configuration"));
     }
 
-    configs.iter().try_fold(0_u64, |total, config| {
-        total
-            .checked_add(usable_endpoints(config)?)
-            .ok_or(Error::MissingField("representable Docker bridge capacity"))
-    })
+    let mut ipv4 = None;
+    let mut ipv6 = None;
+    for config in configs {
+        let (family, usable) = usable_endpoints(config)?;
+        let total = match family {
+            IpAddr::V4(_) => &mut ipv4,
+            IpAddr::V6(_) => &mut ipv6,
+        };
+        *total = Some(
+            total
+                .unwrap_or(0_u64)
+                .checked_add(usable)
+                .ok_or(Error::MissingField("representable Docker bridge capacity"))?,
+        );
+    }
+    match (ipv4, ipv6) {
+        (Some(ipv4), Some(ipv6)) => Ok(ipv4.min(ipv6)),
+        (Some(usable), None) | (None, Some(usable)) => Ok(usable),
+        (None, None) => Err(Error::MissingField("Docker bridge IPAM configuration")),
+    }
 }
 
-fn usable_endpoints(config: &IpamConfig) -> Result<u64, Error> {
+fn usable_endpoints(config: &IpamConfig) -> Result<(IpAddr, u64), Error> {
     let invalid = || Error::MissingField("usable Docker bridge IPAM configuration");
     let subnet_text = config.subnet.as_deref().ok_or_else(invalid)?;
     let subnet = subnet_text.parse::<IpNet>().map_err(|_| invalid())?;
@@ -113,10 +128,11 @@ fn usable_endpoints(config: &IpamConfig) -> Result<u64, Error> {
         .iter()
         .filter(|address| pool.contains(*address))
         .count() as u128;
-    address_count(pool)
+    let usable = address_count(pool)
         .and_then(|addresses| addresses.checked_sub(reserved))
         .and_then(|addresses| addresses.try_into().ok())
-        .ok_or_else(invalid)
+        .ok_or_else(invalid)?;
+    Ok((gateway, usable))
 }
 
 fn address_count(pool: IpNet) -> Option<u128> {
@@ -241,5 +257,16 @@ mod tests {
         let usable = usable_endpoint_count(&[ipam("fd00::/120", None, "fd00::1", &[])]).unwrap();
 
         assert_eq!(usable, 255);
+    }
+
+    #[test]
+    fn dual_stack_capacity_is_limited_by_the_smaller_family() {
+        let usable = usable_endpoint_count(&[
+            ipam("10.0.0.0/24", None, "10.0.0.1", &[]),
+            ipam("fd00::/120", None, "fd00::1", &[]),
+        ])
+        .unwrap();
+
+        assert_eq!(usable, 253);
     }
 }
