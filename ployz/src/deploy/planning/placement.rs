@@ -503,13 +503,7 @@ fn determine_update_order(
     }) {
         return UpdateOrder::StopFirst;
     }
-    if (matches!(requested.mode, ServiceMode::Global)
-        || matches!(
-            requested.mode,
-            ServiceMode::Replicated { replicas } if replicas.get() == 1
-        ))
-        && has_mounted_named_volume(&requested.volume_graph)
-    {
+    if has_mounted_named_volume(&requested.volume_graph) {
         return UpdateOrder::StopFirst;
     }
     UpdateOrder::StartFirst

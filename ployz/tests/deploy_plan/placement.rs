@@ -115,6 +115,59 @@ fn changed_running_container_is_replaced_on_its_machine() {
 }
 
 #[test]
+fn explicit_order_is_deferred_until_the_next_replacement() {
+    let cases = [
+        (
+            "start-first named volume",
+            true,
+            UpdateOrder::StopFirst,
+            UpdateOrder::StartFirst,
+        ),
+        (
+            "stop-first stateless",
+            false,
+            UpdateOrder::StartFirst,
+            UpdateOrder::StopFirst,
+        ),
+    ];
+
+    for (name, with_volume, current_order, requested_order) in cases {
+        let mut requested = requested(ServiceMode::Replicated {
+            replicas: NonZeroU32::new(1).unwrap(),
+        });
+        if with_volume {
+            add_named_volume(&mut requested, "data");
+        }
+        let mut current = container('b', '1', &requested, &service_id('a'));
+        current.resolved_spec.update.order = current_order;
+        requested.update.order = Some(requested_order);
+        let snapshot = DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![current],
+            volumes: with_volume
+                .then(|| observed_volume(machine_id('1'), "data"))
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+
+        let policy_only = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+        assert!(policy_only.operations.is_empty(), "{name}");
+
+        requested.container.image = "ghcr.io/getployz/api:2".into();
+        let replacement = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+        assert!(
+            matches!(
+                operations(&replacement).as_slice(),
+                [DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })]
+                    if spec.update.order == requested_order
+            ),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn global_active_non_running_container_is_replaced_before_reusing_its_host_port() {
     for runtime in [
         ContainerRuntimeObservation::Paused,
