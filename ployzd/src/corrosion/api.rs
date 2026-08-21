@@ -190,17 +190,18 @@ impl ApiClient {
                 LinesCodec::new_with_max_length(8 * 1024 * 1024),
             ),
         };
-        loop {
-            match subscription.next_event().await? {
-                QueryEvent::Columns(_) | QueryEvent::Row(_, _) => {}
-                QueryEvent::EndOfQuery { .. } => return Ok(subscription),
-                QueryEvent::Change(_) => {
-                    return Err(Error::Protocol(
-                        "subscription change preceded end-of-query".into(),
-                    ));
-                }
-                QueryEvent::Error(error) => return Err(Error::Api(error)),
+        match subscription.next_event().await? {
+            QueryEvent::Columns(_) => {
+                subscription.finish_snapshot().await?;
+                Ok(subscription)
             }
+            QueryEvent::Change(_) => Err(Error::Protocol(
+                "subscription change preceded end-of-query".into(),
+            )),
+            QueryEvent::Error(error) => Err(Error::Api(error)),
+            QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(Error::Protocol(
+                "subscription snapshot event arrived without columns".into(),
+            )),
         }
     }
 }
@@ -216,21 +217,25 @@ impl Subscription {
         match self.next_event().await? {
             QueryEvent::Change(_) => Ok(()),
             QueryEvent::Error(error) => Err(Error::Api(error)),
-            QueryEvent::Columns(_) => loop {
-                match self.next_event().await? {
-                    QueryEvent::Row(_, _) => {}
-                    QueryEvent::EndOfQuery { .. } => return Ok(()),
-                    QueryEvent::Error(error) => return Err(Error::Api(error)),
-                    QueryEvent::Columns(_) | QueryEvent::Change(_) => {
-                        return Err(Error::Protocol(
-                            "subscription re-snapshot events arrived out of order".into(),
-                        ));
-                    }
-                }
-            },
+            QueryEvent::Columns(_) => self.finish_snapshot().await,
             QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(Error::Protocol(
                 "subscription snapshot event arrived without columns".into(),
             )),
+        }
+    }
+
+    async fn finish_snapshot(&mut self) -> Result<(), Error> {
+        loop {
+            match self.next_event().await? {
+                QueryEvent::Row(_, _) => {}
+                QueryEvent::EndOfQuery { .. } => return Ok(()),
+                QueryEvent::Error(error) => return Err(Error::Api(error)),
+                QueryEvent::Columns(_) | QueryEvent::Change(_) => {
+                    return Err(Error::Protocol(
+                        "subscription snapshot events arrived out of order".into(),
+                    ));
+                }
+            }
         }
     }
 
@@ -317,4 +322,50 @@ enum QueryEvent {
     },
     Change(IgnoredAny),
     Error(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use axum::{Router, body::Body, routing::post};
+    use tokio::net::TcpListener;
+
+    use super::{ApiClient, Statement};
+
+    #[tokio::test]
+    async fn subscription_accepts_live_change_resnapshot_and_later_change() {
+        const EVENTS: &[u8] = b"{\"columns\":[\"id\"]}\n\
+{\"row\":[1,[\"initial\"]]}\n\
+{\"eoq\":{\"time\":0.0}}\n\
+{\"change\":{}}\n\
+{\"columns\":[\"id\"]}\n\
+{\"row\":[2,[\"replacement\"]]}\n\
+{\"eoq\":{\"time\":0.0}}\n\
+{\"change\":{}}\n";
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/v1/subscriptions", post(|| async { Body::from(EVENTS) })),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::http1(address, &"a".repeat(64)).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let mut subscription = client
+                .subscribe(Statement::new("SELECT id FROM test", []))
+                .await
+                .unwrap();
+            subscription.changed().await.unwrap();
+            subscription.changed().await.unwrap();
+            subscription.changed().await.unwrap();
+        })
+        .await
+        .unwrap();
+        server.abort();
+    }
 }

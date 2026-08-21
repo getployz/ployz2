@@ -23,7 +23,10 @@ use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore},
+    corrosion::{
+        CertificateChallenge, CertificateMaterial, CertificateRow, Error as CorrosionError,
+        ReplicatedStore,
+    },
     filesystem::{atomic_write, set_ployz_group},
 };
 
@@ -143,11 +146,10 @@ pub async fn run(
         ) {
             Ok(changes) => changes,
             Err(error) => {
-                tracing::warn!(error = %error, "Caddy watcher failed, retrying");
-                tokio::select! {
-                    () = tokio::time::sleep(WATCH_RETRY) => continue,
-                    () = shutdown.cancelled() => return Ok(()),
+                if wait_to_retry(&error, &shutdown).await {
+                    continue;
                 }
+                return Ok(());
             }
         };
         loop {
@@ -189,13 +191,20 @@ pub async fn run(
                 () = shutdown.cancelled() => return Ok(()),
             };
             if let Err(error) = changed {
-                tracing::warn!(error = %error, "Caddy watcher failed, retrying");
-                tokio::select! {
-                    () = tokio::time::sleep(WATCH_RETRY) => continue 'watch,
-                    () = shutdown.cancelled() => return Ok(()),
+                if wait_to_retry(&error, &shutdown).await {
+                    continue 'watch;
                 }
+                return Ok(());
             }
         }
+    }
+}
+
+async fn wait_to_retry(error: &CorrosionError, shutdown: &CancellationToken) -> bool {
+    tracing::warn!(error = %error, "Caddy watcher failed, retrying");
+    tokio::select! {
+        () = tokio::time::sleep(WATCH_RETRY) => true,
+        () = shutdown.cancelled() => false,
     }
 }
 
