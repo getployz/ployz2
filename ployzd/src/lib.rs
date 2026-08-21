@@ -17,6 +17,7 @@ pub mod machine;
 pub mod metrics;
 pub mod network;
 pub mod proxy;
+mod public_dns;
 pub mod relay;
 pub mod rpc;
 pub(crate) mod runtime_watch;

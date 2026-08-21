@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     net::{IpAddr, Ipv6Addr},
     process::{self, Command, Output},
     sync::{Arc, Mutex},
@@ -6,7 +7,8 @@ use std::{
 };
 
 use ployz_core::{
-    CreateDomainRecordsRequest, DnsRecord, DnsRecordType, MachineUpdate, PublicIpUpdate, op,
+    CreateDomainRecordsRequest, DnsRecord, DnsRecordType, MachineUpdate, MembershipObservation,
+    PublicIpUpdate, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use reqwest::{Client as HttpClient, redirect::Policy};
@@ -30,6 +32,7 @@ struct FakeHostedService {
 #[derive(Default)]
 struct FakeHostedState {
     requests: Vec<CapturedRequest>,
+    records: BTreeMap<String, Vec<String>>,
     reject_record_type: Option<String>,
 }
 
@@ -40,6 +43,16 @@ impl FakeHostedService {
 
     fn reject_record_type(&self, record_type: &str) {
         self.state.lock().unwrap().reject_record_type = Some(record_type.into());
+    }
+
+    fn record_values(&self, record_type: &str) -> Vec<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .records
+            .get(record_type)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -80,7 +93,7 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
         .await
         .unwrap();
 
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    wait_cli_success(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]).await;
     wait_exact_caddy(IpAddr::V4(first_ip), machines[0].id.as_str().as_bytes()).await;
     wait_exact_caddy(mapped_second, machines[1].id.as_str().as_bytes()).await;
 
@@ -103,6 +116,8 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
     assert!(stored.contains("raw-token"), "stored reservation: {stored}");
     assert!(stored.contains("opaque.uncloud.example"));
 
+    wait_record_values(&hosted, "A", vec![first_ip.to_string()]).await;
+    wait_record_values(&hosted, "AAAA", vec![mapped_second.to_string()]).await;
     let initial = hosted.requests();
     assert_eq!(domain_requests(&initial), 1);
     let reservation_request = initial
@@ -115,13 +130,6 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
             .head
             .to_ascii_lowercase()
             .contains("authorization:")
-    );
-    assert_eq!(record_requests(&initial).len(), 2);
-    assert_record(record_request(&initial, 0), "A", &[first_ip.to_string()]);
-    assert_record(
-        record_request(&initial, 1),
-        "AAAA",
-        &[mapped_second.to_string()],
     );
 
     let second_direct = cluster.api_address(1).unwrap();
@@ -155,10 +163,9 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
         )
         .await
         .unwrap();
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    let partial = hosted.requests();
-    assert_eq!(record_requests(&partial).len(), 3);
-    assert_record(record_request(&partial, 2), "A", &[first_ip.to_string()]);
+    wait_cli_success(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]).await;
+    wait_record_values(&hosted, "A", vec![first_ip.to_string()]).await;
+    wait_record_values(&hosted, "AAAA", Vec::new()).await;
 
     cluster
         .update_machine(
@@ -171,11 +178,11 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
         )
         .await
         .unwrap();
-    let before_empty = hosted.requests().len();
     let empty = run_cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
     assert!(!empty.status.success());
     assert!(String::from_utf8_lossy(&empty.stderr).contains("no publicly reachable"));
-    assert_eq!(hosted.requests().len(), before_empty);
+    assert_eq!(hosted.record_values("A"), vec![first_ip.to_string()]);
+    assert!(hosted.record_values("AAAA").is_empty());
     assert_eq!(
         cli(&direct, &["dns", "show"]).trim(),
         "opaque.uncloud.example"
@@ -211,17 +218,14 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
         .unwrap_err();
     assert!(error.to_string().contains("HTTP 500"));
     let after_rejection = hosted.requests();
-    assert_eq!(record_requests(&after_rejection).len(), 5);
-    assert_record(
-        record_request(&after_rejection, 3),
-        "A",
-        &[first_ip.to_string()],
-    );
-    assert_record(
-        record_request(&after_rejection, 4),
-        "AAAA",
-        &[Ipv6Addr::LOCALHOST.to_string()],
-    );
+    let records = record_requests(&after_rejection);
+    let [.., a_record, aaaa_record] = records.as_slice() else {
+        panic!("expected the rejected replacement record requests");
+    };
+    assert_record(a_record, "A", &[first_ip.to_string()]);
+    assert_record(aaaa_record, "AAAA", &[Ipv6Addr::LOCALHOST.to_string()]);
+    assert_eq!(hosted.record_values("A"), vec![first_ip.to_string()]);
+    assert!(hosted.record_values("AAAA").is_empty());
     assert!(after_rejection.iter().all(|request| {
         request.head.starts_with("POST ")
             && !request
@@ -230,7 +234,6 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
                 .contains("dns.uncloud.run")
     }));
 
-    let before_release = after_rejection.len();
     assert_eq!(
         cli(&direct, &["dns", "release"]).trim(),
         "Released Cluster domain: opaque.uncloud.example"
@@ -239,7 +242,7 @@ async fn hosted_dns_reservation_and_reachable_caddy_records_survive_real_cluster
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("was not found"));
     let after_release = hosted.requests();
-    assert_eq!(after_release.len(), before_release + 1);
+    assert!(hosted.record_values("A").is_empty());
     let purge = after_release.last().unwrap();
     assert!(
         purge
@@ -283,7 +286,7 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
             .unwrap();
     }
 
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
+    wait_cli_success(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]).await;
     wait_exact_caddy(IpAddr::V4(first_ip), machines[0].id.as_str().as_bytes()).await;
     wait_exact_caddy(IpAddr::V4(second_ip), machines[1].id.as_str().as_bytes()).await;
     wait_exact_caddy(IpAddr::V4(third_ip), machines[2].id.as_str().as_bytes()).await;
@@ -297,14 +300,16 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
         &direct,
         &["dns", "reserve", "--endpoint", endpoint.as_str()],
     );
-    assert_eq!(
-        authoritative_wildcard_a(&hosted.requests()),
+    wait_record_values(
+        &hosted,
+        "A",
         vec![
             first_ip.to_string(),
             second_ip.to_string(),
-            third_ip.to_string()
+            third_ip.to_string(),
         ],
-    );
+    )
+    .await;
 
     let mut client = ployz::connect::connect(
         std::path::Path::new("/missing-ployz-test-config"),
@@ -315,17 +320,11 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
     .unwrap();
     // Same refresh `machine add` runs after membership is saved, including when
     // the add-time Caddy Deploy failed or was skipped.
-    let before_add_refresh = record_requests(&hosted.requests()).len();
     ployz::dns::update_records_if_reserved(&mut client)
         .await
         .unwrap();
-    let after_add_refresh = hosted.requests();
     assert_eq!(
-        record_requests(&after_add_refresh).len(),
-        before_add_refresh + 1
-    );
-    assert_eq!(
-        authoritative_wildcard_a(&after_add_refresh),
+        hosted.record_values("A"),
         vec![
             first_ip.to_string(),
             second_ip.to_string(),
@@ -334,18 +333,38 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
         "last published * A at the authority must include a Machine that passes the Caddy probe"
     );
 
-    let before_remove = record_requests(&after_add_refresh).len();
+    cluster.stop(2).unwrap();
+    wait_membership(&cluster, 0, &machines[2], MembershipObservation::Down).await;
+    wait_record_values(
+        &hosted,
+        "A",
+        vec![first_ip.to_string(), second_ip.to_string()],
+    )
+    .await;
+
+    cluster.restart(2).unwrap();
+    wait_membership(&cluster, 0, &machines[2], MembershipObservation::Up).await;
+    wait_record_values(
+        &hosted,
+        "A",
+        vec![
+            first_ip.to_string(),
+            second_ip.to_string(),
+            third_ip.to_string(),
+        ],
+    )
+    .await;
+
     cli(
         &direct,
         &["machine", "rm", machines[1].id.as_str(), "--yes"],
     );
-    let after_remove = hosted.requests();
-    assert_eq!(record_requests(&after_remove).len(), before_remove + 1);
-    assert_eq!(
-        authoritative_wildcard_a(&after_remove),
+    wait_record_values(
+        &hosted,
+        "A",
         vec![first_ip.to_string(), third_ip.to_string()],
-        "last published * A at the authority must not include the removed Machine"
-    );
+    )
+    .await;
 }
 
 fn poison_production_dns(cluster: &Cluster, index: usize) {
@@ -456,6 +475,7 @@ async fn fake_hosted_service() -> (u16, FakeHostedService) {
                     json!({"name":"opaque.uncloud.example","token":"raw-token"}),
                 )
             } else if path == "/domains/opaque.uncloud.example/purgerecords" {
+                server.state.lock().unwrap().records.clear();
                 (202, json!({"name":"opaque.uncloud.example"}))
             } else {
                 assert_eq!(path, "/domains/opaque.uncloud.example/records");
@@ -474,6 +494,16 @@ async fn fake_hosted_service() -> (u16, FakeHostedService) {
                 if reject {
                     (500, json!({"error":"rejected later record"}))
                 } else {
+                    server.state.lock().unwrap().records.insert(
+                        body.get("type").unwrap().as_str().unwrap().to_owned(),
+                        body.get("values")
+                            .unwrap()
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|value| value.as_str().unwrap().to_owned())
+                            .collect(),
+                    );
                     (
                         200,
                         json!({
@@ -556,12 +586,50 @@ fn record_requests(requests: &[CapturedRequest]) -> Vec<&CapturedRequest> {
         .collect()
 }
 
-fn record_request(requests: &[CapturedRequest], index: usize) -> &CapturedRequest {
-    requests
-        .iter()
-        .filter(|request| request.head.contains("/records HTTP/1.1"))
-        .nth(index)
-        .unwrap()
+async fn wait_membership(
+    cluster: &Cluster,
+    entry_index: usize,
+    machine: &ployz_core::Machine,
+    membership: MembershipObservation,
+) {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            if cluster
+                .machines(entry_index)
+                .await
+                .is_ok_and(|observations| {
+                    observations.iter().any(|observation| {
+                        observation.machine.id == machine.id && observation.membership == membership
+                    })
+                })
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+async fn wait_record_values(
+    hosted: &FakeHostedService,
+    record_type: &str,
+    mut expected: Vec<String>,
+) {
+    expected.sort();
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let mut actual = hosted.record_values(record_type);
+            actual.sort();
+            if actual == expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 fn authoritative_wildcard_a(requests: &[CapturedRequest]) -> Vec<String> {

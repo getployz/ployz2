@@ -92,7 +92,7 @@ pub(crate) async fn update_records_after_removal(
     }
     let remaining = remaining_members(members, removed);
     if remaining.is_empty() {
-        return Ok(());
+        return publish_records(client, Vec::new()).await;
     }
     publish_records(client, records_from_machines(&remaining)?).await
 }
@@ -118,8 +118,11 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
 
     // ponytail: ListMachines already has public_ip; Inspect during mesh reconvergence is how #248 fails
     let machines = public_dns_machines(observations)
-        .filter(|machine| caddy_machines.contains(&machine.id) && machine.public_ip.is_some())
+        .filter(|machine| caddy_machines.contains(&machine.id))
         .collect::<Vec<_>>();
+    if machines.is_empty() {
+        return publish_records(client, Vec::new()).await;
+    }
     let records = records_from_machines(&probe_machines(machines).await?)?;
     publish_records(client, records).await
 }
@@ -177,7 +180,7 @@ fn remaining_members(
     removed: &MachineId,
 ) -> Vec<Machine> {
     public_dns_machines(members)
-        .filter(|machine| machine.id != *removed && machine.public_ip.is_some())
+        .filter(|machine| machine.id != *removed)
         .collect()
 }
 
@@ -185,9 +188,7 @@ fn public_dns_machines(
     observations: impl IntoIterator<Item = MachineObservation>,
 ) -> impl Iterator<Item = Machine> {
     observations.into_iter().filter_map(|observation| {
-        observation
-            .membership
-            .invites_rpc()
+        (observation.membership.invites_rpc() && observation.machine.public_ip.is_some())
             .then_some(observation.machine)
     })
 }
@@ -550,7 +551,7 @@ mod tests {
         ] {
             transitioned.membership = membership;
             assert_eq!(
-                !published_addresses([transitioned.clone()]).is_empty(),
+                public_dns_machines([transitioned.clone()]).next().is_some(),
                 published
             );
         }
@@ -944,13 +945,5 @@ mod tests {
             selected_endpoint: None,
             rtt: None,
         }
-    }
-
-    fn published_addresses(
-        observations: impl IntoIterator<Item = MachineObservation>,
-    ) -> Vec<String> {
-        public_dns_machines(observations)
-            .filter_map(|machine| machine.public_ip.map(|address| address.to_string()))
-            .collect()
     }
 }

@@ -37,6 +37,7 @@ use crate::{
     metrics,
     network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane},
     proxy::MachineProxy,
+    public_dns,
     rpc::MachineService,
 };
 
@@ -147,6 +148,7 @@ impl Daemon {
         };
         let corrosion = start_corrosion(&config, &store).await?;
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
+        let corrosion_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let containers = match (containers, replicated_store.clone()) {
             (Some(runtime), Some(replicated)) => {
                 Some(runtime.replicating(replicated, Arc::clone(&store)))
@@ -309,6 +311,20 @@ impl Daemon {
                     }
                 }
             };
+            let hosted_dns = async {
+                if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
+                    return Ok(());
+                }
+                match (replicated_store.clone(), corrosion_admin) {
+                    (Some(replicated), Some(admin)) => {
+                        public_dns::run(replicated, admin, local_id, shutdown.clone()).await
+                    }
+                    _ => {
+                        shutdown.cancelled().await;
+                        Ok(())
+                    }
+                }
+            };
             let relay_register = async {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
@@ -325,6 +341,7 @@ impl Daemon {
                 dns,
                 caddy,
                 certificates,
+                hosted_dns,
                 relay_register,
             )
             .map(|_| ())

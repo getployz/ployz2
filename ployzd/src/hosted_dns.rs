@@ -65,7 +65,7 @@ impl HostedDns {
         records: &[DnsRecord],
     ) -> Result<Vec<DnsRecord>, Error> {
         let reservation = store.domain_reservation().await?.ok_or(Error::NotFound)?;
-        self.submit_records(&reservation, records).await
+        self.replace_records(&reservation, records).await
     }
 
     async fn request_reservation(&self, endpoint: &str) -> Result<Reservation, Error> {
@@ -124,6 +124,17 @@ impl HostedDns {
             });
         }
         Ok(created)
+    }
+
+    pub(crate) async fn replace_records(
+        &self,
+        reservation: &Reservation,
+        records: &[DnsRecord],
+    ) -> Result<Vec<DnsRecord>, Error> {
+        // The hosted API has no replacement operation. Purging before every
+        // publication keeps its persisted delete values aligned with DNS.
+        self.purge_hosted_records(reservation).await?;
+        self.submit_records(reservation, records).await
     }
 }
 
@@ -238,6 +249,7 @@ mod tests {
                 200,
                 r#"{"name":"opaque.uncloud.example","token":"raw-token"}"#,
             ),
+            (202, r#"{"name":"opaque.uncloud.example"}"#),
             (
                 200,
                 r#"{"name":"*","type":"A","values":["203.0.113.9"],"fqdn":"*.opaque.uncloud.example"}"#,
@@ -254,7 +266,7 @@ mod tests {
         assert_eq!(reservation.name, "opaque.uncloud.example");
         assert_eq!(reservation.token, "raw-token");
         let records = client
-            .submit_records(
+            .replace_records(
                 &reservation,
                 &[
                     DnsRecord {
@@ -289,8 +301,9 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let requests = requests.lock().unwrap();
-        let [reservation_request, a_request, aaaa_request] = requests.as_slice() else {
-            panic!("expected one reservation and two record requests");
+        let [reservation_request, purge_request, a_request, aaaa_request] = requests.as_slice()
+        else {
+            panic!("expected one reservation, one purge, and two record requests");
         };
         assert!(
             reservation_request
@@ -304,6 +317,12 @@ mod tests {
                 .contains("authorization:")
         );
         assert!(reservation_request.body.is_empty());
+        assert!(
+            purge_request
+                .head
+                .starts_with("POST /v1/domains/opaque.uncloud.example/purgerecords HTTP/1.1\r\n")
+        );
+        assert!(purge_request.body.is_empty());
         for request in [a_request, aaaa_request] {
             assert!(
                 request
@@ -324,6 +343,36 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&aaaa_request.body).unwrap(),
             serde_json::json!({"name":"*","type":"AAAA","values":["2001:db8::1"]})
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_public_projection_withdraws_the_wildcard() {
+        let (endpoint, requests) =
+            fake_server([(202, r#"{"name":"opaque.uncloud.example"}"#)]).await;
+        let reservation = super::Reservation {
+            endpoint,
+            name: "opaque.uncloud.example".into(),
+            token: "raw-token".into(),
+        };
+
+        assert!(
+            HostedDns::new()
+                .replace_records(&reservation, &[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let requests = requests.lock().unwrap();
+        let [purge] = requests.as_slice() else {
+            panic!("expected one purge request");
+        };
+        assert!(
+            purge
+                .head
+                .starts_with("POST /v1/domains/opaque.uncloud.example/purgerecords HTTP/1.1\r\n")
         );
     }
 
