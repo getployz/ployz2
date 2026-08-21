@@ -17,16 +17,16 @@ pub(super) async fn observe(
     let requests = machines.iter().filter_map(|machine| {
         let machine_id = machine.machine.id;
         machine.membership.invites_rpc().then(|| {
-            let client = client.clone();
+            let mut client = client.clone();
             async move {
                 let result = client
-                    .invoke::<op::Inspect>(
+                    .read::<op::Inspect>(
                         InspectRequest {
                             telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
                             ..Default::default()
                         },
                         &MachineTarget::from(&machine_id),
-                        Some(TARGET_RPC_TIMEOUT),
+                        TARGET_RPC_TIMEOUT,
                     )
                     .await;
                 (machine_id, result)

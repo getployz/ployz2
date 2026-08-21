@@ -7,14 +7,13 @@ use std::{
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
     ContainerObservation, CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume,
-    DockerVolumeName, FanoutOutcome, FanoutResponse, FanoutSelector, GetDomainRequest,
-    InspectRequest, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
-    ListVolumesRequest, LiveServices, LocalMachineRemoved, MachineFailure, MachineId,
-    MachineImages, MachineName, MachineObservation, MachineRpcClient, MachineSuccess,
-    MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
-    RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
-    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
-    StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, apply_many_targets,
+    DockerVolumeName, GetDomainRequest, InspectRequest, ListContainersRequest, ListImagesRequest,
+    ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved, Machine,
+    MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
+    MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
+    ProjectName, RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
+    RpcResponseBody, StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss,
     derive_live_services, op,
 };
 use serde::Serialize;
@@ -25,8 +24,8 @@ use tonic::{Streaming, codec::ProstCodec, codegen::http::uri::PathAndQuery, tran
 use crate::{
     connect::{
         BoxProxyStream, ConnectError, Connector, TARGET_RPC_TIMEOUT, TransportError,
-        UNARY_RETRY_DELAYS, apply_timeout, decode_fanout_failure, is_unary_retryable, rpc_error,
-        stop_rpc_timeout, target_request,
+        UNARY_RETRY_DELAYS, apply_timeout, is_unary_retryable, rpc_error, stop_rpc_timeout,
+        target_request,
     },
     context::{Connection, ConnectionSource, Transport},
     deploy::{DeploySnapshot, ObservedDockerVolume},
@@ -107,13 +106,42 @@ impl Client {
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
         let payload = T::into_request(request).encode()?;
+        self.call_retried::<T>(payload, target, None).await
+    }
+
+    /// Issue a retryable read-only targeted RPC with a deadline per attempt.
+    pub(crate) async fn read<T: Rpc>(
+        &mut self,
+        request: T::Request,
+        target: &MachineTarget,
+        timeout: Duration,
+    ) -> Result<T::Response, RpcError> {
+        let payload = T::into_request(request)
+            .encode()
+            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+        self.call_retried::<T>(payload, Some(target), Some(timeout))
+            .await
+            .map_err(rpc_error)
+    }
+
+    async fn call_retried<T: Rpc>(
+        &mut self,
+        payload: OpaquePayload,
+        target: Option<&MachineTarget>,
+        timeout: Option<Duration>,
+    ) -> Result<T::Response, ConnectError> {
         let mut delays = UNARY_RETRY_DELAYS.iter().copied();
         let mut redial = false;
         loop {
-            match self
-                .unary_attempt::<T>(payload.clone(), target, redial)
-                .await
-            {
+            let attempt = self.unary_attempt::<T>(payload.clone(), target, redial);
+            let outcome = match timeout {
+                Some(timeout) => match tokio::time::timeout(timeout, attempt).await {
+                    Ok(outcome) => outcome,
+                    Err(_) => Err(ConnectError::Attempt("target Machine RPC timed out".into())),
+                },
+                None => attempt.await,
+            };
+            match outcome {
                 Ok(response) => return Ok(response),
                 Err(error) if is_unary_retryable(&error) => {
                     let Some(delay) = delays.next() else {
@@ -228,8 +256,8 @@ impl Client {
 
     /// List Docker Volumes on each Machine that invites an RPC.
     ///
-    /// Down, Unknown, and Unrecognized are omitted. Up and Suspect get one
-    /// `invoke` — `call` retries are for the entry connection, not peer fan-out.
+    /// Down, Unknown, and Unrecognized are omitted. Up and Suspect are read
+    /// independently with bounded transient retries.
     /// UT-028: keep each probed target's success or typed failure.
     pub async fn list_volumes(
         &mut self,
@@ -378,68 +406,50 @@ impl Client {
     pub async fn list_images(
         &self,
         reference: Option<String>,
-        targets: &[String],
-    ) -> Result<PartialResult<MachineImagesObservation, RpcError>, ConnectError> {
-        let mut request = tonic::Request::new(
-            op::ListImages::into_request(ListImagesRequest { reference }).encode()?,
-        );
-        let selectors = if targets.is_empty() {
-            vec![FanoutSelector::All]
-        } else {
-            targets
-                .iter()
-                .map(|target| FanoutSelector::parse(target.as_str()))
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        apply_many_targets(request.metadata_mut(), &selectors)?;
-        let mut grpc = tonic::client::Grpc::new(self.channel.clone());
-        grpc.ready().await?;
-        let response = grpc
-            .server_streaming(
-                request,
-                PathAndQuery::from_static(op::ListImages::PATH),
-                ProstCodec::<OpaquePayload, FanoutResponse>::default(),
-            )
-            .await?;
-        let mut stream = response.into_inner();
+        targets: &[Machine],
+    ) -> PartialResult<MachineImagesObservation, RpcError> {
+        let mut tasks = JoinSet::new();
+        for (index, machine) in targets.iter().enumerate() {
+            let mut client = self.clone();
+            let machine = machine.clone();
+            let reference = reference.clone();
+            tasks.spawn(async move {
+                let response = client
+                    .read::<op::ListImages>(
+                        ListImagesRequest { reference },
+                        &MachineTarget::from(&machine.id),
+                        TARGET_RPC_TIMEOUT,
+                    )
+                    .await;
+                (index, machine, response)
+            });
+        }
+        let mut outcomes = Vec::with_capacity(tasks.len());
+        while let Some(outcome) = tasks.join_next().await {
+            outcomes.push(outcome.expect("Image listing task does not panic"));
+        }
+        outcomes.sort_by_key(|(index, _, _)| *index);
         let mut result = PartialResult {
             successes: Vec::new(),
             failures: Vec::new(),
             omissions: Vec::new(),
         };
-        while let Some(envelope) = stream.message().await? {
-            let machine_id = envelope.machine_id()?;
-            let machine_name = envelope.machine_name()?;
-            match envelope.outcome {
-                Some(FanoutOutcome::FramedPayload(frame)) => {
-                    let response = OpaquePayload::decode_grpc_frame(&frame)?.decode_response()?;
-                    if let RpcResponseBody::Error(error) = &response.body {
-                        result.failures.push(MachineFailure {
-                            machine_id,
-                            error: error.clone(),
-                        });
-                    } else {
-                        result.successes.push(MachineSuccess {
-                            machine_id,
-                            value: MachineImagesObservation {
-                                machine_name,
-                                images: response
-                                    .decode::<op::ListImages>()
-                                    .map_err(ConnectError::Codec)?,
-                            },
-                        });
-                    }
-                }
-                Some(FanoutOutcome::Failure(failure)) => {
-                    result.failures.push(MachineFailure {
-                        machine_id,
-                        error: decode_fanout_failure(failure),
-                    });
-                }
-                None => result.omissions.push(machine_id),
+        for (_, machine, outcome) in outcomes {
+            match outcome {
+                Ok(images) => result.successes.push(MachineSuccess {
+                    machine_id: machine.id,
+                    value: MachineImagesObservation {
+                        machine_name: machine.name,
+                        images,
+                    },
+                }),
+                Err(error) => result.failures.push(MachineFailure {
+                    machine_id: machine.id,
+                    error,
+                }),
             }
         }
-        Ok(result)
+        result
     }
 
     pub async fn dial_proxy(
@@ -847,11 +857,12 @@ async fn list_volumes_on_machine(
     client: &Client,
     machine_id: MachineId,
 ) -> Result<MachineSuccess<Vec<DockerVolume>>, MachineFailure<RpcError>> {
+    let mut client = client.clone();
     client
-        .invoke::<op::ListVolumes>(
+        .read::<op::ListVolumes>(
             ListVolumesRequest {},
             &MachineTarget::from(&machine_id),
-            Some(TARGET_RPC_TIMEOUT),
+            TARGET_RPC_TIMEOUT,
         )
         .await
         .map(|list| MachineSuccess {
@@ -862,14 +873,14 @@ async fn list_volumes_on_machine(
 }
 
 async fn list_on_machine(
-    client: Client,
+    mut client: Client,
     machine_id: MachineId,
 ) -> Result<MachineSuccess<Vec<ployz_core::ContainerObservation>>, MachineFailure<RpcError>> {
     client
-        .invoke::<op::ListContainers>(
+        .read::<op::ListContainers>(
             ListContainersRequest {},
             &MachineTarget::from(&machine_id),
-            Some(TARGET_RPC_TIMEOUT),
+            TARGET_RPC_TIMEOUT,
         )
         .await
         .map(|list| MachineSuccess {

@@ -119,7 +119,7 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
                     ..Default::default()
                 };
                 match client
-                    .invoke::<op::Inspect>(request, &selector, Some(TARGET_RPC_TIMEOUT))
+                    .read::<op::Inspect>(request, &selector, TARGET_RPC_TIMEOUT)
                     .await
                 {
                     Ok(details) => result.successes.push(MachineSuccess {
