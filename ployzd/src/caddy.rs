@@ -31,6 +31,7 @@ pub const CONFIG_FILE: &str = "Caddyfile";
 const CERTS_DIR: &str = "certs";
 const CONTAINER_CERTS_DIR: &str = "/config/certs";
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
+const WATCH_RETRY: Duration = Duration::from_secs(1);
 
 /// True when this observation is the reserved Caddy Service.
 #[must_use]
@@ -134,52 +135,66 @@ pub async fn run(
             .parent()
             .ok_or_else(|| io::Error::other("Caddy admin socket has no parent"))?,
     )?;
-    let mut container_changes = replicated
-        .subscribe_container_changes()
-        .await
-        .map_err(io::Error::other)?;
-    let mut certificate_changes = replicated
-        .subscribe_certificate_changes()
-        .await
-        .map_err(io::Error::other)?;
     let mut last_applied = None;
-    loop {
-        let snapshot = match (
-            replicated.containers().await,
-            replicated.certificate_state().await,
+    'watch: loop {
+        let (mut container_changes, mut certificate_changes) = match tokio::try_join!(
+            replicated.subscribe_container_changes(),
+            replicated.subscribe_certificate_changes(),
         ) {
-            (Ok(containers), Ok(certificates)) => Some((containers.observations, certificates)),
-            (Err(error), _) | (_, Err(error)) => {
-                eprintln!("failed to rebuild Caddy projection: {error}");
-                None
-            }
-        };
-        if let Some(snapshot) = snapshot
-            && last_applied.as_ref() != Some(&snapshot)
-        {
-            let admin = AdminClient::connect_if_available(&admin_socket)
-                .await
-                .map_err(io::Error::other)?;
-            match reconcile(
-                &machine,
-                &snapshot.0,
-                &snapshot.1,
-                &config_file,
-                admin.as_ref(),
-            )
-            .await
-            {
-                Ok(()) => last_applied = Some(snapshot),
-                Err(error) => {
-                    last_applied = None;
-                    eprintln!("failed to update Caddy configuration: {error}");
+            Ok(changes) => changes,
+            Err(error) => {
+                tracing::warn!(error = %error, "Caddy watcher failed, retrying");
+                tokio::select! {
+                    () = tokio::time::sleep(WATCH_RETRY) => continue,
+                    () = shutdown.cancelled() => return Ok(()),
                 }
             }
-        }
-        tokio::select! {
-            changed = container_changes.changed() => changed.map_err(io::Error::other)?,
-            changed = certificate_changes.changed() => changed.map_err(io::Error::other)?,
-            () = shutdown.cancelled() => return Ok(()),
+        };
+        loop {
+            let snapshot = match (
+                replicated.containers().await,
+                replicated.certificate_state().await,
+            ) {
+                (Ok(containers), Ok(certificates)) => Some((containers.observations, certificates)),
+                (Err(error), _) | (_, Err(error)) => {
+                    eprintln!("failed to rebuild Caddy projection: {error}");
+                    None
+                }
+            };
+            if let Some(snapshot) = snapshot
+                && last_applied.as_ref() != Some(&snapshot)
+            {
+                let admin = AdminClient::connect_if_available(&admin_socket)
+                    .await
+                    .map_err(io::Error::other)?;
+                match reconcile(
+                    &machine,
+                    &snapshot.0,
+                    &snapshot.1,
+                    &config_file,
+                    admin.as_ref(),
+                )
+                .await
+                {
+                    Ok(()) => last_applied = Some(snapshot),
+                    Err(error) => {
+                        last_applied = None;
+                        eprintln!("failed to update Caddy configuration: {error}");
+                    }
+                }
+            }
+            let changed = tokio::select! {
+                changed = container_changes.changed() => changed,
+                changed = certificate_changes.changed() => changed,
+                () = shutdown.cancelled() => return Ok(()),
+            };
+            if let Err(error) = changed {
+                tracing::warn!(error = %error, "Caddy watcher failed, retrying");
+                tokio::select! {
+                    () = tokio::time::sleep(WATCH_RETRY) => continue 'watch,
+                    () = shutdown.cancelled() => return Ok(()),
+                }
+            }
         }
     }
 }

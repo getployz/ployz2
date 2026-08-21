@@ -216,9 +216,21 @@ impl Subscription {
         match self.next_event().await? {
             QueryEvent::Change(_) => Ok(()),
             QueryEvent::Error(error) => Err(Error::Api(error)),
-            QueryEvent::Columns(_) | QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(
-                Error::Protocol("initial subscription event followed end-of-query".into()),
-            ),
+            QueryEvent::Columns(_) => loop {
+                match self.next_event().await? {
+                    QueryEvent::Row(_, _) => {}
+                    QueryEvent::EndOfQuery { .. } => return Ok(()),
+                    QueryEvent::Error(error) => return Err(Error::Api(error)),
+                    QueryEvent::Columns(_) | QueryEvent::Change(_) => {
+                        return Err(Error::Protocol(
+                            "subscription re-snapshot events arrived out of order".into(),
+                        ));
+                    }
+                }
+            },
+            QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(Error::Protocol(
+                "subscription snapshot event arrived without columns".into(),
+            )),
         }
     }
 
