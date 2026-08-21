@@ -11,10 +11,10 @@ use ployz_core::{
     ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved, Machine,
     MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
     MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
-    ProjectName, RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
-    RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
-    RpcResponseBody, StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss,
-    derive_live_services, op,
+    ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveContainerRequest,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest,
+    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest,
+    StopContainerRequest, UnconfirmedDataLoss, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -226,7 +226,9 @@ impl Client {
         &self,
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc();
+        let mut rpc = self
+            .machine_rpc()
+            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
         Ok(rpc
             .runtime_watch(tonic::Request::new(request))
             .await?
