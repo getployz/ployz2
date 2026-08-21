@@ -292,6 +292,68 @@ assert_eq "$(daemon_action 1.2.4 1.2.3 floating)" "keep"
 assert_eq "$(daemon_action 1.2.3 1.2.2 pin)" "replace"
 assert_eq "$(daemon_action 1.2.2 1.2.3 pin)" "replace"
 
+configure_apt_lock_wait
+assert_eq "$(cat "$APT_CONFIG")" 'DPkg::Lock::Timeout "300";'
+apt_root=$(mktemp -d)
+mkdir -p "$apt_root/lists/partial" "$apt_root/cache/archives/partial" "$apt_root/dpkg" "$apt_root/etc/sources.list.d"
+: > "$apt_root/dpkg/status"
+: > "$apt_root/etc/sources.list"
+apt_args=(
+    -o "Dir::State::lists=$apt_root/lists"
+    -o "Dir::Cache=$apt_root/cache"
+    -o "Dir::State::status=$apt_root/dpkg/status"
+    -o "Dir::Etc::sourcelist=$apt_root/etc/sources.list"
+    -o "Dir::Etc::sourceparts=$apt_root/etc/sources.list.d"
+)
+python3 - "$apt_root/dpkg/lock-frontend" <<'PY' &
+import fcntl
+import sys
+import time
+
+with open(sys.argv[1], "w") as lock:
+    fcntl.lockf(lock, fcntl.LOCK_EX)
+    time.sleep(1)
+PY
+lock_owner=$!
+sleep 0.1
+run_with_apt_lock_wait apt-get "${apt_args[@]}" -o DPkg::Lock::Timeout=3 check >/dev/null
+wait "$lock_owner"
+
+python3 - "$apt_root/dpkg/lock-frontend" <<'PY' &
+import fcntl
+import sys
+import time
+
+with open(sys.argv[1], "w") as lock:
+    fcntl.lockf(lock, fcntl.LOCK_EX)
+    time.sleep(2)
+PY
+lock_owner=$!
+sleep 0.1
+if lock_error=$(run_with_apt_lock_wait apt-get "${apt_args[@]}" -o DPkg::Lock::Timeout=1 check 2>&1); then
+    echo "apt accepted a lock held past its timeout" >&2
+    exit 1
+fi
+wait "$lock_owner"
+printf '%s\n' "$lock_error" | grep -Fq "$apt_root/dpkg/lock-frontend"
+printf '%s\n' "$lock_error" | grep -Fq "python3"
+printf '%s\n' "$lock_error" | grep -Fq "retry the installer"
+if apt_error=$(run_with_apt_lock_wait apt-get "${apt_args[@]}" install -y definitely-not-a-package 2>&1); then
+    echo "apt installed a nonexistent package" >&2
+    exit 1
+else
+    apt_status=$?
+fi
+assert_eq "$apt_status" 100
+printf '%s\n' "$apt_error" | grep -Fq "Unable to locate package definitely-not-a-package"
+if printf '%s\n' "$apt_error" | grep -Fq "retry the installer"; then
+    echo "non-lock apt failure was reported as a lock timeout" >&2
+    exit 1
+fi
+rm -rf "$apt_root"
+rm -f "$APT_CONFIG"
+trap - EXIT
+
 PLOYZ_CLI_INSTALL_TEST_ONLY=true source "$ROOT/install.sh"
 assert_eq "$(cli_archive Linux x86_64)" "ployz_linux_amd64.tar.gz"
 assert_eq "$(cli_archive Linux aarch64)" "ployz_linux_arm64.tar.gz"
