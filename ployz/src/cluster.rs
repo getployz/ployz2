@@ -110,6 +110,11 @@ impl Client {
     }
 
     /// Issue a retryable read-only targeted RPC with a deadline per attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an RPC error when request encoding fails or the targeted read
+    /// does not succeed within the bounded retry policy.
     pub(crate) async fn read<T: Rpc>(
         &mut self,
         request: T::Request,
@@ -406,6 +411,7 @@ impl Client {
         Ok(())
     }
 
+    /// List images on each target Machine with independent bounded retries.
     pub async fn list_images(
         &self,
         reference: Option<String>,
