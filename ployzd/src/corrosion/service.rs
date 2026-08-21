@@ -247,7 +247,7 @@ where
         .await
         .map_err(|_| {
             Error::Api(format!(
-                "Corrosion did not start within {} seconds; inspect `journalctl -u ployzd -n 100 --no-pager`",
+                "Corrosion did not start within {} seconds; inspect `journalctl -u ployz -n 100 --no-pager`",
                 START_TIMEOUT.as_secs(),
             ))
         })?
@@ -377,7 +377,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("journalctl -u ployzd -n 100 --no-pager")
+                .contains("journalctl -u ployz -n 100 --no-pager")
         );
     }
 }
