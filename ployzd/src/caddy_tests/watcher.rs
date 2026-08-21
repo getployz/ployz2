@@ -33,7 +33,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
-async fn retries_protocol_failures_without_exiting() {
+async fn reconciles_resnapshots_and_retries_protocol_failures() {
     let machine = Machine {
         id: MachineId::parse("a".repeat(32)).unwrap(),
         name: MachineName::parse("node-a").unwrap(),
@@ -45,15 +45,16 @@ async fn retries_protocol_failures_without_exiting() {
         runtime: Default::default(),
     };
     let state = WatchState {
-        container: observation(
+        container: Arc::new(Mutex::new(observation(
             1,
             &machine.id,
             "api",
             Some([10, 210, 1, 2]),
             vec![ingress("example.com", 80, HttpProtocol::Http)],
-        ),
-        container_subscriptions: Arc::new(AtomicUsize::new(0)),
-        holds: Arc::new(Mutex::new(Vec::new())),
+        ))),
+        container_opens: Arc::new(AtomicUsize::new(0)),
+        container_subscriptions: Arc::new(Mutex::new(Vec::new())),
+        certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -76,7 +77,7 @@ async fn retries_protocol_failures_without_exiting() {
     let caddyfile = directory.join(CONFIG_FILE);
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(run(
-        machine,
+        machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         caddyfile.clone(),
         directory.join("missing-admin.sock"),
@@ -84,13 +85,56 @@ async fn retries_protocol_failures_without_exiting() {
     ));
 
     wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+    state.replace(observation(
+        2,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 3]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    state.send(b"{\"change\":{}}\n");
+    wait_for_caddyfile(&caddyfile, "10.210.1.3:80").await;
+
+    state.replace(observation(
+        3,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 4]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    state.send(
+        b"{\"columns\":[\"id\",\"container\"]}\n{\"row\":[1,[\"replacement\",\"snapshot\"]]}\n{\"eoq\":{\"time\":0.0}}\n",
+    );
+    let caddy = wait_for_caddyfile(&caddyfile, "10.210.1.4:80").await;
+    assert!(!caddy.contains("10.210.1.3:80"), "{caddy}");
+
+    state.replace(observation(
+        4,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 5]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    state.send(b"{\"change\":{}}\n");
+    let caddy = wait_for_caddyfile(&caddyfile, "10.210.1.5:80").await;
+    assert!(!caddy.contains("10.210.1.4:80"), "{caddy}");
+
+    state.send(b"{\"row\":[1,[]]}\n");
+    state.replace(observation(
+        5,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 6]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
     tokio::time::timeout(Duration::from_secs(5), async {
-        while state.container_subscriptions.load(Ordering::SeqCst) < 2 {
+        while state.container_opens.load(Ordering::SeqCst) < 2 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .expect("Caddy watcher did not resubscribe");
+    wait_for_caddyfile(&caddyfile, "10.210.1.6:80").await;
     assert!(!watcher.is_finished(), "watcher failure exited the plane");
 
     shutdown.cancel();
@@ -101,9 +145,23 @@ async fn retries_protocol_failures_without_exiting() {
 
 #[derive(Clone)]
 struct WatchState {
-    container: ContainerObservation,
-    container_subscriptions: Arc<AtomicUsize>,
-    holds: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
+    container: Arc<Mutex<ContainerObservation>>,
+    container_opens: Arc<AtomicUsize>,
+    container_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
+    certificate_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
+}
+
+impl WatchState {
+    fn replace(&self, container: ContainerObservation) {
+        *self.container.lock().unwrap() = container;
+    }
+
+    fn send(&self, event: &'static [u8]) {
+        self.container_subscriptions
+            .lock()
+            .unwrap()
+            .retain(|subscription| subscription.send(Bytes::from_static(event)).is_ok());
+    }
 }
 
 #[derive(Deserialize)]
@@ -116,11 +174,12 @@ struct Statement {
 async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
     if statement.query == "SELECT id, container FROM containers ORDER BY id" {
+        let container = state.container.lock().unwrap().clone();
         query_events(
             &["id", "container"],
             [vec![
-                json!(state.container.container_id),
-                json!(serde_json::to_string(&state.container).unwrap()),
+                json!(container.container_id),
+                json!(serde_json::to_string(&container).unwrap()),
             ]],
         )
     } else if statement.query == "SELECT hostname, body FROM certificates ORDER BY hostname" {
@@ -132,13 +191,11 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
 
 async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
-    let (columns, fail) = if statement.query == "SELECT id, container FROM containers" {
-        (
-            &["id", "container"][..],
-            state.container_subscriptions.fetch_add(1, Ordering::SeqCst) == 0,
-        )
+    let (columns, subscriptions) = if statement.query == "SELECT id, container FROM containers" {
+        state.container_opens.fetch_add(1, Ordering::SeqCst);
+        (&["id", "container"][..], &state.container_subscriptions)
     } else if statement.query == "SELECT hostname, body FROM certificates" {
-        (&["hostname", "body"][..], false)
+        (&["hostname", "body"][..], &state.certificate_subscriptions)
     } else {
         panic!("unexpected subscription {}", statement.query);
     };
@@ -149,12 +206,7 @@ async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
             json!({ "columns": columns })
         )))
         .unwrap();
-    if fail {
-        sender
-            .send(Bytes::from_static(b"{\"row\":[1,[]]}\n"))
-            .unwrap();
-    }
-    state.holds.lock().unwrap().push(sender);
+    subscriptions.lock().unwrap().push(sender);
     Response::new(Body::from_stream(
         UnboundedReceiverStream::new(receiver).map(Ok::<_, Infallible>),
     ))
@@ -169,15 +221,17 @@ fn query_events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>>) ->
     body.into()
 }
 
-async fn wait_for_caddyfile(path: &Path, expected: &str) {
+async fn wait_for_caddyfile(path: &Path, expected: &str) -> String {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if std::fs::read_to_string(path).is_ok_and(|caddyfile| caddyfile.contains(expected)) {
-                return;
+            if let Ok(caddyfile) = std::fs::read_to_string(path)
+                && caddyfile.contains(expected)
+            {
+                return caddyfile;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("Caddyfile never contained {expected}"));
+    .unwrap_or_else(|_| panic!("Caddyfile never contained {expected}"))
 }
