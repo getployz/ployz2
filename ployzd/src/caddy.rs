@@ -140,10 +140,17 @@ pub async fn run(
     )?;
     let mut last_applied = None;
     'watch: loop {
-        let (mut container_changes, mut certificate_changes) = match tokio::try_join!(
-            replicated.subscribe_container_changes(),
-            replicated.subscribe_certificate_changes(),
-        ) {
+        let subscriptions = async {
+            tokio::try_join!(
+                replicated.subscribe_container_changes(),
+                replicated.subscribe_certificate_changes(),
+            )
+        };
+        let changes = tokio::select! {
+            changes = subscriptions => changes,
+            () = shutdown.cancelled() => return Ok(()),
+        };
+        let (mut container_changes, mut certificate_changes) = match changes {
             Ok(changes) => changes,
             Err(error) => {
                 if wait_to_retry(&error, &shutdown).await {

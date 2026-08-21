@@ -24,7 +24,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -53,6 +53,7 @@ async fn reconciles_resnapshots_and_retries_protocol_failures() {
             vec![ingress("example.com", 80, HttpProtocol::Http)],
         ))),
         container_opens: Arc::new(AtomicUsize::new(0)),
+        stall_container: Arc::new(AtomicBool::new(false)),
         container_subscriptions: Arc::new(Mutex::new(Vec::new())),
         certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
     };
@@ -137,8 +138,21 @@ async fn reconciles_resnapshots_and_retries_protocol_failures() {
     wait_for_caddyfile(&caddyfile, "10.210.1.6:80").await;
     assert!(!watcher.is_finished(), "watcher failure exited the plane");
 
+    state.stall_container.store(true, Ordering::SeqCst);
+    state.send(b"{\"row\":[1,[]]}\n");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while state.container_opens.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Caddy watcher did not begin a stalled subscription");
     shutdown.cancel();
-    watcher.await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(1), watcher)
+        .await
+        .expect("Caddy watcher ignored shutdown during subscription")
+        .unwrap()
+        .unwrap();
     server.abort();
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -147,6 +161,7 @@ async fn reconciles_resnapshots_and_retries_protocol_failures() {
 struct WatchState {
     container: Arc<Mutex<ContainerObservation>>,
     container_opens: Arc<AtomicUsize>,
+    stall_container: Arc<AtomicBool>,
     container_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     certificate_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
 }
@@ -191,21 +206,32 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
 
 async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
-    let (columns, subscriptions) = if statement.query == "SELECT id, container FROM containers" {
-        state.container_opens.fetch_add(1, Ordering::SeqCst);
-        (&["id", "container"][..], &state.container_subscriptions)
-    } else if statement.query == "SELECT hostname, body FROM certificates" {
-        (&["hostname", "body"][..], &state.certificate_subscriptions)
-    } else {
-        panic!("unexpected subscription {}", statement.query);
-    };
+    let (columns, subscriptions, stall) =
+        if statement.query == "SELECT id, container FROM containers" {
+            state.container_opens.fetch_add(1, Ordering::SeqCst);
+            (
+                &["id", "container"][..],
+                &state.container_subscriptions,
+                state.stall_container.load(Ordering::SeqCst),
+            )
+        } else if statement.query == "SELECT hostname, body FROM certificates" {
+            (
+                &["hostname", "body"][..],
+                &state.certificate_subscriptions,
+                false,
+            )
+        } else {
+            panic!("unexpected subscription {}", statement.query);
+        };
     let (sender, receiver) = mpsc::unbounded_channel();
-    sender
-        .send(Bytes::from(format!(
-            "{}\n{{\"eoq\":{{\"time\":0.0}}}}\n",
-            json!({ "columns": columns })
-        )))
-        .unwrap();
+    if !stall {
+        sender
+            .send(Bytes::from(format!(
+                "{}\n{{\"eoq\":{{\"time\":0.0}}}}\n",
+                json!({ "columns": columns })
+            )))
+            .unwrap();
+    }
     subscriptions.lock().unwrap().push(sender);
     Response::new(Body::from_stream(
         UnboundedReceiverStream::new(receiver).map(Ok::<_, Infallible>),
