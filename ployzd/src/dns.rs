@@ -53,9 +53,25 @@ enum ResponsePlan {
 
 struct Projection {
     service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
-    identities: HashMap<QualifiedService, Vec<Ipv4Addr>>,
+    identities: HashMap<QualifiedService, ServiceAddresses>,
     machine_identities: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
-    answer_offset: AtomicUsize,
+}
+
+#[derive(Default)]
+struct ServiceAddresses {
+    eligible: Vec<Ipv4Addr>,
+    next: AtomicUsize,
+}
+
+impl ServiceAddresses {
+    fn rotated(&self) -> Vec<Ipv4Addr> {
+        let mut addresses = self.eligible.clone();
+        if !addresses.is_empty() {
+            let offset = self.next.fetch_add(1, Ordering::Relaxed) % addresses.len();
+            addresses.rotate_left(offset);
+        }
+        addresses
+    }
 }
 
 impl Projection {
@@ -64,7 +80,7 @@ impl Projection {
         // product decision replaces the baseline's deliberately membership-blind behavior.
         let containers = service_containers(observations.iter().cloned());
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
-        let mut identities = HashMap::<QualifiedService, Vec<Ipv4Addr>>::new();
+        let mut identities = HashMap::<QualifiedService, ServiceAddresses>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
         for container in serving_replicas(&containers) {
             let observation = container.as_observation();
@@ -79,6 +95,7 @@ impl Projection {
             identities
                 .entry(identity.clone())
                 .or_default()
+                .eligible
                 .push(address.0);
             machine_identities
                 .entry(MachineServiceTarget {
@@ -92,7 +109,6 @@ impl Projection {
             service_ids,
             identities,
             machine_identities,
-            answer_offset: AtomicUsize::new(0),
         }
     }
 
@@ -120,8 +136,20 @@ impl Projection {
         }
         let (mut addresses, nearest) = match query {
             InternalQuery::Empty | InternalQuery::Regional => (Vec::new(), false),
-            InternalQuery::Service(identity) => (self.identity_addresses(&identity), false),
-            InternalQuery::Nearest(identity) => (self.identity_addresses(&identity), true),
+            InternalQuery::Service(identity) => (
+                self.identities
+                    .get(&identity)
+                    .map(ServiceAddresses::rotated)
+                    .unwrap_or_default(),
+                false,
+            ),
+            InternalQuery::Nearest(identity) => (
+                self.identities
+                    .get(&identity)
+                    .map(|addresses| addresses.eligible.clone())
+                    .unwrap_or_default(),
+                true,
+            ),
             InternalQuery::ServiceId(id) => (
                 self.service_ids.get(&id).cloned().unwrap_or_default(),
                 false,
@@ -134,10 +162,6 @@ impl Projection {
                 false,
             ),
         };
-        if !addresses.is_empty() {
-            let offset = self.answer_offset.fetch_add(1, Ordering::Relaxed) % addresses.len();
-            addresses.rotate_left(offset);
-        }
         if nearest {
             addresses.sort_by_key(|address| !local_subnet.contains(address));
         }
@@ -156,10 +180,6 @@ impl Projection {
             code: ResponseCode::NoError,
             answers,
         }
-    }
-
-    fn identity_addresses(&self, identity: &QualifiedService) -> Vec<Ipv4Addr> {
-        self.identities.get(identity).cloned().unwrap_or_default()
     }
 }
 

@@ -109,6 +109,14 @@ fn resolves_every_canonical_lookup_and_rotates_ordinary_answers() {
         vec![Ipv4Addr::new(10, 210, 2, 2), Ipv4Addr::new(10, 210, 1, 2)]
     );
     assert_eq!(
+        addresses(plan(
+            &projection,
+            &format!("{first}.id.lookup.internal."),
+            RecordType::A,
+        )),
+        vec![Ipv4Addr::new(10, 210, 2, 2)]
+    );
+    assert_eq!(
         addresses(plan(&projection, ordinary, RecordType::A)),
         vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
     );
@@ -119,14 +127,6 @@ fn resolves_every_canonical_lookup_and_rotates_ordinary_answers() {
             RecordType::A,
         )),
         vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
-    );
-    assert_eq!(
-        addresses(plan(
-            &projection,
-            &format!("{first}.id.lookup.internal."),
-            RecordType::A,
-        )),
-        vec![Ipv4Addr::new(10, 210, 2, 2)]
     );
     assert_eq!(
         addresses(plan(
