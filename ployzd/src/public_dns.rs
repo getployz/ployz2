@@ -1,23 +1,18 @@
 //! Keep hosted public DNS aligned with live Caddy Machine membership.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    net::{IpAddr, SocketAddr},
-    time::Duration,
-};
+use std::{collections::BTreeSet, io, net::SocketAddr, time::Duration};
 
 use futures_util::future::join_all;
 use ployz_core::{
-    CADDY_VERIFY_PATH, DnsRecord, DnsRecordType, Machine, MachineId, MachineObservation,
-    ManagementAddress, MembershipObservation, QualifiedService, synthesize_membership,
+    CADDY_VERIFY_PATH, DnsRecord, Machine, MachineId, MachineObservation, QualifiedService,
+    public_dns_candidates, public_dns_records, synthesize_membership,
 };
 use reqwest::{Client, StatusCode, redirect::Policy};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{AdminClient, MembershipState, ReplicatedStore},
+    corrosion::{AdminClient, ReplicatedStore, membership_states_by_address},
     hosted_dns::{HostedDns, Reservation},
 };
 
@@ -46,7 +41,7 @@ pub(crate) async fn run(
             _ = interval.tick() => match projection(&store, &admin, &local_id, &http).await {
                 Ok(None) => published = None,
                 Ok(Some(next)) if published.as_ref() != Some(&next) => {
-                    match hosted.replace_records(&next.0, &next.1).await {
+                    match hosted.replace_records(&next.reservation, &next.records).await {
                         Ok(_) => published = Some(next),
                         Err(error) => eprintln!("failed to update hosted DNS membership projection: {error}"),
                     }
@@ -64,7 +59,7 @@ async fn projection(
     admin: &AdminClient,
     local_id: &MachineId,
     http: &Client,
-) -> Result<Option<(Reservation, Vec<DnsRecord>)>, ProjectionError> {
+) -> Result<Option<DnsProjection>, ProjectionError> {
     let Some(reservation) = store.domain_reservation().await? else {
         return Ok(None);
     };
@@ -76,7 +71,7 @@ async fn projection(
     let observations = synthesize_membership(
         machines.observations,
         local_id,
-        &membership_by_address(states),
+        &membership_states_by_address(states),
     );
     if public_dns_writer(&observations) != Some(*local_id) {
         return Ok(None);
@@ -98,9 +93,18 @@ async fn projection(
         if reachable.is_empty() {
             return Err(ProjectionError::NoReachableMachines);
         }
-        records_from_machines(reachable)
+        public_dns_records(reachable)
     };
-    Ok(Some((reservation, records)))
+    Ok(Some(DnsProjection {
+        reservation,
+        records,
+    }))
+}
+
+#[derive(Eq, PartialEq)]
+struct DnsProjection {
+    reservation: Reservation,
+    records: Vec<DnsRecord>,
 }
 
 fn public_dns_writer(observations: &[MachineObservation]) -> Option<MachineId> {
@@ -113,30 +117,12 @@ fn public_dns_writer(observations: &[MachineObservation]) -> Option<MachineId> {
         .min()
 }
 
-fn membership_by_address(
-    states: impl IntoIterator<Item = MembershipState>,
-) -> BTreeMap<ManagementAddress, MembershipObservation> {
-    states
-        .into_iter()
-        .filter_map(|state| match state.address.ip() {
-            IpAddr::V6(address) => Some((ManagementAddress(address), state.membership)),
-            IpAddr::V4(_) => None,
-        })
-        .collect()
-}
-
 fn public_machines(
     observations: impl IntoIterator<Item = MachineObservation>,
     caddy_machines: &BTreeSet<MachineId>,
 ) -> Vec<Machine> {
-    observations
-        .into_iter()
-        .filter_map(|observation| {
-            (observation.membership.invites_rpc()
-                && caddy_machines.contains(&observation.machine.id)
-                && observation.machine.public_ip.is_some())
-            .then_some(observation.machine)
-        })
+    public_dns_candidates(observations)
+        .filter(|machine| caddy_machines.contains(&machine.id))
         .collect()
 }
 
@@ -167,38 +153,6 @@ async fn probe_machines(client: &Client, machines: Vec<Machine>) -> Vec<Machine>
     .collect()
 }
 
-fn records_from_machines(machines: impl IntoIterator<Item = Machine>) -> Vec<DnsRecord> {
-    let mut ipv4 = BTreeSet::new();
-    let mut ipv6 = BTreeSet::new();
-    for machine in machines {
-        match machine.public_ip {
-            Some(IpAddr::V4(address)) => {
-                ipv4.insert(address.to_string());
-            }
-            Some(IpAddr::V6(address)) => {
-                ipv6.insert(address.to_string());
-            }
-            None => {}
-        }
-    }
-    let mut records = Vec::new();
-    if !ipv4.is_empty() {
-        records.push(DnsRecord {
-            name: "*".into(),
-            record_type: DnsRecordType::A,
-            values: ipv4.into_iter().collect(),
-        });
-    }
-    if !ipv6.is_empty() {
-        records.push(DnsRecord {
-            name: "*".into(),
-            record_type: DnsRecordType::Aaaa,
-            values: ipv6.into_iter().collect(),
-        });
-    }
-    records
-}
-
 #[derive(Debug, Error)]
 enum ProjectionError {
     #[error(transparent)]
@@ -209,45 +163,9 @@ enum ProjectionError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use ployz_core::{Machine, MachineId, MachineObservation, MembershipObservation};
 
-    use super::{public_dns_writer, public_machines, records_from_machines};
-
-    #[test]
-    fn public_records_follow_all_membership_states_in_both_directions() {
-        let mut observation = MachineObservation {
-            machine: serde_json::from_value::<Machine>(serde_json::json!({
-                "id": "4".repeat(32),
-                "name": "machine-4",
-                "subnet": "10.210.4.0/24",
-                "management_address": "fdcc::4",
-                "public_key": vec![4; 32],
-                "public_ip": "192.0.2.4"
-            }))
-            .unwrap(),
-            membership: MembershipObservation::Unknown,
-            selected_endpoint: None,
-            rtt: None,
-        };
-        let caddy_machines = BTreeSet::from([observation.machine.id]);
-
-        for (membership, published) in [
-            (MembershipObservation::Unknown, false),
-            (MembershipObservation::Suspect, true),
-            (MembershipObservation::Down, false),
-            (MembershipObservation::Up, true),
-            (MembershipObservation::Unknown, false),
-        ] {
-            observation.membership = membership;
-            assert_eq!(
-                !records_from_machines(public_machines([observation.clone()], &caddy_machines,))
-                    .is_empty(),
-                published
-            );
-        }
-    }
+    use super::public_dns_writer;
 
     #[test]
     fn lowest_up_or_suspect_machine_is_the_only_writer() {

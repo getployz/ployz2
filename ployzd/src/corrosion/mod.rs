@@ -12,6 +12,7 @@ mod integration_tests;
 #[cfg(test)]
 mod store_tests;
 
+pub(crate) use admin::membership_states_by_address;
 pub use admin::{AdminClient, MembershipState};
 use api::Statement;
 pub(crate) use api::{ApiClient, Subscription};

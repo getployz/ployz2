@@ -6,10 +6,10 @@ use std::{
 };
 
 use ployz_core::{
-    CADDY_VERIFY_PATH, ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, DnsRecordType,
-    HttpProtocol, IngressHost, IngressHostname, IngressLabelTooLong, Machine, MachineId,
-    MachineObservation, PortPublication, ProjectName, QualifiedService, RequestedServiceSpec,
-    cluster_dns_verdict, op,
+    CADDY_VERIFY_PATH, ClusterDnsVerdict, CreateDomainRecordsRequest, DnsRecord, HttpProtocol,
+    IngressHost, IngressHostname, IngressLabelTooLong, Machine, MachineId, MachineObservation,
+    PortPublication, ProjectName, QualifiedService, RequestedServiceSpec, cluster_dns_verdict, op,
+    public_dns_candidates, public_dns_records,
 };
 use reqwest::{Client as HttpClient, redirect::Policy};
 use thiserror::Error;
@@ -117,7 +117,7 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
     }
 
     // ponytail: ListMachines already has public_ip; Inspect during mesh reconvergence is how #248 fails
-    let machines = public_dns_machines(observations)
+    let machines = public_dns_candidates(observations)
         .filter(|machine| caddy_machines.contains(&machine.id))
         .collect::<Vec<_>>();
     if machines.is_empty() {
@@ -179,56 +179,16 @@ fn remaining_members(
     members: impl IntoIterator<Item = MachineObservation>,
     removed: &MachineId,
 ) -> Vec<Machine> {
-    public_dns_machines(members)
+    public_dns_candidates(members)
         .filter(|machine| machine.id != *removed)
         .collect()
 }
 
-fn public_dns_machines(
-    observations: impl IntoIterator<Item = MachineObservation>,
-) -> impl Iterator<Item = Machine> {
-    observations.into_iter().filter_map(|observation| {
-        (observation.membership.invites_rpc() && observation.machine.public_ip.is_some())
-            .then_some(observation.machine)
-    })
-}
-
 fn records_from_machines(machines: &[Machine]) -> Result<Vec<DnsRecord>, NoReachableMachines> {
-    if machines.is_empty() {
-        return Err(NoReachableMachines);
-    }
-    let mut ipv4 = BTreeSet::new();
-    let mut ipv6 = BTreeSet::new();
-    for address in machines.iter().filter_map(|machine| machine.public_ip) {
-        match address {
-            std::net::IpAddr::V4(address) => {
-                ipv4.insert(address.to_string());
-            }
-            std::net::IpAddr::V6(address) => {
-                ipv6.insert(address.to_string());
-            }
-        }
-    }
-    let mut records = Vec::new();
-    if !ipv4.is_empty() {
-        records.push(DnsRecord {
-            name: "*".into(),
-            record_type: DnsRecordType::A,
-            values: ipv4.into_iter().collect(),
-        });
-    }
-    if !ipv6.is_empty() {
-        records.push(DnsRecord {
-            name: "*".into(),
-            record_type: DnsRecordType::Aaaa,
-            values: ipv6.into_iter().collect(),
-        });
-    }
-    if records.is_empty() {
-        Err(NoReachableMachines)
-    } else {
-        Ok(records)
-    }
+    let records = public_dns_records(machines.iter().cloned());
+    (!records.is_empty())
+        .then_some(records)
+        .ok_or(NoReachableMachines)
 }
 
 /// Expand Cluster Domain intents and attach automatic fallbacks.
@@ -475,8 +435,8 @@ mod tests {
 
     use super::{
         DomainRequired, ExpandIngressError, NoReachableMachines, expand_ingress_ports,
-        ingress_dns_warnings, public_dns_machines, reachability_matches, records_from_machines,
-        remaining_members, resolve_ingress_addresses,
+        ingress_dns_warnings, reachability_matches, records_from_machines, remaining_members,
+        resolve_ingress_addresses,
     };
 
     #[test]
@@ -537,24 +497,6 @@ mod tests {
                 values: vec!["192.0.2.1".into(), "203.0.113.1".into()],
             }]
         );
-    }
-
-    #[test]
-    fn public_dns_membership_filter_covers_all_states_and_both_transition_directions() {
-        let mut transitioned = observation('4', "192.0.2.4", MembershipObservation::Unknown);
-        for (membership, published) in [
-            (MembershipObservation::Unknown, false),
-            (MembershipObservation::Suspect, true),
-            (MembershipObservation::Down, false),
-            (MembershipObservation::Up, true),
-            (MembershipObservation::Unknown, false),
-        ] {
-            transitioned.membership = membership;
-            assert_eq!(
-                public_dns_machines([transitioned.clone()]).next().is_some(),
-                published
-            );
-        }
     }
 
     #[test]

@@ -632,43 +632,6 @@ async fn wait_record_values(
     .unwrap();
 }
 
-fn authoritative_wildcard_a(requests: &[CapturedRequest]) -> Vec<String> {
-    record_requests(requests)
-        .into_iter()
-        .rev()
-        .find_map(|request| {
-            let body = serde_json::from_slice::<Value>(&request.body).ok()?;
-            if body.get("name")?.as_str()? != "*" || body.get("type")?.as_str()? != "A" {
-                return None;
-            }
-            Some(
-                body.get("values")?
-                    .as_array()?
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect(),
-            )
-        })
-        .unwrap_or_default()
-}
-
-#[test]
-fn fresh_never_cached_label_reads_the_last_published_wildcard_a() {
-    let older = CapturedRequest {
-        head: "POST /domains/opaque.uncloud.example/records HTTP/1.1".into(),
-        body: br#"{"name":"*","type":"A","values":["192.0.2.1","198.51.100.1"]}"#.to_vec(),
-    };
-    let newer = CapturedRequest {
-        head: "POST /domains/opaque.uncloud.example/records HTTP/1.1".into(),
-        body: br#"{"name":"*","type":"A","values":["192.0.2.1"]}"#.to_vec(),
-    };
-    assert_eq!(
-        authoritative_wildcard_a(&[older, newer]),
-        vec!["192.0.2.1".to_string()]
-    );
-}
-
 fn assert_record(request: &CapturedRequest, record_type: &str, values: &[String]) {
     assert!(
         request
