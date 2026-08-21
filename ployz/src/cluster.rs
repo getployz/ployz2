@@ -425,41 +425,39 @@ impl Client {
         let mut tasks = JoinSet::new();
         for (index, machine) in targets.iter().enumerate() {
             let mut client = self.clone();
-            let machine = machine.clone();
+            let machine_id = machine.id;
+            let machine_name = machine.name.clone();
             let reference = reference.clone();
             tasks.spawn(async move {
                 let response = client
                     .read::<op::ListImages>(
                         ListImagesRequest { reference },
-                        &MachineTarget::from(&machine.id),
+                        &MachineTarget::from(&machine_id),
                     )
                     .await;
-                (index, machine, response)
+                (index, machine_id, machine_name, response)
             });
         }
         let mut outcomes = Vec::with_capacity(tasks.len());
         while let Some(outcome) = tasks.join_next().await {
             outcomes.push(outcome.expect("Image listing task does not panic"));
         }
-        outcomes.sort_by_key(|(index, _, _)| *index);
+        outcomes.sort_by_key(|(index, _, _, _)| *index);
         let mut result = PartialResult {
             successes: Vec::new(),
             failures: Vec::new(),
             omissions: Vec::new(),
         };
-        for (_, machine, outcome) in outcomes {
+        for (_, machine_id, machine_name, outcome) in outcomes {
             match outcome {
                 Ok(images) => result.successes.push(MachineSuccess {
-                    machine_id: machine.id,
+                    machine_id,
                     value: MachineImagesObservation {
-                        machine_name: machine.name,
+                        machine_name,
                         images,
                     },
                 }),
-                Err(error) => result.failures.push(MachineFailure {
-                    machine_id: machine.id,
-                    error,
-                }),
+                Err(error) => result.failures.push(MachineFailure { machine_id, error }),
             }
         }
         result
