@@ -8,7 +8,6 @@ use ployz_core::{
 };
 
 use super::Client;
-use crate::connect::TARGET_RPC_TIMEOUT;
 
 pub(super) async fn observe(
     client: &Client,
@@ -26,7 +25,6 @@ pub(super) async fn observe(
                             ..Default::default()
                         },
                         &MachineTarget::from(&machine_id),
-                        TARGET_RPC_TIMEOUT,
                     )
                     .await;
                 (machine_id, result)

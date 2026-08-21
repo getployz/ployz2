@@ -118,10 +118,7 @@ pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
                     include_rtts: true,
                     ..Default::default()
                 };
-                match client
-                    .read::<op::Inspect>(request, &selector, TARGET_RPC_TIMEOUT)
-                    .await
-                {
+                match client.read::<op::Inspect>(request, &selector).await {
                     Ok(details) => result.successes.push(MachineSuccess {
                         machine_id: id,
                         value: details.rtts,

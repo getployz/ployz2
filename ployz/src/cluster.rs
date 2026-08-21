@@ -114,12 +114,11 @@ impl Client {
         &mut self,
         request: T::Request,
         target: &MachineTarget,
-        timeout: Duration,
     ) -> Result<T::Response, RpcError> {
         let payload = T::into_request(request)
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        self.call_retried::<T>(payload, Some(target), Some(timeout))
+        self.call_retried::<T>(payload, Some(target), Some(TARGET_RPC_TIMEOUT))
             .await
             .map_err(rpc_error)
     }
@@ -418,7 +417,6 @@ impl Client {
                     .read::<op::ListImages>(
                         ListImagesRequest { reference },
                         &MachineTarget::from(&machine.id),
-                        TARGET_RPC_TIMEOUT,
                     )
                     .await;
                 (index, machine, response)
@@ -859,11 +857,7 @@ async fn list_volumes_on_machine(
 ) -> Result<MachineSuccess<Vec<DockerVolume>>, MachineFailure<RpcError>> {
     let mut client = client.clone();
     client
-        .read::<op::ListVolumes>(
-            ListVolumesRequest {},
-            &MachineTarget::from(&machine_id),
-            TARGET_RPC_TIMEOUT,
-        )
+        .read::<op::ListVolumes>(ListVolumesRequest {}, &MachineTarget::from(&machine_id))
         .await
         .map(|list| MachineSuccess {
             machine_id,
@@ -877,11 +871,7 @@ async fn list_on_machine(
     machine_id: MachineId,
 ) -> Result<MachineSuccess<Vec<ployz_core::ContainerObservation>>, MachineFailure<RpcError>> {
     client
-        .read::<op::ListContainers>(
-            ListContainersRequest {},
-            &MachineTarget::from(&machine_id),
-            TARGET_RPC_TIMEOUT,
-        )
+        .read::<op::ListContainers>(ListContainersRequest {}, &MachineTarget::from(&machine_id))
         .await
         .map(|list| MachineSuccess {
             machine_id,
