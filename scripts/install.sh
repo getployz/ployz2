@@ -39,16 +39,31 @@ configure_apt_lock_wait() {
 }
 
 run_with_apt_lock_wait() {
-    local error_log status tee_pid
-    error_log=$(mktemp)
-    if "$@" 2> >(tee "$error_log" >&2); then
-        status=0
-    else
-        status=$?
-    fi
-    tee_pid=$!
-    wait "$tee_pid"
-    if [ "$status" -ne 0 ] && grep -Eq '^E: (Could not get lock|Unable to acquire .* lock)' "$error_log"; then
+    local deadline=0 error_log status tee_pid
+    while true; do
+        error_log=$(mktemp)
+        if "$@" 2> >(tee "$error_log" >&2); then
+            status=0
+        else
+            status=$?
+        fi
+        tee_pid=$!
+        wait "$tee_pid"
+        if [ "$status" -eq 0 ]; then
+            rm -f "$error_log"
+            return 0
+        fi
+        if grep -Eq '^E: Could not get lock .* held by process' "$error_log" && grep -Fq 'Unable to lock directory' "$error_log"; then
+            [ "$deadline" -ne 0 ] || deadline=$((SECONDS + APT_LOCK_TIMEOUT_SECONDS))
+            if [ "$SECONDS" -lt "$deadline" ]; then
+                rm -f "$error_log"
+                sleep 1
+                continue
+            fi
+        fi
+        break
+    done
+    if grep -Eq '^E: (Could not get lock|Unable to acquire .* lock)' "$error_log"; then
         rm -f "$error_log"
         error "The package-manager lock named above stayed busy for five minutes. Let its owner finish, then retry the installer."
     fi

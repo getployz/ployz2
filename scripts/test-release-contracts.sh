@@ -305,37 +305,39 @@ apt_args=(
     -o "Dir::Etc::sourcelist=$apt_root/etc/sources.list"
     -o "Dir::Etc::sourceparts=$apt_root/etc/sources.list.d"
 )
-python3 - "$apt_root/dpkg/lock-frontend" <<'PY' &
+start_apt_lock_owner() {
+    local lock=$1 ready=$1.ready
+    rm -f "$ready"
+    python3 - "$lock" "$ready" "$2" <<'PY' &
 import fcntl
 import sys
 import time
 
 with open(sys.argv[1], "w") as lock:
     fcntl.lockf(lock, fcntl.LOCK_EX)
-    time.sleep(1)
+    open(sys.argv[2], "w").close()
+    time.sleep(int(sys.argv[3]))
 PY
-lock_owner=$!
-sleep 0.1
-run_with_apt_lock_wait apt-get "${apt_args[@]}" -o DPkg::Lock::Timeout=3 check >/dev/null
+    lock_owner=$!
+    while [ ! -e "$ready" ]; do
+        kill -0 "$lock_owner" 2>/dev/null || return 1
+        sleep 0.01
+    done
+}
+
+APT_LOCK_TIMEOUT_SECONDS=3
+start_apt_lock_owner "$apt_root/lists/lock" 1
+run_with_apt_lock_wait apt-get "${apt_args[@]}" update >/dev/null
 wait "$lock_owner"
 
-python3 - "$apt_root/dpkg/lock-frontend" <<'PY' &
-import fcntl
-import sys
-import time
-
-with open(sys.argv[1], "w") as lock:
-    fcntl.lockf(lock, fcntl.LOCK_EX)
-    time.sleep(2)
-PY
-lock_owner=$!
-sleep 0.1
-if lock_error=$(run_with_apt_lock_wait apt-get "${apt_args[@]}" -o DPkg::Lock::Timeout=1 check 2>&1); then
+APT_LOCK_TIMEOUT_SECONDS=1
+start_apt_lock_owner "$apt_root/lists/lock" 2
+if lock_error=$(run_with_apt_lock_wait apt-get "${apt_args[@]}" update 2>&1); then
     echo "apt accepted a lock held past its timeout" >&2
     exit 1
 fi
 wait "$lock_owner"
-printf '%s\n' "$lock_error" | grep -Fq "$apt_root/dpkg/lock-frontend"
+printf '%s\n' "$lock_error" | grep -Fq "$apt_root/lists/lock"
 printf '%s\n' "$lock_error" | grep -Fq "python3"
 printf '%s\n' "$lock_error" | grep -Fq "retry the installer"
 if apt_error=$(run_with_apt_lock_wait apt-get "${apt_args[@]}" install -y definitely-not-a-package 2>&1); then
