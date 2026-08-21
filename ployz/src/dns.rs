@@ -73,11 +73,11 @@ pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error
     }
 }
 
-/// Publish remaining member public IPs after a Machine leaves.
+/// Publish remaining Up or Suspect member public IPs after a Machine leaves.
 ///
 /// Uses the pre-removal membership snapshot so refresh does not Inspect over a
 /// reconverging mesh. Caddy filtering would need that mesh, so this path keeps
-/// every remaining public IP.
+/// every remaining public IP whose membership still invites RPC.
 ///
 /// # Errors
 ///
@@ -90,10 +90,7 @@ pub(crate) async fn update_records_after_removal(
     if client.domain_if_reserved().await?.is_none() {
         return Ok(());
     }
-    let remaining = remaining_members(
-        members.into_iter().map(|observation| observation.machine),
-        removed,
-    );
+    let remaining = remaining_members(members, removed);
     if remaining.is_empty() {
         return Ok(());
     }
@@ -120,9 +117,7 @@ pub async fn update_records_for_caddy(client: &mut Client) -> Result<(), Error> 
     }
 
     // ponytail: ListMachines already has public_ip; Inspect during mesh reconvergence is how #248 fails
-    let machines = observations
-        .into_iter()
-        .map(|observation| observation.machine)
+    let machines = public_dns_machines(observations)
         .filter(|machine| caddy_machines.contains(&machine.id) && machine.public_ip.is_some())
         .collect::<Vec<_>>();
     let records = records_from_machines(&probe_machines(machines).await?)?;
@@ -178,13 +173,23 @@ fn reachability_matches(machine_id: &MachineId, status: u16, body: Option<&[u8]>
 }
 
 fn remaining_members(
-    members: impl IntoIterator<Item = Machine>,
+    members: impl IntoIterator<Item = MachineObservation>,
     removed: &MachineId,
 ) -> Vec<Machine> {
-    members
-        .into_iter()
+    public_dns_machines(members)
         .filter(|machine| machine.id != *removed && machine.public_ip.is_some())
         .collect()
+}
+
+fn public_dns_machines(
+    observations: impl IntoIterator<Item = MachineObservation>,
+) -> impl Iterator<Item = Machine> {
+    observations.into_iter().filter_map(|observation| {
+        observation
+            .membership
+            .invites_rpc()
+            .then_some(observation.machine)
+    })
 }
 
 fn records_from_machines(machines: &[Machine]) -> Result<Vec<DnsRecord>, NoReachableMachines> {
@@ -463,13 +468,14 @@ mod tests {
 
     use ployz_core::{
         DnsRecord, DnsRecordType, HttpProtocol, IngressHostname, Machine, MachineId,
-        PortPublication, ProjectName, RequestedServiceSpec,
+        MachineObservation, MembershipObservation, PortPublication, ProjectName,
+        RequestedServiceSpec,
     };
 
     use super::{
         DomainRequired, ExpandIngressError, NoReachableMachines, expand_ingress_ports,
-        ingress_dns_warnings, reachability_matches, records_from_machines, remaining_members,
-        resolve_ingress_addresses,
+        ingress_dns_warnings, public_dns_machines, reachability_matches, records_from_machines,
+        remaining_members, resolve_ingress_addresses,
     };
 
     #[test]
@@ -515,9 +521,9 @@ mod tests {
     fn remaining_members_drop_the_removed_machine_from_a_three_machine_wildcard() {
         let remaining = remaining_members(
             [
-                machine('1', "192.0.2.1"),
-                machine('2', "198.51.100.1"),
-                machine('3', "203.0.113.1"),
+                observation('1', "192.0.2.1", MembershipObservation::Up),
+                observation('2', "198.51.100.1", MembershipObservation::Up),
+                observation('3', "203.0.113.1", MembershipObservation::Up),
             ],
             &MachineId::parse("2".repeat(32)).unwrap(),
         );
@@ -530,6 +536,24 @@ mod tests {
                 values: vec!["192.0.2.1".into(), "203.0.113.1".into()],
             }]
         );
+    }
+
+    #[test]
+    fn public_dns_membership_filter_covers_all_states_and_both_transition_directions() {
+        let mut transitioned = observation('4', "192.0.2.4", MembershipObservation::Unknown);
+        for (membership, published) in [
+            (MembershipObservation::Unknown, false),
+            (MembershipObservation::Suspect, true),
+            (MembershipObservation::Down, false),
+            (MembershipObservation::Up, true),
+            (MembershipObservation::Unknown, false),
+        ] {
+            transitioned.membership = membership;
+            assert_eq!(
+                !published_addresses([transitioned.clone()]).is_empty(),
+                published
+            );
+        }
     }
 
     #[test]
@@ -907,5 +931,26 @@ mod tests {
         .unwrap();
         machine.public_ip = Some(public_ip.parse::<IpAddr>().unwrap());
         machine
+    }
+
+    fn observation(
+        seed: char,
+        public_ip: &str,
+        membership: MembershipObservation,
+    ) -> MachineObservation {
+        MachineObservation {
+            machine: machine(seed, public_ip),
+            membership,
+            selected_endpoint: None,
+            rtt: None,
+        }
+    }
+
+    fn published_addresses(
+        observations: impl IntoIterator<Item = MachineObservation>,
+    ) -> Vec<String> {
+        public_dns_machines(observations)
+            .filter_map(|machine| machine.public_ip.map(|address| address.to_string()))
+            .collect()
     }
 }
