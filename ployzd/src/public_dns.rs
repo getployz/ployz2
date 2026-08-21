@@ -54,18 +54,12 @@ pub(crate) async fn run(
                 }
                 Ok(Projection::NotWriter) => published = None,
                 Ok(Projection::Records(next)) if should_publish(published.as_ref(), &next, Instant::now()) => {
-                    match store.domain_reservation().await {
-                        Ok(Some(current)) if current == next.reservation => {
-                            match hosted.replace_records(&next.reservation, &next.records).await {
-                                Ok(_) => published = Some(PublishedProjection {
-                                    projection: next,
-                                    published_at: Instant::now(),
-                                }),
-                                Err(error) => eprintln!("failed to update hosted DNS membership projection: {error}"),
-                            }
-                        }
-                        Ok(_) => published = None,
-                        Err(error) => eprintln!("failed to fence hosted DNS membership projection: {error}"),
+                    match hosted.replace_records(&next.reservation, &next.records).await {
+                        Ok(_) => published = Some(PublishedProjection {
+                            projection: next,
+                            published_at: Instant::now(),
+                        }),
+                        Err(error) => eprintln!("failed to update hosted DNS membership projection: {error}"),
                     }
                 }
                 Ok(Projection::Records(_)) => {}
