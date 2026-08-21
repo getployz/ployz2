@@ -1,4 +1,4 @@
-//! Fake enroll HTTP, Relay, and Machine RPC for `ployz cloud enroll` tests.
+//! Fake enroll HTTP, Relay, and Machine RPC for membership join tests.
 
 use std::{
     collections::VecDeque,
@@ -248,6 +248,10 @@ impl JoinDaemon {
         self
     }
 
+    #[allow(
+        dead_code,
+        reason = "used by the join_catch_up integration-test target"
+    )]
     pub fn transient_ensure_failures(self, failures: usize) -> Self {
         self.inner
             .transient_ensure_failures
@@ -264,6 +268,10 @@ impl JoinDaemon {
         self.inner.ensure_requests.lock().unwrap().clone()
     }
 
+    #[allow(
+        dead_code,
+        reason = "used by the join_catch_up integration-test target"
+    )]
     pub fn ensure_attempts(&self) -> usize {
         self.inner.ensure_attempts.load(Ordering::SeqCst)
     }
@@ -818,6 +826,30 @@ pub fn registration() -> Registered {
         assigned_machine: joiner_machine(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+    }
+}
+
+pub fn caddy_on(machine: &Machine) -> ContainerObservation {
+    let spec = ployz::caddy::service_spec("caddy:2.10.0".into(), Vec::new(), None).to_resolved(
+        ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+        ployz_core::ResolvedUpdateConfig::default(),
+    );
+    ContainerObservation {
+        container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+        display_name: "caddy-a".into(),
+        created_at_unix_nanos: 1,
+        machine_id: machine.id,
+        project_name: ployz_core::ProjectName::system(),
+        service_id: spec.service_id,
+        service_name: spec.name.clone(),
+        kind: ContainerKind::ServiceContainer,
+        runtime: ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        },
+        effective_healthcheck: None,
+        resolved_spec: spec,
+        address: None,
+        labels: Default::default(),
     }
 }
 
