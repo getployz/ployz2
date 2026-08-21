@@ -149,6 +149,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     "Docker Volume {name:?} was not found"
                 )));
             }
+            report_partial_removal_discovery(&result);
             if volumes.is_empty() {
                 return Err(Error::usage(failure_summary(&result)));
             }
@@ -156,7 +157,6 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
             for volume in &volumes {
                 println!("  {}/{}", volume.machine_name, volume.volume.id.name);
             }
-            report_partial_removal_discovery(&result);
             let confirmed = yes || confirm()?;
             if !confirmed {
                 println!("Cancelled. No volumes were removed.");

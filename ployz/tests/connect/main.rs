@@ -376,6 +376,25 @@ async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is
         String::from_utf8_lossy(&failed.stderr).contains("volume is in use"),
         "{failed:?}"
     );
+
+    let unseen = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "volume",
+            "rm",
+            "unseen",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(!unseen.status.success(), "{unseen:?}");
+    assert!(
+        String::from_utf8_lossy(&unseen.stderr)
+            .contains("was not checked and may hold a same-named Docker Volume"),
+        "{unseen:?}"
+    );
     server.abort();
 }
 
