@@ -28,6 +28,7 @@ pub const DEFAULT_API_ADDRESS: &str = "127.0.0.1:51002";
 pub const DEFAULT_GOSSIP_ADDRESS: &str = "127.0.0.1:51001";
 const TOKEN_FILE: &str = ".api-token";
 const SCHEMA: &str = include_str!("schema.sql");
+const READY_TIMEOUT: Duration = Duration::from_secs(4 * 60 + 30);
 
 pub struct CorrosionConfig {
     data_dir: PathBuf,
@@ -90,12 +91,7 @@ impl CorrosionConfig {
             run_dir: self.run_dir.clone(),
         };
         service.start().await?;
-        wait_ready(|| async {
-            api.query(Statement::new("SELECT 1 FROM cluster LIMIT 1", []))
-                .await
-                .is_ok()
-        })
-        .await;
+        wait_ready(|| async { api.query(Statement::new("SELECT 1", [])).await.is_ok() }).await?;
         Ok(RunningCorrosion {
             store: ReplicatedStore::new(api),
             admin,
@@ -240,25 +236,26 @@ impl DockerService {
     }
 }
 
-async fn wait_ready<F, Fut>(mut ready: F)
+async fn wait_ready<F, Fut>(mut ready: F) -> Result<(), Error>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = bool>,
 {
-    let warning_interval = Duration::from_secs(5 * 60);
-    let mut warning_at = tokio::time::Instant::now() + warning_interval;
-    loop {
-        if ready().await {
-            return;
-        }
-        tokio::select! {
-            () = tokio::time::sleep(Duration::from_millis(500)) => {}
-            () = tokio::time::sleep_until(warning_at) => {
-                eprintln!("Corrosion is still not ready");
-                warning_at = tokio::time::Instant::now() + warning_interval;
+    tokio::time::timeout(READY_TIMEOUT, async {
+        loop {
+            if ready().await {
+                return;
             }
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
-    }
+    })
+    .await
+    .map_err(|_| {
+        Error::Api(
+            "Corrosion did not become ready within 270 seconds; run `docker logs ployz-corrosion`"
+                .into(),
+        )
+    })
 }
 
 fn create_private_dir(path: &Path) -> Result<(), Error> {
@@ -352,11 +349,23 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn corrosion_readiness_wait_keeps_polling_after_fifteen_seconds() {
         let started = Instant::now();
-        wait_ready(|| async { started.elapsed() >= Duration::from_secs(16) }).await;
+        wait_ready(|| async { started.elapsed() >= Duration::from_secs(16) })
+            .await
+            .unwrap();
         assert!(
             started.elapsed() >= Duration::from_secs(16),
             "probe must succeed only after 15 seconds, got {:?}",
             started.elapsed()
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn corrosion_readiness_wait_is_bounded() {
+        let error =
+            tokio::time::timeout(Duration::from_secs(5 * 60), wait_ready(|| async { false }))
+                .await
+                .expect("Corrosion readiness must return before the systemd startup ceiling")
+                .unwrap_err();
+        assert!(error.to_string().contains("docker logs ployz-corrosion"));
     }
 }
