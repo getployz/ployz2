@@ -698,11 +698,11 @@ fn write_certificate_errors(
 }
 
 #[derive(Default)]
-struct Site<'a> {
+struct Site<'certificate> {
     http: Option<Vec<String>>,
     https: Option<Vec<String>>,
-    challenge: Option<&'a CertificateChallenge>,
-    material: Option<&'a CertificateMaterial>,
+    challenge: Option<&'certificate CertificateChallenge>,
+    material: Option<&'certificate CertificateMaterial>,
 }
 
 impl Site<'_> {
