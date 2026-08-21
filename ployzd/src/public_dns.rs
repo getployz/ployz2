@@ -9,6 +9,7 @@ use ployz_core::{
 };
 use reqwest::{Client, StatusCode, redirect::Policy};
 use thiserror::Error;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -18,6 +19,7 @@ use crate::{
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
+const REASSERT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Keep the public wildcard aligned with this Machine's live membership view.
 pub(crate) async fn run(
@@ -35,18 +37,38 @@ pub(crate) async fn run(
         .map_err(io::Error::other)?;
     let mut interval = tokio::time::interval(REFRESH_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut published = None;
+    let mut published: Option<PublishedProjection> = None;
     loop {
         tokio::select! {
             _ = interval.tick() => match projection(&store, &admin, &local_id, &http).await {
-                Ok(None) => published = None,
-                Ok(Some(next)) if published.as_ref() != Some(&next) => {
-                    match hosted.replace_records(&next.reservation, &next.records).await {
-                        Ok(_) => published = Some(next),
-                        Err(error) => eprintln!("failed to update hosted DNS membership projection: {error}"),
+                Ok(Projection::NoReservation) => {
+                    let reservation = published
+                        .as_ref()
+                        .map(|published| published.projection.reservation.clone());
+                    if let Some(reservation) = reservation {
+                        match hosted.replace_records(&reservation, &[]).await {
+                            Ok(_) => published = None,
+                            Err(error) => eprintln!("failed to withdraw released hosted DNS projection: {error}"),
+                        }
                     }
                 }
-                Ok(Some(_)) => {}
+                Ok(Projection::NotWriter) => published = None,
+                Ok(Projection::Records(next)) if should_publish(published.as_ref(), &next, Instant::now()) => {
+                    match store.domain_reservation().await {
+                        Ok(Some(current)) if current == next.reservation => {
+                            match hosted.replace_records(&next.reservation, &next.records).await {
+                                Ok(_) => published = Some(PublishedProjection {
+                                    projection: next,
+                                    published_at: Instant::now(),
+                                }),
+                                Err(error) => eprintln!("failed to update hosted DNS membership projection: {error}"),
+                            }
+                        }
+                        Ok(_) => published = None,
+                        Err(error) => eprintln!("failed to fence hosted DNS membership projection: {error}"),
+                    }
+                }
+                Ok(Projection::Records(_)) => {}
                 Err(error) => eprintln!("failed to rebuild hosted DNS membership projection: {error}"),
             },
             () = shutdown.cancelled() => return Ok(()),
@@ -59,9 +81,9 @@ async fn projection(
     admin: &AdminClient,
     local_id: &MachineId,
     http: &Client,
-) -> Result<Option<DnsProjection>, ProjectionError> {
+) -> Result<Projection, ProjectionError> {
     let Some(reservation) = store.domain_reservation().await? else {
-        return Ok(None);
+        return Ok(Projection::NoReservation);
     };
     let (machines, containers, states) = tokio::try_join!(
         store.machines(),
@@ -74,7 +96,7 @@ async fn projection(
         &membership_states_by_address(states),
     );
     if public_dns_writer(&observations) != Some(*local_id) {
-        return Ok(None);
+        return Ok(Projection::NotWriter);
     }
     let caddy_machines = containers
         .observations
@@ -86,25 +108,39 @@ async fn projection(
         return Err(ProjectionError::NoReachableMachines);
     }
     let candidates = public_machines(observations, &caddy_machines);
-    let records = if candidates.is_empty() {
-        Vec::new()
-    } else {
-        let reachable = probe_machines(http, candidates).await;
-        if reachable.is_empty() {
-            return Err(ProjectionError::NoReachableMachines);
-        }
-        public_dns_records(reachable)
-    };
-    Ok(Some(DnsProjection {
+    let records = public_dns_records(probe_machines(http, candidates).await);
+    Ok(Projection::Records(DnsProjection {
         reservation,
         records,
     }))
+}
+
+enum Projection {
+    NoReservation,
+    NotWriter,
+    Records(DnsProjection),
 }
 
 #[derive(Eq, PartialEq)]
 struct DnsProjection {
     reservation: Reservation,
     records: Vec<DnsRecord>,
+}
+
+struct PublishedProjection {
+    projection: DnsProjection,
+    published_at: Instant,
+}
+
+fn should_publish(
+    published: Option<&PublishedProjection>,
+    next: &DnsProjection,
+    now: Instant,
+) -> bool {
+    published.is_none_or(|published| {
+        published.projection != *next
+            || now.saturating_duration_since(published.published_at) >= REASSERT_INTERVAL
+    })
 }
 
 fn public_dns_writer(observations: &[MachineObservation]) -> Option<MachineId> {
@@ -163,9 +199,44 @@ enum ProjectionError {
 
 #[cfg(test)]
 mod tests {
+    use tokio::time::Instant;
+
     use ployz_core::{Machine, MachineId, MachineObservation, MembershipObservation};
 
-    use super::public_dns_writer;
+    use super::{
+        DnsProjection, PublishedProjection, REASSERT_INTERVAL, public_dns_writer, should_publish,
+    };
+    use crate::hosted_dns::Reservation;
+
+    #[test]
+    fn unchanged_projection_is_periodically_reasserted() {
+        let now = Instant::now();
+        let projection = DnsProjection {
+            reservation: Reservation {
+                endpoint: "https://dns.example.test/v1".into(),
+                name: "cluster.example.test".into(),
+                token: "token".into(),
+            },
+            records: Vec::new(),
+        };
+        let recent = PublishedProjection {
+            projection: DnsProjection {
+                reservation: projection.reservation.clone(),
+                records: Vec::new(),
+            },
+            published_at: now,
+        };
+        assert!(!should_publish(Some(&recent), &projection, now));
+
+        let stale = PublishedProjection {
+            projection: DnsProjection {
+                reservation: projection.reservation.clone(),
+                records: Vec::new(),
+            },
+            published_at: now - REASSERT_INTERVAL,
+        };
+        assert!(should_publish(Some(&stale), &projection, now));
+    }
 
     #[test]
     fn lowest_up_or_suspect_machine_is_the_only_writer() {

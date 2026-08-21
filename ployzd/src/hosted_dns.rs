@@ -52,10 +52,10 @@ impl HostedDns {
 
     pub(crate) async fn release_domain(&self, store: &ReplicatedStore) -> Result<String, Error> {
         let reservation = store.domain_reservation().await?.ok_or(Error::NotFound)?;
+        store.remove_domain_reservation().await?;
         // ponytail: purge is best-effort. Hosted PersistRecord leaves stale
         // values after upsert, so purgerecords 500s; age-purge removes leftovers.
         let _ = self.purge_hosted_records(&reservation).await;
-        store.remove_domain_reservation().await?;
         Ok(reservation.name)
     }
 
