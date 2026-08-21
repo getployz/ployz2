@@ -40,7 +40,6 @@ configure_apt_lock_wait() {
     fi
     printf 'DPkg::Lock::Timeout "%s";\n' "$APT_LOCK_TIMEOUT_SECONDS" >> "$PLOYZ_APT_CONFIG"
     export APT_CONFIG="$PLOYZ_APT_CONFIG"
-    trap 'rm -f "$PLOYZ_APT_CONFIG"' EXIT
 }
 
 run_with_apt_lock_wait() {
@@ -61,7 +60,7 @@ run_with_apt_lock_wait() {
             rm -rf "$error_dir"
             return 0
         fi
-        if grep -Eq '^E: Could not get lock .*/lists/lock\. It is held by process' "$error_log"; then
+        if grep -Eq '^E: Could not get lock .*/(lists|archives)/lock\. It is held by process' "$error_log"; then
             [ "$deadline" -ne 0 ] || deadline=$((SECONDS + APT_LOCK_TIMEOUT_SECONDS))
             if [ "$SECONDS" -lt "$deadline" ]; then
                 rm -rf "$error_dir"
@@ -243,10 +242,16 @@ main() {
     [ "$EUID" -eq 0 ] || error "Run this installer with sudo or as root"
     [ "$PLOYZ_VERSION" != nightly ] || error "nightly is not a supported release channel"
     verify_system
-    command_exists apt-get && configure_apt_lock_wait
+    if command_exists apt-get; then
+        configure_apt_lock_wait
+        trap 'rm -f "$PLOYZ_APT_CONFIG"' EXIT
+    fi
     install_prerequisites
     install_docker
-    rm -f "$PLOYZ_APT_CONFIG"
+    if [ -n "$PLOYZ_APT_CONFIG" ]; then
+        rm -f "$PLOYZ_APT_CONFIG"
+        trap - EXIT
+    fi
     create_user_and_directories
     unit=$INSTALL_SYSTEMD_DIR/ployz.service
     [ -f "$unit" ] || DAEMON_REPLACED=true

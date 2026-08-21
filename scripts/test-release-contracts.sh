@@ -349,8 +349,9 @@ if archive_error=$(run_with_apt_lock_wait sh -c 'printf x >> "$1"; printf "%s\n"
     echo "fake archive lock unexpectedly succeeded" >&2
     exit 1
 fi
-assert_eq "$(cat "$archive_attempts")" x
+assert_eq "$(cat "$archive_attempts")" xx
 printf '%s\n' "$archive_error" | grep -Fq "/var/cache/apt/archives/lock"
+printf '%s\n' "$archive_error" | grep -Fq "retry the installer"
 rm -f "$archive_attempts"
 if apt_error=$(run_with_apt_lock_wait apt-get "${apt_args[@]}" install -y definitely-not-a-package 2>&1); then
     echo "apt installed a nonexistent package" >&2
@@ -366,7 +367,6 @@ if printf '%s\n' "$apt_error" | grep -Fq "retry the installer"; then
 fi
 rm -rf "$apt_root"
 rm -f "$APT_CONFIG"
-trap - EXIT
 
 PLOYZ_CLI_INSTALL_TEST_ONLY=true source "$ROOT/install.sh"
 assert_eq "$(cli_archive Linux x86_64)" "ployz_linux_amd64.tar.gz"
