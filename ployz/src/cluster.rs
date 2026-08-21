@@ -136,7 +136,9 @@ impl Client {
             let outcome = match timeout {
                 Some(timeout) => match tokio::time::timeout(timeout, attempt).await {
                     Ok(outcome) => outcome,
-                    Err(_) => Err(ConnectError::Attempt("target Machine RPC timed out".into())),
+                    Err(_) => {
+                        Err(tonic::Status::deadline_exceeded("target Machine RPC timed out").into())
+                    }
                 },
                 None => attempt.await,
             };
