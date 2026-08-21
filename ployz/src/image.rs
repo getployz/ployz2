@@ -331,7 +331,9 @@ pub(crate) async fn ensure_cluster_image(
         .filter(|machine| machine.membership.invites_rpc())
         .map(|machine| machine.machine)
         .collect::<Vec<_>>();
-    let listings = client.list_images(Some(image.to_owned()), &targets).await;
+    let listings = listing_client
+        .list_images(Some(image.to_owned()), &targets)
+        .await;
     if destination_has_image(dest, &listings.successes, image) {
         return Ok(());
     }
