@@ -276,7 +276,7 @@ impl Client {
             let machine_id = machine.machine.id;
             let client = self.clone();
             requests
-                .spawn(async move { (index, list_volumes_on_machine(&client, machine_id).await) });
+                .spawn(async move { (index, list_volumes_on_machine(client, machine_id).await) });
         }
         let mut outcomes = Vec::with_capacity(requests.len());
         while let Some(outcome) = requests.join_next().await {
@@ -829,7 +829,7 @@ async fn data_loss_on_machine(
     if !observation.membership.invites_rpc() {
         return Err(machine_did_not_respond(selected));
     }
-    let volumes = list_volumes_on_machine(client, selected)
+    let volumes = list_volumes_on_machine(client.clone(), selected)
         .await
         .map_err(|failure| {
             if failure.error.code == RpcErrorCode::Unavailable {
@@ -856,10 +856,9 @@ fn machine_did_not_respond(machine_id: MachineId) -> RpcError {
 }
 
 async fn list_volumes_on_machine(
-    client: &Client,
+    mut client: Client,
     machine_id: MachineId,
 ) -> Result<MachineSuccess<Vec<DockerVolume>>, MachineFailure<RpcError>> {
-    let mut client = client.clone();
     client
         .read::<op::ListVolumes>(ListVolumesRequest {}, &MachineTarget::from(&machine_id))
         .await
