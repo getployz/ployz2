@@ -81,7 +81,7 @@ impl CorrosionConfig {
     }
 
     pub async fn start(&self) -> Result<RunningCorrosion, Error> {
-        bounded_start(async {
+        bounded_start(&self.container_name, async {
             let token = self.install()?;
             let api = ApiClient::new(self.api_address, &token)?;
             let admin = AdminClient::new(self.run_dir.join("admin.sock"));
@@ -239,7 +239,7 @@ impl DockerService {
     }
 }
 
-async fn bounded_start<F, T>(start: F) -> Result<T, Error>
+async fn bounded_start<F, T>(container_name: &str, start: F) -> Result<T, Error>
 where
     F: Future<Output = Result<T, Error>>,
 {
@@ -247,8 +247,8 @@ where
         .await
         .map_err(|_| {
             Error::Api(format!(
-                "Corrosion did not start within {} seconds; run `docker logs ployz-corrosion`",
-                START_TIMEOUT.as_secs()
+                "Corrosion did not start within {} seconds; run `docker logs {container_name}`",
+                START_TIMEOUT.as_secs(),
             ))
         })?
 }
@@ -369,11 +369,14 @@ mod tests {
     async fn corrosion_start_is_bounded() {
         let error = tokio::time::timeout(
             Duration::from_secs(5 * 60),
-            bounded_start(std::future::pending::<Result<(), Error>>()),
+            bounded_start(
+                "custom-corrosion",
+                std::future::pending::<Result<(), Error>>(),
+            ),
         )
         .await
         .expect("Corrosion startup must return before the systemd startup ceiling")
         .unwrap_err();
-        assert!(error.to_string().contains("docker logs ployz-corrosion"));
+        assert!(error.to_string().contains("docker logs custom-corrosion"));
     }
 }
