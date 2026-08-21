@@ -1,15 +1,8 @@
 //! Shared post-join Global catch-up behavior for Cloud enrollment and Machine add.
 
-#[allow(
-    dead_code,
-    reason = "shared with the cloud_init integration-test target"
-)]
-#[path = "../cloud_init/harness.rs"]
-mod harness;
-
 use std::{collections::BTreeMap, fs, process::Output};
 
-use harness::{
+use super::harness::{
     EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, caddy_on, founder_machine, registration,
     serve_machine,
 };

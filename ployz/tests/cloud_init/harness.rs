@@ -248,10 +248,6 @@ impl JoinDaemon {
         self
     }
 
-    #[allow(
-        dead_code,
-        reason = "used by the join_catch_up integration-test target"
-    )]
     pub fn transient_ensure_failures(self, failures: usize) -> Self {
         self.inner
             .transient_ensure_failures
@@ -268,10 +264,6 @@ impl JoinDaemon {
         self.inner.ensure_requests.lock().unwrap().clone()
     }
 
-    #[allow(
-        dead_code,
-        reason = "used by the join_catch_up integration-test target"
-    )]
     pub fn ensure_attempts(&self) -> usize {
         self.inner.ensure_attempts.load(Ordering::SeqCst)
     }
