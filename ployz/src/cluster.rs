@@ -100,6 +100,11 @@ impl Client {
     /// Transient transport drops (`Attempt`, tonic `Unavailable` / `DeadlineExceeded`)
     /// redial the same connection and retry up to four times. Domain `Remote` errors
     /// and other gRPC status codes are not retried.
+    ///
+    /// # Errors
+    ///
+    /// Returns an encoding, transport, or remote RPC error when the call does
+    /// not succeed within the bounded retry policy.
     pub async fn call<T: Rpc>(
         &mut self,
         request: T::Request,
