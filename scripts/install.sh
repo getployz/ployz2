@@ -32,31 +32,39 @@ error() { echo "ERROR: $1" >&2; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 configure_apt_lock_wait() {
+    local inherited_apt_config=${APT_CONFIG:-}
     PLOYZ_APT_CONFIG=$(mktemp)
-    printf 'DPkg::Lock::Timeout "%s";\n' "$APT_LOCK_TIMEOUT_SECONDS" > "$PLOYZ_APT_CONFIG"
-    export APT_CONFIG=$PLOYZ_APT_CONFIG
+    if [ -n "$inherited_apt_config" ]; then
+        cat "$inherited_apt_config" > "$PLOYZ_APT_CONFIG"
+        printf '\n' >> "$PLOYZ_APT_CONFIG"
+    fi
+    printf 'DPkg::Lock::Timeout "%s";\n' "$APT_LOCK_TIMEOUT_SECONDS" >> "$PLOYZ_APT_CONFIG"
+    export APT_CONFIG="$PLOYZ_APT_CONFIG"
     trap 'rm -f "$PLOYZ_APT_CONFIG"' EXIT
 }
 
 run_with_apt_lock_wait() {
-    local deadline=0 error_log status tee_pid
+    local deadline=0 error_dir error_log status tee_pid
     while true; do
-        error_log=$(mktemp)
-        if "$@" 2> >(tee "$error_log" >&2); then
+        error_dir=$(mktemp -d)
+        error_log=$error_dir/stderr
+        mkfifo "$error_dir/pipe"
+        tee "$error_log" < "$error_dir/pipe" >&2 &
+        tee_pid=$!
+        if LC_ALL=C "$@" 2> "$error_dir/pipe"; then
             status=0
         else
             status=$?
         fi
-        tee_pid=$!
         wait "$tee_pid"
         if [ "$status" -eq 0 ]; then
-            rm -f "$error_log"
+            rm -rf "$error_dir"
             return 0
         fi
-        if grep -Eq '^E: Could not get lock .* held by process' "$error_log" && grep -Fq 'Unable to lock directory' "$error_log"; then
+        if grep -Eq '^E: Could not get lock .*/lists/lock\. It is held by process' "$error_log"; then
             [ "$deadline" -ne 0 ] || deadline=$((SECONDS + APT_LOCK_TIMEOUT_SECONDS))
             if [ "$SECONDS" -lt "$deadline" ]; then
-                rm -f "$error_log"
+                rm -rf "$error_dir"
                 sleep 1
                 continue
             fi
@@ -64,10 +72,10 @@ run_with_apt_lock_wait() {
         break
     done
     if grep -Eq '^E: (Could not get lock|Unable to acquire .* lock)' "$error_log"; then
-        rm -f "$error_log"
+        rm -rf "$error_dir"
         error "The package-manager lock named above stayed busy for five minutes. Let its owner finish, then retry the installer."
     fi
-    rm -f "$error_log"
+    rm -rf "$error_dir"
     return "$status"
 }
 

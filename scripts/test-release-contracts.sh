@@ -292,8 +292,12 @@ assert_eq "$(daemon_action 1.2.4 1.2.3 floating)" "keep"
 assert_eq "$(daemon_action 1.2.3 1.2.2 pin)" "replace"
 assert_eq "$(daemon_action 1.2.2 1.2.3 pin)" "replace"
 
-configure_apt_lock_wait
-assert_eq "$(cat "$APT_CONFIG")" 'DPkg::Lock::Timeout "300";'
+inherited_apt_config=$(mktemp)
+printf 'Acquire::Retries "7";' > "$inherited_apt_config"
+APT_CONFIG=$inherited_apt_config configure_apt_lock_wait
+assert_eq "$(cat "$APT_CONFIG")" $'Acquire::Retries "7";\nDPkg::Lock::Timeout "300";'
+assert_eq "$(run_with_apt_lock_wait sh -c 'printf %s "$LC_ALL"')" C
+rm -f "$inherited_apt_config"
 apt_root=$(mktemp -d)
 mkdir -p "$apt_root/lists/partial" "$apt_root/cache/archives/partial" "$apt_root/dpkg" "$apt_root/etc/sources.list.d"
 : > "$apt_root/dpkg/status"
@@ -340,6 +344,14 @@ wait "$lock_owner"
 printf '%s\n' "$lock_error" | grep -Fq "$apt_root/lists/lock"
 printf '%s\n' "$lock_error" | grep -Fq "python3"
 printf '%s\n' "$lock_error" | grep -Fq "retry the installer"
+archive_attempts=$(mktemp)
+if archive_error=$(run_with_apt_lock_wait sh -c 'printf x >> "$1"; printf "%s\n" "E: Could not get lock /var/cache/apt/archives/lock. It is held by process 1 (apt-get)" "E: Unable to lock directory /var/cache/apt/archives/" >&2; exit 100' _ "$archive_attempts" 2>&1); then
+    echo "fake archive lock unexpectedly succeeded" >&2
+    exit 1
+fi
+assert_eq "$(cat "$archive_attempts")" x
+printf '%s\n' "$archive_error" | grep -Fq "/var/cache/apt/archives/lock"
+rm -f "$archive_attempts"
 if apt_error=$(run_with_apt_lock_wait apt-get "${apt_args[@]}" install -y definitely-not-a-package 2>&1); then
     echo "apt installed a nonexistent package" >&2
     exit 1
