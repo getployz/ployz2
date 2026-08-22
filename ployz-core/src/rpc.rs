@@ -421,17 +421,25 @@ pub struct ImagePulled {}
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GetCaddyConfigRequest {}
 
+/// A Service's state in a candidate Caddy configuration.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CaddyServiceConfig {
-    pub service: QualifiedService,
-    pub config: Option<String>,
+pub enum CaddyServiceConfig {
+    /// The Service remains deployed, with an optional custom Caddy fragment.
+    Present(Option<String>),
+    /// The Service is removed by the deployment.
+    Removed,
 }
 
+/// The Service states used to build and validate a candidate Caddy configuration.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PreflightCaddyConfigRequest {
-    pub services: Vec<CaddyServiceConfig>,
-    pub removed_services: Vec<QualifiedService>,
+    /// Final deployment state for every Service changed or removed by the plan.
+    pub services: BTreeMap<QualifiedService, CaddyServiceConfig>,
 }
+
+/// Confirms that the candidate Caddy configuration adapted successfully.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CaddyConfigPreflighted {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReserveDomainRequest {
@@ -839,6 +847,7 @@ define_responses! {
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
     ImagePulled(ImagePulled) => "image_pulled";
     CaddyConfig(CaddyConfig) => "caddy_config";
+    CaddyConfigPreflighted(CaddyConfigPreflighted) => "caddy_config_preflighted";
     Domain(Domain) => "domain";
     DomainRecords(DomainRecords) => "domain_records";
     MachineUpdated(MachineUpdated) => "machine_updated";

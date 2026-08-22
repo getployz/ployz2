@@ -56,13 +56,13 @@ pub(crate) enum Error {
     AdminUnavailable,
     #[error("{0}")]
     Template(String),
-    #[error("{0}")]
-    Candidate(String),
-}
-
-enum ConfigOverride {
-    Planned(Option<String>),
-    Removed,
+    #[error("Service '{service}': Caddy {operation} failed: {source}")]
+    Candidate {
+        service: QualifiedService,
+        operation: &'static str,
+        #[source]
+        source: Box<Error>,
+    },
 }
 
 trait CaddyAdmin: Send + Sync {
@@ -260,8 +260,7 @@ pub(crate) async fn preflight(
     observations: &[ContainerObservation],
     certificates: &BTreeMap<IngressHost, CertificateRow>,
     admin_socket: &Path,
-    services: &[CaddyServiceConfig],
-    removed_services: &[QualifiedService],
+    services: &BTreeMap<QualifiedService, CaddyServiceConfig>,
 ) -> Result<String, Error> {
     let admin = AdminClient::connect_if_available(admin_socket).await?;
     preflight_candidate(
@@ -269,7 +268,6 @@ pub(crate) async fn preflight(
         observations,
         certificates,
         services,
-        removed_services,
         admin.as_ref(),
     )
     .await
@@ -279,25 +277,9 @@ async fn preflight_candidate<A: CaddyAdmin>(
     machine: &Machine,
     observations: &[ContainerObservation],
     certificates: &BTreeMap<IngressHost, CertificateRow>,
-    services: &[CaddyServiceConfig],
-    removed_services: &[QualifiedService],
+    services: &BTreeMap<QualifiedService, CaddyServiceConfig>,
     admin: Option<&A>,
 ) -> Result<String, Error> {
-    let mut overrides = services
-        .iter()
-        .map(|service| {
-            (
-                service.service.clone(),
-                ConfigOverride::Planned(service.config.clone()),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    overrides.extend(
-        removed_services
-            .iter()
-            .cloned()
-            .map(|service| (service, ConfigOverride::Removed)),
-    );
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     generate_caddyfile(
         &machine.id,
@@ -305,7 +287,7 @@ async fn preflight_candidate<A: CaddyAdmin>(
         &service_containers(observations.iter().cloned()),
         &timestamp,
         certificates,
-        Some(&overrides),
+        Some(services),
         admin,
     )
     .await
@@ -400,7 +382,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     containers: &[ServiceContainer],
     timestamp: &str,
     certificates: &BTreeMap<IngressHost, CertificateRow>,
-    overrides: Option<&BTreeMap<QualifiedService, ConfigOverride>>,
+    overrides: Option<&BTreeMap<QualifiedService, CaddyServiceConfig>>,
     admin: Option<&A>,
 ) -> Result<String, Error> {
     let mut output = automatic_caddyfile(
@@ -446,10 +428,10 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     if let Some(overrides) = overrides {
         for (identity, config) in overrides {
             match config {
-                ConfigOverride::Planned(Some(config)) => {
+                CaddyServiceConfig::Present(Some(config)) => {
                     configs.insert(identity.clone(), config.clone());
                 }
-                ConfigOverride::Planned(None) | ConfigOverride::Removed => {
+                CaddyServiceConfig::Present(None) | CaddyServiceConfig::Removed => {
                     configs.remove(identity);
                 }
             }
@@ -465,14 +447,17 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         return Ok(output);
     }
     let admin = admin.ok_or(Error::AdminUnavailable)?;
+    let planned_services = overrides
+        .into_iter()
+        .flatten()
+        .filter_map(|(identity, config)| {
+            matches!(config, CaddyServiceConfig::Present(_)).then_some(identity.clone())
+        })
+        .collect::<BTreeSet<_>>();
     let known_services = eligible
         .iter()
         .map(|container| container.as_observation().identity())
-        .chain(overrides.into_iter().flat_map(planned_override_services))
-        .collect::<BTreeSet<_>>();
-    let placeholder_services = overrides
-        .into_iter()
-        .flat_map(planned_override_services)
+        .chain(planned_services.iter().cloned())
         .collect::<BTreeSet<_>>();
     if let Some(config) = configs.remove(&QualifiedService::system_caddy()) {
         let identity = QualifiedService::system_caddy();
@@ -481,12 +466,12 @@ async fn generate_caddyfile<A: CaddyAdmin>(
             &identity,
             &eligible,
             &known_services,
-            &placeholder_services,
+            &planned_services,
         )
-        .map_err(|error| {
-            Error::Candidate(format!(
-                "Service '{identity}': Caddy rendering failed: {error}"
-            ))
+        .map_err(|source| Error::Candidate {
+            service: identity.clone(),
+            operation: "rendering",
+            source: Box::new(source),
         })?;
         let candidate = automatic_caddyfile(
             local_machine,
@@ -496,11 +481,14 @@ async fn generate_caddyfile<A: CaddyAdmin>(
             Some(&rendered),
             certificates,
         );
-        admin.adapt(&candidate).await.map_err(|error| {
-            Error::Candidate(format!(
-                "Service '{identity}': Caddy adaptation failed: {error}"
-            ))
-        })?;
+        admin
+            .adapt(&candidate)
+            .await
+            .map_err(|source| Error::Candidate {
+                service: identity,
+                operation: "adaptation",
+                source: Box::new(source),
+            })?;
         output = candidate;
     }
     for (identity, config) in configs {
@@ -509,33 +497,28 @@ async fn generate_caddyfile<A: CaddyAdmin>(
             &identity,
             &eligible,
             &known_services,
-            &placeholder_services,
+            &planned_services,
         )
-        .map_err(|error| {
-            Error::Candidate(format!(
-                "Service '{identity}': Caddy rendering failed: {error}"
-            ))
+        .map_err(|source| Error::Candidate {
+            service: identity.clone(),
+            operation: "rendering",
+            source: Box::new(source),
         })?;
         let fragment = format!("\n# User-defined config for Service '{identity}'.\n{rendered}\n");
         let candidate = format!("{output}{fragment}");
         // TODO(UT-119): /adapt remains the only validation for custom Caddyfile
         // candidates and may accept a configuration that /load rejects.
-        admin.adapt(&candidate).await.map_err(|error| {
-            Error::Candidate(format!(
-                "Service '{identity}': Caddy adaptation failed: {error}"
-            ))
-        })?;
+        admin
+            .adapt(&candidate)
+            .await
+            .map_err(|source| Error::Candidate {
+                service: identity,
+                operation: "adaptation",
+                source: Box::new(source),
+            })?;
         output = candidate;
     }
     Ok(output)
-}
-
-fn planned_override_services(
-    overrides: &BTreeMap<QualifiedService, ConfigOverride>,
-) -> impl Iterator<Item = QualifiedService> + '_ {
-    overrides.iter().filter_map(|(identity, config)| {
-        matches!(config, ConfigOverride::Planned(_)).then_some(identity.clone())
-    })
 }
 
 fn eligible_containers<'a>(

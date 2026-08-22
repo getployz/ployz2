@@ -4,11 +4,12 @@
 //! `confirm` executes those rows to a Deploy Outcome. This module does not
 //! print, read stdin, or exit the process.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::time::SystemTime;
 
+use futures_util::future::join_all;
 use ployz_core::{
     CaddyServiceConfig, DataLoss, DeployOperation, MachineFailure, MachineId, MachineObservation,
     MachineTarget, ObservedDataLoss, PortPublication, PreflightCaddyConfigRequest, ProjectName,
@@ -369,17 +370,24 @@ async fn preflight_caddy_config(
     {
         return Ok(());
     }
-    let request = PreflightCaddyConfigRequest {
-        services: intent
-            .target
+    let mut services = intent
+        .target
+        .iter()
+        .map(|service| {
+            (
+                QualifiedService::new(intent.project_name.clone(), service.name.clone()),
+                CaddyServiceConfig::Present(service.caddy_config.clone()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    services.extend(
+        preview
+            .would_remove
             .iter()
-            .map(|service| CaddyServiceConfig {
-                service: QualifiedService::new(intent.project_name.clone(), service.name.clone()),
-                config: service.caddy_config.clone(),
-            })
-            .collect(),
-        removed_services: preview.would_remove.clone(),
-    };
+            .cloned()
+            .map(|service| (service, CaddyServiceConfig::Removed)),
+    );
+    let request = PreflightCaddyConfigRequest { services };
     let machines = snapshot
         .containers
         .iter()
@@ -391,11 +399,18 @@ async fn preflight_caddy_config(
     if machines.is_empty() {
         return Err(DeployError::CaddyUnavailable);
     }
-    for machine_id in machines {
-        client
-            .read::<op::PreflightCaddyConfig>(request.clone(), &MachineTarget::from(&machine_id))
-            .await
-            .map_err(|source| DeployError::CaddyPreflight { machine_id, source })?;
+    let requests = machines.into_iter().map(|machine_id| {
+        let mut client = client.clone();
+        let request = request.clone();
+        async move {
+            let result = client
+                .read::<op::PreflightCaddyConfig>(request, &MachineTarget::from(&machine_id))
+                .await;
+            (machine_id, result)
+        }
+    });
+    for (machine_id, result) in join_all(requests).await {
+        result.map_err(|source| DeployError::CaddyPreflight { machine_id, source })?;
     }
     Ok(())
 }

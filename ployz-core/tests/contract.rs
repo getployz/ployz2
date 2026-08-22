@@ -809,11 +809,17 @@ fn caddy_config_contract_returns_the_owned_plain_file() {
 #[test]
 fn caddy_preflight_contract_carries_owned_service_configs() {
     let request = PreflightCaddyConfigRequest {
-        services: vec![CaddyServiceConfig {
-            service: QualifiedService::parse("app/web").unwrap(),
-            config: Some("web.example { respond ok }".into()),
-        }],
-        removed_services: vec![QualifiedService::parse("app/old").unwrap()],
+        services: [
+            (
+                QualifiedService::parse("app/web").unwrap(),
+                CaddyServiceConfig::Present(Some("web.example { respond ok }".into())),
+            ),
+            (
+                QualifiedService::parse("app/old").unwrap(),
+                CaddyServiceConfig::Removed,
+            ),
+        ]
+        .into(),
     };
     let request = op::PreflightCaddyConfig::into_request(request.clone());
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);

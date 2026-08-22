@@ -818,27 +818,21 @@ async fn failed_preflight_preserves_the_last_config_without_loading() {
         runtime: Default::default(),
     };
     let services = [
-        CaddyServiceConfig {
-            service: ployz_core::QualifiedService::parse("app/api").unwrap(),
-            config: Some("api.example { respond ok }".into()),
-        },
-        CaddyServiceConfig {
-            service: ployz_core::QualifiedService::parse("app/web").unwrap(),
-            config: Some("# invalid\nweb.example { respond bad }".into()),
-        },
-    ];
+        (
+            ployz_core::QualifiedService::parse("app/api").unwrap(),
+            CaddyServiceConfig::Present(Some("api.example { respond ok }".into())),
+        ),
+        (
+            ployz_core::QualifiedService::parse("app/web").unwrap(),
+            CaddyServiceConfig::Present(Some("# invalid\nweb.example { respond bad }".into())),
+        ),
+    ]
+    .into();
     let admin = FakeAdmin::default();
 
-    let error = preflight_candidate(
-        &machine,
-        &[],
-        &BTreeMap::new(),
-        &services,
-        &[],
-        Some(&admin),
-    )
-    .await
-    .unwrap_err();
+    let error = preflight_candidate(&machine, &[], &BTreeMap::new(), &services, Some(&admin))
+        .await
+        .unwrap_err();
 
     assert_eq!(
         error.to_string(),

@@ -15,13 +15,14 @@ use ployz::{
     deploy::PlanOptions,
 };
 use ployz_core::{
-    AdvertisedEndpoint, CaddyConfig, CaddyServiceConfig, ContainerCreated, ContainerDetails,
-    ContainerId, ContainerKind, ContainerList, ContainerPath, ContainerRuntimeObservation,
-    ContractDescription, DockerVolume, DockerVolumeId, DockerVolumeName, Domain, HealthObservation,
-    LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
-    MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
-    OpaquePayload, PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec, ResolvedUpdateConfig,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
+    AdvertisedEndpoint, CaddyConfigPreflighted, CaddyServiceConfig, ContainerCreated,
+    ContainerDetails, ContainerId, ContainerKind, ContainerList, ContainerPath,
+    ContainerRuntimeObservation, ContractDescription, DockerVolume, DockerVolumeId,
+    DockerVolumeName, Domain, HealthObservation, LocalMachinePhase, Machine, MachineDetails,
+    MachineId, MachineImages, MachineList, MachineName, MachineObservation, MachineRpc,
+    MachineRpcServer, ManagementAddress, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
+    ProjectName, QualifiedService, RequestedServiceSpec, ResolvedUpdateConfig, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
     ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeList, VolumeSource,
     WireGuardPublicKey,
 };
@@ -41,7 +42,7 @@ pub(super) struct DeployService {
     containers: Arc<AtomicUsize>,
     created_projects: Arc<Mutex<Vec<ProjectName>>>,
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
-    preflight_services: Arc<Mutex<Vec<CaddyServiceConfig>>>,
+    preflight_services: Arc<Mutex<BTreeMap<QualifiedService, CaddyServiceConfig>>>,
     mutating_rpcs: Arc<AtomicUsize>,
     domain: Option<String>,
     hold_health: bool,
@@ -56,7 +57,7 @@ impl DeployService {
             containers: Arc::new(AtomicUsize::new(0)),
             created_projects: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
-            preflight_services: Arc::new(Mutex::new(Vec::new())),
+            preflight_services: Arc::new(Mutex::new(BTreeMap::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
             hold_health: false,
@@ -71,7 +72,7 @@ impl DeployService {
             containers: Arc::new(AtomicUsize::new(0)),
             created_projects: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
-            preflight_services: Arc::new(Mutex::new(Vec::new())),
+            preflight_services: Arc::new(Mutex::new(BTreeMap::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
             hold_health: false,
@@ -118,7 +119,9 @@ impl DeployService {
         self.created_projects.clone()
     }
 
-    pub(super) fn preflight_services(&self) -> Arc<Mutex<Vec<CaddyServiceConfig>>> {
+    pub(super) fn preflight_services(
+        &self,
+    ) -> Arc<Mutex<BTreeMap<QualifiedService, CaddyServiceConfig>>> {
         self.preflight_services.clone()
     }
 
@@ -448,9 +451,7 @@ impl MachineRpc for DeployService {
         *self.preflight_services.lock().unwrap() = preflight.services;
         match &self.caddy_preflight_error {
             Some(error) => encoded(RpcResponse::from(error.clone())),
-            None => encoded(RpcResponse::from(CaddyConfig {
-                caddyfile: "validated".into(),
-            })),
+            None => encoded(RpcResponse::from(CaddyConfigPreflighted {})),
         }
     }
     async fn reserve_domain(

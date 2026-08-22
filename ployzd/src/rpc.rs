@@ -6,11 +6,12 @@ use std::{
 };
 
 use ployz_core::{
-    CaddyConfig, CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged,
-    ContainerDetails, ContainerList, ContractDescription, Domain, DomainRecords, ImageIngestReason,
-    ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, MachineId, MachineLogService,
-    MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
+    CaddyConfig, CaddyConfigPreflighted, CapabilityAdvertisement, CloudPairing, CloudPairingSet,
+    ContainerChanged, ContainerDetails, ContainerList, ContractDescription, Domain, DomainRecords,
+    ImageIngestReason, ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, MachineId,
+    MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR,
+    QualifiedService, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList,
+    VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, watch};
@@ -79,6 +80,7 @@ impl MachineService {
     }
 
     #[must_use]
+    /// Configures the Caddyfile and admin socket used by Caddy RPCs.
     pub fn with_caddy(mut self, caddyfile: PathBuf, admin_socket: PathBuf) -> Self {
         self.caddyfile = Some(caddyfile);
         self.caddy_admin_socket = Some(admin_socket);
@@ -794,11 +796,10 @@ impl MachineRpc for MachineService {
             &certificates,
             admin_socket,
             &request.services,
-            &request.removed_services,
         )
         .await
         {
-            Ok(caddyfile) => respond(CaddyConfig { caddyfile }),
+            Ok(_) => respond(CaddyConfigPreflighted {}),
             Err(error) => respond(caddy_preflight_error(error)),
         }
     }
@@ -945,17 +946,20 @@ fn unavailable(message: &str) -> RpcError {
 }
 
 fn caddy_preflight_error(error: crate::caddy::Error) -> RpcError {
-    let code = match &error {
-        crate::caddy::Error::AdminUnavailable
-        | crate::caddy::Error::Http(_)
-        | crate::caddy::Error::Io(_) => RpcErrorCode::Unavailable,
-        crate::caddy::Error::Admin(_)
-        | crate::caddy::Error::Template(_)
-        | crate::caddy::Error::Candidate(_) => RpcErrorCode::InvalidArgument,
-        crate::caddy::Error::Json(_) => RpcErrorCode::Internal,
-    };
+    fn code(error: &crate::caddy::Error) -> RpcErrorCode {
+        match error {
+            crate::caddy::Error::AdminUnavailable
+            | crate::caddy::Error::Http(_)
+            | crate::caddy::Error::Io(_) => RpcErrorCode::Unavailable,
+            crate::caddy::Error::Admin(_) | crate::caddy::Error::Template(_) => {
+                RpcErrorCode::InvalidArgument
+            }
+            crate::caddy::Error::Candidate { source, .. } => code(source),
+            crate::caddy::Error::Json(_) => RpcErrorCode::Internal,
+        }
+    }
     RpcError {
-        code,
+        code: code(&error),
         message: error.to_string(),
         details: Value::Null,
     }

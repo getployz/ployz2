@@ -237,8 +237,8 @@ async fn multiple_custom_configs_are_preflighted_together() {
         preflighted
             .lock()
             .unwrap()
-            .iter()
-            .map(|service| service.service.to_string())
+            .keys()
+            .map(ToString::to_string)
             .collect::<Vec<_>>(),
         ["app/api", "app/web"]
     );

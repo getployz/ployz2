@@ -62,7 +62,7 @@ macro_rules! rpc_catalog {
                 EnsureImageIngest: (ensure_image_ingest, "EnsureImageIngest", EnsureImageIngestRequest, "ensure_image_ingest", ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container),
                 PullImageFromMachine: (pull_image_from_machine, "PullImageFromMachine", PullImageFromMachineRequest, "pull_image_from_machine", ImagePulled, PULL_IMAGE_FROM_MACHINE_CAPABILITY, "ployz.image.pull-from-machine.v1", Container),
                 GetCaddyConfig: (get_caddy_config, "GetCaddyConfig", GetCaddyConfigRequest, "get_caddy_config", CaddyConfig, GET_CADDY_CONFIG_CAPABILITY, "ployz.caddy.config.v1", Caddy),
-                PreflightCaddyConfig: (preflight_caddy_config, "PreflightCaddyConfig", PreflightCaddyConfigRequest, "preflight_caddy_config", CaddyConfig, PREFLIGHT_CADDY_CONFIG_CAPABILITY, "ployz.caddy.preflight.v1", Caddy),
+                PreflightCaddyConfig: (preflight_caddy_config, "PreflightCaddyConfig", PreflightCaddyConfigRequest, "preflight_caddy_config", CaddyConfigPreflighted, PREFLIGHT_CADDY_CONFIG_CAPABILITY, "ployz.caddy.preflight.v1", Caddy),
                 ReserveDomain: (reserve_domain, "ReserveDomain", ReserveDomainRequest, "reserve_domain", Domain, RESERVE_DOMAIN_CAPABILITY, "ployz.dns.reserve.v1", Cluster),
                 GetDomain: (get_domain, "GetDomain", GetDomainRequest, "get_domain", Domain, GET_DOMAIN_CAPABILITY, "ployz.dns.show.v1", Cluster),
                 ReleaseDomain: (release_domain, "ReleaseDomain", ReleaseDomainRequest, "release_domain", Domain, RELEASE_DOMAIN_CAPABILITY, "ployz.dns.release.v1", Cluster),
