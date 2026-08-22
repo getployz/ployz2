@@ -461,10 +461,13 @@ pub struct ServiceContainerSpec {
     pub entrypoint: Vec<String>,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+    /// User Docker labels, excluding Ployz's reserved management namespace.
     #[serde(default)]
     pub labels: ContainerLabels,
+    /// The container's UTS hostname, with no Ployz identity or routing meaning.
     #[serde(default)]
     pub hostname: Option<ContainerHostname>,
+    /// Container-local Docker `/etc/hosts` entries.
     #[serde(default)]
     pub extra_hosts: Vec<ExtraHost>,
     #[serde(default)]
