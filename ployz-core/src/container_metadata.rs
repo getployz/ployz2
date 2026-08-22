@@ -1,3 +1,5 @@
+//! Validated native container metadata shared by requested and resolved specs.
+
 use std::{collections::BTreeMap, fmt, net::IpAddr, str::FromStr};
 
 use serde::{Deserialize, Serialize};
@@ -105,6 +107,7 @@ impl ContainerHostname {
         }
     }
 
+    /// Borrow the validated hostname.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -181,6 +184,7 @@ impl ExtraHost {
         Self::from_parts(host, address).map_err(|_| extra_host_error(value))
     }
 
+    /// Borrow Docker's canonical `host:address` entry.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
