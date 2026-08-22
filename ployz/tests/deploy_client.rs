@@ -10,7 +10,8 @@ use ployz::deploy::{
     ExecutionError, FailedOperation, OperationStatus, PlanError, PruneRefusal, VolumeFate,
 };
 use ployz_core::{
-    ContainerId, OperationPhase, ProjectName, QualifiedService, RequestedServiceSpec,
+    CaddyServiceConfig, ContainerId, OperationPhase, ProjectName, QualifiedService,
+    RequestedServiceSpec, ServiceAttempt,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -242,6 +243,125 @@ async fn multiple_custom_configs_are_preflighted_together() {
             .collect::<Vec<_>>(),
         ["app/api", "app/web"]
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn partial_deploy_preflights_only_the_apply_set() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone());
+    service
+        .listed_containers()
+        .lock()
+        .unwrap()
+        .push(system_caddy_container(&machine));
+    let preflighted = service.preflight_services();
+    let (mut client, server) = connected(service).await;
+    let mut api = spec("api");
+    api.caddy_config = Some("api.example { respond api }".into());
+    let mut web = spec("web");
+    web.caddy_config = Some("web.example { respond web }".into());
+    let mut options = skip_health();
+    options.selected = vec![ServiceAttempt {
+        name: web.name.clone(),
+    }];
+
+    client
+        .preview(DeployIntent::new(
+            ProjectName::parse("app").unwrap(),
+            vec![api, web],
+            options,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        preflighted
+            .lock()
+            .unwrap()
+            .keys()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["app/web"]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn removal_preflights_custom_config_owned_by_another_project() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone()).fail_caddy_preflight(
+        "Service 'shop/gateway': Caddy adaptation failed: upstream app/api is unavailable",
+    );
+    let listed = service.listed_containers();
+    let mut api = running_container(&machine, &spec("api"));
+    api.container_id = ContainerId::parse("2".repeat(64)).unwrap();
+    let mut gateway_spec = spec("gateway");
+    gateway_spec.caddy_config = Some("gateway.example { reverse_proxy app-api:80 }".into());
+    let mut gateway = running_container(&machine, &gateway_spec);
+    gateway.container_id = ContainerId::parse("3".repeat(64)).unwrap();
+    gateway.project_name = ProjectName::parse("shop").unwrap();
+    listed
+        .lock()
+        .unwrap()
+        .extend([system_caddy_container(&machine), api, gateway]);
+    let preflighted = service.preflight_services();
+    let mutations = service.mutating_rpcs();
+    let (mut client, server) = connected(service).await;
+
+    let error = client
+        .run(
+            DeployIntent::apply_all(ProjectName::parse("app").unwrap(), [], skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("shop/gateway"), "{error}");
+    assert_eq!(mutations.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        preflighted
+            .lock()
+            .unwrap()
+            .get(&QualifiedService::parse("app/api").unwrap()),
+        Some(&CaddyServiceConfig::Removed)
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn custom_config_fails_closed_when_container_discovery_is_incomplete() {
+    let primary = machine('a', "one");
+    let service = DeployService::new(primary.clone())
+        .fail_container_list_on(machine('b', "two"), "container listing failed");
+    service
+        .listed_containers()
+        .lock()
+        .unwrap()
+        .push(system_caddy_container(&primary));
+    let mutations = service.mutating_rpcs();
+    let (mut client, server) = connected(service).await;
+    let mut requested = spec("web");
+    requested.caddy_config = Some("web.example { respond web }".into());
+
+    let error = client
+        .run(
+            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            DeployError::CaddyDiscoveryIncomplete { failures: 1, .. }
+        ),
+        "{error}"
+    );
+    assert_eq!(mutations.load(Ordering::SeqCst), 0);
     server.abort();
 }
 

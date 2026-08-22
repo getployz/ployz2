@@ -39,6 +39,7 @@ pub(super) struct DeployService {
     machines: Vec<MachineObservation>,
     create_volume_error: Option<RpcError>,
     caddy_preflight_error: Option<RpcError>,
+    container_list_error: Option<(MachineId, RpcError)>,
     containers: Arc<AtomicUsize>,
     created_projects: Arc<Mutex<Vec<ProjectName>>>,
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
@@ -54,6 +55,7 @@ impl DeployService {
             machines: vec![machine],
             create_volume_error: None,
             caddy_preflight_error: None,
+            container_list_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
             created_projects: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
@@ -69,6 +71,7 @@ impl DeployService {
             machines: Vec::new(),
             create_volume_error: None,
             caddy_preflight_error: None,
+            container_list_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
             created_projects: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
@@ -94,6 +97,24 @@ impl DeployService {
             message: message.into(),
             details: Value::Null,
         });
+        self
+    }
+
+    pub(super) fn fail_container_list_on(
+        mut self,
+        machine: MachineObservation,
+        message: &str,
+    ) -> Self {
+        let machine_id = machine.machine.id;
+        self.machines.push(machine);
+        self.container_list_error = Some((
+            machine_id,
+            RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: message.into(),
+                details: Value::Null,
+            },
+        ));
         self
     }
 
@@ -164,8 +185,14 @@ impl MachineRpc for DeployService {
 
     async fn list_containers(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let machine_id = machine_from_metadata(&request)?;
+        if let Some((failed_machine, error)) = &self.container_list_error
+            && machine_id == *failed_machine
+        {
+            return encoded(RpcResponse::from(error.clone()));
+        }
         encoded(RpcResponse::from(ContainerList {
             containers: self.listed_containers.lock().unwrap().clone(),
         }))

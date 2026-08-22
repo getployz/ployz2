@@ -322,7 +322,9 @@ fn removal_operations(
         .collect()
 }
 
-fn specs_to_plan(intent: &DeployIntent) -> Result<Vec<&RequestedServiceSpec>, PlanError> {
+pub(super) fn specs_to_plan(
+    intent: &DeployIntent,
+) -> Result<Vec<&RequestedServiceSpec>, PlanError> {
     order_included(intent, &names_to_plan(intent))
 }
 

@@ -209,9 +209,9 @@ impl From<DeployError> for Failure {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into(),
             DeployError::Project(error) => error.into(),
-            error @ (DeployError::CaddyUnavailable | DeployError::CaddyPreflight { .. }) => {
-                Self::command(error)
-            }
+            error @ (DeployError::CaddyUnavailable
+            | DeployError::CaddyDiscoveryIncomplete { .. }
+            | DeployError::CaddyPreflight { .. }) => Self::command(error),
         }
     }
 }

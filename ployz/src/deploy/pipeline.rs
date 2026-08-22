@@ -53,6 +53,11 @@ pub enum DeployError {
     /// Candidate Caddy validation could not be performed.
     #[error("Caddy preflight cannot run: no healthy Caddy Service Container is visible")]
     CaddyUnavailable,
+    /// Candidate Caddy validation cannot trust an incomplete Container snapshot.
+    #[error(
+        "Caddy preflight cannot run: Container discovery is incomplete ({failures} failed, {omissions} omitted)"
+    )]
+    CaddyDiscoveryIncomplete { failures: usize, omissions: usize },
     /// A Machine rejected the candidate Caddy configuration.
     #[error("Caddy preflight failed on Machine {machine_id}: {source}")]
     CaddyPreflight {
@@ -235,9 +240,10 @@ impl From<DeployError> for RpcError {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => invalid_argument(error.to_string()),
             DeployError::Project(error) => invalid_argument(error.to_string()),
-            DeployError::CaddyUnavailable => RpcError {
+            error @ (DeployError::CaddyUnavailable
+            | DeployError::CaddyDiscoveryIncomplete { .. }) => RpcError {
                 code: RpcErrorCode::Unavailable,
-                message: DeployError::CaddyUnavailable.to_string(),
+                message: error.to_string(),
                 details: serde_json::Value::Null,
             },
             DeployError::CaddyPreflight { source, .. } => source,
@@ -365,16 +371,23 @@ async fn preflight_caddy_config(
     intent: &DeployIntent,
     preview: &DeployPreview,
 ) -> Result<(), DeployError> {
-    if !intent
-        .target
-        .iter()
-        .any(|service| service.caddy_config.is_some())
-    {
+    let applied = planning::specs_to_plan(intent)?;
+    let has_custom_config = applied.iter().any(|service| service.caddy_config.is_some())
+        || snapshot
+            .containers
+            .iter()
+            .any(|container| container.resolved_spec.caddy_config.is_some());
+    if !has_custom_config {
         return Ok(());
     }
-    let mut services = intent
-        .target
-        .iter()
+    if !snapshot.container_failures.is_empty() || !snapshot.container_omissions.is_empty() {
+        return Err(DeployError::CaddyDiscoveryIncomplete {
+            failures: snapshot.container_failures.len(),
+            omissions: snapshot.container_omissions.len(),
+        });
+    }
+    let mut services = applied
+        .into_iter()
         .map(|service| {
             (
                 QualifiedService::new(intent.project_name.clone(), service.name.clone()),
