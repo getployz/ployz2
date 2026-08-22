@@ -80,7 +80,7 @@ fn is_rfc1123_label(value: &str) -> bool {
 }
 
 fn is_rfc1123_hostname(value: &str) -> bool {
-    (1..=253).contains(&value.len()) && value.split('.').all(is_rfc1123_label)
+    (1..=64).contains(&value.len()) && value.split('.').all(is_rfc1123_label)
 }
 
 /// A container's UTS hostname. It has no Service, DNS, ingress, placement, or Machine meaning.
@@ -102,7 +102,7 @@ impl ContainerHostname {
             Err(ValueError::new(
                 "container hostname",
                 value,
-                "a 1-253 character RFC 1123 hostname",
+                "a 1-64 character RFC 1123 hostname",
             ))
         }
     }

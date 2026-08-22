@@ -374,10 +374,23 @@ fn compose_rejects_reserved_labels_and_invalid_container_hostnames() {
         assert_eq!(
             error.to_string(),
             format!(
-                "invalid normalized Compose project: service 'app': invalid container hostname {hostname:?}: a 1-253 character RFC 1123 hostname"
+                "invalid normalized Compose project: service 'app': invalid container hostname {hostname:?}: a 1-64 character RFC 1123 hostname"
             )
         );
     }
+
+    let too_long = format!("{}.b", "a".repeat(63));
+    let error = parse_normalized(
+        &format!("services: {{app: {{image: app, hostname: {too_long:?}}}}}"),
+        ".",
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "invalid normalized Compose project: service 'app': invalid container hostname {too_long:?}: a 1-64 character RFC 1123 hostname"
+        )
+    );
 
     for entry in ["api:not-an-address", "=192.0.2.1"] {
         let error = parse_normalized(

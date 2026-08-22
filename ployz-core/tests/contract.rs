@@ -101,8 +101,10 @@ fn container_hostname_accepts_rfc1123_and_rejects_invalid_labels() {
         ContainerHostname::parse("Shared.Host").unwrap().as_str(),
         "Shared.Host"
     );
+    assert!(ContainerHostname::parse(format!("{}.b", "a".repeat(62))).is_ok());
     assert!(ContainerHostname::parse("bad_name").is_err());
     assert!(ContainerHostname::parse("-leading").is_err());
+    assert!(ContainerHostname::parse(format!("{}.b", "a".repeat(63))).is_err());
 }
 
 #[test]
