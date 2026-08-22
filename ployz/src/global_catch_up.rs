@@ -1,5 +1,7 @@
 //! Global catch-up: place observed eligible Globals onto this Machine only.
 
+use std::collections::BTreeSet;
+
 use ployz_core::{
     BridgeEndpointCapacity, ContainerRuntimeObservation, EnsureGlobalSlotRequest, InspectRequest,
     LiveServices, Machine, MachineId, MachineTarget, QualifiedService, ResolvedServiceSpec,
@@ -114,6 +116,23 @@ fn slot_for(
     this_machine: &Machine,
     skip_caddy: bool,
 ) -> Option<GlobalCatchUpSlot> {
+    let slot = eligible_slot(service, this_machine, skip_caddy)?;
+    if service.containers.iter().any(|container| {
+        let observation = container.as_observation();
+        observation.machine_id == this_machine.id
+            && observation.service_id == slot.spec.service_id
+            && is_running(&observation.runtime)
+    }) {
+        return None;
+    }
+    Some(slot)
+}
+
+fn eligible_slot(
+    service: &ServiceObservation,
+    this_machine: &Machine,
+    skip_caddy: bool,
+) -> Option<GlobalCatchUpSlot> {
     if skip_caddy && service.identity == QualifiedService::system_caddy() {
         return None;
     }
@@ -123,14 +142,6 @@ fn slot_for(
         return None;
     }
     if !machine_matches_placement(this_machine, &spec.placement) {
-        return None;
-    }
-    if service.containers.iter().any(|container| {
-        let observation = container.as_observation();
-        observation.machine_id == this_machine.id
-            && observation.service_id == spec.service_id
-            && is_running(&observation.runtime)
-    }) {
         return None;
     }
     Some(GlobalCatchUpSlot {
@@ -177,6 +188,11 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         eprintln!("WARNING: Global catch-up used partial Service observations: {warning}");
     }
     let services = live.services();
+    let initially_eligible = services
+        .iter()
+        .filter_map(|service| eligible_slot(service, this_machine, skip_caddy))
+        .map(|slot| slot.identity)
+        .collect::<BTreeSet<_>>();
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
     let initially_missing: Vec<_> = slots.iter().map(|slot| slot.identity.clone()).collect();
     let endpoint_creates = slots
@@ -223,10 +239,16 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     if let Some(warning) = partial_observation_warning(&live) {
         eprintln!("WARNING: Global catch-up used partial Service observations: {warning}");
     }
-    let missing = plan_global_catch_up(&live.services(), this_machine, skip_caddy)
+    let services = live.services();
+    let mut missing = plan_global_catch_up(&services, this_machine, skip_caddy)
         .into_iter()
         .map(|slot| slot.identity)
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
+    missing.extend(
+        initially_eligible
+            .into_iter()
+            .filter(|identity| !services.iter().any(|service| service.identity == *identity)),
+    );
     if !missing.is_empty() {
         let details = failures
             .iter()
@@ -238,7 +260,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         } else {
             Failure::usage(format!("Global catch-up RPCs failed: {details}"))
         };
-        return Err(CatchUpError::new(cause, missing));
+        return Err(CatchUpError::new(cause, missing.into_iter().collect()));
     }
     Ok(())
 }
@@ -333,6 +355,8 @@ mod tests {
         let mut client = FakeCatchUpClient {
             machine_id: joiner.id,
             services: vec![stale, current],
+            refreshed_services: None,
+            live_calls: Cell::new(0),
             capacity: None,
             ensure_calls: Cell::new(0),
         };
@@ -353,6 +377,8 @@ mod tests {
         let mut client = FakeCatchUpClient {
             machine_id: joiner.id,
             services: vec![service],
+            refreshed_services: None,
+            live_calls: Cell::new(0),
             capacity: None,
             ensure_calls: Cell::new(0),
         };
@@ -364,21 +390,52 @@ mod tests {
         assert_eq!(error.missing, [qualified("app", "api")]);
     }
 
+    #[tokio::test]
+    async fn initially_eligible_global_absent_from_refresh_remains_missing() {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let service = global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(&founder, 'a'),
+        );
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: vec![service],
+            refreshed_services: Some(Vec::new()),
+            live_calls: Cell::new(0),
+            capacity: None,
+            ensure_calls: Cell::new(0),
+        };
+
+        let error = catch_up_globals(&mut client, &joiner, true)
+            .await
+            .unwrap_err();
+        assert_eq!(error.missing, [qualified("app", "api")]);
+    }
+
     struct FakeCatchUpClient {
         machine_id: MachineId,
         services: Vec<ServiceObservation>,
+        refreshed_services: Option<Vec<ServiceObservation>>,
+        live_calls: Cell<usize>,
         capacity: Option<BridgeEndpointCapacity>,
         ensure_calls: Cell<usize>,
     }
 
     impl CatchUpClient for FakeCatchUpClient {
         async fn live_services(&mut self) -> Result<LiveServices<RpcError>, Failure> {
+            let services = if self.live_calls.replace(self.live_calls.get() + 1) == 0 {
+                &self.services
+            } else {
+                self.refreshed_services.as_ref().unwrap_or(&self.services)
+            };
             Ok(LiveServices {
                 containers: ployz_core::PartialResult {
                     successes: vec![ployz_core::MachineSuccess {
                         machine_id: self.machine_id,
-                        value: self
-                            .services
+                        value: services
                             .iter()
                             .flat_map(|service| service.containers.iter().cloned())
                             .map(ServiceContainer::into_observation)
