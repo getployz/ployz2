@@ -1,9 +1,10 @@
 use chrono::{SecondsFormat, Utc};
 use hex::encode as hex_encode;
 use ployz_core::{
-    CADDY_VERIFY_PATH, CaddyServiceConfig, ContainerObservation, HttpProtocol, IngressHost,
-    Machine, MachineId, PortPublication, QualifiedService, ServiceContainer, ServiceName,
-    hostname_owners, service_containers, serving_replicas,
+    CADDY_VERIFY_PATH, CaddyServiceConfig, ContainerAddress, ContainerId, ContainerKind,
+    ContainerObservation, ContainerRuntimeObservation, HealthObservation, HttpProtocol,
+    IngressHost, Machine, MachineId, PortPublication, QualifiedService, ServiceContainer,
+    ServiceName, hostname_owners, service_containers, serving_replicas,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -281,13 +282,19 @@ async fn preflight_candidate<A: CaddyAdmin>(
     admin: Option<&A>,
 ) -> Result<String, Error> {
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-    let mut containers = service_containers(observations.iter().cloned());
-    containers.retain(|container| {
-        !matches!(
-            services.get(&container.as_observation().identity()),
-            Some(CaddyServiceConfig::Removed)
-        )
-    });
+    let mut observations = observations.to_vec();
+    observations.retain(|container| !services.contains_key(&container.identity()));
+    observations.extend(
+        services
+            .iter()
+            .filter_map(|(identity, config)| match config {
+                CaddyServiceConfig::Present(spec) => {
+                    Some(planned_observation(machine, identity, spec))
+                }
+                CaddyServiceConfig::Removed => None,
+            }),
+    );
+    let containers = service_containers(observations);
     generate_caddyfile(
         &machine.id,
         machine.name.as_str(),
@@ -298,6 +305,32 @@ async fn preflight_candidate<A: CaddyAdmin>(
         admin,
     )
     .await
+}
+
+fn planned_observation(
+    machine: &Machine,
+    identity: &QualifiedService,
+    spec: &ployz_core::ResolvedServiceSpec,
+) -> ContainerObservation {
+    let service_id = spec.service_id.as_str();
+    ContainerObservation {
+        container_id: ContainerId::parse(format!("{service_id}{service_id}"))
+            .expect("two Service IDs form a Container ID"),
+        display_name: format!("preflight-{identity}"),
+        created_at_unix_nanos: 0,
+        machine_id: machine.id,
+        project_name: identity.project.clone(),
+        service_id: spec.service_id,
+        service_name: identity.name.clone(),
+        kind: ContainerKind::ServiceContainer,
+        runtime: ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        },
+        effective_healthcheck: None,
+        resolved_spec: spec.clone(),
+        address: Some(ContainerAddress(std::net::Ipv4Addr::LOCALHOST)),
+        labels: BTreeMap::new(),
+    }
 }
 
 fn write_certificate_files(
@@ -435,10 +468,15 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     if let Some(overrides) = overrides {
         for (identity, config) in overrides {
             match config {
-                CaddyServiceConfig::Present(Some(config)) => {
-                    configs.insert(identity.clone(), config.clone());
-                }
-                CaddyServiceConfig::Present(None) | CaddyServiceConfig::Removed => {
+                CaddyServiceConfig::Present(spec) => match &spec.caddy_config {
+                    Some(config) => {
+                        configs.insert(identity.clone(), config.clone());
+                    }
+                    None => {
+                        configs.remove(identity);
+                    }
+                },
+                CaddyServiceConfig::Removed => {
                     configs.remove(identity);
                 }
             }

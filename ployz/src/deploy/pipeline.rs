@@ -11,10 +11,11 @@ use std::time::SystemTime;
 
 use futures_util::future::join_all;
 use ployz_core::{
-    CaddyServiceConfig, DataLoss, DeployOperation, MachineFailure, MachineId, MachineObservation,
-    MachineTarget, ObservedDataLoss, PortPublication, PreflightCaddyConfigRequest, ProjectName,
-    QualifiedService, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceMode, ServiceSelector,
-    UnconfirmedDataLoss, op, select_service,
+    CaddyServiceConfig, ContainerKind, DataLoss, DeployOperation, MachineFailure, MachineId,
+    MachineObservation, MachineTarget, ObservedDataLoss, PortPublication,
+    PreflightCaddyConfigRequest, ProjectName, QualifiedService, RequestedServiceSpec,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceMode, ServiceSelector, UnconfirmedDataLoss,
+    op, select_service,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -371,6 +372,12 @@ async fn preflight_caddy_config(
     intent: &DeployIntent,
     preview: &DeployPreview,
 ) -> Result<(), DeployError> {
+    if !snapshot.container_failures.is_empty() || !snapshot.container_omissions.is_empty() {
+        return Err(DeployError::CaddyDiscoveryIncomplete {
+            failures: snapshot.container_failures.len(),
+            omissions: snapshot.container_omissions.len(),
+        });
+    }
     let applied = planning::specs_to_plan(intent)?;
     let has_custom_config = applied.iter().any(|service| service.caddy_config.is_some())
         || snapshot
@@ -380,19 +387,13 @@ async fn preflight_caddy_config(
     if !has_custom_config {
         return Ok(());
     }
-    if !snapshot.container_failures.is_empty() || !snapshot.container_omissions.is_empty() {
-        return Err(DeployError::CaddyDiscoveryIncomplete {
-            failures: snapshot.container_failures.len(),
-            omissions: snapshot.container_omissions.len(),
-        });
-    }
     let mut services = applied
         .into_iter()
         .map(|service| {
-            (
-                QualifiedService::new(intent.project_name.clone(), service.name.clone()),
-                CaddyServiceConfig::Present(service.caddy_config.clone()),
-            )
+            let identity = QualifiedService::new(intent.project_name.clone(), service.name.clone());
+            let spec = planned_service_spec(&identity, snapshot, preview)
+                .expect("an applied Service has a planned or current resolved spec");
+            (identity, CaddyServiceConfig::Present(Box::new(spec)))
         })
         .collect::<BTreeMap<_, _>>();
     services.extend(
@@ -428,6 +429,49 @@ async fn preflight_caddy_config(
         result.map_err(|source| DeployError::CaddyPreflight { machine_id, source })?;
     }
     Ok(())
+}
+
+fn planned_service_spec(
+    identity: &QualifiedService,
+    snapshot: &DeploySnapshot,
+    preview: &DeployPreview,
+) -> Option<ResolvedServiceSpec> {
+    preview
+        .operations
+        .iter()
+        .filter_map(|row| operation_spec(&row.operation))
+        .find(|spec| identity.project == preview.project_name && identity.name == spec.name)
+        .cloned()
+        .or_else(|| {
+            snapshot
+                .containers
+                .iter()
+                .filter(|container| {
+                    container.kind == ContainerKind::ServiceContainer
+                        && container.identity() == *identity
+                })
+                .max_by_key(|container| {
+                    (
+                        container.created_at_unix_nanos,
+                        container.container_id.as_str(),
+                    )
+                })
+                .map(|container| container.resolved_spec.clone())
+        })
+}
+
+fn operation_spec(operation: &DeployOperation) -> Option<&ResolvedServiceSpec> {
+    match operation {
+        DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
+            Some(spec)
+        }
+        DeployOperation::ReplaceContainer(replacement) => Some(&replacement.spec),
+        DeployOperation::CreateVolume { .. }
+        | DeployOperation::StopContainer { .. }
+        | DeployOperation::RemoveContainer { .. }
+        | DeployOperation::StopHook { .. }
+        | DeployOperation::RemoveVolume { .. } => None,
+    }
 }
 
 pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {

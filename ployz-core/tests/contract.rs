@@ -808,11 +808,19 @@ fn caddy_config_contract_returns_the_owned_plain_file() {
 
 #[test]
 fn caddy_preflight_contract_carries_owned_service_configs() {
+    let web: ResolvedServiceSpec = serde_json::from_value(json!({
+        "service_id": "11111111111111111111111111111111",
+        "name": "web",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "example.test/web", "pull_policy": "missing" },
+        "caddy_config": "web.example { respond ok }"
+    }))
+    .unwrap();
     let request = PreflightCaddyConfigRequest {
         services: [
             (
                 QualifiedService::parse("app/web").unwrap(),
-                CaddyServiceConfig::Present(Some("web.example { respond ok }".into())),
+                CaddyServiceConfig::Present(Box::new(web)),
             ),
             (
                 QualifiedService::parse("app/old").unwrap(),

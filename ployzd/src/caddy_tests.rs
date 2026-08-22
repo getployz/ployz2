@@ -1062,6 +1062,7 @@ struct FakeAdmin {
     adapted: Mutex<Vec<String>>,
     loaded: Mutex<Vec<String>>,
     fail_load: bool,
+    reject_duplicate_site: Option<String>,
 }
 
 impl CaddyAdmin for FakeAdmin {
@@ -1069,6 +1070,12 @@ impl CaddyAdmin for FakeAdmin {
         self.adapted.lock().unwrap().push(caddyfile.into());
         if caddyfile.contains("# invalid") {
             Err(Error::Admin("invalid config detected".into()))
+        } else if self
+            .reject_duplicate_site
+            .as_ref()
+            .is_some_and(|site| caddyfile.matches(site).count() > 1)
+        {
+            Err(Error::Admin("duplicate site detected".into()))
         } else {
             Ok("{}".into())
         }

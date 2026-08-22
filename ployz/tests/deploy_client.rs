@@ -331,7 +331,7 @@ async fn removal_preflights_custom_config_owned_by_another_project() {
 }
 
 #[tokio::test]
-async fn custom_config_fails_closed_when_container_discovery_is_incomplete() {
+async fn deployment_fails_closed_when_container_discovery_is_incomplete() {
     let primary = machine('a', "one");
     let service = DeployService::new(primary.clone())
         .fail_container_list_on(machine('b', "two"), "container listing failed");
@@ -342,8 +342,7 @@ async fn custom_config_fails_closed_when_container_discovery_is_incomplete() {
         .push(system_caddy_container(&primary));
     let mutations = service.mutating_rpcs();
     let (mut client, server) = connected(service).await;
-    let mut requested = spec("web");
-    requested.caddy_config = Some("web.example { respond web }".into());
+    let requested = spec("web");
 
     let error = client
         .run(
@@ -435,13 +434,20 @@ async fn confirm_executes_the_previewed_operations_without_re_planning() {
 async fn preview_expands_ingress_and_includes_dns_warnings() {
     let mut machine = machine('a', "one");
     machine.machine.public_ip = Some("192.0.2.1".parse().unwrap());
-    let service = DeployService::new(machine).with_domain("opaque.uncloud.example");
+    let service = DeployService::new(machine.clone()).with_domain("opaque.uncloud.example");
+    service
+        .listed_containers()
+        .lock()
+        .unwrap()
+        .push(system_caddy_container(&machine));
     let mutating = service.mutating_rpcs();
+    let preflighted = service.preflight_services();
     let (mut client, server) = connected(service).await;
     let spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
         "name": "web",
         "mode": { "mode": "replicated", "replicas": 1 },
         "container": { "image": "nginx", "pull_policy": "always" },
+        "caddy_config": "custom.example { respond custom }",
         "ports": [
             {
                 "mode": "ingress",
@@ -494,6 +500,13 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
         hostnames.contains(&"preview-deploy.invalid"),
         "explicit ingress hostname must remain: {hostnames:?}"
     );
+    let preflighted = preflighted.lock().unwrap();
+    let Some(CaddyServiceConfig::Present(preflight_spec)) =
+        preflighted.get(&QualifiedService::parse("app/web").unwrap())
+    else {
+        panic!("expected planned Service state: {preflighted:?}");
+    };
+    assert_eq!(preflight_spec.ports, spec.ports);
     assert!(
         preview.warnings.iter().any(|warning| match warning {
             DeployWarning::IngressHostname(message) => {

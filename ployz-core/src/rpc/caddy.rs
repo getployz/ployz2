@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::QualifiedService;
+use crate::{QualifiedService, ResolvedServiceSpec};
 
 /// Requests the active Caddyfile.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -11,8 +11,8 @@ pub struct GetCaddyConfigRequest {}
 /// A Service's state in a candidate Caddy configuration.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum CaddyServiceConfig {
-    /// The Service remains deployed, with an optional custom Caddy fragment.
-    Present(Option<String>),
+    /// The Service remains deployed with this final resolved configuration.
+    Present(Box<ResolvedServiceSpec>),
     /// The Service is removed by the deployment.
     Removed,
 }

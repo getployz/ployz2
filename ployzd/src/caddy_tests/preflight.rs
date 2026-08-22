@@ -1,10 +1,10 @@
 //! Candidate Caddy configuration preflight tests.
 
-use super::{FakeAdmin, custom_observation};
+use super::{FakeAdmin, custom_observation, ingress};
 use crate::caddy::preflight_candidate;
 use ployz_core::{
-    AdvertisedEndpoint, CaddyServiceConfig, Machine, MachineId, MachineName, ManagementAddress,
-    QualifiedService, WireGuardPublicKey,
+    AdvertisedEndpoint, CaddyServiceConfig, HttpProtocol, Machine, MachineId, MachineName,
+    ManagementAddress, QualifiedService, WireGuardPublicKey,
 };
 use std::collections::BTreeMap;
 
@@ -14,11 +14,11 @@ async fn failed_preflight_adapts_fragments_without_loading() {
     let services = [
         (
             QualifiedService::parse("app/api").unwrap(),
-            CaddyServiceConfig::Present(Some("api.example { respond ok }".into())),
+            present(&machine, 1, "api", "api.example { respond ok }"),
         ),
         (
             QualifiedService::parse("app/web").unwrap(),
-            CaddyServiceConfig::Present(Some("# invalid\nweb.example { respond bad }".into())),
+            present(&machine, 2, "web", "# invalid\nweb.example { respond bad }"),
         ),
     ]
     .into();
@@ -61,7 +61,7 @@ async fn excludes_removed_services_from_upstream_resolution() {
         ),
         (
             QualifiedService::parse("app/gateway").unwrap(),
-            CaddyServiceConfig::Present(Some(gateway.into())),
+            present(&machine, 3, "gateway", gateway),
         ),
     ]
     .into();
@@ -80,6 +80,62 @@ async fn excludes_removed_services_from_upstream_resolution() {
         error.to_string(),
         "Service 'app/gateway': Caddy rendering failed: Service 'api' was not found"
     );
+}
+
+#[tokio::test]
+async fn planned_ingress_routes_are_included_before_custom_adaptation() {
+    let machine = machine();
+    let mut spec = custom_observation(
+        1,
+        1,
+        &machine.id,
+        "web",
+        "http://web.example { respond custom }",
+        [10, 210, 1, 2],
+    )
+    .resolved_spec;
+    spec.ports = vec![ingress("web.example", 8080, HttpProtocol::Http)];
+    let services = [(
+        QualifiedService::parse("app/web").unwrap(),
+        CaddyServiceConfig::Present(Box::new(spec)),
+    )]
+    .into();
+    let admin = FakeAdmin {
+        reject_duplicate_site: Some("http://web.example".into()),
+        ..Default::default()
+    };
+
+    let error = preflight_candidate(&machine, &[], &BTreeMap::new(), &services, Some(&admin))
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Service 'app/web': Caddy adaptation failed: duplicate site detected"
+    );
+    assert!(
+        admin
+            .adapted
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .contains("reverse_proxy 127.0.0.1:8080")
+    );
+}
+
+fn present(machine: &Machine, suffix: u8, service: &str, config: &str) -> CaddyServiceConfig {
+    CaddyServiceConfig::Present(Box::new(
+        custom_observation(
+            suffix,
+            1,
+            &machine.id,
+            service,
+            config,
+            [10, 210, 1, suffix],
+        )
+        .resolved_spec,
+    ))
 }
 
 fn machine() -> Machine {
