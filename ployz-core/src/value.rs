@@ -1,7 +1,6 @@
 use std::{
-    collections::BTreeMap,
     fmt,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     str::{self, FromStr},
 };
 
@@ -61,21 +60,6 @@ fn is_service_selector(value: &str) -> bool {
 
 fn is_hostname(value: &str) -> bool {
     (1..=253).contains(&value.len()) && value.split('.').all(is_dns_label)
-}
-
-fn is_rfc1123_label(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    !bytes.is_empty()
-        && bytes.len() <= 63
-        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
-}
-
-fn is_rfc1123_hostname(value: &str) -> bool {
-    (1..=253).contains(&value.len()) && value.split('.').all(is_rfc1123_label)
 }
 
 macro_rules! hex_id_newtype {
@@ -445,65 +429,6 @@ validated_string_newtype!(
 
 /// Docker label written on resources Ployz manages.
 pub const MANAGED_LABEL: &str = "ployz.managed";
-/// Docker label namespace reserved for Ployz management metadata.
-pub const MANAGEMENT_LABEL_PREFIX: &str = "ployz.";
-
-fn validate_container_label_key(key: &str) -> Result<(), ValueError> {
-    if key.starts_with(MANAGEMENT_LABEL_PREFIX) {
-        return Err(ValueError::new(
-            "container label key",
-            key,
-            "outside the reserved 'ployz.*' management namespace",
-        ));
-    }
-    Ok(())
-}
-
-/// User-supplied Docker labels outside Ployz's management namespace.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(
-    try_from = "BTreeMap<String, String>",
-    into = "BTreeMap<String, String>"
-)]
-pub struct ContainerLabels(BTreeMap<String, String>);
-
-impl ContainerLabels {
-    /// Validate user-supplied Docker labels.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ValueError`] when a key is in the reserved `ployz.*` namespace.
-    pub fn parse(labels: BTreeMap<String, String>) -> Result<Self, ValueError> {
-        for key in labels.keys() {
-            validate_container_label_key(key)?;
-        }
-        Ok(Self(labels))
-    }
-
-    #[must_use]
-    pub fn as_map(&self) -> &BTreeMap<String, String> {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn into_map(self) -> BTreeMap<String, String> {
-        self.0
-    }
-}
-
-impl TryFrom<BTreeMap<String, String>> for ContainerLabels {
-    type Error = ValueError;
-
-    fn try_from(labels: BTreeMap<String, String>) -> Result<Self, Self::Error> {
-        Self::parse(labels)
-    }
-}
-
-impl From<ContainerLabels> for BTreeMap<String, String> {
-    fn from(labels: ContainerLabels) -> Self {
-        labels.0
-    }
-}
 /// Docker label recording the owning Project.
 pub const PROJECT_NAME_LABEL: &str = "ployz.project.name";
 
@@ -683,95 +608,6 @@ validated_string_newtype!(
     "a 1-253 character lowercase DNS hostname",
     |value| is_hostname(value)
 );
-
-validated_string_newtype!(
-    /// A container's UTS hostname. It has no Service, DNS, ingress, placement, or Machine meaning.
-    ContainerHostname,
-    "container hostname",
-    "a 1-253 character RFC 1123 hostname",
-    |value| is_rfc1123_hostname(value)
-);
-
-/// One container-local Docker `/etc/hosts` entry.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct ExtraHost(String);
-
-impl ExtraHost {
-    /// Build an entry from a non-empty host and an IP address or `host-gateway`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ValueError`] when either part is invalid.
-    pub fn from_parts(host: &str, address: &str) -> Result<Self, ValueError> {
-        let address = address
-            .strip_prefix('[')
-            .and_then(|address| address.strip_suffix(']'))
-            .unwrap_or(address);
-        if host.is_empty()
-            || address.is_empty()
-            || (address != "host-gateway" && address.parse::<IpAddr>().is_err())
-        {
-            return Err(extra_host_error(format!("{host}:{address}")));
-        }
-        Ok(Self(format!("{host}:{address}")))
-    }
-
-    /// Parse Docker's canonical `host:address` entry form.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ValueError`] when the host is empty or the address is neither
-    /// an IP address nor `host-gateway`.
-    pub fn parse(value: impl Into<String>) -> Result<Self, ValueError> {
-        let value = value.into();
-        let Some((host, address)) = value.split_once(':') else {
-            return Err(extra_host_error(value));
-        };
-        Self::from_parts(host, address).map_err(|_| extra_host_error(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-fn extra_host_error(value: impl Into<String>) -> ValueError {
-    ValueError::new(
-        "extra host",
-        value,
-        "a non-empty host and an IP address or 'host-gateway'",
-    )
-}
-
-impl fmt::Display for ExtraHost {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl FromStr for ExtraHost {
-    type Err = ValueError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
-
-impl TryFrom<String> for ExtraHost {
-    type Error = ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(value)
-    }
-}
-
-impl From<ExtraHost> for String {
-    fn from(value: ExtraHost) -> Self {
-        value.0
-    }
-}
 
 /// One Machine's optimistic container subnet candidate.
 ///

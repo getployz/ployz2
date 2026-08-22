@@ -126,6 +126,8 @@ fn container_metadata_values_reject_invalid_wire_states() {
     );
     assert!(ExtraHost::parse(":192.0.2.1").is_err());
     assert!(ExtraHost::parse("api:not-an-address").is_err());
+    assert!(ExtraHost::from_parts("api:alias", "192.0.2.1").is_err());
+    assert!(ExtraHost::from_parts("api alias", "192.0.2.1").is_err());
     assert!(
         ContainerLabels::parse(BTreeMap::from([("example.user".into(), "yes".into())])).is_ok()
     );
