@@ -1,12 +1,9 @@
-use super::{
-    CONFIG_FILE, CaddyAdmin, Error, automatic_caddyfile, generate_caddyfile, preflight_candidate,
-    reconcile,
-};
+use super::{CONFIG_FILE, CaddyAdmin, Error, automatic_caddyfile, generate_caddyfile, reconcile};
 use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
 use ployz_core::{
-    AdvertisedEndpoint, CADDY_VERIFY_PATH, CaddyServiceConfig, ContainerAddress, ContainerId,
-    ContainerKind, ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind,
-    HttpProtocol, IngressHost, IngressHostname, Machine, MachineId, MachineName, ManagementAddress,
+    AdvertisedEndpoint, CADDY_VERIFY_PATH, ContainerAddress, ContainerId, ContainerKind,
+    ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol,
+    IngressHost, IngressHostname, Machine, MachineId, MachineName, ManagementAddress,
     PortPublication, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol,
     WireGuardPublicKey, service_containers,
 };
@@ -18,6 +15,9 @@ use std::sync::Mutex;
 
 #[path = "caddy_tests/watcher.rs"]
 mod watcher;
+
+#[path = "caddy_tests/preflight.rs"]
+mod preflight;
 
 #[test]
 fn automatic_sites_match_the_frozen_caddyfile_contract() {
@@ -797,106 +797,6 @@ async fn invalid_custom_config_fails_closed_with_owning_service() {
     assert_eq!(
         error.to_string(),
         "Service 'app/broken': Caddy adaptation failed: invalid config detected"
-    );
-}
-
-#[tokio::test]
-async fn failed_preflight_preserves_the_last_config_without_loading() {
-    let directory =
-        std::env::temp_dir().join(format!("ployz-caddy-preflight-test-{}", std::process::id()));
-    let path = directory.join(CONFIG_FILE);
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::write(&path, "last loaded").unwrap();
-    let machine = Machine {
-        id: MachineId::parse("a".repeat(32)).unwrap(),
-        name: MachineName::parse("node-a").unwrap(),
-        subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
-        public_key: WireGuardPublicKey([1; 32]),
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
-        runtime: Default::default(),
-    };
-    let services = [
-        (
-            ployz_core::QualifiedService::parse("app/api").unwrap(),
-            CaddyServiceConfig::Present(Some("api.example { respond ok }".into())),
-        ),
-        (
-            ployz_core::QualifiedService::parse("app/web").unwrap(),
-            CaddyServiceConfig::Present(Some("# invalid\nweb.example { respond bad }".into())),
-        ),
-    ]
-    .into();
-    let admin = FakeAdmin::default();
-
-    let error = preflight_candidate(&machine, &[], &BTreeMap::new(), &services, Some(&admin))
-        .await
-        .unwrap_err();
-
-    assert_eq!(
-        error.to_string(),
-        "Service 'app/web': Caddy adaptation failed: invalid config detected"
-    );
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "last loaded");
-    assert!(admin.loaded.lock().unwrap().is_empty());
-    let adapted = admin.adapted.lock().unwrap();
-    assert_eq!(adapted.len(), 2);
-    assert!(adapted.last().unwrap().contains("api.example"));
-    assert!(adapted.last().unwrap().contains("web.example"));
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[tokio::test]
-async fn preflight_excludes_removed_services_from_upstream_resolution() {
-    let local = MachineId::parse("a".repeat(32)).unwrap();
-    let machine = Machine {
-        id: local,
-        name: MachineName::parse("node-a").unwrap(),
-        subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
-        public_key: WireGuardPublicKey([1; 32]),
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
-        runtime: Default::default(),
-    };
-    let gateway = "gateway.example { reverse_proxy {{upstreams \"api\"}} }";
-    let observations = vec![
-        custom_observation(
-            1,
-            1,
-            &local,
-            "api",
-            "api.example { respond ok }",
-            [10, 210, 1, 2],
-        ),
-        custom_observation(2, 1, &local, "gateway", gateway, [10, 210, 1, 3]),
-    ];
-    let services = [
-        (
-            ployz_core::QualifiedService::parse("app/api").unwrap(),
-            CaddyServiceConfig::Removed,
-        ),
-        (
-            ployz_core::QualifiedService::parse("app/gateway").unwrap(),
-            CaddyServiceConfig::Present(Some(gateway.into())),
-        ),
-    ]
-    .into();
-
-    let error = preflight_candidate(
-        &machine,
-        &observations,
-        &BTreeMap::new(),
-        &services,
-        Some(&FakeAdmin::default()),
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(
-        error.to_string(),
-        "Service 'app/gateway': Caddy rendering failed: Service 'api' was not found"
     );
 }
 
