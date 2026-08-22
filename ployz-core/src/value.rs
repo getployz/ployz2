@@ -62,6 +62,21 @@ fn is_hostname(value: &str) -> bool {
     (1..=253).contains(&value.len()) && value.split('.').all(is_dns_label)
 }
 
+fn is_rfc1123_label(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 63
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
+}
+
+fn is_rfc1123_hostname(value: &str) -> bool {
+    (1..=253).contains(&value.len()) && value.split('.').all(is_rfc1123_label)
+}
+
 macro_rules! hex_id_newtype {
     ($(#[$attribute:meta])* $name:ident, $label:literal, $len:expr, $expected:literal) => {
         $(#[$attribute])*
@@ -429,6 +444,8 @@ validated_string_newtype!(
 
 /// Docker label written on resources Ployz manages.
 pub const MANAGED_LABEL: &str = "ployz.managed";
+/// Docker label namespace reserved for Ployz management metadata.
+pub const MANAGEMENT_LABEL_PREFIX: &str = "ployz.";
 /// Docker label recording the owning Project.
 pub const PROJECT_NAME_LABEL: &str = "ployz.project.name";
 
@@ -607,6 +624,14 @@ validated_string_newtype!(
     "Ingress Hostname",
     "a 1-253 character lowercase DNS hostname",
     |value| is_hostname(value)
+);
+
+validated_string_newtype!(
+    /// A container's UTS hostname. It has no Service, DNS, ingress, placement, or Machine meaning.
+    ContainerHostname,
+    "container hostname",
+    "a 1-253 character RFC 1123 hostname",
+    |value| is_rfc1123_hostname(value)
 );
 
 /// One Machine's optimistic container subnet candidate.

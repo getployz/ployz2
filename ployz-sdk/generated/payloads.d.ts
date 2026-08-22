@@ -42,6 +42,8 @@ export type ContainerAddress = string;
 
 export type IngressHost = string;
 
+export type ContainerHostname = string;
+
 export type DockerVolumeName = string;
 
 export type CapabilityName = string;
@@ -195,6 +197,9 @@ export type ServiceContainerSpec = Additive<{
   command?: string[];
   entrypoint?: string[];
   environment?: { readonly [key: string]: string };
+  labels?: { readonly [key: string]: string };
+  hostname?: ContainerHostname;
+  extra_hosts?: string[];
   cap_add?: string[];
   cap_drop?: string[];
   healthcheck?: HealthcheckSpec;

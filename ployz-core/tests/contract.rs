@@ -1323,6 +1323,9 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         command: vec!["serve".into()],
         entrypoint: Vec::new(),
         environment: Default::default(),
+        labels: Default::default(),
+        hostname: None,
+        extra_hosts: Vec::new(),
         cap_add: vec!["NET_ADMIN".into()],
         cap_drop: Vec::new(),
         healthcheck: Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {

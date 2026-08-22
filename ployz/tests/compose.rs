@@ -272,6 +272,104 @@ fn compose_maps_disabled_and_sentinel_healthchecks() {
 }
 
 #[test]
+fn compose_maps_native_container_metadata_without_changing_service_identity() {
+    let project = parse_normalized(
+        r#"
+services:
+  app:
+    image: app:1
+    hostname: Shared.Host
+    labels:
+      example.empty:
+      example.equals: a=b
+      example.number: 3
+    extra_hosts:
+      app: 192.0.2.10
+      gateway: host-gateway
+      ipv6:
+        - "::1"
+        - "2001:db8::1"
+    deploy: {replicas: 2}
+  worker:
+    image: worker:1
+    labels: [example.bare, example.value=unchanged]
+    extra_hosts: [app=198.51.100.2, legacy:203.0.113.4]
+"#,
+        ".",
+    )
+    .unwrap();
+
+    let app = service(&project, "app");
+    assert_eq!(app.name.as_str(), "app");
+    assert!(matches!(app.mode, ServiceMode::Replicated { replicas } if replicas.get() == 2));
+    assert_eq!(app.placement, Default::default());
+    assert!(app.ports.is_empty());
+    assert!(app.caddy_config.is_none());
+    assert_eq!(
+        app.container.hostname.as_ref().unwrap().as_str(),
+        "Shared.Host"
+    );
+    assert_eq!(
+        app.container.labels,
+        BTreeMap::from([
+            ("example.empty".into(), String::new()),
+            ("example.equals".into(), "a=b".into()),
+            ("example.number".into(), "3".into()),
+        ])
+    );
+    assert_eq!(
+        app.container.extra_hosts,
+        [
+            "app:192.0.2.10",
+            "gateway:host-gateway",
+            "ipv6:::1",
+            "ipv6:2001:db8::1",
+        ]
+    );
+
+    let worker = service(&project, "worker");
+    assert_eq!(
+        worker.container.labels,
+        BTreeMap::from([
+            ("example.bare".into(), String::new()),
+            ("example.value".into(), "unchanged".into()),
+        ])
+    );
+    assert_eq!(
+        worker.container.extra_hosts,
+        ["app:198.51.100.2", "legacy:203.0.113.4"]
+    );
+    assert!(project.warnings.is_empty());
+}
+
+#[test]
+fn compose_rejects_reserved_labels_and_invalid_container_hostnames() {
+    let label_error = parse_normalized(
+        "services: {app: {image: app, labels: {ployz.future: mine}}}",
+        ".",
+    )
+    .unwrap_err();
+    assert_eq!(
+        label_error.to_string(),
+        "invalid normalized Compose project: service 'app': label key 'ployz.future' uses the reserved 'ployz.*' management namespace"
+    );
+
+    for hostname in ["bad_name", "-leading", "trailing-", "two..dots"] {
+        let error = parse_normalized(
+            &format!("services: {{app: {{image: app, hostname: {hostname:?}}}}}"),
+            ".",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "invalid normalized Compose project: service 'app': invalid container hostname {hostname:?}: a 1-253 character RFC 1123 hostname"
+            )
+        );
+    }
+}
+
+#[test]
 fn classifier_keeps_the_warning_error_split_and_incomplete_boundary() {
     let warning_yaml = r#"
 name: demo
@@ -301,8 +399,6 @@ secrets:
         [
             "service 'app': unsupported feature 'dns'",
             "service 'app': unsupported feature 'dns_search'",
-            "service 'app': unsupported feature 'extra_hosts'",
-            "service 'app': unsupported feature 'labels'",
             "service 'app': unsupported feature 'links'",
             "service 'app': unsupported feature 'storage_opt'",
             "service 'app': unsupported feature 'mem_swappiness'",
