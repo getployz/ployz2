@@ -178,7 +178,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     }
     let services = live.services();
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
-    let missing: Vec<_> = slots.iter().map(|slot| slot.identity.clone()).collect();
+    let initially_missing: Vec<_> = slots.iter().map(|slot| slot.identity.clone()).collect();
     let endpoint_creates = slots
         .iter()
         .filter(|slot| !service_has_slot(&services, this_machine, &slot.spec.service_id))
@@ -188,13 +188,13 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let capacity = client
         .bridge_capacity(&this_machine.id)
         .await
-        .map_err(|error| CatchUpError::new(error, missing.clone()))?;
+        .map_err(|error| CatchUpError::new(error, initially_missing.clone()))?;
     if endpoint_creates > 0
         && let Some(error) = endpoint_capacity_error(endpoint_creates, capacity.as_ref())
     {
         return Err(CatchUpError::new(
             Failure::usage(error.to_string()),
-            missing,
+            initially_missing,
         ));
     }
     if !slots.is_empty() {
@@ -216,17 +216,29 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             failures.push((identity, error));
         }
     }
-    if !failures.is_empty() {
+    let live = client
+        .live_services()
+        .await
+        .map_err(|error| CatchUpError::new(error, initially_missing))?;
+    if let Some(warning) = partial_observation_warning(&live) {
+        eprintln!("WARNING: Global catch-up used partial Service observations: {warning}");
+    }
+    let missing = plan_global_catch_up(&live.services(), this_machine, skip_caddy)
+        .into_iter()
+        .map(|slot| slot.identity)
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
         let details = failures
             .iter()
             .map(|(identity, error)| format!("{identity}: {error}"))
             .collect::<Vec<_>>()
             .join("; ");
-        let missing = failures.into_iter().map(|(identity, _)| identity).collect();
-        return Err(CatchUpError::new(
-            Failure::usage(format!("Global catch-up RPCs failed: {details}")),
-            missing,
-        ));
+        let cause = if details.is_empty() {
+            Failure::usage("eligible Globals are not running after catch-up")
+        } else {
+            Failure::usage(format!("Global catch-up RPCs failed: {details}"))
+        };
+        return Err(CatchUpError::new(cause, missing));
     }
     Ok(())
 }
@@ -327,6 +339,29 @@ mod tests {
 
         assert!(catch_up_globals(&mut client, &joiner, true).await.is_err());
         assert_eq!(client.ensure_calls.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn successful_ensure_is_reobserved_before_success() {
+        let joiner = machine('1', "joiner");
+        let service = global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            created_on(&joiner, 'a'),
+        );
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: vec![service],
+            capacity: None,
+            ensure_calls: Cell::new(0),
+        };
+
+        let error = catch_up_globals(&mut client, &joiner, true)
+            .await
+            .unwrap_err();
+        assert_eq!(client.ensure_calls.get(), 1);
+        assert_eq!(error.missing, [qualified("app", "api")]);
     }
 
     struct FakeCatchUpClient {
