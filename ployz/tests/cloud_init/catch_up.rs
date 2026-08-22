@@ -8,8 +8,8 @@ use super::harness::{
 };
 use ployz::context::{Config, Connection, Context};
 use ployz_core::{
-    CloudPairing, ContainerId, ContainerObservation, PairingCredential, ProjectName, ServiceId,
-    ServiceName,
+    CloudPairing, ContainerId, ContainerObservation, MembershipObservation, PairingCredential,
+    ProjectName, ServiceId, ServiceName,
 };
 use serde_json::json;
 
@@ -71,6 +71,17 @@ async fn machine_add_retries_catch_up_and_reports_exhaustion() {
     target.join_request();
 }
 
+#[tokio::test]
+async fn machine_add_verifies_target_while_membership_is_not_up() {
+    for membership in [MembershipObservation::Down, MembershipObservation::Unknown] {
+        let (output, entry, target) = machine_add_with_membership(0, 0, membership).await;
+        assert!(output.status.success(), "stderr: {:?}", output.stderr);
+        assert_eq!(entry.target_inspect_attempts(), 1);
+        assert_eq!(entry.ensure_attempts(), 2);
+        target.join_request();
+    }
+}
+
 async fn cloud_join(target_failures: usize, ensure_failures: usize) -> (Output, JoinDaemon) {
     let founder = founder_machine();
     let mut registration = registration();
@@ -112,11 +123,20 @@ async fn machine_add(
     target_failures: usize,
     ensure_failures: usize,
 ) -> (Output, JoinDaemon, JoinDaemon) {
+    machine_add_with_membership(target_failures, ensure_failures, MembershipObservation::Up).await
+}
+
+async fn machine_add_with_membership(
+    target_failures: usize,
+    ensure_failures: usize,
+    membership: MembershipObservation,
+) -> (Output, JoinDaemon, JoinDaemon) {
     let founder = founder_machine();
     let mut registration = registration();
     registration.visible_peers = vec![founder.clone()];
     let entry = JoinDaemon::new(registration.clone())
         .with_containers(globals_on(&founder))
+        .with_membership(membership)
         .transient_target_inspect_failures(target_failures)
         .transient_ensure_failures(ensure_failures);
     let target = JoinDaemon::new(registration);

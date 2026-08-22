@@ -1,11 +1,12 @@
 //! Global catch-up: place observed eligible Globals onto this Machine only.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerRuntimeObservation, EnsureGlobalSlotRequest, InspectRequest,
-    LiveServices, Machine, MachineId, MachineTarget, QualifiedService, ResolvedServiceSpec,
-    RpcError, ServiceContainer, ServiceMode, ServiceObservation, machine_matches_placement, op,
+    BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation,
+    EnsureGlobalSlotRequest, InspectRequest, ListContainersRequest, LiveServices, Machine,
+    MachineId, MachineTarget, QualifiedService, ResolvedServiceSpec, RpcError, ServiceContainer,
+    ServiceMode, ServiceObservation, machine_matches_placement, op, service_containers,
 };
 
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
@@ -42,6 +43,10 @@ pub(crate) trait CatchUpClient {
         machine_id: &MachineId,
         request: EnsureGlobalSlotRequest,
     ) -> Result<(), RpcError>;
+    async fn target_containers(
+        &mut self,
+        machine_id: &MachineId,
+    ) -> Result<Vec<ContainerObservation>, Failure>;
 }
 
 impl CatchUpClient for Client {
@@ -75,6 +80,16 @@ impl CatchUpClient for Client {
             .await
             .map(|_| ())
             .map_err(Into::into)
+    }
+
+    async fn target_containers(
+        &mut self,
+        machine_id: &MachineId,
+    ) -> Result<Vec<ContainerObservation>, Failure> {
+        self.read::<op::ListContainers>(ListContainersRequest {}, &MachineTarget::from(machine_id))
+            .await
+            .map(|list| list.containers)
+            .map_err(Failure::from)
     }
 }
 
@@ -117,7 +132,7 @@ fn slot_for(
     skip_caddy: bool,
 ) -> Option<GlobalCatchUpSlot> {
     let slot = eligible_slot(service, this_machine, skip_caddy)?;
-    if service_has_running_slot(service, this_machine, &slot.spec.service_id) {
+    if has_running_slot(&service.containers, this_machine, &slot.spec.service_id) {
         return None;
     }
     Some(slot)
@@ -159,12 +174,12 @@ fn is_running(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(runtime, ContainerRuntimeObservation::Running { .. })
 }
 
-fn service_has_running_slot(
-    service: &ServiceObservation,
+fn has_running_slot<'a>(
+    containers: impl IntoIterator<Item = &'a ServiceContainer>,
     machine: &Machine,
     service_id: &ployz_core::ServiceId,
 ) -> bool {
-    service.containers.iter().any(|container| {
+    containers.into_iter().any(|container| {
         let observation = container.as_observation();
         observation.machine_id == machine.id
             && observation.service_id == *service_id
@@ -240,29 +255,18 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             failures.push((identity, error));
         }
     }
-    let live = client
-        .live_services()
+    let missing_if_unverified = initially_eligible.keys().cloned().collect();
+    let target_containers = client
+        .target_containers(&this_machine.id)
         .await
-        .map_err(|error| CatchUpError::new(error, initially_missing))?;
-    if let Some(warning) = partial_observation_warning(&live) {
-        eprintln!("WARNING: Global catch-up used partial Service observations: {warning}");
-    }
-    let services = live.services();
-    let mut missing = plan_global_catch_up(&services, this_machine, skip_caddy)
+        .map_err(|error| CatchUpError::new(error, missing_if_unverified))?;
+    let target_services = service_containers(target_containers);
+    let missing = initially_eligible
         .into_iter()
-        .map(|slot| slot.identity)
-        .collect::<BTreeSet<_>>();
-    missing.extend(
-        initially_eligible
-            .into_iter()
-            .filter_map(|(identity, service_id)| {
-                (!services.iter().any(|service| {
-                    service.identity == identity
-                        && service_has_running_slot(service, this_machine, &service_id)
-                }))
-                .then_some(identity)
-            }),
-    );
+        .filter_map(|(identity, service_id)| {
+            (!has_running_slot(&target_services, this_machine, &service_id)).then_some(identity)
+        })
+        .collect::<Vec<_>>();
     if !missing.is_empty() {
         let details = failures
             .iter()
@@ -274,7 +278,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         } else {
             Failure::usage(format!("Global catch-up RPCs failed: {details}"))
         };
-        return Err(CatchUpError::new(cause, missing.into_iter().collect()));
+        return Err(CatchUpError::new(cause, missing));
     }
     Ok(())
 }
@@ -369,8 +373,7 @@ mod tests {
         let mut client = FakeCatchUpClient {
             machine_id: joiner.id,
             services: vec![stale, current],
-            refreshed_services: None,
-            live_calls: Cell::new(0),
+            target_services: None,
             capacity: None,
             ensure_calls: Cell::new(0),
         };
@@ -391,8 +394,7 @@ mod tests {
         let mut client = FakeCatchUpClient {
             machine_id: joiner.id,
             services: vec![service],
-            refreshed_services: None,
-            live_calls: Cell::new(0),
+            target_services: None,
             capacity: None,
             ensure_calls: Cell::new(0),
         };
@@ -405,7 +407,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initially_eligible_global_absent_from_refresh_remains_missing() {
+    async fn initially_eligible_global_absent_from_target_inspection_remains_missing() {
         let joiner = machine('1', "joiner");
         let founder = machine('f', "founder");
         let service = global_service(
@@ -417,8 +419,7 @@ mod tests {
         let mut client = FakeCatchUpClient {
             machine_id: joiner.id,
             services: vec![service],
-            refreshed_services: Some(Vec::new()),
-            live_calls: Cell::new(0),
+            target_services: Some(Vec::new()),
             capacity: None,
             ensure_calls: Cell::new(0),
         };
@@ -455,8 +456,7 @@ mod tests {
         let mut client = FakeCatchUpClient {
             machine_id: joiner.id,
             services: vec![service],
-            refreshed_services: Some(vec![hook_only]),
-            live_calls: Cell::new(0),
+            target_services: Some(vec![hook_only]),
             capacity: None,
             ensure_calls: Cell::new(0),
         };
@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initially_eligible_generation_absent_from_refresh_remains_missing() {
+    async fn initially_eligible_generation_absent_from_target_inspection_remains_missing() {
         let joiner = machine('1', "joiner");
         let founder = machine('f', "founder");
         let stale = global_service(
@@ -486,8 +486,7 @@ mod tests {
         let mut client = FakeCatchUpClient {
             machine_id: joiner.id,
             services: vec![stale.clone(), current],
-            refreshed_services: Some(vec![stale]),
-            live_calls: Cell::new(0),
+            target_services: Some(vec![stale]),
             capacity: Some(BridgeEndpointCapacity::new(10, 0)),
             ensure_calls: Cell::new(0),
         };
@@ -502,24 +501,19 @@ mod tests {
     struct FakeCatchUpClient {
         machine_id: MachineId,
         services: Vec<ServiceObservation>,
-        refreshed_services: Option<Vec<ServiceObservation>>,
-        live_calls: Cell<usize>,
+        target_services: Option<Vec<ServiceObservation>>,
         capacity: Option<BridgeEndpointCapacity>,
         ensure_calls: Cell<usize>,
     }
 
     impl CatchUpClient for FakeCatchUpClient {
         async fn live_services(&mut self) -> Result<LiveServices<RpcError>, Failure> {
-            let services = if self.live_calls.replace(self.live_calls.get() + 1) == 0 {
-                &self.services
-            } else {
-                self.refreshed_services.as_ref().unwrap_or(&self.services)
-            };
             Ok(LiveServices {
                 containers: ployz_core::PartialResult {
                     successes: vec![ployz_core::MachineSuccess {
                         machine_id: self.machine_id,
-                        value: services
+                        value: self
+                            .services
                             .iter()
                             .flat_map(ServiceObservation::members)
                             .map(|container| container.as_observation().clone())
@@ -545,6 +539,20 @@ mod tests {
         ) -> Result<(), RpcError> {
             self.ensure_calls.set(self.ensure_calls.get() + 1);
             Ok(())
+        }
+
+        async fn target_containers(
+            &mut self,
+            _machine_id: &MachineId,
+        ) -> Result<Vec<ContainerObservation>, Failure> {
+            Ok(self
+                .target_services
+                .as_ref()
+                .unwrap_or(&self.services)
+                .iter()
+                .flat_map(ServiceObservation::members)
+                .map(|container| container.as_observation().clone())
+                .collect())
         }
     }
 

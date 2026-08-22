@@ -188,6 +188,7 @@ struct JoinInner {
     transient_target_inspect_failures: AtomicUsize,
     fail_ensure: AtomicBool,
     fail_list_on: Mutex<Option<MachineId>>,
+    assigned_membership: Mutex<MembershipObservation>,
     _register: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -209,6 +210,7 @@ impl JoinDaemon {
                 transient_target_inspect_failures: AtomicUsize::new(0),
                 fail_ensure: AtomicBool::new(false),
                 fail_list_on: Mutex::new(None),
+                assigned_membership: Mutex::new(MembershipObservation::Up),
                 _register: Mutex::new(None),
             }),
         }
@@ -269,6 +271,11 @@ impl JoinDaemon {
 
     pub fn fail_list_on(self, machine_id: MachineId) -> Self {
         *self.inner.fail_list_on.lock().unwrap() = Some(machine_id);
+        self
+    }
+
+    pub fn with_membership(self, membership: MembershipObservation) -> Self {
+        *self.inner.assigned_membership.lock().unwrap() = membership;
         self
     }
 
@@ -496,8 +503,13 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let assigned = self.inner.registration.assigned_machine.clone();
-        let mut machines = vec![up_machine(assigned)];
+        let assigned = MachineObservation {
+            machine: self.inner.registration.assigned_machine.clone(),
+            membership: self.inner.assigned_membership.lock().unwrap().clone(),
+            selected_endpoint: None,
+            rtt: None,
+        };
+        let mut machines = vec![assigned];
         machines.extend(
             self.inner
                 .registration
