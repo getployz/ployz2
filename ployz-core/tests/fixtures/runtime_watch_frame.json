@@ -59,7 +59,6 @@
   "services": [
     {
       "identity": "app/api",
-      "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "member_ids": [
         "1111111111111111111111111111111111111111111111111111111111111111"
       ]

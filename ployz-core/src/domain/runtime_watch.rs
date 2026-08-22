@@ -93,7 +93,10 @@ impl RuntimeWatchTransportFrame {
     /// Normalize an ergonomic frame for transport.
     #[must_use]
     pub fn from_frame(frame: &RuntimeWatchFrame) -> Self {
-        let mut frame = frame.clone();
+        Self::from_owned_frame(frame.clone())
+    }
+
+    fn from_owned_frame(mut frame: RuntimeWatchFrame) -> Self {
         frame
             .containers
             .sort_by_key(|container| container.container_id);
@@ -124,7 +127,7 @@ impl<'de> Deserialize<'de> for RuntimeWatchTransportFrame {
     {
         RuntimeWatchTransportWire::deserialize(deserializer)?
             .into_frame()
-            .map(|frame| Self::from_frame(&frame))
+            .map(Self::from_owned_frame)
             .map_err(D::Error::custom)
     }
 }
@@ -198,7 +201,6 @@ impl RuntimeWatchContainerWire {
 #[derive(Serialize, Deserialize)]
 struct RuntimeWatchServiceWire {
     identity: QualifiedService,
-    service_id: ServiceId,
     #[serde(default)]
     member_ids: Vec<ContainerId>,
 }
@@ -257,7 +259,6 @@ impl RuntimeWatchTransportWire {
                 member_ids.sort_unstable();
                 RuntimeWatchServiceWire {
                     identity: service.identity.clone(),
-                    service_id: service.service_id,
                     member_ids,
                 }
             })
@@ -320,21 +321,12 @@ impl RuntimeWatchTransportWire {
         }
 
         let mut service_identities = BTreeSet::new();
-        let mut service_ids = BTreeMap::new();
         let mut assigned = vec![false; containers.len()];
         let mut services = Vec::with_capacity(self.services.len());
         for service in self.services {
             if !service_identities.insert(service.identity.clone()) {
                 return Err(RuntimeWatchGraphError::DuplicateServiceIdentity {
                     identity: Box::new(service.identity),
-                });
-            }
-            if let Some(identity) = service_ids.insert(service.service_id, service.identity.clone())
-            {
-                return Err(RuntimeWatchGraphError::DuplicateServiceId {
-                    service_id: service.service_id,
-                    first: Box::new(identity),
-                    duplicate: Box::new(service.identity),
                 });
             }
             if service.member_ids.is_empty() {
@@ -372,18 +364,11 @@ impl RuntimeWatchTransportWire {
                 *assigned = true;
                 members.push(member.clone());
             }
-            let derived_service_id = members
+            let service_id = members
                 .iter()
                 .max_by_key(|member| (member.created_at_unix_nanos, member.container_id.as_str()))
                 .expect("empty Services were rejected")
                 .service_id;
-            if service.service_id != derived_service_id {
-                return Err(RuntimeWatchGraphError::ContradictoryServiceId {
-                    identity: Box::new(service.identity),
-                    declared: service.service_id,
-                    derived: derived_service_id,
-                });
-            }
 
             let mut containers = Vec::<ServiceContainer>::new();
             let mut hook_containers = Vec::<HookContainer>::new();
@@ -395,7 +380,7 @@ impl RuntimeWatchTransportWire {
             }
             services.push(ServiceObservation {
                 identity: service.identity,
-                service_id: service.service_id,
+                service_id,
                 containers,
                 hook_containers,
             });
@@ -440,12 +425,6 @@ enum RuntimeWatchGraphError {
     ContradictorySpecIdentity { container_id: ContainerId },
     #[error("Service {identity} appears more than once")]
     DuplicateServiceIdentity { identity: Box<QualifiedService> },
-    #[error("Service ID {service_id} is shared by {first} and {duplicate}")]
-    DuplicateServiceId {
-        service_id: ServiceId,
-        first: Box<QualifiedService>,
-        duplicate: Box<QualifiedService>,
-    },
     #[error("Service {identity} has no members")]
     EmptyService { identity: Box<QualifiedService> },
     #[error("Service {identity} references missing Container {container_id}")]
@@ -460,12 +439,6 @@ enum RuntimeWatchGraphError {
         container_id: ContainerId,
         expected: Box<QualifiedService>,
         actual: Box<QualifiedService>,
-    },
-    #[error("Service {identity} declares ID {declared}, but its newest member has {derived}")]
-    ContradictoryServiceId {
-        identity: Box<QualifiedService>,
-        declared: ServiceId,
-        derived: ServiceId,
     },
     #[error("Container {container_id} does not belong to a Service")]
     UnassignedContainer { container_id: ContainerId },
