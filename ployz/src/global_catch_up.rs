@@ -23,6 +23,7 @@ pub(crate) struct CatchUpError {
 }
 
 impl CatchUpError {
+    /// Record the failure and every eligible Global left missing.
     pub(crate) fn new(cause: Failure, missing: Vec<QualifiedService>) -> Self {
         Self { cause, missing }
     }

@@ -259,6 +259,7 @@ impl JoinDaemon {
         self
     }
 
+    /// Make this many targeted Inspect attempts transiently unavailable.
     pub fn transient_target_inspect_failures(self, failures: usize) -> Self {
         self.inner
             .transient_target_inspect_failures
@@ -279,6 +280,7 @@ impl JoinDaemon {
         self.inner.ensure_attempts.load(Ordering::SeqCst)
     }
 
+    /// Count targeted Inspect attempts received by this fake daemon.
     pub fn target_inspect_attempts(&self) -> usize {
         self.inner.target_inspect_attempts.load(Ordering::SeqCst)
     }
