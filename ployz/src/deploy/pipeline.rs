@@ -50,8 +50,10 @@ pub enum DeployError {
     Plan(#[from] PlanError),
     #[error(transparent)]
     Project(#[from] crate::project::ProjectError),
+    /// Candidate Caddy validation could not be performed.
     #[error("Caddy preflight cannot run: no healthy Caddy Service Container is visible")]
     CaddyUnavailable,
+    /// A Machine rejected the candidate Caddy configuration.
     #[error("Caddy preflight failed on Machine {machine_id}: {source}")]
     CaddyPreflight {
         machine_id: MachineId,

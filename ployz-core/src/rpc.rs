@@ -13,13 +13,15 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, CloudPairing, ContainerId, ContainerKind,
     ContainerObservation, DockerVolume, InspectTelemetry, LocalMachinePhase, Machine, MachineId,
     MachineLogService, MachineName, MachineObservation, MachineRuntime, MachineToken,
-    MachineUpdate, ProjectName, PublicIpDiscovery, QualifiedService, ResolvedServiceSpec,
-    RttObservation, TelemetryObservation, WireGuardDevice, WireGuardPublicKey,
+    MachineUpdate, ProjectName, PublicIpDiscovery, ResolvedServiceSpec, RttObservation,
+    TelemetryObservation, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
 
+mod caddy;
 mod docker;
 
+pub use caddy::*;
 pub use docker::*;
 
 pub const PROTOCOL_MAJOR: u32 = 1;
@@ -418,29 +420,6 @@ pub struct PullImageFromMachineRequest {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImagePulled {}
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct GetCaddyConfigRequest {}
-
-/// A Service's state in a candidate Caddy configuration.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum CaddyServiceConfig {
-    /// The Service remains deployed, with an optional custom Caddy fragment.
-    Present(Option<String>),
-    /// The Service is removed by the deployment.
-    Removed,
-}
-
-/// The Service states used to build and validate a candidate Caddy configuration.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct PreflightCaddyConfigRequest {
-    /// Final deployment state for every Service changed or removed by the plan.
-    pub services: BTreeMap<QualifiedService, CaddyServiceConfig>,
-}
-
-/// Confirms that the candidate Caddy configuration adapted successfully.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CaddyConfigPreflighted {}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReserveDomainRequest {
     pub endpoint: String,
@@ -722,11 +701,6 @@ pub struct ImageSummary {
 pub struct MachineImages {
     pub containerd_store: bool,
     pub images: Vec<ImageSummary>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CaddyConfig {
-    pub caddyfile: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

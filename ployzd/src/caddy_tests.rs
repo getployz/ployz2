@@ -848,6 +848,59 @@ async fn failed_preflight_preserves_the_last_config_without_loading() {
 }
 
 #[tokio::test]
+async fn preflight_excludes_removed_services_from_upstream_resolution() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let machine = Machine {
+        id: local,
+        name: MachineName::parse("node-a").unwrap(),
+        subnet: "10.210.1.0/24".parse().unwrap(),
+        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
+        runtime: Default::default(),
+    };
+    let gateway = "gateway.example { reverse_proxy {{upstreams \"api\"}} }";
+    let observations = vec![
+        custom_observation(
+            1,
+            1,
+            &local,
+            "api",
+            "api.example { respond ok }",
+            [10, 210, 1, 2],
+        ),
+        custom_observation(2, 1, &local, "gateway", gateway, [10, 210, 1, 3]),
+    ];
+    let services = [
+        (
+            ployz_core::QualifiedService::parse("app/api").unwrap(),
+            CaddyServiceConfig::Removed,
+        ),
+        (
+            ployz_core::QualifiedService::parse("app/gateway").unwrap(),
+            CaddyServiceConfig::Present(Some(gateway.into())),
+        ),
+    ]
+    .into();
+
+    let error = preflight_candidate(
+        &machine,
+        &observations,
+        &BTreeMap::new(),
+        &services,
+        Some(&FakeAdmin::default()),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Service 'app/gateway': Caddy rendering failed: Service 'api' was not found"
+    );
+}
+
+#[tokio::test]
 async fn invalid_cross_project_upstream_fails_closed_at_owning_service() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let mut staging_web = custom_observation(

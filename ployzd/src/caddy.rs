@@ -281,10 +281,17 @@ async fn preflight_candidate<A: CaddyAdmin>(
     admin: Option<&A>,
 ) -> Result<String, Error> {
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let mut containers = service_containers(observations.iter().cloned());
+    containers.retain(|container| {
+        !matches!(
+            services.get(&container.as_observation().identity()),
+            Some(CaddyServiceConfig::Removed)
+        )
+    });
     generate_caddyfile(
         &machine.id,
         machine.name.as_str(),
-        &service_containers(observations.iter().cloned()),
+        &containers,
         &timestamp,
         certificates,
         Some(services),
