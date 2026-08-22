@@ -572,6 +572,7 @@ export type RuntimeWatchFrame = Additive<{
 }>;
 
 export const GET_CADDY_CONFIG_CAPABILITY: CapabilityName = "ployz.caddy.config.v1";
+export const PREFLIGHT_CADDY_CONFIG_CAPABILITY: CapabilityName = "ployz.caddy.preflight.v1";
 export const CERTIFICATE_POLICY_CAPABILITY: CapabilityName = "ployz.certificates.policy.v1";
 export const CREATE_CONTAINER_CAPABILITY: CapabilityName = "ployz.container.create.v1";
 export const ENSURE_GLOBAL_SLOT_CAPABILITY: CapabilityName = "ployz.container.ensure-global-slot.v1";
@@ -611,6 +612,7 @@ export const INSPECT_WIREGUARD_CAPABILITY: CapabilityName = "ployz.wireguard.ins
 
 export const CATALOGUED_CAPABILITIES = [
   "ployz.caddy.config.v1",
+  "ployz.caddy.preflight.v1",
   "ployz.certificates.policy.v1",
   "ployz.container.create.v1",
   "ployz.container.ensure-global-slot.v1",

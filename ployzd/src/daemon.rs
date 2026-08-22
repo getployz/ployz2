@@ -179,7 +179,7 @@ impl Daemon {
                 .map(|running| (running.store().clone(), running.admin_client())),
         )
         .with_optional_containers(containers.clone())
-        .with_caddyfile(caddyfile.clone())
+        .with_caddy(caddyfile.clone(), caddy_admin_socket.clone())
         .with_image_ingest(Arc::clone(&ingest))
         .with_cloud_pairing(cloud_pairing_tx);
         let proxy = MachineProxy::new(

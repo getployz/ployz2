@@ -10,9 +10,10 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    DataLoss, DeployOperation, MachineFailure, MachineId, MachineObservation, ObservedDataLoss,
-    PortPublication, ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceMode,
-    ServiceSelector, UnconfirmedDataLoss, select_service,
+    CaddyServiceConfig, DataLoss, DeployOperation, MachineFailure, MachineId, MachineObservation,
+    MachineTarget, ObservedDataLoss, PortPublication, PreflightCaddyConfigRequest, ProjectName,
+    QualifiedService, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceMode, ServiceSelector,
+    UnconfirmedDataLoss, op, select_service,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -48,6 +49,13 @@ pub enum DeployError {
     Plan(#[from] PlanError),
     #[error(transparent)]
     Project(#[from] crate::project::ProjectError),
+    #[error("Caddy preflight cannot run: no healthy Caddy Service Container is visible")]
+    CaddyUnavailable,
+    #[error("Caddy preflight failed on Machine {machine_id}: {source}")]
+    CaddyPreflight {
+        machine_id: MachineId,
+        source: RpcError,
+    },
 }
 
 impl Client {
@@ -224,6 +232,12 @@ impl From<DeployError> for RpcError {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => invalid_argument(error.to_string()),
             DeployError::Project(error) => invalid_argument(error.to_string()),
+            DeployError::CaddyUnavailable => RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: DeployError::CaddyUnavailable.to_string(),
+                details: serde_json::Value::Null,
+            },
+            DeployError::CaddyPreflight { source, .. } => source,
         }
     }
 }
@@ -336,9 +350,54 @@ async fn preview_gathered(
             cluster_domain: domain.as_deref(),
         },
     )?;
+    preflight_caddy_config(client, &snapshot, intent, &preview).await?;
     warnings.extend(hostname_warnings(&preview, &snapshot.machines).await);
     preview.warnings.splice(0..0, warnings);
     Ok(preview)
+}
+
+async fn preflight_caddy_config(
+    client: &mut Client,
+    snapshot: &DeploySnapshot,
+    intent: &DeployIntent,
+    preview: &DeployPreview,
+) -> Result<(), DeployError> {
+    if !intent
+        .target
+        .iter()
+        .any(|service| service.caddy_config.is_some())
+    {
+        return Ok(());
+    }
+    let request = PreflightCaddyConfigRequest {
+        services: intent
+            .target
+            .iter()
+            .map(|service| CaddyServiceConfig {
+                service: QualifiedService::new(intent.project_name.clone(), service.name.clone()),
+                config: service.caddy_config.clone(),
+            })
+            .collect(),
+        removed_services: preview.would_remove.clone(),
+    };
+    let machines = snapshot
+        .containers
+        .iter()
+        .filter(|container| {
+            crate::caddy::is_system_caddy(container) && container.runtime.is_healthy()
+        })
+        .map(|container| container.machine_id)
+        .collect::<BTreeSet<_>>();
+    if machines.is_empty() {
+        return Err(DeployError::CaddyUnavailable);
+    }
+    for machine_id in machines {
+        client
+            .read::<op::PreflightCaddyConfig>(request.clone(), &MachineTarget::from(&machine_id))
+            .await
+            .map_err(|source| DeployError::CaddyPreflight { machine_id, source })?;
+    }
+    Ok(())
 }
 
 pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {

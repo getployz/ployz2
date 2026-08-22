@@ -648,6 +648,13 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
+    async fn preflight_caddy_config(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
     async fn reserve_domain(
         &self,
         _request: Request<OpaquePayload>,

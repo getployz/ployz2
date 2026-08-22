@@ -1,9 +1,9 @@
 use chrono::{SecondsFormat, Utc};
 use hex::encode as hex_encode;
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, Machine, MachineId,
-    PortPublication, QualifiedService, ServiceContainer, ServiceName, hostname_owners,
-    service_containers, serving_replicas,
+    CADDY_VERIFY_PATH, CaddyServiceConfig, ContainerObservation, HttpProtocol, IngressHost,
+    Machine, MachineId, PortPublication, QualifiedService, ServiceContainer, ServiceName,
+    hostname_owners, service_containers, serving_replicas,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -43,7 +43,7 @@ pub(crate) fn is_system_caddy(observation: &ContainerObservation) -> bool {
 }
 
 #[derive(Debug, Error)]
-enum Error {
+pub(crate) enum Error {
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
@@ -52,8 +52,17 @@ enum Error {
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     Admin(String),
+    #[error("Caddy admin API is not reachable; cannot validate custom config")]
+    AdminUnavailable,
     #[error("{0}")]
     Template(String),
+    #[error("{0}")]
+    Candidate(String),
+}
+
+enum ConfigOverride {
+    Planned(Option<String>),
+    Removed,
 }
 
 trait CaddyAdmin: Send + Sync {
@@ -233,9 +242,10 @@ async fn reconcile<A: CaddyAdmin>(
         &containers,
         &timestamp,
         certificates,
+        None,
         admin,
     )
-    .await;
+    .await?;
     if let Some(admin) = admin {
         let json = admin.adapt(&caddyfile).await?;
         admin.load(&json).await?;
@@ -243,6 +253,62 @@ async fn reconcile<A: CaddyAdmin>(
     write_caddyfile(config_file, &caddyfile)?;
     remove_stale_certificate_files(config_file, certificates)?;
     Ok(())
+}
+
+pub(crate) async fn preflight(
+    machine: &Machine,
+    observations: &[ContainerObservation],
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
+    admin_socket: &Path,
+    services: &[CaddyServiceConfig],
+    removed_services: &[QualifiedService],
+) -> Result<String, Error> {
+    let admin = AdminClient::connect_if_available(admin_socket).await?;
+    preflight_candidate(
+        machine,
+        observations,
+        certificates,
+        services,
+        removed_services,
+        admin.as_ref(),
+    )
+    .await
+}
+
+async fn preflight_candidate<A: CaddyAdmin>(
+    machine: &Machine,
+    observations: &[ContainerObservation],
+    certificates: &BTreeMap<IngressHost, CertificateRow>,
+    services: &[CaddyServiceConfig],
+    removed_services: &[QualifiedService],
+    admin: Option<&A>,
+) -> Result<String, Error> {
+    let mut overrides = services
+        .iter()
+        .map(|service| {
+            (
+                service.service.clone(),
+                ConfigOverride::Planned(service.config.clone()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    overrides.extend(
+        removed_services
+            .iter()
+            .cloned()
+            .map(|service| (service, ConfigOverride::Removed)),
+    );
+    let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    generate_caddyfile(
+        &machine.id,
+        machine.name.as_str(),
+        &service_containers(observations.iter().cloned()),
+        &timestamp,
+        certificates,
+        Some(&overrides),
+        admin,
+    )
+    .await
 }
 
 fn write_certificate_files(
@@ -334,8 +400,9 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     containers: &[ServiceContainer],
     timestamp: &str,
     certificates: &BTreeMap<IngressHost, CertificateRow>,
+    overrides: Option<&BTreeMap<QualifiedService, ConfigOverride>>,
     admin: Option<&A>,
-) -> String {
+) -> Result<String, Error> {
     let mut output = automatic_caddyfile(
         local_machine,
         machine_name,
@@ -344,64 +411,14 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         None,
         certificates,
     );
-    let Some(admin) = admin else {
-        output.push_str(
-            "\n# User-defined Caddy configs are unavailable because Caddy's admin API is not reachable.\n\
-# Run `ployz caddy logs` and `ployz inspect caddy` to troubleshoot.\n",
-        );
-        return output;
-    };
-
     let healthy = healthy_containers(local_machine, containers);
     let eligible = eligible_containers(local_machine, containers);
-    let mut skipped = Vec::new();
-    if let Some(container) = healthy
-        .iter()
-        .copied()
-        .filter(|container| {
-            let observation = container.as_observation();
-            is_system_caddy(observation) && observation.machine_id == *local_machine
-        })
-        .max_by_key(|container| creation_key(container))
-        && let Some(config) = container
-            .as_observation()
-            .resolved_spec
-            .caddy_config
-            .as_deref()
-    {
-        match render_custom_config(config, &container.as_observation().identity(), &eligible) {
-            Ok(rendered) => {
-                let candidate = automatic_caddyfile(
-                    local_machine,
-                    machine_name,
-                    containers,
-                    timestamp,
-                    Some(&rendered),
-                    certificates,
-                );
-                // TODO(UT-119): /adapt remains the only validation for custom Caddyfile
-                // candidates and may accept a configuration that /load rejects.
-                match admin.adapt(&candidate).await {
-                    Ok(_) => output = candidate,
-                    Err(error) => {
-                        skipped.push(format!(
-                            "Service '{}': validation failed: {error}",
-                            QualifiedService::system_caddy()
-                        ));
-                    }
-                }
-            }
-            Err(error) => skipped.push(format!(
-                "Service '{}': rendering failed: {error}",
-                QualifiedService::system_caddy()
-            )),
-        }
-    }
-
     let mut newest = BTreeMap::<QualifiedService, &ServiceContainer>::new();
     for container in &healthy {
         let identity = container.as_observation().identity();
-        if is_system_caddy(container.as_observation()) {
+        if is_system_caddy(container.as_observation())
+            && container.as_observation().machine_id != *local_machine
+        {
             continue;
         }
         newest
@@ -413,38 +430,112 @@ async fn generate_caddyfile<A: CaddyAdmin>(
             })
             .or_insert(container);
     }
-    for (identity, container) in newest {
-        let Some(config) = container
-            .as_observation()
-            .resolved_spec
-            .caddy_config
-            .as_deref()
-        else {
-            continue;
-        };
-        let rendered = match render_custom_config(config, &identity, &eligible) {
-            Ok(rendered) => rendered,
-            Err(error) => {
-                skipped.push(format!("Service '{identity}': rendering failed: {error}"));
-                continue;
+    let mut configs = newest
+        .into_iter()
+        .filter_map(|(identity, container)| {
+            Some((
+                identity,
+                container
+                    .as_observation()
+                    .resolved_spec
+                    .caddy_config
+                    .clone()?,
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if let Some(overrides) = overrides {
+        for (identity, config) in overrides {
+            match config {
+                ConfigOverride::Planned(Some(config)) => {
+                    configs.insert(identity.clone(), config.clone());
+                }
+                ConfigOverride::Planned(None) | ConfigOverride::Removed => {
+                    configs.remove(identity);
+                }
             }
-        };
+        }
+    }
+    if configs.is_empty() {
+        if admin.is_none() {
+            output.push_str(
+                "\n# User-defined Caddy configs are unavailable because Caddy's admin API is not reachable.\n\
+# Run `ployz caddy logs` and `ployz inspect caddy` to troubleshoot.\n",
+            );
+        }
+        return Ok(output);
+    }
+    let admin = admin.ok_or(Error::AdminUnavailable)?;
+    let known_services = eligible
+        .iter()
+        .map(|container| container.as_observation().identity())
+        .chain(overrides.into_iter().flat_map(planned_override_services))
+        .collect::<BTreeSet<_>>();
+    let placeholder_services = overrides
+        .into_iter()
+        .flat_map(planned_override_services)
+        .collect::<BTreeSet<_>>();
+    if let Some(config) = configs.remove(&QualifiedService::system_caddy()) {
+        let identity = QualifiedService::system_caddy();
+        let rendered = render_custom_config(
+            &config,
+            &identity,
+            &eligible,
+            &known_services,
+            &placeholder_services,
+        )
+        .map_err(|error| {
+            Error::Candidate(format!(
+                "Service '{identity}': Caddy rendering failed: {error}"
+            ))
+        })?;
+        let candidate = automatic_caddyfile(
+            local_machine,
+            machine_name,
+            containers,
+            timestamp,
+            Some(&rendered),
+            certificates,
+        );
+        admin.adapt(&candidate).await.map_err(|error| {
+            Error::Candidate(format!(
+                "Service '{identity}': Caddy adaptation failed: {error}"
+            ))
+        })?;
+        output = candidate;
+    }
+    for (identity, config) in configs {
+        let rendered = render_custom_config(
+            &config,
+            &identity,
+            &eligible,
+            &known_services,
+            &placeholder_services,
+        )
+        .map_err(|error| {
+            Error::Candidate(format!(
+                "Service '{identity}': Caddy rendering failed: {error}"
+            ))
+        })?;
         let fragment = format!("\n# User-defined config for Service '{identity}'.\n{rendered}\n");
         let candidate = format!("{output}{fragment}");
-        match admin.adapt(&candidate).await {
-            Ok(_) => output = candidate,
-            Err(error) => skipped.push(format!("Service '{identity}': validation failed: {error}")),
-        }
+        // TODO(UT-119): /adapt remains the only validation for custom Caddyfile
+        // candidates and may accept a configuration that /load rejects.
+        admin.adapt(&candidate).await.map_err(|error| {
+            Error::Candidate(format!(
+                "Service '{identity}': Caddy adaptation failed: {error}"
+            ))
+        })?;
+        output = candidate;
     }
-    if !skipped.is_empty() {
-        output.push_str("\n# Skipped invalid user-defined configs:\n");
-        for error in skipped {
-            for (index, line) in error.lines().enumerate() {
-                let _ = writeln!(output, "# {} {line}", if index == 0 { "-" } else { " " });
-            }
-        }
-    }
-    output
+    Ok(output)
+}
+
+fn planned_override_services(
+    overrides: &BTreeMap<QualifiedService, ConfigOverride>,
+) -> impl Iterator<Item = QualifiedService> + '_ {
+    overrides.iter().filter_map(|(identity, config)| {
+        matches!(config, ConfigOverride::Planned(_)).then_some(identity.clone())
+    })
 }
 
 fn eligible_containers<'a>(
@@ -493,6 +584,8 @@ fn render_custom_config(
     template: &str,
     current_service: &QualifiedService,
     containers: &[&ServiceContainer],
+    known_services: &BTreeSet<QualifiedService>,
+    placeholder_services: &BTreeSet<QualifiedService>,
 ) -> Result<String, Error> {
     let mut rendered = String::new();
     let mut remaining = template;
@@ -506,20 +599,27 @@ fn render_custom_config(
             .map_err(|error| Error::Template(error.to_string()))?;
         let replacement = match tokens.as_slice() {
             [name] if name == ".Name" => current_service.to_string(),
-            [helper] if helper == "upstreams" => upstreams(containers, current_service, None),
+            [helper] if helper == "upstreams" => {
+                upstreams(containers, current_service, None, placeholder_services)
+            }
             [helper, argument] if helper == "upstreams" => match argument.parse::<u16>() {
-                Ok(port) => upstreams(containers, current_service, Some(port)),
+                Ok(port) => upstreams(
+                    containers,
+                    current_service,
+                    Some(port),
+                    placeholder_services,
+                ),
                 Err(_) => {
-                    let identity = upstream_identity(current_service, argument, containers)?;
-                    upstreams(containers, &identity, None)
+                    let identity = upstream_identity(current_service, argument, known_services)?;
+                    upstreams(containers, &identity, None, placeholder_services)
                 }
             },
             [helper, service, port] if helper == "upstreams" => {
-                let identity = upstream_identity(current_service, service, containers)?;
+                let identity = upstream_identity(current_service, service, known_services)?;
                 let port = port
                     .parse::<u16>()
                     .map_err(|_| Error::Template(format!("invalid upstream port '{port}'")))?;
-                upstreams(containers, &identity, Some(port))
+                upstreams(containers, &identity, Some(port), placeholder_services)
             }
             _ => {
                 return Err(Error::Template(format!(
@@ -538,7 +638,7 @@ fn render_custom_config(
 fn upstream_identity(
     current_service: &QualifiedService,
     argument: &str,
-    containers: &[&ServiceContainer],
+    known_services: &BTreeSet<QualifiedService>,
 ) -> Result<QualifiedService, Error> {
     if argument == ".Name" {
         return Ok(current_service.clone());
@@ -550,10 +650,7 @@ fn upstream_identity(
             .map_err(|_| Error::Template(format!("Service '{argument}' was not found")))?;
         QualifiedService::new(current_service.project.clone(), name)
     };
-    if containers
-        .iter()
-        .any(|container| container.as_observation().identity() == identity)
-    {
+    if known_services.contains(&identity) {
         Ok(identity)
     } else {
         Err(Error::Template(format!(
@@ -566,8 +663,9 @@ fn upstreams(
     containers: &[&ServiceContainer],
     identity: &QualifiedService,
     port: Option<u16>,
+    placeholder_services: &BTreeSet<QualifiedService>,
 ) -> String {
-    containers
+    let upstreams = containers
         .iter()
         .map(|container| container.as_observation())
         .filter(|observation| observation.identity() == *identity)
@@ -576,8 +674,15 @@ fn upstreams(
             Some(port) => format!("{}:{port}", address.0),
             None => address.0.to_string(),
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect::<Vec<_>>();
+    if upstreams.is_empty() && placeholder_services.contains(identity) {
+        match port {
+            Some(port) => format!("127.0.0.1:{port}"),
+            None => "127.0.0.1".into(),
+        }
+    } else {
+        upstreams.join(" ")
+    }
 }
 
 fn automatic_caddyfile(

@@ -13,8 +13,8 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, CloudPairing, ContainerId, ContainerKind,
     ContainerObservation, DockerVolume, InspectTelemetry, LocalMachinePhase, Machine, MachineId,
     MachineLogService, MachineName, MachineObservation, MachineRuntime, MachineToken,
-    MachineUpdate, ProjectName, PublicIpDiscovery, ResolvedServiceSpec, RttObservation,
-    TelemetryObservation, WireGuardDevice, WireGuardPublicKey,
+    MachineUpdate, ProjectName, PublicIpDiscovery, QualifiedService, ResolvedServiceSpec,
+    RttObservation, TelemetryObservation, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
 
@@ -420,6 +420,18 @@ pub struct ImagePulled {}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GetCaddyConfigRequest {}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CaddyServiceConfig {
+    pub service: QualifiedService,
+    pub config: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PreflightCaddyConfigRequest {
+    pub services: Vec<CaddyServiceConfig>,
+    pub removed_services: Vec<QualifiedService>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReserveDomainRequest {

@@ -640,6 +640,12 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
+    async fn preflight_caddy_config(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
     async fn reserve_domain(
         &self,
         request: Request<OpaquePayload>,

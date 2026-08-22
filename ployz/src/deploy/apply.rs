@@ -91,6 +91,15 @@ pub(crate) async fn deploy_project(
     gate: ConfirmGate<'_>,
 ) -> Result<(), Failure> {
     let machines = list_machines(client).await?;
+    let preview = plan_project(
+        client,
+        project,
+        machines.clone(),
+        options,
+        &gate.project.name,
+        hints,
+    )
+    .await?;
     let outcome = push_project_images(client, builds, &machines).await?;
     print_pushed_images(&outcome);
     if !outcome.failures.is_empty() {
@@ -99,15 +108,6 @@ pub(crate) async fn deploy_project(
             outcome.failures.join("; ")
         )));
     }
-    let preview = plan_project(
-        client,
-        project,
-        machines,
-        options,
-        &gate.project.name,
-        hints,
-    )
-    .await?;
     print_warnings(&preview);
     confirm_and_execute(client, &preview, gate).await
 }

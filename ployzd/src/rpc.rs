@@ -36,6 +36,7 @@ pub struct MachineService {
     local: LocalMachine,
     hosted_dns: crate::hosted_dns::HostedDns,
     caddyfile: Option<PathBuf>,
+    caddy_admin_socket: Option<PathBuf>,
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
     cloud_pairing: Option<watch::Sender<Option<CloudPairing>>>,
@@ -58,6 +59,7 @@ impl MachineService {
             local: LocalMachine::new(store, restart).with_cluster(cluster),
             hosted_dns: crate::hosted_dns::HostedDns::new(),
             caddyfile: None,
+            caddy_admin_socket: None,
             ingest: ImageIngest::new(None, CancellationToken::new(), None),
             machine_api_port: MACHINE_API_PORT,
             cloud_pairing: None,
@@ -77,8 +79,9 @@ impl MachineService {
     }
 
     #[must_use]
-    pub fn with_caddyfile(mut self, path: PathBuf) -> Self {
-        self.caddyfile = Some(path);
+    pub fn with_caddy(mut self, caddyfile: PathBuf, admin_socket: PathBuf) -> Self {
+        self.caddyfile = Some(caddyfile);
+        self.caddy_admin_socket = Some(admin_socket);
         self
     }
 
@@ -755,6 +758,51 @@ impl MachineRpc for MachineService {
         }
     }
 
+    async fn preflight_caddy_config(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PreflightCaddyConfig>(request)?;
+        let Some(admin_socket) = &self.caddy_admin_socket else {
+            return respond(unavailable("Caddy preflight is not available"));
+        };
+        let record = self.local_record()?;
+        let Some(machine) = record
+            .machine()
+            .filter(|_| record.phase() == LocalMachinePhase::Participating)
+            .cloned()
+        else {
+            return respond(unavailable("Machine is not participating"));
+        };
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        let containers = match replicated.containers().await {
+            Ok(containers) => containers.observations,
+            Err(error) => return respond(unavailable(&format!("read Caddy containers: {error}"))),
+        };
+        let certificates = match replicated.certificate_state().await {
+            Ok(certificates) => certificates,
+            Err(error) => {
+                return respond(unavailable(&format!("read Caddy certificates: {error}")));
+            }
+        };
+        match crate::caddy::preflight(
+            &machine,
+            &containers,
+            &certificates,
+            admin_socket,
+            &request.services,
+            &request.removed_services,
+        )
+        .await
+        {
+            Ok(caddyfile) => respond(CaddyConfig { caddyfile }),
+            Err(error) => respond(caddy_preflight_error(error)),
+        }
+    }
+
     async fn reserve_domain(
         &self,
         request: Request<OpaquePayload>,
@@ -892,6 +940,23 @@ fn unavailable(message: &str) -> RpcError {
     RpcError {
         code: RpcErrorCode::Unavailable,
         message: message.into(),
+        details: Value::Null,
+    }
+}
+
+fn caddy_preflight_error(error: crate::caddy::Error) -> RpcError {
+    let code = match &error {
+        crate::caddy::Error::AdminUnavailable
+        | crate::caddy::Error::Http(_)
+        | crate::caddy::Error::Io(_) => RpcErrorCode::Unavailable,
+        crate::caddy::Error::Admin(_)
+        | crate::caddy::Error::Template(_)
+        | crate::caddy::Error::Candidate(_) => RpcErrorCode::InvalidArgument,
+        crate::caddy::Error::Json(_) => RpcErrorCode::Internal,
+    };
+    RpcError {
+        code,
+        message: error.to_string(),
         details: Value::Null,
     }
 }

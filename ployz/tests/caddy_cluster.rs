@@ -1,4 +1,5 @@
 use std::{
+    fs,
     process::{self, Command},
     time::Duration,
 };
@@ -149,7 +150,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     assert_start_first_gap(&cluster, &mut client, &machines).await;
     assert_failed_load_retry(&cluster, &mut client, &machines[0]).await;
     assert_membership_blind(&cluster, &mut client, &machines, &observations).await;
-    assert_invalid_template(&mut client, &machines[0]).await;
+    assert_invalid_fragment_preflight(&cluster, &direct, &mut client, &machines[0]).await;
 }
 
 #[tokio::test]
@@ -400,25 +401,72 @@ async fn assert_membership_blind(
     );
 }
 
-async fn assert_invalid_template(client: &mut ployz::connect::Client, machine: &Machine) {
-    let broken: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
-        "service_id": ServiceId::random(),
-        "name": "broken",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": {
-            "image": "alpine:3.23.3",
-            "command": ["sleep", "300"],
-            "pull_policy": "missing"
-        },
-        "caddy_config": "{{unknown}}"
-    }))
+async fn assert_invalid_fragment_preflight(
+    cluster: &Cluster,
+    direct: &str,
+    client: &mut ployz::connect::Client,
+    machine: &Machine,
+) {
+    let stable = client
+        .call::<op::GetCaddyConfig>(
+            GetCaddyConfigRequest {},
+            Some(&MachineTarget::from(&machine.id)),
+        )
+        .await
+        .unwrap()
+        .caddyfile;
+    let directory =
+        std::env::temp_dir().join(format!("ployz-caddy-preflight-l3-{}", process::id()));
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).unwrap();
+    let compose = directory.join("compose.yaml");
+    fs::write(
+        &compose,
+        "name: caddy-preflight\nservices:\n  broken:\n    image: alpine:3.23.3\n    command: [sleep, '300']\n    x-pre_deploy:\n      command: ['true']\n    x-caddy: |\n      }}} garbage {{{ nonsense\n",
+    )
     .unwrap();
-    create_and_start(client, machine, broken).await;
-    let config = wait_config(client, machine, |config| {
-        config.contains("Service 'broken': rendering failed")
-    })
-    .await;
-    assert!(config.contains("http://example.test"));
+
+    let output = run_cli_unchecked(
+        direct,
+        &["deploy", "--file", compose.to_str().unwrap(), "--yes"],
+    );
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("Service 'caddy-preflight/broken'"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Caddy adaptation failed"), "{stderr}");
+    assert_eq!(
+        client
+            .call::<op::GetCaddyConfig>(
+                GetCaddyConfigRequest {},
+                Some(&MachineTarget::from(&machine.id)),
+            )
+            .await
+            .unwrap()
+            .caddyfile,
+        stable
+    );
+    assert!(
+        !client
+            .live_services()
+            .await
+            .unwrap()
+            .services()
+            .iter()
+            .any(|service| service.identity
+                == ployz_core::QualifiedService::parse("caddy-preflight/broken").unwrap())
+    );
+    assert_eq!(
+        cluster
+            .machine_shell(0, "curl -fsS -H 'Host: example.test' http://127.0.0.1")
+            .unwrap()
+            .trim(),
+        "ok"
+    );
+    fs::remove_dir_all(directory).unwrap();
 }
 
 fn cli(direct: &str, args: &[&str]) -> String {
@@ -426,7 +474,18 @@ fn cli(direct: &str, args: &[&str]) -> String {
 }
 
 fn run_cli(direct: &str, args: &[&str]) -> process::Output {
-    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = run_cli_unchecked(direct, args);
+    assert!(
+        output.status.success(),
+        "ployz {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+fn run_cli_unchecked(direct: &str, args: &[&str]) -> process::Output {
+    Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args([
             "--connect",
             direct,
@@ -436,14 +495,7 @@ fn run_cli(direct: &str, args: &[&str]) -> process::Output {
         .args(args)
         .env("PLOYZ_HEALTH_MONITOR_PERIOD", "0s")
         .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "ployz {} failed: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output
+        .unwrap()
 }
 
 async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: usize) -> ServiceId {

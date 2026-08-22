@@ -7,11 +7,12 @@ use ployz_core::{
     INSPECT_MACHINE_CAPABILITY, INSPECT_VOLUME_CAPABILITY, INSPECT_WIREGUARD_CAPABILITY,
     JOIN_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY,
     LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, MACHINE_LOGS_CAPABILITY,
-    MACHINE_TOKEN_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY, REGISTER_MACHINE_CAPABILITY,
-    RELEASE_DOMAIN_CAPABILITY, REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY,
-    REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY, RESERVE_DOMAIN_CAPABILITY,
-    RESET_MACHINE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SET_CLOUD_PAIRING_CAPABILITY,
-    START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY, UPDATE_MACHINE_CAPABILITY, op,
+    MACHINE_TOKEN_CAPABILITY, PREFLIGHT_CADDY_CONFIG_CAPABILITY,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, REGISTER_MACHINE_CAPABILITY, RELEASE_DOMAIN_CAPABILITY,
+    REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY,
+    REMOVE_VOLUME_CAPABILITY, RESERVE_DOMAIN_CAPABILITY, RESET_MACHINE_CAPABILITY,
+    RUNTIME_WATCH_CAPABILITY, Rpc, SET_CLOUD_PAIRING_CAPABILITY, START_CONTAINER_CAPABILITY,
+    STOP_CONTAINER_CAPABILITY, UPDATE_MACHINE_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -57,6 +58,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
             "ployz.image.pull-from-machine.v1",
         ),
         (GET_CADDY_CONFIG_CAPABILITY, "ployz.caddy.config.v1"),
+        (
+            PREFLIGHT_CADDY_CONFIG_CAPABILITY,
+            "ployz.caddy.preflight.v1",
+        ),
         (RESERVE_DOMAIN_CAPABILITY, "ployz.dns.reserve.v1"),
         (GET_DOMAIN_CAPABILITY, "ployz.dns.show.v1"),
         (RELEASE_DOMAIN_CAPABILITY, "ployz.dns.release.v1"),
@@ -133,7 +138,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
     );
     assert_eq!(
         names(CapabilityAdvertisement::Caddy),
-        ["ployz.caddy.config.v1"]
+        ["ployz.caddy.config.v1", "ployz.caddy.preflight.v1"]
     );
     assert_eq!(
         names(CapabilityAdvertisement::Cluster),
@@ -163,6 +168,10 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
     assert_eq!(
         op::GetCaddyConfig::PATH,
         "/ployz.rpc.v1.MachineRpc/GetCaddyConfig"
+    );
+    assert_eq!(
+        op::PreflightCaddyConfig::PATH,
+        "/ployz.rpc.v1.MachineRpc/PreflightCaddyConfig"
     );
     assert_eq!(
         op::EnsureImageIngest::PATH,

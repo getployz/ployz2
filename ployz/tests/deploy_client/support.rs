@@ -15,13 +15,13 @@ use ployz::{
     deploy::PlanOptions,
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContainerCreated, ContainerDetails, ContainerId, ContainerKind,
-    ContainerList, ContainerPath, ContainerRuntimeObservation, ContractDescription, DockerVolume,
-    DockerVolumeId, DockerVolumeName, Domain, HealthObservation, LocalMachinePhase, Machine,
-    MachineDetails, MachineId, MachineImages, MachineList, MachineName, MachineObservation,
-    MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation, OpaquePayload,
-    PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec, ResolvedUpdateConfig, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
+    AdvertisedEndpoint, CaddyConfig, CaddyServiceConfig, ContainerCreated, ContainerDetails,
+    ContainerId, ContainerKind, ContainerList, ContainerPath, ContainerRuntimeObservation,
+    ContractDescription, DockerVolume, DockerVolumeId, DockerVolumeName, Domain, HealthObservation,
+    LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
+    MachineObservation, MachineRpc, MachineRpcServer, ManagementAddress, MembershipObservation,
+    OpaquePayload, PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec, ResolvedUpdateConfig,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
     ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeList, VolumeSource,
     WireGuardPublicKey,
 };
@@ -37,9 +37,11 @@ mod inspect_telemetry_fixture;
 pub(super) struct DeployService {
     machines: Vec<MachineObservation>,
     create_volume_error: Option<RpcError>,
+    caddy_preflight_error: Option<RpcError>,
     containers: Arc<AtomicUsize>,
     created_projects: Arc<Mutex<Vec<ProjectName>>>,
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
+    preflight_services: Arc<Mutex<Vec<CaddyServiceConfig>>>,
     mutating_rpcs: Arc<AtomicUsize>,
     domain: Option<String>,
     hold_health: bool,
@@ -50,9 +52,11 @@ impl DeployService {
         Self {
             machines: vec![machine],
             create_volume_error: None,
+            caddy_preflight_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
             created_projects: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
+            preflight_services: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
             hold_health: false,
@@ -63,9 +67,11 @@ impl DeployService {
         Self {
             machines: Vec::new(),
             create_volume_error: None,
+            caddy_preflight_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
             created_projects: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
+            preflight_services: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
             domain: None,
             hold_health: false,
@@ -75,6 +81,15 @@ impl DeployService {
     pub(super) fn fail_create_volume(mut self, message: &str) -> Self {
         self.create_volume_error = Some(RpcError {
             code: RpcErrorCode::Unavailable,
+            message: message.into(),
+            details: Value::Null,
+        });
+        self
+    }
+
+    pub(super) fn fail_caddy_preflight(mut self, message: &str) -> Self {
+        self.caddy_preflight_error = Some(RpcError {
+            code: RpcErrorCode::InvalidArgument,
             message: message.into(),
             details: Value::Null,
         });
@@ -101,6 +116,10 @@ impl DeployService {
 
     pub(super) fn created_projects(&self) -> Arc<Mutex<Vec<ProjectName>>> {
         self.created_projects.clone()
+    }
+
+    pub(super) fn preflight_services(&self) -> Arc<Mutex<Vec<CaddyServiceConfig>>> {
+        self.preflight_services.clone()
     }
 
     fn record_mutation(&self) {
@@ -417,6 +436,23 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
+    async fn preflight_caddy_config(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let RpcRequestBody::PreflightCaddyConfig(preflight) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected preflight_caddy_config"));
+        };
+        *self.preflight_services.lock().unwrap() = preflight.services;
+        match &self.caddy_preflight_error {
+            Some(error) => encoded(RpcResponse::from(error.clone())),
+            None => encoded(RpcResponse::from(CaddyConfig {
+                caddyfile: "validated".into(),
+            })),
+        }
+    }
     async fn reserve_domain(
         &self,
         _request: Request<OpaquePayload>,
@@ -586,6 +622,14 @@ pub(super) fn running_container(
         address: None,
         labels: BTreeMap::new(),
     }
+}
+
+pub(super) fn system_caddy_container(
+    machine: &MachineObservation,
+) -> ployz_core::ContainerObservation {
+    let mut container = running_container(machine, &spec("caddy"));
+    container.project_name = ProjectName::system();
+    container
 }
 
 pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str) {

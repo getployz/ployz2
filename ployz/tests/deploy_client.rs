@@ -171,6 +171,103 @@ async fn preview_returns_operations_and_mutates_nothing() {
 }
 
 #[tokio::test]
+async fn failed_caddy_preflight_stops_before_container_mutation() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone()).fail_caddy_preflight(
+        "Service 'app/web': Caddy adaptation failed: parsing caddyfile tokens: unexpected '}'",
+    );
+    service
+        .listed_containers()
+        .lock()
+        .unwrap()
+        .push(system_caddy_container(&machine));
+    let mutations = service.mutating_rpcs();
+    let (mut client, server) = connected(service).await;
+    let mut requested = spec("web");
+    requested.caddy_config = Some("}}} garbage {{{ nonsense".into());
+    requested.pre_deploy = Some(ployz_core::PreDeployHook {
+        command: vec!["true".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+
+    let error = client
+        .run(
+            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("Service 'app/web'"), "{error}");
+    assert!(error.to_string().contains("unexpected '}'"), "{error}");
+    assert_eq!(mutations.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn multiple_custom_configs_are_preflighted_together() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone());
+    service
+        .listed_containers()
+        .lock()
+        .unwrap()
+        .push(system_caddy_container(&machine));
+    let preflighted = service.preflight_services();
+    let (mut client, server) = connected(service).await;
+    let mut api = spec("api");
+    api.caddy_config = Some("api.example { respond api }".into());
+    let mut web = spec("web");
+    web.caddy_config = Some("web.example { respond web }".into());
+
+    client
+        .preview(DeployIntent::apply_all(
+            ProjectName::parse("app").unwrap(),
+            [&api, &web],
+            skip_health(),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        preflighted
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|service| service.service.to_string())
+            .collect::<Vec<_>>(),
+        ["app/api", "app/web"]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn custom_config_fails_closed_when_caddy_preflight_is_unavailable() {
+    let service = DeployService::new(machine('a', "one"));
+    let mutations = service.mutating_rpcs();
+    let (mut client, server) = connected(service).await;
+    let mut requested = spec("web");
+    requested.caddy_config = Some("web.example { respond web }".into());
+
+    let error = client
+        .run(
+            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, DeployError::CaddyUnavailable));
+    assert_eq!(mutations.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
+#[tokio::test]
 async fn confirm_executes_the_previewed_operations_without_re_planning() {
     let machine = machine('a', "one");
     let spec = spec("web");

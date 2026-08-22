@@ -5,9 +5,9 @@ use std::{
 };
 
 use ployz_core::{
-    CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
-    ConfiguredHealthcheck, ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
-    ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
+    CREATE_CONTAINER_CAPABILITY, CaddyConfig, CaddyServiceConfig, CapabilityName, CodecError,
+    ConfigMount, ConfigSpec, ConfiguredHealthcheck, ContainerCreated, ContainerKind, ContainerPath,
+    ContainerResources, ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
     DnsRecordType, DockerVolumeName, Domain, DomainRecords, ENSURE_IMAGE_INGEST_CAPABILITY,
     EnsureImageIngestRequest, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
@@ -17,10 +17,11 @@ use ployz_core::{
     LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway,
     MachineId, MachineImages, MachineName, MachinePath, MachineRpc, MachineRpcClient,
     MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget, MachineTokenRequest,
-    MachineUpdate, NameMatches, OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication, PreDeployHook,
-    ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, PullPolicy,
-    QualifiedService, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
+    MachineUpdate, NameMatches, OpaquePayload, PREFLIGHT_CADDY_CONFIG_CAPABILITY,
+    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult,
+    Placement, PortPublication, PreDeployHook, PreflightCaddyConfigRequest, ProjectName,
+    PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, PullPolicy, QualifiedService,
+    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
     RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
     ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
@@ -803,6 +804,27 @@ fn caddy_config_contract_returns_the_owned_plain_file() {
         "example.test { respond ok }\n"
     );
     assert_eq!(GET_CADDY_CONFIG_CAPABILITY, "ployz.caddy.config.v1");
+}
+
+#[test]
+fn caddy_preflight_contract_carries_owned_service_configs() {
+    let request = PreflightCaddyConfigRequest {
+        services: vec![CaddyServiceConfig {
+            service: QualifiedService::parse("app/web").unwrap(),
+            config: Some("web.example { respond ok }".into()),
+        }],
+        removed_services: vec![QualifiedService::parse("app/old").unwrap()],
+    };
+    let request = op::PreflightCaddyConfig::into_request(request.clone());
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    assert!(matches!(
+        request.body,
+        RpcRequestBody::PreflightCaddyConfig(_)
+    ));
+    assert_eq!(
+        PREFLIGHT_CADDY_CONFIG_CAPABILITY,
+        "ployz.caddy.preflight.v1"
+    );
 }
 
 #[test]
