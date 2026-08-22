@@ -244,11 +244,11 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         .into_iter()
         .map(|slot| slot.identity)
         .collect::<BTreeSet<_>>();
-    missing.extend(
-        initially_eligible
-            .into_iter()
-            .filter(|identity| !services.iter().any(|service| service.identity == *identity)),
-    );
+    missing.extend(initially_eligible.into_iter().filter(|identity| {
+        !services
+            .iter()
+            .any(|service| service.identity == *identity && !service.containers.is_empty())
+    }));
     if !missing.is_empty() {
         let details = failures
             .iter()
@@ -415,6 +415,44 @@ mod tests {
         assert_eq!(error.missing, [qualified("app", "api")]);
     }
 
+    #[tokio::test]
+    async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let service = global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(&founder, 'a'),
+        );
+        let mut hook = service
+            .containers
+            .first()
+            .expect("test Global has one Service container")
+            .clone()
+            .into_observation();
+        hook.kind = ContainerKind::PreDeployHook;
+        let hook_only = ServiceObservation {
+            identity: service.identity.clone(),
+            service_id: service.service_id,
+            containers: Vec::new(),
+            hook_containers: vec![ployz_core::HookContainer::try_from(hook).unwrap()],
+        };
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: vec![service],
+            refreshed_services: Some(vec![hook_only]),
+            live_calls: Cell::new(0),
+            capacity: None,
+            ensure_calls: Cell::new(0),
+        };
+
+        let error = catch_up_globals(&mut client, &joiner, true)
+            .await
+            .unwrap_err();
+        assert_eq!(error.missing, [qualified("app", "api")]);
+    }
+
     struct FakeCatchUpClient {
         machine_id: MachineId,
         services: Vec<ServiceObservation>,
@@ -437,8 +475,8 @@ mod tests {
                         machine_id: self.machine_id,
                         value: services
                             .iter()
-                            .flat_map(|service| service.containers.iter().cloned())
-                            .map(ServiceContainer::into_observation)
+                            .flat_map(ServiceObservation::members)
+                            .map(|container| container.as_observation().clone())
                             .collect(),
                     }],
                     failures: Vec::new(),
