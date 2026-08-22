@@ -369,7 +369,7 @@ impl NetworkPlane {
         let subnet = self.machine.subnet.to_string();
         let gateway = self.machine.subnet.gateway().0.to_string();
         let required_options = required_docker_network_options(self.mtu);
-        let exists = match self.docker.inspect_network(DOCKER_NETWORK_NAME, None).await {
+        match self.docker.inspect_network(DOCKER_NETWORK_NAME, None).await {
             Ok(network) => {
                 if docker_network_matches(&network, &subnet, &gateway, &required_options) {
                     return Ok(false);
@@ -411,37 +411,34 @@ impl NetworkPlane {
                         ));
                     }
                 }
-                false
             }
-            Err(error) if docker_not_found(&error) => false,
+            Err(error) if docker_not_found(&error) => {}
             Err(error) => return Err(error.into()),
-        };
-        if !exists {
-            self.docker
-                .create_network(NetworkCreateRequest {
-                    name: DOCKER_NETWORK_NAME.into(),
-                    driver: Some("bridge".into()),
-                    scope: Some("local".into()),
-                    ipam: Some(Ipam {
-                        config: Some(vec![IpamConfig {
-                            subnet: Some(subnet),
-                            gateway: Some(gateway),
-                            ..Default::default()
-                        }]),
-                        ..Default::default()
-                    }),
-                    options: Some(required_options),
-                    labels: Some(HashMap::from([(
-                        DOCKER_NETWORK_MANAGED_LABEL.into(),
-                        String::new(),
-                    )])),
-                    ..Default::default()
-                })
-                .await?;
         }
+        self.docker
+            .create_network(NetworkCreateRequest {
+                name: DOCKER_NETWORK_NAME.into(),
+                driver: Some("bridge".into()),
+                scope: Some("local".into()),
+                ipam: Some(Ipam {
+                    config: Some(vec![IpamConfig {
+                        subnet: Some(subnet),
+                        gateway: Some(gateway),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+                options: Some(required_options),
+                labels: Some(HashMap::from([(
+                    DOCKER_NETWORK_MANAGED_LABEL.into(),
+                    String::new(),
+                )])),
+                ..Default::default()
+            })
+            .await?;
         // TODO(UT-113): check if this works when firewalld used instead of raw iptables. The Docker daemon has a different
         // code path for firewalld.
-        Ok(!exists)
+        Ok(true)
     }
 }
 
