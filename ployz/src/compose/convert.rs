@@ -5,12 +5,12 @@ use std::{
 };
 
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerHostname, ContainerPath, ContainerResources, DeviceMapping,
-    DeviceReservation, DockerVolumeName, ExtraHost, HEALTHCHECK_DISABLE_SENTINEL,
-    HealthcheckCommand, HealthcheckSpec, LogDriver, MANAGEMENT_LABEL_PREFIX, MachinePath,
-    MachineTarget, Placement, PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy,
-    ServiceConfigGraph, ServiceContainerSpec, ServiceMode, ServiceName, ServiceVolumeGraph, Ulimit,
-    UpdateConfig, UpdateOrder, validate_container_label_key,
+    ConfiguredHealthcheck, ContainerHostname, ContainerLabels, ContainerPath, ContainerResources,
+    DeviceMapping, DeviceReservation, DockerVolumeName, ExtraHost, HEALTHCHECK_DISABLE_SENTINEL,
+    HealthcheckCommand, HealthcheckSpec, LogDriver, MachinePath, MachineTarget, Placement,
+    PortPublication, PullPolicy, RequestedServiceSpec, RestartPolicy, ServiceConfigGraph,
+    ServiceContainerSpec, ServiceMode, ServiceName, ServiceVolumeGraph, Ulimit, UpdateConfig,
+    UpdateOrder,
 };
 use serde_norway::Value;
 
@@ -625,7 +625,7 @@ pub(super) fn environment(value: &Value) -> Result<BTreeMap<String, String>, Com
     }
 }
 
-fn labels(name: &str, value: &Value) -> Result<BTreeMap<String, String>, ComposeError> {
+fn labels(name: &str, value: &Value) -> Result<ContainerLabels, ComposeError> {
     let labels = match value {
         Value::Null => BTreeMap::new(),
         Value::Mapping(map) => map
@@ -663,15 +663,7 @@ fn labels(name: &str, value: &Value) -> Result<BTreeMap<String, String>, Compose
             return Err(invalid("labels must be a map or list of strings"));
         }
     };
-    if let Some(key) = labels
-        .keys()
-        .find(|key| validate_container_label_key(key).is_err())
-    {
-        return Err(invalid(format!(
-            "service '{name}': label key '{key}' uses the reserved '{MANAGEMENT_LABEL_PREFIX}*' management namespace"
-        )));
-    }
-    Ok(labels)
+    ContainerLabels::parse(labels).map_err(|error| invalid(format!("service '{name}': {error}")))
 }
 
 fn extra_hosts(value: &Value) -> Result<Vec<ExtraHost>, ComposeError> {
@@ -697,34 +689,21 @@ fn extra_hosts(value: &Value) -> Result<Vec<ExtraHost>, ComposeError> {
                 let host = host
                     .as_str()
                     .ok_or_else(|| invalid("extra_hosts keys must be strings"))?;
-                match addresses {
-                    Value::Sequence(addresses) => {
-                        for address in addresses {
-                            let address = scalar(address)
-                                .ok_or_else(|| invalid("extra_hosts values must be scalar"))?;
-                            entries.push(ExtraHost::from_parts(host, &address).map_err(|_| {
-                                invalid(format!("invalid extra_hosts entry '{host}:{address}'"))
-                            })?);
-                        }
-                    }
-                    Value::Bool(address) => {
-                        entries.push(ExtraHost::from_parts(host, &address.to_string()).map_err(
-                            |_| invalid(format!("invalid extra_hosts entry '{host}:{address}'")),
-                        )?)
-                    }
-                    Value::Number(address) => {
-                        entries.push(ExtraHost::from_parts(host, &address.to_string()).map_err(
-                            |_| invalid(format!("invalid extra_hosts entry '{host}:{address}'")),
-                        )?)
-                    }
-                    Value::String(address) => {
-                        entries.push(ExtraHost::from_parts(host, address).map_err(|_| {
-                            invalid(format!("invalid extra_hosts entry '{host}:{address}'"))
-                        })?)
-                    }
-                    Value::Null | Value::Mapping(_) | Value::Tagged(_) => {
-                        return Err(invalid("extra_hosts values must be scalar"));
-                    }
+                let addresses = match addresses {
+                    Value::Sequence(addresses) => addresses.iter().collect(),
+                    address @ (Value::Null
+                    | Value::Bool(_)
+                    | Value::Number(_)
+                    | Value::String(_)
+                    | Value::Mapping(_)
+                    | Value::Tagged(_)) => vec![address],
+                };
+                for address in addresses {
+                    let address = scalar(address)
+                        .ok_or_else(|| invalid("extra_hosts values must be scalar"))?;
+                    entries.push(ExtraHost::from_parts(host, &address).map_err(|_| {
+                        invalid(format!("invalid extra_hosts entry '{host}:{address}'"))
+                    })?);
                 }
             }
             Ok(entries)

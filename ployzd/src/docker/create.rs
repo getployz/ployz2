@@ -12,7 +12,7 @@ use bollard::models::{
 use ployz_core::{
     BindPropagation, BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec,
     HostBind, MachineGateway, MachineId, PortPublication, ProjectName, ResolvedServiceSpec,
-    ServiceVolumeGraph, TransportProtocol, VolumeSource, validate_container_label_key,
+    ServiceVolumeGraph, TransportProtocol, VolumeSource,
 };
 
 use super::{
@@ -42,14 +42,7 @@ pub(super) fn container_create_body(
         environment.insert("PLOYZ_HOOK_PRE_DEPLOY".into(), "true".into());
     }
     environment.insert("PLOYZ_MACHINE_ID".into(), machine_id.to_string());
-    if let Some(error) = container
-        .labels
-        .keys()
-        .find_map(|key| validate_container_label_key(key).err())
-    {
-        return Err(Error::InvalidContainerConfig(error.to_string()));
-    }
-    let mut labels: HashMap<_, _> = container.labels.clone().into_iter().collect();
+    let mut labels: HashMap<_, _> = container.labels.clone().into_map().into_iter().collect();
     labels.extend([
         (LABEL_MANAGED.into(), String::new()),
         (LABEL_PROJECT_NAME.into(), project_name.to_string()),

@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph};
 use crate::{
-    BindPropagation, BindRecursive, ClusterDomainLabel, ContainerHostname, ContainerPath,
-    DockerVolumeId, DockerVolumeName, ExtraHost, IngressHost, MANAGED_LABEL, MachinePath,
-    MachineTarget, PROJECT_NAME_LABEL, PidMode, ProjectName, RestartPolicy, ServiceId, ServiceName,
-    ServiceVolumeReference, ValueError,
+    BindPropagation, BindRecursive, ClusterDomainLabel, ContainerHostname, ContainerLabels,
+    ContainerPath, DockerVolumeId, DockerVolumeName, ExtraHost, IngressHost, MANAGED_LABEL,
+    MachinePath, MachineTarget, PROJECT_NAME_LABEL, PidMode, ProjectName, RestartPolicy, ServiceId,
+    ServiceName, ServiceVolumeReference, ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -462,7 +462,7 @@ pub struct ServiceContainerSpec {
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
     #[serde(default)]
-    pub labels: BTreeMap<String, String>,
+    pub labels: ContainerLabels,
     #[serde(default)]
     pub hostname: Option<ContainerHostname>,
     #[serde(default)]

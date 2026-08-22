@@ -143,7 +143,7 @@ pub fn service_spec(
                 "CADDY_ADMIN".into(),
                 "unix//run/caddy/admin.sock".into(),
             )]),
-            labels: BTreeMap::new(),
+            labels: Default::default(),
             hostname: None,
             extra_hosts: Vec::new(),
             cap_add: Vec::new(),

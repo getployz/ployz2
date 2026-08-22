@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     str::{self, FromStr},
@@ -447,12 +448,7 @@ pub const MANAGED_LABEL: &str = "ployz.managed";
 /// Docker label namespace reserved for Ployz management metadata.
 pub const MANAGEMENT_LABEL_PREFIX: &str = "ployz.";
 
-/// Reject a Docker label key reserved for Ployz management metadata.
-///
-/// # Errors
-///
-/// Returns [`ValueError`] when `key` is in the `ployz.*` namespace.
-pub fn validate_container_label_key(key: &str) -> Result<(), ValueError> {
+fn validate_container_label_key(key: &str) -> Result<(), ValueError> {
     if key.starts_with(MANAGEMENT_LABEL_PREFIX) {
         return Err(ValueError::new(
             "container label key",
@@ -461,6 +457,52 @@ pub fn validate_container_label_key(key: &str) -> Result<(), ValueError> {
         ));
     }
     Ok(())
+}
+
+/// User-supplied Docker labels outside Ployz's management namespace.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    try_from = "BTreeMap<String, String>",
+    into = "BTreeMap<String, String>"
+)]
+pub struct ContainerLabels(BTreeMap<String, String>);
+
+impl ContainerLabels {
+    /// Validate user-supplied Docker labels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when a key is in the reserved `ployz.*` namespace.
+    pub fn parse(labels: BTreeMap<String, String>) -> Result<Self, ValueError> {
+        for key in labels.keys() {
+            validate_container_label_key(key)?;
+        }
+        Ok(Self(labels))
+    }
+
+    #[must_use]
+    pub fn as_map(&self) -> &BTreeMap<String, String> {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_map(self) -> BTreeMap<String, String> {
+        self.0
+    }
+}
+
+impl TryFrom<BTreeMap<String, String>> for ContainerLabels {
+    type Error = ValueError;
+
+    fn try_from(labels: BTreeMap<String, String>) -> Result<Self, Self::Error> {
+        Self::parse(labels)
+    }
+}
+
+impl From<ContainerLabels> for BTreeMap<String, String> {
+    fn from(labels: ContainerLabels) -> Self {
+        labels.0
+    }
 }
 /// Docker label recording the owning Project.
 pub const PROJECT_NAME_LABEL: &str = "ployz.project.name";
@@ -662,6 +704,10 @@ impl ExtraHost {
     ///
     /// Returns [`ValueError`] when either part is invalid.
     pub fn from_parts(host: &str, address: &str) -> Result<Self, ValueError> {
+        let address = address
+            .strip_prefix('[')
+            .and_then(|address| address.strip_suffix(']'))
+            .unwrap_or(address);
         if host.is_empty()
             || address.is_empty()
             || (address != "host-gateway" && address.parse::<IpAddr>().is_err())

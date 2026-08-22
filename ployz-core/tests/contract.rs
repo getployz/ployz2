@@ -6,27 +6,27 @@ use std::{
 
 use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
-    ConfiguredHealthcheck, ContainerCreated, ContainerHostname, ContainerKind, ContainerPath,
-    ContainerResources, ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
-    CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
-    DnsRecordType, DockerVolumeName, Domain, DomainRecords, ENSURE_IMAGE_INGEST_CAPABILITY,
-    EnsureImageIngestRequest, ExtraHost, FanoutFailure, FanoutOutcome, FanoutResponse,
-    FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation,
-    HealthcheckCommand, HealthcheckSpec, HttpProtocol, ImageIngestDestination, ImageIngestOpened,
-    ImageIngestReason, ImagePulled, ImageSummary, IngressHost, IngressHostname,
-    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
-    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
-    MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget,
-    MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROJECT_NAME_LABEL,
-    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication,
-    PreDeployHook, ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest,
-    PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest,
-    RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest,
-    ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount,
-    ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest,
-    UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
-    validate_container_label_key,
+    ConfiguredHealthcheck, ContainerCreated, ContainerHostname, ContainerKind, ContainerLabels,
+    ContainerPath, ContainerResources, ContainerRuntimeObservation, ContractDescription,
+    CreateContainerRequest, CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY,
+    DescribeContractRequest, DnsRecord, DnsRecordType, DockerVolumeName, Domain, DomainRecords,
+    ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost, FanoutFailure,
+    FanoutOutcome, FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY,
+    GetCaddyConfigRequest, HealthObservation, HealthcheckCommand, HealthcheckSpec, HttpProtocol,
+    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageSummary,
+    IngressHost, IngressHostname, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
+    ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
+    MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSubnet,
+    MachineSuccess, MachineTarget, MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload,
+    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult,
+    Placement, PortPublication, PreDeployHook, ProjectName, PublicIpDiscovery, PublicIpUpdate,
+    PullImageFromMachineRequest, PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
+    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
+    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
+    UpdateMachineRequest, UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames,
+    op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -114,10 +114,24 @@ fn container_metadata_values_reject_invalid_wire_states() {
         "gateway:host-gateway"
     );
     assert_eq!(ExtraHost::parse("ipv6:::1").unwrap().as_str(), "ipv6:::1");
+    assert_eq!(
+        serde_json::from_str::<ExtraHost>(r#""ipv6:[::1]""#)
+            .unwrap()
+            .as_str(),
+        "ipv6:::1"
+    );
+    assert_eq!(
+        ExtraHost::from_parts("ipv6", "[::1]").unwrap().as_str(),
+        "ipv6:::1"
+    );
     assert!(ExtraHost::parse(":192.0.2.1").is_err());
     assert!(ExtraHost::parse("api:not-an-address").is_err());
-    assert!(validate_container_label_key("example.user").is_ok());
-    assert!(validate_container_label_key("ployz.future").is_err());
+    assert!(
+        ContainerLabels::parse(BTreeMap::from([("example.user".into(), "yes".into())])).is_ok()
+    );
+    assert!(
+        ContainerLabels::parse(BTreeMap::from([("ployz.future".into(), "mine".into())])).is_err()
+    );
 }
 
 #[test]
@@ -1454,6 +1468,16 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
     };
 
     let requested_json = serde_json::to_value(&requested).unwrap();
+    let mut invalid_requested_json = requested_json.clone();
+    *invalid_requested_json
+        .pointer_mut("/container/labels")
+        .expect("requested fixture has container labels") = json!({"ployz.future": "mine"});
+    assert!(
+        serde_json::from_value::<RequestedServiceSpec>(invalid_requested_json)
+            .unwrap_err()
+            .to_string()
+            .contains("reserved 'ployz.*' management namespace")
+    );
     assert_eq!(
         serde_json::from_value::<RequestedServiceSpec>(requested_json.clone()).unwrap(),
         requested
@@ -1468,8 +1492,18 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
     assert_eq!(older_requested.update, UpdateConfig::default());
     assert_eq!(older_requested.container.restart, RestartPolicy::default());
     let resolved_json = serde_json::to_value(&resolved).unwrap();
+    let mut invalid_resolved_json = resolved_json.clone();
+    *invalid_resolved_json
+        .pointer_mut("/container/labels")
+        .expect("resolved fixture has container labels") = json!({"ployz.future": "mine"});
+    assert!(
+        serde_json::from_value::<ResolvedServiceSpec>(invalid_resolved_json)
+            .unwrap_err()
+            .to_string()
+            .contains("reserved 'ployz.*' management namespace")
+    );
     assert_eq!(
-        serde_json::from_value::<ResolvedServiceSpec>(resolved_json).unwrap(),
+        serde_json::from_value::<ResolvedServiceSpec>(resolved_json.clone()).unwrap(),
         resolved
     );
 

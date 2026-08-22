@@ -824,23 +824,6 @@ mod tests {
             hook_labels.get("example.value").map(String::as_str),
             Some("unchanged")
         );
-
-        let mut reserved = spec.clone();
-        reserved
-            .container
-            .labels
-            .insert("ployz.future".into(), "mine".into());
-        assert!(matches!(
-            create::container_create_body(
-                &machine_id,
-                gateway,
-                ContainerKind::ServiceContainer,
-                &project_name,
-                &reserved,
-            ),
-            Err(Error::InvalidContainerConfig(message))
-                if message.contains("reserved 'ployz.*' management namespace")
-        ));
     }
 
     #[test]

@@ -297,7 +297,7 @@ fn requested_with_graphs(
             command: Vec::new(),
             entrypoint: Vec::new(),
             environment: BTreeMap::new(),
-            labels: BTreeMap::new(),
+            labels: Default::default(),
             hostname: None,
             extra_hosts: Vec::new(),
             cap_add: Vec::new(),

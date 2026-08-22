@@ -289,11 +289,12 @@ services:
       ipv6:
         - "::1"
         - "2001:db8::1"
+      bracketed: "[::1]"
     deploy: {replicas: 2}
   worker:
     image: worker:1
     labels: [example.bare, example.value=unchanged]
-    extra_hosts: [app=198.51.100.2, legacy:203.0.113.4]
+    extra_hosts: [app=198.51.100.2, legacy:203.0.113.4, "bracketed=[::1]"]
 "#,
         ".",
     )
@@ -310,8 +311,8 @@ services:
         "Shared.Host"
     );
     assert_eq!(
-        app.container.labels,
-        BTreeMap::from([
+        app.container.labels.as_map(),
+        &BTreeMap::from([
             ("example.empty".into(), String::new()),
             ("example.equals".into(), "a=b".into()),
             ("example.number".into(), "3".into()),
@@ -328,13 +329,14 @@ services:
             "gateway:host-gateway",
             "ipv6:::1",
             "ipv6:2001:db8::1",
+            "bracketed:::1",
         ]
     );
 
     let worker = service(&project, "worker");
     assert_eq!(
-        worker.container.labels,
-        BTreeMap::from([
+        worker.container.labels.as_map(),
+        &BTreeMap::from([
             ("example.bare".into(), String::new()),
             ("example.value".into(), "unchanged".into()),
         ])
@@ -346,7 +348,7 @@ services:
             .iter()
             .map(ployz_core::ExtraHost::as_str)
             .collect::<Vec<_>>(),
-        ["app:198.51.100.2", "legacy:203.0.113.4"]
+        ["app:198.51.100.2", "legacy:203.0.113.4", "bracketed:::1"]
     );
     assert!(project.warnings.is_empty());
 }
@@ -360,7 +362,7 @@ fn compose_rejects_reserved_labels_and_invalid_container_hostnames() {
     .unwrap_err();
     assert_eq!(
         label_error.to_string(),
-        "invalid normalized Compose project: service 'app': label key 'ployz.future' uses the reserved 'ployz.*' management namespace"
+        "invalid normalized Compose project: service 'app': invalid container label key \"ployz.future\": outside the reserved 'ployz.*' management namespace"
     );
 
     for hostname in ["bad_name", "-leading", "trailing-", "two..dots"] {

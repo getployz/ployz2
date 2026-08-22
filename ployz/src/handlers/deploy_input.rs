@@ -76,7 +76,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
                 .transpose()?
                 .unwrap_or_default(),
             environment: parse_environment(&string_values(matches, "env"))?,
-            labels: BTreeMap::new(),
+            labels: Default::default(),
             hostname: None,
             extra_hosts: Vec::new(),
             cap_add: Vec::new(),
