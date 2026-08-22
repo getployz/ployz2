@@ -274,6 +274,7 @@ impl JoinDaemon {
         self
     }
 
+    /// Set the entry Machine's membership observation for the assigned Machine.
     pub fn with_membership(self, membership: MembershipObservation) -> Self {
         *self.inner.assigned_membership.lock().unwrap() = membership;
         self

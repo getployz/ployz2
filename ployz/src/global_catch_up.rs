@@ -43,6 +43,7 @@ pub(crate) trait CatchUpClient {
         machine_id: &MachineId,
         request: EnsureGlobalSlotRequest,
     ) -> Result<(), RpcError>;
+    /// List Containers directly from the joined Machine for final verification.
     async fn target_containers(
         &mut self,
         machine_id: &MachineId,
