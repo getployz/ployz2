@@ -1,3 +1,5 @@
+//! Candidate Caddy configuration preflight tests.
+
 use super::{FakeAdmin, custom_observation};
 use crate::caddy::preflight_candidate;
 use ployz_core::{
