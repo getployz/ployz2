@@ -1,6 +1,6 @@
 use std::{
     fmt,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     str::{self, FromStr},
 };
 
@@ -446,6 +446,22 @@ validated_string_newtype!(
 pub const MANAGED_LABEL: &str = "ployz.managed";
 /// Docker label namespace reserved for Ployz management metadata.
 pub const MANAGEMENT_LABEL_PREFIX: &str = "ployz.";
+
+/// Reject a Docker label key reserved for Ployz management metadata.
+///
+/// # Errors
+///
+/// Returns [`ValueError`] when `key` is in the `ployz.*` namespace.
+pub fn validate_container_label_key(key: &str) -> Result<(), ValueError> {
+    if key.starts_with(MANAGEMENT_LABEL_PREFIX) {
+        return Err(ValueError::new(
+            "container label key",
+            key,
+            "outside the reserved 'ployz.*' management namespace",
+        ));
+    }
+    Ok(())
+}
 /// Docker label recording the owning Project.
 pub const PROJECT_NAME_LABEL: &str = "ployz.project.name";
 
@@ -633,6 +649,83 @@ validated_string_newtype!(
     "a 1-253 character RFC 1123 hostname",
     |value| is_rfc1123_hostname(value)
 );
+
+/// One container-local Docker `/etc/hosts` entry.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ExtraHost(String);
+
+impl ExtraHost {
+    /// Build an entry from a non-empty host and an IP address or `host-gateway`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when either part is invalid.
+    pub fn from_parts(host: &str, address: &str) -> Result<Self, ValueError> {
+        if host.is_empty()
+            || address.is_empty()
+            || (address != "host-gateway" && address.parse::<IpAddr>().is_err())
+        {
+            return Err(extra_host_error(format!("{host}:{address}")));
+        }
+        Ok(Self(format!("{host}:{address}")))
+    }
+
+    /// Parse Docker's canonical `host:address` entry form.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] when the host is empty or the address is neither
+    /// an IP address nor `host-gateway`.
+    pub fn parse(value: impl Into<String>) -> Result<Self, ValueError> {
+        let value = value.into();
+        let Some((host, address)) = value.split_once(':') else {
+            return Err(extra_host_error(value));
+        };
+        Self::from_parts(host, address).map_err(|_| extra_host_error(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn extra_host_error(value: impl Into<String>) -> ValueError {
+    ValueError::new(
+        "extra host",
+        value,
+        "a non-empty host and an IP address or 'host-gateway'",
+    )
+}
+
+impl fmt::Display for ExtraHost {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for ExtraHost {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<String> for ExtraHost {
+    type Error = ValueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl From<ExtraHost> for String {
+    fn from(value: ExtraHost) -> Self {
+        value.0
+    }
+}
 
 /// One Machine's optimistic container subnet candidate.
 ///

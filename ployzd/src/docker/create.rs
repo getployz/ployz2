@@ -11,8 +11,8 @@ use bollard::models::{
 };
 use ployz_core::{
     BindPropagation, BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec,
-    HostBind, MANAGEMENT_LABEL_PREFIX, MachineGateway, MachineId, PortPublication, ProjectName,
-    ResolvedServiceSpec, ServiceVolumeGraph, TransportProtocol, VolumeSource,
+    HostBind, MachineGateway, MachineId, PortPublication, ProjectName, ResolvedServiceSpec,
+    ServiceVolumeGraph, TransportProtocol, VolumeSource, validate_container_label_key,
 };
 
 use super::{
@@ -42,14 +42,12 @@ pub(super) fn container_create_body(
         environment.insert("PLOYZ_HOOK_PRE_DEPLOY".into(), "true".into());
     }
     environment.insert("PLOYZ_MACHINE_ID".into(), machine_id.to_string());
-    if let Some(key) = container
+    if let Some(error) = container
         .labels
         .keys()
-        .find(|key| key.starts_with(MANAGEMENT_LABEL_PREFIX))
+        .find_map(|key| validate_container_label_key(key).err())
     {
-        return Err(Error::InvalidContainerConfig(format!(
-            "label key '{key}' uses the reserved '{MANAGEMENT_LABEL_PREFIX}*' management namespace"
-        )));
+        return Err(Error::InvalidContainerConfig(error.to_string()));
     }
     let mut labels: HashMap<_, _> = container.labels.clone().into_iter().collect();
     labels.extend([
@@ -105,7 +103,13 @@ pub(super) fn container_create_body(
         cap_add: (!container.cap_add.is_empty()).then(|| container.cap_add.clone()),
         cap_drop: (!container.cap_drop.is_empty()).then(|| container.cap_drop.clone()),
         pid_mode: container.pid_mode.as_ref().map(ToString::to_string),
-        extra_hosts: (!container.extra_hosts.is_empty()).then(|| container.extra_hosts.clone()),
+        extra_hosts: (!container.extra_hosts.is_empty()).then(|| {
+            container
+                .extra_hosts
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        }),
         privileged: Some(
             hook.and_then(|hook| hook.privileged)
                 .unwrap_or(container.privileged),

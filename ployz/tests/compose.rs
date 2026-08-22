@@ -318,7 +318,11 @@ services:
         ])
     );
     assert_eq!(
-        app.container.extra_hosts,
+        app.container
+            .extra_hosts
+            .iter()
+            .map(ployz_core::ExtraHost::as_str)
+            .collect::<Vec<_>>(),
         [
             "app:192.0.2.10",
             "gateway:host-gateway",
@@ -336,7 +340,12 @@ services:
         ])
     );
     assert_eq!(
-        worker.container.extra_hosts,
+        worker
+            .container
+            .extra_hosts
+            .iter()
+            .map(ployz_core::ExtraHost::as_str)
+            .collect::<Vec<_>>(),
         ["app:198.51.100.2", "legacy:203.0.113.4"]
     );
     assert!(project.warnings.is_empty());
@@ -365,6 +374,18 @@ fn compose_rejects_reserved_labels_and_invalid_container_hostnames() {
             format!(
                 "invalid normalized Compose project: service 'app': invalid container hostname {hostname:?}: a 1-253 character RFC 1123 hostname"
             )
+        );
+    }
+
+    for entry in ["api:not-an-address", "=192.0.2.1"] {
+        let error = parse_normalized(
+            &format!("services: {{app: {{image: app, extra_hosts: [{entry:?}]}}}}"),
+            ".",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("invalid normalized Compose project: invalid extra_hosts entry '{entry}'")
         );
     }
 }

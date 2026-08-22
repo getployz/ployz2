@@ -6,26 +6,27 @@ use std::{
 
 use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
-    ConfiguredHealthcheck, ContainerCreated, ContainerKind, ContainerPath, ContainerResources,
-    ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
+    ConfiguredHealthcheck, ContainerCreated, ContainerHostname, ContainerKind, ContainerPath,
+    ContainerResources, ContainerRuntimeObservation, ContractDescription, CreateContainerRequest,
     CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DnsRecord,
     DnsRecordType, DockerVolumeName, Domain, DomainRecords, ENSURE_IMAGE_INGEST_CAPABILITY,
-    EnsureImageIngestRequest, FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
-    GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation, HealthcheckCommand,
-    HealthcheckSpec, HttpProtocol, ImageIngestDestination, ImageIngestOpened, ImageIngestReason,
-    ImagePulled, ImageSummary, IngressHost, IngressHostname, InspectWireGuardRequest,
-    LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway,
-    MachineId, MachineImages, MachineName, MachinePath, MachineRpc, MachineRpcClient,
-    MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget, MachineTokenRequest,
-    MachineUpdate, NameMatches, OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication, PreDeployHook,
-    ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, PullPolicy,
-    QualifiedService, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
-    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
-    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
-    VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    EnsureImageIngestRequest, ExtraHost, FanoutFailure, FanoutOutcome, FanoutResponse,
+    FramingError, GET_CADDY_CONFIG_CAPABILITY, GetCaddyConfigRequest, HealthObservation,
+    HealthcheckCommand, HealthcheckSpec, HttpProtocol, ImageIngestDestination, ImageIngestOpened,
+    ImageIngestReason, ImagePulled, ImageSummary, IngressHost, IngressHostname,
+    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
+    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
+    MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget,
+    MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROJECT_NAME_LABEL,
+    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication,
+    PreDeployHook, ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest,
+    PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest,
+    RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest,
+    ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount,
+    ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest,
+    UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    validate_container_label_key,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -92,6 +93,31 @@ fn identities_validate_and_serialize_as_their_wire_strings() {
     assert!(ServiceId::parse("too-short").is_err());
     assert!(ServiceName::parse("Uppercase").is_err());
     assert!(ServiceName::parse("valid-service").is_ok());
+}
+
+#[test]
+fn container_hostname_accepts_rfc1123_and_rejects_invalid_labels() {
+    assert_eq!(
+        ContainerHostname::parse("Shared.Host").unwrap().as_str(),
+        "Shared.Host"
+    );
+    assert!(ContainerHostname::parse("bad_name").is_err());
+    assert!(ContainerHostname::parse("-leading").is_err());
+}
+
+#[test]
+fn container_metadata_values_reject_invalid_wire_states() {
+    assert_eq!(
+        ExtraHost::from_parts("gateway", "host-gateway")
+            .unwrap()
+            .as_str(),
+        "gateway:host-gateway"
+    );
+    assert_eq!(ExtraHost::parse("ipv6:::1").unwrap().as_str(), "ipv6:::1");
+    assert!(ExtraHost::parse(":192.0.2.1").is_err());
+    assert!(ExtraHost::parse("api:not-an-address").is_err());
+    assert!(validate_container_label_key("example.user").is_ok());
+    assert!(validate_container_label_key("ployz.future").is_err());
 }
 
 #[test]

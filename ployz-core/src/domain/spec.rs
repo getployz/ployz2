@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use super::{ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph};
 use crate::{
     BindPropagation, BindRecursive, ClusterDomainLabel, ContainerHostname, ContainerPath,
-    DockerVolumeId, DockerVolumeName, IngressHost, MANAGED_LABEL, MachinePath, MachineTarget,
-    PROJECT_NAME_LABEL, PidMode, ProjectName, RestartPolicy, ServiceId, ServiceName,
+    DockerVolumeId, DockerVolumeName, ExtraHost, IngressHost, MANAGED_LABEL, MachinePath,
+    MachineTarget, PROJECT_NAME_LABEL, PidMode, ProjectName, RestartPolicy, ServiceId, ServiceName,
     ServiceVolumeReference, ValueError,
 };
 
@@ -466,7 +466,7 @@ pub struct ServiceContainerSpec {
     #[serde(default)]
     pub hostname: Option<ContainerHostname>,
     #[serde(default)]
-    pub extra_hosts: Vec<String>,
+    pub extra_hosts: Vec<ExtraHost>,
     #[serde(default)]
     pub cap_add: Vec<String>,
     #[serde(default)]
