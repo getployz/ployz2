@@ -1,6 +1,6 @@
 //! Global catch-up: place observed eligible Globals onto this Machine only.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     BridgeEndpointCapacity, ContainerRuntimeObservation, EnsureGlobalSlotRequest, InspectRequest,
@@ -117,12 +117,7 @@ fn slot_for(
     skip_caddy: bool,
 ) -> Option<GlobalCatchUpSlot> {
     let slot = eligible_slot(service, this_machine, skip_caddy)?;
-    if service.containers.iter().any(|container| {
-        let observation = container.as_observation();
-        observation.machine_id == this_machine.id
-            && observation.service_id == slot.spec.service_id
-            && is_running(&observation.runtime)
-    }) {
+    if service_has_running_slot(service, this_machine, &slot.spec.service_id) {
         return None;
     }
     Some(slot)
@@ -164,6 +159,19 @@ fn is_running(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(runtime, ContainerRuntimeObservation::Running { .. })
 }
 
+fn service_has_running_slot(
+    service: &ServiceObservation,
+    machine: &Machine,
+    service_id: &ployz_core::ServiceId,
+) -> bool {
+    service.containers.iter().any(|container| {
+        let observation = container.as_observation();
+        observation.machine_id == machine.id
+            && observation.service_id == *service_id
+            && is_running(&observation.runtime)
+    })
+}
+
 fn partial_observation_warning(live: &LiveServices<RpcError>) -> Option<String> {
     (!live.containers.all_targets_succeeded())
         .then(|| crate::failure::partial_failure_details(&live.containers))
@@ -191,8 +199,8 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let initially_eligible = services
         .iter()
         .filter_map(|service| eligible_slot(service, this_machine, skip_caddy))
-        .map(|slot| slot.identity)
-        .collect::<BTreeSet<_>>();
+        .map(|slot| (slot.identity, slot.spec.service_id))
+        .collect::<BTreeMap<_, _>>();
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
     let initially_missing: Vec<_> = slots.iter().map(|slot| slot.identity.clone()).collect();
     let endpoint_creates = slots
@@ -244,11 +252,17 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         .into_iter()
         .map(|slot| slot.identity)
         .collect::<BTreeSet<_>>();
-    missing.extend(initially_eligible.into_iter().filter(|identity| {
-        !services
-            .iter()
-            .any(|service| service.identity == *identity && !service.containers.is_empty())
-    }));
+    missing.extend(
+        initially_eligible
+            .into_iter()
+            .filter_map(|(identity, service_id)| {
+                (!services.iter().any(|service| {
+                    service.identity == identity
+                        && service_has_running_slot(service, this_machine, &service_id)
+                }))
+                .then_some(identity)
+            }),
+    );
     if !missing.is_empty() {
         let details = failures
             .iter()
@@ -450,6 +464,38 @@ mod tests {
         let error = catch_up_globals(&mut client, &joiner, true)
             .await
             .unwrap_err();
+        assert_eq!(error.missing, [qualified("app", "api")]);
+    }
+
+    #[tokio::test]
+    async fn initially_eligible_generation_absent_from_refresh_remains_missing() {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let stale = global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(&joiner, 'a'),
+        );
+        let current = global_service(
+            qualified("app", "api"),
+            'b',
+            Placement::default(),
+            running_on(&founder, 'b'),
+        );
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: vec![stale.clone(), current],
+            refreshed_services: Some(vec![stale]),
+            live_calls: Cell::new(0),
+            capacity: Some(BridgeEndpointCapacity::new(10, 0)),
+            ensure_calls: Cell::new(0),
+        };
+
+        let error = catch_up_globals(&mut client, &joiner, true)
+            .await
+            .unwrap_err();
+        assert_eq!(client.ensure_calls.get(), 1);
         assert_eq!(error.missing, [qualified("app", "api")]);
     }
 
