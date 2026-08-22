@@ -1,5 +1,5 @@
 [workspace]
-members = ["ployz-core", "ployz", "ployz-relay", "ployz-sdk", "ployz-sdk-payloads", "ployzd", "ployz-testkit"]
+members = ["ployz-core", "ployz", "ployz-relay", "ployz-sdk", "ployz-sdk-payloads", "ployzd", "ployz-testkit", "ployz-cli-ui-spike"]
 default-members = ["ployz-core", "ployz", "ployz-relay", "ployz-sdk", "ployz-sdk-payloads", "ployzd"]
 resolver = "3"
 
