@@ -17,8 +17,9 @@ use ployz::{
 use ployz_core::{
     CapabilityName, ContainerKind, ContainerRuntimeObservation, ContractDescription,
     DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation,
-    LogsOptions, MachineId, MachineRpcServer, MembershipObservation, PROJECT_NAME_LABEL,
-    PROTOCOL_MAJOR, RpcError, RpcErrorCode, op,
+    LogsOptions, MACHINE_STORAGE_OBSERVATION_CAPABILITY, MachineId, MachineRpcServer,
+    MachineStorageObservation, MembershipObservation, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RpcError,
+    RpcErrorCode, op,
 };
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, UnixListener};
@@ -684,13 +685,13 @@ async fn fanout_reads_retry_failed_legs_without_rerunning_successes() {
 
 #[tokio::test]
 async fn machines_returns_list_machines_membership_observations() {
-    let (address, server) = serve_discovery(DiscoveryService::new(ContractDescription {
+    let service = DiscoveryService::new(ContractDescription {
         machine_id: MachineId::random(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),
         capabilities: Default::default(),
-    }))
-    .await;
+    });
+    let (address, server) = serve_discovery(service.clone()).await;
     let mut client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
@@ -704,6 +705,28 @@ async fn machines_returns_list_machines_membership_observations() {
     let observed = client.machines().await.unwrap();
 
     assert_eq!(observed, vec![machine('a', "one")]);
+    assert_eq!(service.inspect_calls.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn machines_observes_storage_only_when_the_target_advertises_it() {
+    let service = DiscoveryService::new(ContractDescription {
+        machine_id: MachineId::random(),
+        protocol_major: PROTOCOL_MAJOR,
+        daemon_version: "test".into(),
+        capabilities: [CapabilityName::parse(MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap()]
+            .into(),
+    });
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    let observed = client.machines().await.unwrap();
+
+    assert_eq!(
+        observed.first().and_then(|machine| machine.storage),
+        Some(MachineStorageObservation::Ready)
+    );
+    assert_eq!(service.inspect_calls.load(Ordering::SeqCst), 1);
     server.abort();
 }
 

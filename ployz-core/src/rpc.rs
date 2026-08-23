@@ -59,12 +59,20 @@ macro_rules! define_capabilities {
         /// The daemon can take a Certificate Policy from cluster state.
         pub const CERTIFICATE_POLICY_CAPABILITY: &str = "ployz.certificates.policy.v1";
 
+        /// `Inspect` reports current local Machine storage evidence.
+        pub const MACHINE_STORAGE_OBSERVATION_CAPABILITY: &str =
+            "ployz.machine.storage-observation.v1";
+
         /// Const ident and wire spelling for every advertised capability.
         pub const CATALOGUED_CAPABILITY_BINDINGS: &[(&str, &str)] = &[
             $((stringify!($unary_capability), $unary_capability_name),)+
             $((stringify!($stream_capability), $stream_capability_name),)+
             ("EXEC_CONTAINER_CAPABILITY", EXEC_CONTAINER_CAPABILITY),
             ("CERTIFICATE_POLICY_CAPABILITY", CERTIFICATE_POLICY_CAPABILITY),
+            (
+                "MACHINE_STORAGE_OBSERVATION_CAPABILITY",
+                MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+            ),
         ];
 
         const CATALOGUED_CAPABILITIES: &[(&str, CapabilityAdvertisement)] = &[
@@ -72,6 +80,10 @@ macro_rules! define_capabilities {
             $(($stream_capability, CapabilityAdvertisement::$stream_advertisement),)+
             (EXEC_CONTAINER_CAPABILITY, CapabilityAdvertisement::Container),
             (CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement::Always),
+            (
+                MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+                CapabilityAdvertisement::Always,
+            ),
         ];
     };
 }
@@ -646,6 +658,9 @@ pub struct MachineDetails {
     /// Fresh telemetry requested only by targeted inspect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<TelemetryObservation>,
+    /// Current local storage evidence when the daemon advertises support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<crate::MachineStorageObservation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

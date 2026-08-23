@@ -8,13 +8,14 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
     ContainerObservation, CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume,
     DockerVolumeName, GetDomainRequest, InspectRequest, ListContainersRequest, ListImagesRequest,
-    ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved, Machine,
-    MachineFailure, MachineId, MachineImages, MachineName, MachineObservation, MachineRpcClient,
-    MachineSuccess, MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult,
-    ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveContainerRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest,
-    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest,
-    StopContainerRequest, UnconfirmedDataLoss, derive_live_services, op,
+    ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
+    MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
+    MachineTarget, NameMatches, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveContainerRequest, RemoveLocalMachineRequest,
+    RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc,
+    RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest,
+    UnconfirmedDataLoss, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -479,9 +480,31 @@ impl Client {
     ///
     /// Returns a connection or remote RPC error from `ListMachines`.
     pub async fn machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
-        self.call::<op::ListMachines>(ListMachinesRequest {}, None)
+        let mut machines = self
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
-            .map(|list| list.machines)
+            .map(|list| list.machines)?;
+        self.observe_machine_storage(&mut machines).await;
+        Ok(machines)
+    }
+
+    pub(crate) async fn observe_machine_storage(&self, machines: &mut [MachineObservation]) {
+        let mut tasks = JoinSet::new();
+        for (index, machine) in machines.iter().enumerate() {
+            if machine.membership.invites_rpc() {
+                tasks.spawn(observe_machine_storage(
+                    self.clone(),
+                    index,
+                    machine.machine.id,
+                ));
+            }
+        }
+        while let Some(observed) = tasks.join_next().await {
+            let (index, storage) = observed.expect("Machine storage observation does not panic");
+            if let Some(machine) = machines.get_mut(index) {
+                machine.storage = storage;
+            }
+        }
     }
 
     pub async fn live_services(&mut self) -> Result<LiveServices<RpcError>, ConnectError> {
@@ -862,6 +885,26 @@ fn machine_did_not_respond(machine_id: MachineId) -> RpcError {
         message: format!("Machine {machine_id} did not respond"),
         details: Value::Null,
     }
+}
+
+async fn observe_machine_storage(
+    mut client: Client,
+    index: usize,
+    machine_id: MachineId,
+) -> (usize, Option<MachineStorageObservation>) {
+    let target = MachineTarget::from(&machine_id);
+    let storage = match client
+        .read::<op::DescribeContract>(DescribeContractRequest {}, &target)
+        .await
+    {
+        Ok(description) if description.supports(MACHINE_STORAGE_OBSERVATION_CAPABILITY) => client
+            .read::<op::Inspect>(InspectRequest::default(), &target)
+            .await
+            .ok()
+            .and_then(|details| details.storage),
+        Ok(_) | Err(_) => None,
+    };
+    (index, storage)
 }
 
 async fn list_volumes_on_machine(

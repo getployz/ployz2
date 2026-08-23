@@ -5,9 +5,10 @@ use std::{path::PathBuf, process::Command, time::Duration};
 use ployz::sdk;
 use ployz_core::{
     CapabilityName, ContainerId, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DockerVolume,
-    DockerVolumeId, DockerVolumeName, MachineId, OpaquePayload, PROTOCOL_MAJOR,
-    RUNTIME_WATCH_CAPABILITY, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame,
-    RuntimeWatchRequest, RuntimeWatchTransportFrame,
+    DockerVolumeId, DockerVolumeName, MACHINE_STORAGE_OBSERVATION_CAPABILITY, MachineId,
+    MachineStorageObservation, OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_CAPABILITY,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest,
+    RuntimeWatchTransportFrame,
 };
 use serde_json::Value;
 use tokio::time::timeout;
@@ -83,6 +84,38 @@ async fn first_watch_yield_is_the_complete_generated_frame() {
         [RuntimeWatchRequest {}]
     );
     assert_no_list_rpc(&service);
+    assert_eq!(
+        service
+            .inspect_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
+#[tokio::test]
+async fn watch_enriches_machine_storage_only_when_the_target_advertises_it() {
+    let description = storage_watch_description();
+    let session = RelaySession::start().await;
+    let service = DiscoveryService::new(description.clone());
+    service.push_watch_frame(frozen_frame());
+    let _machine = session
+        .spawn_machine(description.machine_id, service.clone())
+        .await;
+    let client = connect(&session.url, description.machine_id.as_str()).await;
+    let watch = client.watch().await.unwrap();
+
+    let frame = next_frame(&watch).await;
+
+    assert_eq!(
+        frame.machines.first().and_then(|machine| machine.storage),
+        Some(MachineStorageObservation::Ready)
+    );
+    assert_eq!(
+        service
+            .inspect_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
 }
 
 #[tokio::test]
@@ -232,7 +265,7 @@ async fn reconnect_starts_with_a_fresh_complete_frame_and_no_cursor() {
 
 #[tokio::test]
 async fn node_watch_decodes_frames_above_tonics_default() {
-    let description = watch_description();
+    let description = storage_watch_description();
     let session = RelaySession::start().await;
     let service = DiscoveryService::new(description.clone());
     let mut frame = frozen_frame();
@@ -390,6 +423,15 @@ fn watch_description() -> ContractDescription {
         ]
         .into(),
     }
+}
+
+fn storage_watch_description() -> ContractDescription {
+    let mut description = watch_description();
+    description.capabilities.insert(
+        CapabilityName::parse(MACHINE_STORAGE_OBSERVATION_CAPABILITY)
+            .expect("catalogued capability names are valid"),
+    );
+    description
 }
 
 fn frozen_frame() -> RuntimeWatchFrame {
