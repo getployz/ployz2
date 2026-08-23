@@ -81,18 +81,19 @@ struct VolumeStorage {
 
 impl VolumeStorage {
     fn new() -> Self {
-        Self::with_programs("zpool", "zfs")
+        Self {
+            pool: PoolStorage::new("zpool"),
+            zfs: "zfs".into(),
+            mutation: Arc::new(Mutex::new(())),
+        }
     }
 
+    #[cfg(test)]
     fn with_programs(zpool: impl Into<PathBuf>, zfs: impl Into<PathBuf>) -> Self {
         let zpool = zpool.into();
-        #[cfg(test)]
         let backing = zpool.with_file_name("machine-pool");
-        let pool = PoolStorage::new(zpool);
-        #[cfg(test)]
-        let pool = pool.with_backing(backing);
         Self {
-            pool,
+            pool: PoolStorage::new(zpool).with_backing(backing),
             zfs: zfs.into(),
             mutation: Arc::new(Mutex::new(())),
         }
