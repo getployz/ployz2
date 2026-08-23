@@ -99,34 +99,30 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     config.save()?;
     let want_caddy = !matches.get_flag("no-caddy");
     let want_dns = !matches.get_flag("no-dns");
-    if want_caddy || want_dns {
-        runtime()?.block_on(async {
-            let mut ready = helpers::wait_direct_participating(
-                &connection,
-                "initial Machine did not become ready",
-            )
-            .await?;
+    runtime()?.block_on(async {
+        let mut ready =
+            helpers::wait_direct_participating(&connection, "initial Machine did not become ready")
+                .await?;
+        if want_dns {
+            let endpoint = matches
+                .get_one::<String>("dns-endpoint")
+                .cloned()
+                .ok_or_else(|| Error::usage("dns-endpoint is required"))?;
+            let domain = ready
+                .call::<op::ReserveDomain>(ReserveDomainRequest { endpoint }, None)
+                .await?;
+            println!("Reserved Cluster domain: {}", domain.name);
+        }
+        if want_caddy {
+            let image = crate::caddy::latest_image().await?;
+            let requested = crate::caddy::service_spec(image, Vec::new(), None);
+            crate::deploy::apply_requested(&mut ready, &requested).await?;
             if want_dns {
-                let endpoint = matches
-                    .get_one::<String>("dns-endpoint")
-                    .cloned()
-                    .ok_or_else(|| Error::usage("dns-endpoint is required"))?;
-                let domain = ready
-                    .call::<op::ReserveDomain>(ReserveDomainRequest { endpoint }, None)
-                    .await?;
-                println!("Reserved Cluster domain: {}", domain.name);
+                crate::dns::update_records_for_caddy(&mut ready).await?;
             }
-            if want_caddy {
-                let image = crate::caddy::latest_image().await?;
-                let requested = crate::caddy::service_spec(image, Vec::new(), None);
-                crate::deploy::apply_requested(&mut ready, &requested).await?;
-                if want_dns {
-                    crate::dns::update_records_for_caddy(&mut ready).await?;
-                }
-            }
-            Ok::<_, Error>(())
-        })?;
-    }
+        }
+        Ok::<_, Error>(())
+    })?;
     println!("Initialised Machine {} ({})", machine.name, machine.id);
     Ok(())
 }
