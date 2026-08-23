@@ -4,7 +4,7 @@ use axum::{Json, extract::State};
 use serde::Serialize;
 
 use super::{
-    Dataset, DockerVolumeName, ErrorResponse, Result, VolumeRequest, VolumeStorage, error_response,
+    DockerVolumeName, ErrorResponse, Result, VolumeRequest, VolumeStorage, error_response,
 };
 
 impl VolumeStorage {
@@ -13,7 +13,8 @@ impl VolumeStorage {
         let Some(pool) = self.pool.one_usable().await? else {
             return Ok(());
         };
-        let Some(dataset) = self.dataset(&pool, name).await? else {
+        let datasets = self.datasets(&pool).await?;
+        let Some(dataset) = Self::dataset(&datasets, &pool, name)? else {
             return Ok(());
         };
         dataset.require_provisioned(name)?;
@@ -21,15 +22,14 @@ impl VolumeStorage {
         Ok(())
     }
 
-    async fn inspect(&self, name: &DockerVolumeName) -> Result<Dataset> {
+    async fn inspect(&self, name: &DockerVolumeName) -> Result<String> {
         let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
-        let dataset = self
-            .dataset(&pool, name)
-            .await?
+        let datasets = self.datasets(&pool).await?;
+        let dataset = Self::dataset(&datasets, &pool, name)?
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
         dataset.require_provisioned(name)?;
-        Ok(dataset)
+        Ok(dataset.mountpoint.clone())
     }
 }
 
@@ -49,9 +49,9 @@ pub(super) async fn get(
     Json(request): Json<VolumeRequest>,
 ) -> Json<GetResponse> {
     let result = match request.name.parse::<DockerVolumeName>() {
-        Ok(name) => storage.inspect(&name).await.map(|dataset| PluginVolume {
+        Ok(name) => storage.inspect(&name).await.map(|mountpoint| PluginVolume {
             name: name.to_string(),
-            mountpoint: dataset.mountpoint,
+            mountpoint,
         }),
         Err(error) => Err(error),
     };

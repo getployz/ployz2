@@ -169,3 +169,23 @@ async fn get_returns_the_minimal_exact_volume_identity() {
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn get_rejects_a_volume_with_a_descendant_dataset() {
+    let test = TestDir::new();
+    for marker in ["root", "volume", "descendant"] {
+        fs::write(test.0.join(marker), "").unwrap();
+    }
+    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+    let response = post(&socket, "/VolumeDriver.Get", json!({"Name":"data"})).await;
+
+    assert!(response.get("Volume").is_none());
+    let message = error(&response);
+    assert!(message.contains("tank/ployz/data/child"));
+    assert!(message.contains("descendant"));
+    server.abort();
+}
