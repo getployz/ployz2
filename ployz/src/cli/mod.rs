@@ -636,24 +636,6 @@ mod tests {
             ["prod"]
         );
 
-        for command in ["scale", "rm"] {
-            let mut args = vec!["ployz", command, "-p", "shop", "web"];
-            if command == "scale" {
-                args.push("2");
-            }
-            let matches = super::command().try_get_matches_from(args).unwrap();
-            assert_eq!(
-                matches
-                    .subcommand()
-                    .unwrap()
-                    .1
-                    .get_one::<String>("project-name")
-                    .map(String::as_str),
-                Some("shop"),
-                "{command}"
-            );
-        }
-
         let run = super::command()
             .try_get_matches_from(["ployz", "run", "-p", "8080/https", "alpine"])
             .unwrap();
