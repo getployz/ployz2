@@ -102,7 +102,6 @@ pub(super) fn scope_requested(
     spec
 }
 
-#[derive(Clone)]
 pub(super) struct ProvisionedVolumeBindings {
     bounds: BTreeMap<ServiceName, BTreeMap<DockerVolumeName, ProvisionedVolumeMaximumBytes>>,
 }

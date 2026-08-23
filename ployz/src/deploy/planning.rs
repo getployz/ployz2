@@ -160,7 +160,7 @@ fn plan_operations(
 ) -> Result<Planned, PlanError> {
     let bound = bind(intent, ingress)?;
     let warnings = hostname_policy_for(&intent.project_name, &bound.requested, snapshot)?;
-    assemble_plan(intent, &bound, snapshot, warnings)
+    assemble_plan(intent, bound, snapshot, warnings)
 }
 
 fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundIntent, PlanError> {
@@ -213,21 +213,26 @@ fn hostname_policy_for(
 
 fn assemble_plan(
     intent: &DeployIntent,
-    bound: &BoundIntent,
+    bound: BoundIntent,
     snapshot: &DeploySnapshot,
     mut warnings: Vec<DeployWarning>,
 ) -> Result<Planned, PlanError> {
+    let BoundIntent {
+        target,
+        requested,
+        provisioned_volumes,
+    } = bound;
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
-    let volume_uses = named_volume_uses(&bound.requested);
+    let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
-    let mut pins = VolumePins::new(bound.provisioned_volumes.clone());
-    let name_errors_with_service = bound.requested.len() > 1;
+    let mut pins = VolumePins::new(provisioned_volumes);
+    let name_errors_with_service = requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
     let mut capacity = CapacityBudget::from_snapshot(snapshot);
     let reservations = prepare_shared_replicated_volumes(
         &volume_uses,
         snapshot,
-        &bound.requested,
+        &requested,
         &services,
         &mut pins,
         &mut capacity,
@@ -235,7 +240,7 @@ fn assemble_plan(
     )?;
     let mut placement = PlacementState::new(capacity, reservations);
     let mut service_operations = Vec::new();
-    for spec in &bound.requested {
+    for spec in &requested {
         let operations = plan_one_service(
             spec,
             &intent.project_name,
@@ -287,7 +292,7 @@ fn assemble_plan(
     operations.extend(service_operations);
     let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
-    let preserved_volumes = preserved_owned_volumes(&intent.project_name, &bound.target, snapshot);
+    let preserved_volumes = preserved_owned_volumes(&intent.project_name, &target, snapshot);
     if prune_refusal.is_none() {
         operations.extend(removal_operations(&services, &would_remove));
     }
