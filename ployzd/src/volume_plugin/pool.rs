@@ -1,17 +1,22 @@
 //! Root-backed Machine Pool creation and cleanup.
 
 use std::{
+    collections::BTreeMap,
     fs, io,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::PathBuf,
 };
 
+#[cfg(test)]
+use ployzd::machine::DEFAULT_DATA_DIR;
 use ployzd::machine_pool::{self, MachinePool};
 
-use super::{Result, VolumeError, checked_command};
+use super::{DockerVolumeName, Result, VolumeError, VolumeStorage, checked_command, parse_size};
 
 const GIBIBYTE: u64 = 1024_u64.pow(3);
+const POOL_BACKING_PATH: &str = "/var/lib/ployz-machine-pool";
 /// Filename of the root-backed Machine Pool vdev.
+#[cfg(test)]
 pub(super) const POOL_BACKING_FILE: &str = "machine-pool";
 const POOL_NAME: &str = "ployz";
 
@@ -22,7 +27,7 @@ pub(super) struct PoolStorage {
     fallocate: PathBuf,
     stat: PathBuf,
     df: PathBuf,
-    data_dir: PathBuf,
+    backing: PathBuf,
     host_root: PathBuf,
     sys_dev_block: PathBuf,
 }
@@ -45,6 +50,35 @@ impl CreatedPool<'_> {
     }
 }
 
+impl VolumeStorage {
+    /// Creates a bounded Volume, creating its Machine Pool first when absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when request validation, Pool creation, or dataset creation fails.
+    pub(super) async fn create(
+        &self,
+        name: &DockerVolumeName,
+        options: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        let requested = parse_size(options)?;
+        let _guard = self.mutation.lock().await;
+        match self.pool.one_usable().await? {
+            Some(pool) => self.create_volume(&pool, name, requested).await,
+            None => {
+                let pool = self.pool.create(requested).await?;
+                match self
+                    .create_volume(pool.machine_pool(), name, requested)
+                    .await
+                {
+                    Ok(()) => Ok(()),
+                    Err(error) => Err(pool.cleanup(error).await),
+                }
+            }
+        }
+    }
+}
+
 impl PoolStorage {
     /// Uses production storage programs and host paths.
     pub(super) fn new(zpool: impl Into<PathBuf>) -> Self {
@@ -53,7 +87,7 @@ impl PoolStorage {
             fallocate: "fallocate".into(),
             stat: "stat".into(),
             df: "df".into(),
-            data_dir: "/var/lib/ployz".into(),
+            backing: POOL_BACKING_PATH.into(),
             host_root: "/".into(),
             sys_dev_block: "/sys/dev/block".into(),
         }
@@ -66,7 +100,7 @@ impl PoolStorage {
         fallocate: PathBuf,
         stat: PathBuf,
         df: PathBuf,
-        data_dir: PathBuf,
+        backing: PathBuf,
         host_root: PathBuf,
         sys_dev_block: PathBuf,
     ) -> Self {
@@ -75,13 +109,13 @@ impl PoolStorage {
             fallocate,
             stat,
             df,
-            data_dir,
+            backing,
             host_root,
             sys_dev_block,
         }
     }
 
-    /// Selects the sole usable imported Machine Pool, if none is imported.
+    /// Selects the sole usable imported Machine Pool, or `None` when none is imported.
     ///
     /// # Errors
     ///
@@ -100,11 +134,10 @@ impl PoolStorage {
     pub(super) async fn create(&self, requested: u64) -> Result<CreatedPool<'_>> {
         let capacity = initial_capacity(requested)?;
         let ashift = self.check_host_root(capacity).await?;
-        let backing = self.data_dir.join(POOL_BACKING_FILE);
-        let backing = backing.to_str().ok_or_else(|| {
+        let backing = self.backing.to_str().ok_or_else(|| {
             VolumeError::from(format!(
                 "Machine Pool backing path is not valid UTF-8: {}",
-                backing.display()
+                self.backing.display()
             ))
         })?;
         fs::OpenOptions::new()
@@ -175,7 +208,7 @@ impl PoolStorage {
             Err(error) => {
                 return format!(
                     "{failure}; cleanup could not inspect Machine Pools: {error}; backing file retained at {}",
-                    self.data_dir.join(POOL_BACKING_FILE).display()
+                    self.backing.display()
                 )
                 .into();
             }
@@ -185,7 +218,7 @@ impl PoolStorage {
         {
             return format!(
                 "{failure}; cleanup could not destroy Machine Pool {POOL_NAME}: {error}; backing file retained at {}",
-                self.data_dir.join(POOL_BACKING_FILE).display()
+                self.backing.display()
             )
             .into();
         }
@@ -199,16 +232,22 @@ impl PoolStorage {
                 self.host_root.display()
             )
         })?;
-        let data = fs::metadata(&self.data_dir).map_err(|error| {
+        let backing_directory = self.backing.parent().ok_or_else(|| {
+            VolumeError::from(format!(
+                "Machine Pool backing path has no parent: {}",
+                self.backing.display()
+            ))
+        })?;
+        let data = fs::metadata(backing_directory).map_err(|error| {
             format!(
-                "could not inspect Ployz data directory {}: {error}",
-                self.data_dir.display()
+                "could not inspect Machine Pool backing directory {}: {error}",
+                backing_directory.display()
             )
         })?;
         if host.dev() != data.dev() {
             return Err(format!(
-                "Ployz data directory {} is not on the host root filesystem",
-                self.data_dir.display()
+                "Machine Pool backing directory {} is not on the host root filesystem",
+                backing_directory.display()
             )
             .into());
         }
@@ -306,13 +345,12 @@ impl PoolStorage {
     }
 
     fn cleanup_backing(&self, failure: VolumeError) -> VolumeError {
-        let backing = self.data_dir.join(POOL_BACKING_FILE);
-        match fs::remove_file(&backing) {
+        match fs::remove_file(&self.backing) {
             Ok(()) => failure,
             Err(error) if error.kind() == io::ErrorKind::NotFound => failure,
             Err(error) => format!(
                 "{failure}; cleanup could not remove Machine Pool backing file {}: {error}",
-                backing.display()
+                self.backing.display()
             )
             .into(),
         }
@@ -356,4 +394,16 @@ fn safe_ashift(physical_block_size: u64) -> Result<u32> {
         .into());
     }
     Ok(ashift)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_backing_file_survives_machine_state_reset() {
+        let storage = PoolStorage::new("zpool");
+
+        assert!(!storage.backing.starts_with(DEFAULT_DATA_DIR));
+    }
 }

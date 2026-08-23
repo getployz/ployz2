@@ -92,28 +92,6 @@ impl VolumeStorage {
         }
     }
 
-    async fn create(
-        &self,
-        name: &DockerVolumeName,
-        options: &BTreeMap<String, String>,
-    ) -> Result<()> {
-        let requested = parse_size(options)?;
-        let _guard = self.mutation.lock().await;
-        match self.pool.one_usable().await? {
-            Some(pool) => self.create_volume(&pool, name, requested).await,
-            None => {
-                let pool = self.pool.create(requested).await?;
-                match self
-                    .create_volume(pool.machine_pool(), name, requested)
-                    .await
-                {
-                    Ok(()) => Ok(()),
-                    Err(error) => Err(pool.cleanup(error).await),
-                }
-            }
-        }
-    }
-
     async fn create_volume(
         &self,
         pool: &MachinePool,
@@ -208,13 +186,10 @@ impl VolumeStorage {
     }
 
     async fn one_pool(&self) -> Result<MachinePool> {
-        self.usable_pool()
+        self.pool
+            .one_usable()
             .await?
             .ok_or_else(|| "no usable existing Machine Pool".into())
-    }
-
-    async fn usable_pool(&self) -> Result<Option<MachinePool>> {
-        self.pool.one_usable().await
     }
 
     async fn datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {

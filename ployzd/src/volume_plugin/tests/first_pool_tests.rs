@@ -219,7 +219,7 @@ esac
             program("fallocate"),
             program("stat"),
             program("df"),
-            directory.to_owned(),
+            directory.join(POOL_BACKING_FILE),
             directory.to_owned(),
             sys_dev_block,
         ),
