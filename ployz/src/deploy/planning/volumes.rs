@@ -116,8 +116,10 @@ pub(super) fn validate_provisioned_volume_bounds(
                 reference: declaration.reference.clone(),
             });
         };
-        if let Some(existing_maximum_bytes) = bounds.insert(name.clone(), declaration.maximum_bytes)
-            && existing_maximum_bytes != declaration.maximum_bytes
+        if let Some(existing_maximum_bytes) = bounds.insert(
+            (declaration.service.clone(), name.clone()),
+            declaration.maximum_bytes,
+        ) && existing_maximum_bytes != declaration.maximum_bytes
         {
             return Err(PlanError::ConflictingProvisionedVolumeBounds {
                 name: name.clone(),

@@ -57,6 +57,45 @@ fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
 }
 
 #[test]
+fn disjoint_global_volumes_may_have_different_bounds() {
+    let mut first = requested(ServiceMode::Global);
+    first.name = ServiceName::parse("first").unwrap();
+    first.placement.machines = vec![MachineTarget::parse("first").unwrap()];
+    add_named_volume(&mut first, "data");
+    let mut second = requested(ServiceMode::Global);
+    second.name = ServiceName::parse("second").unwrap();
+    second.placement.machines = vec![MachineTarget::parse("second").unwrap()];
+    add_named_volume(&mut second, "data");
+    let mut intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&first, &second],
+        PlanOptions::default(),
+    );
+    intent.provisioned_volumes = vec![
+        ProvisionedVolume {
+            service: first.name.clone(),
+            reference: ServiceVolumeReference::parse("data").unwrap(),
+            maximum_bytes: maximum_bytes(1_073_741_824),
+        },
+        ProvisionedVolume {
+            service: second.name.clone(),
+            reference: ServiceVolumeReference::parse("data").unwrap(),
+            maximum_bytes: maximum_bytes(2_147_483_648),
+        },
+    ];
+
+    preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    )
+    .unwrap();
+}
+
+#[test]
 fn unknown_provisioned_volume_reference_fails_planning() {
     let mut intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
