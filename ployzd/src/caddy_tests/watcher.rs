@@ -173,14 +173,61 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
         Some([10, 210, 1, 4]),
         vec![ingress("example.com", 80, HttpProtocol::Http)],
     ));
-    state.send_certificates(b"{\"change\":{}}\n");
+    state.send(b"{\"columns\":[\"id\",\"container\"]}\n");
     settle().await;
-    advance(Duration::from_millis(100)).await;
+    advance(Duration::from_millis(200)).await;
+    settle().await;
+    assert!(
+        load_rx.try_recv().is_err(),
+        "incomplete snapshot loaded before it ended"
+    );
     state.replace(observation(
         4,
         &machine.id,
         "api",
         Some([10, 210, 1, 5]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    state.send(b"{\"row\":[1,[\"replacement\",\"snapshot\"]]}\n{\"eoq\":{\"time\":0.0}}\n");
+    settle().await;
+    advance(Duration::from_millis(300)).await;
+    resume();
+    let after_snapshot = timeout(Duration::from_secs(1), load_rx.recv())
+        .await
+        .expect("completed snapshot did not load after quiet")
+        .unwrap();
+    assert!(after_snapshot.contains("10.210.1.5:80"), "{after_snapshot}");
+    assert!(
+        !after_snapshot.contains("10.210.1.4:80"),
+        "{after_snapshot}"
+    );
+
+    pause();
+    state.replace(observation(
+        5,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 6]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    state.send(b"{\"change\":{}}\n");
+    settle().await;
+    advance(Duration::from_millis(100)).await;
+    state.replace(observation(
+        6,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 7]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    state.send_certificates(b"{\"change\":{}}\n");
+    settle().await;
+    advance(Duration::from_millis(100)).await;
+    state.replace(observation(
+        7,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 8]),
         vec![ingress("example.com", 80, HttpProtocol::Http)],
     ));
     state.send(b"{\"change\":{}}\n");
@@ -195,18 +242,18 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
         .await
         .expect("burst did not load after quiet")
         .unwrap();
-    assert!(latest.contains("10.210.1.5:80"), "{latest}");
-    assert!(!latest.contains("10.210.1.3:80"), "{latest}");
-    assert!(!latest.contains("10.210.1.4:80"), "{latest}");
+    assert!(latest.contains("10.210.1.8:80"), "{latest}");
+    assert!(!latest.contains("10.210.1.6:80"), "{latest}");
+    assert!(!latest.contains("10.210.1.7:80"), "{latest}");
     assert!(load_rx.try_recv().is_err(), "burst produced extra loads");
 
     pause();
     advance(Duration::from_secs(2)).await;
     state.replace(observation(
-        5,
+        8,
         &machine.id,
         "api",
-        Some([10, 210, 1, 6]),
+        Some([10, 210, 1, 9]),
         vec![ingress("example.com", 80, HttpProtocol::Http)],
     ));
     state.send(b"{\"change\":{}}\n");
@@ -217,7 +264,7 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
         .await
         .expect("isolated update did not load")
         .unwrap();
-    assert!(isolated.contains("10.210.1.6:80"), "{isolated}");
+    assert!(isolated.contains("10.210.1.9:80"), "{isolated}");
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();

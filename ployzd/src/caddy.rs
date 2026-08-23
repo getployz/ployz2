@@ -248,7 +248,18 @@ async fn wait_for_debounced_change(
             () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
             changed = container_changes.changed() => changed?,
             changed = certificate_changes.changed() => changed?,
-            () = &mut quiet => return Ok(DebouncedChange::Changed),
+            () = &mut quiet => {
+                let container_snapshot = container_changes.snapshot_in_progress();
+                let certificate_snapshot = certificate_changes.snapshot_in_progress();
+                if !container_snapshot && !certificate_snapshot {
+                    return Ok(DebouncedChange::Changed);
+                }
+                tokio::select! {
+                    () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
+                    changed = container_changes.changed(), if container_snapshot => changed?,
+                    changed = certificate_changes.changed(), if certificate_snapshot => changed?,
+                }
+            }
         }
         quiet
             .as_mut()
