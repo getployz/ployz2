@@ -256,8 +256,8 @@ async fn wait_for_debounced_change(
                 }
                 tokio::select! {
                     () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
-                    changed = container_changes.changed(), if container_snapshot => changed?,
-                    changed = certificate_changes.changed(), if certificate_snapshot => changed?,
+                    changed = container_changes.changed() => changed?,
+                    changed = certificate_changes.changed() => changed?,
                 }
             }
         }
