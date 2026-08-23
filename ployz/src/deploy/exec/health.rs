@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use ployz_core::{
     ConfiguredHealthcheck, ContainerId, ContainerObservation, ContainerRuntimeObservation,
-    ExecutionError, HealthFailure, HealthObservation, HealthcheckSpec, MachineId, OperationPhase,
-    ResolvedServiceSpec,
+    DependencyHealthFailure, ExecutionError, HealthFailure, HealthObservation, HealthcheckSpec,
+    MachineId, OperationPhase, QualifiedService, ResolvedServiceSpec,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -18,6 +18,122 @@ enum HealthPoll {
     Complete,
     PendingUntil(Instant),
     Failed(HealthFailure),
+}
+
+pub(super) async fn wait_healthy<C: MachineOperations>(
+    client: &C,
+    index: usize,
+    progress: &mut Progress,
+    dependency: &QualifiedService,
+    cancellation: &CancellationToken,
+) -> Result<(), ExecutionError> {
+    let started = Instant::now();
+    let monitor_deadline = started + default_health_monitor();
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(dependency_health_error(
+                dependency,
+                DependencyHealthFailure::Cancelled,
+            ));
+        }
+        let mut containers = client
+            .service_containers(dependency)
+            .await
+            .map_err(|error| {
+                dependency_health_error(dependency, DependencyHealthFailure::Observation { error })
+            })?;
+        containers.retain(|container| {
+            container.kind == ployz_core::ContainerKind::ServiceContainer
+                && container.project_name == dependency.project
+                && container.service_name == dependency.name
+        });
+        if containers.is_empty() {
+            return Err(dependency_health_error(
+                dependency,
+                DependencyHealthFailure::NoContainers,
+            ));
+        }
+
+        let now = Instant::now();
+        let mut pending = None;
+        for observed in &containers {
+            let health = match &observed.runtime {
+                ContainerRuntimeObservation::Running { health } => Some(health.clone()),
+                ContainerRuntimeObservation::Created
+                | ContainerRuntimeObservation::Paused
+                | ContainerRuntimeObservation::Restarting
+                | ContainerRuntimeObservation::Exited { .. }
+                | ContainerRuntimeObservation::Removing
+                | ContainerRuntimeObservation::Dead
+                | ContainerRuntimeObservation::Unknown { .. } => None,
+            };
+            if health == Some(HealthObservation::Healthy) {
+                continue;
+            }
+            let health_budget = matches!(
+                health,
+                Some(
+                    HealthObservation::Starting
+                        | HealthObservation::NotConfigured
+                        | HealthObservation::Unrecognized(_)
+                )
+            );
+            let deadline = if health_budget {
+                health_deadline_for(
+                    observed.resolved_spec.container.healthcheck.as_ref(),
+                    observed,
+                    started,
+                )
+                .unwrap_or_else(|| started + healthcheck_timeout(None))
+            } else {
+                monitor_deadline
+            };
+            if now >= deadline {
+                let failure = if health_budget {
+                    HealthFailure::TimedOut
+                } else {
+                    HealthFailure::Runtime {
+                        observation: observed.runtime.clone(),
+                    }
+                };
+                return Err(dependency_health_error(
+                    dependency,
+                    DependencyHealthFailure::Container {
+                        container_id: observed.container_id,
+                        failure,
+                    },
+                ));
+            }
+            if pending
+                .as_ref()
+                .is_none_or(|(_, _, pending_deadline)| deadline < *pending_deadline)
+            {
+                pending = Some((observed.container_id, health, deadline));
+            }
+        }
+        let Some((container_id, health, deadline)) = pending else {
+            return Ok(());
+        };
+        progress.set_running(
+            index,
+            OperationPhase::WaitingForHealth {
+                container_id,
+                health,
+                elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                deadline_ms: u64::try_from(deadline.saturating_duration_since(started).as_millis())
+                    .unwrap_or(u64::MAX),
+            },
+        );
+        tokio::select! {
+            () = cancellation.cancelled() => {
+                return Err(dependency_health_error(
+                    dependency,
+                    DependencyHealthFailure::Cancelled,
+                ));
+            }
+            () = tokio::time::sleep_until(std::cmp::min(now + POLL_INTERVAL, deadline)) => {}
+        }
+    }
 }
 
 pub(super) async fn monitor_container<C: MachineOperations>(
@@ -190,6 +306,16 @@ fn classify_health(
 fn health_error(container_id: &ContainerId, failure: HealthFailure) -> ExecutionError {
     ExecutionError::Health {
         container_id: *container_id,
+        failure,
+    }
+}
+
+fn dependency_health_error(
+    dependency: &QualifiedService,
+    failure: DependencyHealthFailure,
+) -> ExecutionError {
+    ExecutionError::DependencyHealth {
+        dependency: dependency.clone(),
         failure,
     }
 }
