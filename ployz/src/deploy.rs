@@ -343,6 +343,22 @@ fn quoted_names(names: &[DockerVolumeName]) -> String {
     quoted
 }
 
+fn compose_deploy_intent(
+    project: &ComposeProject,
+    project_name: ProjectName,
+    options: PlanOptions,
+) -> DeployIntent {
+    let mut intent = DeployIntent::from_named_specs(
+        project_name,
+        &project.services,
+        &project.dependencies,
+        options,
+    )
+    .with_service_profiles(project.service_profiles());
+    intent.provisioned_volumes = project.provisioned_volume_declarations();
+    intent
+}
+
 /// Plan a Compose project: fail if any `external: true` volume is missing from
 /// the snapshot, then plan service operations.
 ///
@@ -357,17 +373,8 @@ pub fn plan_compose(
     project_name: ProjectName,
 ) -> Result<DeployPreview, PlanError> {
     reject_missing_external_volumes(project, snapshot)?;
-    preview_deploy(
-        &DeployIntent::from_named_specs(
-            project_name,
-            &project.services,
-            &project.dependencies,
-            PlanOptions::default(),
-        )
-        .with_service_profiles(project.service_profiles()),
-        snapshot,
-        IngressContext::default(),
-    )
+    let intent = compose_deploy_intent(project, project_name, PlanOptions::default());
+    preview_deploy(&intent, snapshot, IngressContext::default())
 }
 
 pub(crate) fn reject_missing_external_volumes(
