@@ -180,7 +180,7 @@ fn reference_shape(
     {
         flags
             .get_mut("version")
-            .expect("provisioning version")
+            .expect("Machine provisioning commands have a version flag")
             .default = Some(env!("CARGO_PKG_VERSION").into());
     }
     if command_path == "ployz volume rm" && deviations.contains("volume-remove-auto-confirm-env") {
