@@ -276,20 +276,6 @@ pub enum PlanError {
         /// Later bound that conflicts with the existing declaration.
         conflicting_maximum_bytes: ProvisionedVolumeMaximumBytes,
     },
-    /// One Service Volume Reference carries two different bounds.
-    #[error(
-        "Provisioned Volume {service}/{reference} has conflicting maximum byte counts: {existing_maximum_bytes} and {conflicting_maximum_bytes}"
-    )]
-    ConflictingProvisionedVolumeReferenceBounds {
-        /// Service that owns the local reference.
-        service: ServiceName,
-        /// Service-local Volume Reference.
-        reference: ServiceVolumeReference,
-        /// First bound declared for the reference.
-        existing_maximum_bytes: ProvisionedVolumeMaximumBytes,
-        /// Later conflicting bound.
-        conflicting_maximum_bytes: ProvisionedVolumeMaximumBytes,
-    },
     /// A Provisioned Volume declaration names no Service Volume in the target.
     #[error("Provisioned Volume {service}/{reference} does not resolve to a Service Volume")]
     UnknownProvisionedVolumeReference {

@@ -95,46 +95,34 @@ pub(super) fn validate_provisioned_volume_bounds(
     target: &[RequestedServiceSpec],
     declarations: &[ProvisionedVolume],
 ) -> Result<(), PlanError> {
-    let mut references = BTreeMap::new();
-    for declaration in declarations {
-        let key = (declaration.service.clone(), declaration.reference.clone());
-        if let Some(existing_maximum_bytes) = references.insert(key, declaration.maximum_bytes)
-            && existing_maximum_bytes != declaration.maximum_bytes
-        {
-            return Err(PlanError::ConflictingProvisionedVolumeReferenceBounds {
-                service: declaration.service.clone(),
-                reference: declaration.reference.clone(),
-                existing_maximum_bytes,
-                conflicting_maximum_bytes: declaration.maximum_bytes,
-            });
-        }
-    }
-
     let mut bounds = BTreeMap::new();
-    for ((service, reference), maximum_bytes) in references {
+    for declaration in declarations {
         let volume = target
             .iter()
-            .find(|spec| spec.name == service)
+            .find(|spec| spec.name == declaration.service)
             .and_then(|spec| {
                 spec.volume_graph
                     .volumes()
                     .iter()
-                    .find(|volume| volume.reference == reference)
+                    .find(|volume| volume.reference == declaration.reference)
             })
             .ok_or_else(|| PlanError::UnknownProvisionedVolumeReference {
-                service: service.clone(),
-                reference: reference.clone(),
+                service: declaration.service.clone(),
+                reference: declaration.reference.clone(),
             })?;
         let VolumeSource::Named { name, .. } = &volume.source else {
-            return Err(PlanError::ProvisionedVolumeReferenceNotNamed { service, reference });
+            return Err(PlanError::ProvisionedVolumeReferenceNotNamed {
+                service: declaration.service.clone(),
+                reference: declaration.reference.clone(),
+            });
         };
-        if let Some(existing_maximum_bytes) = bounds.insert(name.clone(), maximum_bytes)
-            && existing_maximum_bytes != maximum_bytes
+        if let Some(existing_maximum_bytes) = bounds.insert(name.clone(), declaration.maximum_bytes)
+            && existing_maximum_bytes != declaration.maximum_bytes
         {
             return Err(PlanError::ConflictingProvisionedVolumeBounds {
                 name: name.clone(),
                 existing_maximum_bytes,
-                conflicting_maximum_bytes: maximum_bytes,
+                conflicting_maximum_bytes: declaration.maximum_bytes,
             });
         }
     }

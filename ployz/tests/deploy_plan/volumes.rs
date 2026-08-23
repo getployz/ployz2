@@ -57,28 +57,29 @@ fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
 }
 
 #[test]
-fn conflicting_bounds_fail_even_when_the_reference_does_not_resolve() {
+fn unknown_provisioned_volume_reference_fails_planning() {
     let mut intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [],
         PlanOptions::default(),
     );
-    intent.provisioned_volumes = [1_073_741_824, 2_147_483_648]
-        .map(|bytes| ProvisionedVolume {
-            service: ServiceName::parse("api").unwrap(),
-            reference: ServiceVolumeReference::parse("data").unwrap(),
-            maximum_bytes: maximum_bytes(bytes),
-        })
-        .into();
+    intent.provisioned_volumes.push(ProvisionedVolume {
+        service: ServiceName::parse("api").unwrap(),
+        reference: ServiceVolumeReference::parse("data").unwrap(),
+        maximum_bytes: maximum_bytes(1_073_741_824),
+    });
 
-    assert!(matches!(
+    assert_eq!(
         preview_deploy(
             &intent,
             &DeploySnapshot::default(),
             IngressContext::default()
         ),
-        Err(PlanError::ConflictingProvisionedVolumeReferenceBounds { .. })
-    ));
+        Err(PlanError::UnknownProvisionedVolumeReference {
+            service: ServiceName::parse("api").unwrap(),
+            reference: ServiceVolumeReference::parse("data").unwrap(),
+        })
+    );
 }
 
 #[test]
