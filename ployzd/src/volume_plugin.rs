@@ -188,6 +188,12 @@ impl VolumeStorage {
         let Some(dataset) = datasets.iter().find(|dataset| dataset.name == volume) else {
             return Ok(());
         };
+        if dataset.refquota == 0 {
+            return Err(format!(
+                "ZFS dataset {volume} has no Provisioned Volume bound; refusing to destroy it"
+            )
+            .into());
+        }
         dataset.require_mountpoint(&name.mountpoint())?;
         self.zfs(&["destroy", &volume]).await?;
         Ok(())
@@ -908,6 +914,7 @@ mod tests {
         let incompatible_root = directory.join("incompatible-root");
         let volume = directory.join("volume");
         let incompatible_volume = directory.join("incompatible-volume");
+        let unbounded_volume = directory.join("unbounded-volume");
         let sibling = directory.join("sibling");
         let mounted = directory.join("mounted");
         let destroy_fails = directory.join("destroy-fails");
@@ -930,7 +937,8 @@ case "$*" in
     if [ -e '{volume}' ]; then
       if [ -e '{mounted}' ]; then state=yes; else state=no; fi
       if [ -e '{incompatible_volume}' ]; then volume_mountpoint=/srv/data; else volume_mountpoint=/var/lib/ployz-volumes/data; fi
-      printf 'tank/ployz/data\t1073741824\t24576\t1073717248\t%s\t%s\n' "$volume_mountpoint" "$state"
+      if [ -e '{unbounded_volume}' ]; then refquota=none; else refquota=1073741824; fi
+      printf 'tank/ployz/data\t%s\t24576\t1073717248\t%s\t%s\n' "$refquota" "$volume_mountpoint" "$state"
     fi
     if [ -e '{sibling}' ]; then
       printf 'tank/ployz/sibling\t1073741824\t24576\t1073717248\t/var/lib/ployz-volumes/sibling\tno\n'
@@ -952,6 +960,7 @@ esac
             incompatible_root = incompatible_root.display(),
             volume = volume.display(),
             incompatible_volume = incompatible_volume.display(),
+            unbounded_volume = unbounded_volume.display(),
             sibling = sibling.display(),
             mounted = mounted.display(),
             destroy_fails = destroy_fails.display(),

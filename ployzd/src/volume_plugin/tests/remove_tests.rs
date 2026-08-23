@@ -82,3 +82,26 @@ async fn docker_receives_dataset_destruction_failures() {
     assert!(test.0.join("volume").exists());
     server.abort();
 }
+
+#[tokio::test]
+async fn remove_never_destroys_an_unbounded_dataset() {
+    let test = TestDir::new();
+    fs::write(test.0.join("root"), "").unwrap();
+    fs::write(test.0.join("volume"), "").unwrap();
+    fs::write(test.0.join("unbounded-volume"), "").unwrap();
+    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+    let response = post(&socket, "/VolumeDriver.Remove", json!({"Name":"data"})).await;
+
+    assert!(!error(&response).is_empty());
+    assert!(test.0.join("volume").exists());
+    assert!(
+        !fs::read_to_string(test.0.join("commands"))
+            .unwrap()
+            .contains("zfs destroy")
+    );
+    server.abort();
+}
