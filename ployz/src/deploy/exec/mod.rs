@@ -4,10 +4,10 @@ use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, DeployEvent,
     DockerVolumeId, ExecutionError, FailedOperation, HookFailure, InspectContainerRequest,
-    MachineAction, MachineId, MachineTarget, OperationPhase, OperationRow, ProjectName,
-    QualifiedService, RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, ServiceVolume, StartContainerRequest, StopContainerRequest, UpdateOrder,
-    VolumeSource, op,
+    MachineAction, MachineId, MachineTarget, MembershipObservation, OperationPhase, OperationRow,
+    ProjectName, QualifiedService, RemoveContainerRequest, RemoveVolumeRequest,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume, StartContainerRequest,
+    StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -124,7 +124,14 @@ impl MachineOperations for Client {
         if let Some(failure) = listed.failures.into_iter().next() {
             return Err(failure.error);
         }
-        if let Some(machine_id) = listed.omissions.into_iter().next() {
+        if let Some(machine_id) = listed.omissions.into_iter().find(|machine_id| {
+            omission_requires_observation(
+                machines
+                    .iter()
+                    .find(|machine| machine.machine.id == *machine_id)
+                    .map(|machine| &machine.membership),
+            )
+        }) {
             return Err(RpcError {
                 code: RpcErrorCode::Unavailable,
                 message: format!("container observation omitted {machine_id}"),
@@ -285,6 +292,10 @@ impl MachineOperations for Client {
         .await
         .map(|_| ())
     }
+}
+
+fn omission_requires_observation(membership: Option<&MembershipObservation>) -> bool {
+    membership.is_none_or(MembershipObservation::invites_rpc)
 }
 
 enum OperationFailure {

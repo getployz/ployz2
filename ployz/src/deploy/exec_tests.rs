@@ -2,8 +2,8 @@ use std::{collections::VecDeque, sync::Mutex};
 
 use ployz_core::{
     ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
-    HealthFailure, HealthObservation, ProjectName, ServiceName, ServiceVolumeReference,
-    VolumeSource,
+    HealthFailure, HealthObservation, MembershipObservation, ProjectName, ServiceName,
+    ServiceVolumeReference, VolumeSource,
 };
 
 use crate::deploy::{DeployOutcome, DeploySnapshot, FailedOperation};
@@ -13,6 +13,17 @@ use super::*;
 
 fn test_project() -> ProjectName {
     ProjectName::parse("app").unwrap()
+}
+
+#[test]
+fn dependency_health_requires_only_rpc_eligible_observations() {
+    assert!(omission_requires_observation(None));
+    for membership in [MembershipObservation::Up, MembershipObservation::Suspect] {
+        assert!(omission_requires_observation(Some(&membership)));
+    }
+    for membership in [MembershipObservation::Down, MembershipObservation::Unknown] {
+        assert!(!omission_requires_observation(Some(&membership)));
+    }
 }
 
 async fn execute_with<C: MachineOperations>(
