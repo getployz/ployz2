@@ -1,13 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    num::NonZeroU64,
 };
 
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolumeId,
     DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId, MachineName,
-    MachineObservation, MachineTarget, ProjectName, QualifiedService, RpcError, ServiceObservation,
+    MachineObservation, MachineTarget, ProjectName, ProvisionedVolumeMaximumBytes,
+    QualifiedService, RpcError, ServiceName, ServiceObservation, ServiceVolumeReference,
     derive_services,
 };
 use thiserror::Error;
@@ -258,13 +258,47 @@ pub enum PlanError {
     ServiceModeCannotChange,
     #[error("mounted Service Volumes disagree about Docker Volume {name}")]
     ConflictingDockerVolumeDefinitions { name: DockerVolumeName },
+    /// Two references resolve to one Docker Volume but declare different bounds.
     #[error(
-        "Provisioned Volume declarations for Docker Volume {name} conflict: {first} and {second} byte maximums"
+        "Provisioned Volume declarations for Docker Volume {name} conflict: {existing_maximum_bytes} and {conflicting_maximum_bytes} byte maximums"
     )]
     ConflictingProvisionedVolumeBounds {
+        /// Scoped Docker Volume identity shared by the declarations.
         name: DockerVolumeName,
-        first: NonZeroU64,
-        second: NonZeroU64,
+        /// Bound already assigned to `name`.
+        existing_maximum_bytes: ProvisionedVolumeMaximumBytes,
+        /// Later bound that conflicts with the existing declaration.
+        conflicting_maximum_bytes: ProvisionedVolumeMaximumBytes,
+    },
+    /// One Service Volume Reference carries two different bounds.
+    #[error(
+        "Provisioned Volume {service}/{reference} has conflicting maximum byte counts: {existing_maximum_bytes} and {conflicting_maximum_bytes}"
+    )]
+    ConflictingProvisionedVolumeReferenceBounds {
+        /// Service that owns the local reference.
+        service: ServiceName,
+        /// Service-local Volume Reference.
+        reference: ServiceVolumeReference,
+        /// First bound declared for the reference.
+        existing_maximum_bytes: ProvisionedVolumeMaximumBytes,
+        /// Later conflicting bound.
+        conflicting_maximum_bytes: ProvisionedVolumeMaximumBytes,
+    },
+    /// A Provisioned Volume declaration names no Service Volume in the target.
+    #[error("Provisioned Volume {service}/{reference} does not resolve to a Service Volume")]
+    UnknownProvisionedVolumeReference {
+        /// Service expected to own the local reference.
+        service: ServiceName,
+        /// Service-local Volume Reference that was not found.
+        reference: ServiceVolumeReference,
+    },
+    /// A Provisioned Volume declaration resolves to a Bind or Tmpfs mount source.
+    #[error("Provisioned Volume {service}/{reference} does not resolve to a named Docker Volume")]
+    ProvisionedVolumeReferenceNotNamed {
+        /// Service that owns the local reference.
+        service: ServiceName,
+        /// Service-local Volume Reference with a non-Volume source.
+        reference: ServiceVolumeReference,
     },
     #[error("plan service '{service}': {source}")]
     Service {

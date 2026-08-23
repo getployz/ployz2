@@ -2,7 +2,8 @@ use std::{collections::BTreeMap, future::Future, num::NonZeroU64};
 
 use ployz_core::{
     DockerVolume, DockerVolumeId, DockerVolumeName, MachineFailure, MachineId, MachineName,
-    MachineObservation, MachineSuccess, PartialResult, RpcError, RpcErrorCode,
+    MachineObservation, MachineSuccess, PartialResult, ProvisionedVolumeMaximumBytes, RpcError,
+    RpcErrorCode,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -11,7 +12,7 @@ use thiserror::Error;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProvisionedVolumeSize {
     option: String,
-    bytes: u64,
+    maximum_bytes: ProvisionedVolumeMaximumBytes,
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -38,12 +39,14 @@ impl ProvisionedVolumeSize {
             _ => return Err(invalid()),
         };
         let amount = amount.parse::<NonZeroU64>().map_err(|_| invalid())?.get();
-        let bytes = amount
+        let maximum_bytes = amount
             .checked_mul(multiplier)
             .ok_or_else(|| ProvisionedVolumeSizeError::Overflow(value.to_owned()))?;
+        let maximum_bytes = ProvisionedVolumeMaximumBytes::new(maximum_bytes)
+            .expect("parsed size amount is positive");
         Ok(Self {
             option: value.to_owned(),
-            bytes,
+            maximum_bytes,
         })
     }
 
@@ -60,7 +63,7 @@ impl ProvisionedVolumeSize {
                 .options
                 .get("size")
                 .and_then(|size| Self::parse(size).ok())
-                .is_some_and(|size| size.bytes == self.bytes)
+                .is_some_and(|size| size.maximum_bytes == self.maximum_bytes)
     }
 }
 

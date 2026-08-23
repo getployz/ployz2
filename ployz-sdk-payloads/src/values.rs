@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeMap,
     net::{IpAddr, Ipv6Addr, SocketAddr},
-    num::{NonZeroU16, NonZeroU32, NonZeroU64},
+    num::{NonZeroU16, NonZeroU32},
 };
 
 use ployz_core::{
@@ -21,15 +21,15 @@ use ployz_core::{
     MachineStorageObservation, MachineSuccess, ManagementAddress, MembershipObservation,
     ObservationKind, ObservedDataLoss, OperationPhase, OperationRow, OperationStatus,
     PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication, PreDeployHook,
-    PreservedVolume, ProjectName, ProvisionedVolume, PruneRefusal, PullPolicy, QualifiedService,
-    RegisterRequest, Registered, RemoveVolumesRequest, ReplacementCompensation,
-    ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
-    RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, SelectedEndpoint, ServiceAttempt,
-    ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StorageChoice,
-    TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver,
-    VolumeSource, WireGuardPublicKey,
+    PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal,
+    PullPolicy, QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest,
+    ReplacementCompensation, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
+    ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
+    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, SelectedEndpoint,
+    ServiceAttempt, ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount,
+    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder,
+    VolumeDriver, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -696,21 +696,20 @@ fn service_attempt() -> ServiceAttempt {
 
 fn provisioned_volume() -> ProvisionedVolume {
     ProvisionedVolume {
+        service: ServiceName::parse("api").expect("fixture Service Name is valid"),
         reference: ServiceVolumeReference::parse("data")
             .expect("fixture Service Volume Reference is valid"),
-        maximum_bytes: NonZeroU64::new(1_073_741_824)
+        maximum_bytes: ProvisionedVolumeMaximumBytes::new(1_073_741_824)
             .expect("fixture Provisioned Volume bound is positive"),
     }
 }
 
 fn deploy_intent() -> DeployIntent {
-    let mut intent = DeployIntent::new(
+    DeployIntent::new(
         ProjectName::parse("app").unwrap(),
         Vec::new(),
         PlanOptions::default(),
-    );
-    intent.provisioned_volumes = vec![provisioned_volume()];
-    intent
+    )
 }
 
 fn deploy_preview() -> DeployPreview {

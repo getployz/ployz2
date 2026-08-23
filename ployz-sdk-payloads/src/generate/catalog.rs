@@ -51,6 +51,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ("MachinePath", Shape::Alias("string")),
     ("ContainerPath", Shape::Alias("string")),
     ("ServiceVolumeReference", Shape::Alias("string")),
+    ("ProvisionedVolumeMaximumBytes", Shape::Alias("number")),
     ("MachineTarget", Shape::Alias("string")),
     ("PidMode", Shape::Alias("string")),
     (
@@ -587,8 +588,9 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         Shape::Additive {
             params: "",
             fields: &[
+                ("service", "ServiceName"),
                 ("reference", "ServiceVolumeReference"),
-                ("maximum_bytes", "number"),
+                ("maximum_bytes", "ProvisionedVolumeMaximumBytes"),
             ],
         },
     ),

@@ -1,5 +1,11 @@
 use super::support::*;
-use ployz_core::{PreservedVolume, ProvisionedVolume, ServiceAttempt, ServiceName};
+use ployz_core::{
+    PreservedVolume, ProvisionedVolume, ProvisionedVolumeMaximumBytes, ServiceAttempt, ServiceName,
+};
+
+fn maximum_bytes(bytes: u64) -> ProvisionedVolumeMaximumBytes {
+    ProvisionedVolumeMaximumBytes::new(bytes).unwrap()
+}
 
 #[test]
 fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
@@ -8,15 +14,10 @@ fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
     });
     add_named_volume(&mut requested, "data");
     let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mut mounts = requested.volume_graph.mounts().to_vec();
+    let mounts = requested.volume_graph.mounts().to_vec();
     volumes.push(ServiceVolume {
         reference: ServiceVolumeReference::parse("data-alias").unwrap(),
         source: volumes.first().unwrap().source.clone(),
-    });
-    mounts.push(ServiceMount {
-        volume: ServiceVolumeReference::parse("data-alias").unwrap(),
-        target: ContainerPath::parse("/alias").unwrap(),
-        read_only: false,
     });
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
     let mut intent = DeployIntent::apply_all(
@@ -26,12 +27,14 @@ fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
     );
     intent.provisioned_volumes = vec![
         ProvisionedVolume {
+            service: requested.name.clone(),
             reference: ServiceVolumeReference::parse("data").unwrap(),
-            maximum_bytes: 1_073_741_824.try_into().unwrap(),
+            maximum_bytes: maximum_bytes(1_073_741_824),
         },
         ProvisionedVolume {
+            service: requested.name.clone(),
             reference: ServiceVolumeReference::parse("data-alias").unwrap(),
-            maximum_bytes: 2_147_483_648.try_into().unwrap(),
+            maximum_bytes: maximum_bytes(2_147_483_648),
         },
     ];
 
@@ -46,10 +49,35 @@ fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
         ),
         Err(PlanError::ConflictingProvisionedVolumeBounds {
             name: app_volume("data"),
-            first: 1_073_741_824.try_into().unwrap(),
-            second: 2_147_483_648.try_into().unwrap(),
+            existing_maximum_bytes: maximum_bytes(1_073_741_824),
+            conflicting_maximum_bytes: maximum_bytes(2_147_483_648),
         })
     );
+}
+
+#[test]
+fn conflicting_bounds_fail_even_when_the_reference_does_not_resolve() {
+    let mut intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [],
+        PlanOptions::default(),
+    );
+    intent.provisioned_volumes = [1_073_741_824, 2_147_483_648]
+        .map(|maximum_bytes| ProvisionedVolume {
+            service: ServiceName::parse("api").unwrap(),
+            reference: ServiceVolumeReference::parse("data").unwrap(),
+            maximum_bytes: ProvisionedVolumeMaximumBytes::new(maximum_bytes).unwrap(),
+        })
+        .into();
+
+    assert!(matches!(
+        preview_deploy(
+            &intent,
+            &DeploySnapshot::default(),
+            IngressContext::default()
+        ),
+        Err(PlanError::ConflictingProvisionedVolumeReferenceBounds { .. })
+    ));
 }
 
 #[test]

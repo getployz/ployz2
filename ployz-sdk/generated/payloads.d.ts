@@ -60,6 +60,8 @@ export type ContainerPath = string;
 
 export type ServiceVolumeReference = string;
 
+export type ProvisionedVolumeMaximumBytes = number;
+
 export type MachineTarget = string;
 
 export type PidMode = string;
@@ -357,8 +359,9 @@ export type ServiceAttempt = Additive<{
 }>;
 
 export type ProvisionedVolume = Additive<{
+  service: ServiceName;
   reference: ServiceVolumeReference;
-  maximum_bytes: number;
+  maximum_bytes: ProvisionedVolumeMaximumBytes;
 }>;
 
 export type DeployIntent = Additive<{

@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     ContainerId, DockerVolumeId, MachineId, MachineName, ProjectName, QualifiedService, RpcError,
-    ServiceName,
+    ServiceName, ServiceVolumeReference,
 };
 use thiserror::Error;
 
@@ -43,13 +43,43 @@ pub struct ServiceAttempt {
     pub name: ServiceName,
 }
 
+/// A positive maximum byte count for one Provisioned Volume.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProvisionedVolumeMaximumBytes(NonZeroU64);
+
+impl ProvisionedVolumeMaximumBytes {
+    /// Construct a Provisioned Volume bound, or `None` for zero bytes.
+    #[must_use]
+    pub const fn new(bytes: u64) -> Option<Self> {
+        match NonZeroU64::new(bytes) {
+            Some(bytes) => Some(Self(bytes)),
+            None => None,
+        }
+    }
+
+    /// The positive maximum byte count.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl Display for ProvisionedVolumeMaximumBytes {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 /// One Provisioned Volume declaration in a Deploy Intent.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProvisionedVolume {
+    /// Service whose local Volume Reference is declared.
+    pub service: ServiceName,
     /// Service-local reference that resolves to the Docker Volume declaration.
-    pub reference: crate::ServiceVolumeReference,
+    pub reference: ServiceVolumeReference,
     /// Required positive storage bound in bytes.
-    pub maximum_bytes: NonZeroU64,
+    pub maximum_bytes: ProvisionedVolumeMaximumBytes,
 }
 
 /// Complete desired Services plus which of those Services this command applies.

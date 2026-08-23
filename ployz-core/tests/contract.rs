@@ -8,7 +8,7 @@ use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
     ConfiguredHealthcheck, ContainerCreated, ContainerHostname, ContainerKind, ContainerLabels,
     ContainerPath, ContainerResources, ContainerRuntimeObservation, ContractDescription,
-    CreateContainerRequest, CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DeployIntent,
+    CreateContainerRequest, CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY,
     DescribeContractRequest, DnsRecord, DnsRecordType, DockerVolumeName, Domain, DomainRecords,
     ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost, FanoutFailure,
     FanoutOutcome, FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY,
@@ -19,14 +19,14 @@ use ployz_core::{
     MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSubnet,
     MachineSuccess, MachineTarget, MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload,
     PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult,
-    Placement, PortPublication, PreDeployHook, ProjectName, PublicIpDiscovery, PublicIpUpdate,
-    PullImageFromMachineRequest, PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
-    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
-    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
-    UpdateMachineRequest, UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames,
-    op,
+    Placement, PortPublication, PreDeployHook, ProjectName, ProvisionedVolume, PublicIpDiscovery,
+    PublicIpUpdate, PullImageFromMachineRequest, PullPolicy, QualifiedService,
+    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
+    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
+    VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -37,50 +37,20 @@ const OTHER_MACHINE_ID: &str = "fedcba9876543210fedcba9876543210";
 #[test]
 fn provisioned_volume_bounds_are_required_positive_byte_counts() {
     let valid = json!({
-        "project_name": "app",
-        "target": [],
-        "provisioned_volumes": [{ "reference": "data", "maximum_bytes": 1_073_741_824 }],
-        "options": {
-            "force_recreate": false,
-            "skip_health_monitor": false,
-            "placement_seed": 0,
-            "selected": []
-        }
+        "service": "api",
+        "reference": "data",
+        "maximum_bytes": 1_073_741_824
     });
-    let intent: DeployIntent = serde_json::from_value(valid.clone()).unwrap();
-    assert_eq!(serde_json::to_value(intent).unwrap(), valid);
-
+    let volume: ProvisionedVolume = serde_json::from_value(valid.clone()).unwrap();
+    assert_eq!(volume.maximum_bytes.get(), 1_073_741_824);
+    assert_eq!(serde_json::to_value(volume).unwrap(), valid);
     for invalid in [
-        json!({ "reference": "data" }),
-        json!({ "reference": "data", "maximum_bytes": 0 }),
+        r#"{"service":"api","reference":"data"}"#,
+        r#"{"service":"api","reference":"data","maximum_bytes":0}"#,
+        r#"{"service":"api","reference":"data","maximum_bytes":18446744073709551616}"#,
     ] {
-        let mut value = valid.clone();
-        value
-            .as_object_mut()
-            .expect("valid Deploy Intent fixture is an object")
-            .insert("provisioned_volumes".into(), json!([invalid]));
-        assert!(serde_json::from_value::<DeployIntent>(value).is_err());
+        assert!(serde_json::from_str::<ProvisionedVolume>(invalid).is_err());
     }
-
-    assert!(
-        serde_json::from_str::<DeployIntent>(
-            r#"{
-                "project_name":"app",
-                "target":[],
-                "provisioned_volumes":[{
-                    "reference":"data",
-                    "maximum_bytes":18446744073709551616
-                }],
-                "options":{
-                    "force_recreate":false,
-                    "skip_health_monitor":false,
-                    "placement_seed":0,
-                    "selected":[]
-                }
-            }"#,
-        )
-        .is_err()
-    );
 }
 
 /// The response catalog generates `ResponseKind` from one table, so a typo in a row
