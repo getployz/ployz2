@@ -1,6 +1,6 @@
 //! First-Pool creation behavior through the Docker plugin boundary.
 
-use std::os::unix::fs::MetadataExt;
+use std::{os::unix::fs::MetadataExt, time::Duration};
 
 use super::super::pool::{POOL_BACKING_FILE, PoolStorage};
 use super::*;
@@ -94,6 +94,66 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
     );
     assert!(test.0.join(POOL_BACKING_FILE).exists());
     assert!(test.0.join("pool").exists());
+}
+
+#[tokio::test]
+async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
+    let test = TestDir::new();
+    fs::write(test.0.join("pause-failed-volume"), "").unwrap();
+    let first = fake_first_pool(&test.0, 4096);
+    let second = VolumeStorage {
+        pool: first.pool.clone(),
+        zfs: first.zfs.clone(),
+        mutation: Arc::new(Mutex::new(())),
+    };
+    let first_socket = test.0.join("first-plugin.sock");
+    let second_socket = test.0.join("second-plugin.sock");
+    let first_server = tokio::spawn(serve(UnixListener::bind(&first_socket).unwrap(), first));
+    let second_server = tokio::spawn(serve(UnixListener::bind(&second_socket).unwrap(), second));
+
+    let failed = tokio::spawn({
+        let socket = first_socket.clone();
+        async move {
+            post(
+                &socket,
+                "/VolumeDriver.Create",
+                json!({"Name":"data","Opts":{"size":"1g"}}),
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !test.0.join("pool-visible").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let succeeds = tokio::spawn({
+        let socket = second_socket.clone();
+        async move {
+            post(
+                &socket,
+                "/VolumeDriver.Create",
+                json!({"Name":"other","Opts":{"size":"1g"}}),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!test.0.join("other").exists());
+    fs::write(test.0.join("continue-failure"), "").unwrap();
+
+    assert!(!error(&failed.await.unwrap()).is_empty());
+    assert_eq!(succeeds.await.unwrap(), json!({"Err":""}));
+    first_server.abort();
+    second_server.abort();
+
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert_eq!(log.matches("zpool create ").count(), 2);
+    assert_eq!(log.matches("zpool destroy -f ployz").count(), 1);
+    assert!(test.0.join("pool").exists());
+    assert!(test.0.join("other").exists());
 }
 
 #[tokio::test]
@@ -303,6 +363,9 @@ fn fake_first_pool(directory: &Path, physical_block_size: u64) -> VolumeStorage 
     let fail_volume = directory.join("fail-volume");
     let importable = directory.join("importable");
     let fail_import = directory.join("fail-import");
+    let pause_failed_volume = directory.join("pause-failed-volume");
+    let pool_visible = directory.join("pool-visible");
+    let continue_failure = directory.join("continue-failure");
     let foreign = directory.join("foreign");
     let destroyed = directory.join("destroyed");
     let concurrent = directory.join("concurrent");
@@ -365,6 +428,11 @@ case "$name" in
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
       'create -o refquota='*' ployz/ployz/data')
+        if [ -e '{pause_failed_volume}' ]; then
+          touch '{pool_visible}'
+          while [ ! -e '{continue_failure}' ]; do sleep 0.01; done
+          exit 2
+        fi
         [ ! -e '{fail_volume}' ] || exit 2
         touch '{volume}'
         ;;
@@ -386,6 +454,9 @@ esac
         fail_volume = fail_volume.display(),
         importable = importable.display(),
         fail_import = fail_import.display(),
+        pause_failed_volume = pause_failed_volume.display(),
+        pool_visible = pool_visible.display(),
+        continue_failure = continue_failure.display(),
         foreign = foreign.display(),
         destroyed = destroyed.display(),
         concurrent = concurrent.display(),

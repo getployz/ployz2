@@ -52,6 +52,26 @@ pub fn one_usable(output: &str) -> Result<Option<MachinePool>, Error> {
     }
 }
 
+/// Reads the Pool names from one successful `zpool import` label scan.
+///
+/// # Errors
+///
+/// Returns an error when non-empty output contains no complete Pool name.
+pub fn importable_names(output: &str) -> Result<Vec<&str>, Error> {
+    let output = output.trim();
+    if output.is_empty() || output == "no pools available to import" {
+        return Ok(Vec::new());
+    }
+    let pools: Vec<_> = output
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pool:").map(str::trim))
+        .collect();
+    if pools.is_empty() || pools.contains(&"") {
+        return Err(Error(format!("invalid ZFS Pool import output: {output}")));
+    }
+    Ok(pools)
+}
+
 fn parse(line: &str) -> Result<Option<MachinePool>, Error> {
     let mut fields = line.split('\t');
     let invalid = || Error(format!("invalid ZFS Pool output: {line}"));
@@ -85,5 +105,19 @@ mod tests {
             one_usable("broken\tONLINE").unwrap_err().to_string(),
             "invalid ZFS Pool output: broken\tONLINE"
         );
+    }
+
+    #[test]
+    fn import_scan_extracts_names_and_distinguishes_no_pool() {
+        assert!(
+            importable_names("no pools available to import\n")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            importable_names("   pool: ployz\n     id: 1\n   pool: other\n").unwrap(),
+            ["ployz", "other"]
+        );
+        assert!(importable_names("unexpected").is_err());
     }
 }

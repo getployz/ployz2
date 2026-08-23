@@ -85,8 +85,14 @@ impl VolumeStorage {
     }
 
     fn with_programs(zpool: impl Into<PathBuf>, zfs: impl Into<PathBuf>) -> Self {
+        let zpool = zpool.into();
+        #[cfg(test)]
+        let backing = zpool.with_file_name("machine-pool");
+        let pool = PoolStorage::new(zpool);
+        #[cfg(test)]
+        let pool = pool.with_backing(backing);
         Self {
-            pool: PoolStorage::new(zpool),
+            pool,
             zfs: zfs.into(),
             mutation: Arc::new(Mutex::new(())),
         }
