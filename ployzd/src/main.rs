@@ -60,17 +60,6 @@ enum Command {
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    let volume_listener = if matches!(args.command, Some(Command::VolumePlugin)) {
-        match volume_plugin::inherited_listener() {
-            Ok(listener) => Some(listener),
-            Err(error) => {
-                eprintln!("{error}");
-                return ExitCode::FAILURE;
-            }
-        }
-    } else {
-        None
-    };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -81,7 +70,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(run(args, volume_listener)) {
+    match runtime.block_on(run(args)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -101,10 +90,7 @@ fn daemon_error_exit_code(error: &Error) -> ExitCode {
     }
 }
 
-async fn run(
-    args: Args,
-    volume_listener: Option<std::os::unix::net::UnixListener>,
-) -> Result<(), Error> {
+async fn run(args: Args) -> Result<(), Error> {
     if matches!(args.command, Some(Command::Version)) {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -114,7 +100,8 @@ async fn run(
     }
     diag::init(args.log_level.as_deref())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    if let Some(listener) = volume_listener {
+    if matches!(args.command, Some(Command::VolumePlugin)) {
+        let listener = volume_plugin::inherited_listener()?;
         return volume_plugin::run(listener).await.map_err(Error::from);
     }
     let daemon = Daemon::start(DaemonConfig {
