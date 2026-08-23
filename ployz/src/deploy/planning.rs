@@ -226,6 +226,7 @@ fn assemble_plan(
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::new(provisioned_volumes);
+    pins.validate_provisioned_volume_bounds(&target, snapshot, &intent.options)?;
     let name_errors_with_service = requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
     let mut capacity = CapacityBudget::from_snapshot(snapshot);

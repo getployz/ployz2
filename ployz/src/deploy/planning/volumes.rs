@@ -162,6 +162,29 @@ impl ProvisionedVolumeBindings {
 }
 
 impl VolumePins {
+    pub(super) fn validate_provisioned_volume_bounds(
+        &mut self,
+        target: &[RequestedServiceSpec],
+        snapshot: &DeploySnapshot,
+        options: &PlanOptions,
+    ) -> Result<(), PlanError> {
+        let name_errors_with_service = target.len() > 1;
+        for spec in target {
+            if !self.provisioned.bounds.contains_key(&spec.name) {
+                continue;
+            }
+            let result = (|| {
+                let mut machines = super::eligible_machines(spec, snapshot, options)?;
+                volume_constraints(spec, snapshot, self, &mut machines)?;
+                self.record_provisioned(spec, &machines)
+            })();
+            result.map_err(|source| {
+                super::service_error(name_errors_with_service, spec.name.as_str(), source)
+            })?;
+        }
+        Ok(())
+    }
+
     fn record_provisioned(
         &mut self,
         spec: &RequestedServiceSpec,

@@ -90,13 +90,18 @@ fn disjoint_global_volumes_may_have_different_bounds() {
 }
 
 #[test]
-fn colocated_global_volumes_cannot_have_different_bounds() {
+fn partial_apply_rejects_different_bounds_for_colocated_global_volumes() {
     let first = global_service("first", "first");
     let second = global_service("second", "first");
     let mut intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [&first, &second],
-        PlanOptions::default(),
+        PlanOptions {
+            selected: vec![ServiceAttempt {
+                name: first.name.clone(),
+            }],
+            ..PlanOptions::default()
+        },
     );
     intent.provisioned_volumes = vec![
         provisioned("first", "data", 1_073_741_824),
