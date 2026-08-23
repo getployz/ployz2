@@ -253,6 +253,7 @@ set_and_verify_zfs_arc_max() {
 
 validate_zfs() {
     local bytes backing pool blocks block_size allocated mount_target
+    local pool_names dataset_names mount_sources
     local pool_created=false failure='' cleanup_failure=''
     bytes=$(zfs_smoke_bytes)
     require_host_root_reserve "$bytes"
@@ -289,16 +290,30 @@ validate_zfs() {
         failure="Could not query temporary ZFS smoke dataset $pool"
     fi
 
-    if [ "$pool_created" = true ] || zpool list -H "$pool" >/dev/null 2>&1; then
+    if [ "$pool_created" = true ]; then
         if ! zpool destroy -f "$pool"; then
             cleanup_failure="Could not destroy temporary ZFS smoke Pool $pool; destroy it, then remove $backing"
         fi
+    elif ! pool_names=$(zpool list -H -o name 2>/dev/null); then
+        cleanup_failure="Could not verify whether temporary ZFS smoke Pool $pool remains; inspect and destroy it, then remove $backing"
+    elif printf '%s\n' "$pool_names" | grep -Fxq "$pool" && ! zpool destroy -f "$pool"; then
+        cleanup_failure="Could not destroy temporary ZFS smoke Pool $pool; destroy it, then remove $backing"
     fi
-    if [ -z "$cleanup_failure" ] && zpool list -H "$pool" >/dev/null 2>&1; then
+    if [ -z "$cleanup_failure" ] && ! pool_names=$(zpool list -H -o name 2>/dev/null); then
+        cleanup_failure="Could not verify cleanup of temporary ZFS smoke Pool $pool; inspect and destroy it, then remove $backing"
+    elif [ -z "$cleanup_failure" ] && printf '%s\n' "$pool_names" | grep -Fxq "$pool"; then
         cleanup_failure="Temporary ZFS smoke Pool $pool remains after destroy; destroy it, then remove $backing"
-    elif [ -z "$cleanup_failure" ] && zfs list -H "$pool" >/dev/null 2>&1; then
+    elif [ -z "$cleanup_failure" ] && ! dataset_names=$(zfs list -H -o name 2>/dev/null); then
+        cleanup_failure="Could not verify cleanup of temporary ZFS smoke dataset $pool; inspect and destroy its Pool, then remove $backing"
+    elif [ -z "$cleanup_failure" ] && printf '%s\n' "$dataset_names" | awk -v pool="$pool" \
+        '$0 == pool || index($0, pool "/") == 1 { found = 1 } END { exit !found }'; then
         cleanup_failure="Temporary ZFS smoke dataset $pool remains after destroy; destroy its Pool, then remove $backing"
-    elif [ -z "$cleanup_failure" ] && findmnt -rn -t zfs -S "$pool" >/dev/null 2>&1; then
+    elif [ -z "$cleanup_failure" ] && ! mount_sources=$(awk '
+        { for (i = 1; i <= NF; i++) if ($i == "-" && $(i + 1) == "zfs") print $(i + 2) }
+    ' /proc/self/mountinfo); then
+        cleanup_failure="Could not verify cleanup of temporary ZFS smoke mounts for $pool; inspect and unmount them, then remove $backing"
+    elif [ -z "$cleanup_failure" ] && printf '%s\n' "$mount_sources" | awk -v pool="$pool" \
+        '$0 == pool || index($0, pool "/") == 1 { found = 1 } END { exit !found }'; then
         cleanup_failure="Temporary ZFS smoke mount for $pool remains after destroy; unmount it, destroy the Pool, then remove $backing"
     elif [ -z "$cleanup_failure" ] && ! rm -f "$backing"; then
         cleanup_failure="Could not remove temporary ZFS smoke backing file $backing"

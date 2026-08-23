@@ -461,13 +461,23 @@ rm -f "$zfs_smoke_state"
         printf 'zpool %s\n' "$*" >> "$zfs_smoke_log"
         case "$1" in
             create) touch "$zfs_smoke_state" ;;
-            list) [ -e "$zfs_smoke_state" ] ;;
+            list)
+                if [ "$2" = -H ]; then
+                    [ ! -e "$zfs_smoke_state" ] || printf '%s\n' "$pool"
+                else
+                    [ -e "$zfs_smoke_state" ]
+                fi
+                ;;
             destroy) rm -f "$zfs_smoke_state" ;;
         esac
     }
     zfs() {
         printf 'zfs %s\n' "$*" >> "$zfs_smoke_log"
-        [ "$1" = list ] && [ -e "$zfs_smoke_state" ]
+        if [ "$2" = -H ]; then
+            [ ! -e "$zfs_smoke_state" ] || printf '%s\n' "$pool"
+        else
+            [ "$1" = list ] && [ -e "$zfs_smoke_state" ]
+        fi
     }
     validate_zfs
 )
@@ -488,9 +498,12 @@ if smoke_error=$(
         findmnt() { [ "$1" = -n ] && echo /; }
         zpool() {
             printf 'zpool %s\n' "$*" >> "$zfs_smoke_log"
-            case "$1" in create | destroy) return 0 ;; *) return 1 ;; esac
+            case "$1" in
+                create | destroy) return 0 ;;
+                list) [ "$2" = -H ] ;;
+            esac
         }
-        zfs() { return 1; }
+        zfs() { [ "$2" = -H ]; }
         validate_zfs
     ) 2>&1
 ); then
@@ -515,11 +528,17 @@ if cleanup_error=$(
             printf 'zpool %s\n' "$*" >> "$zfs_smoke_log"
             case "$1" in
                 create) touch "$zfs_smoke_state" ;;
-                list) [ -e "$zfs_smoke_state" ] ;;
+                list)
+                    if [ "$2" = -H ]; then
+                        [ ! -e "$zfs_smoke_state" ] || printf '%s\n' "$pool"
+                    else
+                        [ -e "$zfs_smoke_state" ]
+                    fi
+                    ;;
                 destroy) return 1 ;;
             esac
         }
-        zfs() { [ "$1" = list ] && [ -e "$zfs_smoke_state" ]; }
+        zfs() { printf '%s\n' "$pool"; }
         validate_zfs
     ) 2>&1
 ); then
@@ -530,6 +549,28 @@ printf '%s\n' "$cleanup_error" | grep -Fq "Could not destroy temporary ZFS smoke
 printf '%s\n' "$cleanup_error" | grep -Fq "then remove /var/tmp/ployz-zfs-smoke."
 smoke_backing=$(awk '$1 == "zpool" && $2 == "create" { print $NF }' "$zfs_smoke_log")
 rm -f "$zfs_smoke_state" "$zfs_smoke_log" "$smoke_backing"
+
+zfs_cleanup_probe_log=$(mktemp)
+if cleanup_probe_error=$(
+    (
+        zfs_smoke_bytes() { echo 1048576; }
+        require_host_root_reserve() { return 0; }
+        findmnt() { [ "$1" = -n ] && echo /; }
+        zpool() {
+            printf 'zpool %s\n' "$*" >> "$zfs_cleanup_probe_log"
+            case "$1" in create | destroy) return 0 ;; list) return 2 ;; esac
+        }
+        zfs() { return 0; }
+        validate_zfs
+    ) 2>&1
+); then
+    echo "installer accepted an unverified ZFS smoke cleanup" >&2
+    exit 1
+fi
+printf '%s\n' "$cleanup_probe_error" | grep -Fq \
+    "Could not verify cleanup of temporary ZFS smoke Pool"
+smoke_backing=$(awk '$1 == "zpool" && $2 == "create" { print $NF }' "$zfs_cleanup_probe_log")
+rm -f "$zfs_cleanup_probe_log" "$smoke_backing"
 
 PLOYZ_CLI_INSTALL_TEST_ONLY=true source "$ROOT/install.sh"
 assert_eq "$(cli_archive Linux x86_64)" "ployz_linux_amd64.tar.gz"
