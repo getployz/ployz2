@@ -7,10 +7,34 @@ use ployz_core::{
     MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName,
 };
 use serde_json::json;
+use tokio::net::UnixListener;
 
 use super::*;
+use crate::corrosion::fake_cluster;
 
 const SUBNET: &str = "10.210.1.0/24";
+
+#[tokio::test(start_paused = true)]
+async fn membership_sample_times_out() {
+    let root = std::env::temp_dir().join(format!("ployzd-dns-membership-{}", MachineId::random()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("admin.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let admin_server = tokio::spawn(async move {
+        let (_stream, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let (replicated, replicated_server) = fake_cluster::store().await;
+
+    let error = load_down_machines(&replicated, &AdminClient::new(path), &MachineId::random())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, CorrosionError::Io(error) if error.kind() == io::ErrorKind::TimedOut));
+    admin_server.abort();
+    replicated_server.abort();
+    std::fs::remove_dir_all(root).unwrap();
+}
 
 #[test]
 fn projects_only_eligible_service_container_addresses() {

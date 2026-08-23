@@ -437,7 +437,16 @@ async fn load_down_machines(
     admin: &AdminClient,
     local_id: &MachineId,
 ) -> Result<HashSet<MachineId>, CorrosionError> {
-    let (machines, states) = tokio::try_join!(replicated.machines(), admin.membership_states())?;
+    let (machines, states) = tokio::time::timeout(MEMBERSHIP_SAMPLE_INTERVAL, async {
+        tokio::try_join!(replicated.machines(), admin.membership_states())
+    })
+    .await
+    .map_err(|_| {
+        CorrosionError::Io(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Internal DNS membership sample timed out",
+        ))
+    })??;
     let states = states
         .into_iter()
         .filter_map(|state| match state.address.ip() {
