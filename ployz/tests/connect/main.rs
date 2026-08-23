@@ -385,21 +385,13 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     let service_id = "c".repeat(32);
     let container_id = "c".repeat(64);
     let machine_id = "a".repeat(32);
+    let services = format!(
+        "SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS\n{service_id}\tapp/api\t1/1\t0\n{}\tapp/worker\t2/3\t1\n",
+        "d".repeat(32)
+    );
     let human_cases = [
-        (
-            &["ls"][..],
-            format!(
-                "SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS\n{service_id}\tapp/api\t1/1\t0\n{}\tapp/worker\t2/3\t1\n",
-                "d".repeat(32)
-            ),
-        ),
-        (
-            &["service", "ls"][..],
-            format!(
-                "SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS\n{service_id}\tapp/api\t1/1\t0\n{}\tapp/worker\t2/3\t1\n",
-                "d".repeat(32)
-            ),
-        ),
+        (&["ls"][..], services.clone()),
+        (&["service", "ls"][..], services),
         (
             &["ps"][..],
             format!(
@@ -445,17 +437,17 @@ async fn run_ployz(address: std::net::SocketAddr, args: &[&str]) -> std::process
 }
 
 fn listing_container(
-    container_id: char,
-    service_id: char,
+    container_hex: char,
+    service_hex: char,
     name: &str,
     kind: ContainerKind,
     runtime: ContainerRuntimeObservation,
 ) -> ployz_core::ContainerObservation {
-    let service_id = ployz_core::ServiceId::parse(service_id.to_string().repeat(32)).unwrap();
+    let service_id = ployz_core::ServiceId::parse(service_hex.to_string().repeat(32)).unwrap();
     let service_name = ployz_core::ServiceName::parse(name).unwrap();
     ployz_core::ContainerObservation {
-        container_id: ployz_core::ContainerId::parse(container_id.to_string().repeat(64)).unwrap(),
-        display_name: format!("{name}-{container_id}"),
+        container_id: ployz_core::ContainerId::parse(container_hex.to_string().repeat(64)).unwrap(),
+        display_name: format!("{name}-{container_hex}"),
         created_at_unix_nanos: 1,
         machine_id: machine_id('a'),
         project_name: ployz_core::ProjectName::parse("app").unwrap(),
