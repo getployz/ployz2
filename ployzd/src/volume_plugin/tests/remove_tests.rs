@@ -105,3 +105,29 @@ async fn remove_never_destroys_an_unbounded_dataset() {
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn get_returns_the_minimal_exact_volume_identity() {
+    let test = TestDir::new();
+    fs::write(test.0.join("root"), "").unwrap();
+    fs::write(test.0.join("volume"), "").unwrap();
+    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+    assert_eq!(
+        post(&socket, "/VolumeDriver.Get", json!({"Name":"data"})).await,
+        json!({
+            "Volume":{"Name":"data","Mountpoint":"/var/lib/ployz-volumes/data"},
+            "Err":""
+        })
+    );
+    assert!(
+        post(&socket, "/VolumeDriver.Get", json!({"Name":"missing"}))
+            .await
+            .get("Volume")
+            .is_none()
+    );
+    server.abort();
+}

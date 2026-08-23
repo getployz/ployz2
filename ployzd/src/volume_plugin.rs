@@ -5,10 +5,19 @@ use std::{
     str::FromStr, sync::Arc,
 };
 
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{
+    Json, Router,
+    extract::{Request, State},
+    http::{HeaderValue, header::CONTENT_TYPE},
+    middleware::{self, Next},
+    response::Response,
+    routing::post,
+};
 use ployzd::machine_pool::{self, MachinePool};
 use serde::{Deserialize, Serialize};
 use tokio::{net::UnixListener, process::Command, sync::Mutex};
+
+mod removal;
 
 const DATASET_ROOT: &str = "ployz";
 const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
@@ -155,22 +164,17 @@ impl VolumeStorage {
     async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
         let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
-        let volume = format!("{}/{DATASET_ROOT}/{name}", pool.name());
         let expected_mountpoint = name.mountpoint();
         let mut dataset = self
-            .datasets(&pool)
+            .dataset(&pool, name)
             .await?
-            .into_iter()
-            .find(|dataset| dataset.name == volume)
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
         dataset.require_mountpoint(&expected_mountpoint)?;
         if !dataset.mounted {
-            self.zfs(&["mount", &volume]).await?;
+            self.zfs(&["mount", &dataset.name]).await?;
             dataset = self
-                .datasets(&pool)
+                .dataset(&pool, name)
                 .await?
-                .into_iter()
-                .find(|dataset| dataset.name == volume)
                 .ok_or_else(|| format!("Provisioned Volume {name} disappeared while mounting"))?;
             dataset.require_mountpoint(&expected_mountpoint)?;
         }
@@ -178,25 +182,6 @@ impl VolumeStorage {
             return Err(format!("Provisioned Volume {name} did not mount").into());
         }
         Ok(dataset.mountpoint)
-    }
-
-    async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
-        let _guard = self.mutation.lock().await;
-        let pool = self.one_pool().await?;
-        let volume = format!("{}/{DATASET_ROOT}/{name}", pool.name());
-        let datasets = self.datasets(&pool).await?;
-        let Some(dataset) = datasets.iter().find(|dataset| dataset.name == volume) else {
-            return Ok(());
-        };
-        if dataset.refquota == 0 {
-            return Err(format!(
-                "ZFS dataset {volume} has no Provisioned Volume bound; refusing to destroy it"
-            )
-            .into());
-        }
-        dataset.require_mountpoint(&name.mountpoint())?;
-        self.zfs(&["destroy", &volume]).await?;
-        Ok(())
     }
 
     async fn one_pool(&self) -> Result<MachinePool> {
@@ -224,6 +209,19 @@ impl VolumeStorage {
             .lines()
             .map(|line| Dataset::parse(line, pool.name()))
             .collect()
+    }
+
+    async fn dataset(
+        &self,
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+    ) -> Result<Option<Dataset>> {
+        let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name());
+        Ok(self
+            .datasets(pool)
+            .await?
+            .into_iter()
+            .find(|dataset| dataset.name == requested))
     }
 
     async fn zfs(&self, args: &[&str]) -> Result<String> {
@@ -283,6 +281,17 @@ impl Dataset {
             self.name, self.mountpoint
         )
         .into())
+    }
+
+    fn require_provisioned(&self, name: &DockerVolumeName) -> Result<()> {
+        if self.refquota == 0 {
+            return Err(format!(
+                "ZFS dataset {} has no Provisioned Volume bound; refusing to use it",
+                self.name
+            )
+            .into());
+        }
+        self.require_mountpoint(&name.mountpoint())
     }
 }
 
@@ -411,13 +420,23 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
     let router = Router::new()
         .route("/Plugin.Activate", post(activate))
         .route("/VolumeDriver.Create", post(create))
-        .route("/VolumeDriver.Remove", post(remove))
+        .route("/VolumeDriver.Remove", post(removal::remove))
+        .route("/VolumeDriver.Get", post(removal::get))
         .route("/VolumeDriver.Mount", post(mount))
         .route("/VolumeDriver.Unmount", post(unmount))
         .route("/VolumeDriver.Path", post(mount))
         .route("/VolumeDriver.Capabilities", post(capabilities))
+        .layer(middleware::from_fn(legacy_plugin_json))
         .with_state(storage);
     axum::serve(listener, router).await
+}
+
+async fn legacy_plugin_json(mut request: Request, next: Next) -> Response {
+    request
+        .headers_mut()
+        .entry(CONTENT_TYPE)
+        .or_insert(HeaderValue::from_static("application/json"));
+    next.run(request).await
 }
 
 async fn activate() -> Json<serde_json::Value> {
@@ -432,6 +451,10 @@ async fn create(
         Ok(name) => storage.create(&name, &request.options).await,
         Err(error) => Err(error),
     };
+    error_response(result)
+}
+
+fn error_response(result: Result<()>) -> Json<ErrorResponse> {
     Json(ErrorResponse {
         error: result
             .err()
@@ -449,22 +472,6 @@ async fn mount(
         Err(error) => Err(error),
     };
     mount_response(result)
-}
-
-async fn remove(
-    State(storage): State<VolumeStorage>,
-    Json(request): Json<VolumeRequest>,
-) -> Json<ErrorResponse> {
-    let result = match request.name.parse::<DockerVolumeName>() {
-        Ok(name) => storage.remove(&name).await,
-        Err(error) => Err(error),
-    };
-    Json(ErrorResponse {
-        error: result
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_default(),
-    })
 }
 
 fn mount_response(result: Result<String>) -> Json<MountResponse> {
@@ -885,7 +892,7 @@ mod tests {
         stream
             .write_all(
                 format!(
-                    "POST {route} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "POST {route} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 )
                 .as_bytes(),
