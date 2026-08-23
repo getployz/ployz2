@@ -434,6 +434,24 @@ fi
 printf '%s\n' "$missing_kernel_error" | grep -Fq \
     "no packaged ZFS module for the running kernel 6.8.0-unsupported"
 
+if module_download_error=$(
+    (
+        run_with_apt_lock_wait() {
+            [ "$1 $2" != 'apt-get download' ]
+        }
+        function apt-cache {
+            [ "$1" = show ] && [ "$2" = linux-modules-extra-6.8.0-download-failure ]
+        }
+        function dpkg-query { return 1; }
+        install_zfs_packages_ubuntu 6.8.0-download-failure
+    ) 2>&1
+); then
+    echo "installer hid a ZFS module package download failure" >&2
+    exit 1
+fi
+printf '%s\n' "$module_download_error" | grep -Fq \
+    "Could not download running-kernel module package linux-modules-extra-6.8.0-download-failure to inspect it for ZFS support"
+
 assert_eq "$PLOYZ_STORAGE" none
 storage_selection_log=$(mktemp)
 (
