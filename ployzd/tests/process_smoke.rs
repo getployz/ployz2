@@ -115,6 +115,22 @@ fn volume_plugin_accepts_the_systemd_socket() {
 }
 
 #[test]
+fn volume_plugin_requires_exactly_one_systemd_socket() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .arg("volume-plugin")
+        .env_remove("LISTEN_FDS")
+        .env_remove("LISTEN_PID")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("requires exactly one systemd socket, received 0")
+    );
+}
+
+#[test]
 fn join_leaves_a_journal_line_and_records_the_restart() {
     let root = TestDir::new("ployzd-process-join");
     fs::create_dir_all(&root.0).unwrap();

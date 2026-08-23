@@ -20,4 +20,3 @@ pub mod proxy;
 pub mod relay;
 pub mod rpc;
 pub(crate) mod runtime_watch;
-pub mod volume_plugin;

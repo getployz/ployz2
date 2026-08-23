@@ -1,6 +1,8 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("ployzd supports Linux only");
 
+mod volume_plugin;
+
 use std::{
     io,
     net::SocketAddr,
@@ -16,7 +18,6 @@ use ployzd::{
     diag,
     machine::DEFAULT_DATA_DIR,
     network::NetworkError,
-    volume_plugin,
 };
 use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
 

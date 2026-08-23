@@ -100,7 +100,10 @@ grep -Fxq 'Service=ployz-volume-plugin.service' "$TMP/systemd/ployz-volume-plugi
 grep -Fxq 'Sockets=ployz-volume-plugin.socket' "$TMP/systemd/ployz-volume-plugin.service"
 grep -Fq 'ExecStart='"$TMP/install"'/ployzd volume-plugin' "$TMP/systemd/ployz-volume-plugin.service"
 grep -Fq 'systemctl enable --now ployz-volume-plugin.socket' "$LOG"
-grep -Fq 'systemctl enable --now ployz-volume-plugin.service' "$LOG"
+if grep -Fq 'systemctl enable --now ployz-volume-plugin.service' "$LOG"; then
+    echo "Volume plugin service was enabled instead of socket-activated" >&2
+    exit 1
+fi
 grep -Fq 'systemctl restart ployz.service' "$LOG"
 grep -Fq 'systemctl try-restart ployz-volume-plugin.service' "$LOG"
 

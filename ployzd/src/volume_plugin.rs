@@ -1,6 +1,8 @@
+//! Docker v1 Volume plugin backed by bounded ZFS datasets.
+
 use std::{
-    collections::BTreeMap, io, os::unix::net::UnixListener as StdUnixListener, path::PathBuf,
-    sync::Arc,
+    collections::BTreeMap, fmt, io, os::unix::net::UnixListener as StdUnixListener, path::PathBuf,
+    str::FromStr, sync::Arc,
 };
 
 use axum::{Json, Router, extract::State, routing::post};
@@ -9,6 +11,47 @@ use tokio::{net::UnixListener, process::Command, sync::Mutex};
 
 const DATASET_ROOT: &str = "ployz";
 const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
+type Result<T> = std::result::Result<T, VolumeError>;
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct VolumeError(String);
+
+impl From<String> for VolumeError {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
+
+impl From<&str> for VolumeError {
+    fn from(message: &str) -> Self {
+        Self(message.to_owned())
+    }
+}
+
+struct DockerVolumeName(String);
+
+impl FromStr for DockerVolumeName {
+    type Err = VolumeError;
+
+    fn from_str(name: &str) -> Result<Self> {
+        let mut bytes = name.bytes();
+        if !bytes
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            || !bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+        {
+            return Err(format!("invalid Docker Volume name {name:?}").into());
+        }
+        Ok(Self(name.to_owned()))
+    }
+}
+
+impl fmt::Display for DockerVolumeName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
 
 #[derive(Clone)]
 struct VolumeStorage {
@@ -30,8 +73,11 @@ impl VolumeStorage {
         }
     }
 
-    async fn create(&self, name: &str, options: &BTreeMap<String, String>) -> Result<(), String> {
-        validate_name(name)?;
+    async fn create(
+        &self,
+        name: &DockerVolumeName,
+        options: &BTreeMap<String, String>,
+    ) -> Result<()> {
         let requested = parse_size(options)?;
         let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
@@ -46,7 +92,8 @@ impl VolumeStorage {
                 Err(format!(
                     "Volume {name} already has a {}-byte bound; changing it to {requested} bytes is a separate update operation",
                     existing.refquota
-                ))
+                )
+                .into())
             };
         }
 
@@ -68,7 +115,8 @@ impl VolumeStorage {
             return Err(format!(
                 "Pool {} has {uncommitted} uncommitted bytes but Volume {name} requires {requested}; grow the Machine Pool before retrying (automatic growth is tracked by #548)",
                 pool.name
-            ));
+            )
+            .into());
         }
 
         if !datasets.iter().any(|dataset| dataset.name == root) {
@@ -87,8 +135,7 @@ impl VolumeStorage {
         Ok(())
     }
 
-    async fn mountpoint(&self, name: &str) -> Result<String, String> {
-        validate_name(name)?;
+    async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
         let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
         let volume = format!("{}/{DATASET_ROOT}/{name}", pool.name);
@@ -108,17 +155,17 @@ impl VolumeStorage {
                 .ok_or_else(|| format!("Provisioned Volume {name} disappeared while mounting"))?;
         }
         if !dataset.mounted {
-            return Err(format!("Provisioned Volume {name} did not mount"));
+            return Err(format!("Provisioned Volume {name} did not mount").into());
         }
         match dataset.mountpoint.as_str() {
-            "none" | "legacy" | "-" | "" => Err(format!(
-                "Provisioned Volume {name} has no usable ZFS mountpoint"
-            )),
+            "none" | "legacy" | "-" | "" => {
+                Err(format!("Provisioned Volume {name} has no usable ZFS mountpoint").into())
+            }
             _ => Ok(dataset.mountpoint),
         }
     }
 
-    async fn one_pool(&self) -> Result<Pool, String> {
+    async fn one_pool(&self) -> Result<Pool> {
         let output =
             checked_command(&self.zpool, &["list", "-Hp", "-o", "name,health,readonly"]).await?;
         let pools = output
@@ -146,11 +193,12 @@ impl VolumeStorage {
                     .map(|pool| pool.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
-            )),
+            )
+            .into()),
         }
     }
 
-    async fn datasets(&self, pool: &Pool) -> Result<Vec<Dataset>, String> {
+    async fn datasets(&self, pool: &Pool) -> Result<Vec<Dataset>> {
         let output = self
             .zfs(&[
                 "list",
@@ -167,7 +215,7 @@ impl VolumeStorage {
             .collect()
     }
 
-    async fn zfs(&self, args: &[&str]) -> Result<String, String> {
+    async fn zfs(&self, args: &[&str]) -> Result<String> {
         checked_command(&self.zfs, args).await
     }
 }
@@ -187,30 +235,50 @@ struct Dataset {
 }
 
 impl Dataset {
-    fn parse(line: &str, pool: &str) -> Result<Self, String> {
-        let fields = line.split('\t').collect::<Vec<_>>();
+    fn parse(line: &str, pool: &str) -> Result<Self> {
+        let mut fields = line.split('\t');
         let invalid = || format!("invalid ZFS dataset output for Pool {pool}: {line}");
+        let (
+            Some(name),
+            Some(refquota),
+            Some(referenced),
+            Some(available),
+            Some(mountpoint),
+            Some(mounted),
+            None,
+        ) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        )
+        else {
+            return Err(invalid().into());
+        };
         Ok(Self {
-            name: fields.first().ok_or_else(invalid)?.to_string(),
-            refquota: parse_zfs_bytes(fields.get(1).ok_or_else(invalid)?)?,
-            referenced: parse_zfs_bytes(fields.get(2).ok_or_else(invalid)?)?,
-            available: parse_zfs_bytes(fields.get(3).ok_or_else(invalid)?)?,
-            mountpoint: fields.get(4).ok_or_else(invalid)?.to_string(),
-            mounted: *fields.get(5).ok_or_else(invalid)? == "yes",
+            name: name.to_owned(),
+            refquota: parse_zfs_bytes(refquota)?,
+            referenced: parse_zfs_bytes(referenced)?,
+            available: parse_zfs_bytes(available)?,
+            mountpoint: mountpoint.to_owned(),
+            mounted: mounted == "yes",
         })
     }
 }
 
-fn parse_zfs_bytes(value: &str) -> Result<u64, String> {
+fn parse_zfs_bytes(value: &str) -> Result<u64> {
     match value {
         "none" | "-" => Ok(0),
         _ => value
             .parse()
-            .map_err(|_| format!("invalid byte count from ZFS: {value}")),
+            .map_err(|_| VolumeError::from(format!("invalid byte count from ZFS: {value}"))),
     }
 }
 
-fn parse_size(options: &BTreeMap<String, String>) -> Result<u64, String> {
+fn parse_size(options: &BTreeMap<String, String>) -> Result<u64> {
     if options.len() != 1 || !options.contains_key("size") {
         return Err("Volume option size is required and is the only supported option".into());
     }
@@ -226,7 +294,8 @@ fn parse_size(options: &BTreeMap<String, String>) -> Result<u64, String> {
         _ => {
             return Err(format!(
                 "invalid Volume size {value:?}; use a positive integer followed by k, m, g, or t"
-            ));
+            )
+            .into());
         }
     };
     let amount = amount.parse::<u64>().map_err(|_| {
@@ -237,22 +306,10 @@ fn parse_size(options: &BTreeMap<String, String>) -> Result<u64, String> {
     }
     amount
         .checked_mul(multiplier)
-        .ok_or_else(|| format!("Volume size {value:?} overflows bytes"))
+        .ok_or_else(|| format!("Volume size {value:?} overflows bytes").into())
 }
 
-fn validate_name(name: &str) -> Result<(), String> {
-    let mut bytes = name.bytes();
-    if !bytes
-        .next()
-        .is_some_and(|byte| byte.is_ascii_alphanumeric())
-        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
-    {
-        return Err(format!("invalid Docker Volume name {name:?}"));
-    }
-    Ok(())
-}
-
-async fn checked_command(program: &PathBuf, args: &[&str]) -> Result<String, String> {
+async fn checked_command(program: &PathBuf, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
         .output()
@@ -264,10 +321,11 @@ async fn checked_command(program: &PathBuf, args: &[&str]) -> Result<String, Str
             program.display(),
             args.join(" "),
             String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        )
+        .into());
     }
     String::from_utf8(output.stdout)
-        .map_err(|_| format!("{} returned non-UTF-8 output", program.display()))
+        .map_err(|_| format!("{} returned non-UTF-8 output", program.display()).into())
 }
 
 #[derive(Deserialize)]
@@ -298,7 +356,12 @@ struct MountResponse {
     error: String,
 }
 
-pub fn inherited_listener() -> io::Result<StdUnixListener> {
+/// Takes the one Unix listener supplied by systemd socket activation.
+///
+/// # Errors
+///
+/// Returns an error unless systemd supplied exactly one valid Unix listener.
+pub(super) fn inherited_listener() -> io::Result<StdUnixListener> {
     let mut inherited = listenfd::ListenFd::from_env();
     if inherited.len() != 1 {
         return Err(io::Error::new(
@@ -317,7 +380,12 @@ pub fn inherited_listener() -> io::Result<StdUnixListener> {
     })
 }
 
-pub async fn run(listener: StdUnixListener) -> io::Result<()> {
+/// Serves the Docker Volume plugin on an activated Unix listener.
+///
+/// # Errors
+///
+/// Returns an error when the listener cannot become asynchronous or serving fails.
+pub(super) async fn run(listener: StdUnixListener) -> io::Result<()> {
     listener.set_nonblocking(true)?;
     serve(UnixListener::from_std(listener)?, VolumeStorage::new()).await
 }
@@ -328,7 +396,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Mount", post(mount))
         .route("/VolumeDriver.Unmount", post(unmount))
-        .route("/VolumeDriver.Path", post(path))
+        .route("/VolumeDriver.Path", post(mount))
         .route("/VolumeDriver.Capabilities", post(capabilities))
         .with_state(storage);
     axum::serve(listener, router).await
@@ -342,11 +410,14 @@ async fn create(
     State(storage): State<VolumeStorage>,
     Json(request): Json<CreateRequest>,
 ) -> Json<ErrorResponse> {
+    let result = match request.name.parse::<DockerVolumeName>() {
+        Ok(name) => storage.create(&name, &request.options).await,
+        Err(error) => Err(error),
+    };
     Json(ErrorResponse {
-        error: storage
-            .create(&request.name, &request.options)
-            .await
+        error: result
             .err()
+            .map(|error| error.to_string())
             .unwrap_or_default(),
     })
 }
@@ -355,17 +426,14 @@ async fn mount(
     State(storage): State<VolumeStorage>,
     Json(request): Json<VolumeRequest>,
 ) -> Json<MountResponse> {
-    mount_response(storage.mountpoint(&request.name).await)
+    let result = match request.name.parse::<DockerVolumeName>() {
+        Ok(name) => storage.mountpoint(&name).await,
+        Err(error) => Err(error),
+    };
+    mount_response(result)
 }
 
-async fn path(
-    State(storage): State<VolumeStorage>,
-    Json(request): Json<VolumeRequest>,
-) -> Json<MountResponse> {
-    mount_response(storage.mountpoint(&request.name).await)
-}
-
-fn mount_response(result: Result<String, String>) -> Json<MountResponse> {
+fn mount_response(result: Result<String>) -> Json<MountResponse> {
     match result {
         Ok(mountpoint) => Json(MountResponse {
             mountpoint,
@@ -373,7 +441,7 @@ fn mount_response(result: Result<String, String>) -> Json<MountResponse> {
         }),
         Err(error) => Json(MountResponse {
             mountpoint: String::new(),
-            error,
+            error: error.to_string(),
         }),
     }
 }
@@ -464,7 +532,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_sizes_are_rejected_before_zfs_mutation() {
+    async fn invalid_requests_are_rejected_before_zfs_mutation() {
         let test = TestDir::new();
         let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
         let socket = test.0.join("plugin.sock");
@@ -490,6 +558,17 @@ mod tests {
             .await;
             assert!(!error(&response).is_empty(), "accepted options {options}");
         }
+        assert!(
+            !error(
+                &post(
+                    &socket,
+                    "/VolumeDriver.Create",
+                    json!({"Name":"../data","Opts":{"size":"1g"}}),
+                )
+                .await
+            )
+            .is_empty()
+        );
 
         assert!(
             !fs::read_to_string(test.0.join("commands"))

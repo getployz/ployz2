@@ -516,15 +516,11 @@ ProtectKernelTunables=true
 PrivateTmp=true
 RestrictAddressFamilies=AF_UNIX
 RestrictNamespaces=true
-
-[Install]
-WantedBy=multi-user.target
 EOF
     if [ "$INSTALL_ONLY" != true ]; then
         systemctl daemon-reload
         systemctl enable ployz.service
         systemctl enable --now ployz-volume-plugin.socket
-        systemctl enable --now ployz-volume-plugin.service
     fi
 }
 
