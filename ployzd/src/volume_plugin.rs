@@ -53,6 +53,12 @@ impl fmt::Display for DockerVolumeName {
     }
 }
 
+impl DockerVolumeName {
+    fn mountpoint(&self) -> String {
+        format!("{MOUNT_ROOT}/{self}")
+    }
+}
+
 #[derive(Clone)]
 struct VolumeStorage {
     zpool: PathBuf,
@@ -85,17 +91,12 @@ impl VolumeStorage {
         let root = format!("{}/{DATASET_ROOT}", pool.name);
         let volume = format!("{root}/{name}");
 
-        if let Some(dataset) = datasets.iter().find(|dataset| dataset.name == root)
-            && dataset.mountpoint != MOUNT_ROOT
-        {
-            return Err(format!(
-                "Ployz dataset root {root} has incompatible mountpoint {}; set it to {MOUNT_ROOT} before retrying",
-                dataset.mountpoint
-            )
-            .into());
+        if let Some(dataset) = datasets.iter().find(|dataset| dataset.name == root) {
+            dataset.require_mountpoint(MOUNT_ROOT)?;
         }
 
         if let Some(existing) = datasets.iter().find(|dataset| dataset.name == volume) {
+            existing.require_mountpoint(&name.mountpoint())?;
             return if existing.refquota == requested {
                 Ok(())
             } else {
@@ -149,12 +150,14 @@ impl VolumeStorage {
         let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
         let volume = format!("{}/{DATASET_ROOT}/{name}", pool.name);
+        let expected_mountpoint = name.mountpoint();
         let mut dataset = self
             .datasets(&pool)
             .await?
             .into_iter()
             .find(|dataset| dataset.name == volume)
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
+        dataset.require_mountpoint(&expected_mountpoint)?;
         if !dataset.mounted {
             self.zfs(&["mount", &volume]).await?;
             dataset = self
@@ -163,33 +166,23 @@ impl VolumeStorage {
                 .into_iter()
                 .find(|dataset| dataset.name == volume)
                 .ok_or_else(|| format!("Provisioned Volume {name} disappeared while mounting"))?;
+            dataset.require_mountpoint(&expected_mountpoint)?;
         }
         if !dataset.mounted {
             return Err(format!("Provisioned Volume {name} did not mount").into());
         }
-        match dataset.mountpoint.as_str() {
-            "none" | "legacy" | "-" | "" => {
-                Err(format!("Provisioned Volume {name} has no usable ZFS mountpoint").into())
-            }
-            _ => Ok(dataset.mountpoint),
-        }
+        Ok(dataset.mountpoint)
     }
 
     async fn one_pool(&self) -> Result<Pool> {
         let output =
             checked_command(&self.zpool, &["list", "-Hp", "-o", "name,health,readonly"]).await?;
-        let pools = output
-            .lines()
-            .filter_map(|line| {
-                let mut fields = line.split('\t');
-                let name = fields.next()?;
-                let health = fields.next()?;
-                let readonly = fields.next()?;
-                (matches!(health, "ONLINE" | "DEGRADED") && readonly == "off").then(|| Pool {
-                    name: name.to_owned(),
-                })
-            })
-            .collect::<Vec<_>>();
+        let mut pools = Vec::new();
+        for line in output.lines() {
+            if let Some(pool) = Pool::parse(line)? {
+                pools.push(pool);
+            }
+        }
         match pools.as_slice() {
             [pool] => Ok(pool.clone()),
             [] => Err(
@@ -235,6 +228,32 @@ struct Pool {
     name: String,
 }
 
+impl Pool {
+    fn parse(line: &str) -> Result<Option<Self>> {
+        let mut fields = line.split('\t');
+        let invalid = || format!("invalid ZFS Pool output: {line}");
+        let (Some(name), Some(health), Some(readonly), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err(invalid().into());
+        };
+        if name.is_empty()
+            || !matches!(
+                health,
+                "ONLINE" | "DEGRADED" | "FAULTED" | "OFFLINE" | "REMOVED" | "UNAVAIL" | "SUSPENDED"
+            )
+            || !matches!(readonly, "on" | "off")
+        {
+            return Err(invalid().into());
+        }
+        Ok(
+            (matches!(health, "ONLINE" | "DEGRADED") && readonly == "off").then(|| Self {
+                name: name.to_owned(),
+            }),
+        )
+    }
+}
+
 struct Dataset {
     name: String,
     refquota: u64,
@@ -276,6 +295,17 @@ impl Dataset {
             mountpoint: mountpoint.to_owned(),
             mounted: mounted == "yes",
         })
+    }
+
+    fn require_mountpoint(&self, expected: &str) -> Result<()> {
+        if self.mountpoint == expected {
+            return Ok(());
+        }
+        Err(format!(
+            "ZFS dataset {} has incompatible mountpoint {}; set it to {expected} before retrying",
+            self.name, self.mountpoint
+        )
+        .into())
     }
 }
 
@@ -571,6 +601,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_and_mount_reject_an_existing_child_outside_the_managed_root() {
+        let test = TestDir::new();
+        fs::write(test.0.join("root"), "").unwrap();
+        fs::write(test.0.join("volume"), "").unwrap();
+        fs::write(test.0.join("incompatible-volume"), "").unwrap();
+        let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+        let socket = test.0.join("plugin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+        for response in [
+            post(
+                &socket,
+                "/VolumeDriver.Create",
+                json!({"Name":"data","Opts":{"size":"1g"}}),
+            )
+            .await,
+            post(
+                &socket,
+                "/VolumeDriver.Mount",
+                json!({"Name":"data","ID":"container"}),
+            )
+            .await,
+        ] {
+            let message = error(&response);
+            assert!(message.contains("tank/ployz/data"));
+            assert!(message.contains("/srv/data"));
+            assert!(message.contains("/var/lib/ployz-volumes/data"));
+        }
+        let log = fs::read_to_string(test.0.join("commands")).unwrap();
+        assert!(!log.contains("zfs create"));
+        assert!(!log.contains("zfs mount"));
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn invalid_requests_are_rejected_before_zfs_mutation() {
         let test = TestDir::new();
         let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
@@ -733,6 +799,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_rejects_malformed_pool_inspection_before_zfs_mutation() {
+        let test = TestDir::new();
+        let (zpool, zfs) = fake_zfs(&test.0, "broken\tONLINE\ntank\tONLINE\toff\n");
+        let socket = test.0.join("plugin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+        let response = post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"data","Opts":{"size":"1g"}}),
+        )
+        .await;
+
+        let message = error(&response);
+        assert!(message.contains("invalid ZFS Pool output"));
+        assert!(message.contains("broken"));
+        assert!(
+            !fs::read_to_string(test.0.join("commands"))
+                .unwrap()
+                .contains("zfs create")
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn plugin_serves_activation_path_unmount_and_local_capabilities() {
         let test = TestDir::new();
         let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
@@ -804,6 +896,7 @@ mod tests {
         let root = directory.join("root");
         let incompatible_root = directory.join("incompatible-root");
         let volume = directory.join("volume");
+        let incompatible_volume = directory.join("incompatible-volume");
         let mounted = directory.join("mounted");
         let script_body = format!(
             r#"#!/bin/sh
@@ -823,7 +916,8 @@ case "$*" in
     fi
     if [ -e '{volume}' ]; then
       if [ -e '{mounted}' ]; then state=yes; else state=no; fi
-      printf 'tank/ployz/data\t1073741824\t24576\t1073717248\t/var/lib/ployz-volumes/data\t%s\n' "$state"
+      if [ -e '{incompatible_volume}' ]; then volume_mountpoint=/srv/data; else volume_mountpoint=/var/lib/ployz-volumes/data; fi
+      printf 'tank/ployz/data\t1073741824\t24576\t1073717248\t%s\t%s\n' "$volume_mountpoint" "$state"
     fi
     ;;
   'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz') touch '{root}' ;;
@@ -837,6 +931,7 @@ esac
             root = root.display(),
             incompatible_root = incompatible_root.display(),
             volume = volume.display(),
+            incompatible_volume = incompatible_volume.display(),
             mounted = mounted.display(),
         );
         fs::write(&script, script_body).unwrap();
