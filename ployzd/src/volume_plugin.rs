@@ -5,7 +5,14 @@ use std::{
     str::FromStr, sync::Arc,
 };
 
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{
+    Json, Router,
+    extract::{Request, State},
+    http::{HeaderValue, header::CONTENT_TYPE},
+    middleware::{self, Next},
+    response::Response,
+    routing::post,
+};
 use serde::{Deserialize, Serialize};
 use tokio::{net::UnixListener, process::Command, sync::Mutex};
 
@@ -434,12 +441,21 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
     let router = Router::new()
         .route("/Plugin.Activate", post(activate))
         .route("/VolumeDriver.Create", post(create))
+        .route("/VolumeDriver.Remove", post(removal::remove))
+        .route("/VolumeDriver.Get", post(removal::get))
         .route("/VolumeDriver.Mount", post(mount))
         .route("/VolumeDriver.Unmount", post(unmount))
         .route("/VolumeDriver.Path", post(mount))
         .route("/VolumeDriver.Capabilities", post(capabilities))
+        .layer(middleware::from_fn(docker_json))
         .with_state(storage);
     axum::serve(listener, router).await
+}
+
+async fn docker_json(mut request: Request, next: Next) -> Response {
+    let json = HeaderValue::from_static("application/json");
+    request.headers_mut().entry(CONTENT_TYPE).or_insert(json);
+    next.run(request).await
 }
 
 async fn activate() -> Json<serde_json::Value> {
@@ -454,6 +470,10 @@ async fn create(
         Ok(name) => storage.create(&name, &request.options).await,
         Err(error) => Err(error),
     };
+    error_response(result)
+}
+
+fn error_response(result: Result<()>) -> Json<ErrorResponse> {
     Json(ErrorResponse {
         error: result
             .err()
@@ -514,10 +534,10 @@ mod tests {
     use super::*;
 
     static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
-    struct TestDir(PathBuf);
+    pub(super) struct TestDir(pub(super) PathBuf);
 
     impl TestDir {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
                 "ployzd-volume-plugin-{}-{}",
                 std::process::id(),
@@ -862,13 +882,13 @@ mod tests {
         server.abort();
     }
 
-    async fn post(socket: &Path, route: &str, body: Value) -> Value {
+    pub(super) async fn post(socket: &Path, route: &str, body: Value) -> Value {
         let body = serde_json::to_vec(&body).unwrap();
         let mut stream = UnixStream::connect(socket).await.unwrap();
         stream
             .write_all(
                 format!(
-                    "POST {route} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "POST {route} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 )
                 .as_bytes(),
@@ -886,17 +906,19 @@ mod tests {
         serde_json::from_slice(body).unwrap()
     }
 
-    fn error(response: &Value) -> &str {
+    pub(super) fn error(response: &Value) -> &str {
         response.get("Err").and_then(Value::as_str).unwrap()
     }
 
-    fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
+    pub(super) fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
         let script = directory.join("fake-zfs");
         let commands = directory.join("commands");
         let root = directory.join("root");
         let incompatible_root = directory.join("incompatible-root");
         let volume = directory.join("volume");
         let incompatible_volume = directory.join("incompatible-volume");
+        let sibling = directory.join("sibling");
+        let fail_destroy = directory.join("fail-destroy");
         let mounted = directory.join("mounted");
         let script_body = format!(
             r#"#!/bin/sh
@@ -919,10 +941,12 @@ case "$*" in
       if [ -e '{incompatible_volume}' ]; then volume_mountpoint=/srv/data; else volume_mountpoint=/var/lib/ployz-volumes/data; fi
       printf 'tank/ployz/data\t1073741824\t24576\t1073717248\t%s\t%s\n' "$volume_mountpoint" "$state"
     fi
+    if [ -e '{sibling}' ]; then printf 'tank/ployz/sibling\t1073741824\t24576\t1073717248\t/var/lib/ployz-volumes/sibling\tno\n'; fi
     ;;
   'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz') touch '{root}' ;;
   'create -o refquota=1073741824 tank/ployz/data') touch '{volume}' ;;
   'mount tank/ployz/data') touch '{mounted}' ;;
+  'destroy tank/ployz/data') if [ -e '{fail_destroy}' ]; then echo 'destroy failed' >&2; exit 1; fi; rm '{volume}' ;;
   *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
 esac
 "#,
@@ -932,6 +956,8 @@ esac
             incompatible_root = incompatible_root.display(),
             volume = volume.display(),
             incompatible_volume = incompatible_volume.display(),
+            sibling = sibling.display(),
+            fail_destroy = fail_destroy.display(),
             mounted = mounted.display(),
         );
         fs::write(&script, script_body).unwrap();
@@ -943,3 +969,5 @@ esac
         (zpool, zfs)
     }
 }
+
+mod removal;
