@@ -156,28 +156,43 @@ impl VolumeStorage {
     async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
         let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
-        let volume = format!("{}/{DATASET_ROOT}/{name}", pool.name);
         let expected_mountpoint = name.mountpoint();
         let mut dataset = self
-            .datasets(&pool)
+            .dataset(&pool, name)
             .await?
-            .into_iter()
-            .find(|dataset| dataset.name == volume)
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
         dataset.require_mountpoint(&expected_mountpoint)?;
         if !dataset.mounted {
-            self.zfs(&["mount", &volume]).await?;
+            self.zfs(&["mount", &dataset.name]).await?;
             dataset = self
-                .datasets(&pool)
+                .dataset(&pool, name)
                 .await?
-                .into_iter()
-                .find(|dataset| dataset.name == volume)
                 .ok_or_else(|| format!("Provisioned Volume {name} disappeared while mounting"))?;
             dataset.require_mountpoint(&expected_mountpoint)?;
         }
         if !dataset.mounted {
             return Err(format!("Provisioned Volume {name} did not mount").into());
         }
+        Ok(dataset.mountpoint)
+    }
+
+    async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
+        let _guard = self.mutation.lock().await;
+        let pool = self.one_pool().await?;
+        if let Some(dataset) = self.dataset(&pool, name).await? {
+            self.zfs(&["destroy", &dataset.name]).await?;
+        }
+        Ok(())
+    }
+
+    async fn inspect(&self, name: &DockerVolumeName) -> Result<String> {
+        let _guard = self.mutation.lock().await;
+        let pool = self.one_pool().await?;
+        let dataset = self
+            .dataset(&pool, name)
+            .await?
+            .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
+        dataset.require_mountpoint(&name.mountpoint())?;
         Ok(dataset.mountpoint)
     }
 
@@ -223,6 +238,15 @@ impl VolumeStorage {
             .lines()
             .map(|line| Dataset::parse(line, &pool.name))
             .collect()
+    }
+
+    async fn dataset(&self, pool: &Pool, name: &DockerVolumeName) -> Result<Option<Dataset>> {
+        let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name);
+        Ok(self
+            .datasets(pool)
+            .await?
+            .into_iter()
+            .find(|dataset| dataset.name == requested))
     }
 
     async fn zfs(&self, args: &[&str]) -> Result<String> {

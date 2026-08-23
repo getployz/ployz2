@@ -1,41 +1,11 @@
+//! Docker Volume plugin removal and lookup endpoints.
+
 use axum::{Json, extract::State, response::IntoResponse};
 use serde::Serialize;
 
-use super::{
-    DATASET_ROOT, Dataset, DockerVolumeName, ErrorResponse, Result, VolumeRequest, VolumeStorage,
-    error_response,
-};
+use super::{DockerVolumeName, ErrorResponse, VolumeRequest, VolumeStorage, error_response};
 
-impl VolumeStorage {
-    async fn requested_dataset(&self, name: &DockerVolumeName) -> Result<Option<Dataset>> {
-        let pool = self.one_pool().await?;
-        let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name);
-        Ok(self
-            .datasets(&pool)
-            .await?
-            .into_iter()
-            .find(|dataset| dataset.name == requested))
-    }
-
-    async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
-        let _guard = self.mutation.lock().await;
-        if let Some(dataset) = self.requested_dataset(name).await? {
-            self.zfs(&["destroy", &dataset.name]).await?;
-        }
-        Ok(())
-    }
-
-    async fn inspect(&self, name: &DockerVolumeName) -> Result<String> {
-        let _guard = self.mutation.lock().await;
-        let dataset = self
-            .requested_dataset(name)
-            .await?
-            .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
-        dataset.require_mountpoint(&name.mountpoint())?;
-        Ok(dataset.mountpoint)
-    }
-}
-
+/// Destroys the requested Provisioned Volume dataset when it exists.
 pub(super) async fn remove(
     State(storage): State<VolumeStorage>,
     Json(request): Json<VolumeRequest>,
@@ -47,6 +17,7 @@ pub(super) async fn remove(
     error_response(result)
 }
 
+/// Returns the requested Provisioned Volume to Docker when it exists.
 pub(super) async fn get(
     State(storage): State<VolumeStorage>,
     Json(request): Json<VolumeRequest>,
@@ -58,19 +29,34 @@ pub(super) async fn get(
         }),
         Err(error) => Err(error),
     };
-    let (volume, error) = match result {
-        Ok(volume) => (Some(volume), String::new()),
-        Err(error) => (None, error.to_string()),
-    };
-    Json(GetResponse { volume, error })
+    Json(match result {
+        Ok(volume) => GetResponse::Found { volume, error: () },
+        Err(error) => GetResponse::Error {
+            error: error.to_string(),
+        },
+    })
 }
 
 #[derive(Serialize)]
-struct GetResponse {
-    #[serde(rename = "Volume", skip_serializing_if = "Option::is_none")]
-    volume: Option<PluginVolume>,
-    #[serde(rename = "Err")]
-    error: String,
+#[serde(untagged)]
+enum GetResponse {
+    Found {
+        #[serde(rename = "Volume")]
+        volume: PluginVolume,
+        #[serde(rename = "Err", serialize_with = "empty_error")]
+        error: (),
+    },
+    Error {
+        #[serde(rename = "Err")]
+        error: String,
+    },
+}
+
+fn empty_error<S>((): &(), serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str("")
 }
 
 #[derive(Serialize)]
