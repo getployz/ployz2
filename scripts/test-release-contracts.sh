@@ -372,20 +372,41 @@ assert_eq "$(zfs_arc_max_for_memory_kib 524288)" 268435456
 assert_eq "$(zfs_arc_max_for_memory_kib 2097152)" 536870912
 assert_eq "$(zfs_arc_max_for_memory_kib 8388608)" 1073741824
 
-zfs_package_log=$(mktemp)
-(
-    run_with_apt_lock_wait() { printf '%s\n' "$*" >> "$zfs_package_log"; }
-    function apt-cache {
-        [ "$1" = show ] && [ "$2" = linux-modules-extra-6.8.0-1008-azure ]
-    }
-    function dpkg-query {
-        printf '%s\n' /lib/modules/6.8.0-1008-azure/kernel/fs/zfs/zfs.ko.zst
-    }
-    install_zfs_packages_ubuntu 6.8.0-1008-azure
-)
-assert_contains "$zfs_package_log" "apt-get update -qq"
-assert_contains "$zfs_package_log" "zfsutils-linux linux-modules-extra-6.8.0-1008-azure"
-rm -f "$zfs_package_log"
+assert_zfs_module_package() {
+    local kernel=$1 owner=$2 available package_log
+    shift 2
+    available=$(printf '%s\n' "$@")
+    package_log=$(mktemp)
+    (
+        run_with_apt_lock_wait() { printf '%s\n' "$*" >> "$package_log"; }
+        function apt-cache {
+            [ "$1" = show ] && printf '%s\n' "$available" | grep -Fxq "$2"
+        }
+        function dpkg-query {
+            [ "$1" = -L ] && [ "$2" = "$owner" ] && \
+                printf '%s\n' "/lib/modules/$kernel/kernel/fs/zfs/zfs.ko.zst"
+        }
+        install_zfs_packages_ubuntu "$kernel"
+    )
+    assert_contains "$package_log" "apt-get update -qq"
+    assert_contains "$package_log" "zfsutils-linux $owner"
+    rm -f "$package_log"
+}
+
+assert_zfs_module_package 6.8.12-mainline \
+    linux-main-modules-zfs-6.8.12-mainline \
+    linux-main-modules-zfs-6.8.12-mainline
+assert_zfs_module_package 6.8.0-1008-azure \
+    linux-modules-zfs-6.8.0-1008-azure \
+    linux-modules-zfs-6.8.0-1008-azure
+assert_zfs_module_package 6.8.0-1008-aws \
+    linux-modules-extra-6.8.0-1008-aws \
+    linux-modules-extra-6.8.0-1008-aws
+assert_zfs_module_package 5.15.0-139-generic \
+    linux-modules-5.15.0-139-generic \
+    linux-main-modules-zfs-5.15.0-139-generic \
+    linux-modules-5.15.0-139-generic \
+    linux-modules-extra-5.15.0-139-generic
 
 if missing_kernel_error=$(
     (

@@ -187,33 +187,25 @@ require_host_root_reserve() {
     fi
 }
 
-ubuntu_zfs_module_package() {
-    local kernel=$1 package
-    for package in \
-        "linux-main-modules-zfs-$kernel" \
-        "linux-modules-zfs-$kernel" \
-        "linux-modules-extra-$kernel"; do
-        if apt-cache show "$package" >/dev/null 2>&1; then
-            printf '%s\n' "$package"
-            return
-        fi
-    done
-    return 1
-}
-
 install_zfs_packages_ubuntu() {
-    local kernel=$1 module_package
+    local kernel=$1 package
     if ! run_with_apt_lock_wait apt-get update -qq >/dev/null; then
         error "Could not refresh Ubuntu packages needed for ZFS"
     fi
-    module_package=$(ubuntu_zfs_module_package "$kernel") || \
-        error "Ubuntu has no packaged ZFS module for the running kernel $kernel; install a supported Ubuntu kernel and retry"
-    if ! run_with_apt_lock_wait env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends zfsutils-linux "$module_package"; then
-        error "Could not install zfsutils-linux and running-kernel module package $module_package"
-    fi
-    if ! dpkg-query -L "$module_package" | grep -F "/lib/modules/$kernel/" | grep -Eq '/zfs\.ko(\.[^/]*)?$'; then
-        error "Installed package $module_package does not supply the ZFS module for running kernel $kernel"
-    fi
+    for package in \
+        "linux-main-modules-zfs-$kernel" \
+        "linux-modules-zfs-$kernel" \
+        "linux-modules-$kernel" \
+        "linux-modules-extra-$kernel"; do
+        apt-cache show "$package" >/dev/null 2>&1 || continue
+        if ! run_with_apt_lock_wait env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends zfsutils-linux "$package"; then
+            error "Could not install zfsutils-linux and running-kernel module package $package"
+        fi
+        if dpkg-query -L "$package" | grep -F "/lib/modules/$kernel/" | grep -Eq '/zfs\.ko(\.[^/]*)?$'; then
+            return
+        fi
+    done
+    error "Ubuntu has no packaged ZFS module for the running kernel $kernel; install a supported Ubuntu kernel and retry"
 }
 
 zfs_arc_max_for_memory_kib() {
