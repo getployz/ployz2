@@ -63,18 +63,22 @@ impl VolumeStorage {
     ) -> Result<()> {
         let requested = parse_size(options)?;
         let _guard = self.mutation.lock().await;
+        let _pool_guard = self.pool.lock_mutation().await?;
         match self.pool.one_usable().await? {
             Some(pool) => self.create_volume(&pool, name, requested).await,
-            None => {
-                let pool = self.pool.create(requested).await?;
-                match self
-                    .create_volume(pool.machine_pool(), name, requested)
-                    .await
-                {
-                    Ok(()) => Ok(()),
-                    Err(error) => Err(pool.cleanup(error).await),
+            None => match self.pool.recover().await? {
+                Some(pool) => self.create_volume(&pool, name, requested).await,
+                None => {
+                    let pool = self.pool.create(requested).await?;
+                    match self
+                        .create_volume(pool.machine_pool(), name, requested)
+                        .await
+                    {
+                        Ok(()) => Ok(()),
+                        Err(error) => Err(pool.cleanup(error).await),
+                    }
                 }
-            }
+            },
         }
     }
 }
@@ -115,6 +119,41 @@ impl PoolStorage {
         }
     }
 
+    #[cfg(test)]
+    /// Replaces the production backing path for adapters at the test seam.
+    pub(super) fn with_backing(mut self, backing: PathBuf) -> Self {
+        self.backing = backing;
+        self
+    }
+
+    async fn lock_mutation(&self) -> Result<fs::File> {
+        let mut lock_path = self.backing.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock_path = PathBuf::from(lock_path);
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&lock_path)
+            .map_err(|error| {
+                format!(
+                    "could not open Machine Pool mutation lock {}: {error}",
+                    lock_path.display()
+                )
+            })?;
+        tokio::task::spawn_blocking(move || fs2::FileExt::lock_exclusive(&lock).map(|()| lock))
+            .await
+            .map_err(|error| format!("could not wait for Machine Pool mutation lock: {error}"))?
+            .map_err(|error| {
+                format!(
+                    "could not lock Machine Pool mutations through {}: {error}",
+                    lock_path.display()
+                )
+                .into()
+            })
+    }
+
     /// Selects the sole usable imported Machine Pool, or `None` when none is imported.
     ///
     /// # Errors
@@ -126,6 +165,78 @@ impl PoolStorage {
         Ok(machine_pool::one_usable(&output).map_err(|error| error.to_string())?)
     }
 
+    /// Imports this host's valid unimported backing Pool, or removes an unlabeled stale file.
+    async fn recover(&self) -> Result<Option<MachinePool>> {
+        match self.backing.try_exists() {
+            Ok(false) => return Ok(None),
+            Ok(true) => {}
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect Machine Pool backing file {}: {error}",
+                    self.backing.display()
+                )
+                .into());
+            }
+        }
+        let backing = self.backing_text()?;
+        let output = checked_command(&self.zpool, &["import", "-d", backing]).await?;
+        let pools = machine_pool::importable_names(&output).map_err(|error| error.to_string())?;
+        if pools.is_empty() {
+            let output = checked_command(&self.zpool, &["import", "-D", "-d", backing]).await?;
+            if !machine_pool::importable_names(&output)
+                .map_err(|error| error.to_string())?
+                .is_empty()
+            {
+                return Err(format!(
+                    "Machine Pool backing file {} contains a destroyed Pool label; refusing to replace it",
+                    self.backing.display()
+                )
+                .into());
+            }
+            self.remove_backing().map_err(|error| {
+                format!(
+                    "could not remove unlabeled Machine Pool backing file {}: {error}",
+                    self.backing.display()
+                )
+            })?;
+            return Ok(None);
+        }
+        if pools.as_slice() != [POOL_NAME] {
+            return Err(format!(
+                "Machine Pool backing file {} has ambiguous Pool labels ({}); refusing to replace it",
+                self.backing.display(),
+                pools.join(", ")
+            )
+            .into());
+        }
+        checked_command(
+            &self.zpool,
+            &["import", "-d", backing, "-f", "-N", POOL_NAME],
+        )
+        .await?;
+        match self.one_usable().await? {
+            Some(pool) if pool.name() == POOL_NAME => Ok(Some(pool)),
+            Some(pool) => Err(format!(
+                "imported Machine Pool {POOL_NAME}, but ZFS selected {}",
+                pool.name()
+            )
+            .into()),
+            None => {
+                Err(format!("imported Machine Pool {POOL_NAME}, but ZFS did not report it").into())
+            }
+        }
+    }
+
+    fn backing_text(&self) -> Result<&str> {
+        self.backing.to_str().ok_or_else(|| {
+            format!(
+                "Machine Pool backing path is not valid UTF-8: {}",
+                self.backing.display()
+            )
+            .into()
+        })
+    }
+
     /// Creates one root-backed Machine Pool sized for the requested Volume.
     ///
     /// # Errors
@@ -134,12 +245,7 @@ impl PoolStorage {
     pub(super) async fn create(&self, requested: u64) -> Result<CreatedPool<'_>> {
         let capacity = initial_capacity(requested)?;
         let ashift = self.check_host_root(capacity).await?;
-        let backing = self.backing.to_str().ok_or_else(|| {
-            VolumeError::from(format!(
-                "Machine Pool backing path is not valid UTF-8: {}",
-                self.backing.display()
-            ))
-        })?;
+        let backing = self.backing_text()?;
         fs::OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -345,14 +451,20 @@ impl PoolStorage {
     }
 
     fn cleanup_backing(&self, failure: VolumeError) -> VolumeError {
-        match fs::remove_file(&self.backing) {
+        match self.remove_backing() {
             Ok(()) => failure,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => failure,
             Err(error) => format!(
                 "{failure}; cleanup could not remove Machine Pool backing file {}: {error}",
                 self.backing.display()
             )
             .into(),
+        }
+    }
+
+    fn remove_backing(&self) -> io::Result<()> {
+        match fs::remove_file(&self.backing) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            result => result,
         }
     }
 }

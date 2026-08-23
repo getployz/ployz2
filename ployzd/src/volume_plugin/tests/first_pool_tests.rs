@@ -1,6 +1,9 @@
 //! First-Pool creation behavior through the Docker plugin boundary.
 
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::{
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    time::Duration,
+};
 
 use super::super::pool::{POOL_BACKING_FILE, PoolStorage};
 use super::*;
@@ -30,6 +33,238 @@ async fn first_create_builds_the_pool_and_bounded_volume_in_one_request() {
         1
     );
     assert!(backing.exists());
+}
+
+#[tokio::test]
+async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
+    let test = TestDir::new();
+    fs::write(test.0.join(POOL_BACKING_FILE), "interrupted").unwrap();
+    fs::write(test.0.join("concurrent"), "").unwrap();
+    let first = fake_first_pool(&test.0, 4096);
+    let second = VolumeStorage {
+        pool: first.pool.clone(),
+        zfs: first.zfs.clone(),
+        mutation: Arc::new(Mutex::new(())),
+    };
+    let first_socket = test.0.join("first-plugin.sock");
+    let second_socket = test.0.join("second-plugin.sock");
+    let first_server = tokio::spawn(serve(UnixListener::bind(&first_socket).unwrap(), first));
+    let second_server = tokio::spawn(serve(UnixListener::bind(&second_socket).unwrap(), second));
+
+    let (data, other) = tokio::join!(
+        post(
+            &first_socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"data","Opts":{"size":"1g"}}),
+        ),
+        post(
+            &second_socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"other","Opts":{"size":"1g"}}),
+        ),
+    );
+    assert_eq!(data, json!({"Err":""}));
+    assert_eq!(other, json!({"Err":""}));
+    assert_eq!(
+        post(
+            &first_socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"data","Opts":{"size":"1g"}}),
+        )
+        .await,
+        json!({"Err":""})
+    );
+    first_server.abort();
+    second_server.abort();
+
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert_eq!(log.matches("fallocate -l 2147483648 ").count(), 1);
+    assert_eq!(log.matches("zpool create ").count(), 1);
+    assert_eq!(
+        log.matches("zfs create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz")
+            .count(),
+        1
+    );
+    assert_eq!(
+        log.matches("zfs create -o refquota=1073741824 ployz/ployz/data")
+            .count(),
+        1
+    );
+    assert_eq!(
+        log.matches("zfs create -o refquota=1073741824 ployz/ployz/other")
+            .count(),
+        1
+    );
+    assert!(test.0.join(POOL_BACKING_FILE).exists());
+    assert!(test.0.join("pool").exists());
+}
+
+#[tokio::test]
+async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
+    let test = TestDir::new();
+    fs::write(test.0.join("pause-failed-volume"), "").unwrap();
+    let first = fake_first_pool(&test.0, 4096);
+    let second = VolumeStorage {
+        pool: first.pool.clone(),
+        zfs: first.zfs.clone(),
+        mutation: Arc::new(Mutex::new(())),
+    };
+    let first_socket = test.0.join("first-plugin.sock");
+    let second_socket = test.0.join("second-plugin.sock");
+    let first_server = tokio::spawn(serve(UnixListener::bind(&first_socket).unwrap(), first));
+    let second_server = tokio::spawn(serve(UnixListener::bind(&second_socket).unwrap(), second));
+
+    let failed = tokio::spawn({
+        let socket = first_socket.clone();
+        async move {
+            post(
+                &socket,
+                "/VolumeDriver.Create",
+                json!({"Name":"data","Opts":{"size":"1g"}}),
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !test.0.join("pool-visible").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let succeeds = tokio::spawn({
+        let socket = second_socket.clone();
+        async move {
+            post(
+                &socket,
+                "/VolumeDriver.Create",
+                json!({"Name":"other","Opts":{"size":"1g"}}),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!test.0.join("other").exists());
+    fs::write(test.0.join("continue-failure"), "").unwrap();
+
+    assert!(!error(&failed.await.unwrap()).is_empty());
+    assert_eq!(succeeds.await.unwrap(), json!({"Err":""}));
+    first_server.abort();
+    second_server.abort();
+
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert_eq!(log.matches("zpool create ").count(), 2);
+    assert_eq!(log.matches("zpool destroy -f ployz").count(), 1);
+    assert!(test.0.join("pool").exists());
+    assert!(test.0.join("other").exists());
+}
+
+#[tokio::test]
+async fn valid_unimported_backing_pool_is_imported_and_reused() {
+    let test = TestDir::new();
+    fs::write(test.0.join(POOL_BACKING_FILE), "existing Pool").unwrap();
+    fs::write(test.0.join("allocated"), "2147483648").unwrap();
+    fs::write(test.0.join("importable"), "").unwrap();
+
+    assert_eq!(
+        create_first_volume(&test, 4096, "1g").await,
+        json!({"Err":""})
+    );
+
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert!(log.contains(&format!(
+        "zpool import -d {} -f -N ployz",
+        test.0.join(POOL_BACKING_FILE).display()
+    )));
+    assert!(!log.contains("fallocate"));
+    assert!(!log.contains("zpool create"));
+    assert_eq!(
+        fs::read_to_string(test.0.join(POOL_BACKING_FILE)).unwrap(),
+        "existing Pool"
+    );
+}
+
+#[tokio::test]
+async fn unlabeled_stale_backing_is_replaced() {
+    let test = TestDir::new();
+    fs::write(test.0.join(POOL_BACKING_FILE), "interrupted").unwrap();
+
+    assert_eq!(
+        create_first_volume(&test, 4096, "1g").await,
+        json!({"Err":""})
+    );
+
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert_eq!(log.matches("zpool import -d ").count(), 1);
+    assert_eq!(log.matches("fallocate -l 2147483648 ").count(), 1);
+    assert_eq!(log.matches("zpool create ").count(), 1);
+}
+
+#[tokio::test]
+async fn failed_import_preserves_the_backing_file() {
+    let test = TestDir::new();
+    fs::write(test.0.join(POOL_BACKING_FILE), "existing Pool").unwrap();
+    fs::write(test.0.join("importable"), "").unwrap();
+    fs::write(test.0.join("fail-import"), "").unwrap();
+
+    let response = create_first_volume(&test, 4096, "1g").await;
+
+    assert!(error(&response).contains("zpool import"));
+    assert_eq!(
+        fs::read_to_string(test.0.join(POOL_BACKING_FILE)).unwrap(),
+        "existing Pool"
+    );
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert!(!log.contains("fallocate"));
+    assert!(!log.contains("zpool create"));
+    assert!(!log.contains("zpool destroy"));
+}
+
+#[tokio::test]
+async fn ambiguous_or_destroyed_pool_labels_are_preserved() {
+    for marker in ["foreign", "destroyed"] {
+        let test = TestDir::new();
+        fs::write(test.0.join(POOL_BACKING_FILE), "labeled Pool").unwrap();
+        fs::write(test.0.join(marker), "").unwrap();
+
+        let response = create_first_volume(&test, 4096, "1g").await;
+
+        assert!(!error(&response).is_empty());
+        assert_eq!(
+            fs::read_to_string(test.0.join(POOL_BACKING_FILE)).unwrap(),
+            "labeled Pool"
+        );
+        let log = fs::read_to_string(test.0.join("commands")).unwrap();
+        assert!(!log.contains("fallocate"));
+        assert!(!log.contains("zpool create"));
+        assert!(!log.contains("zpool destroy"));
+    }
+}
+
+#[tokio::test]
+async fn retry_after_pool_creation_completes_the_interrupted_volume() {
+    let test = TestDir::new();
+    fs::write(test.0.join(POOL_BACKING_FILE), "existing Pool").unwrap();
+    fs::write(test.0.join("allocated"), "2147483648").unwrap();
+    fs::write(test.0.join("pool"), "").unwrap();
+
+    assert_eq!(
+        create_first_volume(&test, 4096, "1g").await,
+        json!({"Err":""})
+    );
+
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert!(!log.contains("fallocate"));
+    assert!(!log.contains("zpool create"));
+    assert_eq!(
+        log.matches("zfs create -o refquota=1073741824 ployz/ployz/data")
+            .count(),
+        1
+    );
+    assert_eq!(
+        fs::read_to_string(test.0.join(POOL_BACKING_FILE)).unwrap(),
+        "existing Pool"
+    );
 }
 
 #[tokio::test]
@@ -129,6 +364,15 @@ fn fake_first_pool(directory: &Path, physical_block_size: u64) -> VolumeStorage 
     let sparse = directory.join("sparse");
     let fail_pool = directory.join("fail-pool");
     let fail_volume = directory.join("fail-volume");
+    let importable = directory.join("importable");
+    let fail_import = directory.join("fail-import");
+    let pause_failed_volume = directory.join("pause-failed-volume");
+    let pool_visible = directory.join("pool-visible");
+    let continue_failure = directory.join("continue-failure");
+    let foreign = directory.join("foreign");
+    let destroyed = directory.join("destroyed");
+    let concurrent = directory.join("concurrent");
+    let other = directory.join("other");
     let script_body = format!(
         r#"#!/bin/sh
 set -eu
@@ -153,10 +397,26 @@ case "$name" in
     ;;
   zpool)
     case "$*" in
-      'list -Hp -o name,health,readonly') [ ! -e '{pool}' ] || printf 'ployz\tONLINE\toff\n' ;;
+      'import -d {backing}')
+        if [ -e '{foreign}' ]; then printf '   pool: foreign\n'
+        elif [ -e '{importable}' ]; then printf '   pool: ployz\n'
+        fi
+        ;;
+      'import -D -d {backing}') [ ! -e '{destroyed}' ] || printf '   pool: ployz\n' ;;
+      'import -d {backing} -f -N ployz')
+        [ ! -e '{fail_import}' ] || {{ echo 'import failed' >&2; exit 2; }}
+        touch '{pool}'
+        ;;
+      'list -Hp -o name,health,readonly')
+        if [ -e '{concurrent}' ] && [ ! -e '{pool}' ]; then
+          sleep 0.1
+        else
+          [ ! -e '{pool}' ] || printf 'ployz\tONLINE\toff\n'
+        fi
+        ;;
       'list -H -o name') [ ! -e '{pool}' ] || printf 'ployz\n' ;;
       create*) touch '{pool}'; [ ! -e '{fail_pool}' ] || exit 2 ;;
-      'destroy -f ployz') rm -f '{pool}' '{root}' '{volume}' ;;
+      'destroy -f ployz') rm -f '{pool}' '{root}' '{volume}' '{other}' ;;
       *) echo "unexpected fake zpool command: $*" >&2; exit 2 ;;
     esac
     ;;
@@ -166,12 +426,20 @@ case "$name" in
         available=$(cat '{allocated}')
         printf 'ployz\t0\t24576\t%s\t/ployz\tyes\toff\n' "$available"
         [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t24576\t%s\t/var/lib/ployz-volumes\tno\toff\n' "$available"
+        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t1073741824\t24576\t%s\t/var/lib/ployz-volumes/data\tno\toff\n' "$available"
+        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t1073741824\t24576\t%s\t/var/lib/ployz-volumes/other\tno\toff\n' "$available"
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
       'create -o refquota='*' ployz/ployz/data')
+        if [ -e '{pause_failed_volume}' ]; then
+          touch '{pool_visible}'
+          while [ ! -e '{continue_failure}' ]; do sleep 0.01; done
+          exit 2
+        fi
         [ ! -e '{fail_volume}' ] || exit 2
         touch '{volume}'
         ;;
+      'create -o refquota='*' ployz/ployz/other') touch '{other}' ;;
       *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
     esac
     ;;
@@ -187,6 +455,16 @@ esac
         sparse = sparse.display(),
         fail_pool = fail_pool.display(),
         fail_volume = fail_volume.display(),
+        importable = importable.display(),
+        fail_import = fail_import.display(),
+        pause_failed_volume = pause_failed_volume.display(),
+        pool_visible = pool_visible.display(),
+        continue_failure = continue_failure.display(),
+        foreign = foreign.display(),
+        destroyed = destroyed.display(),
+        concurrent = concurrent.display(),
+        other = other.display(),
+        backing = directory.join(POOL_BACKING_FILE).display(),
     );
     fs::write(&script, script_body).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
