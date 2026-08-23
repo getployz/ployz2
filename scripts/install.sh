@@ -148,6 +148,193 @@ install_prerequisites() {
     fi
 }
 
+operating_system_id() {
+    local id
+    [ -r /etc/os-release ] || return 1
+    id=$(sed -n 's/^ID=//p' /etc/os-release | head -n1)
+    id=${id#\"}
+    id=${id%\"}
+    [ -n "$id" ] || return 1
+    printf '%s\n' "$id"
+}
+
+container_virtualization() {
+    systemd-detect-virt --container 2>/dev/null || true
+}
+
+lxc_is_unprivileged() {
+    local inside outside _length
+    read -r inside outside _length < /proc/self/uid_map || return 1
+    [ "$inside" = 0 ] && [ "$outside" != 0 ]
+}
+
+zfs_smoke_bytes() {
+    echo 134217728
+}
+
+require_host_root_reserve() {
+    local allocation=$1 root_size='' root_available='' reserve
+    read -r root_size root_available < <(df -B1 --output=size,avail / | tail -n1) || \
+        error "Could not inspect host-root capacity for ZFS storage preparation"
+    case "$root_size:$root_available" in
+        *[!0-9:]* | :* | *:) error "Could not read host-root capacity for ZFS storage preparation" ;;
+    esac
+    reserve=$((root_size / 4))
+    [ "$reserve" -ge 10737418240 ] || reserve=10737418240
+    if [ "$root_available" -lt $((reserve + allocation)) ]; then
+        error "Host root has ${root_available} bytes available; ZFS validation needs ${allocation} bytes while preserving the ${reserve}-byte host-root reserve"
+    fi
+}
+
+ubuntu_zfs_module_package() {
+    local kernel=$1 package
+    for package in \
+        "linux-main-modules-zfs-$kernel" \
+        "linux-modules-zfs-$kernel" \
+        "linux-modules-extra-$kernel"; do
+        if apt-cache show "$package" >/dev/null 2>&1; then
+            printf '%s\n' "$package"
+            return
+        fi
+    done
+    return 1
+}
+
+install_zfs_packages_ubuntu() {
+    local kernel=$1 module_package
+    if ! run_with_apt_lock_wait apt-get update -qq >/dev/null; then
+        error "Could not refresh Ubuntu packages needed for ZFS"
+    fi
+    module_package=$(ubuntu_zfs_module_package "$kernel") || \
+        error "Ubuntu has no packaged ZFS module for the running kernel $kernel; install a supported Ubuntu kernel and retry"
+    if ! run_with_apt_lock_wait env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends zfsutils-linux "$module_package"; then
+        error "Could not install zfsutils-linux and running-kernel module package $module_package"
+    fi
+    if ! dpkg-query -L "$module_package" | grep -F "/lib/modules/$kernel/" | grep -Eq '/zfs\.ko(\.[^/]*)?$'; then
+        error "Installed package $module_package does not supply the ZFS module for running kernel $kernel"
+    fi
+}
+
+zfs_arc_max_for_memory_kib() {
+    local memory_kib=$1 cap
+    cap=$((memory_kib * 1024 / 4))
+    [ "$cap" -ge 268435456 ] || cap=268435456
+    [ "$cap" -le 1073741824 ] || cap=1073741824
+    printf '%s\n' "$cap"
+}
+
+zfs_arc_max() {
+    local memory_kib
+    memory_kib=$(awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo)
+    case "$memory_kib" in '' | *[!0-9]*) error "Could not read total RAM for the ZFS ARC limit" ;; esac
+    zfs_arc_max_for_memory_kib "$memory_kib"
+}
+
+persist_zfs_arc_max() {
+    local cap=$1 config
+    config=$(mktemp)
+    printf 'options zfs zfs_arc_max=%s\n' "$cap" > "$config"
+    if ! install -D -m 0644 "$config" /etc/modprobe.d/ployz-zfs.conf; then
+        rm -f "$config"
+        error "Could not persist the ZFS ARC limit in /etc/modprobe.d/ployz-zfs.conf"
+    fi
+    rm -f "$config"
+}
+
+set_and_verify_zfs_arc_max() {
+    local cap=$1 parameter=/sys/module/zfs/parameters/zfs_arc_max observed
+    [ -w "$parameter" ] || error "Loaded ZFS module does not expose a writable zfs_arc_max parameter"
+    printf '%s\n' "$cap" > "$parameter" || error "Could not apply zfs_arc_max=$cap to the loaded ZFS module"
+    observed=$(cat "$parameter") || error "Could not read zfs_arc_max from the loaded ZFS module"
+    [ "$observed" = "$cap" ] || \
+        error "Loaded ZFS module reports zfs_arc_max=$observed instead of the required $cap"
+}
+
+validate_zfs() {
+    local bytes backing pool blocks block_size allocated mount_target
+    local pool_created=false failure='' cleanup_failure=''
+    bytes=$(zfs_smoke_bytes)
+    require_host_root_reserve "$bytes"
+    if ! backing=$(mktemp /var/tmp/ployz-zfs-smoke.XXXXXX); then
+        error "Could not create a temporary host-root backing file for ZFS validation"
+    fi
+    pool="ployz-smoke-${BASHPID:-$$}-${RANDOM}"
+
+    if ! fallocate -l "$bytes" "$backing"; then
+        failure="Could not preallocate the non-sparse ZFS smoke backing file $backing"
+    elif ! read -r blocks block_size < <(stat -c '%b %B' "$backing"); then
+        failure="Could not verify allocation of ZFS smoke backing file $backing"
+    else
+        allocated=$((blocks * block_size))
+        [ "$allocated" -ge "$bytes" ] || \
+            failure="ZFS smoke backing file $backing is sparse: $allocated of $bytes bytes are allocated"
+    fi
+    if [ -z "$failure" ]; then
+        mount_target=$(findmnt -n -o TARGET -T "$backing" 2>/dev/null || true)
+        [ "$mount_target" = / ] || \
+            failure="ZFS smoke backing file $backing is on $mount_target instead of the host root filesystem"
+    fi
+    if [ -z "$failure" ]; then
+        if zpool create -f -m none -o cachefile=none "$pool" "$backing"; then
+            pool_created=true
+        else
+            failure="Could not create temporary ZFS smoke Pool $pool on $backing"
+        fi
+    fi
+    if [ -z "$failure" ] && ! zpool list -Hp -o name,size,alloc,free "$pool" >/dev/null; then
+        failure="Could not query temporary ZFS smoke Pool $pool"
+    fi
+    if [ -z "$failure" ] && ! zfs list -Hp -o name,mountpoint "$pool" >/dev/null; then
+        failure="Could not query temporary ZFS smoke dataset $pool"
+    fi
+
+    if [ "$pool_created" = true ] || zpool list -H "$pool" >/dev/null 2>&1; then
+        if ! zpool destroy -f "$pool"; then
+            cleanup_failure="Could not destroy temporary ZFS smoke Pool $pool; destroy it, then remove $backing"
+        fi
+    fi
+    if [ -z "$cleanup_failure" ] && zpool list -H "$pool" >/dev/null 2>&1; then
+        cleanup_failure="Temporary ZFS smoke Pool $pool remains after destroy; destroy it, then remove $backing"
+    elif [ -z "$cleanup_failure" ] && zfs list -H "$pool" >/dev/null 2>&1; then
+        cleanup_failure="Temporary ZFS smoke dataset $pool remains after destroy; destroy its Pool, then remove $backing"
+    elif [ -z "$cleanup_failure" ] && findmnt -rn -t zfs -S "$pool" >/dev/null 2>&1; then
+        cleanup_failure="Temporary ZFS smoke mount for $pool remains after destroy; unmount it, destroy the Pool, then remove $backing"
+    elif [ -z "$cleanup_failure" ] && ! rm -f "$backing"; then
+        cleanup_failure="Could not remove temporary ZFS smoke backing file $backing"
+    fi
+    if [ -z "$cleanup_failure" ] && [ -e "$backing" ]; then
+        cleanup_failure="Temporary ZFS smoke backing file $backing remains after cleanup"
+    fi
+    if [ -n "$cleanup_failure" ]; then
+        [ -z "$failure" ] || cleanup_failure="$cleanup_failure (after: $failure)"
+        error "$cleanup_failure"
+    fi
+    [ -z "$failure" ] || error "$failure"
+}
+
+prepare_zfs() {
+    local os_id container kernel cap
+    os_id=$(operating_system_id) || error "Could not identify the Linux distribution for ZFS storage preparation"
+    [ "$os_id" = ubuntu ] || error "ZFS storage preparation is not supported on $os_id yet; use a supported Ubuntu release"
+    container=$(container_virtualization)
+    if [ "$container" = openvz ] || { [ -d /proc/vz ] && [ ! -d /proc/bc ]; }; then
+        error "OpenVZ does not allow this Machine to load the host ZFS kernel module"
+    fi
+    if [ "$container" = lxc ] && lxc_is_unprivileged; then
+        error "Unprivileged LXC does not allow this Machine to load the host ZFS kernel module"
+    fi
+    command_exists apt-get || error "Ubuntu apt-get is required for ZFS storage preparation"
+    kernel=$(uname -r)
+    require_host_root_reserve "$(zfs_smoke_bytes)"
+    install_zfs_packages_ubuntu "$kernel"
+    cap=$(zfs_arc_max)
+    persist_zfs_arc_max "$cap"
+    modprobe zfs || error "modprobe zfs failed for running kernel $kernel; verify kernel module support and container privileges"
+    set_and_verify_zfs_arc_max "$cap"
+    validate_zfs
+    log "ZFS storage preparation validated; no Machine Pool was created"
+}
+
 install_docker() {
     if command_exists dockerd; then
         if [ "$INSTALL_ONLY" != true ] && ! docker info -f '{{ .DriverStatus }}' 2>/dev/null | grep -q io.containerd.snapshotter; then
