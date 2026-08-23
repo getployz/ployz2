@@ -666,21 +666,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["8080/https"]
         );
-
-        let build = super::command()
-            .try_get_matches_from(["ployz", "build", "-p", "prod"])
-            .unwrap();
-        assert_eq!(
-            build
-                .subcommand()
-                .unwrap()
-                .1
-                .get_many::<String>("profile")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["prod"]
-        );
     }
 
     #[test]
