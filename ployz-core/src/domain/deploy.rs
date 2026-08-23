@@ -44,32 +44,7 @@ pub struct ServiceAttempt {
 }
 
 /// A positive maximum byte count for one Provisioned Volume.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ProvisionedVolumeMaximumBytes(NonZeroU64);
-
-impl ProvisionedVolumeMaximumBytes {
-    /// Construct a Provisioned Volume bound, or `None` for zero bytes.
-    #[must_use]
-    pub const fn new(bytes: u64) -> Option<Self> {
-        match NonZeroU64::new(bytes) {
-            Some(bytes) => Some(Self(bytes)),
-            None => None,
-        }
-    }
-
-    /// The positive maximum byte count.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0.get()
-    }
-}
-
-impl Display for ProvisionedVolumeMaximumBytes {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
+pub type ProvisionedVolumeMaximumBytes = NonZeroU64;
 
 /// One Provisioned Volume declaration in a Deploy Intent.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
