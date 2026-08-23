@@ -1,9 +1,12 @@
+//! Fake ZFS command adapter for volume-plugin route tests.
+
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
+/// Creates fake `zpool` and `zfs` programs backed by marker files in `directory`.
 pub(super) fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
     let script = directory.join("fake-zfs");
     let commands = directory.join("commands");

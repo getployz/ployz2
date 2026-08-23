@@ -218,10 +218,10 @@ impl VolumeStorage {
         }
 
         let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name());
-        let descendant = format!("{requested}/");
+        let descendant_prefix = format!("{requested}/");
         if let Some(dataset) = datasets
             .iter()
-            .find(|dataset| dataset.name.starts_with(&descendant))
+            .find(|dataset| dataset.name.starts_with(&descendant_prefix))
         {
             return Err(format!(
                 "ZFS dataset {} is a descendant of Provisioned Volume {name}; remove it before retrying",

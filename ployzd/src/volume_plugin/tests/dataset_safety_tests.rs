@@ -1,3 +1,5 @@
+//! Provisioned Volume dataset safety behavior through Docker plugin routes.
+
 use super::*;
 
 #[tokio::test]
@@ -41,7 +43,7 @@ async fn mount_and_path_reject_a_read_only_volume() {
 
     for route in ["/VolumeDriver.Mount", "/VolumeDriver.Path"] {
         let response = post(&socket, route, json!({"Name":"data","ID":"container"})).await;
-        assert_eq!(response["Mountpoint"], "");
+        assert_eq!(response.get("Mountpoint").and_then(Value::as_str), Some(""));
         let message = error(&response);
         assert!(message.contains("tank/ployz/data"));
         assert!(message.contains("read-only"));
@@ -67,7 +69,7 @@ async fn mount_and_path_reject_a_volume_with_a_cleared_refquota() {
 
     for route in ["/VolumeDriver.Mount", "/VolumeDriver.Path"] {
         let response = post(&socket, route, json!({"Name":"data","ID":"container"})).await;
-        assert_eq!(response["Mountpoint"], "");
+        assert_eq!(response.get("Mountpoint").and_then(Value::as_str), Some(""));
         let message = error(&response);
         assert!(message.contains("tank/ployz/data"));
         assert!(message.contains("no Provisioned Volume bound"));
