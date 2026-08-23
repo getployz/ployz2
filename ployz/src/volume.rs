@@ -14,18 +14,22 @@ pub(crate) struct ProvisionedVolumeSize {
     bytes: u64,
 }
 
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub(crate) enum ProvisionedVolumeSizeError {
+    #[error("invalid Volume size {0:?}; use a positive integer followed by k, m, g, or t")]
+    Invalid(String),
+    #[error("Volume size {0:?} overflows bytes")]
+    Overflow(String),
+}
+
 impl ProvisionedVolumeSize {
     /// Parses a positive integer followed by a binary `k`, `m`, `g`, or `t` suffix.
     ///
     /// # Errors
     ///
     /// Returns an error for any other spelling, zero, or a byte count above `u64`.
-    pub(crate) fn parse(value: &str) -> Result<Self, String> {
-        let invalid = || {
-            format!(
-                "invalid Volume size {value:?}; use a positive integer followed by k, m, g, or t"
-            )
-        };
+    pub(crate) fn parse(value: &str) -> Result<Self, ProvisionedVolumeSizeError> {
+        let invalid = || ProvisionedVolumeSizeError::Invalid(value.to_owned());
         let (amount, multiplier) = match value.as_bytes().last() {
             Some(b'k') => (&value[..value.len() - 1], 1024_u64),
             Some(b'm') => (&value[..value.len() - 1], 1024_u64.pow(2)),
@@ -36,7 +40,7 @@ impl ProvisionedVolumeSize {
         let amount = amount.parse::<NonZeroU64>().map_err(|_| invalid())?.get();
         let bytes = amount
             .checked_mul(multiplier)
-            .ok_or_else(|| format!("Volume size {value:?} overflows bytes"))?;
+            .ok_or_else(|| ProvisionedVolumeSizeError::Overflow(value.to_owned()))?;
         Ok(Self {
             option: value.to_owned(),
             bytes,
