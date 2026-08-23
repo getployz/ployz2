@@ -6,9 +6,15 @@ use std::{
 };
 
 use axum::{Json, Router, extract::State, routing::post};
-use ployzd::machine_pool::{self, MachinePool};
+use ployzd::machine_pool::MachinePool;
 use serde::{Deserialize, Serialize};
 use tokio::{net::UnixListener, process::Command, sync::Mutex};
+
+#[cfg(test)]
+mod first_pool_tests;
+mod pool;
+
+use pool::PoolStorage;
 
 const DATASET_ROOT: &str = "ployz";
 const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
@@ -62,7 +68,7 @@ impl DockerVolumeName {
 
 #[derive(Clone)]
 struct VolumeStorage {
-    zpool: PathBuf,
+    pool: PoolStorage,
     zfs: PathBuf,
     mutation: Arc<Mutex<()>>,
 }
@@ -74,7 +80,7 @@ impl VolumeStorage {
 
     fn with_programs(zpool: impl Into<PathBuf>, zfs: impl Into<PathBuf>) -> Self {
         Self {
-            zpool: zpool.into(),
+            pool: PoolStorage::new(zpool),
             zfs: zfs.into(),
             mutation: Arc::new(Mutex::new(())),
         }
@@ -87,8 +93,28 @@ impl VolumeStorage {
     ) -> Result<()> {
         let requested = parse_size(options)?;
         let _guard = self.mutation.lock().await;
-        let pool = self.one_pool().await?;
-        let datasets = self.datasets(&pool).await?;
+        match self.pool.one().await? {
+            Some(pool) => self.create_volume(&pool, name, requested).await,
+            None => {
+                let pool = self.pool.create(requested).await?;
+                match self
+                    .create_volume(pool.machine_pool(), name, requested)
+                    .await
+                {
+                    Ok(()) => Ok(()),
+                    Err(error) => Err(pool.cleanup(error).await),
+                }
+            }
+        }
+    }
+
+    async fn create_volume(
+        &self,
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+        requested: u64,
+    ) -> Result<()> {
+        let datasets = self.datasets(pool).await?;
         let root = format!("{}/{DATASET_ROOT}", pool.name());
         let volume = format!("{root}/{name}");
 
@@ -154,7 +180,11 @@ impl VolumeStorage {
 
     async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
         let _guard = self.mutation.lock().await;
-        let pool = self.one_pool().await?;
+        let pool = self
+            .pool
+            .one()
+            .await?
+            .ok_or_else(|| VolumeError::from("no usable existing Machine Pool"))?;
         let volume = format!("{}/{DATASET_ROOT}/{name}", pool.name());
         let expected_mountpoint = name.mountpoint();
         let mut dataset = self
@@ -178,16 +208,6 @@ impl VolumeStorage {
             return Err(format!("Provisioned Volume {name} did not mount").into());
         }
         Ok(dataset.mountpoint)
-    }
-
-    async fn one_pool(&self) -> Result<MachinePool> {
-        let output =
-            checked_command(&self.zpool, &["list", "-Hp", "-o", "name,health,readonly"]).await?;
-        machine_pool::one_usable(&output)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| {
-                "no usable existing Machine Pool; automatic Pool creation is tracked by #541".into()
-            })
     }
 
     async fn datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
@@ -739,7 +759,6 @@ mod tests {
     #[tokio::test]
     async fn create_uses_the_same_pool_eligibility_cases_as_observation() {
         for (pools, expected_error) in [
-            ("", Some("no usable existing Machine Pool")),
             ("tank\tONLINE\toff\n", None),
             (
                 "tank\tONLINE\ton\n",
