@@ -384,7 +384,11 @@ fn machine_init() -> Command {
 fn project() -> Command {
     base("project", "Manage projects")
         .arg_required_else_help(true)
-        .subcommand(base("ls", "List projects").visible_alias("list"))
+        .subcommand(
+            base("ls", "List projects")
+                .visible_alias("list")
+                .arg(value("output", Some('o')).value_parser(["json"])),
+        )
         .subcommand(
             base("rm", "Remove a project")
                 .visible_aliases(["remove", "delete"])
@@ -409,15 +413,17 @@ fn proxy() -> Command {
 }
 
 fn ps() -> Command {
-    base("ps", "List service containers").arg(
-        value("sort", Some('s'))
-            .default_value("service")
-            .value_parser(["service", "machine", "health"]),
-    )
+    base("ps", "List service containers")
+        .arg(
+            value("sort", Some('s'))
+                .default_value("service")
+                .value_parser(["service", "machine", "health"]),
+        )
+        .arg(value("output", Some('o')).value_parser(["json"]))
 }
 
 fn service_ls(name: &'static str) -> Command {
-    base(name, "List services")
+    base(name, "List services").arg(value("output", Some('o')).value_parser(["json"]))
 }
 
 fn service_rm(name: &'static str) -> Command {
@@ -518,7 +524,8 @@ fn volume() -> Command {
             base("ls", "List volumes")
                 .visible_alias("list")
                 .arg(many("machine", Some('m')))
-                .arg(switch("quiet", Some('q'))),
+                .arg(switch("quiet", Some('q')))
+                .arg(value("output", Some('o')).value_parser(["json"])),
         )
         .subcommand(
             base("rm", "Remove volumes")
