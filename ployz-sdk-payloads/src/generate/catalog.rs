@@ -51,7 +51,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ("MachinePath", Shape::Alias("string")),
     ("ContainerPath", Shape::Alias("string")),
     ("ServiceVolumeReference", Shape::Alias("string")),
-    ("ProvisionedVolumeMaximumBytes", Shape::Alias("number")),
+    ("ProvisionedVolumeMaximumBytes", Shape::Alias("string")),
     ("MachineTarget", Shape::Alias("string")),
     ("PidMode", Shape::Alias("string")),
     (

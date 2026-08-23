@@ -475,7 +475,7 @@
     ]
   },
   "provisioned_volume": {
-    "maximum_bytes": 1073741824,
+    "maximum_bytes": "1073741824",
     "reference": "data",
     "service": "api"
   },

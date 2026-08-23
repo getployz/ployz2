@@ -81,6 +81,34 @@ fn conflicting_bounds_fail_even_when_the_reference_does_not_resolve() {
 }
 
 #[test]
+fn duplicate_target_services_fail_before_volume_resolution() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let mut intent = DeployIntent::new(
+        ProjectName::parse("app").unwrap(),
+        vec![requested.clone(), requested],
+        PlanOptions::default(),
+    );
+    intent.provisioned_volumes.push(ProvisionedVolume {
+        service: ServiceName::parse("api").unwrap(),
+        reference: ServiceVolumeReference::parse("data").unwrap(),
+        maximum_bytes: maximum_bytes(1_073_741_824),
+    });
+
+    assert_eq!(
+        preview_deploy(
+            &intent,
+            &DeploySnapshot::default(),
+            IngressContext::default(),
+        ),
+        Err(PlanError::DuplicateTargetService {
+            service: ServiceName::parse("api").unwrap(),
+        })
+    );
+}
+
+#[test]
 fn already_owned_volume_names_are_not_prefixed_again() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),

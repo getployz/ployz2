@@ -163,6 +163,7 @@ fn plan_operations(
 }
 
 fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundIntent, PlanError> {
+    let specs = specs_to_plan(intent)?;
     let target: Vec<_> = intent
         .target
         .iter()
@@ -171,7 +172,7 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
         .collect();
     validate_provisioned_volume_bounds(&target, &intent.provisioned_volumes)?;
     let mut requested = Vec::new();
-    for spec in specs_to_plan(intent)? {
+    for spec in specs {
         let scoped = target
             .iter()
             .find(|candidate| candidate.name == spec.name)
@@ -446,11 +447,14 @@ fn order_included<'intent>(
         Ok(())
     }
 
-    let by_name = intent
-        .target
-        .iter()
-        .map(|spec| (&spec.name, spec))
-        .collect::<BTreeMap<_, _>>();
+    let mut by_name = BTreeMap::new();
+    for spec in &intent.target {
+        if by_name.insert(&spec.name, spec).is_some() {
+            return Err(PlanError::DuplicateTargetService {
+                service: spec.name.clone(),
+            });
+        }
+    }
     let mut ordered = Vec::new();
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();

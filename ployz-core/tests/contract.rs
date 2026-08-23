@@ -39,15 +39,24 @@ fn provisioned_volume_bounds_are_required_positive_byte_counts() {
     let valid = json!({
         "service": "api",
         "reference": "data",
-        "maximum_bytes": 1_073_741_824
+        "maximum_bytes": "1073741824"
     });
     let volume: ProvisionedVolume = serde_json::from_value(valid.clone()).unwrap();
     assert_eq!(volume.maximum_bytes.get(), 1_073_741_824);
     assert_eq!(serde_json::to_value(volume).unwrap(), valid);
+    let exact_u64_max = json!({
+        "service": "api",
+        "reference": "data",
+        "maximum_bytes": "18446744073709551615"
+    });
+    let volume: ProvisionedVolume = serde_json::from_value(exact_u64_max.clone()).unwrap();
+    assert_eq!(volume.maximum_bytes.get(), u64::MAX);
+    assert_eq!(serde_json::to_value(volume).unwrap(), exact_u64_max);
     for invalid in [
         r#"{"service":"api","reference":"data"}"#,
-        r#"{"service":"api","reference":"data","maximum_bytes":0}"#,
-        r#"{"service":"api","reference":"data","maximum_bytes":18446744073709551616}"#,
+        r#"{"service":"api","reference":"data","maximum_bytes":"0"}"#,
+        r#"{"service":"api","reference":"data","maximum_bytes":"18446744073709551616"}"#,
+        r#"{"service":"api","reference":"data","maximum_bytes":9007199254740993}"#,
     ] {
         assert!(serde_json::from_str::<ProvisionedVolume>(invalid).is_err());
     }

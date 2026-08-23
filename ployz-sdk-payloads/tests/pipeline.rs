@@ -456,7 +456,7 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type ProvisionedVolume = Additive<{"));
     assert!(dts.contains("service: ServiceName"));
     assert!(dts.contains("reference: ServiceVolumeReference"));
-    assert!(dts.contains("export type ProvisionedVolumeMaximumBytes = number"));
+    assert!(dts.contains("export type ProvisionedVolumeMaximumBytes = string"));
     assert!(dts.contains("maximum_bytes: ProvisionedVolumeMaximumBytes"));
     assert!(dts.contains("provisioned_volumes: ProvisionedVolume[]"));
     assert!(dts.contains("export type RequestedServiceSpec = Additive<{"));

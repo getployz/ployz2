@@ -258,6 +258,12 @@ pub enum PlanError {
     ServiceModeCannotChange,
     #[error("mounted Service Volumes disagree about Docker Volume {name}")]
     ConflictingDockerVolumeDefinitions { name: DockerVolumeName },
+    /// Two target specs declare the same Service Name.
+    #[error("duplicate target Service {service}")]
+    DuplicateTargetService {
+        /// Service Name repeated in the Deploy Intent target.
+        service: ServiceName,
+    },
     /// Two references resolve to one Docker Volume but declare different bounds.
     #[error(
         "Provisioned Volume declarations for Docker Volume {name} conflict: {existing_maximum_bytes} and {conflicting_maximum_bytes} byte maximums"

@@ -60,7 +60,7 @@ export type ContainerPath = string;
 
 export type ServiceVolumeReference = string;
 
-export type ProvisionedVolumeMaximumBytes = number;
+export type ProvisionedVolumeMaximumBytes = string;
 
 export type MachineTarget = string;
 

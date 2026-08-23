@@ -54,7 +54,33 @@ pub struct ProvisionedVolume {
     /// Service-local reference that resolves to the Docker Volume declaration.
     pub reference: ServiceVolumeReference,
     /// Required positive storage bound in bytes.
+    #[serde(with = "nonzero_u64_string")]
     pub maximum_bytes: ProvisionedVolumeMaximumBytes,
+}
+
+mod nonzero_u64_string {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    use super::ProvisionedVolumeMaximumBytes;
+
+    pub fn serialize<S>(
+        value: &ProvisionedVolumeMaximumBytes,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(value)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<ProvisionedVolumeMaximumBytes, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(D::Error::custom)
+    }
 }
 
 /// Complete desired Services plus which of those Services this command applies.
