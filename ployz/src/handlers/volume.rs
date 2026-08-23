@@ -23,8 +23,19 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     // EO-011: an explicit non-empty name is required; anonymous Docker Volumes stay unsupported.
     let name = DockerVolumeName::parse(required(matches, "volume-name")?)?;
-    let driver = required(matches, "driver")?;
-    let options = parse_assignments(string_values(matches, "opt").iter().map(String::as_str))?;
+    let size = matches
+        .get_one::<crate::volume::ProvisionedVolumeSize>("size")
+        .cloned();
+    let (driver, options) = match size {
+        Some(size) => (
+            "ployz".to_owned(),
+            BTreeMap::from([("size".to_owned(), size.into_string())]),
+        ),
+        None => (
+            required(matches, "driver")?,
+            parse_assignments(string_values(matches, "opt").iter().map(String::as_str))?,
+        ),
+    };
     let labels = parse_assignments(string_values(matches, "label").iter().map(String::as_str))?;
     let selector = matches.get_one::<String>("machine").cloned();
     with_client(root, |client| {

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, future::Future};
+use std::{collections::BTreeMap, future::Future, str::FromStr};
 
 use ployz_core::{
     DockerVolume, DockerVolumeId, DockerVolumeName, MachineFailure, MachineId, MachineName,
@@ -6,6 +6,52 @@ use ployz_core::{
 };
 use serde::Serialize;
 use thiserror::Error;
+
+/// A positive Provisioned Volume bound accepted by Docker's Ployz driver.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProvisionedVolumeSize(String);
+
+/// Why a Provisioned Volume bound is invalid.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error("{0}")]
+pub struct ProvisionedVolumeSizeError(String);
+
+impl ProvisionedVolumeSize {
+    /// Returns the validated spelling expected by Docker's Ployz driver.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl FromStr for ProvisionedVolumeSize {
+    type Err = ProvisionedVolumeSizeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let invalid = || {
+            ProvisionedVolumeSizeError(format!(
+                "invalid Volume size {value:?}; use a positive integer followed by k, m, g, or t"
+            ))
+        };
+        let (amount, multiplier) = match value.as_bytes().last() {
+            Some(b'k') => (&value[..value.len() - 1], 1024_u64),
+            Some(b'm') => (&value[..value.len() - 1], 1024_u64.pow(2)),
+            Some(b'g') => (&value[..value.len() - 1], 1024_u64.pow(3)),
+            Some(b't') => (&value[..value.len() - 1], 1024_u64.pow(4)),
+            _ => return Err(invalid()),
+        };
+        let amount = amount.parse::<u64>().map_err(|_| invalid())?;
+        if amount == 0 {
+            return Err(ProvisionedVolumeSizeError(
+                "Volume size must be greater than zero".into(),
+            ));
+        }
+        amount.checked_mul(multiplier).ok_or_else(|| {
+            ProvisionedVolumeSizeError(format!("Volume size {value:?} overflows bytes"))
+        })?;
+        Ok(Self(value.to_owned()))
+    }
+}
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum AssignmentError {
