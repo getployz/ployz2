@@ -344,12 +344,11 @@ pub async fn run(
         .map_err(io::Error::other)?;
     let local_id = machine.id;
     let observations = replicated.containers().await.map_err(io::Error::other)?;
-    let mut inputs = ProjectionInputs {
+    let inputs = ProjectionInputs {
         local_id,
         observations: observations.observations,
         down_machines: None,
     };
-    inputs.update_membership(load_down_machines(&replicated, &admin, &local_id).await);
     let projection = Arc::new(RwLock::new(inputs.build()));
     let handler = Handler {
         projection: Arc::clone(&projection),
@@ -399,10 +398,8 @@ async fn watch_projection(
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     let local_id = inputs.local_id;
-    let mut interval = tokio::time::interval_at(
-        tokio::time::Instant::now() + MEMBERSHIP_SAMPLE_INTERVAL,
-        MEMBERSHIP_SAMPLE_INTERVAL,
-    );
+    let mut interval =
+        tokio::time::interval_at(tokio::time::Instant::now(), MEMBERSHIP_SAMPLE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // `Then` retains an in-flight membership read when another select branch wins, so slow
     // membership I/O never delays Container-change withdrawal.
