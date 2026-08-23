@@ -2,7 +2,7 @@
 
 use super::{ingress, observation};
 use crate::{
-    caddy::{CONFIG_FILE, run},
+    caddy::{CONFIG_FILE, CaddyAdmin, Error as CaddyError, run, run_with_admin},
     corrosion::{ApiClient, ReplicatedStore},
 };
 use axum::{
@@ -29,7 +29,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    net::{TcpListener, UnixListener},
+    net::TcpListener,
     sync::mpsc,
     time::{advance, pause, resume, timeout},
 };
@@ -204,28 +204,15 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
         "ployz-caddy-watch-debounce-test-{}",
         MachineId::random()
     ));
-    std::fs::create_dir_all(&directory).unwrap();
-    let admin_socket = directory.join("admin.sock");
-    let admin_listener = UnixListener::bind(&admin_socket).unwrap();
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
-    let admin_server = tokio::spawn(async move {
-        axum::serve(
-            admin_listener,
-            Router::new()
-                .route("/adapt", post(adapt))
-                .route("/load", post(load))
-                .with_state(load_tx),
-        )
-        .await
-        .unwrap();
-    });
+    let admin = TestAdmin { loads: load_tx };
     let shutdown = CancellationToken::new();
-    let watcher = tokio::spawn(run(
+    let watcher = tokio::spawn(run_with_admin(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         directory.join(CONFIG_FILE),
-        admin_socket,
         shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
     ));
 
     let first = timeout(Duration::from_millis(250), load_rx.recv())
@@ -301,26 +288,30 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
     store_server.abort();
-    admin_server.abort();
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-async fn adapt(body: Bytes) -> Response {
-    Response::builder()
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "result": { "caddyfile": String::from_utf8(body.to_vec()).unwrap() }
-            })
-            .to_string(),
-        ))
-        .unwrap()
+#[derive(Clone)]
+struct TestAdmin {
+    loads: mpsc::UnboundedSender<String>,
 }
 
-async fn load(State(loads): State<mpsc::UnboundedSender<String>>, body: Bytes) {
-    let body = serde_json::from_slice::<Value>(&body).unwrap();
-    let caddyfile = body.get("caddyfile").unwrap().as_str().unwrap().to_owned();
-    loads.send(caddyfile).unwrap();
+impl CaddyAdmin for TestAdmin {
+    async fn adapt(&self, caddyfile: &str) -> Result<String, CaddyError> {
+        Ok(json!({ "caddyfile": caddyfile }).to_string())
+    }
+
+    async fn load(&self, json: &str) -> Result<(), CaddyError> {
+        let caddyfile = serde_json::from_str::<Value>(json)
+            .unwrap()
+            .get("caddyfile")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned();
+        self.loads.send(caddyfile).unwrap();
+        Ok(())
+    }
 }
 
 async fn settle() {

@@ -139,6 +139,24 @@ pub async fn run(
             .parent()
             .ok_or_else(|| io::Error::other("Caddy admin socket has no parent"))?,
     )?;
+    run_with_admin(machine, replicated, config_file, shutdown, move || {
+        let admin_socket = admin_socket.clone();
+        async move { AdminClient::connect_if_available(&admin_socket).await }
+    })
+    .await
+}
+
+async fn run_with_admin<A: CaddyAdmin, Connect, ConnectFuture>(
+    machine: Machine,
+    replicated: ReplicatedStore,
+    config_file: PathBuf,
+    shutdown: CancellationToken,
+    mut connect: Connect,
+) -> io::Result<()>
+where
+    Connect: FnMut() -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<Option<A>, Error>>,
+{
     let mut last_applied = None;
     'watch: loop {
         let subscriptions = async {
@@ -174,9 +192,7 @@ pub async fn run(
             if let Some(snapshot) = snapshot
                 && last_applied.as_ref() != Some(&snapshot)
             {
-                let admin = AdminClient::connect_if_available(&admin_socket)
-                    .await
-                    .map_err(io::Error::other)?;
+                let admin = connect().await.map_err(io::Error::other)?;
                 match reconcile(
                     &machine,
                     &snapshot.0,
@@ -200,8 +216,8 @@ pub async fn run(
             )
             .await
             {
-                Ok(true) => {}
-                Ok(false) => return Ok(()),
+                Ok(DebouncedChange::Changed) => {}
+                Ok(DebouncedChange::Shutdown) => return Ok(()),
                 Err(error) if wait_to_retry(&error, &shutdown).await => continue 'watch,
                 Err(_) => return Ok(()),
             }
@@ -209,25 +225,30 @@ pub async fn run(
     }
 }
 
+enum DebouncedChange {
+    Changed,
+    Shutdown,
+}
+
 async fn wait_for_debounced_change(
     container_changes: &mut Subscription,
     certificate_changes: &mut Subscription,
     shutdown: &CancellationToken,
-) -> Result<bool, CorrosionError> {
+) -> Result<DebouncedChange, CorrosionError> {
     tokio::select! {
         changed = container_changes.changed() => changed?,
         changed = certificate_changes.changed() => changed?,
-        () = shutdown.cancelled() => return Ok(false),
+        () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
     }
     let quiet = tokio::time::sleep(WATCH_DEBOUNCE);
     tokio::pin!(quiet);
     loop {
         tokio::select! {
             biased;
-            () = shutdown.cancelled() => return Ok(false),
+            () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
             changed = container_changes.changed() => changed?,
             changed = certificate_changes.changed() => changed?,
-            () = &mut quiet => return Ok(true),
+            () = &mut quiet => return Ok(DebouncedChange::Changed),
         }
         quiet
             .as_mut()
