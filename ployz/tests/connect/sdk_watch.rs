@@ -129,12 +129,11 @@ async fn cancel_interrupts_storage_enrichment() {
         .await;
     let client = connect(&session.url, description.machine_id.as_str()).await;
     let watch = client.watch().await.unwrap();
-    service.describe_outcomes.lock().unwrap().extend([
-        DescribeOutcome::Status(Status::unavailable("retry 1")),
-        DescribeOutcome::Status(Status::unavailable("retry 2")),
-        DescribeOutcome::Status(Status::unavailable("retry 3")),
-        DescribeOutcome::Status(Status::unavailable("retry 4")),
-    ]);
+    service
+        .describe_outcomes
+        .lock()
+        .unwrap()
+        .push_back(DescribeOutcome::Hang);
     let waiting = watch.next();
     tokio::pin!(waiting);
     assert!(
@@ -150,6 +149,35 @@ async fn cancel_interrupts_storage_enrichment() {
             .await
             .expect("cancel must interrupt storage enrichment")
             .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn storage_enrichment_has_a_short_overall_budget() {
+    let description = storage_watch_description();
+    let session = RelaySession::start().await;
+    let service = DiscoveryService::new(description.clone());
+    service.push_watch_frame(frozen_frame());
+    let _machine = session
+        .spawn_machine(description.machine_id, service.clone())
+        .await;
+    let client = connect(&session.url, description.machine_id.as_str()).await;
+    let watch = client.watch().await.unwrap();
+    service
+        .describe_outcomes
+        .lock()
+        .unwrap()
+        .push_back(DescribeOutcome::Hang);
+
+    let frame = timeout(Duration::from_secs(4), watch.next())
+        .await
+        .expect("storage enrichment must have a short overall budget")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        frame.machines.first().and_then(|machine| machine.storage),
         None
     );
 }

@@ -59,7 +59,7 @@ macro_rules! define_capabilities {
         /// The daemon can take a Certificate Policy from cluster state.
         pub const CERTIFICATE_POLICY_CAPABILITY: &str = "ployz.certificates.policy.v1";
 
-        /// `Inspect` reports current local Machine storage evidence.
+        /// `Inspect` can report requested current local Machine storage evidence.
         pub const MACHINE_STORAGE_OBSERVATION_CAPABILITY: &str =
             "ployz.machine.storage-observation.v1";
 
@@ -198,6 +198,9 @@ pub struct InspectRequest {
     pub wireguard_port: u16,
     #[serde(default)]
     pub include_rtts: bool,
+    /// Collect current local storage evidence for this inspection.
+    #[serde(default)]
+    pub include_storage: bool,
     /// Fresh telemetry to collect for this inspection.
     #[serde(default)]
     pub telemetry: InspectTelemetry,
@@ -210,6 +213,7 @@ impl Default for InspectRequest {
             public_ip_override: None,
             wireguard_port: default_wireguard_port(),
             include_rtts: false,
+            include_storage: false,
             telemetry: InspectTelemetry::None,
         }
     }

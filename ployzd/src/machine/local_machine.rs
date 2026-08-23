@@ -237,6 +237,11 @@ impl LocalMachine {
                 Some(ployz_core::TelemetryObservation::Full { host, bridge })
             }
         };
+        let storage = if request.include_storage {
+            local_storage(std::path::Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
+        } else {
+            None
+        };
         Ok(MachineDetails {
             id: record.id(),
             phase: record.phase(),
@@ -247,8 +252,7 @@ impl LocalMachine {
             rtts,
             cloud_paired: record.cloud_pairing.is_some(),
             telemetry,
-            storage: local_storage(std::path::Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT)
-                .await,
+            storage,
         })
     }
 

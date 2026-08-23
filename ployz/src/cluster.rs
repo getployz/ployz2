@@ -35,6 +35,8 @@ use crate::{
 
 mod capacity;
 
+const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
+
 #[derive(Clone)]
 pub struct Client {
     channel: Channel,
@@ -885,22 +887,36 @@ fn machine_did_not_respond(machine_id: MachineId) -> RpcError {
 }
 
 async fn observe_machine_storage(
-    mut client: Client,
+    client: Client,
     index: usize,
     machine_id: MachineId,
 ) -> (usize, Option<MachineStorageObservation>) {
     let target = MachineTarget::from(&machine_id);
-    let storage = match client
-        .read::<op::DescribeContract>(DescribeContractRequest {}, &target)
-        .await
-    {
-        Ok(description) if description.supports(MACHINE_STORAGE_OBSERVATION_CAPABILITY) => client
-            .read::<op::Inspect>(InspectRequest::default(), &target)
+    let observation = async {
+        let description = client
+            .invoke::<op::DescribeContract>(DescribeContractRequest {}, &target, None)
             .await
-            .ok()
-            .and_then(|details| details.storage),
-        Ok(_) | Err(_) => None,
+            .ok()?;
+        if !description.supports(MACHINE_STORAGE_OBSERVATION_CAPABILITY) {
+            return None;
+        }
+        client
+            .invoke::<op::Inspect>(
+                InspectRequest {
+                    include_storage: true,
+                    ..Default::default()
+                },
+                &target,
+                None,
+            )
+            .await
+            .ok()?
+            .storage
     };
+    let storage = tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, observation)
+        .await
+        .ok()
+        .flatten();
     (index, storage)
 }
 

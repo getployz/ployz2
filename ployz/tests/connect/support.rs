@@ -59,6 +59,7 @@ pub(super) async fn serve_discovery(
 pub(super) enum DescribeOutcome {
     Status(Status),
     Remote(RpcError),
+    Hang,
 }
 
 #[derive(Clone)]
@@ -263,11 +264,13 @@ impl MachineRpc for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        match self.describe_outcomes.lock().unwrap().pop_front() {
+        let outcome = self.describe_outcomes.lock().unwrap().pop_front();
+        match outcome {
             Some(DescribeOutcome::Status(status)) => return Err(status),
             Some(DescribeOutcome::Remote(error)) => {
                 return Ok(Response::new(RpcResponse::from(error).encode().unwrap()));
             }
+            Some(DescribeOutcome::Hang) => return std::future::pending().await,
             None => {}
         }
         let request = request
@@ -308,7 +311,9 @@ impl MachineRpc for DiscoveryService {
                 rtts: Vec::new(),
                 cloud_paired: self.cloud_paired.load(Ordering::SeqCst),
                 telemetry,
-                storage: Some(MachineStorageObservation::Ready),
+                storage: inspect
+                    .include_storage
+                    .then_some(MachineStorageObservation::Ready),
             })
             .encode()
             .unwrap(),
