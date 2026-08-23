@@ -521,6 +521,15 @@ async fn execute_operation<C: MachineOperations>(
                 .await
                 .map_err(|error| machine_error(MachineAction::CreateVolume, error).into())
         }
+        DeployOperation::CreateProvisionedVolume { .. } => Err(machine_error(
+            MachineAction::CreateVolume,
+            RpcError {
+                code: RpcErrorCode::Unsupported,
+                message: "Provisioned Volume execution is not available".into(),
+                details: serde_json::Value::Null,
+            },
+        )
+        .into()),
         DeployOperation::WaitHealthy { dependency, .. } => {
             wait_healthy(client, index, progress, dependency, cancellation)
                 .await

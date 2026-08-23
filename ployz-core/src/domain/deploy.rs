@@ -364,6 +364,12 @@ pub enum DeployOperation {
         machine_id: MachineId,
         volume: ServiceVolume,
     },
+    /// Create a bounded Provisioned Volume on `machine_id`.
+    CreateProvisionedVolume {
+        machine_id: MachineId,
+        volume: ServiceVolume,
+        maximum_bytes: ProvisionedVolumeMaximumBytes,
+    },
     /// Wait for every observed Service Container of `dependency` before starting `dependent`.
     WaitHealthy {
         machine_id: MachineId,
@@ -766,6 +772,7 @@ impl DeployOperation {
     pub fn machine_id(&self) -> MachineId {
         match self {
             Self::CreateVolume { machine_id, .. }
+            | Self::CreateProvisionedVolume { machine_id, .. }
             | Self::WaitHealthy { machine_id, .. }
             | Self::RunContainer { machine_id, .. }
             | Self::StopContainer { machine_id, .. }
@@ -785,6 +792,7 @@ impl DeployOperation {
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(&spec.name),
             Self::ReplaceContainer(replacement) => Some(&replacement.spec.name),
             Self::CreateVolume { .. }
+            | Self::CreateProvisionedVolume { .. }
             | Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
             | Self::StopHook { .. }
@@ -801,6 +809,7 @@ impl DeployOperation {
             | Self::StopHook { container_id, .. } => Some(*container_id),
             Self::ReplaceContainer(replacement) => Some(replacement.old_container_id),
             Self::CreateVolume { .. }
+            | Self::CreateProvisionedVolume { .. }
             | Self::WaitHealthy { .. }
             | Self::RunContainer { .. }
             | Self::RunHook { .. }

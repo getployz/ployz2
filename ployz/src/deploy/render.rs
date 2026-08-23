@@ -153,7 +153,9 @@ fn service_trees(preview: &DeployPreview) -> String {
     for row in &preview.operations {
         if matches!(
             row.operation,
-            DeployOperation::CreateVolume { .. } | DeployOperation::RemoveVolume { .. }
+            DeployOperation::CreateVolume { .. }
+                | DeployOperation::CreateProvisionedVolume { .. }
+                | DeployOperation::RemoveVolume { .. }
         ) {
             volumes.push(row);
             continue;
@@ -181,7 +183,8 @@ fn service_trees(preview: &DeployPreview) -> String {
 fn volume_line(row: &OperationRow) -> String {
     let machine = machine_label(row);
     match &row.operation {
-        DeployOperation::CreateVolume { volume, .. } => {
+        DeployOperation::CreateVolume { volume, .. }
+        | DeployOperation::CreateProvisionedVolume { volume, .. } => {
             format!("+ create volume {} on {machine}", volume.reference)
         }
         DeployOperation::RemoveVolume { id } => {
@@ -249,6 +252,7 @@ fn spec_image(operation: &DeployOperation) -> Option<&str> {
             Some(replacement.spec.container.image.as_str())
         }
         DeployOperation::CreateVolume { .. }
+        | DeployOperation::CreateProvisionedVolume { .. }
         | DeployOperation::WaitHealthy { .. }
         | DeployOperation::StopContainer { .. }
         | DeployOperation::RemoveContainer { .. }
@@ -291,7 +295,8 @@ fn child_line(row: &OperationRow) -> String {
         DeployOperation::RunHook { spec, .. } => {
             format!("+ run pre-deploy hook for {} on {machine}", spec.name)
         }
-        DeployOperation::CreateVolume { volume, .. } => {
+        DeployOperation::CreateVolume { volume, .. }
+        | DeployOperation::CreateProvisionedVolume { volume, .. } => {
             format!("+ create volume {} on {machine}", volume.reference)
         }
         DeployOperation::RemoveVolume { id } => {
@@ -309,7 +314,9 @@ fn plan_footer(preview: &DeployPreview) -> String {
     for row in &preview.operations {
         machines.insert(row.machine_id, ());
         match &row.operation {
-            DeployOperation::RunContainer { .. } | DeployOperation::CreateVolume { .. } => {
+            DeployOperation::RunContainer { .. }
+            | DeployOperation::CreateVolume { .. }
+            | DeployOperation::CreateProvisionedVolume { .. } => {
                 creates += 1;
             }
             DeployOperation::ReplaceContainer(replacement) => {
@@ -372,7 +379,8 @@ fn container_label(row: &OperationRow) -> String {
         DeployOperation::StopContainer { container_id, .. }
         | DeployOperation::RemoveContainer { container_id, .. }
         | DeployOperation::StopHook { container_id, .. } => container_id.to_string(),
-        DeployOperation::CreateVolume { volume, .. } => volume.reference.to_string(),
+        DeployOperation::CreateVolume { volume, .. }
+        | DeployOperation::CreateProvisionedVolume { volume, .. } => volume.reference.to_string(),
         DeployOperation::RemoveVolume { id } => id.name.to_string(),
     }
 }
@@ -435,7 +443,9 @@ fn completed_label(operation: &DeployOperation) -> &'static str {
         | DeployOperation::StopContainer { .. }
         | DeployOperation::StopHook { .. }
         | DeployOperation::RemoveVolume { .. } => "Removed",
-        DeployOperation::CreateVolume { .. } => "Created",
+        DeployOperation::CreateVolume { .. } | DeployOperation::CreateProvisionedVolume { .. } => {
+            "Created"
+        }
         DeployOperation::WaitHealthy { .. }
         | DeployOperation::RunContainer { .. }
         | DeployOperation::ReplaceContainer(_)
@@ -454,6 +464,7 @@ fn endpoints_footer(completed: &[DeployOperation]) -> Option<String> {
             DeployOperation::RunContainer { spec, .. } => spec,
             DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. }) => spec,
             DeployOperation::CreateVolume { .. }
+            | DeployOperation::CreateProvisionedVolume { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
@@ -513,7 +524,10 @@ fn failed_summary(failed: &FailedOperation<ExecutionError>) -> String {
 
 fn operation_label(operation: &DeployOperation) -> String {
     match operation {
-        DeployOperation::CreateVolume { machine_id, volume } => {
+        DeployOperation::CreateVolume { machine_id, volume }
+        | DeployOperation::CreateProvisionedVolume {
+            machine_id, volume, ..
+        } => {
             format!("create volume {} on {machine_id}", volume.reference)
         }
         DeployOperation::WaitHealthy {
