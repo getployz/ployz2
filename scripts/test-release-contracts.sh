@@ -452,6 +452,27 @@ fi
 printf '%s\n' "$module_download_error" | grep -Fq \
     "Could not download running-kernel module package linux-modules-extra-6.8.0-download-failure to inspect it for ZFS support"
 
+if module_archive_error=$(
+    (
+        run_with_apt_lock_wait() {
+            if [ "$1 $2" = 'apt-get download' ]; then
+                : > "$3.deb"
+            fi
+        }
+        function apt-cache {
+            [ "$1" = show ] && [ "$2" = linux-modules-extra-6.8.0-archive-failure ]
+        }
+        function dpkg-query { return 1; }
+        function dpkg-deb { return 2; }
+        install_zfs_packages_ubuntu 6.8.0-archive-failure
+    ) 2>&1
+); then
+    echo "installer hid a ZFS module package archive inspection failure" >&2
+    exit 1
+fi
+printf '%s\n' "$module_archive_error" | grep -Fq \
+    "Could not inspect downloaded running-kernel module package linux-modules-extra-6.8.0-archive-failure for ZFS support"
+
 assert_eq "$PLOYZ_STORAGE" none
 storage_selection_log=$(mktemp)
 (

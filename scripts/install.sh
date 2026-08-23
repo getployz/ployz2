@@ -193,7 +193,7 @@ package_file_list_has_zfs_module() {
 }
 
 ubuntu_zfs_module_package() {
-    local kernel=$1 package package_dir archive download_failure=''
+    local kernel=$1 package package_dir archive download_failure='' archive_failure=''
     for package in \
         "linux-main-modules-zfs-$kernel" \
         "linux-modules-zfs-$kernel" \
@@ -207,7 +207,9 @@ ubuntu_zfs_module_package() {
         package_dir=$(mktemp -d)
         if (cd "$package_dir" && run_with_apt_lock_wait apt-get download "$package" >/dev/null); then
             archive=$(find "$package_dir" -maxdepth 1 -type f -name '*.deb' -print -quit)
-            if [ -n "$archive" ] && dpkg-deb -c "$archive" | package_file_list_has_zfs_module "$kernel"; then
+            if [ -z "$archive" ] || ! dpkg-deb -c "$archive" > "$package_dir/files"; then
+                archive_failure=$package
+            elif package_file_list_has_zfs_module "$kernel" < "$package_dir/files"; then
                 rm -rf "$package_dir"
                 printf '%s\n' "$package"
                 return
@@ -217,6 +219,9 @@ ubuntu_zfs_module_package() {
         fi
         rm -rf "$package_dir"
     done
+    if [ -n "$archive_failure" ]; then
+        error "Could not inspect downloaded running-kernel module package $archive_failure for ZFS support"
+    fi
     if [ -n "$download_failure" ]; then
         error "Could not download running-kernel module package $download_failure to inspect it for ZFS support"
     fi
