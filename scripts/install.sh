@@ -509,11 +509,6 @@ EnvironmentFile=-/etc/default/ployz
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
-ProtectSystem=full
-ProtectControlGroups=true
-ProtectHome=read-only
-ProtectKernelTunables=true
-PrivateTmp=true
 RestrictAddressFamilies=AF_UNIX
 RestrictNamespaces=true
 EOF
@@ -534,16 +529,16 @@ main() {
     fi
     install_prerequisites
     prepare_storage
-    install_docker
-    if [ -n "$PLOYZ_APT_CONFIG" ]; then
-        rm -f "$PLOYZ_APT_CONFIG"
-        trap - EXIT
-    fi
     create_user_and_directories
     unit=$INSTALL_SYSTEMD_DIR/ployz.service
     [ -f "$unit" ] || DAEMON_REPLACED=true
     install_binaries
     install_systemd
+    install_docker
+    if [ -n "$PLOYZ_APT_CONFIG" ]; then
+        rm -f "$PLOYZ_APT_CONFIG"
+        trap - EXIT
+    fi
     if [ "$INSTALL_ONLY" != true ] && [ "$DAEMON_REPLACED" = true ]; then
         systemctl restart ployz.service
         systemctl try-restart ployz-volume-plugin.service
