@@ -20,6 +20,12 @@ enum HealthPoll {
     Failed(HealthFailure),
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum HealthExpectation {
+    ContainerReady,
+    Healthy,
+}
+
 pub(super) async fn wait_healthy<C: MachineOperations>(
     client: &C,
     index: usize,
@@ -57,53 +63,42 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
         let now = Instant::now();
         let mut pending = None;
         for observed in &containers {
-            let health = match &observed.runtime {
-                ContainerRuntimeObservation::Running { health } => Some(health.clone()),
-                ContainerRuntimeObservation::Created
-                | ContainerRuntimeObservation::Paused
-                | ContainerRuntimeObservation::Restarting
-                | ContainerRuntimeObservation::Exited { .. }
-                | ContainerRuntimeObservation::Removing
-                | ContainerRuntimeObservation::Dead
-                | ContainerRuntimeObservation::Unknown { .. } => None,
-            };
-            if health == Some(HealthObservation::Healthy) {
-                continue;
-            }
-            let health_budget = matches!(
-                health,
-                Some(
-                    HealthObservation::Starting
-                        | HealthObservation::NotConfigured
-                        | HealthObservation::Unrecognized(_)
-                )
-            );
-            let deadline = if health_budget {
-                health_deadline_for(
-                    observed.resolved_spec.container.healthcheck.as_ref(),
-                    observed,
-                    started,
-                )
-                .unwrap_or_else(|| started + healthcheck_timeout(None))
-            } else {
-                monitor_deadline
-            };
-            if now >= deadline {
-                let failure = if health_budget {
-                    HealthFailure::TimedOut
-                } else {
-                    HealthFailure::Runtime {
-                        observation: observed.runtime.clone(),
+            let health_deadline = health_deadline_for(
+                observed.resolved_spec.container.healthcheck.as_ref(),
+                observed,
+                started,
+            )
+            .or_else(|| {
+                matches!(
+                    &observed.runtime,
+                    ContainerRuntimeObservation::Running {
+                        health: HealthObservation::Starting
+                            | HealthObservation::NotConfigured
+                            | HealthObservation::Unrecognized(_),
                     }
-                };
-                return Err(dependency_health_error(
-                    dependency,
-                    DependencyHealthFailure::Container {
-                        container_id: observed.container_id,
-                        failure,
-                    },
-                ));
-            }
+                )
+                .then(|| started + healthcheck_timeout(None))
+            });
+            let deadline = match classify_health(
+                &observed.runtime,
+                now,
+                monitor_deadline,
+                health_deadline,
+                HealthExpectation::Healthy,
+            ) {
+                HealthPoll::Complete => continue,
+                HealthPoll::PendingUntil(deadline) => deadline,
+                HealthPoll::Failed(failure) => {
+                    return Err(dependency_health_error(
+                        dependency,
+                        DependencyHealthFailure::Container {
+                            container_id: observed.container_id,
+                            failure,
+                        },
+                    ));
+                }
+            };
+            let health = observed_health(&observed.runtime);
             if pending
                 .as_ref()
                 .is_none_or(|(_, _, pending_deadline)| deadline < *pending_deadline)
@@ -204,16 +199,7 @@ pub(super) async fn monitor_container<C: MachineOperations>(
         let now = Instant::now();
         let health_deadline =
             health_deadline_for(spec.container.healthcheck.as_ref(), &observed, started);
-        let health = match &observed.runtime {
-            ContainerRuntimeObservation::Running { health } => Some(health.clone()),
-            ContainerRuntimeObservation::Created
-            | ContainerRuntimeObservation::Paused
-            | ContainerRuntimeObservation::Restarting
-            | ContainerRuntimeObservation::Exited { .. }
-            | ContainerRuntimeObservation::Removing
-            | ContainerRuntimeObservation::Dead
-            | ContainerRuntimeObservation::Unknown { .. } => None,
-        };
+        let health = observed_health(&observed.runtime);
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let deadline_ms = health_deadline
             .or(Some(monitor_deadline))
@@ -231,12 +217,17 @@ pub(super) async fn monitor_container<C: MachineOperations>(
                 deadline_ms,
             },
         );
-        let wake_deadline =
-            match classify_health(&observed.runtime, now, monitor_deadline, health_deadline) {
-                HealthPoll::Complete => return Ok(()),
-                HealthPoll::PendingUntil(deadline) => deadline,
-                HealthPoll::Failed(failure) => return Err(health_error(container_id, failure)),
-            };
+        let wake_deadline = match classify_health(
+            &observed.runtime,
+            now,
+            monitor_deadline,
+            health_deadline,
+            HealthExpectation::ContainerReady,
+        ) {
+            HealthPoll::Complete => return Ok(()),
+            HealthPoll::PendingUntil(deadline) => deadline,
+            HealthPoll::Failed(failure) => return Err(health_error(container_id, failure)),
+        };
         let wake = std::cmp::min(now + POLL_INTERVAL, wake_deadline);
         tokio::select! {
             () = cancellation.cancelled() => {
@@ -252,6 +243,7 @@ fn classify_health(
     now: Instant,
     monitor_deadline: Instant,
     health_deadline: Option<Instant>,
+    expectation: HealthExpectation,
 ) -> HealthPoll {
     match runtime {
         ContainerRuntimeObservation::Running {
@@ -259,8 +251,14 @@ fn classify_health(
         } => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
-        } if health_deadline.is_none() => HealthPoll::Complete,
-        ContainerRuntimeObservation::Exited { code: 0 } => HealthPoll::Complete,
+        } if expectation == HealthExpectation::ContainerReady && health_deadline.is_none() => {
+            HealthPoll::Complete
+        }
+        ContainerRuntimeObservation::Exited { code: 0 }
+            if expectation == HealthExpectation::ContainerReady =>
+        {
+            HealthPoll::Complete
+        }
         ContainerRuntimeObservation::Running {
             health:
                 HealthObservation::Starting
@@ -280,13 +278,18 @@ fn classify_health(
         }
         // The process already died. Waiting would let a later healthy snapshot
         // during the next start window succeed the deploy.
-        ContainerRuntimeObservation::Restarting => HealthPoll::Failed(HealthFailure::Runtime {
-            observation: runtime.clone(),
-        }),
+        ContainerRuntimeObservation::Restarting
+            if expectation == HealthExpectation::ContainerReady =>
+        {
+            HealthPoll::Failed(HealthFailure::Runtime {
+                observation: runtime.clone(),
+            })
+        }
         ContainerRuntimeObservation::Created
         | ContainerRuntimeObservation::Running {
             health: HealthObservation::Unhealthy,
         }
+        | ContainerRuntimeObservation::Restarting
         | ContainerRuntimeObservation::Paused
         | ContainerRuntimeObservation::Exited { .. }
         | ContainerRuntimeObservation::Removing
@@ -300,6 +303,19 @@ fn classify_health(
                 HealthPoll::PendingUntil(monitor_deadline)
             }
         }
+    }
+}
+
+fn observed_health(runtime: &ContainerRuntimeObservation) -> Option<HealthObservation> {
+    match runtime {
+        ContainerRuntimeObservation::Running { health } => Some(health.clone()),
+        ContainerRuntimeObservation::Created
+        | ContainerRuntimeObservation::Paused
+        | ContainerRuntimeObservation::Restarting
+        | ContainerRuntimeObservation::Exited { .. }
+        | ContainerRuntimeObservation::Removing
+        | ContainerRuntimeObservation::Dead
+        | ContainerRuntimeObservation::Unknown { .. } => None,
     }
 }
 

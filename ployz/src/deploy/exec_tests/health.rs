@@ -89,6 +89,7 @@ async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines
         (unhealthy(), 6, "runtime"),
         (starting(), 8, "timed_out"),
         (running(), 8, "timed_out"),
+        (ContainerRuntimeObservation::Restarting, 6, "runtime"),
     ] {
         let id = container('a');
         let mut observed = observation(&machine('1'), &id, runtime);
