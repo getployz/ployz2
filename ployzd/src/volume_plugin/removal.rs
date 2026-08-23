@@ -4,7 +4,8 @@ use axum::{Json, extract::State};
 use serde::Serialize;
 
 use super::{
-    DockerVolumeName, ErrorResponse, Result, VolumeRequest, VolumeStorage, error_response,
+    DATASET_ROOT, DockerVolumeName, ErrorResponse, Result, VolumeRequest, VolumeStorage,
+    error_response,
 };
 
 impl VolumeStorage {
@@ -14,9 +15,12 @@ impl VolumeStorage {
             return Ok(());
         };
         let datasets = self.datasets(&pool).await?;
-        let Some(dataset) = Self::dataset(&datasets, &pool, name)? else {
+        let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name());
+        if !datasets.iter().any(|dataset| dataset.name == requested) {
             return Ok(());
-        };
+        }
+        let dataset = Self::dataset(&datasets, &pool, name)?
+            .expect("the requested dataset was just observed");
         dataset.require_provisioned(name)?;
         self.zfs(&["destroy", &dataset.name]).await?;
         Ok(())

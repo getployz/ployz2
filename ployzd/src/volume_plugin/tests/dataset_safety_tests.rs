@@ -3,31 +3,40 @@
 use super::*;
 
 #[tokio::test]
-async fn create_rejects_a_read_only_managed_root() {
-    let test = TestDir::new();
-    fs::write(test.0.join("root"), "").unwrap();
-    fs::write(test.0.join("readonly-root"), "").unwrap();
-    let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
-    let socket = test.0.join("plugin.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+async fn create_rejects_read_only_roots_and_volumes() {
+    for (markers, expected_dataset) in [
+        (&["root", "readonly-root"][..], "tank/ployz"),
+        (
+            &["root", "volume", "readonly-volume"][..],
+            "tank/ployz/data",
+        ),
+    ] {
+        let test = TestDir::new();
+        for marker in markers {
+            fs::write(test.0.join(marker), "").unwrap();
+        }
+        let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+        let socket = test.0.join("plugin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
 
-    let response = post(
-        &socket,
-        "/VolumeDriver.Create",
-        json!({"Name":"data","Opts":{"size":"1g"}}),
-    )
-    .await;
+        let response = post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"data","Opts":{"size":"1g"}}),
+        )
+        .await;
 
-    let message = error(&response);
-    assert!(message.contains("tank/ployz"));
-    assert!(message.contains("read-only"));
-    assert!(
-        !fs::read_to_string(test.0.join("commands"))
-            .unwrap()
-            .contains("zfs create")
-    );
-    server.abort();
+        let message = error(&response);
+        assert!(message.contains(expected_dataset));
+        assert!(message.contains("read-only"));
+        assert!(
+            !fs::read_to_string(test.0.join("commands"))
+                .unwrap()
+                .contains("zfs create")
+        );
+        server.abort();
+    }
 }
 
 #[tokio::test]

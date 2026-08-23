@@ -104,6 +104,7 @@ impl VolumeStorage {
 
         if let Some(existing) = Self::dataset(&datasets, pool, name)? {
             existing.require_mountpoint(&name.mountpoint())?;
+            existing.require_writable()?;
             return if existing.refquota == requested {
                 Ok(())
             } else {

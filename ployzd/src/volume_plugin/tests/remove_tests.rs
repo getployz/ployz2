@@ -83,6 +83,30 @@ async fn removing_an_unknown_volume_without_a_pool_is_idempotent() {
 }
 
 #[tokio::test]
+async fn removing_an_unknown_volume_ignores_an_unusable_managed_root() {
+    for root_state in ["readonly-root", "incompatible-root"] {
+        let test = TestDir::new();
+        fs::write(test.0.join("root"), "").unwrap();
+        fs::write(test.0.join(root_state), "").unwrap();
+        let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+        let socket = test.0.join("plugin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+        assert_eq!(
+            post(&socket, "/VolumeDriver.Remove", json!({"Name":"missing"})).await,
+            json!({"Err":""})
+        );
+        assert!(
+            !fs::read_to_string(test.0.join("commands"))
+                .unwrap()
+                .contains("zfs destroy")
+        );
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn docker_receives_dataset_destruction_failures() {
     let test = TestDir::new();
     fs::write(test.0.join("root"), "").unwrap();
