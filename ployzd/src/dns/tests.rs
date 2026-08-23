@@ -67,7 +67,7 @@ fn projects_only_eligible_service_container_addresses() {
 
     assert_eq!(
         addresses(plan(
-            &Projection::from_observations(&observations),
+            &unfiltered_projection(&observations),
             "api.app.internal.",
             RecordType::A,
         )),
@@ -82,7 +82,7 @@ fn resolves_every_canonical_lookup_and_rotates_ordinary_answers() {
     let first = ServiceId::parse("b".repeat(32)).unwrap();
     let second = ServiceId::parse("d".repeat(32)).unwrap();
     let name = ServiceName::parse("api").unwrap();
-    let projection = Projection::from_observations(&[
+    let projection = unfiltered_projection(&[
         observation(
             1,
             &remote,
@@ -174,7 +174,7 @@ fn cross_project_and_reserved_names_are_resolved_structurally() {
             word,
         ));
     }
-    let projection = Projection::from_observations(&observations);
+    let projection = unfiltered_projection(&observations);
 
     for (index, word) in words.into_iter().enumerate() {
         assert_eq!(
@@ -203,7 +203,7 @@ fn exact_selectors_do_not_fall_back_when_their_endpoint_is_ineligible() {
     let selected_id = ServiceId::parse("b".repeat(32)).unwrap();
     let colliding_id = ServiceId::parse("c".repeat(32)).unwrap();
     let colliding_name = ServiceName::parse(selected_id.to_string()).unwrap();
-    let projection = Projection::from_observations(&[
+    let projection = unfiltered_projection(&[
         observation(
             1,
             &machine,
@@ -246,7 +246,7 @@ fn exact_selectors_do_not_fall_back_when_their_endpoint_is_ineligible() {
 
 #[test]
 fn malformed_internal_and_non_a_queries_are_authoritative() {
-    let projection = Projection::from_observations(&[]);
+    let projection = unfiltered_projection(&[]);
 
     for name in [
         "internal.",
@@ -300,6 +300,74 @@ options ndots:1
             "198.51.100.53:53".parse().unwrap(),
         ]
     );
+}
+
+#[test]
+fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let suspect = MachineId::parse("b".repeat(32)).unwrap();
+    let down = MachineId::parse("c".repeat(32)).unwrap();
+    let service = ServiceId::parse("d".repeat(32)).unwrap();
+    let name = ServiceName::parse("api").unwrap();
+    let observations = [
+        observation(
+            1,
+            &local,
+            &service,
+            &name,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 2]),
+        ),
+        observation(
+            2,
+            &suspect,
+            &service,
+            &name,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 2, 2]),
+        ),
+        observation(
+            3,
+            &down,
+            &service,
+            &name,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 3, 2]),
+        ),
+    ];
+    let down_machines = HashSet::from([local, down]);
+
+    assert_eq!(
+        addresses(plan(
+            &Projection::from_observations(&observations, &local, Some(&down_machines)),
+            "api.app.internal.",
+            RecordType::A,
+        )),
+        vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
+    );
+    assert_eq!(
+        addresses(plan(
+            &Projection::from_observations(&observations, &local, None),
+            "api.app.internal.",
+            RecordType::A,
+        )),
+        vec![
+            Ipv4Addr::new(10, 210, 1, 2),
+            Ipv4Addr::new(10, 210, 2, 2),
+            Ipv4Addr::new(10, 210, 3, 2),
+        ]
+    );
+}
+
+fn unfiltered_projection(observations: &[ContainerObservation]) -> Projection {
+    Projection::from_observations(
+        observations,
+        &MachineId::parse("0".repeat(32)).unwrap(),
+        None,
+    )
 }
 
 fn plan(projection: &Projection, name: &str, record_type: RecordType) -> ResponsePlan {

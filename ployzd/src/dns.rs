@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap, HashSet},
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
@@ -22,8 +22,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, Machine, QualifiedService, ServiceId, service_containers,
-    serving_replicas,
+    ContainerObservation, Machine, MachineId, ManagementAddress, MembershipObservation,
+    QualifiedService, ServiceId, service_containers, serving_replicas, synthesize_membership,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -31,7 +31,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::corrosion::{ReplicatedStore, Subscription};
+use crate::corrosion::{AdminClient, Error as CorrosionError, ReplicatedStore, Subscription};
 
 mod query;
 
@@ -39,6 +39,7 @@ use query::{InternalQuery, MachineServiceTarget, Query, parse};
 
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
+const MEMBERSHIP_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const TCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_RESPONSE_BUFFER: usize = 32;
 
@@ -55,6 +56,22 @@ struct Projection {
     service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
     identities: HashMap<QualifiedService, ServiceAddresses>,
     machine_identities: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
+}
+
+struct ProjectionInputs {
+    local_id: MachineId,
+    observations: Vec<ContainerObservation>,
+    down_machines: Option<HashSet<MachineId>>,
+}
+
+impl ProjectionInputs {
+    fn build(&self) -> Projection {
+        Projection::from_observations(
+            &self.observations,
+            &self.local_id,
+            self.down_machines.as_ref(),
+        )
+    }
 }
 
 #[derive(Default)]
@@ -75,15 +92,22 @@ impl ServiceAddresses {
 }
 
 impl Projection {
-    fn from_observations(observations: &[ContainerObservation]) -> Self {
-        // TODO(UT-117, UT-118): keep Membership Observations out of DNS projection until a
-        // product decision replaces the baseline's deliberately membership-blind behavior.
+    fn from_observations(
+        observations: &[ContainerObservation],
+        local_id: &MachineId,
+        down_machines: Option<&HashSet<MachineId>>,
+    ) -> Self {
         let containers = service_containers(observations.iter().cloned());
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut identities = HashMap::<QualifiedService, ServiceAddresses>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
         for container in serving_replicas(&containers) {
             let observation = container.as_observation();
+            if observation.machine_id != *local_id
+                && down_machines.is_some_and(|down| down.contains(&observation.machine_id))
+            {
+                continue;
+            }
             let address = observation
                 .address
                 .expect("Serving Container has a Container Address");
@@ -287,6 +311,7 @@ impl Handler {
 pub async fn run(
     machine: Machine,
     replicated: ReplicatedStore,
+    admin: AdminClient,
     upstreams: Option<Vec<SocketAddr>>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
@@ -296,10 +321,23 @@ pub async fn run(
         .subscribe_container_changes()
         .await
         .map_err(io::Error::other)?;
+    let local_id = machine.id;
     let observations = replicated.containers().await.map_err(io::Error::other)?;
-    let projection = Arc::new(RwLock::new(Projection::from_observations(
-        &observations.observations,
-    )));
+    let down_machines = match load_down_machines(&replicated, &admin, &local_id).await {
+        Ok(down) => Some(down),
+        Err(error) => {
+            eprintln!(
+                "failed to load Internal DNS membership; serving unfiltered answers: {error}"
+            );
+            None
+        }
+    };
+    let inputs = ProjectionInputs {
+        local_id,
+        observations: observations.observations,
+        down_machines,
+    };
+    let projection = Arc::new(RwLock::new(inputs.build()));
     let handler = Handler {
         projection: Arc::clone(&projection),
         local_subnet: machine.subnet.into(),
@@ -319,7 +357,14 @@ pub async fn run(
         server.register_listener(tcp, TCP_REQUEST_TIMEOUT, TCP_RESPONSE_BUFFER);
     }
     let server = run_server(server, shutdown.clone());
-    let projection = watch_projection(replicated, projection, &mut changes, shutdown);
+    let projection = watch_projection(
+        replicated,
+        admin,
+        projection,
+        inputs,
+        &mut changes,
+        shutdown,
+    );
     tokio::try_join!(server, projection).map(|_| ())
 }
 
@@ -334,27 +379,91 @@ async fn run_server(mut server: Server<Handler>, shutdown: CancellationToken) ->
 
 async fn watch_projection(
     replicated: ReplicatedStore,
+    admin: AdminClient,
     projection: Arc<RwLock<Projection>>,
+    mut inputs: ProjectionInputs,
     changes: &mut Subscription,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
+    let mut membership = Box::pin(next_membership_sample(
+        &replicated,
+        &admin,
+        &inputs.local_id,
+    ));
     loop {
-        tokio::select! {
+        let rebuild = tokio::select! {
             changed = changes.changed() => {
                 changed.map_err(io::Error::other)?;
                 match replicated.containers().await {
-                    Ok(observations) => {
-                        *projection
-                            .write()
-                            .map_err(|_| io::Error::other("DNS projection lock poisoned"))? =
-                            Projection::from_observations(&observations.observations);
+                    Ok(next) => {
+                        inputs.observations = next.observations;
+                        true
                     }
-                    Err(error) => eprintln!("failed to rebuild DNS projection: {error}"),
+                    Err(error) => {
+                        eprintln!("failed to rebuild DNS projection: {error}");
+                        false
+                    }
+                }
+            }
+            result = &mut membership => {
+                membership = Box::pin(next_membership_sample(
+                    &replicated,
+                    &admin,
+                    &inputs.local_id,
+                ));
+                match result {
+                    Ok(down) if inputs.down_machines.as_ref() == Some(&down) => false,
+                    Ok(down) => {
+                        inputs.down_machines = Some(down);
+                        true
+                    }
+                    Err(error) => {
+                        eprintln!("failed to refresh Internal DNS membership: {error}");
+                        false
+                    }
                 }
             }
             () = shutdown.cancelled() => return Ok(()),
+        };
+        if rebuild {
+            *projection
+                .write()
+                .map_err(|_| io::Error::other("DNS projection lock poisoned"))? = inputs.build();
         }
     }
+}
+
+async fn next_membership_sample(
+    replicated: &ReplicatedStore,
+    admin: &AdminClient,
+    local_id: &MachineId,
+) -> Result<HashSet<MachineId>, CorrosionError> {
+    tokio::time::sleep(MEMBERSHIP_SAMPLE_INTERVAL).await;
+    load_down_machines(replicated, admin, local_id).await
+}
+
+async fn load_down_machines(
+    replicated: &ReplicatedStore,
+    admin: &AdminClient,
+    local_id: &MachineId,
+) -> Result<HashSet<MachineId>, CorrosionError> {
+    let (machines, states) = tokio::try_join!(replicated.machines(), admin.membership_states())?;
+    let states = states
+        .into_iter()
+        .filter_map(|state| match state.address.ip() {
+            IpAddr::V6(address) => Some((ManagementAddress(address), state.membership)),
+            IpAddr::V4(_) => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    Ok(
+        synthesize_membership(machines.observations, local_id, &states)
+            .into_iter()
+            .filter_map(|observation| {
+                (observation.membership == MembershipObservation::Down)
+                    .then_some(observation.machine.id)
+            })
+            .collect(),
+    )
 }
 
 fn configured_upstreams(
