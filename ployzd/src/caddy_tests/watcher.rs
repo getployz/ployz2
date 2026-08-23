@@ -21,7 +21,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     convert::Infallible,
-    path::Path,
+    net::SocketAddr,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -31,6 +32,7 @@ use std::{
 use tokio::{
     net::TcpListener,
     sync::mpsc,
+    task::JoinHandle,
     time::{advance, pause, resume, timeout},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -38,47 +40,13 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn reconciles_resnapshots_and_retries_protocol_failures() {
-    let machine = Machine {
-        id: MachineId::parse("a".repeat(32)).unwrap(),
-        name: MachineName::parse("node-a").unwrap(),
-        subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
-        public_key: WireGuardPublicKey([1; 32]),
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
-        runtime: Default::default(),
-    };
-    let state = WatchState {
-        container: Arc::new(Mutex::new(observation(
-            1,
-            &machine.id,
-            "api",
-            Some([10, 210, 1, 2]),
-            vec![ingress("example.com", 80, HttpProtocol::Http)],
-        ))),
-        container_opens: Arc::new(AtomicUsize::new(0)),
-        stall_container: Arc::new(AtomicBool::new(false)),
-        container_subscriptions: Arc::new(Mutex::new(Vec::new())),
-        certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
-    };
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server_state = state.clone();
-    let server = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            Router::new()
-                .route("/v1/queries", post(query))
-                .route("/v1/subscriptions", post(subscribe))
-                .with_state(server_state),
-        )
-        .await
-        .unwrap();
-    });
-    let directory = std::env::temp_dir().join(format!(
-        "ployz-caddy-watch-retry-test-{}",
-        MachineId::random()
-    ));
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
     let caddyfile = directory.join(CONFIG_FILE);
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(run(
@@ -163,47 +131,13 @@ async fn reconciles_resnapshots_and_retries_protocol_failures() {
 
 #[tokio::test]
 async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapshot() {
-    let machine = Machine {
-        id: MachineId::parse("a".repeat(32)).unwrap(),
-        name: MachineName::parse("node-a").unwrap(),
-        subnet: "10.210.1.0/24".parse().unwrap(),
-        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
-        public_key: WireGuardPublicKey([1; 32]),
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
-        runtime: Default::default(),
-    };
-    let state = WatchState {
-        container: Arc::new(Mutex::new(observation(
-            1,
-            &machine.id,
-            "api",
-            Some([10, 210, 1, 2]),
-            vec![ingress("example.com", 80, HttpProtocol::Http)],
-        ))),
-        container_opens: Arc::new(AtomicUsize::new(0)),
-        stall_container: Arc::new(AtomicBool::new(false)),
-        container_subscriptions: Arc::new(Mutex::new(Vec::new())),
-        certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
-    };
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server_state = state.clone();
-    let store_server = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            Router::new()
-                .route("/v1/queries", post(query))
-                .route("/v1/subscriptions", post(subscribe))
-                .with_state(server_state),
-        )
-        .await
-        .unwrap();
-    });
-    let directory = std::env::temp_dir().join(format!(
-        "ployz-caddy-watch-debounce-test-{}",
-        MachineId::random()
-    ));
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = TestAdmin { loads: load_tx };
     let shutdown = CancellationToken::new();
@@ -287,8 +221,65 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
-    store_server.abort();
+    server.abort();
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+struct WatcherFixture {
+    machine: Machine,
+    state: WatchState,
+    address: SocketAddr,
+    server: JoinHandle<()>,
+    directory: PathBuf,
+}
+
+async fn watcher_fixture() -> WatcherFixture {
+    let machine = Machine {
+        id: MachineId::parse("a".repeat(32)).unwrap(),
+        name: MachineName::parse("node-a").unwrap(),
+        subnet: "10.210.1.0/24".parse().unwrap(),
+        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
+        runtime: Default::default(),
+    };
+    let state = WatchState {
+        container: Arc::new(Mutex::new(observation(
+            1,
+            &machine.id,
+            "api",
+            Some([10, 210, 1, 2]),
+            vec![ingress("example.com", 80, HttpProtocol::Http)],
+        ))),
+        container_opens: Arc::new(AtomicUsize::new(0)),
+        stall_container: Arc::new(AtomicBool::new(false)),
+        container_subscriptions: Arc::new(Mutex::new(Vec::new())),
+        certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server_state = state.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route("/v1/queries", post(query))
+                .route("/v1/subscriptions", post(subscribe))
+                .with_state(server_state),
+        )
+        .await
+        .unwrap();
+    });
+    let directory =
+        std::env::temp_dir().join(format!("ployz-caddy-watch-test-{}", MachineId::random()));
+    WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    }
 }
 
 #[derive(Clone)]
