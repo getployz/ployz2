@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     fmt::{self, Display, Formatter},
+    num::NonZeroU64,
 };
 
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,15 @@ pub struct ServiceAttempt {
     pub name: ServiceName,
 }
 
+/// One Provisioned Volume declaration in a Deploy Intent.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProvisionedVolume {
+    /// Service-local reference that resolves to the Docker Volume declaration.
+    pub reference: crate::ServiceVolumeReference,
+    /// Required positive storage bound in bytes.
+    pub maximum_bytes: NonZeroU64,
+}
+
 /// Complete desired Services plus which of those Services this command applies.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeployIntent {
@@ -49,6 +59,8 @@ pub struct DeployIntent {
     pub project_name: ProjectName,
     /// Complete desired Services for this Cluster.
     pub target: Vec<RequestedServiceSpec>,
+    /// Bounded Provisioned Volumes referenced by Services in `target`.
+    pub provisioned_volumes: Vec<ProvisionedVolume>,
     /// Planner knobs for this Deploy, including the selected Service list.
     pub options: PlanOptions,
     // ponytail: planner graph, not wire. Split if Cloud ever sends depends_on.
@@ -77,6 +89,7 @@ impl DeployIntent {
         Self {
             project_name,
             target,
+            provisioned_volumes: Vec::new(),
             options,
             dependencies: BTreeMap::new(),
             service_profiles: BTreeMap::new(),

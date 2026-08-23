@@ -8,7 +8,7 @@ use ployz_core::{
     CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
     ConfiguredHealthcheck, ContainerCreated, ContainerHostname, ContainerKind, ContainerLabels,
     ContainerPath, ContainerResources, ContainerRuntimeObservation, ContractDescription,
-    CreateContainerRequest, CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY,
+    CreateContainerRequest, CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, DeployIntent,
     DescribeContractRequest, DnsRecord, DnsRecordType, DockerVolumeName, Domain, DomainRecords,
     ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost, FanoutFailure,
     FanoutOutcome, FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY,
@@ -33,6 +33,55 @@ use serde_json::{Value, json};
 
 const MACHINE_ID: &str = "0123456789abcdef0123456789abcdef";
 const OTHER_MACHINE_ID: &str = "fedcba9876543210fedcba9876543210";
+
+#[test]
+fn provisioned_volume_bounds_are_required_positive_byte_counts() {
+    let valid = json!({
+        "project_name": "app",
+        "target": [],
+        "provisioned_volumes": [{ "reference": "data", "maximum_bytes": 1_073_741_824 }],
+        "options": {
+            "force_recreate": false,
+            "skip_health_monitor": false,
+            "placement_seed": 0,
+            "selected": []
+        }
+    });
+    let intent: DeployIntent = serde_json::from_value(valid.clone()).unwrap();
+    assert_eq!(serde_json::to_value(intent).unwrap(), valid);
+
+    for invalid in [
+        json!({ "reference": "data" }),
+        json!({ "reference": "data", "maximum_bytes": 0 }),
+    ] {
+        let mut value = valid.clone();
+        value
+            .as_object_mut()
+            .expect("valid Deploy Intent fixture is an object")
+            .insert("provisioned_volumes".into(), json!([invalid]));
+        assert!(serde_json::from_value::<DeployIntent>(value).is_err());
+    }
+
+    assert!(
+        serde_json::from_str::<DeployIntent>(
+            r#"{
+                "project_name":"app",
+                "target":[],
+                "provisioned_volumes":[{
+                    "reference":"data",
+                    "maximum_bytes":18446744073709551616
+                }],
+                "options":{
+                    "force_recreate":false,
+                    "skip_health_monitor":false,
+                    "placement_seed":0,
+                    "selected":[]
+                }
+            }"#,
+        )
+        .is_err()
+    );
+}
 
 /// The response catalog generates `ResponseKind` from one table, so a typo in a row
 /// would round-trip through both sides symmetrically and break only across versions.

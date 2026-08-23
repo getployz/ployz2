@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     DockerVolumeName, MachineId, MachineObservation, MachineTarget, PreservedVolume, ProjectName,
-    RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation, ServiceVolume,
-    ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
+    ProvisionedVolume, RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
+    ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
 };
 
 use crate::deploy::{
@@ -89,6 +89,34 @@ pub(super) fn scope_requested(
     spec.volume_graph = ServiceVolumeGraph::parse(volumes, mounts)
         .expect("scoping Docker Volume names does not change Service Volume References");
     spec
+}
+
+pub(super) fn validate_provisioned_volume_bounds(
+    target: &[RequestedServiceSpec],
+    declarations: &[ProvisionedVolume],
+) -> Result<(), PlanError> {
+    let mut bounds = BTreeMap::new();
+    for declaration in declarations {
+        for volume in target
+            .iter()
+            .flat_map(|spec| spec.volume_graph.volumes())
+            .filter(|volume| volume.reference == declaration.reference)
+        {
+            let VolumeSource::Named { name, .. } = &volume.source else {
+                continue;
+            };
+            if let Some(first) = bounds.insert(name.clone(), declaration.maximum_bytes)
+                && first != declaration.maximum_bytes
+            {
+                return Err(PlanError::ConflictingProvisionedVolumeBounds {
+                    name: name.clone(),
+                    first,
+                    second: declaration.maximum_bytes,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Owned Compose-declared Docker Volumes omitted from this Deploy's target.

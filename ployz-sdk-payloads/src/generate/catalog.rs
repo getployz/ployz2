@@ -583,12 +583,23 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "ProvisionedVolume",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("reference", "ServiceVolumeReference"),
+                ("maximum_bytes", "number"),
+            ],
+        },
+    ),
+    (
         "DeployIntent",
         Shape::Additive {
             params: "",
             fields: &[
                 ("project_name", "ProjectName"),
                 ("target", "RequestedServiceSpec[]"),
+                ("provisioned_volumes", "ProvisionedVolume[]"),
                 ("options", "PlanOptions"),
             ],
         },

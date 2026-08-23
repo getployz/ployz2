@@ -25,7 +25,7 @@ use placement::{
 use volumes::{
     VolumePins, constrain_volume_candidates, named_volume_uses, plan_volume_operations,
     prepare_shared_replicated_volumes, preserved_owned_volumes, reject_mixed_volume_modes,
-    scope_requested,
+    scope_requested, validate_provisioned_volume_bounds,
 };
 
 /// Whether Project removal keeps or destroys observer-visible managed volumes.
@@ -169,6 +169,7 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
         .cloned()
         .map(|spec| scope_requested(spec, &intent.project_name))
         .collect();
+    validate_provisioned_volume_bounds(&target, &intent.provisioned_volumes)?;
     let mut requested = Vec::new();
     for spec in specs_to_plan(intent)? {
         let scoped = target

@@ -356,9 +356,15 @@ export type ServiceAttempt = Additive<{
   name: ServiceName;
 }>;
 
+export type ProvisionedVolume = Additive<{
+  reference: ServiceVolumeReference;
+  maximum_bytes: number;
+}>;
+
 export type DeployIntent = Additive<{
   project_name: ProjectName;
   target: RequestedServiceSpec[];
+  provisioned_volumes: ProvisionedVolume[];
   options: PlanOptions;
 }>;
 

@@ -5,6 +5,7 @@ import type {
   DeviceMapping,
   DeviceReservation,
   HealthcheckSpec,
+  ProvisionedVolume,
   RequestedServiceSpec,
   ResolvedServiceSpec,
   Ulimit,
@@ -13,6 +14,7 @@ import type {
 import fixtures from "../generated/fixtures.json";
 
 const spec = fixtures.requested_service_spec_typed;
+fixtures.provisioned_volume satisfies ProvisionedVolume;
 const source = spec.volumes[0].source;
 
 source.driver satisfies VolumeDriver;

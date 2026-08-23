@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    num::NonZeroU64,
 };
 
 use ployz_core::{
@@ -257,6 +258,14 @@ pub enum PlanError {
     ServiceModeCannotChange,
     #[error("mounted Service Volumes disagree about Docker Volume {name}")]
     ConflictingDockerVolumeDefinitions { name: DockerVolumeName },
+    #[error(
+        "Provisioned Volume declarations for Docker Volume {name} conflict: {first} and {second} byte maximums"
+    )]
+    ConflictingProvisionedVolumeBounds {
+        name: DockerVolumeName,
+        first: NonZeroU64,
+        second: NonZeroU64,
+    },
     #[error("plan service '{service}': {source}")]
     Service {
         service: String,

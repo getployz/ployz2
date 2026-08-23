@@ -1,5 +1,56 @@
 use super::support::*;
-use ployz_core::{PreservedVolume, ServiceAttempt, ServiceName};
+use ployz_core::{PreservedVolume, ProvisionedVolume, ServiceAttempt, ServiceName};
+
+#[test]
+fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut requested, "data");
+    let mut volumes = requested.volume_graph.volumes().to_vec();
+    let mut mounts = requested.volume_graph.mounts().to_vec();
+    volumes.push(ServiceVolume {
+        reference: ServiceVolumeReference::parse("data-alias").unwrap(),
+        source: volumes.first().unwrap().source.clone(),
+    });
+    mounts.push(ServiceMount {
+        volume: ServiceVolumeReference::parse("data-alias").unwrap(),
+        target: ContainerPath::parse("/alias").unwrap(),
+        read_only: false,
+    });
+    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    let mut intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&requested],
+        PlanOptions::default(),
+    );
+    intent.provisioned_volumes = vec![
+        ProvisionedVolume {
+            reference: ServiceVolumeReference::parse("data").unwrap(),
+            maximum_bytes: 1_073_741_824.try_into().unwrap(),
+        },
+        ProvisionedVolume {
+            reference: ServiceVolumeReference::parse("data-alias").unwrap(),
+            maximum_bytes: 2_147_483_648.try_into().unwrap(),
+        },
+    ];
+
+    assert_eq!(
+        preview_deploy(
+            &intent,
+            &DeploySnapshot {
+                machines: vec![machine('1', "first")],
+                ..Default::default()
+            },
+            IngressContext::default(),
+        ),
+        Err(PlanError::ConflictingProvisionedVolumeBounds {
+            name: app_volume("data"),
+            first: 1_073_741_824.try_into().unwrap(),
+            second: 2_147_483_648.try_into().unwrap(),
+        })
+    );
+}
 
 #[test]
 fn already_owned_volume_names_are_not_prefixed_again() {
