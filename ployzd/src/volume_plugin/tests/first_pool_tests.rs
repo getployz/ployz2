@@ -1,61 +1,18 @@
-use std::{
-    fs,
-    os::unix::fs::{MetadataExt, PermissionsExt},
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+//! First-Pool creation behavior through the Docker plugin boundary.
 
-use serde_json::{Value, json};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
-    sync::Mutex,
-};
+use std::os::unix::fs::MetadataExt;
 
-use super::{VolumeStorage, pool::POOL_BACKING_FILE, pool::PoolStorage, serve};
-
-static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
-
-struct TestDir(PathBuf);
-
-impl TestDir {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "ployzd-first-pool-{}-{}",
-            std::process::id(),
-            NEXT_TEST.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use super::super::pool::{POOL_BACKING_FILE, PoolStorage};
+use super::*;
 
 #[tokio::test]
 async fn first_create_builds_the_pool_and_bounded_volume_in_one_request() {
     let test = TestDir::new();
-    let storage = fake_first_pool(&test.0, 8192);
     let backing = test.0.join(POOL_BACKING_FILE);
     assert!(!backing.exists());
-    let socket = test.0.join("plugin.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    let server = tokio::spawn(serve(listener, storage));
 
     assert_eq!(
-        post(
-            &socket,
-            "/VolumeDriver.Create",
-            json!({"Name":"data","Opts":{"size":"1g"}}),
-        )
-        .await,
+        create_first_volume(&test, 8192, "1g").await,
         json!({"Err":""})
     );
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
@@ -73,47 +30,27 @@ async fn first_create_builds_the_pool_and_bounded_volume_in_one_request() {
         1
     );
     assert!(backing.exists());
-    server.abort();
 }
 
 #[tokio::test]
 async fn initial_capacity_uses_ten_percent_when_it_exceeds_one_gibibyte() {
     let test = TestDir::new();
-    let storage = fake_first_pool(&test.0, 512);
-    let socket = test.0.join("plugin.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    let server = tokio::spawn(serve(listener, storage));
 
     assert_eq!(
-        post(
-            &socket,
-            "/VolumeDriver.Create",
-            json!({"Name":"data","Opts":{"size":"20g"}}),
-        )
-        .await,
+        create_first_volume(&test, 512, "20g").await,
         json!({"Err":""})
     );
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
     assert_eq!(log.matches("fallocate -l 23622320128 ").count(), 1);
     assert!(log.contains("-o ashift=12 -O canmount=off ployz"));
-    server.abort();
 }
 
 #[tokio::test]
 async fn first_create_refuses_before_mutation_when_root_reserve_would_be_broken() {
     let test = TestDir::new();
-    let storage = fake_first_pool(&test.0, 4096);
     fs::write(test.0.join("insufficient"), "").unwrap();
-    let socket = test.0.join("plugin.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    let server = tokio::spawn(serve(listener, storage));
 
-    let response = post(
-        &socket,
-        "/VolumeDriver.Create",
-        json!({"Name":"data","Opts":{"size":"1g"}}),
-    )
-    .await;
+    let response = create_first_volume(&test, 4096, "1g").await;
 
     assert!(error(&response).contains("host-root reserve"));
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
@@ -121,106 +58,64 @@ async fn first_create_refuses_before_mutation_when_root_reserve_would_be_broken(
     assert!(!log.contains("zpool create"));
     assert!(!test.0.join(POOL_BACKING_FILE).exists());
     assert!(!test.0.join("pool").exists());
-    server.abort();
 }
 
 #[tokio::test]
 async fn first_create_rejects_sparse_allocation_without_creating_a_pool() {
     let test = TestDir::new();
-    let storage = fake_first_pool(&test.0, 4096);
     fs::write(test.0.join("sparse"), "").unwrap();
-    let socket = test.0.join("plugin.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    let server = tokio::spawn(serve(listener, storage));
 
-    let response = post(
-        &socket,
-        "/VolumeDriver.Create",
-        json!({"Name":"data","Opts":{"size":"1g"}}),
-    )
-    .await;
+    let response = create_first_volume(&test, 4096, "1g").await;
 
     assert!(error(&response).contains("is sparse"));
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
     assert!(!log.contains("zpool create"));
     assert!(!test.0.join(POOL_BACKING_FILE).exists());
-    server.abort();
 }
 
 #[tokio::test]
 async fn failed_pool_creation_removes_the_partial_pool_and_backing_file() {
     let test = TestDir::new();
-    let storage = fake_first_pool(&test.0, 4096);
     fs::write(test.0.join("fail-pool"), "").unwrap();
-    let socket = test.0.join("plugin.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    let server = tokio::spawn(serve(listener, storage));
 
-    let response = post(
-        &socket,
-        "/VolumeDriver.Create",
-        json!({"Name":"data","Opts":{"size":"1g"}}),
-    )
-    .await;
+    let response = create_first_volume(&test, 4096, "1g").await;
 
     assert!(!error(&response).is_empty());
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
     assert_eq!(log.matches("zpool destroy -f ployz").count(), 1);
     assert!(!test.0.join(POOL_BACKING_FILE).exists());
     assert!(!test.0.join("pool").exists());
-    server.abort();
 }
 
 #[tokio::test]
 async fn failed_first_volume_removes_the_new_pool_and_backing_file() {
     let test = TestDir::new();
-    let storage = fake_first_pool(&test.0, 4096);
     fs::write(test.0.join("fail-volume"), "").unwrap();
-    let socket = test.0.join("plugin.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    let server = tokio::spawn(serve(listener, storage));
 
-    let response = post(
-        &socket,
-        "/VolumeDriver.Create",
-        json!({"Name":"data","Opts":{"size":"1g"}}),
-    )
-    .await;
+    let response = create_first_volume(&test, 4096, "1g").await;
 
     assert!(!error(&response).is_empty());
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
     assert_eq!(log.matches("zpool destroy -f ployz").count(), 1);
     assert!(!test.0.join(POOL_BACKING_FILE).exists());
     assert!(!test.0.join("pool").exists());
+}
+
+async fn create_first_volume(test: &TestDir, physical_block_size: u64, size: &str) -> Value {
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(
+        listener,
+        fake_first_pool(&test.0, physical_block_size),
+    ));
+    let response = post(
+        &socket,
+        "/VolumeDriver.Create",
+        json!({"Name":"data","Opts":{"size":size}}),
+    )
+    .await;
     server.abort();
-}
-
-async fn post(socket: &Path, route: &str, body: Value) -> Value {
-    let body = serde_json::to_vec(&body).unwrap();
-    let mut stream = UnixStream::connect(socket).await.unwrap();
-    stream
-        .write_all(
-            format!(
-                "POST {route} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .as_bytes(),
-        )
-        .await
-        .unwrap();
-    stream.write_all(&body).await.unwrap();
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).await.unwrap();
-    let body = response
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .and_then(|index| response.get(index + 4..))
-        .unwrap();
-    serde_json::from_slice(body).unwrap()
-}
-
-fn error(response: &Value) -> &str {
-    response.get("Err").and_then(Value::as_str).unwrap()
+    response
 }
 
 fn fake_first_pool(directory: &Path, physical_block_size: u64) -> VolumeStorage {

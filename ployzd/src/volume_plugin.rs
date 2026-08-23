@@ -17,8 +17,6 @@ use ployzd::machine_pool::MachinePool;
 use serde::{Deserialize, Serialize};
 use tokio::{net::UnixListener, process::Command, sync::Mutex};
 
-#[cfg(test)]
-mod first_pool_tests;
 mod pool;
 mod removal;
 
@@ -101,7 +99,7 @@ impl VolumeStorage {
     ) -> Result<()> {
         let requested = parse_size(options)?;
         let _guard = self.mutation.lock().await;
-        match self.pool.one().await? {
+        match self.pool.one_usable().await? {
             Some(pool) => self.create_volume(&pool, name, requested).await,
             None => {
                 let pool = self.pool.create(requested).await?;
@@ -216,7 +214,7 @@ impl VolumeStorage {
     }
 
     async fn usable_pool(&self) -> Result<Option<MachinePool>> {
-        self.pool.one().await
+        self.pool.one_usable().await
     }
 
     async fn datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
@@ -570,6 +568,9 @@ mod tests {
 
     #[path = "remove_tests.rs"]
     mod remove_tests;
+
+    #[path = "first_pool_tests.rs"]
+    mod first_pool_tests;
 
     #[tokio::test]
     async fn docker_can_create_and_mount_a_bounded_volume() {

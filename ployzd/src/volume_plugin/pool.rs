@@ -11,9 +11,11 @@ use ployzd::machine_pool::{self, MachinePool};
 use super::{Result, VolumeError, checked_command};
 
 const GIBIBYTE: u64 = 1024_u64.pow(3);
+/// Filename of the root-backed Machine Pool vdev.
 pub(super) const POOL_BACKING_FILE: &str = "machine-pool";
 const POOL_NAME: &str = "ployz";
 
+/// Observes and creates the host's single Machine Pool.
 #[derive(Clone)]
 pub(super) struct PoolStorage {
     zpool: PathBuf,
@@ -25,22 +27,26 @@ pub(super) struct PoolStorage {
     sys_dev_block: PathBuf,
 }
 
+/// A Pool created by the current request and therefore safe to clean up.
 pub(super) struct CreatedPool<'storage> {
     pool: MachinePool,
     storage: &'storage PoolStorage,
 }
 
 impl CreatedPool<'_> {
+    /// Returns the newly created Pool's usable identity.
     pub(super) fn machine_pool(&self) -> &MachinePool {
         &self.pool
     }
 
+    /// Destroys this newly created Pool and returns the original failure, with cleanup evidence.
     pub(super) async fn cleanup(self, failure: VolumeError) -> VolumeError {
         self.storage.cleanup(failure).await
     }
 }
 
 impl PoolStorage {
+    /// Uses production storage programs and host paths.
     pub(super) fn new(zpool: impl Into<PathBuf>) -> Self {
         Self {
             zpool: zpool.into(),
@@ -54,6 +60,7 @@ impl PoolStorage {
     }
 
     #[cfg(test)]
+    /// Replaces external programs and host paths for seam tests.
     pub(super) fn with_environment(
         zpool: PathBuf,
         fallocate: PathBuf,
@@ -74,12 +81,22 @@ impl PoolStorage {
         }
     }
 
-    pub(super) async fn one(&self) -> Result<Option<MachinePool>> {
+    /// Selects the sole usable imported Machine Pool, if none is imported.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Pool inspection fails or imported Pool evidence is unusable.
+    pub(super) async fn one_usable(&self) -> Result<Option<MachinePool>> {
         let output =
             checked_command(&self.zpool, &["list", "-Hp", "-o", "name,health,readonly"]).await?;
         Ok(machine_pool::one_usable(&output).map_err(|error| error.to_string())?)
     }
 
+    /// Creates one root-backed Machine Pool sized for the requested Volume.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when reserve, allocation, Pool creation, or verification fails.
     pub(super) async fn create(&self, requested: u64) -> Result<CreatedPool<'_>> {
         let capacity = initial_capacity(requested)?;
         let ashift = self.check_host_root(capacity).await?;
@@ -129,7 +146,7 @@ impl PoolStorage {
         {
             return Err(self.cleanup(error).await);
         }
-        match self.one().await {
+        match self.one_usable().await {
             Ok(Some(pool)) if pool.name() == POOL_NAME => Ok(CreatedPool {
                 pool,
                 storage: self,
