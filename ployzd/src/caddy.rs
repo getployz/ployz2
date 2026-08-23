@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     corrosion::{
         CertificateChallenge, CertificateMaterial, CertificateRow, Error as CorrosionError,
-        ReplicatedStore,
+        ReplicatedStore, Subscription,
     },
     filesystem::{atomic_write, set_ployz_group},
 };
@@ -34,6 +34,7 @@ pub const CONFIG_FILE: &str = "Caddyfile";
 const CERTS_DIR: &str = "certs";
 const CONTAINER_CERTS_DIR: &str = "/config/certs";
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const WATCH_RETRY: Duration = Duration::from_secs(1);
 
 /// True when this observation is the reserved Caddy Service.
@@ -192,18 +193,45 @@ pub async fn run(
                     }
                 }
             }
-            let changed = tokio::select! {
-                changed = container_changes.changed() => changed,
-                changed = certificate_changes.changed() => changed,
-                () = shutdown.cancelled() => return Ok(()),
-            };
-            if let Err(error) = changed {
-                if wait_to_retry(&error, &shutdown).await {
-                    continue 'watch;
-                }
-                return Ok(());
+            match wait_for_debounced_change(
+                &mut container_changes,
+                &mut certificate_changes,
+                &shutdown,
+            )
+            .await
+            {
+                Ok(true) => {}
+                Ok(false) => return Ok(()),
+                Err(error) if wait_to_retry(&error, &shutdown).await => continue 'watch,
+                Err(_) => return Ok(()),
             }
         }
+    }
+}
+
+async fn wait_for_debounced_change(
+    container_changes: &mut Subscription,
+    certificate_changes: &mut Subscription,
+    shutdown: &CancellationToken,
+) -> Result<bool, CorrosionError> {
+    tokio::select! {
+        changed = container_changes.changed() => changed?,
+        changed = certificate_changes.changed() => changed?,
+        () = shutdown.cancelled() => return Ok(false),
+    }
+    let quiet = tokio::time::sleep(WATCH_DEBOUNCE);
+    tokio::pin!(quiet);
+    loop {
+        tokio::select! {
+            biased;
+            () = shutdown.cancelled() => return Ok(false),
+            changed = container_changes.changed() => changed?,
+            changed = certificate_changes.changed() => changed?,
+            () = &mut quiet => return Ok(true),
+        }
+        quiet
+            .as_mut()
+            .reset(tokio::time::Instant::now() + WATCH_DEBOUNCE);
     }
 }
 

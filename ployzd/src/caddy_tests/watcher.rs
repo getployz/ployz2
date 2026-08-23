@@ -28,7 +28,11 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::{
+    net::{TcpListener, UnixListener},
+    sync::mpsc,
+    time::{advance, pause, resume, timeout},
+};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 
@@ -157,6 +161,174 @@ async fn reconciles_resnapshots_and_retries_protocol_failures() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapshot() {
+    let machine = Machine {
+        id: MachineId::parse("a".repeat(32)).unwrap(),
+        name: MachineName::parse("node-a").unwrap(),
+        subnet: "10.210.1.0/24".parse().unwrap(),
+        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
+        runtime: Default::default(),
+    };
+    let state = WatchState {
+        container: Arc::new(Mutex::new(observation(
+            1,
+            &machine.id,
+            "api",
+            Some([10, 210, 1, 2]),
+            vec![ingress("example.com", 80, HttpProtocol::Http)],
+        ))),
+        container_opens: Arc::new(AtomicUsize::new(0)),
+        stall_container: Arc::new(AtomicBool::new(false)),
+        container_subscriptions: Arc::new(Mutex::new(Vec::new())),
+        certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server_state = state.clone();
+    let store_server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route("/v1/queries", post(query))
+                .route("/v1/subscriptions", post(subscribe))
+                .with_state(server_state),
+        )
+        .await
+        .unwrap();
+    });
+    let directory = std::env::temp_dir().join(format!(
+        "ployz-caddy-watch-debounce-test-{}",
+        MachineId::random()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let admin_socket = directory.join("admin.sock");
+    let admin_listener = UnixListener::bind(&admin_socket).unwrap();
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin_server = tokio::spawn(async move {
+        axum::serve(
+            admin_listener,
+            Router::new()
+                .route("/adapt", post(adapt))
+                .route("/load", post(load))
+                .with_state(load_tx),
+        )
+        .await
+        .unwrap();
+    });
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(run(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        admin_socket,
+        shutdown.clone(),
+    ));
+
+    let first = timeout(Duration::from_millis(250), load_rx.recv())
+        .await
+        .expect("first load waited for debounce")
+        .unwrap();
+    assert!(first.contains("10.210.1.2:80"), "{first}");
+
+    pause();
+    state.replace(observation(
+        2,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 3]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    state.send(b"{\"change\":{}}\n");
+    settle().await;
+    advance(Duration::from_millis(100)).await;
+    state.replace(observation(
+        3,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 4]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    state.send_certificates(b"{\"change\":{}}\n");
+    settle().await;
+    advance(Duration::from_millis(100)).await;
+    state.replace(observation(
+        4,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 5]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    state.send(b"{\"change\":{}}\n");
+    settle().await;
+
+    advance(Duration::from_millis(299)).await;
+    settle().await;
+    assert!(load_rx.try_recv().is_err(), "burst loaded before quiet");
+    advance(Duration::from_millis(1)).await;
+    resume();
+    let latest = timeout(Duration::from_secs(1), load_rx.recv())
+        .await
+        .expect("burst did not load after quiet")
+        .unwrap();
+    assert!(latest.contains("10.210.1.5:80"), "{latest}");
+    assert!(!latest.contains("10.210.1.3:80"), "{latest}");
+    assert!(!latest.contains("10.210.1.4:80"), "{latest}");
+    assert!(load_rx.try_recv().is_err(), "burst produced extra loads");
+
+    pause();
+    advance(Duration::from_secs(2)).await;
+    state.replace(observation(
+        5,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 6]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    state.send(b"{\"change\":{}}\n");
+    settle().await;
+    advance(Duration::from_millis(300)).await;
+    resume();
+    let isolated = timeout(Duration::from_secs(1), load_rx.recv())
+        .await
+        .expect("isolated update did not load")
+        .unwrap();
+    assert!(isolated.contains("10.210.1.6:80"), "{isolated}");
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    store_server.abort();
+    admin_server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+async fn adapt(body: Bytes) -> Response {
+    Response::builder()
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "result": { "caddyfile": String::from_utf8(body.to_vec()).unwrap() }
+            })
+            .to_string(),
+        ))
+        .unwrap()
+}
+
+async fn load(State(loads): State<mpsc::UnboundedSender<String>>, body: Bytes) {
+    let body = serde_json::from_slice::<Value>(&body).unwrap();
+    let caddyfile = body.get("caddyfile").unwrap().as_str().unwrap().to_owned();
+    loads.send(caddyfile).unwrap();
+}
+
+async fn settle() {
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+}
+
 #[derive(Clone)]
 struct WatchState {
     container: Arc<Mutex<ContainerObservation>>,
@@ -173,6 +345,13 @@ impl WatchState {
 
     fn send(&self, event: &'static [u8]) {
         self.container_subscriptions
+            .lock()
+            .unwrap()
+            .retain(|subscription| subscription.send(Bytes::from_static(event)).is_ok());
+    }
+
+    fn send_certificates(&self, event: &'static [u8]) {
+        self.certificate_subscriptions
             .lock()
             .unwrap()
             .retain(|subscription| subscription.send(Bytes::from_static(event)).is_ok());
