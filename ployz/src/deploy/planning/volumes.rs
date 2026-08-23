@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeName, MachineId, MachineObservation, MachineTarget, PreservedVolume, ProjectName,
-    ProvisionedVolume, ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ServiceMode,
-    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph, VolumeSource,
-    machine_matches_target, owned_volume_project,
+    DockerVolumeId, DockerVolumeName, MachineId, MachineObservation, MachineTarget,
+    PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
+    RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation, ServiceVolume,
+    ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
 };
 
 use crate::deploy::{
@@ -24,7 +24,7 @@ pub(super) struct VolumePins {
     anchors: BTreeMap<DockerVolumeName, MachineId>,
     creates: Vec<(MachineId, ServiceVolume)>,
     provisioned: ProvisionedVolumeBindings,
-    provisioned_bounds: BTreeMap<(MachineId, DockerVolumeName), ProvisionedVolumeMaximumBytes>,
+    provisioned_bounds: BTreeMap<DockerVolumeId, ProvisionedVolumeMaximumBytes>,
 }
 
 impl VolumePins {
@@ -177,10 +177,13 @@ impl VolumePins {
                 continue;
             };
             for machine in machines {
-                if let Some(existing_maximum_bytes) = self
-                    .provisioned_bounds
-                    .insert((machine.machine.id, name.clone()), maximum_bytes)
-                    && existing_maximum_bytes != maximum_bytes
+                if let Some(existing_maximum_bytes) = self.provisioned_bounds.insert(
+                    DockerVolumeId {
+                        machine_id: machine.machine.id,
+                        name: name.clone(),
+                    },
+                    maximum_bytes,
+                ) && existing_maximum_bytes != maximum_bytes
                 {
                     return Err(PlanError::ConflictingProvisionedVolumeBounds {
                         name: name.clone(),
