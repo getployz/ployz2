@@ -339,6 +339,17 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
         ),
     ];
     let down_machines = HashSet::from([local, down]);
+    let mut inputs = ProjectionInputs {
+        local_id: local,
+        observations: observations.to_vec(),
+        down_machines: None,
+    };
+
+    assert!(!inputs.update_membership(Err(CorrosionError::Protocol("not loaded".into()))));
+    assert_eq!(inputs.down_machines, None);
+    assert!(inputs.update_membership(Ok(down_machines.clone())));
+    assert!(!inputs.update_membership(Err(CorrosionError::Protocol("unavailable".into()))));
+    assert_eq!(inputs.down_machines.as_ref(), Some(&down_machines));
 
     assert_eq!(
         addresses(plan(

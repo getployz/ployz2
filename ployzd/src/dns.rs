@@ -10,6 +10,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use hickory_server::proto::{
     op::{Header, HeaderCounts, Message, Metadata, ResponseCode},
     rr::{Name, RData, Record, RecordType, rdata::A},
@@ -29,6 +30,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
 };
+use tokio_stream::wrappers::IntervalStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::corrosion::{AdminClient, Error as CorrosionError, ReplicatedStore, Subscription};
@@ -71,6 +73,25 @@ impl ProjectionInputs {
             &self.local_id,
             self.down_machines.as_ref(),
         )
+    }
+
+    fn update_membership(&mut self, loaded: Result<HashSet<MachineId>, CorrosionError>) -> bool {
+        match loaded {
+            Ok(down) if self.down_machines.as_ref() == Some(&down) => false,
+            Ok(down) => {
+                self.down_machines = Some(down);
+                true
+            }
+            Err(error) => {
+                let fallback = if self.down_machines.is_some() {
+                    "keeping the last successful filter"
+                } else {
+                    "serving unfiltered answers"
+                };
+                eprintln!("failed to load Internal DNS membership; {fallback}: {error}");
+                false
+            }
+        }
     }
 }
 
@@ -323,20 +344,12 @@ pub async fn run(
         .map_err(io::Error::other)?;
     let local_id = machine.id;
     let observations = replicated.containers().await.map_err(io::Error::other)?;
-    let down_machines = match load_down_machines(&replicated, &admin, &local_id).await {
-        Ok(down) => Some(down),
-        Err(error) => {
-            eprintln!(
-                "failed to load Internal DNS membership; serving unfiltered answers: {error}"
-            );
-            None
-        }
-    };
-    let inputs = ProjectionInputs {
+    let mut inputs = ProjectionInputs {
         local_id,
         observations: observations.observations,
-        down_machines,
+        down_machines: None,
     };
+    inputs.update_membership(load_down_machines(&replicated, &admin, &local_id).await);
     let projection = Arc::new(RwLock::new(inputs.build()));
     let handler = Handler {
         projection: Arc::clone(&projection),
@@ -385,11 +398,15 @@ async fn watch_projection(
     changes: &mut Subscription,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    let mut membership = Box::pin(next_membership_sample(
-        &replicated,
-        &admin,
-        &inputs.local_id,
-    ));
+    let local_id = inputs.local_id;
+    let mut interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + MEMBERSHIP_SAMPLE_INTERVAL,
+        MEMBERSHIP_SAMPLE_INTERVAL,
+    );
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let membership =
+        IntervalStream::new(interval).then(|_| load_down_machines(&replicated, &admin, &local_id));
+    tokio::pin!(membership);
     loop {
         let rebuild = tokio::select! {
             changed = changes.changed() => {
@@ -405,24 +422,7 @@ async fn watch_projection(
                     }
                 }
             }
-            result = &mut membership => {
-                membership = Box::pin(next_membership_sample(
-                    &replicated,
-                    &admin,
-                    &inputs.local_id,
-                ));
-                match result {
-                    Ok(down) if inputs.down_machines.as_ref() == Some(&down) => false,
-                    Ok(down) => {
-                        inputs.down_machines = Some(down);
-                        true
-                    }
-                    Err(error) => {
-                        eprintln!("failed to refresh Internal DNS membership: {error}");
-                        false
-                    }
-                }
-            }
+            Some(result) = membership.next() => inputs.update_membership(result),
             () = shutdown.cancelled() => return Ok(()),
         };
         if rebuild {
@@ -431,15 +431,6 @@ async fn watch_projection(
                 .map_err(|_| io::Error::other("DNS projection lock poisoned"))? = inputs.build();
         }
     }
-}
-
-async fn next_membership_sample(
-    replicated: &ReplicatedStore,
-    admin: &AdminClient,
-    local_id: &MachineId,
-) -> Result<HashSet<MachineId>, CorrosionError> {
-    tokio::time::sleep(MEMBERSHIP_SAMPLE_INTERVAL).await;
-    load_down_machines(replicated, admin, local_id).await
 }
 
 async fn load_down_machines(
