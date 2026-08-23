@@ -488,30 +488,24 @@ printf '%s\n' "$invalid_storage_error" | grep -Fq \
     "Unsupported storage preparation 'other'; expected none or zfs"
 rm -f "$storage_selection_log"
 
-assert_main_storage_order() {
-    local storage=$1 expected=$2 main_order_log
-    main_order_log=$(mktemp)
-    (
-        error() { [ "$1" = "Run this installer with sudo or as root" ]; }
-        verify_system() { :; }
-        command_exists() { return 1; }
-        install_prerequisites() { echo prerequisites >> "$main_order_log"; }
-        prepare_zfs() { echo zfs >> "$main_order_log"; }
-        create_user_and_directories() { :; }
-        install_binaries() { :; }
-        install_systemd() { :; }
-        install_docker() { :; }
-        systemctl() { :; }
-        log() { :; }
-        PLOYZ_STORAGE=$storage
-        main
-    )
-    assert_eq "$(cat "$main_order_log")" "$expected"
-    rm -f "$main_order_log"
-}
-
-assert_main_storage_order zfs "$(printf '%s\n' zfs prerequisites)"
-assert_main_storage_order none prerequisites
+main_order_log=$(mktemp)
+(
+    error() { [ "$1" = "Run this installer with sudo or as root" ]; }
+    verify_system() { :; }
+    command_exists() { return 1; }
+    install_prerequisites() { echo prerequisites >> "$main_order_log"; }
+    prepare_zfs() { echo zfs >> "$main_order_log"; }
+    create_user_and_directories() { :; }
+    install_binaries() { :; }
+    install_systemd() { :; }
+    install_docker() { :; }
+    systemctl() { :; }
+    log() { :; }
+    PLOYZ_STORAGE=zfs main
+    PLOYZ_STORAGE=none main
+)
+assert_eq "$(cat "$main_order_log")" "$(printf '%s\n' zfs prerequisites prerequisites)"
+rm -f "$main_order_log"
 
 zfs_prepare_log=$(mktemp)
 (
