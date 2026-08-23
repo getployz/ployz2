@@ -11,16 +11,17 @@ use thiserror::Error;
 
 use crate::{
     AdvertisedEndpoint, CapabilityName, CloudPairing, ContainerId, ContainerKind,
-    ContainerObservation, DockerVolume, InspectTelemetry, LocalMachinePhase, Machine, MachineId,
-    MachineLogService, MachineName, MachineObservation, MachineRuntime, MachineToken,
-    MachineUpdate, ProjectName, PublicIpDiscovery, ResolvedServiceSpec, RttObservation,
-    StorageChoice, TelemetryObservation, WireGuardDevice, WireGuardPublicKey,
+    ContainerObservation, DockerVolume, Machine, MachineId, MachineLogService, MachineName,
+    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
+    PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
 
 mod docker;
+mod inspect;
 
 pub use docker::*;
+pub use inspect::*;
 
 pub const PROTOCOL_MAJOR: u32 = 1;
 pub const UNREGISTRY_PORT: u16 = 51500;
@@ -189,37 +190,6 @@ pub struct DescribeContractRequest {}
 pub struct ResetRequest {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct InspectRequest {
-    #[serde(default)]
-    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
-    #[serde(default)]
-    pub public_ip_override: Option<IpAddr>,
-    #[serde(default = "default_wireguard_port")]
-    pub wireguard_port: u16,
-    #[serde(default)]
-    pub include_rtts: bool,
-    /// Collect current local storage evidence for this inspection.
-    #[serde(default)]
-    pub include_storage: bool,
-    /// Fresh telemetry to collect for this inspection.
-    #[serde(default)]
-    pub telemetry: InspectTelemetry,
-}
-
-impl Default for InspectRequest {
-    fn default() -> Self {
-        Self {
-            advertised_endpoints: Vec::new(),
-            public_ip_override: None,
-            wireguard_port: default_wireguard_port(),
-            include_rtts: false,
-            include_storage: false,
-            telemetry: InspectTelemetry::None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineTokenRequest {
     #[serde(default)]
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
@@ -239,7 +209,7 @@ impl Default for MachineTokenRequest {
     }
 }
 
-fn default_wireguard_port() -> u16 {
+pub(super) fn default_wireguard_port() -> u16 {
     51820
 }
 
@@ -642,30 +612,6 @@ struct RequestHeader {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResetAccepted {}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct MachineDetails {
-    pub id: MachineId,
-    pub phase: LocalMachinePhase,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub machine: Option<Machine>,
-    pub public_key: WireGuardPublicKey,
-    #[serde(default)]
-    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
-    #[serde(default)]
-    pub store_version: BTreeMap<String, i64>,
-    #[serde(default)]
-    pub rtts: Vec<RttObservation>,
-    /// Stored Cloud Pairing is present. The Pairing Credential is not returned.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub cloud_paired: bool,
-    /// Fresh telemetry requested only by targeted inspect.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub telemetry: Option<TelemetryObservation>,
-    /// Current local storage evidence when the daemon advertises support.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage: Option<crate::MachineStorageObservation>,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Initialized {

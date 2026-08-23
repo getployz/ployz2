@@ -17,8 +17,8 @@ use ployz::{
 use ployz_core::{
     CapabilityName, ContainerKind, ContainerRuntimeObservation, ContractDescription,
     DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation,
-    LogsOptions, MACHINE_STORAGE_OBSERVATION_CAPABILITY, MachineId, MachineRpcServer,
-    MembershipObservation, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode, op,
+    LogsOptions, MachineId, MachineRpcServer, MembershipObservation, PROJECT_NAME_LABEL,
+    PROTOCOL_MAJOR, RpcError, RpcErrorCode, op,
 };
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, UnixListener};
@@ -29,6 +29,7 @@ use tonic::{
     transport::{Channel, Endpoint, Server},
 };
 
+mod machine_storage;
 mod relay;
 mod sdk;
 mod sdk_data_loss;
@@ -679,56 +680,6 @@ async fn fanout_reads_retry_failed_legs_without_rerunning_successes() {
         BTreeMap::from([(machine_id('a'), 2), (machine_id('b'), 4)])
     );
 
-    server.abort();
-}
-
-#[tokio::test]
-async fn machines_returns_raw_list_machines_observations_without_storage_fanout() {
-    let service = DiscoveryService::new(ContractDescription {
-        machine_id: MachineId::random(),
-        protocol_major: PROTOCOL_MAJOR,
-        daemon_version: "test".into(),
-        capabilities: [CapabilityName::parse(MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap()]
-            .into(),
-    });
-    let (address, server) = serve_discovery(service.clone()).await;
-    let mut client = connect_selected_with(
-        SelectedConnections {
-            source: ConnectionSource::Direct,
-            connections: vec![Connection::tcp(address)],
-        },
-        Arc::new(SystemConnector::default()),
-    )
-    .await
-    .unwrap();
-
-    let observed = client.machines().await.unwrap();
-
-    assert_eq!(observed, vec![machine('a', "one")]);
-    assert_eq!(service.inspect_calls.load(Ordering::SeqCst), 0);
-    server.abort();
-}
-
-#[tokio::test]
-async fn machine_ls_observes_storage_only_when_the_target_advertises_it() {
-    let service = DiscoveryService::new(ContractDescription {
-        machine_id: MachineId::random(),
-        protocol_major: PROTOCOL_MAJOR,
-        daemon_version: "test".into(),
-        capabilities: [CapabilityName::parse(MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap()]
-            .into(),
-    });
-    let (address, server) = serve_discovery(service.clone()).await;
-
-    let output = run_ployz(address, &["machine", "ls", "--output", "json"]).await;
-
-    assert!(output.status.success(), "{output:?}");
-    let observed: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        observed.pointer("/0/storage").and_then(Value::as_str),
-        Some("ready")
-    );
-    assert_eq!(service.inspect_calls.load(Ordering::SeqCst), 1);
     server.abort();
 }
 
