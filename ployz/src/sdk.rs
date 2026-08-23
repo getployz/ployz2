@@ -571,11 +571,15 @@ impl Watch {
             Some(Ok(Some(payload))) => match payload.decode_json::<RuntimeWatchTransportFrame>() {
                 Ok(frame) => {
                     let mut frame = frame.into_frame();
-                    drop(guard);
-                    self.client
-                        .observe_machine_storage(&mut frame.machines)
-                        .await;
-                    Ok(Some(frame))
+                    tokio::select! {
+                        () = self.cancel.cancelled() => {
+                            *guard = None;
+                            Ok(None)
+                        }
+                        () = self.client.observe_machine_storage(&mut frame.machines) => {
+                            Ok(Some(frame))
+                        }
+                    }
                 }
                 Err(error) => {
                     *guard = None;

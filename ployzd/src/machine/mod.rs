@@ -596,7 +596,7 @@ pub fn local_runtime() -> MachineRuntime {
     }
 }
 
-async fn local_storage(program: &Path, timeout: Duration) -> MachineStorageObservation {
+async fn local_storage(program: &Path, timeout: Duration) -> Option<MachineStorageObservation> {
     let mut command = tokio::process::Command::new(program);
     command
         .args(["list", "-H", "-o", "name"])
@@ -604,12 +604,15 @@ async fn local_storage(program: &Path, timeout: Duration) -> MachineStorageObser
     match tokio::time::timeout(timeout, command.output()).await {
         Ok(Ok(output)) if output.status.success() => {
             if output.stdout.iter().any(|byte| !byte.is_ascii_whitespace()) {
-                MachineStorageObservation::Pool
+                Some(MachineStorageObservation::Pool)
             } else {
-                MachineStorageObservation::Ready
+                Some(MachineStorageObservation::Ready)
             }
         }
-        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => MachineStorageObservation::Stateless,
+        Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => {
+            Some(MachineStorageObservation::Stateless)
+        }
+        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => None,
     }
 }
 
@@ -770,7 +773,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn current_zpool_evidence_distinguishes_all_storage_states() {
+    async fn current_zpool_evidence_distinguishes_states_and_is_not_persisted() {
         let root = std::env::temp_dir().join(format!(
             "ployzd-storage-observation-{}",
             ployz_core::MachineId::random()
@@ -778,18 +781,20 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let program = root.join("zpool");
 
+        assert_eq!(
+            local_storage(&program, Duration::from_secs(1)).await,
+            Some(MachineStorageObservation::Stateless)
+        );
+
         for (script, expected) in [
+            ("#!/bin/sh\nexit 1\n", None),
             (
-                "#!/bin/sh\nexit 1\n",
-                ployz_core::MachineStorageObservation::Stateless,
+                "#!/bin/sh\nprintf 'ployz\\n'\n",
+                Some(MachineStorageObservation::Pool),
             ),
             (
                 "#!/bin/sh\nexit 0\n",
-                ployz_core::MachineStorageObservation::Ready,
-            ),
-            (
-                "#!/bin/sh\nprintf 'ployz\\n'\n",
-                ployz_core::MachineStorageObservation::Pool,
+                Some(MachineStorageObservation::Ready),
             ),
         ] {
             fs::write(&program, script).unwrap();
@@ -800,26 +805,11 @@ mod tests {
             );
         }
 
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test]
-    async fn storage_readiness_is_rederived_after_daemon_restart_without_a_pool() {
-        let root = std::env::temp_dir().join(format!(
-            "ployzd-storage-restart-{}",
-            ployz_core::MachineId::random()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let program = root.join("zpool");
-        fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-
-        for _daemon_start in 0..2 {
-            assert_eq!(
-                local_storage(&program, Duration::from_secs(1)).await,
-                MachineStorageObservation::Ready
-            );
-        }
+        fs::write(&program, "#!/bin/sh\nwhile :; do :; done\n").unwrap();
+        assert_eq!(
+            local_storage(&program, Duration::from_millis(10)).await,
+            None
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

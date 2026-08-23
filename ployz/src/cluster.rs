@@ -480,12 +480,9 @@ impl Client {
     ///
     /// Returns a connection or remote RPC error from `ListMachines`.
     pub async fn machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
-        let mut machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        self.call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
-            .map(|list| list.machines)?;
-        self.observe_machine_storage(&mut machines).await;
-        Ok(machines)
+            .map(|list| list.machines)
     }
 
     pub(crate) async fn observe_machine_storage(&self, machines: &mut [MachineObservation]) {

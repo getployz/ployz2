@@ -247,9 +247,8 @@ impl LocalMachine {
             rtts,
             cloud_paired: record.cloud_pairing.is_some(),
             telemetry,
-            storage: Some(
-                local_storage(std::path::Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await,
-            ),
+            storage: local_storage(std::path::Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT)
+                .await,
         })
     }
 

@@ -22,7 +22,8 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
     let output = leaf_matches(root).get_one::<String>("output").cloned();
     with_client(root, |client| {
         Box::pin(async move {
-            let machines = machine_list(client).await?;
+            let mut machines = machine_list(client).await?;
+            client.observe_machine_storage(&mut machines).await;
             if output.as_deref() == Some("json") {
                 let machines = machines
                     .iter()
@@ -79,7 +80,7 @@ fn format_storage(storage: Option<MachineStorageObservation>) -> &'static str {
     }
 }
 
-/// Print fresh targeted Machine telemetry without adding host probes to list/watch.
+/// Print fresh targeted Machine telemetry; list/watch request only storage evidence.
 pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let selector = MachineTarget::parse(
         leaf_matches(root)

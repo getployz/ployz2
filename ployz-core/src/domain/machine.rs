@@ -230,27 +230,6 @@ pub struct MachineObservation {
     pub rtt: Option<RttStatistics>,
 }
 
-#[cfg(test)]
-mod storage_observation_tests {
-    use super::MachineStorageObservation;
-
-    #[test]
-    fn storage_observation_has_only_the_three_public_states() {
-        assert_eq!(
-            serde_json::to_string(&MachineStorageObservation::Stateless).unwrap(),
-            "\"stateless\""
-        );
-        assert_eq!(
-            serde_json::to_string(&MachineStorageObservation::Ready).unwrap(),
-            "\"ready\""
-        );
-        assert_eq!(
-            serde_json::to_string(&MachineStorageObservation::Pool).unwrap(),
-            "\"pool\""
-        );
-    }
-}
-
 /// Match a Machine by exact ID or observer-relative Name. `all` is identity text.
 #[must_use]
 pub fn machine_matches_target(machine: &Machine, target: &MachineTarget) -> bool {

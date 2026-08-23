@@ -15,7 +15,7 @@ use tokio::time::timeout;
 use tonic::Status;
 
 use super::relay::{self, FakeMachine, RelaySession};
-use super::support::{DiscoveryService, native_addon};
+use super::support::{DescribeOutcome, DiscoveryService, native_addon};
 
 const FROZEN_FRAME: &str =
     include_str!("../../../ployz-core/tests/fixtures/runtime_watch_frame.json");
@@ -115,6 +115,42 @@ async fn watch_enriches_machine_storage_only_when_the_target_advertises_it() {
             .inspect_calls
             .load(std::sync::atomic::Ordering::SeqCst),
         1
+    );
+}
+
+#[tokio::test]
+async fn cancel_interrupts_storage_enrichment() {
+    let description = storage_watch_description();
+    let session = RelaySession::start().await;
+    let service = DiscoveryService::new(description.clone());
+    service.push_watch_frame(frozen_frame());
+    let _machine = session
+        .spawn_machine(description.machine_id, service.clone())
+        .await;
+    let client = connect(&session.url, description.machine_id.as_str()).await;
+    let watch = client.watch().await.unwrap();
+    service.describe_outcomes.lock().unwrap().extend([
+        DescribeOutcome::Status(Status::unavailable("retry 1")),
+        DescribeOutcome::Status(Status::unavailable("retry 2")),
+        DescribeOutcome::Status(Status::unavailable("retry 3")),
+        DescribeOutcome::Status(Status::unavailable("retry 4")),
+    ]);
+    let waiting = watch.next();
+    tokio::pin!(waiting);
+    assert!(
+        timeout(Duration::from_millis(50), &mut waiting)
+            .await
+            .is_err()
+    );
+
+    watch.cancel();
+
+    assert_eq!(
+        timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("cancel must interrupt storage enrichment")
+            .unwrap(),
+        None
     );
 }
 
