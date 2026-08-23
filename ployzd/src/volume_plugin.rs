@@ -85,6 +85,16 @@ impl VolumeStorage {
         let root = format!("{}/{DATASET_ROOT}", pool.name);
         let volume = format!("{root}/{name}");
 
+        if let Some(dataset) = datasets.iter().find(|dataset| dataset.name == root)
+            && dataset.mountpoint != MOUNT_ROOT
+        {
+            return Err(format!(
+                "Ployz dataset root {root} has incompatible mountpoint {}; set it to {MOUNT_ROOT} before retrying",
+                dataset.mountpoint
+            )
+            .into());
+        }
+
         if let Some(existing) = datasets.iter().find(|dataset| dataset.name == volume) {
             return if existing.refquota == requested {
                 Ok(())
@@ -532,6 +542,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_rejects_an_existing_root_with_an_incompatible_mountpoint() {
+        let test = TestDir::new();
+        fs::write(test.0.join("root"), "").unwrap();
+        fs::write(test.0.join("incompatible-root"), "").unwrap();
+        let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
+        let socket = test.0.join("plugin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+        let response = post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"data","Opts":{"size":"1g"}}),
+        )
+        .await;
+
+        let message = error(&response);
+        assert!(message.contains("tank/ployz"));
+        assert!(message.contains("/tank/ployz"));
+        assert!(message.contains(MOUNT_ROOT));
+        assert!(
+            !fs::read_to_string(test.0.join("commands"))
+                .unwrap()
+                .contains("zfs create")
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn invalid_requests_are_rejected_before_zfs_mutation() {
         let test = TestDir::new();
         let (zpool, zfs) = fake_zfs(&test.0, "tank\tONLINE\toff\n");
@@ -763,6 +802,7 @@ mod tests {
         let script = directory.join("fake-zfs");
         let commands = directory.join("commands");
         let root = directory.join("root");
+        let incompatible_root = directory.join("incompatible-root");
         let volume = directory.join("volume");
         let mounted = directory.join("mounted");
         let script_body = format!(
@@ -777,7 +817,10 @@ fi
 case "$*" in
   'list -Hp -o name,refquota,referenced,available,mountpoint,mounted -r tank')
     printf 'tank\t0\t24576\t2147459072\t/tank\tyes\n'
-    [ ! -e '{root}' ] || printf 'tank/ployz\t0\t24576\t2147459072\t/var/lib/ployz-volumes\tno\n'
+    if [ -e '{root}' ]; then
+      if [ -e '{incompatible_root}' ]; then root_mountpoint=/tank/ployz; else root_mountpoint=/var/lib/ployz-volumes; fi
+      printf 'tank/ployz\t0\t24576\t2147459072\t%s\tno\n' "$root_mountpoint"
+    fi
     if [ -e '{volume}' ]; then
       if [ -e '{mounted}' ]; then state=yes; else state=no; fi
       printf 'tank/ployz/data\t1073741824\t24576\t1073717248\t/var/lib/ployz-volumes/data\t%s\n' "$state"
@@ -792,6 +835,7 @@ esac
             commands = commands.display(),
             pools = pools.escape_default(),
             root = root.display(),
+            incompatible_root = incompatible_root.display(),
             volume = volume.display(),
             mounted = mounted.display(),
         );
