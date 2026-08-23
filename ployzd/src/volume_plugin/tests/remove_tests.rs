@@ -66,6 +66,21 @@ async fn removing_an_unknown_volume_is_idempotent_and_keeps_siblings() {
 }
 
 #[tokio::test]
+async fn removing_an_unknown_volume_without_a_pool_is_idempotent() {
+    let test = TestDir::new();
+    let (zpool, zfs) = fake_zfs(&test.0, "");
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+    assert_eq!(
+        post(&socket, "/VolumeDriver.Remove", json!({"Name":"missing"})).await,
+        json!({"Err":""})
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn docker_receives_dataset_destruction_failures() {
     let test = TestDir::new();
     fs::write(test.0.join("root"), "").unwrap();

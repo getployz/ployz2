@@ -185,13 +185,15 @@ impl VolumeStorage {
     }
 
     async fn one_pool(&self) -> Result<MachinePool> {
+        self.usable_pool().await?.ok_or_else(|| {
+            "no usable existing Machine Pool; automatic Pool creation is tracked by #541".into()
+        })
+    }
+
+    async fn usable_pool(&self) -> Result<Option<MachinePool>> {
         let output =
             checked_command(&self.zpool, &["list", "-Hp", "-o", "name,health,readonly"]).await?;
-        machine_pool::one_usable(&output)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| {
-                "no usable existing Machine Pool; automatic Pool creation is tracked by #541".into()
-            })
+        Ok(machine_pool::one_usable(&output).map_err(|error| error.to_string())?)
     }
 
     async fn datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
