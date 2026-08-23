@@ -133,6 +133,12 @@ impl PoolStorage {
     /// Returns an error when reserve, allocation, Pool creation, or verification fails.
     pub(super) async fn create(&self, requested: u64) -> Result<CreatedPool<'_>> {
         let capacity = initial_capacity(requested)?;
+        self.remove_backing().map_err(|error| {
+            format!(
+                "could not remove interrupted Machine Pool backing file {}: {error}",
+                self.backing.display()
+            )
+        })?;
         let ashift = self.check_host_root(capacity).await?;
         let backing = self.backing.to_str().ok_or_else(|| {
             VolumeError::from(format!(
@@ -345,14 +351,20 @@ impl PoolStorage {
     }
 
     fn cleanup_backing(&self, failure: VolumeError) -> VolumeError {
-        match fs::remove_file(&self.backing) {
+        match self.remove_backing() {
             Ok(()) => failure,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => failure,
             Err(error) => format!(
                 "{failure}; cleanup could not remove Machine Pool backing file {}: {error}",
                 self.backing.display()
             )
             .into(),
+        }
+    }
+
+    fn remove_backing(&self) -> io::Result<()> {
+        match fs::remove_file(&self.backing) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            result => result,
         }
     }
 }

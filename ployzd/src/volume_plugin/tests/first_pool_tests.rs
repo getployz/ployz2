@@ -33,6 +33,88 @@ async fn first_create_builds_the_pool_and_bounded_volume_in_one_request() {
 }
 
 #[tokio::test]
+async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
+    let test = TestDir::new();
+    fs::write(test.0.join(POOL_BACKING_FILE), "interrupted").unwrap();
+    fs::write(test.0.join("concurrent"), "").unwrap();
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, fake_first_pool(&test.0, 4096)));
+
+    let (data, other) = tokio::join!(
+        post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"data","Opts":{"size":"1g"}}),
+        ),
+        post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"other","Opts":{"size":"1g"}}),
+        ),
+    );
+    assert_eq!(data, json!({"Err":""}));
+    assert_eq!(other, json!({"Err":""}));
+    assert_eq!(
+        post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"data","Opts":{"size":"1g"}}),
+        )
+        .await,
+        json!({"Err":""})
+    );
+    server.abort();
+
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert_eq!(log.matches("fallocate -l 2147483648 ").count(), 1);
+    assert_eq!(log.matches("zpool create ").count(), 1);
+    assert_eq!(
+        log.matches("zfs create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz")
+            .count(),
+        1
+    );
+    assert_eq!(
+        log.matches("zfs create -o refquota=1073741824 ployz/ployz/data")
+            .count(),
+        1
+    );
+    assert_eq!(
+        log.matches("zfs create -o refquota=1073741824 ployz/ployz/other")
+            .count(),
+        1
+    );
+    assert!(test.0.join(POOL_BACKING_FILE).exists());
+    assert!(test.0.join("pool").exists());
+}
+
+#[tokio::test]
+async fn retry_after_pool_creation_completes_the_interrupted_volume() {
+    let test = TestDir::new();
+    fs::write(test.0.join(POOL_BACKING_FILE), "existing Pool").unwrap();
+    fs::write(test.0.join("allocated"), "2147483648").unwrap();
+    fs::write(test.0.join("pool"), "").unwrap();
+
+    assert_eq!(
+        create_first_volume(&test, 4096, "1g").await,
+        json!({"Err":""})
+    );
+
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert!(!log.contains("fallocate"));
+    assert!(!log.contains("zpool create"));
+    assert_eq!(
+        log.matches("zfs create -o refquota=1073741824 ployz/ployz/data")
+            .count(),
+        1
+    );
+    assert_eq!(
+        fs::read_to_string(test.0.join(POOL_BACKING_FILE)).unwrap(),
+        "existing Pool"
+    );
+}
+
+#[tokio::test]
 async fn initial_capacity_uses_ten_percent_when_it_exceeds_one_gibibyte() {
     let test = TestDir::new();
 
@@ -129,6 +211,8 @@ fn fake_first_pool(directory: &Path, physical_block_size: u64) -> VolumeStorage 
     let sparse = directory.join("sparse");
     let fail_pool = directory.join("fail-pool");
     let fail_volume = directory.join("fail-volume");
+    let concurrent = directory.join("concurrent");
+    let other = directory.join("other");
     let script_body = format!(
         r#"#!/bin/sh
 set -eu
@@ -153,10 +237,16 @@ case "$name" in
     ;;
   zpool)
     case "$*" in
-      'list -Hp -o name,health,readonly') [ ! -e '{pool}' ] || printf 'ployz\tONLINE\toff\n' ;;
+      'list -Hp -o name,health,readonly')
+        if [ -e '{concurrent}' ] && [ ! -e '{pool}' ]; then
+          sleep 0.1
+        else
+          [ ! -e '{pool}' ] || printf 'ployz\tONLINE\toff\n'
+        fi
+        ;;
       'list -H -o name') [ ! -e '{pool}' ] || printf 'ployz\n' ;;
       create*) touch '{pool}'; [ ! -e '{fail_pool}' ] || exit 2 ;;
-      'destroy -f ployz') rm -f '{pool}' '{root}' '{volume}' ;;
+      'destroy -f ployz') rm -f '{pool}' '{root}' '{volume}' '{other}' ;;
       *) echo "unexpected fake zpool command: $*" >&2; exit 2 ;;
     esac
     ;;
@@ -166,12 +256,15 @@ case "$name" in
         available=$(cat '{allocated}')
         printf 'ployz\t0\t24576\t%s\t/ployz\tyes\n' "$available"
         [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t24576\t%s\t/var/lib/ployz-volumes\tno\n' "$available"
+        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t1073741824\t24576\t%s\t/var/lib/ployz-volumes/data\tno\n' "$available"
+        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t1073741824\t24576\t%s\t/var/lib/ployz-volumes/other\tno\n' "$available"
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
       'create -o refquota='*' ployz/ployz/data')
         [ ! -e '{fail_volume}' ] || exit 2
         touch '{volume}'
         ;;
+      'create -o refquota='*' ployz/ployz/other') touch '{other}' ;;
       *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
     esac
     ;;
@@ -187,6 +280,8 @@ esac
         sparse = sparse.display(),
         fail_pool = fail_pool.display(),
         fail_volume = fail_volume.display(),
+        concurrent = concurrent.display(),
+        other = other.display(),
     );
     fs::write(&script, script_body).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
