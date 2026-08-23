@@ -404,6 +404,8 @@ async fn watch_projection(
         MEMBERSHIP_SAMPLE_INTERVAL,
     );
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // `Then` retains an in-flight membership read when another select branch wins, so slow
+    // membership I/O never delays Container-change withdrawal.
     let membership =
         IntervalStream::new(interval).then(|_| load_down_machines(&replicated, &admin, &local_id));
     tokio::pin!(membership);
