@@ -296,15 +296,39 @@ cleanup_zfs_smoke() {
     [ -z "$failure" ] || error "$failure"
 }
 
+restore_zfs_smoke_trap() {
+    local saved=$1 signal=$2
+    if [ -n "$saved" ]; then
+        eval "$saved"
+    else
+        trap - "$signal"
+    fi
+}
+
+interrupt_zfs_smoke() {
+    local signal=$1 pool=$2 backing=$3 pool_created=$4
+    local previous_int_trap=$5 previous_term_trap=$6
+    trap - INT TERM
+    [ -z "$backing" ] || cleanup_zfs_smoke "$pool" "$backing" "$pool_created" ''
+    restore_zfs_smoke_trap "$previous_int_trap" INT
+    restore_zfs_smoke_trap "$previous_term_trap" TERM
+    kill -s "$signal" "${BASHPID:-$$}"
+}
+
 validate_zfs() {
-    local bytes backing pool blocks block_size allocated mount_target
+    local bytes backing='' pool blocks block_size allocated mount_target
+    local previous_int_trap previous_term_trap
     local pool_created=false failure=''
     bytes=$(zfs_smoke_bytes)
     require_host_root_reserve "$bytes"
+    pool="ployz-smoke-${BASHPID:-$$}-${RANDOM}"
+    previous_int_trap=$(trap -p INT)
+    previous_term_trap=$(trap -p TERM)
+    trap 'interrupt_zfs_smoke INT "$pool" "$backing" "$pool_created" "$previous_int_trap" "$previous_term_trap"' INT
+    trap 'interrupt_zfs_smoke TERM "$pool" "$backing" "$pool_created" "$previous_int_trap" "$previous_term_trap"' TERM
     if ! backing=$(mktemp /var/tmp/ployz-zfs-smoke.XXXXXX); then
         error "Could not create a temporary host-root backing file for ZFS validation"
     fi
-    pool="ployz-smoke-${BASHPID:-$$}-${RANDOM}"
 
     if ! fallocate -l "$bytes" "$backing"; then
         failure="Could not preallocate the non-sparse ZFS smoke backing file $backing"
@@ -335,6 +359,8 @@ validate_zfs() {
     fi
 
     cleanup_zfs_smoke "$pool" "$backing" "$pool_created" "$failure"
+    restore_zfs_smoke_trap "$previous_int_trap" INT
+    restore_zfs_smoke_trap "$previous_term_trap" TERM
 }
 
 prepare_zfs() {

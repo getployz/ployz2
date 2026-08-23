@@ -463,6 +463,10 @@ fake_zpool() {
         create) printf '%s\n' "${@: -2:1}" > "$zfs_smoke_state" ;;
         list)
             if [ "$2" = -Hp ]; then
+                if [ "$zfs_smoke_scenario" = interrupt ]; then
+                    zfs_smoke_scenario=interrupted
+                    kill -TERM "${BASHPID:-$$}"
+                fi
                 [ "$zfs_smoke_scenario" != query-failure ] && [ -e "$zfs_smoke_state" ]
             elif [ "$zfs_smoke_scenario" = cleanup-probe-failure ]; then
                 echo "simulated zpool list failure" >&2
@@ -499,7 +503,15 @@ cleanup_zfs_smoke_fake() {
 }
 
 setup_zfs_smoke_fake success
-(run_fake_zfs_smoke)
+(
+    trap : INT
+    trap : TERM
+    previous_int_trap=$(trap -p INT)
+    previous_term_trap=$(trap -p TERM)
+    run_fake_zfs_smoke
+    [ "$(trap -p INT)" = "$previous_int_trap" ]
+    [ "$(trap -p TERM)" = "$previous_term_trap" ]
+)
 assert_contains "$zfs_smoke_log" "zpool create -f -m none -o cachefile=none"
 assert_contains "$zfs_smoke_log" "zpool list -Hp -o name,size,alloc,free"
 assert_contains "$zfs_smoke_log" "zfs list -Hp -o name,mountpoint"
@@ -543,6 +555,20 @@ fi
 printf '%s\n' "$cleanup_probe_error" | grep -Fq \
     "Could not verify cleanup of temporary ZFS smoke Pool"
 printf '%s\n' "$cleanup_probe_error" | grep -Fq "simulated zpool list failure"
+cleanup_zfs_smoke_fake
+
+setup_zfs_smoke_fake interrupt
+if (run_fake_zfs_smoke); then
+    echo "installer accepted an interrupted ZFS smoke test" >&2
+    exit 1
+else
+    interrupt_status=$?
+fi
+assert_eq "$interrupt_status" 143
+assert_contains "$zfs_smoke_log" "zpool destroy -f"
+smoke_backing=$(awk '$1 == "zpool" && $2 == "create" { print $NF }' "$zfs_smoke_log")
+[ ! -e "$zfs_smoke_state" ]
+[ ! -e "$smoke_backing" ]
 cleanup_zfs_smoke_fake
 
 PLOYZ_CLI_INSTALL_TEST_ONLY=true source "$ROOT/install.sh"
