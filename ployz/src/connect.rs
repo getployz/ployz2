@@ -202,7 +202,7 @@ fn ssh_args(
     args
 }
 
-pub(crate) fn ssh_base_args(
+fn ssh_base_args(
     destination: &crate::context::SshDestination,
     key_file: Option<&Path>,
     control_path: Option<&Path>,
@@ -237,7 +237,7 @@ pub(crate) fn ssh_base_args(
     args
 }
 
-pub(crate) fn control_path() -> Option<PathBuf> {
+fn control_path() -> Option<PathBuf> {
     if let Some(directory) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
         && directory.is_dir()
     {

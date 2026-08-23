@@ -6,14 +6,13 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    DOCKER_NETWORK_CONFLICT_EXIT_STATUS, DOCKER_NETWORK_CONFLICT_RECOVERY, InspectRequest,
-    LocalMachinePhase, MachineName, MachineToken, MachineTokenRequest, PublicIpDiscovery, op,
+    DOCKER_NETWORK_CONFLICT_RECOVERY, InspectRequest, LocalMachinePhase, MachineName, MachineToken,
+    MachineTokenRequest, PublicIpDiscovery, op,
 };
-use tokio::process::Command;
 
 use super::parse_endpoints;
 use crate::{
-    connect::{Client, SystemConnector, connect_selected_with, control_path, ssh_base_args},
+    connect::{Client, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections, Transport},
     handlers::{Error, string_values},
 };
@@ -112,45 +111,14 @@ pub(super) async fn wait_direct_participating(
     .await
     {
         Ok(client) => Ok(client),
-        Err(_) => Err(Error::usage(readiness_timeout_message(
-            timeout_message,
-            remote_daemon_exit_status(connection).await,
-        ))),
+        Err(_) => Err(Error::usage(readiness_timeout_message(timeout_message))),
     }
 }
 
-pub(super) fn readiness_timeout_message(message: &str, exit_status: Option<u8>) -> String {
-    if exit_status == Some(DOCKER_NETWORK_CONFLICT_EXIT_STATUS) {
-        format!("{message}; safe recovery: {DOCKER_NETWORK_CONFLICT_RECOVERY}")
-    } else {
-        message.into()
-    }
-}
-
-async fn remote_daemon_exit_status(connection: &Connection) -> Option<u8> {
-    let Transport::Ssh {
-        destination,
-        key_file,
-    } = connection.transport()
-    else {
-        return None;
-    };
-    let control_path = control_path();
-    let mut args = ssh_base_args(destination, key_file.as_deref(), control_path.as_deref());
-    args.extend([
-        destination.target().into(),
-        "systemctl show ployz.service --property=ExecMainStatus --value".into(),
-    ]);
-    let mut command = Command::new("ssh");
-    command.args(args).kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(10), command.output())
-        .await
-        .ok()?
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+pub(super) fn readiness_timeout_message(message: &str) -> String {
+    format!(
+        "{message}; if ployzd refused a Docker network, safe recovery: {DOCKER_NETWORK_CONFLICT_RECOVERY}"
+    )
 }
 
 pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {
