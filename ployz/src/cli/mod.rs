@@ -94,6 +94,10 @@ fn value(name: &'static str, short: Option<char>) -> Arg {
     }
 }
 
+fn json_output() -> Arg {
+    value("output", Some('o')).value_parser(["json"])
+}
+
 fn many(name: &'static str, short: Option<char>) -> Arg {
     value(name, short)
         .action(ArgAction::Append)
@@ -221,7 +225,7 @@ fn image() -> Command {
             base("ls", "List images")
                 .visible_alias("list")
                 .arg(many("machine", Some('m')))
-                .arg(value("output", Some('o')).value_parser(["json"]))
+                .arg(json_output())
                 .arg(positional("image", false)),
         )
         .subcommand(
@@ -387,7 +391,7 @@ fn project() -> Command {
         .subcommand(
             base("ls", "List projects")
                 .visible_alias("list")
-                .arg(value("output", Some('o')).value_parser(["json"])),
+                .arg(json_output()),
         )
         .subcommand(
             base("rm", "Remove a project")
@@ -419,11 +423,11 @@ fn ps() -> Command {
                 .default_value("service")
                 .value_parser(["service", "machine", "health"]),
         )
-        .arg(value("output", Some('o')).value_parser(["json"]))
+        .arg(json_output())
 }
 
 fn service_ls(name: &'static str) -> Command {
-    base(name, "List services").arg(value("output", Some('o')).value_parser(["json"]))
+    base(name, "List services").arg(json_output())
 }
 
 fn service_rm(name: &'static str) -> Command {
@@ -525,7 +529,7 @@ fn volume() -> Command {
                 .visible_alias("list")
                 .arg(many("machine", Some('m')))
                 .arg(switch("quiet", Some('q')))
-                .arg(value("output", Some('o')).value_parser(["json"])),
+                .arg(json_output()),
         )
         .subcommand(
             base("rm", "Remove volumes")

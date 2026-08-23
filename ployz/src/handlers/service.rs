@@ -8,6 +8,11 @@ use ployz_core::{
 
 use super::{Error, leaf_matches, with_client};
 
+/// List the observed Services.
+///
+/// # Errors
+///
+/// Returns a connection, RPC, or serialization error.
 pub fn list(root: &ArgMatches) -> Result<(), Error> {
     let json = leaf_matches(root)
         .get_one::<String>("output")
@@ -37,6 +42,11 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+/// List observed Service and hook Containers.
+///
+/// # Errors
+///
+/// Returns a connection, RPC, or serialization error.
 pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let sort = matches
