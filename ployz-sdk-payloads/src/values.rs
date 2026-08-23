@@ -11,23 +11,24 @@ use ployz_core::{
     CertificateBackoff, CertificateFailureKind, CertificateObservation, ClusterTeardown,
     ConfigMount, ConfigSpec, ConfiguredHealthcheck, ContainerId, ContainerKind,
     ContainerObservation, ContainerPath, ContainerResources, ContainerRuntimeObservation,
-    ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DeployEvent, DeployIntent,
-    DeployOperation, DeployOutcome, DeployPreview, DeployWarning, DeviceMapping, DeviceReservation,
-    DockerVolume, DockerVolumeId, DockerVolumeName, ExecutionError, FailedOperation, HealthFailure,
-    HealthObservation, HealthcheckCommand, HealthcheckSpec, HookContainer, HookFailure, HostBind,
-    HttpProtocol, IngressHost, IngressHostname, LocalMachineRemoved, LogDriver, Machine,
-    MachineAction, MachineFailure, MachineId, MachineName, MachineObservation, MachinePath,
-    MachineRuntime, MachineSuccess, ManagementAddress, MembershipObservation, ObservationKind,
-    ObservedDataLoss, OperationPhase, OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult,
-    Placement, PlanOptions, PortPublication, PreDeployHook, PreservedVolume, ProjectName,
-    PruneRefusal, PullPolicy, RegisterRequest, Registered, RemoveVolumesRequest,
-    ReplacementCompensation, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
-    ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, SelectedEndpoint,
-    ServiceAttempt, ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount,
-    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
-    StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder,
-    VolumeDriver, VolumeSource, WireGuardPublicKey,
+    ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DependencyHealthFailure,
+    DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
+    DeviceMapping, DeviceReservation, DockerVolume, DockerVolumeId, DockerVolumeName,
+    ExecutionError, FailedOperation, HealthFailure, HealthObservation, HealthcheckCommand,
+    HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol, IngressHost,
+    IngressHostname, LocalMachineRemoved, LogDriver, Machine, MachineAction, MachineFailure,
+    MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime, MachineSuccess,
+    ManagementAddress, MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase,
+    OperationRow, OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions,
+    PortPublication, PreDeployHook, PreservedVolume, ProjectName, PruneRefusal, PullPolicy,
+    QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest, ReplacementCompensation,
+    ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
+    RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame,
+    RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, SelectedEndpoint, ServiceAttempt,
+    ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StorageChoice,
+    TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver,
+    VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -385,12 +386,28 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             ],
         ),
         (
+            "DependencyHealthFailure",
+            vec![
+                to_value(&DependencyHealthFailure::Cancelled),
+                to_value(&DependencyHealthFailure::NoContainers),
+                to_value(&DependencyHealthFailure::Observation { error: rpc_error() }),
+                to_value(&DependencyHealthFailure::Container {
+                    container_id: container_id(),
+                    failure: HealthFailure::TimedOut,
+                }),
+            ],
+        ),
+        (
             "ExecutionError",
             vec![
                 to_value(&execution_error_machine()),
                 to_value(&ExecutionError::Health {
                     container_id: container_id(),
                     failure: HealthFailure::TimedOut,
+                }),
+                to_value(&ExecutionError::DependencyHealth {
+                    dependency: QualifiedService::parse("app/db").unwrap(),
+                    failure: DependencyHealthFailure::NoContainers,
                 }),
                 to_value(&ExecutionError::Hook {
                     container_id: container_id(),
@@ -706,7 +723,7 @@ fn deploy_event_progress() -> DeployEvent {
     }
 }
 
-fn deploy_warnings() -> [DeployWarning; 4] {
+fn deploy_warnings() -> [DeployWarning; 5] {
     [
         DeployWarning::ObservationFailed {
             kind: ObservationKind::Container,
@@ -722,6 +739,10 @@ fn deploy_warnings() -> [DeployWarning; 4] {
                 .into(),
         ),
         DeployWarning::ObserverRelativeHostnameConflict,
+        DeployWarning::SkippedDependencyHealth {
+            dependent: QualifiedService::parse("app/web").unwrap(),
+            dependency: QualifiedService::parse("app/db").unwrap(),
+        },
     ]
 }
 
@@ -767,13 +788,18 @@ fn replacement_operation() -> ReplacementOperation {
     }
 }
 
-fn deploy_operations() -> [DeployOperation; 8] {
+fn deploy_operations() -> [DeployOperation; 9] {
     let machine_id = machine_id(MACHINE_ID_HEX);
     let container_id = container_id();
     [
         DeployOperation::CreateVolume {
             machine_id,
             volume: service_volume(),
+        },
+        DeployOperation::WaitHealthy {
+            machine_id,
+            dependent: QualifiedService::parse("app/web").unwrap(),
+            dependency: QualifiedService::parse("app/db").unwrap(),
         },
         DeployOperation::RunContainer {
             machine_id,

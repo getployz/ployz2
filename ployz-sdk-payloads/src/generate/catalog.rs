@@ -608,6 +608,10 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ),
                 ("IngressHostname", Some("string")),
                 ("ObserverRelativeHostnameConflict", None),
+                (
+                    "SkippedDependencyHealth",
+                    Some("{ dependent: QualifiedService; dependency: QualifiedService }"),
+                ),
             ],
         },
     ),
@@ -745,6 +749,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                     &[("machine_id", "MachineId"), ("volume", "ServiceVolume")],
                 ),
                 (
+                    "wait_healthy",
+                    &[
+                        ("machine_id", "MachineId"),
+                        ("dependent", "QualifiedService"),
+                        ("dependency", "QualifiedService"),
+                    ],
+                ),
+                (
                     "run_container",
                     &[
                         ("machine_id", "MachineId"),
@@ -822,6 +834,25 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "DependencyHealthFailure",
+        Shape::InternallyTagged {
+            tag: "type",
+            params: "",
+            variants: &[
+                ("cancelled", &[]),
+                ("no_containers", &[]),
+                ("observation", &[("error", "RpcError")]),
+                (
+                    "container",
+                    &[
+                        ("container_id", "ContainerId"),
+                        ("failure", "HealthFailure"),
+                    ],
+                ),
+            ],
+        },
+    ),
+    (
         "ExecutionError",
         Shape::InternallyTagged {
             tag: "type",
@@ -836,6 +867,13 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                     &[
                         ("container_id", "ContainerId"),
                         ("failure", "HealthFailure"),
+                    ],
+                ),
+                (
+                    "dependency_health",
+                    &[
+                        ("dependency", "QualifiedService"),
+                        ("failure", "DependencyHealthFailure"),
                     ],
                 ),
                 (
