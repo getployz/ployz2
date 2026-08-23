@@ -14,6 +14,7 @@
 - `machine-inspect-telemetry` — Add `ployz machine inspect MACHINE` for fresh Machine, Docker, and bridge-capacity telemetry; the frozen Uncloud CLI had no targeted Machine inspection command.
 - `fixed-wireguard-port` — Keep `ployz machine add --wg-port` at the daemon-supported port 51820; reject other values instead of advertising a port the WireGuard interface and firewall do not apply.
 - `machine-enrollment-storage` — Add `--storage none|zfs` to `ployz machine init` and `ployz machine add` so enrollment can prepare the current Machine for Provisioned Volumes.
+- `provisioned-volume-size` — Add `ployz volume create --size` as the strict operator surface for creating a bounded Volume through Docker's Ployz driver.
 - `deploy-intent-flags` — Add `--skip-health` to `run`, `service run`, `scale`, `service scale`, and `caddy deploy`, and `--recreate` to `run`, `service run`, and `caddy deploy`, so every Deploy command can set the shared planning options bag. Uncloud exposes these only on `uc deploy`. Scale has no `--recreate`.
 - `direct-push-reference-boundary` — Reject digest and port-qualified-registry references for direct image push: Docker cannot push a digest or nest a registry-port colon below the temporary loopback registry without changing the reference. Build resolution remains exact, and external `--push-registry` delivery remains supported.
 - `images-json-output` — Add `-o, --output json` to `ployz images` and `ployz image ls` so consumers can still read raw `CREATED` and `SIZE` after the table becomes human-formatted.
