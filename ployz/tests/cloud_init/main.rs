@@ -8,7 +8,8 @@ use harness::{
     caddy_on, founder_machine, registration, serve_machine, wait_for_held,
 };
 use ployz_core::{
-    CloudPairing, InitializeRequest, PairingCredential, Registered, SetCloudPairingRequest, op,
+    CloudPairing, InitializeRequest, InspectRequest, LocalMachinePhase, PairingCredential,
+    Registered, SetCloudPairingRequest, op,
 };
 use serde_json::json;
 
@@ -21,6 +22,7 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "join",
+        "storage": "none",
         "pairing": pairing,
         "registration": registration,
     }))
@@ -83,6 +85,56 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
 }
 
 #[tokio::test]
+async fn failed_cloud_zfs_preparation_does_not_join_the_machine() {
+    if std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .unwrap()
+        .stdout
+        == b"0\n"
+    {
+        return;
+    }
+    let registration = registration();
+    let pairing = CloudPairing::parse(
+        "https://relay.example.invalid",
+        PairingCredential::parse(PAIRING).unwrap(),
+    )
+    .unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "zfs",
+        "pairing": pairing,
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration);
+    let machine_addr = serve_machine(daemon).await;
+
+    let output = init_cloud(
+        &format!("tcp://{machine_addr}"),
+        &enroll.url,
+        "joiner",
+        false,
+        true,
+    )
+    .await;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("run this command with sudo"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let details = connect_daemon(machine_addr)
+        .await
+        .call::<op::Inspect>(InspectRequest::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(details.phase, LocalMachinePhase::Uninitialized);
+}
+
+#[tokio::test]
 async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     let founder = founder_machine();
     let machine_id = founder.id;
@@ -91,6 +143,7 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "initialize",
+        "storage": "none",
         "pairing": pairing,
     }))
     .await;
@@ -178,6 +231,7 @@ async fn cloud_init_initialize_reserves_hosted_dns() {
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "initialize",
+        "storage": "none",
         "pairing": pairing,
     }))
     .await;
@@ -245,6 +299,7 @@ async fn cloud_init_retries_not_yet_then_joins() {
         json!({"kind": "not_yet", "retryAfter": 0}),
         json!({
             "kind": "join",
+            "storage": "none",
             "pairing": pairing,
             "registration": registration,
         }),
@@ -303,6 +358,7 @@ async fn cloud_init_retries_not_yet_then_initializes() {
         json!({"kind": "not_yet", "retryAfter": 0}),
         json!({
             "kind": "initialize",
+            "storage": "none",
             "pairing": pairing,
         }),
     ])
@@ -364,6 +420,7 @@ async fn cloud_init_initialize_callback_failure_is_nonfatal_when_on_list() {
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "initialize",
+        "storage": "none",
         "pairing": pairing,
     }))
     .await;
@@ -461,9 +518,10 @@ async fn revoked_pairing_resets_and_joins() {
     let dead = pairing_on(&relay, DEAD);
     let live = pairing_on(&relay, PAIRING);
     let enroll = EnrollListen::script([
-        json!({ "kind": "initialize", "pairing": dead }),
+        json!({ "kind": "initialize", "storage": "none", "pairing": dead }),
         json!({
             "kind": "join",
+            "storage": "none",
             "pairing": live,
             "registration": registration,
         }),
@@ -514,8 +572,8 @@ async fn revoked_pairing_resets_and_initializes_with_new_pairing() {
     let dead = pairing_on(&relay, DEAD);
     let live = pairing_on(&relay, PAIRING);
     let enroll = EnrollListen::script([
-        json!({ "kind": "initialize", "pairing": dead }),
-        json!({ "kind": "initialize", "pairing": live }),
+        json!({ "kind": "initialize", "storage": "none", "pairing": dead }),
+        json!({ "kind": "initialize", "storage": "none", "pairing": live }),
     ])
     .await;
     let daemon = JoinDaemon::new(Registered {
@@ -569,7 +627,9 @@ async fn revoked_pairing_reset_confirms_unless_yes() {
     let relay = RelayListen::start().await;
     relay.revoke(DEAD).await;
     let dead = pairing_on(&relay, DEAD);
-    let enroll = EnrollListen::start(json!({ "kind": "initialize", "pairing": dead })).await;
+    let enroll =
+        EnrollListen::start(json!({ "kind": "initialize", "storage": "none", "pairing": dead }))
+            .await;
     let daemon = JoinDaemon::new(Registered {
         assigned_machine: founder,
         visible_peers: Vec::new(),
@@ -608,7 +668,9 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
         PairingCredential::parse(PAIRING).unwrap(),
     )
     .unwrap();
-    let enroll = EnrollListen::start(json!({ "kind": "initialize", "pairing": pairing })).await;
+    let enroll =
+        EnrollListen::start(json!({ "kind": "initialize", "storage": "none", "pairing": pairing }))
+            .await;
     let daemon = JoinDaemon::new(Registered {
         assigned_machine: founder.clone(),
         visible_peers: Vec::new(),
@@ -754,6 +816,7 @@ async fn join_places_observed_caddy_on_this_machine() {
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "join",
+        "storage": "none",
         "pairing": pairing,
         "registration": registration,
     }))
@@ -802,6 +865,7 @@ async fn unreachable_peer_does_not_block_observed_caddy_catch_up() {
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "join",
+        "storage": "none",
         "pairing": pairing,
         "registration": registration,
     }))
@@ -850,6 +914,7 @@ async fn join_no_caddy_skips_caddy_and_still_places_other_globals() {
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "join",
+        "storage": "none",
         "pairing": pairing,
         "registration": registration,
     }))
@@ -895,6 +960,7 @@ async fn join_fails_visibly_when_expected_caddy_cannot_be_placed() {
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "join",
+        "storage": "none",
         "pairing": pairing,
         "registration": registration,
     }))
@@ -951,6 +1017,7 @@ async fn join_starts_created_caddy_before_success() {
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "join",
+        "storage": "none",
         "pairing": pairing,
         "registration": registration,
     }))
@@ -1018,6 +1085,7 @@ async fn join_against_founder(
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "join",
+        "storage": "none",
         "pairing": pairing,
         "registration": registration,
     }))
