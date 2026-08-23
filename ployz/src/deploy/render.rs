@@ -119,7 +119,7 @@ pub fn confirm_removal_prompt(project: &ployz_core::ProjectName, context: &str) 
     format!("Proceed with removal of Project {project} from {context}? [y/N] ")
 }
 
-/// Completed-prefix / failed op / unexecuted rest, plus endpoints on success.
+/// Completed operations / failed op / unexecuted operations, plus endpoints on success.
 #[must_use]
 pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
     match outcome {
@@ -183,10 +183,17 @@ fn service_trees(preview: &DeployPreview) -> String {
 fn volume_line(row: &OperationRow) -> String {
     let machine = machine_label(row);
     match &row.operation {
-        DeployOperation::CreateVolume { volume, .. }
-        | DeployOperation::CreateProvisionedVolume { volume, .. } => {
+        DeployOperation::CreateVolume { volume, .. } => {
             format!("+ create volume {} on {machine}", volume.reference)
         }
+        DeployOperation::CreateProvisionedVolume {
+            volume,
+            maximum_bytes,
+            ..
+        } => format!(
+            "+ create provisioned volume {} (maximum {maximum_bytes} bytes) on {machine}",
+            volume.reference
+        ),
         DeployOperation::RemoveVolume { id } => {
             format!("- remove volume {} on {machine}", id.name)
         }
@@ -565,11 +572,14 @@ fn operation_label(operation: &DeployOperation) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
     use ployz_core::{
         ContainerId, DeployOperation, DockerVolumeId, DockerVolumeName, MachineId, MachineName,
-        OperationRow, OperationStatus, PreservedVolume, ProjectName, PruneRefusal,
-        QualifiedService, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
-        ServiceName, UpdateOrder,
+        OperationRow, OperationStatus, PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes,
+        PruneRefusal, QualifiedService, ReplacementOperation, RequestedServiceSpec,
+        ResolvedServiceSpec, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateOrder,
+        VolumeSource,
     };
 
     use super::*;
@@ -633,6 +643,43 @@ mod tests {
         assert!(
             preserved.contains("would preserve volume shop_data on edge"),
             "{preserved}"
+        );
+    }
+
+    #[test]
+    fn plan_identifies_a_provisioned_volume_and_its_bound() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let row = OperationRow::pending(
+            0,
+            DeployOperation::CreateProvisionedVolume {
+                machine_id,
+                volume: ServiceVolume {
+                    reference: ServiceVolumeReference::parse("data").unwrap(),
+                    source: VolumeSource::Named {
+                        name: DockerVolumeName::parse("shop_data").unwrap(),
+                        external: false,
+                        driver: None,
+                        labels: Default::default(),
+                        no_copy: false,
+                        subpath: None,
+                    },
+                },
+                maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                    NonZeroU64::new(1_073_741_824).unwrap(),
+                ),
+            },
+            Some(MachineName::parse("edge").unwrap()),
+            None,
+            None,
+        );
+        let preview =
+            DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("shop").unwrap());
+
+        let text = plan_text(&preview, "default", None);
+
+        assert!(
+            text.contains("+ create provisioned volume data (maximum 1073741824 bytes) on edge"),
+            "{text}"
         );
     }
 

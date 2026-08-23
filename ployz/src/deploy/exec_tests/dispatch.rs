@@ -106,7 +106,11 @@ async fn dispatches_the_complete_algebra() {
 #[tokio::test]
 async fn provisioned_volume_execution_fails_closed_without_machine_io() {
     let machine_id = machine('1');
-    let operation = DeployOperation::CreateProvisionedVolume {
+    let ordinary = DeployOperation::CreateVolume {
+        machine_id,
+        volume: volume(),
+    };
+    let provisioned = DeployOperation::CreateProvisionedVolume {
         machine_id,
         volume: volume(),
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1).unwrap()),
@@ -114,7 +118,7 @@ async fn provisioned_volume_execution_fails_closed_without_machine_io() {
     let client = Scripted::new(vec![]);
 
     let outcome = execute_with(
-        std::slice::from_ref(&operation),
+        &[ordinary.clone(), provisioned.clone()],
         &client,
         &CancellationToken::new(),
     )
@@ -135,7 +139,7 @@ async fn provisioned_volume_execution_fails_closed_without_machine_io() {
                 },
             },
             unexecuted,
-        } if completed.is_empty() && failed == operation && unexecuted.is_empty()
+        } if completed.is_empty() && failed == provisioned && unexecuted == vec![ordinary]
     ));
     client.assert_done();
 }
