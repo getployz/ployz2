@@ -93,7 +93,16 @@ run_installer latest
 [ -f "$TMP/state/preserved" ]
 grep -Fq 'EnvironmentFile=-/etc/default/ployz' "$TMP/systemd/ployz.service"
 grep -Fxq 'RestartPreventExitStatus=78' "$TMP/systemd/ployz.service"
+grep -Fxq 'Before=docker.service' "$TMP/systemd/ployz-volume-plugin.socket"
+grep -Fxq 'ListenStream=/run/docker/plugins/ployz.sock' "$TMP/systemd/ployz-volume-plugin.socket"
+grep -Fxq 'Accept=no' "$TMP/systemd/ployz-volume-plugin.socket"
+grep -Fxq 'Service=ployz-volume-plugin.service' "$TMP/systemd/ployz-volume-plugin.socket"
+grep -Fxq 'Sockets=ployz-volume-plugin.socket' "$TMP/systemd/ployz-volume-plugin.service"
+grep -Fq 'ExecStart='"$TMP/install"'/ployzd volume-plugin' "$TMP/systemd/ployz-volume-plugin.service"
+grep -Fq 'systemctl enable --now ployz-volume-plugin.socket' "$LOG"
+grep -Fq 'systemctl enable --now ployz-volume-plugin.service' "$LOG"
 grep -Fq 'systemctl restart ployz.service' "$LOG"
+grep -Fq 'systemctl try-restart ployz-volume-plugin.service' "$LOG"
 
 : > "$LOG"
 run_installer latest
