@@ -2,9 +2,10 @@ use super::support::*;
 use ployz_core::{
     PreservedVolume, ProvisionedVolume, ProvisionedVolumeMaximumBytes, ServiceAttempt, ServiceName,
 };
+use std::num::NonZeroU64;
 
 fn maximum_bytes(bytes: u64) -> ProvisionedVolumeMaximumBytes {
-    ProvisionedVolumeMaximumBytes::new(bytes).unwrap()
+    ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(bytes).unwrap())
 }
 
 #[test]
@@ -63,10 +64,10 @@ fn conflicting_bounds_fail_even_when_the_reference_does_not_resolve() {
         PlanOptions::default(),
     );
     intent.provisioned_volumes = [1_073_741_824, 2_147_483_648]
-        .map(|maximum_bytes| ProvisionedVolume {
+        .map(|bytes| ProvisionedVolume {
             service: ServiceName::parse("api").unwrap(),
             reference: ServiceVolumeReference::parse("data").unwrap(),
-            maximum_bytes: ProvisionedVolumeMaximumBytes::new(maximum_bytes).unwrap(),
+            maximum_bytes: maximum_bytes(bytes),
         })
         .into();
 

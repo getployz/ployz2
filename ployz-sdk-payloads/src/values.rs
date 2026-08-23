@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeMap,
     net::{IpAddr, Ipv6Addr, SocketAddr},
-    num::{NonZeroU16, NonZeroU32},
+    num::{NonZeroU16, NonZeroU32, NonZeroU64},
 };
 
 use ployz_core::{
@@ -699,8 +699,9 @@ fn provisioned_volume() -> ProvisionedVolume {
         service: ServiceName::parse("api").expect("fixture Service Name is valid"),
         reference: ServiceVolumeReference::parse("data")
             .expect("fixture Service Volume Reference is valid"),
-        maximum_bytes: ProvisionedVolumeMaximumBytes::new(1_073_741_824)
-            .expect("fixture Provisioned Volume bound is positive"),
+        maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+            NonZeroU64::new(1_073_741_824).expect("fixture Provisioned Volume bound is positive"),
+        ),
     }
 }
 

@@ -19,14 +19,14 @@ use ployz_core::{
     MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSubnet,
     MachineSuccess, MachineTarget, MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload,
     PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult,
-    Placement, PortPublication, PreDeployHook, ProjectName, ProvisionedVolume, PublicIpDiscovery,
-    PublicIpUpdate, PullImageFromMachineRequest, PullPolicy, QualifiedService,
-    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
-    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
-    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
-    VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    Placement, PortPublication, PreDeployHook, ProjectName, ProvisionedVolume,
+    ProvisionedVolumeMaximumBytes, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest,
+    PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest,
+    RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest,
+    ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount,
+    ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest,
+    UpdateOrder, VolumeList, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -36,6 +36,13 @@ const OTHER_MACHINE_ID: &str = "fedcba9876543210fedcba9876543210";
 
 #[test]
 fn provisioned_volume_bounds_are_required_positive_byte_counts() {
+    let bound: ProvisionedVolumeMaximumBytes =
+        serde_json::from_value(json!("18446744073709551615")).unwrap();
+    assert_eq!(bound.get(), u64::MAX);
+    assert_eq!(
+        serde_json::to_value(bound).unwrap(),
+        json!("18446744073709551615")
+    );
     let valid = json!({
         "service": "api",
         "reference": "data",

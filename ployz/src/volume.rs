@@ -42,8 +42,9 @@ impl ProvisionedVolumeSize {
         let maximum_bytes = amount
             .checked_mul(multiplier)
             .ok_or_else(|| ProvisionedVolumeSizeError::Overflow(value.to_owned()))?;
-        let maximum_bytes = ProvisionedVolumeMaximumBytes::new(maximum_bytes)
-            .expect("parsed size amount is positive");
+        let maximum_bytes = ProvisionedVolumeMaximumBytes::new(
+            NonZeroU64::new(maximum_bytes).expect("parsed size amount is positive"),
+        );
         Ok(Self {
             option: value.to_owned(),
             maximum_bytes,

@@ -6,7 +6,7 @@ use std::{
     num::NonZeroU64,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
 use super::{
     ContainerRuntimeObservation, HealthObservation, RequestedServiceSpec, ResolvedServiceSpec,
@@ -44,7 +44,49 @@ pub struct ServiceAttempt {
 }
 
 /// A positive maximum byte count for one Provisioned Volume.
-pub type ProvisionedVolumeMaximumBytes = NonZeroU64;
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ProvisionedVolumeMaximumBytes(NonZeroU64);
+
+impl ProvisionedVolumeMaximumBytes {
+    /// Construct a Provisioned Volume bound from a positive byte count.
+    #[must_use]
+    pub const fn new(bytes: NonZeroU64) -> Self {
+        Self(bytes)
+    }
+
+    /// The positive maximum byte count.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl Display for ProvisionedVolumeMaximumBytes {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl Serialize for ProvisionedVolumeMaximumBytes {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProvisionedVolumeMaximumBytes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map(Self)
+            .map_err(D::Error::custom)
+    }
+}
 
 /// One Provisioned Volume declaration in a Deploy Intent.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -54,33 +96,7 @@ pub struct ProvisionedVolume {
     /// Service-local reference that resolves to the Docker Volume declaration.
     pub reference: ServiceVolumeReference,
     /// Required positive storage bound in bytes.
-    #[serde(with = "nonzero_u64_string")]
     pub maximum_bytes: ProvisionedVolumeMaximumBytes,
-}
-
-mod nonzero_u64_string {
-    use serde::{Deserialize, Deserializer, Serializer, de::Error};
-
-    use super::ProvisionedVolumeMaximumBytes;
-
-    pub fn serialize<S>(
-        value: &ProvisionedVolumeMaximumBytes,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.collect_str(value)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<ProvisionedVolumeMaximumBytes, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(D::Error::custom)
-    }
 }
 
 /// Complete desired Services plus which of those Services this command applies.
