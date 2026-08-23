@@ -188,7 +188,7 @@ require_host_root_reserve() {
 }
 
 install_zfs_packages_ubuntu() {
-    local kernel=$1 package
+    local kernel=$1 package package_dir archive module_package=''
     if ! run_with_apt_lock_wait apt-get update -qq >/dev/null; then
         error "Could not refresh Ubuntu packages needed for ZFS"
     fi
@@ -198,14 +198,28 @@ install_zfs_packages_ubuntu() {
         "linux-modules-$kernel" \
         "linux-modules-extra-$kernel"; do
         apt-cache show "$package" >/dev/null 2>&1 || continue
-        if ! run_with_apt_lock_wait env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends zfsutils-linux "$package"; then
-            error "Could not install zfsutils-linux and running-kernel module package $package"
+        if dpkg-query -L "$package" 2>/dev/null | grep -F "/lib/modules/$kernel/" | grep -E '/zfs\.ko(\.[^/]*)?$' >/dev/null; then
+            module_package=$package
+            break
         fi
-        if dpkg-query -L "$package" | grep -F "/lib/modules/$kernel/" | grep -Eq '/zfs\.ko(\.[^/]*)?$'; then
-            return
+        package_dir=$(mktemp -d)
+        if (cd "$package_dir" && run_with_apt_lock_wait apt-get download "$package" >/dev/null); then
+            archive=$(find "$package_dir" -maxdepth 1 -type f -name '*.deb' -print -quit)
+            if [ -n "$archive" ] && dpkg-deb -c "$archive" | grep -F "lib/modules/$kernel/" | grep -E '/zfs\.ko(\.[^/]*)?$' >/dev/null; then
+                module_package=$package
+            fi
         fi
+        rm -rf "$package_dir"
+        [ -z "$module_package" ] || break
     done
-    error "Ubuntu has no packaged ZFS module for the running kernel $kernel; install a supported Ubuntu kernel and retry"
+    [ -n "$module_package" ] || \
+        error "Ubuntu has no packaged ZFS module for the running kernel $kernel; install a supported Ubuntu kernel and retry"
+    if ! run_with_apt_lock_wait env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends zfsutils-linux "$module_package"; then
+        error "Could not install zfsutils-linux and running-kernel module package $module_package"
+    fi
+    if ! dpkg-query -L "$module_package" | grep -F "/lib/modules/$kernel/" | grep -E '/zfs\.ko(\.[^/]*)?$' >/dev/null; then
+        error "Installed package $module_package does not supply the ZFS module for running kernel $kernel"
+    fi
 }
 
 zfs_arc_max_for_memory_kib() {

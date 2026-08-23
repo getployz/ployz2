@@ -373,24 +373,37 @@ assert_eq "$(zfs_arc_max_for_memory_kib 2097152)" 536870912
 assert_eq "$(zfs_arc_max_for_memory_kib 8388608)" 1073741824
 
 assert_zfs_module_package() {
-    local kernel=$1 owner=$2 available package_log
+    local kernel=$1 owner=$2 available installed package_log
     shift 2
     available=$(printf '%s\n' "$@")
+    installed=$(mktemp)
+    rm -f "$installed"
     package_log=$(mktemp)
     (
-        run_with_apt_lock_wait() { printf '%s\n' "$*" >> "$package_log"; }
+        run_with_apt_lock_wait() {
+            printf '%s\n' "$*" >> "$package_log"
+            case "$*" in
+                'apt-get download '*) : > "${!#}.deb" ;;
+                *'apt-get install '*) printf '%s\n' "${!#}" > "$installed" ;;
+            esac
+        }
         function apt-cache {
             [ "$1" = show ] && printf '%s\n' "$available" | grep -Fxq "$2"
         }
+        function dpkg-deb {
+            [ "$1" = -c ] && [ "${2##*/}" = "$owner.deb" ] && \
+                printf '%s\n' "./lib/modules/$kernel/kernel/fs/zfs/zfs.ko.zst"
+        }
         function dpkg-query {
-            [ "$1" = -L ] && [ "$2" = "$owner" ] && \
+            [ "$1" = -L ] && [ -e "$installed" ] && [ "$2" = "$owner" ] && \
                 printf '%s\n' "/lib/modules/$kernel/kernel/fs/zfs/zfs.ko.zst"
         }
         install_zfs_packages_ubuntu "$kernel"
     )
     assert_contains "$package_log" "apt-get update -qq"
     assert_contains "$package_log" "zfsutils-linux $owner"
-    rm -f "$package_log"
+    assert_eq "$(grep -Fc 'apt-get install' "$package_log")" 1
+    rm -f "$installed" "$package_log"
 }
 
 assert_zfs_module_package 6.8.12-mainline \
