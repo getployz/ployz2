@@ -172,6 +172,46 @@ fn selected_service_healthy_wait_precedes_the_dependent_hook() {
 }
 
 #[test]
+fn healthy_dependency_does_not_gate_scale_down() {
+    let mut db = spec("db");
+    db.container.healthcheck = Some(configured_healthcheck());
+    let web = spec("web");
+    let web_service_id = service_id('a');
+    let intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&db, &web],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+    let plan = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![
+                container('b', '1', &web, &web_service_id),
+                container('c', '1', &web, &web_service_id),
+            ],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    )
+    .unwrap();
+
+    assert!(
+        !operations(&plan)
+            .iter()
+            .any(|operation| matches!(operation, DeployOperation::WaitHealthy { .. }))
+    );
+    assert!(plan.warnings.is_empty());
+}
+
+#[test]
 fn skip_health_omits_wait_and_warns_for_each_weakened_edge() {
     let mut db = spec("db");
     db.container.healthcheck = Some(configured_healthcheck());

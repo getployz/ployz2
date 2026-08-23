@@ -210,7 +210,9 @@ pub enum DependencyCondition {
 /// One parsed dependency edge used by Deploy planning.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceDependency {
+    /// Service that the dependent Service requires.
     pub service: ServiceName,
+    /// Condition the dependency must satisfy before the dependent starts.
     pub condition: DependencyCondition,
 }
 

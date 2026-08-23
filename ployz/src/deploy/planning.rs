@@ -238,8 +238,19 @@ fn assemble_plan(
             &intent.options,
         )
         .map_err(|source| service_error(name_errors_with_service, spec.name.as_str(), source))?;
-        if let Some(first) = operations.first() {
-            let machine_id = first.machine_id();
+        if let Some(machine_id) = operations.iter().find_map(|operation| match operation {
+            DeployOperation::RunContainer { machine_id, .. }
+            | DeployOperation::ReplaceContainer(ReplacementOperation { machine_id, .. }) => {
+                Some(*machine_id)
+            }
+            DeployOperation::CreateVolume { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
+        }) {
             for dependency in intent.dependencies().get(&spec.name).into_iter().flatten() {
                 if dependency.condition != DependencyCondition::ServiceHealthy {
                     continue;
