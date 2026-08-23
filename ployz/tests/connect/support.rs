@@ -152,6 +152,7 @@ pub(super) struct DiscoveryService {
     pub(super) listed_volumes: Arc<Mutex<BTreeMap<MachineId, Vec<DockerVolume>>>>,
     pub(super) listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     pub(super) accept_volume_creates: bool,
+    pub(super) existing_created_volume: Option<DockerVolume>,
     pub(super) created_volumes: Arc<Mutex<Vec<(MachineId, CreateVolumeRequest)>>>,
     pub(super) removed_volumes: Arc<Mutex<Vec<DockerVolumeId>>>,
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
@@ -178,6 +179,7 @@ impl DiscoveryService {
             listed_volumes: Arc::new(Mutex::new(BTreeMap::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             accept_volume_creates: false,
+            existing_created_volume: None,
             created_volumes: Arc::new(Mutex::new(Vec::new())),
             removed_volumes: Arc::new(Mutex::new(Vec::new())),
             reset_warning: Arc::new(Mutex::new(None)),
@@ -466,8 +468,10 @@ impl MachineRpc for DiscoveryService {
             .lock()
             .unwrap()
             .push((machine_id, create.clone()));
-        Ok(Response::new(
-            RpcResponse::from(DockerVolume {
+        let volume = self
+            .existing_created_volume
+            .clone()
+            .unwrap_or_else(|| DockerVolume {
                 id: DockerVolumeId {
                     machine_id,
                     name: create.name,
@@ -475,10 +479,8 @@ impl MachineRpc for DiscoveryService {
                 driver: create.driver,
                 options: create.options,
                 labels: create.labels,
-            })
-            .encode()
-            .unwrap(),
-        ))
+            });
+        Ok(Response::new(RpcResponse::from(volume).encode().unwrap()))
     }
 
     async fn inspect_container(

@@ -512,6 +512,33 @@ async fn invalid_volume_sizes_fail_before_the_create_rpc() {
     server.abort();
 }
 
+#[tokio::test]
+async fn existing_provisioned_volume_accepts_the_same_bound_but_never_resizes() {
+    let mut service = DiscoveryService::new(test_description());
+    service.accept_volume_creates = true;
+    service.existing_created_volume = Some(DockerVolume {
+        id: DockerVolumeId {
+            machine_id: machine_id('a'),
+            name: DockerVolumeName::parse("data").unwrap(),
+        },
+        driver: "ployz".into(),
+        options: BTreeMap::from([("size".into(), "1g".into())]),
+        labels: BTreeMap::new(),
+    });
+    let (address, server) = serve_discovery(service).await;
+
+    let same = run_ployz(address, &["volume", "create", "data", "--size", "1024m"]).await;
+    assert!(same.status.success(), "{same:?}");
+
+    let different = run_ployz(address, &["volume", "create", "data", "--size", "2g"]).await;
+    assert!(!different.status.success(), "{different:?}");
+    assert!(
+        String::from_utf8_lossy(&different.stderr).contains("volume update"),
+        "{different:?}"
+    );
+    server.abort();
+}
+
 fn listing_container(
     container_hex: char,
     service_hex: char,

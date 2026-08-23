@@ -26,10 +26,10 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
     let size = matches
         .get_one::<crate::volume::ProvisionedVolumeSize>("size")
         .cloned();
-    let (driver, options) = match size {
+    let (driver, options) = match &size {
         Some(size) => (
             "ployz".to_owned(),
-            BTreeMap::from([("size".to_owned(), size.into_string())]),
+            BTreeMap::from([("size".to_owned(), size.as_str().to_owned())]),
         ),
         None => (
             required(matches, "driver")?,
@@ -60,6 +60,12 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
                     Some(TARGET_RPC_TIMEOUT),
                 )
                 .await?;
+            if size.as_ref().is_some_and(|size| !size.matches(&volume)) {
+                return Err(Error::usage(format!(
+                    "Docker Volume {:?} already exists with a different Provisioned shape; resizing is not supported; use the future `ployz volume update` capability",
+                    volume.id.name
+                )));
+            }
             println!("{}\t{}", machine.machine.name, volume.id.name);
             Ok(())
         })
