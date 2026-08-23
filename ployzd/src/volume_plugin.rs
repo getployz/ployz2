@@ -219,9 +219,17 @@ impl VolumeStorage {
         name: &DockerVolumeName,
     ) -> Result<Option<Dataset>> {
         let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name());
-        Ok(self
-            .datasets(pool)
-            .await?
+        let datasets = self.datasets(pool).await?;
+        if !datasets.iter().any(|dataset| dataset.name == requested) {
+            return Ok(None);
+        }
+        let root = format!("{}/{DATASET_ROOT}", pool.name());
+        datasets
+            .iter()
+            .find(|dataset| dataset.name == root)
+            .ok_or_else(|| format!("ZFS did not report managed root dataset {root}"))?
+            .require_mountpoint(MOUNT_ROOT)?;
+        Ok(datasets
             .into_iter()
             .find(|dataset| dataset.name == requested))
     }
