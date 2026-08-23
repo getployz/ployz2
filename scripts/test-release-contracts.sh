@@ -400,6 +400,21 @@ fi
 printf '%s\n' "$missing_kernel_error" | grep -Fq \
     "no packaged ZFS module for the running kernel 6.8.0-unsupported"
 
+assert_eq "$PLOYZ_STORAGE" none
+storage_selection_log=$(mktemp)
+(
+    prepare_zfs() { echo zfs >> "$storage_selection_log"; }
+    prepare_storage
+)
+[ ! -s "$storage_selection_log" ]
+if invalid_storage_error=$(PLOYZ_STORAGE=other prepare_storage 2>&1); then
+    echo "installer accepted an unsupported storage preparation" >&2
+    exit 1
+fi
+printf '%s\n' "$invalid_storage_error" | grep -Fq \
+    "Unsupported storage preparation 'other'; expected none or zfs"
+rm -f "$storage_selection_log"
+
 zfs_prepare_log=$(mktemp)
 (
     operating_system_id() { echo ubuntu; }
@@ -413,7 +428,7 @@ zfs_prepare_log=$(mktemp)
     modprobe() { printf 'modprobe %s\n' "$1" >> "$zfs_prepare_log"; }
     set_and_verify_zfs_arc_max() { printf 'verify %s\n' "$1" >> "$zfs_prepare_log"; }
     validate_zfs() { echo smoke >> "$zfs_prepare_log"; }
-    prepare_zfs >/dev/null
+    PLOYZ_STORAGE=zfs prepare_storage >/dev/null
 )
 assert_eq "$(cat "$zfs_prepare_log")" "$(printf '%s\n' \
     'reserve 134217728' \

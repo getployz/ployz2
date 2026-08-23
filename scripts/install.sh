@@ -15,6 +15,7 @@ PLOYZ_USER=ployz
 PLOYZ_GROUP_ADD_USER=${PLOYZ_GROUP_ADD_USER:-}
 PLOYZ_DATA_DIR=${PLOYZ_DATA_DIR:-/var/lib/ployz}
 PLOYZ_RUN_DIR=${PLOYZ_RUN_DIR:-/run/ployz}
+PLOYZ_STORAGE=${PLOYZ_STORAGE:-none}
 DOCKER_DAEMON_CONFIG_FILE=${DOCKER_DAEMON_CONFIG_FILE:-/etc/docker/daemon.json}
 APT_LOCK_TIMEOUT_SECONDS=300
 PLOYZ_APT_CONFIG=
@@ -335,6 +336,14 @@ prepare_zfs() {
     log "ZFS storage preparation validated; no Machine Pool was created"
 }
 
+prepare_storage() {
+    case "$PLOYZ_STORAGE" in
+        none) return ;;
+        zfs) prepare_zfs ;;
+        *) error "Unsupported storage preparation '$PLOYZ_STORAGE'; expected none or zfs" ;;
+    esac
+}
+
 install_docker() {
     if command_exists dockerd; then
         if [ "$INSTALL_ONLY" != true ] && ! docker info -f '{{ .DriverStatus }}' 2>/dev/null | grep -q io.containerd.snapshotter; then
@@ -434,6 +443,7 @@ main() {
         trap 'rm -f "$PLOYZ_APT_CONFIG"' EXIT
     fi
     install_prerequisites
+    prepare_storage
     install_docker
     if [ -n "$PLOYZ_APT_CONFIG" ]; then
         rm -f "$PLOYZ_APT_CONFIG"
