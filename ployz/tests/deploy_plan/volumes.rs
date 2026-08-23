@@ -8,6 +8,14 @@ fn maximum_bytes(bytes: u64) -> ProvisionedVolumeMaximumBytes {
     ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(bytes).unwrap())
 }
 
+fn provisioned(service: &str, reference: &str, bytes: u64) -> ProvisionedVolume {
+    ProvisionedVolume {
+        service: ServiceName::parse(service).unwrap(),
+        reference: ServiceVolumeReference::parse(reference).unwrap(),
+        maximum_bytes: maximum_bytes(bytes),
+    }
+}
+
 #[test]
 fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
     let mut requested = requested(ServiceMode::Replicated {
@@ -27,16 +35,8 @@ fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
         PlanOptions::default(),
     );
     intent.provisioned_volumes = vec![
-        ProvisionedVolume {
-            service: requested.name.clone(),
-            reference: ServiceVolumeReference::parse("data").unwrap(),
-            maximum_bytes: maximum_bytes(1_073_741_824),
-        },
-        ProvisionedVolume {
-            service: requested.name.clone(),
-            reference: ServiceVolumeReference::parse("data-alias").unwrap(),
-            maximum_bytes: maximum_bytes(2_147_483_648),
-        },
+        provisioned(requested.name.as_str(), "data", 1_073_741_824),
+        provisioned(requested.name.as_str(), "data-alias", 2_147_483_648),
     ];
 
     assert_eq!(
@@ -72,16 +72,8 @@ fn disjoint_global_volumes_may_have_different_bounds() {
         PlanOptions::default(),
     );
     intent.provisioned_volumes = vec![
-        ProvisionedVolume {
-            service: first.name.clone(),
-            reference: ServiceVolumeReference::parse("data").unwrap(),
-            maximum_bytes: maximum_bytes(1_073_741_824),
-        },
-        ProvisionedVolume {
-            service: second.name.clone(),
-            reference: ServiceVolumeReference::parse("data").unwrap(),
-            maximum_bytes: maximum_bytes(2_147_483_648),
-        },
+        provisioned(first.name.as_str(), "data", 1_073_741_824),
+        provisioned(second.name.as_str(), "data", 2_147_483_648),
     ];
 
     preview_deploy(
@@ -102,11 +94,9 @@ fn unknown_provisioned_volume_reference_fails_planning() {
         [],
         PlanOptions::default(),
     );
-    intent.provisioned_volumes.push(ProvisionedVolume {
-        service: ServiceName::parse("api").unwrap(),
-        reference: ServiceVolumeReference::parse("data").unwrap(),
-        maximum_bytes: maximum_bytes(1_073_741_824),
-    });
+    intent
+        .provisioned_volumes
+        .push(provisioned("api", "data", 1_073_741_824));
 
     assert_eq!(
         preview_deploy(
@@ -131,11 +121,9 @@ fn duplicate_target_services_fail_before_volume_resolution() {
         vec![requested.clone(), requested],
         PlanOptions::default(),
     );
-    intent.provisioned_volumes.push(ProvisionedVolume {
-        service: ServiceName::parse("api").unwrap(),
-        reference: ServiceVolumeReference::parse("data").unwrap(),
-        maximum_bytes: maximum_bytes(1_073_741_824),
-    });
+    intent
+        .provisioned_volumes
+        .push(provisioned("api", "data", 1_073_741_824));
 
     assert_eq!(
         preview_deploy(
