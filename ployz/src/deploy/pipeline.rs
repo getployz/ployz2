@@ -284,15 +284,9 @@ pub(super) async fn plan_project(
     project.resolve_secrets()?;
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     super::reject_missing_external_volumes(project, &snapshot)?;
-    let intent = DeployIntent::from_named_specs(
-        project_name.clone(),
-        &project.services,
-        &project.dependencies,
-        options,
-    )
-    .with_service_profiles(project.service_profiles())
-    .with_requested_profiles(hints.requested_profiles)
-    .with_compose_refusal(hints.compose_refusal);
+    let intent = super::compose_deploy_intent(project, project_name.clone(), options)
+        .with_requested_profiles(hints.requested_profiles)
+        .with_compose_refusal(hints.compose_refusal);
     Ok(preview_gathered(client, snapshot, warnings, &intent).await?)
 }
 
