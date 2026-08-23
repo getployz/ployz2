@@ -16,6 +16,14 @@ fn provisioned(service: &str, reference: &str, bytes: u64) -> ProvisionedVolume 
     }
 }
 
+fn global_service(name: &str, machine_name: &str) -> RequestedServiceSpec {
+    let mut service = requested(ServiceMode::Global);
+    service.name = ServiceName::parse(name).unwrap();
+    service.placement.machines = vec![MachineTarget::parse(machine_name).unwrap()];
+    add_named_volume(&mut service, "data");
+    service
+}
+
 #[test]
 fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
     let mut requested = requested(ServiceMode::Replicated {
@@ -58,14 +66,8 @@ fn provisioned_volume_aliases_cannot_conflict_on_one_docker_volume() {
 
 #[test]
 fn disjoint_global_volumes_may_have_different_bounds() {
-    let mut first = requested(ServiceMode::Global);
-    first.name = ServiceName::parse("first").unwrap();
-    first.placement.machines = vec![MachineTarget::parse("first").unwrap()];
-    add_named_volume(&mut first, "data");
-    let mut second = requested(ServiceMode::Global);
-    second.name = ServiceName::parse("second").unwrap();
-    second.placement.machines = vec![MachineTarget::parse("second").unwrap()];
-    add_named_volume(&mut second, "data");
+    let first = global_service("first", "first");
+    let second = global_service("second", "second");
     let mut intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         [&first, &second],
@@ -85,6 +87,38 @@ fn disjoint_global_volumes_may_have_different_bounds() {
         IngressContext::default(),
     )
     .unwrap();
+}
+
+#[test]
+fn colocated_global_volumes_cannot_have_different_bounds() {
+    let first = global_service("first", "first");
+    let second = global_service("second", "first");
+    let mut intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&first, &second],
+        PlanOptions::default(),
+    );
+    intent.provisioned_volumes = vec![
+        provisioned("first", "data", 1_073_741_824),
+        provisioned("second", "data", 2_147_483_648),
+    ];
+
+    let result = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(PlanError::Service { source, .. })
+                if matches!(source.as_ref(), PlanError::ConflictingProvisionedVolumeBounds { .. })
+        ),
+        "unexpected result: {result:?}"
+    );
 }
 
 #[test]

@@ -23,9 +23,9 @@ use placement::{
     plan_replicated,
 };
 use volumes::{
-    VolumePins, constrain_volume_candidates, named_volume_uses, plan_volume_operations,
-    prepare_shared_replicated_volumes, preserved_owned_volumes, reject_mixed_volume_modes,
-    scope_requested, validate_provisioned_volume_bounds,
+    ProvisionedVolumeBindings, VolumePins, constrain_volume_candidates, named_volume_uses,
+    plan_volume_operations, prepare_shared_replicated_volumes, preserved_owned_volumes,
+    reject_mixed_volume_modes, scope_requested,
 };
 
 /// Whether Project removal keeps or destroys observer-visible managed volumes.
@@ -48,6 +48,7 @@ pub struct IngressContext<'domain> {
 struct BoundIntent {
     target: Vec<RequestedServiceSpec>,
     requested: Vec<RequestedServiceSpec>,
+    provisioned_volumes: ProvisionedVolumeBindings,
 }
 
 /// Operations and prune results before pending rows are attached.
@@ -170,7 +171,8 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
         .cloned()
         .map(|spec| scope_requested(spec, &intent.project_name))
         .collect();
-    validate_provisioned_volume_bounds(&target, &intent.provisioned_volumes)?;
+    let provisioned_volumes =
+        ProvisionedVolumeBindings::parse(&target, &intent.provisioned_volumes)?;
     let mut requested = Vec::new();
     for spec in specs {
         let scoped = target
@@ -185,7 +187,11 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
         )?;
         requested.push(planned);
     }
-    Ok(BoundIntent { target, requested })
+    Ok(BoundIntent {
+        target,
+        requested,
+        provisioned_volumes,
+    })
 }
 
 fn hostname_policy_for(
@@ -214,7 +220,7 @@ fn assemble_plan(
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let volume_uses = named_volume_uses(&bound.requested);
     reject_mixed_volume_modes(&volume_uses)?;
-    let mut pins = VolumePins::default();
+    let mut pins = VolumePins::new(bound.provisioned_volumes.clone());
     let name_errors_with_service = bound.requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
     let mut capacity = CapacityBudget::from_snapshot(snapshot);
