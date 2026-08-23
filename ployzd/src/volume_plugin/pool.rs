@@ -120,6 +120,7 @@ impl PoolStorage {
     }
 
     #[cfg(test)]
+    /// Replaces the production backing path for adapters at the test seam.
     pub(super) fn with_backing(mut self, backing: PathBuf) -> Self {
         self.backing = backing;
         self

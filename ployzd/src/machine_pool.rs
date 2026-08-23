@@ -57,7 +57,7 @@ pub fn one_usable(output: &str) -> Result<Option<MachinePool>, Error> {
 /// # Errors
 ///
 /// Returns an error when non-empty output contains no complete Pool name.
-pub fn importable_names(output: &str) -> Result<Vec<&str>, Error> {
+pub fn importable_names<'output>(output: &'output str) -> Result<Vec<&'output str>, Error> {
     let output = output.trim();
     if output.is_empty() || output == "no pools available to import" {
         return Ok(Vec::new());
