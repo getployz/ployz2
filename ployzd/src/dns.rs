@@ -1,5 +1,7 @@
+//! Observer-local Internal DNS serving and answer projection.
+
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
@@ -23,8 +25,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, Machine, MachineId, ManagementAddress, MembershipObservation,
-    QualifiedService, ServiceId, service_containers, serving_replicas, synthesize_membership,
+    ContainerObservation, Machine, MachineId, MembershipObservation, QualifiedService, ServiceId,
+    service_containers, serving_replicas, synthesize_membership,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -33,7 +35,10 @@ use tokio::{
 use tokio_stream::wrappers::IntervalStream;
 use tokio_util::sync::CancellationToken;
 
-use crate::corrosion::{AdminClient, Error as CorrosionError, ReplicatedStore, Subscription};
+use crate::corrosion::{
+    AdminClient, Error as CorrosionError, ReplicatedStore, Subscription,
+    membership_states_by_address,
+};
 
 mod query;
 
@@ -42,6 +47,7 @@ use query::{InternalQuery, MachineServiceTarget, Query, parse};
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
 const MEMBERSHIP_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const TCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_RESPONSE_BUFFER: usize = 32;
 
@@ -329,6 +335,12 @@ impl Handler {
     }
 }
 
+/// Serve Internal DNS from this Machine's observer-local Container and membership views.
+///
+/// # Errors
+///
+/// Returns an I/O error when replicated observations cannot be read or watched, the UDP listener
+/// cannot bind, the DNS server fails, or the projection lock is poisoned.
 pub async fn run(
     machine: Machine,
     replicated: ReplicatedStore,
@@ -437,7 +449,7 @@ async fn load_down_machines(
     admin: &AdminClient,
     local_id: &MachineId,
 ) -> Result<HashSet<MachineId>, CorrosionError> {
-    let (machines, states) = tokio::time::timeout(MEMBERSHIP_SAMPLE_INTERVAL, async {
+    let (machines, states) = tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, async {
         tokio::try_join!(replicated.machines(), admin.membership_states())
     })
     .await
@@ -447,13 +459,7 @@ async fn load_down_machines(
             "Internal DNS membership sample timed out",
         ))
     })??;
-    let states = states
-        .into_iter()
-        .filter_map(|state| match state.address.ip() {
-            IpAddr::V6(address) => Some((ManagementAddress(address), state.membership)),
-            IpAddr::V4(_) => None,
-        })
-        .collect::<BTreeMap<_, _>>();
+    let states = membership_states_by_address(states);
     Ok(
         synthesize_membership(machines.observations, local_id, &states)
             .into_iter()

@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation,
-    MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName,
+    Machine, MachineId, MachineName, MachineRuntime, ManagementAddress, ProjectName,
+    ResolvedServiceSpec, ServiceId, ServiceName, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio::net::UnixListener;
@@ -13,6 +14,34 @@ use super::*;
 use crate::corrosion::fake_cluster;
 
 const SUBNET: &str = "10.210.1.0/24";
+
+#[tokio::test]
+async fn run_reports_subscription_failure() {
+    let machine = Machine {
+        id: MachineId::random(),
+        name: MachineName::parse("node-a").unwrap(),
+        subnet: SUBNET.parse().unwrap(),
+        management_address: ManagementAddress("fdcc::1".parse().unwrap()),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: Vec::new(),
+        runtime: MachineRuntime::default(),
+    };
+    let (replicated, replicated_server) = fake_cluster::store().await;
+
+    let error = run(
+        machine,
+        replicated,
+        AdminClient::new("/no/such/admin.sock"),
+        None,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.to_string().contains("HTTP 404 Not Found"));
+    replicated_server.abort();
+}
 
 #[tokio::test(start_paused = true)]
 async fn membership_sample_times_out() {
