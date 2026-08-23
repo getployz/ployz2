@@ -74,3 +74,16 @@ fn parse(line: &str) -> Result<Option<MachinePool>, Error> {
             .then(|| MachinePool(name.to_owned())),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_output_is_an_error() {
+        assert_eq!(
+            one_usable("broken\tONLINE").unwrap_err().to_string(),
+            "invalid ZFS Pool output: broken\tONLINE"
+        );
+    }
+}
