@@ -85,16 +85,7 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
 }
 
 #[tokio::test]
-async fn failed_cloud_zfs_preparation_does_not_join_the_machine() {
-    if std::process::Command::new("id")
-        .arg("-u")
-        .output()
-        .unwrap()
-        .stdout
-        == b"0\n"
-    {
-        return;
-    }
+async fn cloud_zfs_rejects_a_remote_machine_before_join() {
     let registration = registration();
     let pairing = CloudPairing::parse(
         "https://relay.example.invalid",
@@ -121,7 +112,9 @@ async fn failed_cloud_zfs_preparation_does_not_join_the_machine() {
     .await;
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("run this command with sudo"),
+        String::from_utf8_lossy(&output.stderr).contains(
+            "zfs storage preparation requires running ployz cloud enroll on the Machine itself"
+        ),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );

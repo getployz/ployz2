@@ -12,7 +12,7 @@ use ployz_core::{
 use super::{Error, config_path, connect_client, leaf_matches, required, runtime};
 use crate::cloud_enroll::{self, EnrollIdentity, Outcome};
 use crate::connect::{Client, ConnectError};
-use crate::context::ContextError;
+use crate::context::{ContextError, Transport};
 
 pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -53,6 +53,12 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
             };
             crate::provisioning::announce_storage(storage);
             if storage == StorageChoice::Zfs {
+                if !matches!(client.connection().transport(), Transport::Unix(_)) {
+                    return Err(Error::usage(format!(
+                        "zfs storage preparation requires running ployz cloud enroll on the Machine itself; connected through {}",
+                        client.connection()
+                    )));
+                }
                 crate::provisioning::provision_local(storage)?;
             }
             match outcome {
