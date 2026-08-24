@@ -733,11 +733,12 @@ fn docker_volume() -> DockerVolume {
 
 fn volume_inventory() -> VolumeInventory {
     let volume = docker_volume();
+    let machine_id = volume.id.machine_id;
     VolumeInventory {
-        volumes: vec![volume.clone()],
+        volumes: vec![volume],
         failures: vec![VolumeObservationFailure {
             id: DockerVolumeId {
-                machine_id: volume.id.machine_id,
+                machine_id,
                 name: DockerVolumeName::parse("unavailable").expect("fixture volume name is valid"),
             },
             error: rpc_error(),

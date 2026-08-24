@@ -92,17 +92,18 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     };
     let expected_container_failures = containers.failures.clone();
     let expected_container_omissions = containers.omissions.clone();
-    let expected_volumes = volumes.clone();
+    let expected_machine_failures = volumes.failures.clone();
     let snapshot = snapshot_from_partial(machines.clone(), containers, volumes, BTreeMap::new());
 
     assert_eq!(snapshot.machines, machines);
     assert_eq!(snapshot.containers, [container]);
-    assert_eq!(snapshot.volumes().collect::<Vec<_>>(), [&volume]);
-    assert_eq!(snapshot.volume_observation_failures().count(), 1);
+    assert_eq!(snapshot.volume_snapshot.observations, [volume]);
+    assert_eq!(snapshot.volume_snapshot.named_failures.len(), 1);
     assert_eq!(
         snapshot
-            .volume_observation_failures()
-            .next()
+            .volume_snapshot
+            .named_failures
+            .first()
             .expect("snapshot includes the named failure")
             .id
             .name
@@ -111,8 +112,10 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     );
     assert_eq!(snapshot.container_failures, expected_container_failures);
     assert_eq!(snapshot.container_omissions, expected_container_omissions);
-    assert_eq!(snapshot.volume_inventory, expected_volumes);
-    assert!(!snapshot.volume_observations_complete());
+    assert_eq!(
+        snapshot.volume_snapshot.machine_failures,
+        expected_machine_failures
+    );
     assert!(!snapshot.is_observer_complete());
 }
 

@@ -65,7 +65,9 @@ impl VolumePins {
         snapshot: &'pins DeploySnapshot,
     ) -> impl Iterator<Item = VolumePresence<'pins>> + 'pins {
         snapshot
-            .volumes()
+            .volume_snapshot
+            .observations
+            .iter()
             .map(|observed| VolumePresence {
                 machine_id: observed.id.machine_id,
                 name: &observed.id.name,
@@ -253,9 +255,16 @@ impl VolumePins {
         }
         for (name, maximum_bytes) in self.provisioned.volumes_for(spec) {
             for machine in machines {
-                let Some(existing) = snapshot.volumes().find(|existing| {
-                    existing.id.machine_id == machine.machine.id && existing.id.name == *name
-                }) else {
+                let Some(existing) =
+                    snapshot
+                        .volume_snapshot
+                        .observations
+                        .iter()
+                        .find(|existing| {
+                            existing.id.machine_id == machine.machine.id
+                                && existing.id.name == *name
+                        })
+                else {
                     continue;
                 };
                 if !matches!(
@@ -319,7 +328,7 @@ pub(super) fn preserved_owned_volumes(
 ) -> Vec<PreservedVolume> {
     let declared = declared_physical_names(target);
     let mut preserved = Vec::new();
-    for volume in snapshot.volumes() {
+    for volume in &snapshot.volume_snapshot.observations {
         if owned_volume_project(&volume.labels).as_ref() != Some(project_name) {
             continue;
         }
@@ -697,14 +706,41 @@ fn volume_constraints<'spec>(
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
     let mounted_volumes = mounted_named_volumes(&spec.volume_graph)?;
-    if let Some(failure) = snapshot.volume_observation_failures().find(|failure| {
+    let incomplete = machines.iter().find_map(|machine| {
+        machine_inventory_failure(snapshot, machine.machine.id)
+            .map(|message| (machine.machine.id, machine.machine.name.clone(), message))
+    });
+    if !mounted_volumes.is_empty() {
         machines
-            .iter()
-            .any(|machine| machine.machine.id == failure.id.machine_id)
-            && mounted_volumes
+            .retain(|machine| machine_inventory_failure(snapshot, machine.machine.id).is_none());
+    }
+    if machines.is_empty()
+        && let Some((machine_id, machine, message)) = incomplete
+        && let Some(name) = mounted_volumes
+            .first()
+            .and_then(|volume| named_volume_name(volume))
+    {
+        return Err(PlanError::DockerVolumeUnavailable {
+            id: DockerVolumeId {
+                machine_id,
+                name: name.clone(),
+            },
+            message: format!("Machine '{machine}' {message}"),
+        });
+    }
+    if let Some(failure) = snapshot
+        .volume_snapshot
+        .named_failures
+        .iter()
+        .find(|failure| {
+            machines
                 .iter()
-                .any(|volume| named_volume_name(volume) == Some(&failure.id.name))
-    }) {
+                .any(|machine| machine.machine.id == failure.id.machine_id)
+                && mounted_volumes
+                    .iter()
+                    .any(|volume| named_volume_name(volume) == Some(&failure.id.name))
+        })
+    {
         return Err(PlanError::DockerVolumeUnavailable {
             id: failure.id.clone(),
             message: failure.error.message.clone(),
@@ -748,6 +784,22 @@ fn volume_constraints<'spec>(
         ));
     }
     Ok((mounted_volumes, missing_volumes))
+}
+
+fn machine_inventory_failure(snapshot: &DeploySnapshot, machine_id: MachineId) -> Option<String> {
+    snapshot
+        .volume_snapshot
+        .machine_failures
+        .iter()
+        .find(|failure| failure.machine_id == machine_id)
+        .map(|failure| format!("Docker Volume inventory failed: {}", failure.error.message))
+        .or_else(|| {
+            snapshot
+                .volume_snapshot
+                .omissions
+                .contains(&machine_id)
+                .then(|| "Docker Volume inventory produced no terminal response".into())
+        })
 }
 
 fn no_eligible_shared(

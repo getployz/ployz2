@@ -23,15 +23,16 @@ impl ContainerRuntime {
         machine_id: &MachineId,
         request: CreateVolumeRequest,
     ) -> Result<CreateVolumeReport, Error> {
+        let docker_name = request.name.to_string();
         let id = DockerVolumeId {
             machine_id: *machine_id,
-            name: request.name.clone(),
+            name: request.name,
         };
         decode_volume(
             self.docker
                 .client
                 .create_volume(VolumeCreateRequest {
-                    name: Some(request.name.to_string()),
+                    name: Some(docker_name),
                     driver: Some(request.driver),
                     driver_opts: some_map(request.options),
                     labels: some_map(request.labels),

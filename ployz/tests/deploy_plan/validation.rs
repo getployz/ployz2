@@ -35,7 +35,10 @@ fn global_volume_existing_on_one_machine_is_created_on_the_other() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
-            volume_inventory: volume_inventory(vec![observed_volume(machine_id('1'), "data")]),
+            volume_snapshot: VolumeSnapshot::from_observations(vec![observed_volume(
+                machine_id('1'),
+                "data",
+            )]),
             ..Default::default()
         },
         PlanOptions::default(),
@@ -60,7 +63,7 @@ fn global_named_volume_existing_on_every_machine_is_not_created() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
-            volume_inventory: volume_inventory(vec![
+            volume_snapshot: VolumeSnapshot::from_observations(vec![
                 observed_volume(machine_id('1'), "data"),
                 observed_volume(machine_id('2'), "data"),
             ]),

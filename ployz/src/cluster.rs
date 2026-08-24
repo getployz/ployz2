@@ -30,7 +30,7 @@ use crate::{
         target_request,
     },
     context::{Connection, ConnectionSource, Transport},
-    deploy::DeploySnapshot,
+    deploy::{DeploySnapshot, VolumeSnapshot},
     service::ContainerOperationFailure,
 };
 
@@ -702,13 +702,29 @@ pub(crate) fn snapshot_from_partial(
         failures: container_failures,
         omissions: container_omissions,
     } = containers;
+    let PartialResult {
+        successes,
+        failures: machine_failures,
+        omissions,
+    } = volumes;
+    let mut volume_snapshot = VolumeSnapshot {
+        machine_failures,
+        omissions,
+        ..Default::default()
+    };
+    for success in successes {
+        volume_snapshot.observations.extend(success.value.volumes);
+        volume_snapshot
+            .named_failures
+            .extend(success.value.failures);
+    }
     DeploySnapshot {
         machines,
         containers: container_successes
             .into_iter()
             .flat_map(|success| success.value)
             .collect(),
-        volume_inventory: volumes,
+        volume_snapshot,
         container_failures,
         container_omissions,
         capacity: Some(capacity),

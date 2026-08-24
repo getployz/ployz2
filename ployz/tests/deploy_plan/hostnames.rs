@@ -47,7 +47,7 @@ fn complete_snapshot_rejects_another_qualified_service_already_publishing_the_ho
 fn visible_conflict_rejects_even_when_the_snapshot_is_incomplete() {
     let spec = custom_web();
     let snapshot = DeploySnapshot {
-        volume_inventory: PartialResult {
+        volume_snapshot: VolumeSnapshot {
             omissions: vec![machine_id('1')],
             ..Default::default()
         },
@@ -78,7 +78,7 @@ fn same_qualified_service_redeploy_keeps_the_hostname() {
 fn incomplete_snapshot_without_a_visible_publisher_warns_that_detection_is_observer_relative() {
     for spec in [custom_web(), assigned_web(), chosen_web("api")] {
         let snapshot = DeploySnapshot {
-            volume_inventory: PartialResult {
+            volume_snapshot: VolumeSnapshot {
                 omissions: vec![machine_id('1')],
                 ..Default::default()
             },

@@ -7,7 +7,7 @@ pub(super) use std::{
 pub(super) use ployz::deploy::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, EliminatingConstraint,
     EliminatingConstraints, IngressContext, PlanError, PlanOptions, ReplacementOperation,
-    ServiceAttempt, compare_specs, preview_deploy,
+    ServiceAttempt, VolumeSnapshot, compare_specs, preview_deploy,
 };
 
 pub(super) fn plan_deploy<'a>(
@@ -60,40 +60,13 @@ pub(super) use ployz_core::{
     ContainerPath, ContainerResources, ContainerRuntimeObservation, DeviceMapping,
     DeviceReservation, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, HealthObservation, HostBind, LogDriver, MANAGED_LABEL, Machine,
-    MachineId, MachineName, MachineObservation, MachinePath, MachineSuccess, MachineTarget,
-    ManagementAddress, MembershipObservation, PROJECT_NAME_LABEL, PartialResult, PidMode,
-    Placement, PortPublication, PreDeployHook, ProjectName, PullPolicy, RequestedServiceSpec,
-    ResolvedUpdateConfig, RestartPolicy, RpcError, ServiceContainerSpec, ServiceId, ServiceMode,
-    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
-    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, VolumeInventory, VolumeSource,
-    WireGuardPublicKey,
+    MachineId, MachineName, MachineObservation, MachinePath, MachineTarget, ManagementAddress,
+    MembershipObservation, PROJECT_NAME_LABEL, PidMode, Placement, PortPublication, PreDeployHook,
+    ProjectName, PullPolicy, RequestedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
+    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig, UpdateOrder,
+    VolumeSource, WireGuardPublicKey,
 };
-
-pub(super) fn volume_inventory(
-    volumes: impl IntoIterator<Item = DockerVolume>,
-) -> PartialResult<VolumeInventory, RpcError> {
-    let mut by_machine = BTreeMap::<_, Vec<_>>::new();
-    for volume in volumes {
-        by_machine
-            .entry(volume.id.machine_id)
-            .or_default()
-            .push(volume);
-    }
-    PartialResult {
-        successes: by_machine
-            .into_iter()
-            .map(|(machine_id, volumes)| MachineSuccess {
-                machine_id,
-                value: VolumeInventory {
-                    volumes,
-                    failures: Vec::new(),
-                },
-            })
-            .collect(),
-        failures: Vec::new(),
-        omissions: Vec::new(),
-    }
-}
 pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     RequestedServiceSpec {
         name: ServiceName::parse("api").unwrap(),

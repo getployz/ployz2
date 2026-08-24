@@ -11,15 +11,15 @@ use ployz::{
     compose::parse_normalized,
     deploy::{
         DeployIntent, DeployOperation, DeploySnapshot, EliminatingConstraint, IngressContext,
-        PlanError, PlanOptions, preview_deploy,
+        PlanError, PlanOptions, VolumeSnapshot, preview_deploy,
     },
 };
 use ployz_core::{
     DockerVolumeId, DockerVolumeName, HostBind, HttpProtocol, IngressHostname, MANAGED_LABEL,
-    MachineStorageObservation, MachineSuccess, PROJECT_NAME_LABEL, PartialResult, PortPublication,
-    ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes, RestartPolicy, RpcError,
-    RpcErrorCode, ServiceMode, ServiceName, ServiceVolumeReference, TransportProtocol, UpdateOrder,
-    VolumeInventory, VolumeObservationFailure, VolumeSource,
+    MachineFailure, MachineStorageObservation, PROJECT_NAME_LABEL, PortPublication, ProjectName,
+    ProvisionedVolume, ProvisionedVolumeMaximumBytes, RestartPolicy, RpcError, RpcErrorCode,
+    ServiceMode, ServiceName, ServiceVolumeReference, TransportProtocol, UpdateOrder,
+    VolumeObservationFailure, VolumeSource,
 };
 
 #[path = "compose/support.rs"]
@@ -688,7 +688,7 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![existing.clone(), machine('b', "two")],
-            volume_inventory: volume_inventory(vec![snapshot_volume(
+            volume_snapshot: VolumeSnapshot::from_observations(vec![snapshot_volume(
                 existing.machine.id,
                 "shared",
             )]),
@@ -743,26 +743,19 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
-            volume_inventory: PartialResult {
-                successes: vec![MachineSuccess {
-                    machine_id: machine.machine.id,
-                    value: VolumeInventory {
-                        volumes: Vec::new(),
-                        failures: vec![VolumeObservationFailure {
-                            id: DockerVolumeId {
-                                machine_id: machine.machine.id,
-                                name: DockerVolumeName::parse("ext-vol").unwrap(),
-                            },
-                            error: RpcError {
-                                code: RpcErrorCode::Unavailable,
-                                message: "inspect failed".into(),
-                                details: Default::default(),
-                            },
-                        }],
+            volume_snapshot: VolumeSnapshot {
+                named_failures: vec![VolumeObservationFailure {
+                    id: DockerVolumeId {
+                        machine_id: machine.machine.id,
+                        name: DockerVolumeName::parse("ext-vol").unwrap(),
+                    },
+                    error: RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message: "inspect failed".into(),
+                        details: Default::default(),
                     },
                 }],
-                failures: Vec::new(),
-                omissions: Vec::new(),
+                ..Default::default()
             },
             ..Default::default()
         },
@@ -771,6 +764,66 @@ volumes:
 
     assert!(matches!(error, PlanError::DockerVolumeUnavailable { .. }));
     assert!(error.to_string().contains("inspect failed"), "{error}");
+}
+
+#[test]
+fn failed_external_volume_inventory_is_not_reported_as_absent() {
+    let project = parse_normalized(
+        "services: {app: {image: app, volumes: [{type: volume, source: ext-vol, target: /data}]}}\nvolumes: {ext-vol: {external: true}}\n",
+        ".",
+    )
+    .unwrap();
+    let machine = machine('a', "one");
+    let error = plan_compose(
+        &project,
+        &DeploySnapshot {
+            machines: vec![machine.clone()],
+            volume_snapshot: VolumeSnapshot {
+                machine_failures: vec![MachineFailure {
+                    machine_id: machine.machine.id,
+                    error: RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message: "list failed".into(),
+                        details: Default::default(),
+                    },
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, PlanError::DockerVolumeUnavailable { .. }));
+    assert!(error.to_string().contains("list failed"), "{error}");
+}
+
+#[test]
+fn omitted_external_volume_inventory_is_not_reported_as_absent() {
+    let project = parse_normalized(
+        "services: {app: {image: app, volumes: [{type: volume, source: ext-vol, target: /data}]}}\nvolumes: {ext-vol: {external: true}}\n",
+        ".",
+    )
+    .unwrap();
+    let machine = machine('a', "one");
+    let error = plan_compose(
+        &project,
+        &DeploySnapshot {
+            machines: vec![machine.clone()],
+            volume_snapshot: VolumeSnapshot {
+                omissions: vec![machine.machine.id],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, PlanError::DockerVolumeUnavailable { .. }));
+    assert!(
+        error.to_string().contains("no terminal response"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -813,7 +866,7 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![existing.clone(), machine('b', "two")],
-            volume_inventory: volume_inventory(vec![snapshot_volume(
+            volume_snapshot: VolumeSnapshot::from_observations(vec![snapshot_volume(
                 existing.machine.id,
                 "ext-vol",
             )]),
@@ -901,7 +954,10 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![first.clone(), second.clone()],
-            volume_inventory: volume_inventory(vec![snapshot_volume(first.machine.id, "shared")]),
+            volume_snapshot: VolumeSnapshot::from_observations(vec![snapshot_volume(
+                first.machine.id,
+                "shared",
+            )]),
             ..Default::default()
         },
     )
@@ -1558,7 +1614,10 @@ volumes: {data: {}}
     let without_volume = parse_normalized("services: {app: {image: app}}\n", ".").unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine.clone()],
-        volume_inventory: volume_inventory(vec![owned_volume(machine.machine.id, "data")]),
+        volume_snapshot: VolumeSnapshot::from_observations(vec![owned_volume(
+            machine.machine.id,
+            "data",
+        )]),
         ..Default::default()
     };
     let plan = plan_compose(&without_volume, &snapshot).unwrap();
@@ -1596,7 +1655,10 @@ volumes: {data: {}}
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
-            volume_inventory: volume_inventory(vec![snapshot_volume(machine.machine.id, "data")]),
+            volume_snapshot: VolumeSnapshot::from_observations(vec![snapshot_volume(
+                machine.machine.id,
+                "data",
+            )]),
             ..Default::default()
         },
     )
@@ -1696,7 +1758,7 @@ volumes: {data: {name: demo_data}}
         panic!("unexpected shared Volume: {volume:?}")
     };
     let mut existing_snapshot = snapshot.clone();
-    existing_snapshot.volume_inventory = volume_inventory(
+    existing_snapshot.volume_snapshot = VolumeSnapshot::from_observations(
         snapshot
             .machines
             .iter()
@@ -1777,7 +1839,10 @@ volumes:
         &constrained,
         &DeploySnapshot {
             machines: snapshot.machines.clone(),
-            volume_inventory: volume_inventory(vec![observed_volume(existing_machine, "existing")]),
+            volume_snapshot: VolumeSnapshot::from_observations(vec![observed_volume(
+                existing_machine,
+                "existing",
+            )]),
             ..Default::default()
         },
     )
