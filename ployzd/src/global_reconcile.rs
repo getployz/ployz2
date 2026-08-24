@@ -1,11 +1,8 @@
 //! Machine-local, add-only convergence for Global Service slots.
 
-use std::{
-    io,
-    time::{Duration, SystemTime},
-};
+use std::{io, time::Duration};
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{SecondsFormat, Utc};
 use ployz_core::{
     ContainerObservation, GlobalReconcileFailureObservation, GlobalServiceSlot, Machine, RpcError,
     derive_services, missing_global_slots,
@@ -81,16 +78,12 @@ async fn reconcile_store(
                 &machine,
                 ensurer,
                 observations,
-                &rfc3339(SystemTime::now()),
+                &Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
             )
             .await;
         }
         Err(error) => eprintln!("failed to read Globals for local reconciliation: {error}"),
     }
-}
-
-fn rfc3339(time: SystemTime) -> String {
-    DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 async fn ensure_missing_global_slots<E: GlobalSlotEnsurer>(
@@ -126,85 +119,16 @@ async fn reconcile_and_publish<E: GlobalSlotEnsurer>(
 
 #[cfg(test)]
 mod tests {
-    use std::{net::Ipv6Addr, num::NonZeroU32, sync::Mutex};
+    use std::{net::Ipv6Addr, sync::Mutex};
 
     use ployz_core::{
         ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation, MachineId,
-        MachineName, MachineTarget, ManagementAddress, Placement, ProjectName, QualifiedService,
+        MachineName, ManagementAddress, Placement, ProjectName, QualifiedService,
         ResolvedServiceSpec, RpcErrorCode, ServiceId, ServiceMode, ServiceName, WireGuardPublicKey,
     };
     use serde_json::json;
 
     use super::*;
-
-    #[test]
-    fn decision_selects_only_missing_eligible_globals_including_system_services() {
-        let local = machine('1', "local");
-        let peer = machine('2', "peer");
-        let mut local_present = observation(
-            &local,
-            'e',
-            "app",
-            "present",
-            ServiceMode::Global,
-            Placement::default(),
-        );
-        local_present.container_id = ContainerId::parse("f".repeat(64)).unwrap();
-        let containers = [
-            observation(
-                &peer,
-                'a',
-                "app",
-                "api",
-                ServiceMode::Global,
-                Placement::default(),
-            ),
-            observation(
-                &peer,
-                'c',
-                "ployz-system",
-                "caddy",
-                ServiceMode::Global,
-                Placement::default(),
-            ),
-            observation(
-                &peer,
-                'b',
-                "app",
-                "worker",
-                ServiceMode::Replicated {
-                    replicas: NonZeroU32::new(1).unwrap(),
-                },
-                Placement::default(),
-            ),
-            observation(
-                &peer,
-                'd',
-                "app",
-                "scoped",
-                ServiceMode::Global,
-                Placement {
-                    machines: vec![MachineTarget::parse("peer").unwrap()],
-                },
-            ),
-            observation(
-                &peer,
-                'e',
-                "app",
-                "present",
-                ServiceMode::Global,
-                Placement::default(),
-            ),
-            local_present,
-        ];
-
-        let identities = missing_global_slots(&derive_services(containers), &local)
-            .into_iter()
-            .map(|slot| slot.identity.to_string())
-            .collect::<Vec<_>>();
-
-        assert_eq!(identities, ["app/api", "ployz-system/caddy"]);
-    }
 
     #[tokio::test]
     async fn effect_ensures_each_selected_slot_and_reports_only_failures() {

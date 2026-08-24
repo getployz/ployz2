@@ -123,17 +123,6 @@ pub fn plan_global_catch_up(
         .collect()
 }
 
-fn eligible_slot(
-    service: &ServiceObservation,
-    this_machine: &Machine,
-    skip_caddy: bool,
-) -> Option<GlobalCatchUpSlot> {
-    if skip_caddy && service.identity == QualifiedService::system_caddy() {
-        return None;
-    }
-    eligible_global_slot(service, this_machine)
-}
-
 /// Copy every observed eligible Global onto `this_machine` only.
 ///
 /// # Errors
@@ -152,7 +141,8 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let services = live.services();
     let initially_eligible = services
         .iter()
-        .filter_map(|service| eligible_slot(service, this_machine, skip_caddy))
+        .filter_map(|service| eligible_global_slot(service, this_machine))
+        .filter(|slot| !skip_caddy || slot.identity != QualifiedService::system_caddy())
         .map(|slot| (slot.identity.clone(), slot))
         .collect::<BTreeMap<_, _>>();
     let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
