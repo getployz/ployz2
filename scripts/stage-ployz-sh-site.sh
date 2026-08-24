@@ -9,7 +9,7 @@ channels_dir=${PLOYZ_SH_CHANNELS_DIR:-}
 rm -rf "$out_dir"
 mkdir -p "$out_dir"
 
-install -m 0644 "$ROOT/install.sh" "$out_dir/index.html"
+install -m 0644 "$ROOT/site/index.html" "$out_dir/index.html"
 install -m 0644 "$ROOT/install.sh" "$out_dir/install.sh"
 install -m 0644 "$ROOT/site/_headers" "$out_dir/_headers"
 
