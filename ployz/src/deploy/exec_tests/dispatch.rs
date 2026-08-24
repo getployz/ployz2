@@ -60,7 +60,7 @@ async fn dispatches_the_complete_algebra() {
     ];
     let plan = operations.clone();
     let client = Scripted::new(vec![
-        ok(Call::CreateVolume(first)),
+        ok(create_volume_call(first, "local", None)),
         created(
             Call::Create(first, ContainerKind::ServiceContainer),
             &new_run,
@@ -104,21 +104,58 @@ async fn dispatches_the_complete_algebra() {
 }
 
 #[tokio::test]
-async fn provisioned_volume_execution_fails_closed_without_machine_io() {
+async fn provisioned_volume_executes_before_dependent_operations() {
     let machine_id = machine('1');
-    let ordinary = DeployOperation::CreateVolume {
-        machine_id,
-        volume: volume(),
-    };
     let provisioned = DeployOperation::CreateProvisionedVolume {
         machine_id,
         volume: volume(),
-        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1).unwrap()),
+        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1_073_741_824).unwrap()),
+        placement: ProvisionedVolumePlacement::ExplicitMachine,
     };
-    let client = Scripted::new(vec![]);
+    let dependent = run(&machine_id, spec(None, None, None), true);
+    let created_id = container('a');
+    let client = Scripted::new(vec![
+        ok(create_volume_call(machine_id, "ployz", Some("1073741824b"))),
+        created(
+            Call::Create(machine_id, ContainerKind::ServiceContainer),
+            &created_id,
+        ),
+        ok(Call::Start(machine_id, created_id)),
+    ]);
 
     let outcome = execute_with(
-        &[ordinary.clone(), provisioned.clone()],
+        &[provisioned.clone(), dependent.clone()],
+        &client,
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        DeployOutcome::Success {
+            completed: vec![provisioned, dependent],
+        }
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn provisioned_volume_race_with_plain_volume_stops_before_container_creation() {
+    let machine_id = machine('1');
+    let provisioned = DeployOperation::CreateProvisionedVolume {
+        machine_id,
+        volume: volume(),
+        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1_073_741_824).unwrap()),
+        placement: ProvisionedVolumePlacement::ExplicitMachine,
+    };
+    let dependent = run(&machine_id, spec(None, None, None), true);
+    let client = Scripted::new(vec![Step(
+        create_volume_call(machine_id, "ployz", Some("1073741824b")),
+        volume_reply(machine_id, "local", None),
+    )]);
+
+    let outcome = execute_with(
+        &[provisioned.clone(), dependent.clone()],
         &client,
         &CancellationToken::new(),
     )
@@ -129,17 +166,88 @@ async fn provisioned_volume_execution_fails_closed_without_machine_io() {
         DeployOutcome::Failed {
             completed,
             failed: FailedOperation::Operation {
-                operation: failed,
-                error: ExecutionError::Machine {
-                    action: MachineAction::CreateVolume,
-                    error: RpcError {
-                        code: RpcErrorCode::Unsupported,
-                        ..
-                    },
-                },
+                operation,
+                error: ExecutionError::Machine { error, .. },
             },
             unexecuted,
-        } if completed.is_empty() && failed == provisioned && unexecuted == vec![ordinary]
+        } if completed.is_empty()
+            && operation == provisioned
+            && error.message.contains("will not be replaced or converted")
+            && unexecuted == vec![dependent]
+    ));
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn automatic_provisioned_volume_execution_remains_deferred() {
+    let machine_id = machine('1');
+    let ordinary = DeployOperation::CreateVolume {
+        machine_id,
+        volume: volume(),
+    };
+    let automatic = DeployOperation::CreateProvisionedVolume {
+        machine_id,
+        volume: volume(),
+        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1).unwrap()),
+        placement: ProvisionedVolumePlacement::Automatic,
+    };
+    let client = Scripted::new(Vec::new());
+
+    let outcome = execute_with(
+        &[ordinary.clone(), automatic.clone()],
+        &client,
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert!(matches!(
+        outcome,
+        DeployOutcome::Failed {
+            completed,
+            failed: FailedOperation::Operation {
+                operation,
+                error: ExecutionError::Machine { error, .. },
+            },
+            unexecuted,
+        } if completed.is_empty()
+            && operation == automatic
+            && error.code == RpcErrorCode::Unsupported
+            && unexecuted == vec![ordinary]
+    ));
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn unnamed_volume_creation_fails_before_machine_io() {
+    let machine_id = machine('1');
+    let mut unnamed = volume();
+    unnamed.source = VolumeSource::Tmpfs {
+        size_bytes: None,
+        mode: None,
+        options: Vec::new(),
+    };
+    let operation = DeployOperation::CreateVolume {
+        machine_id,
+        volume: unnamed,
+    };
+    let client = Scripted::new(Vec::new());
+
+    let outcome = execute_with(
+        std::slice::from_ref(&operation),
+        &client,
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert!(matches!(
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                operation: failed,
+                error: ExecutionError::Machine { error, .. },
+            },
+            ..
+        } if failed == operation && error.code == RpcErrorCode::InvalidArgument
     ));
     client.assert_done();
 }

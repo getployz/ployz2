@@ -292,6 +292,36 @@ pub enum PlanError {
         /// Service-local Volume Reference with a non-Volume source.
         reference: ServiceVolumeReference,
     },
+    /// The selected Machine has no usable ZFS storage preparation.
+    #[error(
+        "Machine '{machine}' requires storage preparation before deploying a Provisioned Volume; enroll it with --storage zfs"
+    )]
+    ProvisionedVolumeStorageRequired {
+        /// Explicitly selected stateless Machine.
+        machine: MachineName,
+    },
+    /// An ordinary Docker Volume already owns the requested machine-local name.
+    #[error(
+        "Plain Docker Volume {name} already exists on Machine '{machine}' and will not be replaced or converted to a Provisioned Volume"
+    )]
+    ExistingPlainVolume {
+        /// Existing machine-local Docker Volume name.
+        name: DockerVolumeName,
+        /// Machine holding the existing Volume.
+        machine: MachineName,
+    },
+    /// A Ployz-driver Volume exists with a different bound or malformed options.
+    #[error(
+        "Provisioned Volume {name} on Machine '{machine}' does not have the requested {maximum_bytes}-byte bound and will not be resized or replaced"
+    )]
+    ExistingProvisionedVolumeMismatch {
+        /// Existing machine-local Docker Volume name.
+        name: DockerVolumeName,
+        /// Machine holding the existing Volume.
+        machine: MachineName,
+        /// Bound requested by this Deploy Intent.
+        maximum_bytes: ProvisionedVolumeMaximumBytes,
+    },
     #[error("plan service '{service}': {source}")]
     Service {
         service: String,

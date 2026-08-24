@@ -1,11 +1,14 @@
 use std::{collections::BTreeMap, future::Future, num::NonZeroU64};
 
 use ployz_core::{
-    DockerVolume, DockerVolumeId, DockerVolumeName, MachineFailure, MachineId, MachineName,
-    MachineObservation, MachineSuccess, PartialResult, RpcError, RpcErrorCode,
+    CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName, MachineFailure, MachineId,
+    MachineName, MachineObservation, MachineSuccess, PartialResult, ProvisionedVolumeMaximumBytes,
+    RpcError, RpcErrorCode, ServiceVolume, VolumeSource,
 };
 use serde::Serialize;
 use thiserror::Error;
+
+use crate::deploy::ObservedDockerVolume;
 
 /// A positive Provisioned Volume bound accepted by Docker's Ployz driver.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +50,15 @@ impl ProvisionedVolumeSize {
         })
     }
 
+    /// Builds the exact internal Docker-driver form of an SDK byte bound.
+    #[must_use]
+    pub(crate) fn from_maximum_bytes(maximum_bytes: ProvisionedVolumeMaximumBytes) -> Self {
+        Self {
+            option: format!("{}b", maximum_bytes.get()),
+            bytes: maximum_bytes.get(),
+        }
+    }
+
     #[must_use]
     pub(crate) fn as_str(&self) -> &str {
         &self.option
@@ -59,14 +71,75 @@ impl ProvisionedVolumeSize {
 
     #[must_use]
     pub(crate) fn matches(&self, volume: &DockerVolume) -> bool {
-        volume.driver == "ployz"
-            && volume.options.len() == 1
-            && volume
-                .options
-                .get("size")
-                .and_then(|size| Self::parse(size).ok())
-                .is_some_and(|size| size.bytes == self.bytes)
+        self.matches_shape(&volume.driver, &volume.options)
     }
+
+    /// Whether a Deploy Snapshot Volume has this Ployz-driver bound.
+    #[must_use]
+    pub(crate) fn matches_observed(&self, volume: &ObservedDockerVolume) -> bool {
+        self.matches_shape(&volume.driver, &volume.options)
+    }
+
+    fn matches_shape(&self, driver: &str, options: &BTreeMap<String, String>) -> bool {
+        driver == "ployz"
+            && options.len() == 1
+            && options.get("size").and_then(|size| parse_driver_size(size)) == Some(self.bytes)
+    }
+}
+
+/// Builds Docker's named-Volume creation request from a Service mount.
+///
+/// # Errors
+///
+/// Returns `InvalidArgument` when the mount does not use a named Docker Volume.
+pub(crate) fn create_volume_request(
+    volume: &ServiceVolume,
+    provisioned: Option<&ProvisionedVolumeSize>,
+) -> Result<CreateVolumeRequest, RpcError> {
+    let VolumeSource::Named {
+        name,
+        driver,
+        labels,
+        ..
+    } = &volume.source
+    else {
+        return Err(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: "volume creation requires a named Docker Volume".into(),
+            details: serde_json::Value::Null,
+        });
+    };
+    let mut request = CreateVolumeRequest {
+        name: name.clone(),
+        driver: driver
+            .as_ref()
+            .map_or_else(|| "local".into(), |driver| driver.name.clone()),
+        options: driver
+            .as_ref()
+            .map_or_else(Default::default, |driver| driver.options.clone()),
+        labels: labels.clone(),
+    };
+    if let Some(size) = provisioned {
+        request.driver = "ployz".into();
+        request.options = BTreeMap::from([("size".into(), size.as_str().into())]);
+    }
+    Ok(request)
+}
+
+fn parse_driver_size(value: &str) -> Option<u64> {
+    let (amount, multiplier) = match value.as_bytes().last()? {
+        b'b' => (&value[..value.len() - 1], 1),
+        b'k' => (&value[..value.len() - 1], 1024_u64),
+        b'm' => (&value[..value.len() - 1], 1024_u64.pow(2)),
+        b'g' => (&value[..value.len() - 1], 1024_u64.pow(3)),
+        b't' => (&value[..value.len() - 1], 1024_u64.pow(4)),
+        _ => return None,
+    };
+    amount
+        .parse::<NonZeroU64>()
+        .ok()?
+        .get()
+        .checked_mul(multiplier)
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

@@ -62,7 +62,7 @@ impl Client {
     /// Returns when snapshot gathering or planning fails.
     pub async fn preview(&mut self, intent: DeployIntent) -> Result<DeployPreview, DeployError> {
         let machines = self.machines().await?;
-        let (snapshot, warnings) = gather_snapshot(self, machines).await?;
+        let (snapshot, warnings) = gather_deploy_snapshot(self, machines, &intent).await?;
         preview_gathered(self, snapshot, warnings, &intent).await
     }
 
@@ -282,11 +282,11 @@ pub(super) async fn plan_project(
     hints: ReconciliationHints,
 ) -> Result<DeployPreview, Failure> {
     project.resolve_secrets()?;
-    let (snapshot, warnings) = gather_snapshot(client, machines).await?;
-    super::reject_missing_external_volumes(project, &snapshot)?;
     let intent = super::compose_deploy_intent(project, project_name.clone(), options)
         .with_requested_profiles(hints.requested_profiles)
         .with_compose_refusal(hints.compose_refusal);
+    let (snapshot, warnings) = gather_deploy_snapshot(client, machines, &intent).await?;
+    super::reject_missing_external_volumes(project, &snapshot)?;
     Ok(preview_gathered(client, snapshot, warnings, &intent).await?)
 }
 
@@ -404,6 +404,22 @@ async fn gather_snapshot(
         &snapshot.volume_omissions,
     ));
     Ok((snapshot, warnings))
+}
+
+async fn gather_deploy_snapshot(
+    client: &mut Client,
+    mut machines: Vec<MachineObservation>,
+    intent: &DeployIntent,
+) -> Result<(DeploySnapshot, Vec<DeployWarning>), DeployError> {
+    if intent.provisioned_volumes.iter().any(|provisioned| {
+        intent
+            .target
+            .iter()
+            .any(|spec| spec.name == provisioned.service && !spec.placement.machines.is_empty())
+    }) {
+        client.observe_machine_storage(&mut machines).await;
+    }
+    gather_snapshot(client, machines).await
 }
 
 fn observation_warnings(

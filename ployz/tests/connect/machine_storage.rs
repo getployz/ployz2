@@ -1,8 +1,10 @@
-use std::sync::atomic::Ordering;
+use std::{num::NonZeroU64, sync::atomic::Ordering};
 
+use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz_core::{
     CapabilityName, ContractDescription, MACHINE_STORAGE_OBSERVATION_CAPABILITY, MachineId,
-    PROTOCOL_MAJOR,
+    PROTOCOL_MAJOR, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
+    RequestedServiceSpec, ServiceName, ServiceVolumeReference,
 };
 use serde_json::Value;
 
@@ -56,5 +58,41 @@ async fn machine_ls_observes_storage_only_when_the_target_advertises_it() {
         Some("pool")
     );
     assert_eq!(service.inspect_calls.load(Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn deploy_preview_observes_storage_before_refusing_a_stateless_explicit_target() {
+    let mut service = storage_capable_service();
+    service.storage = ployz_core::MachineStorageObservation::Stateless;
+    let (mut client, server, _) = connected_client(service.clone()).await;
+    let requested: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
+        "name": "api",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "busybox", "pull_policy": "always" },
+        "placement": { "machines": ["one"] },
+        "volumes": [{
+            "reference": "data",
+            "source": { "kind": "named", "name": "data" }
+        }],
+        "mounts": [{ "volume": "data", "target": "/data" }]
+    }))
+    .unwrap();
+    let mut intent = DeployIntent::apply_one(
+        ProjectName::parse("app").unwrap(),
+        requested,
+        PlanOptions::default(),
+    );
+    intent.provisioned_volumes = vec![ProvisionedVolume {
+        service: ServiceName::parse("api").unwrap(),
+        reference: ServiceVolumeReference::parse("data").unwrap(),
+        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1024).unwrap()),
+    }];
+
+    let error = client.preview(intent).await.unwrap_err().to_string();
+
+    assert!(error.contains("storage preparation"), "{error}");
+    assert!(error.contains("--storage zfs"), "{error}");
+    assert_eq!(service.inspect_calls.load(Ordering::SeqCst), 2);
     server.abort();
 }

@@ -356,6 +356,16 @@ pub struct ReplacementOperation {
     pub skip_health_monitor: bool,
 }
 
+/// Whether a Provisioned Volume has a Machine selected by the caller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvisionedVolumePlacement {
+    /// One explicit Machine Target resolved to this Machine.
+    ExplicitMachine,
+    /// Machine selection remains the automatic-placement work tracked by #546.
+    Automatic,
+}
+
 /// One step in a Deploy Plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -370,6 +380,7 @@ pub enum DeployOperation {
         machine_id: MachineId,
         volume: ServiceVolume,
         maximum_bytes: ProvisionedVolumeMaximumBytes,
+        placement: ProvisionedVolumePlacement,
     },
     /// Wait for every observed Service Container of `dependency` before starting `dependent`.
     WaitHealthy {

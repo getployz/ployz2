@@ -180,6 +180,7 @@
   "create_provisioned_volume_operation": {
     "machine_id": "0123456789abcdef0123456789abcdef",
     "maximum_bytes": "1073741824",
+    "placement": "explicit_machine",
     "type": "create_provisioned_volume",
     "volume": {
       "reference": "data",

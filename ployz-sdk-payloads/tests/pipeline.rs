@@ -512,7 +512,7 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("type: \"run_container\""));
     assert!(dts.contains("type: \"wait_healthy\""));
     assert!(dts.contains(
-        "type: \"create_provisioned_volume\"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes"
+        "type: \"create_provisioned_volume\"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes; placement: ProvisionedVolumePlacement"
     ));
     assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
     assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));
