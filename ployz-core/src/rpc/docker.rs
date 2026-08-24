@@ -55,6 +55,11 @@ pub enum CreateVolumeReport {
 
 impl CreateVolumeReport {
     /// Return the verified observation or the created identity and verification failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the created identity and verification error when creation succeeded but
+    /// its follow-up observation failed.
     #[expect(
         clippy::result_large_err,
         reason = "both outcomes are public wire values; boxing would leak allocation into the contract"
@@ -64,6 +69,36 @@ impl CreateVolumeReport {
             Self::Verified { volume } => Ok(volume),
             Self::Unverified { id, error } => Err(VolumeObservationFailure { id, error }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::*;
+    use crate::{MachineId, RpcErrorCode};
+
+    #[test]
+    fn unverified_create_returns_named_observation_failure() {
+        let id = DockerVolumeId {
+            machine_id: MachineId::random(),
+            name: DockerVolumeName::parse("data").unwrap(),
+        };
+        let error = RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "inspect failed".into(),
+            details: Value::Null,
+        };
+
+        assert_eq!(
+            CreateVolumeReport::Unverified {
+                id: id.clone(),
+                error: error.clone(),
+            }
+            .into_observation(),
+            Err(VolumeObservationFailure { id, error })
+        );
     }
 }
 

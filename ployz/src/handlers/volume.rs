@@ -5,12 +5,10 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    CreateVolumeRequest, DockerVolume, DockerVolumeName, DockerVolumeStorageObservation,
-    FanoutSelector, InspectVolumeRequest, ListMachinesRequest, MachineFailure, MachineObservation,
-    MachineSuccess, MachineTarget, NameMatches, PartialResult, RemoveVolumeRequest, RpcError,
-    RpcErrorCode, VolumeInventory, op, resolve_machine_selectors,
+    CreateVolumeRequest, DockerVolumeName, DockerVolumeStorageObservation, FanoutSelector,
+    ListMachinesRequest, MachineObservation, MachineTarget, NameMatches, PartialResult,
+    RemoveVolumeRequest, RpcError, RpcErrorCode, VolumeInventory, op, resolve_machine_selectors,
 };
-use tokio::task::JoinSet;
 
 use crate::{
     connect::{Client, TARGET_RPC_TIMEOUT},
@@ -153,7 +151,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     .machines,
                 &selectors,
             )?;
-            let result = inspect_on_machines(client, &machines, &name).await;
+            let result = client.inspect_volumes(&machines, &name).await;
             if result
                 .failures
                 .iter()
@@ -291,51 +289,6 @@ async fn discover(
     )?;
     let result = client.list_volumes(&machines).await;
     Ok((machine_volumes(&machines, &result), result))
-}
-
-async fn inspect_on_machines(
-    client: &Client,
-    machines: &[MachineObservation],
-    name: &DockerVolumeName,
-) -> PartialResult<DockerVolume, RpcError> {
-    let mut requests = JoinSet::new();
-    let mut omissions = Vec::new();
-    for (index, machine) in machines.iter().enumerate() {
-        if !machine.membership.invites_rpc() {
-            omissions.push(machine.machine.id);
-            continue;
-        }
-        let client = client.clone();
-        let machine_id = machine.machine.id;
-        let name = name.clone();
-        requests.spawn(async move {
-            let result = client
-                .invoke::<op::InspectVolume>(
-                    InspectVolumeRequest { name },
-                    &MachineTarget::from(&machine_id),
-                    Some(TARGET_RPC_TIMEOUT),
-                )
-                .await;
-            (index, machine_id, result)
-        });
-    }
-    let mut outcomes = Vec::with_capacity(requests.len());
-    while let Some(outcome) = requests.join_next().await {
-        outcomes.push(outcome.expect("Volume inspection task does not panic"));
-    }
-    outcomes.sort_by_key(|(index, _, _)| *index);
-    let mut result = PartialResult {
-        successes: Vec::new(),
-        failures: Vec::new(),
-        omissions,
-    };
-    for (_, machine_id, outcome) in outcomes {
-        match outcome {
-            Ok(value) => result.successes.push(MachineSuccess { machine_id, value }),
-            Err(error) => result.failures.push(MachineFailure { machine_id, error }),
-        }
-    }
-    result
 }
 
 fn selected_machines(

@@ -65,8 +65,7 @@ impl VolumePins {
         snapshot: &'pins DeploySnapshot,
     ) -> impl Iterator<Item = VolumePresence<'pins>> + 'pins {
         snapshot
-            .volumes
-            .iter()
+            .volumes()
             .map(|observed| VolumePresence {
                 machine_id: observed.id.machine_id,
                 name: &observed.id.name,
@@ -254,7 +253,7 @@ impl VolumePins {
         }
         for (name, maximum_bytes) in self.provisioned.volumes_for(spec) {
             for machine in machines {
-                let Some(existing) = snapshot.volumes.iter().find(|existing| {
+                let Some(existing) = snapshot.volumes().find(|existing| {
                     existing.id.machine_id == machine.machine.id && existing.id.name == *name
                 }) else {
                     continue;
@@ -320,7 +319,7 @@ pub(super) fn preserved_owned_volumes(
 ) -> Vec<PreservedVolume> {
     let declared = declared_physical_names(target);
     let mut preserved = Vec::new();
-    for volume in &snapshot.volumes {
+    for volume in snapshot.volumes() {
         if owned_volume_project(&volume.labels).as_ref() != Some(project_name) {
             continue;
         }
@@ -698,7 +697,7 @@ fn volume_constraints<'spec>(
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
     let mounted_volumes = mounted_named_volumes(&spec.volume_graph)?;
-    if let Some(failure) = snapshot.volume_observation_failures.iter().find(|failure| {
+    if let Some(failure) = snapshot.volume_observation_failures().find(|failure| {
         machines
             .iter()
             .any(|machine| machine.machine.id == failure.id.machine_id)

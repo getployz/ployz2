@@ -23,8 +23,8 @@ use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, HEALTHCHECK_DISABLE_SENTINEL,
     HealthObservation, HealthcheckCommand, HealthcheckSpec, ImageSummary, MachineId, MachineImages,
-    MachineTelemetry, ProjectName, QualifiedService, RpcErrorCode, ServiceId, ServiceName,
-    ValueError,
+    MachineTelemetry, ProjectName, QualifiedService, RpcError, RpcErrorCode, ServiceId,
+    ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -630,6 +630,16 @@ impl Error {
             | Self::Clock(_)
             | Self::PeerPull(_)
             | Self::InvalidVolumeStatus(_) => RpcErrorCode::Internal,
+        }
+    }
+}
+
+impl From<&Error> for RpcError {
+    fn from(error: &Error) -> Self {
+        Self {
+            code: error.rpc_code(),
+            message: error.to_string(),
+            details: serde_json::Value::Null,
         }
     }
 }

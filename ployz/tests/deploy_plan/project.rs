@@ -12,10 +12,10 @@ fn project_removal_deletes_visible_services_and_preserves_volumes() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![container('b', '1', &spec, &service_id('a'))],
-        volumes: vec![
+        volume_inventory: volume_inventory(vec![
             owned_volume(machine_id('1'), "data"),
             observed_volume(machine_id('1'), "orphan"),
-        ],
+        ]),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();
@@ -52,8 +52,11 @@ fn incomplete_snapshot_refuses_removal_and_does_not_prune() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![container('b', '1', &spec, &service_id('a'))],
-        volumes: vec![owned_volume(machine_id('1'), "data")],
-        volume_omissions: vec![machine_id('1')],
+        volume_inventory: PartialResult {
+            successes: volume_inventory(vec![owned_volume(machine_id('1'), "data")]).successes,
+            omissions: vec![machine_id('1')],
+            failures: Vec::new(),
+        },
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
@@ -70,7 +73,10 @@ fn incomplete_snapshot_refuses_removal_and_does_not_prune() {
 fn incomplete_empty_view_still_refuses() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volume_omissions: vec![machine_id('1')],
+        volume_inventory: PartialResult {
+            omissions: vec![machine_id('1')],
+            ..Default::default()
+        },
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();
@@ -85,7 +91,7 @@ fn destroying_volumes_emits_remove_volume_only_when_complete() {
     let volume = owned_volume(machine_id('1'), "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volumes: vec![volume.clone()],
+        volume_inventory: volume_inventory(vec![volume.clone()]),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
@@ -101,7 +107,7 @@ fn destroying_volumes_emits_remove_volume_only_when_complete() {
 fn unlabeled_volumes_are_never_assigned_or_removed() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volumes: vec![observed_volume(machine_id('1'), "orphan")],
+        volume_inventory: volume_inventory(vec![observed_volume(machine_id('1'), "orphan")]),
         ..Default::default()
     };
     for fate in [VolumeFate::Preserve, VolumeFate::Destroy] {
@@ -123,7 +129,7 @@ fn unlabeled_volumes_are_never_assigned_or_removed() {
 fn volume_only_project_still_plans_preservation() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volumes: vec![owned_volume(machine_id('1'), "data")],
+        volume_inventory: volume_inventory(vec![owned_volume(machine_id('1'), "data")]),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();
@@ -147,7 +153,10 @@ fn other_project_resources_are_left_alone() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![container('b', '1', &spec, &service_id('a')), other],
-        volumes: vec![owned_volume(machine_id('1'), "keep"), other_volume],
+        volume_inventory: volume_inventory(vec![
+            owned_volume(machine_id('1'), "keep"),
+            other_volume,
+        ]),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
@@ -193,7 +202,7 @@ fn planner_does_not_refuse_reserved_names() {
 fn preserving_volumes_is_empty_data_loss() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volumes: vec![owned_volume(machine_id('1'), "data")],
+        volume_inventory: volume_inventory(vec![owned_volume(machine_id('1'), "data")]),
         ..Default::default()
     };
     assert_eq!(
@@ -209,10 +218,10 @@ fn preserving_volumes_is_empty_data_loss() {
 fn destroying_volumes_names_owned_docker_volumes_only() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volumes: vec![
+        volume_inventory: volume_inventory(vec![
             owned_volume(machine_id('1'), "data"),
             observed_volume(machine_id('1'), "orphan"),
-        ],
+        ]),
         ..Default::default()
     };
     assert_eq!(
@@ -233,7 +242,7 @@ fn plan_deploy_never_emits_remove_volume() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            volumes: vec![owned_volume(machine_id('1'), "data")],
+            volume_inventory: volume_inventory(vec![owned_volume(machine_id('1'), "data")]),
             ..Default::default()
         },
         PlanOptions::default(),

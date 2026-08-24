@@ -61,7 +61,7 @@ fn unknown_machine_excluded_by_volume_does_not_make_capacity_unknown() {
             [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "full-volume-host"), machine('2', "unknown")],
-                volumes: vec![observed_volume(machine_id('1'), "data")],
+                volume_inventory: volume_inventory(vec![observed_volume(machine_id('1'), "data")]),
                 capacity: capacity([('1', 0)]),
                 ..Default::default()
             },

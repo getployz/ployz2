@@ -6,9 +6,9 @@ use std::{
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId,
-    MachineName, MachineObservation, MachineTarget, ProjectName, ProvisionedVolumeMaximumBytes,
-    QualifiedService, RpcError, ServiceName, ServiceObservation, ServiceVolumeReference,
-    VolumeObservationFailure, derive_services,
+    MachineName, MachineObservation, MachineTarget, PartialResult, ProjectName,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName, ServiceObservation,
+    ServiceVolumeReference, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
@@ -56,23 +56,41 @@ fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
 pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
     pub containers: Vec<ContainerObservation>,
-    pub volumes: Vec<DockerVolume>,
-    /// Named Docker Volumes confirmed present without current detail.
-    pub volume_observation_failures: Vec<VolumeObservationFailure>,
+    /// Successful, failed, and omitted Docker Volume observations by Machine.
+    pub volume_inventory: PartialResult<VolumeInventory, RpcError>,
     /// Target-specific Container listing failures from this observer's fan-out.
     pub container_failures: Vec<MachineFailure<RpcError>>,
     /// Required Container queries that produced no terminal response.
     pub container_omissions: Vec<MachineId>,
-    /// Target-specific Docker Volume listing failures from this observer's fan-out.
-    pub volume_failures: Vec<MachineFailure<RpcError>>,
-    /// Required Docker Volume queries that produced no terminal response.
-    pub volume_omissions: Vec<MachineId>,
     /// Fresh targeted bridge observations used only for capacity admission.
     /// Fresh telemetry by Machine, or `None` for snapshot paths that cannot create endpoints.
     pub capacity: Option<BTreeMap<MachineId, BridgeEndpointCapacity>>,
 }
 
 impl DeploySnapshot {
+    /// Successfully observed Docker Volumes.
+    pub fn volumes(&self) -> impl Iterator<Item = &DockerVolume> {
+        self.volume_inventory
+            .successes
+            .iter()
+            .flat_map(|success| success.value.volumes.iter())
+    }
+
+    /// Named Docker Volumes confirmed present without current detail.
+    pub fn volume_observation_failures(&self) -> impl Iterator<Item = &VolumeObservationFailure> {
+        self.volume_inventory
+            .successes
+            .iter()
+            .flat_map(|success| success.value.failures.iter())
+    }
+
+    /// Whether every selected Machine and named Docker Volume was observed.
+    #[must_use]
+    pub fn volume_observations_complete(&self) -> bool {
+        self.volume_inventory.all_targets_succeeded()
+            && self.volume_observation_failures().next().is_none()
+    }
+
     /// Observer-derived Services owned by `project`. Other Projects are excluded.
     #[must_use]
     pub fn services_in(&self, project: &ProjectName) -> Vec<ServiceObservation> {
@@ -100,11 +118,13 @@ impl DeploySnapshot {
             &self.container_failures,
             &self.container_omissions,
             &required,
-        ) && !affects_required(&self.volume_failures, &self.volume_omissions, &required)
-            && !self
-                .volume_observation_failures
-                .iter()
-                .any(|failure| required.contains(&failure.id.machine_id))
+        ) && !affects_required(
+            &self.volume_inventory.failures,
+            &self.volume_inventory.omissions,
+            &required,
+        ) && !self
+            .volume_observation_failures()
+            .any(|failure| required.contains(&failure.id.machine_id))
     }
 }
 
@@ -417,23 +437,18 @@ pub(crate) fn reject_missing_external_volumes(
     snapshot: &DeploySnapshot,
 ) -> Result<(), PlanError> {
     let present = snapshot
-        .volumes
-        .iter()
+        .volumes()
         .map(|volume| &volume.id.name)
         .collect::<BTreeSet<_>>();
     let names = project
         .external_volume_names()
         .filter(|name| !present.contains(name))
         .collect::<Vec<_>>();
-    if let Some(failure) = snapshot
-        .volume_observation_failures
-        .iter()
-        .find(|failure| {
-            names
-                .iter()
-                .any(|name| name.as_str() == failure.id.name.as_str())
-        })
-    {
+    if let Some(failure) = snapshot.volume_observation_failures().find(|failure| {
+        names
+            .iter()
+            .any(|name| name.as_str() == failure.id.name.as_str())
+    }) {
         return Err(PlanError::DockerVolumeUnavailable {
             id: failure.id.clone(),
             message: failure.error.message.clone(),

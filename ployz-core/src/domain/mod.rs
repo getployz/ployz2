@@ -80,6 +80,16 @@ pub struct PartialResult<T, E> {
     pub omissions: Vec<MachineId>,
 }
 
+impl<T, E> Default for PartialResult<T, E> {
+    fn default() -> Self {
+        Self {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        }
+    }
+}
+
 impl<T, E> PartialResult<T, E> {
     #[must_use]
     pub fn all_targets_succeeded(&self) -> bool {

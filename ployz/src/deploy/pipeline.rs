@@ -400,10 +400,10 @@ async fn gather_snapshot(
     );
     warnings.extend(observation_warnings(
         ObservationKind::Volume,
-        &snapshot.volume_failures,
-        &snapshot.volume_omissions,
+        &snapshot.volume_inventory.failures,
+        &snapshot.volume_inventory.omissions,
     ));
-    warnings.extend(snapshot.volume_observation_failures.iter().map(|failure| {
+    warnings.extend(snapshot.volume_observation_failures().map(|failure| {
         DeployWarning::ObservationFailed {
             kind: ObservationKind::Volume,
             machine_id: failure.id.machine_id,

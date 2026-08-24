@@ -7,9 +7,35 @@ use ployz::{
 use ployz_core::{
     AdvertisedEndpoint, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, MANAGED_LABEL, Machine, MachineId, MachineName,
-    MachineObservation, ManagementAddress, MembershipObservation, PROJECT_NAME_LABEL, ProjectName,
-    WireGuardPublicKey,
+    MachineObservation, MachineSuccess, ManagementAddress, MembershipObservation,
+    PROJECT_NAME_LABEL, PartialResult, ProjectName, RpcError, VolumeInventory, WireGuardPublicKey,
 };
+
+pub(super) fn volume_inventory(
+    volumes: impl IntoIterator<Item = DockerVolume>,
+) -> PartialResult<VolumeInventory, RpcError> {
+    let mut by_machine = BTreeMap::<_, Vec<_>>::new();
+    for volume in volumes {
+        by_machine
+            .entry(volume.id.machine_id)
+            .or_default()
+            .push(volume);
+    }
+    PartialResult {
+        successes: by_machine
+            .into_iter()
+            .map(|(machine_id, volumes)| MachineSuccess {
+                machine_id,
+                value: VolumeInventory {
+                    volumes,
+                    failures: Vec::new(),
+                },
+            })
+            .collect(),
+        failures: Vec::new(),
+        omissions: Vec::new(),
+    }
+}
 
 pub(super) fn plan_compose(
     project: &ComposeProject,

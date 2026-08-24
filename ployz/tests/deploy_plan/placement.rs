@@ -39,10 +39,9 @@ fn new_container_keeps_an_explicit_order_in_its_resolved_spec() {
             [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "first")],
-                volumes: with_volume
-                    .then(|| observed_volume(machine_id('1'), "data"))
-                    .into_iter()
-                    .collect(),
+                volume_inventory: volume_inventory(
+                    with_volume.then(|| observed_volume(machine_id('1'), "data")),
+                ),
                 ..Default::default()
             },
             PlanOptions::default(),
@@ -86,7 +85,7 @@ fn new_named_volume_containers_default_to_stop_first_in_every_mode() {
             [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "first")],
-                volumes: vec![observed_volume(machine_id('1'), "data")],
+                volume_inventory: volume_inventory(vec![observed_volume(machine_id('1'), "data")]),
                 ..Default::default()
             },
             PlanOptions::default(),
@@ -215,10 +214,9 @@ fn explicit_order_is_deferred_until_the_next_replacement() {
         let snapshot = DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![current],
-            volumes: with_volume
-                .then(|| observed_volume(machine_id('1'), "data"))
-                .into_iter()
-                .collect(),
+            volume_inventory: volume_inventory(
+                with_volume.then(|| observed_volume(machine_id('1'), "data")),
+            ),
             ..Default::default()
         };
 
@@ -432,7 +430,7 @@ fn mounted_docker_volume_anchors_all_replicas_to_its_machine() {
     add_named_volume(&mut requested, "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first"), machine('2', "second")],
-        volumes: vec![observed_volume(machine_id('2'), "data")],
+        volume_inventory: volume_inventory(vec![observed_volume(machine_id('2'), "data")]),
         ..Default::default()
     };
 
@@ -527,9 +525,8 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
             ..Default::default()
         };
         if with_volume {
-            snapshot
-                .volumes
-                .push(observed_volume(machine_id('1'), "data"));
+            snapshot.volume_inventory =
+                volume_inventory(vec![observed_volume(machine_id('1'), "data")]);
         }
 
         let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
@@ -564,7 +561,7 @@ fn global_named_volume_replacement_defaults_to_stop_first() {
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![container('b', '1', &current, &service_id('a'))],
-            volumes: vec![observed_volume(machine_id('1'), "data")],
+            volume_inventory: volume_inventory(vec![observed_volume(machine_id('1'), "data")]),
             ..Default::default()
         },
         PlanOptions::default(),
@@ -740,7 +737,10 @@ fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
-            volumes: vec![observed_volume(machine_id('1'), "multi_existing")],
+            volume_inventory: volume_inventory(vec![observed_volume(
+                machine_id('1'),
+                "multi_existing",
+            )]),
             ..Default::default()
         },
         PlanOptions::default(),
@@ -769,10 +769,10 @@ fn replicas_run_on_the_intersection_of_existing_named_volumes() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first"), machine('2', "second")],
-            volumes: vec![
+            volume_inventory: volume_inventory(vec![
                 observed_volume(machine_id('1'), "intersect_a"),
                 observed_volume(machine_id('1'), "intersect_b"),
-            ],
+            ]),
             ..Default::default()
         },
         PlanOptions::default(),
@@ -795,10 +795,10 @@ fn named_volumes_split_across_machines_return_no_eligible_machines() {
     add_named_volume(&mut requested, "split_b");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first"), machine('2', "second")],
-        volumes: vec![
+        volume_inventory: volume_inventory(vec![
             observed_volume(machine_id('1'), "split_a"),
             observed_volume(machine_id('2'), "split_b"),
-        ],
+        ]),
         ..Default::default()
     };
 
@@ -882,7 +882,7 @@ fn volume_on_another_machine_names_the_volume_and_the_conflict() {
             [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "ewr1"), machine('2', "ord1")],
-                volumes: vec![observed_volume(machine_id('1'), "data")],
+                volume_inventory: volume_inventory(vec![observed_volume(machine_id('1'), "data")]),
                 ..Default::default()
             },
             PlanOptions::default(),

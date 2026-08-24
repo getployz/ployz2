@@ -64,8 +64,7 @@ impl Client {
         let projects = derive_projects(
             &snapshot.containers,
             snapshot
-                .volumes
-                .iter()
+                .volumes()
                 .map(|volume| (&volume.id, &volume.labels)),
         );
         let mut destroyed_projects = Vec::new();
@@ -142,8 +141,7 @@ impl Client {
 fn cluster_volume_loss(snapshot: &DeploySnapshot) -> ObservedDataLoss {
     ObservedDataLoss {
         data_loss: snapshot
-            .volumes
-            .iter()
+            .volumes()
             .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
             .collect(),
     }

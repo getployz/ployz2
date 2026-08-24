@@ -12,7 +12,10 @@ use ployz_core::{
 fn incomplete_snapshot_lists_obsolete_services_and_removes_nothing() {
     let (web, snapshot) = shop_with_obsolete_debug();
     let snapshot = DeploySnapshot {
-        volume_omissions: vec![machine_id('1')],
+        volume_inventory: PartialResult {
+            omissions: vec![machine_id('1')],
+            ..Default::default()
+        },
         ..snapshot
     };
     let plan = preview_deploy(
@@ -119,17 +122,27 @@ fn required_container_failure_makes_the_snapshot_incomplete() {
 fn required_named_volume_failure_makes_the_snapshot_incomplete() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volume_observation_failures: vec![VolumeObservationFailure {
-            id: DockerVolumeId {
+        volume_inventory: PartialResult {
+            successes: vec![MachineSuccess {
                 machine_id: machine_id('1'),
-                name: app_volume("data"),
-            },
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "detail failed".into(),
-                details: Default::default(),
-            },
-        }],
+                value: VolumeInventory {
+                    volumes: Vec::new(),
+                    failures: vec![VolumeObservationFailure {
+                        id: DockerVolumeId {
+                            machine_id: machine_id('1'),
+                            name: app_volume("data"),
+                        },
+                        error: RpcError {
+                            code: RpcErrorCode::Unavailable,
+                            message: "detail failed".into(),
+                            details: Default::default(),
+                        },
+                    }],
+                },
+            }],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        },
         ..Default::default()
     };
 
@@ -143,7 +156,10 @@ fn down_machine_omissions_do_not_make_the_snapshot_incomplete() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first"), down],
         container_omissions: vec![machine_id('2')],
-        volume_omissions: vec![machine_id('2')],
+        volume_inventory: PartialResult {
+            omissions: vec![machine_id('2')],
+            ..Default::default()
+        },
         ..Default::default()
     };
     assert!(snapshot.is_observer_complete());

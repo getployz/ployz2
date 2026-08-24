@@ -23,8 +23,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
             let projects = derive_projects(
                 &snapshot.containers,
                 snapshot
-                    .volumes
-                    .iter()
+                    .volumes()
                     .map(|volume| (&volume.id, &volume.labels)),
             );
             if json {
@@ -86,7 +85,7 @@ fn observer_listing_warnings(snapshot: &DeploySnapshot) -> Vec<String> {
             .iter()
             .map(|machine_id| format!("WARNING: Machine {machine_id} was omitted")),
     );
-    lines.extend(snapshot.volume_failures.iter().map(|failure| {
+    lines.extend(snapshot.volume_inventory.failures.iter().map(|failure| {
         format!(
             "WARNING: Machine {} failed listing volumes: {}",
             failure.machine_id, failure.error.message
@@ -94,7 +93,8 @@ fn observer_listing_warnings(snapshot: &DeploySnapshot) -> Vec<String> {
     }));
     lines.extend(
         snapshot
-            .volume_omissions
+            .volume_inventory
+            .omissions
             .iter()
             .map(|machine_id| format!("WARNING: Machine {machine_id} was omitted listing volumes")),
     );
@@ -119,7 +119,10 @@ mod tests {
                     details: serde_json::Value::Null,
                 },
             }],
-            volume_omissions: vec![machine],
+            volume_inventory: ployz_core::PartialResult {
+                omissions: vec![machine],
+                ..Default::default()
+            },
             ..Default::default()
         };
         assert_eq!(

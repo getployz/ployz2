@@ -241,18 +241,12 @@ impl ContainerRuntime {
             .map_err(|_| Error::LocalStorePoisoned)?
             .record()
             .id();
-        let inventory = self.named_volumes(&machine_id).await?;
+        let inventory = self.list_volumes(&machine_id).await?;
         let mut live = LocalVolumeSnapshot::from_inventory(
             inventory
-                .volumes
+                .failures
                 .iter()
-                .map(|volume| volume.id.name.clone())
-                .chain(
-                    inventory
-                        .failures
-                        .iter()
-                        .map(|failure| failure.id.name.clone()),
-                ),
+                .map(|failure| failure.id.name.clone()),
         );
         for volume in inventory.volumes {
             live.observed(volume);

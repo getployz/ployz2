@@ -40,17 +40,27 @@ fn unavailable_named_volume_blocks_only_a_dependent_service() {
     add_named_volume(&mut dependent, "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volume_observation_failures: vec![VolumeObservationFailure {
-            id: DockerVolumeId {
+        volume_inventory: PartialResult {
+            successes: vec![MachineSuccess {
                 machine_id: machine_id('1'),
-                name: app_volume("data"),
-            },
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "volume detail failed".into(),
-                details: Default::default(),
-            },
-        }],
+                value: VolumeInventory {
+                    volumes: Vec::new(),
+                    failures: vec![VolumeObservationFailure {
+                        id: DockerVolumeId {
+                            machine_id: machine_id('1'),
+                            name: app_volume("data"),
+                        },
+                        error: RpcError {
+                            code: RpcErrorCode::Unavailable,
+                            message: "volume detail failed".into(),
+                            details: Default::default(),
+                        },
+                    }],
+                },
+            }],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        },
         ..Default::default()
     };
 
@@ -104,7 +114,7 @@ fn explicitly_targeted_provisioned_deploy(
         &intent,
         &DeploySnapshot {
             machines: vec![target],
-            volumes,
+            volume_inventory: volume_inventory(volumes),
             ..Default::default()
         },
         IngressContext::default(),
@@ -292,7 +302,7 @@ fn automatic_provisioned_volume_does_not_move_an_existing_plain_volume() {
         &intent,
         &DeploySnapshot {
             machines: vec![pinned, other],
-            volumes: vec![observed_volume(machine_id('1'), "data")],
+            volume_inventory: volume_inventory(vec![observed_volume(machine_id('1'), "data")]),
             ..Default::default()
         },
         IngressContext::default(),
@@ -328,7 +338,7 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
             &intent,
             &DeploySnapshot {
                 machines: vec![pinned, other],
-                volumes: vec![existing],
+                volume_inventory: volume_inventory(vec![existing]),
                 ..Default::default()
             },
             IngressContext::default(),
@@ -629,7 +639,7 @@ fn already_owned_volume_names_are_not_prefixed_again() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            volumes: vec![owned_volume(machine_id('1'), "data")],
+            volume_inventory: volume_inventory(vec![owned_volume(machine_id('1'), "data")]),
             ..Default::default()
         },
         PlanOptions::default(),
@@ -670,10 +680,10 @@ fn sibling_target_volume_is_not_listed_as_preserved_on_a_partial_deploy() {
         ),
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            volumes: vec![
+            volume_inventory: volume_inventory(vec![
                 owned_volume(machine_id('1'), "web-data"),
                 owned_volume(machine_id('1'), "worker-data"),
-            ],
+            ]),
             ..Default::default()
         },
         IngressContext::default(),
@@ -693,10 +703,10 @@ fn omitted_owned_volume_is_preserved_in_plan_order() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            volumes: vec![
+            volume_inventory: volume_inventory(vec![
                 owned_volume(machine_id('1'), "keep-b"),
                 owned_volume(machine_id('1'), "keep-a"),
-            ],
+            ]),
             ..Default::default()
         },
         PlanOptions::default(),

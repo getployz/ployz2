@@ -4,15 +4,18 @@ use bollard::{
     models::{Volume, VolumeCreateRequest},
     query_parameters::RemoveVolumeOptionsBuilder,
 };
+use futures_util::{StreamExt, stream};
 use ployz_core::{
     CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, MachineId, RpcError, VolumeInventory, VolumeObservationFailure,
+    DockerVolumeStorageObservation, MachineId, VolumeInventory, VolumeObservationFailure,
 };
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::{ContainerRuntime, Error, some_map};
 use crate::VolumePluginStatus;
+
+const VOLUME_INSPECTION_CONCURRENCY: usize = 8;
 
 impl ContainerRuntime {
     pub async fn create_volume(
@@ -40,7 +43,7 @@ impl ContainerRuntime {
             Ok(volume) => CreateVolumeReport::Verified { volume },
             Err(error) => CreateVolumeReport::Unverified {
                 id,
-                error: rpc_error(&error),
+                error: (&error).into(),
             },
         })
     }
@@ -53,29 +56,29 @@ impl ContainerRuntime {
                 .await,
         )?;
         let mut inventory = VolumeInventory::default();
-        for volume in listed {
+        let observations = stream::iter(listed.into_iter().map(|volume| async move {
             let id = docker_volume_id(machine_id, &volume.name)?;
             let observation = if volume.driver == "ployz" {
                 self.inspect_volume(machine_id, &id.name).await
             } else {
                 docker_volume(machine_id, volume)
             };
+            Ok::<_, Error>((id, observation))
+        }))
+        .buffered(VOLUME_INSPECTION_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+        for observation in observations {
+            let (id, observation) = observation?;
             match observation {
                 Ok(volume) => inventory.volumes.push(volume),
                 Err(error) => inventory.failures.push(VolumeObservationFailure {
                     id,
-                    error: rpc_error(&error),
+                    error: (&error).into(),
                 }),
             }
         }
         Ok(inventory)
-    }
-
-    pub(super) async fn named_volumes(
-        &self,
-        machine_id: &MachineId,
-    ) -> Result<VolumeInventory, Error> {
-        self.list_volumes(machine_id).await
     }
 
     pub async fn inspect_volume(
@@ -199,14 +202,6 @@ fn docker_volume_id(machine_id: &MachineId, name: &str) -> Result<DockerVolumeId
             source,
         })?,
     })
-}
-
-fn rpc_error(error: &Error) -> RpcError {
-    RpcError {
-        code: error.rpc_code(),
-        message: error.to_string(),
-        details: Value::Null,
-    }
 }
 
 #[cfg(test)]
