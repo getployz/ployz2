@@ -17,6 +17,20 @@ fn provisioned(service: &str, reference: &str, bytes: u64) -> ProvisionedVolume 
     }
 }
 
+fn automatic_provisioned_intent() -> DeployIntent {
+    let mut service = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut service, "data");
+    let mut intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&service],
+        PlanOptions::default(),
+    );
+    intent.provisioned_volumes = vec![provisioned("api", "data", 1_073_741_824)];
+    intent
+}
+
 fn explicitly_targeted_provisioned_deploy(
     storage: Option<MachineStorageObservation>,
     volumes: Vec<ObservedDockerVolume>,
@@ -112,7 +126,10 @@ fn existing_plain_volume_is_not_adopted_as_provisioned() {
 
     assert!(error.contains("app_data"), "{error}");
     assert!(error.contains("Plain Docker Volume"), "{error}");
-    assert!(error.contains("will not be replaced"), "{error}");
+    assert!(
+        error.contains("outside the Provisioned Volume MVP"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -155,17 +172,8 @@ fn existing_provisioned_volume_is_not_implicitly_resized() {
 }
 
 #[test]
-fn automatic_provisioned_volume_placement_is_unchanged() {
-    let mut service = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    add_named_volume(&mut service, "data");
-    let mut intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
-        [&service],
-        PlanOptions::default(),
-    );
-    intent.provisioned_volumes = vec![provisioned("api", "data", 1_073_741_824)];
+fn automatic_provisioned_volume_uses_a_storage_ready_machine() {
+    let intent = automatic_provisioned_intent();
     let mut stateless = machine('1', "stateless");
     stateless.storage = Some(MachineStorageObservation::Stateless);
     let mut ready = machine('2', "ready");
@@ -184,7 +192,7 @@ fn automatic_provisioned_volume_placement_is_unchanged() {
     assert!(
         operations(&preview)
             .iter()
-            .all(|operation| operation.machine_id() == machine_id('1'))
+            .all(|operation| operation.machine_id() == machine_id('2'))
     );
     assert!(operations(&preview).iter().any(|operation| matches!(
         operation,
@@ -193,6 +201,81 @@ fn automatic_provisioned_volume_placement_is_unchanged() {
             ..
         }
     )));
+}
+
+#[test]
+fn automatic_provisioned_volume_reports_observer_relative_storage_guidance() {
+    let intent = automatic_provisioned_intent();
+    let mut stateless = machine('1', "stateless");
+    stateless.storage = Some(MachineStorageObservation::Stateless);
+
+    let error = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![stateless, machine('2', "unobserved")],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error, PlanError::ProvisionedVolumeStorageUnavailable);
+    let error = error.to_string();
+    assert!(error.contains("no observed eligible Machine"), "{error}");
+    assert!(error.contains("--storage zfs"), "{error}");
+}
+
+#[test]
+fn automatic_provisioned_volume_does_not_move_an_existing_plain_volume() {
+    let intent = automatic_provisioned_intent();
+    let mut pinned = machine('1', "pinned");
+    pinned.storage = Some(MachineStorageObservation::Ready);
+    let mut other = machine('2', "other");
+    other.storage = Some(MachineStorageObservation::Ready);
+
+    let error = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![pinned, other],
+            volumes: vec![observed_volume(machine_id('1'), "data")],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("app_data"), "{error}");
+    assert!(error.contains("pinned"), "{error}");
+    assert!(
+        error.contains("outside the Provisioned Volume MVP"),
+        "{error}"
+    );
+}
+
+#[test]
+fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
+    let intent = automatic_provisioned_intent();
+    let mut pinned = machine('1', "pinned");
+    pinned.storage = Some(MachineStorageObservation::Stateless);
+    let mut other = machine('2', "other");
+    other.storage = Some(MachineStorageObservation::Ready);
+    let mut existing = observed_volume(machine_id('1'), "data");
+    existing.driver = "ployz".into();
+    existing.options = BTreeMap::from([("size".into(), "1g".into())]);
+
+    assert_eq!(
+        preview_deploy(
+            &intent,
+            &DeploySnapshot {
+                machines: vec![pinned, other],
+                volumes: vec![existing],
+                ..Default::default()
+            },
+            IngressContext::default(),
+        ),
+        Err(PlanError::ProvisionedVolumeStorageUnavailable)
+    );
 }
 
 #[test]
@@ -398,10 +481,12 @@ fn preview_distinguishes_provisioned_and_ordinary_volume_creates() {
     );
     intent.provisioned_volumes = vec![provisioned("api", "data", 1_073_741_824)];
 
+    let mut ready = machine('1', "first");
+    ready.storage = Some(MachineStorageObservation::Ready);
     let preview = preview_deploy(
         &intent,
         &DeploySnapshot {
-            machines: vec![machine('1', "first")],
+            machines: vec![ready],
             ..Default::default()
         },
         IngressContext::default(),

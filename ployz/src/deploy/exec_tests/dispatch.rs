@@ -179,41 +179,33 @@ async fn provisioned_volume_race_with_plain_volume_stops_before_container_creati
 }
 
 #[tokio::test]
-async fn automatic_provisioned_volume_execution_remains_deferred() {
+async fn automatically_placed_provisioned_volume_executes() {
     let machine_id = machine('1');
-    let ordinary = DeployOperation::CreateVolume {
-        machine_id,
-        volume: volume(),
-    };
     let automatic = DeployOperation::CreateProvisionedVolume {
         machine_id,
         volume: volume(),
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1).unwrap()),
         placement: ProvisionedVolumePlacement::Automatic,
     };
-    let client = Scripted::new(Vec::new());
+    let client = Scripted::new(vec![ok(create_volume_call(
+        machine_id,
+        "ployz",
+        Some("1b"),
+    ))]);
 
     let outcome = execute_with(
-        &[ordinary.clone(), automatic.clone()],
+        std::slice::from_ref(&automatic),
         &client,
         &CancellationToken::new(),
     )
     .await;
 
-    assert!(matches!(
+    assert_eq!(
         outcome,
-        DeployOutcome::Failed {
-            completed,
-            failed: FailedOperation::Operation {
-                operation,
-                error: ExecutionError::Machine { error, .. },
-            },
-            unexecuted,
-        } if completed.is_empty()
-            && operation == automatic
-            && error.code == RpcErrorCode::Unsupported
-            && unexecuted == vec![ordinary]
-    ));
+        DeployOutcome::Success {
+            completed: vec![automatic],
+        }
+    );
     client.assert_done();
 }
 

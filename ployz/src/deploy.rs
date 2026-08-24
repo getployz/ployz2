@@ -300,9 +300,14 @@ pub enum PlanError {
         /// Explicitly selected stateless Machine.
         machine: MachineName,
     },
+    /// No observed automatically eligible Machine has usable ZFS storage preparation.
+    #[error(
+        "no observed eligible Machine is storage-ready or has a Machine Pool; enroll one with --storage zfs before deploying a Provisioned Volume"
+    )]
+    ProvisionedVolumeStorageUnavailable,
     /// An ordinary Docker Volume already owns the requested machine-local name.
     #[error(
-        "Plain Docker Volume {name} already exists on Machine '{machine}' and will not be replaced or converted to a Provisioned Volume"
+        "Plain Docker Volume {name} already exists on Machine '{machine}'; conversion to a Provisioned Volume is outside the Provisioned Volume MVP"
     )]
     ExistingPlainVolume {
         /// Existing machine-local Docker Volume name.

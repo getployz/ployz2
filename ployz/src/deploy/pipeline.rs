@@ -411,12 +411,7 @@ async fn gather_deploy_snapshot(
     mut machines: Vec<MachineObservation>,
     intent: &DeployIntent,
 ) -> Result<(DeploySnapshot, Vec<DeployWarning>), DeployError> {
-    if intent.provisioned_volumes.iter().any(|provisioned| {
-        intent
-            .target
-            .iter()
-            .any(|spec| spec.name == provisioned.service && !spec.placement.machines.is_empty())
-    }) {
+    if !intent.provisioned_volumes.is_empty() {
         client.observe_machine_storage(&mut machines).await;
     }
     gather_snapshot(client, machines).await

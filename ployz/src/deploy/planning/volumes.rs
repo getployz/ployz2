@@ -259,51 +259,72 @@ impl VolumePins {
         Ok(())
     }
 
-    fn validate_explicit_provisioned_volume(
+    fn validate_provisioned_volumes(
         &self,
         spec: &RequestedServiceSpec,
         machines: &[&MachineObservation],
         snapshot: &DeploySnapshot,
     ) -> Result<(), PlanError> {
-        if !self.provisioned.bounds.contains_key(&spec.name)
-            || provisioned_placement(spec, machines) != ProvisionedVolumePlacement::ExplicitMachine
-        {
+        if !self.provisioned.bounds.contains_key(&spec.name) {
             return Ok(());
         }
-        let machine = machines
-            .first()
-            .expect("explicit Provisioned Volume placement resolved one Machine");
-        if !matches!(
-            machine.storage,
-            Some(MachineStorageObservation::Ready | MachineStorageObservation::Pool { .. })
-        ) {
-            return Err(PlanError::ProvisionedVolumeStorageRequired {
-                machine: machine.machine.name.clone(),
-            });
-        }
         for (name, maximum_bytes) in self.provisioned.volumes_for(spec) {
-            let Some(existing) = snapshot.volumes.iter().find(|existing| {
-                existing.id.machine_id == machine.machine.id && existing.id.name == *name
-            }) else {
-                continue;
-            };
-            if existing.driver != "ployz" {
-                return Err(PlanError::ExistingPlainVolume {
-                    name: name.clone(),
-                    machine: machine.machine.name.clone(),
-                });
-            }
-            if !crate::volume::ProvisionedVolumeSize::from_maximum_bytes(maximum_bytes)
-                .matches_observed(existing)
-            {
-                return Err(PlanError::ExistingProvisionedVolumeMismatch {
-                    name: name.clone(),
-                    machine: machine.machine.name.clone(),
-                    maximum_bytes,
-                });
+            for machine in machines {
+                let Some(existing) = snapshot.volumes.iter().find(|existing| {
+                    existing.id.machine_id == machine.machine.id && existing.id.name == *name
+                }) else {
+                    continue;
+                };
+                if existing.driver != "ployz" {
+                    return Err(PlanError::ExistingPlainVolume {
+                        name: name.clone(),
+                        machine: machine.machine.name.clone(),
+                    });
+                }
+                if !crate::volume::ProvisionedVolumeSize::from_maximum_bytes(maximum_bytes)
+                    .matches_observed(existing)
+                {
+                    return Err(PlanError::ExistingProvisionedVolumeMismatch {
+                        name: name.clone(),
+                        machine: machine.machine.name.clone(),
+                        maximum_bytes,
+                    });
+                }
             }
         }
         Ok(())
+    }
+
+    fn constrain_provisioned_candidates(
+        &self,
+        spec: &RequestedServiceSpec,
+        machines: &mut Vec<&MachineObservation>,
+    ) -> Result<(), PlanError> {
+        if !self.provisioned.bounds.contains_key(&spec.name) {
+            return Ok(());
+        }
+        let placement = provisioned_placement(spec, machines);
+        let explicit_machine = machines.first().map(|machine| machine.machine.name.clone());
+        machines.retain(|machine| {
+            matches!(
+                machine.storage,
+                Some(MachineStorageObservation::Ready | MachineStorageObservation::Pool { .. })
+            )
+        });
+        if !machines.is_empty() {
+            return Ok(());
+        }
+        match placement {
+            ProvisionedVolumePlacement::ExplicitMachine => {
+                Err(PlanError::ProvisionedVolumeStorageRequired {
+                    machine: explicit_machine
+                        .expect("explicit Provisioned Volume placement resolved one Machine"),
+                })
+            }
+            ProvisionedVolumePlacement::Automatic => {
+                Err(PlanError::ProvisionedVolumeStorageUnavailable)
+            }
+        }
     }
 }
 
@@ -625,7 +646,7 @@ fn volume_eligible_machine_ids(
     options: &PlanOptions,
 ) -> Result<Vec<MachineId>, PlanError> {
     let mut machines = super::eligible_machines(spec, snapshot, options)?;
-    volume_constraints(spec, snapshot, pins, &mut machines)?;
+    planned_volume_constraints(spec, snapshot, pins, &mut machines)?;
     Ok(machines
         .into_iter()
         .map(|machine| machine.machine.id)
@@ -640,8 +661,8 @@ pub(super) fn plan_volume_operations(
 ) -> Result<(), PlanError> {
     // TODO(UT-001, UT-051, UT-052, UT-078): preserve the baseline
     // placement ceiling: do not filter by memory, image platform, or local image presence.
-    pins.validate_explicit_provisioned_volume(spec, machines, snapshot)?;
-    let (mounted_volumes, missing_volumes) = volume_constraints(spec, snapshot, pins, machines)?;
+    let (mounted_volumes, missing_volumes) =
+        planned_volume_constraints(spec, snapshot, pins, machines)?;
     match spec.mode {
         ServiceMode::Replicated { .. } if !missing_volumes.is_empty() => {
             // TODO(UT-005): named-volume driver and label options remain part of planned creation;
@@ -682,7 +703,19 @@ pub(super) fn constrain_volume_candidates(
     pins: &VolumePins,
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(), PlanError> {
-    volume_constraints(spec, snapshot, pins, machines).map(|_| ())
+    planned_volume_constraints(spec, snapshot, pins, machines).map(|_| ())
+}
+
+fn planned_volume_constraints<'spec>(
+    spec: &'spec RequestedServiceSpec,
+    snapshot: &DeploySnapshot,
+    pins: &VolumePins,
+    machines: &mut Vec<&MachineObservation>,
+) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
+    pins.validate_provisioned_volumes(spec, machines, snapshot)?;
+    let volumes = volume_constraints(spec, snapshot, pins, machines)?;
+    pins.constrain_provisioned_candidates(spec, machines)?;
+    Ok(volumes)
 }
 
 fn volume_constraints<'spec>(
