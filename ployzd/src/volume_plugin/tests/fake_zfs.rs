@@ -56,6 +56,7 @@ case "$*" in
     fi
     ;;
   'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz') touch '{root}' ;;
+  'create -o refquota=1 tank/ployz/data') touch '{volume}' ;;
   'create -o refquota=1073741824 tank/ployz/data') touch '{volume}' ;;
   'mount tank/ployz/data') touch '{mounted}' ;;
   'destroy tank/ployz/data')

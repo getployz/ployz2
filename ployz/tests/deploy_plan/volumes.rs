@@ -1,6 +1,7 @@
 use super::support::*;
 use ployz_core::{
-    PreservedVolume, ProvisionedVolume, ProvisionedVolumeMaximumBytes, ServiceAttempt, ServiceName,
+    MachineStorageObservation, PreservedVolume, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
+    ProvisionedVolumePlacement, ServiceAttempt, ServiceName,
 };
 use std::{collections::BTreeMap, num::NonZeroU64};
 
@@ -14,6 +15,225 @@ fn provisioned(service: &str, reference: &str, bytes: u64) -> ProvisionedVolume 
         reference: ServiceVolumeReference::parse(reference).unwrap(),
         maximum_bytes: maximum_bytes(bytes),
     }
+}
+
+fn explicitly_targeted_provisioned_deploy(
+    storage: Option<MachineStorageObservation>,
+    volumes: Vec<ObservedDockerVolume>,
+) -> Result<DeployPreview, PlanError> {
+    let mut service = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    service.placement.machines = vec![MachineTarget::parse("first").unwrap()];
+    add_named_volume(&mut service, "data");
+    add_named_volume(&mut service, "cache");
+    service.pre_deploy = Some(PreDeployHook {
+        command: vec!["prepare".into()],
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let mut intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&service],
+        PlanOptions::default(),
+    );
+    intent.provisioned_volumes = vec![provisioned("api", "data", 1_073_741_824)];
+    let mut target = machine('1', "first");
+    target.storage = storage;
+    preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![target],
+            volumes,
+            ..Default::default()
+        },
+        IngressContext::default(),
+    )
+}
+
+#[test]
+fn explicitly_targeted_provisioned_volume_precedes_hook_service_and_plain_volume() {
+    let preview =
+        explicitly_targeted_provisioned_deploy(Some(MachineStorageObservation::Ready), Vec::new())
+            .unwrap();
+
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [
+            DeployOperation::CreateVolume { volume: cache, .. },
+            DeployOperation::CreateProvisionedVolume {
+                volume: data,
+                placement: ProvisionedVolumePlacement::ExplicitMachine,
+                ..
+            },
+            DeployOperation::RunHook { .. },
+            DeployOperation::RunContainer { .. },
+        ] if data.reference.as_str() == "data" && cache.reference.as_str() == "cache"
+    ));
+}
+
+#[test]
+fn stateless_explicit_target_requires_storage_preparation() {
+    let error = explicitly_targeted_provisioned_deploy(
+        Some(MachineStorageObservation::Stateless),
+        Vec::new(),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("first"), "{error}");
+    assert!(error.contains("storage preparation"), "{error}");
+    assert!(error.contains("--storage zfs"), "{error}");
+}
+
+#[test]
+fn missing_storage_evidence_requires_storage_preparation() {
+    let error = explicitly_targeted_provisioned_deploy(None, Vec::new())
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("first"), "{error}");
+    assert!(error.contains("storage preparation"), "{error}");
+    assert!(error.contains("--storage zfs"), "{error}");
+}
+
+#[test]
+fn existing_plain_volume_is_not_adopted_as_provisioned() {
+    let error = explicitly_targeted_provisioned_deploy(
+        Some(MachineStorageObservation::Pool {
+            capacity_bytes: NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
+        }),
+        vec![observed_volume(machine_id('1'), "data")],
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("app_data"), "{error}");
+    assert!(error.contains("Plain Docker Volume"), "{error}");
+    assert!(error.contains("will not be replaced"), "{error}");
+}
+
+#[test]
+fn existing_matching_provisioned_volume_is_reused_without_creation() {
+    let mut existing = observed_volume(machine_id('1'), "data");
+    existing.driver = "ployz".into();
+    existing.options = BTreeMap::from([("size".into(), "1g".into())]);
+
+    let preview = explicitly_targeted_provisioned_deploy(
+        Some(MachineStorageObservation::Pool {
+            capacity_bytes: NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
+        }),
+        vec![existing],
+    )
+    .unwrap();
+
+    assert!(
+        operations(&preview)
+            .iter()
+            .all(|operation| !matches!(operation, DeployOperation::CreateProvisionedVolume { .. }))
+    );
+}
+
+#[test]
+fn existing_provisioned_volume_is_not_implicitly_resized() {
+    let mut existing = observed_volume(machine_id('1'), "data");
+    existing.driver = "ployz".into();
+    existing.options = BTreeMap::from([("size".into(), "2g".into())]);
+
+    let error = explicitly_targeted_provisioned_deploy(
+        Some(MachineStorageObservation::Pool {
+            capacity_bytes: NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
+        }),
+        vec![existing],
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("will not be resized or replaced"), "{error}");
+}
+
+#[test]
+fn automatic_provisioned_volume_placement_is_unchanged() {
+    let mut service = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut service, "data");
+    let mut intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&service],
+        PlanOptions::default(),
+    );
+    intent.provisioned_volumes = vec![provisioned("api", "data", 1_073_741_824)];
+    let mut stateless = machine('1', "stateless");
+    stateless.storage = Some(MachineStorageObservation::Stateless);
+    let mut ready = machine('2', "ready");
+    ready.storage = Some(MachineStorageObservation::Ready);
+
+    let preview = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![stateless, ready],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    )
+    .unwrap();
+
+    assert!(
+        operations(&preview)
+            .iter()
+            .all(|operation| operation.machine_id() == machine_id('1'))
+    );
+    assert!(operations(&preview).iter().any(|operation| matches!(
+        operation,
+        DeployOperation::CreateProvisionedVolume {
+            placement: ProvisionedVolumePlacement::Automatic,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
+    let applied = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let mut unchanged = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    unchanged.name = ServiceName::parse("storage").unwrap();
+    unchanged.placement.machines = vec![MachineTarget::parse("stateless").unwrap()];
+    add_named_volume(&mut unchanged, "data");
+    let mut intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&applied, &unchanged],
+        PlanOptions {
+            selected: vec![ServiceAttempt {
+                name: applied.name.clone(),
+            }],
+            ..PlanOptions::default()
+        },
+    );
+    intent.provisioned_volumes = vec![provisioned("storage", "data", 1_073_741_824)];
+    let mut stateless = machine('1', "stateless");
+    stateless.storage = Some(MachineStorageObservation::Stateless);
+
+    let preview = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![stateless],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    )
+    .unwrap();
+
+    assert!(operations(&preview).iter().all(|operation| {
+        operation.service_name() != Some(&unchanged.name)
+            && !matches!(operation, DeployOperation::CreateProvisionedVolume { .. })
+    }));
 }
 
 fn global_service(name: &str, machine_name: &str) -> RequestedServiceSpec {
@@ -78,10 +298,14 @@ fn disjoint_global_volumes_may_have_different_bounds() {
         provisioned(second.name.as_str(), "data", 2_147_483_648),
     ];
 
+    let mut first_machine = machine('1', "first");
+    first_machine.storage = Some(MachineStorageObservation::Ready);
+    let mut second_machine = machine('2', "second");
+    second_machine.storage = Some(MachineStorageObservation::Ready);
     preview_deploy(
         &intent,
         &DeploySnapshot {
-            machines: vec![machine('1', "first"), machine('2', "second")],
+            machines: vec![first_machine, second_machine],
             ..Default::default()
         },
         IngressContext::default(),

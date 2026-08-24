@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeId, DockerVolumeName, MachineId, MachineObservation, MachineTarget,
-    PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
-    RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation, ServiceVolume,
-    ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
+    DockerVolumeId, DockerVolumeName, MachineId, MachineObservation, MachineStorageObservation,
+    MachineTarget, PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
+    ProvisionedVolumePlacement, RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
+    ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
 };
 
 use crate::deploy::{
@@ -24,7 +24,13 @@ pub(super) struct VolumePins {
     anchors: BTreeMap<DockerVolumeName, MachineId>,
     creates: Vec<(MachineId, ServiceVolume)>,
     provisioned: ProvisionedVolumeBindings,
-    provisioned_bounds: BTreeMap<DockerVolumeId, ProvisionedVolumeMaximumBytes>,
+    provisioned_plans: BTreeMap<DockerVolumeId, ProvisionedVolumePlan>,
+}
+
+#[derive(Clone, Copy)]
+struct ProvisionedVolumePlan {
+    maximum_bytes: ProvisionedVolumeMaximumBytes,
+    placement: ProvisionedVolumePlacement,
 }
 
 impl VolumePins {
@@ -33,7 +39,7 @@ impl VolumePins {
             anchors: BTreeMap::new(),
             creates: Vec::new(),
             provisioned,
-            provisioned_bounds: BTreeMap::new(),
+            provisioned_plans: BTreeMap::new(),
         }
     }
 
@@ -80,23 +86,24 @@ impl VolumePins {
     }
 
     pub(super) fn into_creates(self) -> Vec<DeployOperation> {
-        let provisioned_bounds = self.provisioned_bounds;
+        let provisioned_plans = self.provisioned_plans;
         self.creates
             .into_iter()
             .map(|(machine_id, volume)| {
-                let maximum_bytes = named_volume_name(&volume).and_then(|name| {
-                    provisioned_bounds
+                let provisioned = named_volume_name(&volume).and_then(|name| {
+                    provisioned_plans
                         .get(&DockerVolumeId {
                             machine_id,
                             name: name.clone(),
                         })
                         .copied()
                 });
-                match maximum_bytes {
-                    Some(maximum_bytes) => DeployOperation::CreateProvisionedVolume {
+                match provisioned {
+                    Some(provisioned) => DeployOperation::CreateProvisionedVolume {
                         machine_id,
                         volume,
-                        maximum_bytes,
+                        maximum_bytes: provisioned.maximum_bytes,
+                        placement: provisioned.placement,
                     },
                     None => DeployOperation::CreateVolume { machine_id, volume },
                 }
@@ -177,6 +184,21 @@ impl ProvisionedVolumeBindings {
             .and_then(|bounds| bounds.get(name))
             .copied()
     }
+
+    fn volumes_for<'spec>(
+        &'spec self,
+        spec: &'spec RequestedServiceSpec,
+    ) -> impl Iterator<Item = (&'spec DockerVolumeName, ProvisionedVolumeMaximumBytes)> + 'spec
+    {
+        spec.volume_graph.mounts().iter().filter_map(|mount| {
+            let volume = spec.volume_graph.volume_for(mount);
+            let VolumeSource::Named { name, .. } = &volume.source else {
+                return None;
+            };
+            self.bound_for(&spec.name, name)
+                .map(|maximum_bytes| (name, maximum_bytes))
+        })
+    }
 }
 
 impl VolumePins {
@@ -208,32 +230,91 @@ impl VolumePins {
         spec: &RequestedServiceSpec,
         machines: &[&MachineObservation],
     ) -> Result<(), PlanError> {
-        for mount in spec.volume_graph.mounts() {
-            let volume = spec.volume_graph.volume_for(mount);
-            let VolumeSource::Named { name, .. } = &volume.source else {
-                continue;
-            };
-            let Some(maximum_bytes) = self.provisioned.bound_for(&spec.name, name) else {
-                continue;
-            };
+        let placement = provisioned_placement(spec, machines);
+        for (name, maximum_bytes) in self.provisioned.volumes_for(spec) {
             for machine in machines {
-                if let Some(existing_maximum_bytes) = self.provisioned_bounds.insert(
-                    DockerVolumeId {
-                        machine_id: machine.machine.id,
-                        name: name.clone(),
-                    },
-                    maximum_bytes,
-                ) && existing_maximum_bytes != maximum_bytes
-                {
+                let id = DockerVolumeId {
+                    machine_id: machine.machine.id,
+                    name: name.clone(),
+                };
+                let plan = self
+                    .provisioned_plans
+                    .entry(id)
+                    .or_insert(ProvisionedVolumePlan {
+                        maximum_bytes,
+                        placement,
+                    });
+                if plan.maximum_bytes != maximum_bytes {
                     return Err(PlanError::ConflictingProvisionedVolumeBounds {
                         name: name.clone(),
-                        existing_maximum_bytes,
+                        existing_maximum_bytes: plan.maximum_bytes,
                         conflicting_maximum_bytes: maximum_bytes,
                     });
+                }
+                if placement == ProvisionedVolumePlacement::Automatic {
+                    plan.placement = placement;
                 }
             }
         }
         Ok(())
+    }
+
+    fn validate_explicit_provisioned_volume(
+        &self,
+        spec: &RequestedServiceSpec,
+        machines: &[&MachineObservation],
+        snapshot: &DeploySnapshot,
+    ) -> Result<(), PlanError> {
+        if !self.provisioned.bounds.contains_key(&spec.name)
+            || provisioned_placement(spec, machines) != ProvisionedVolumePlacement::ExplicitMachine
+        {
+            return Ok(());
+        }
+        let machine = machines
+            .first()
+            .expect("explicit Provisioned Volume placement resolved one Machine");
+        if !matches!(
+            machine.storage,
+            Some(MachineStorageObservation::Ready | MachineStorageObservation::Pool { .. })
+        ) {
+            return Err(PlanError::ProvisionedVolumeStorageRequired {
+                machine: machine.machine.name.clone(),
+            });
+        }
+        for (name, maximum_bytes) in self.provisioned.volumes_for(spec) {
+            let Some(existing) = snapshot.volumes.iter().find(|existing| {
+                existing.id.machine_id == machine.machine.id && existing.id.name == *name
+            }) else {
+                continue;
+            };
+            if existing.driver != "ployz" {
+                return Err(PlanError::ExistingPlainVolume {
+                    name: name.clone(),
+                    machine: machine.machine.name.clone(),
+                });
+            }
+            if !crate::volume::ProvisionedVolumeSize::from_maximum_bytes(maximum_bytes)
+                .matches_observed(existing)
+            {
+                return Err(PlanError::ExistingProvisionedVolumeMismatch {
+                    name: name.clone(),
+                    machine: machine.machine.name.clone(),
+                    maximum_bytes,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn provisioned_placement(
+    spec: &RequestedServiceSpec,
+    machines: &[&MachineObservation],
+) -> ProvisionedVolumePlacement {
+    if spec.placement.machines.len() == 1 && machines.len() == 1 {
+        ProvisionedVolumePlacement::ExplicitMachine
+    } else {
+        ProvisionedVolumePlacement::Automatic
     }
 }
 
@@ -559,6 +640,7 @@ pub(super) fn plan_volume_operations(
 ) -> Result<(), PlanError> {
     // TODO(UT-001, UT-051, UT-052, UT-078): preserve the baseline
     // placement ceiling: do not filter by memory, image platform, or local image presence.
+    pins.validate_explicit_provisioned_volume(spec, machines, snapshot)?;
     let (mounted_volumes, missing_volumes) = volume_constraints(spec, snapshot, pins, machines)?;
     match spec.mode {
         ServiceMode::Replicated { .. } if !missing_volumes.is_empty() => {

@@ -3,11 +3,11 @@ use std::{future::Future, time::Duration};
 use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, DeployEvent,
-    DockerVolumeId, ExecutionError, FailedOperation, HookFailure, InspectContainerRequest,
-    MachineAction, MachineId, MachineTarget, MembershipObservation, OperationPhase, OperationRow,
-    ProjectName, QualifiedService, RemoveContainerRequest, RemoveVolumeRequest,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceVolume, StartContainerRequest,
-    StopContainerRequest, UpdateOrder, VolumeSource, op,
+    DockerVolume, DockerVolumeId, ExecutionError, FailedOperation, HookFailure,
+    InspectContainerRequest, MachineAction, MachineId, MachineTarget, MembershipObservation,
+    OperationPhase, OperationRow, ProjectName, ProvisionedVolumePlacement, QualifiedService,
+    RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
+    StartContainerRequest, StopContainerRequest, UpdateOrder, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -28,17 +28,6 @@ const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
 const RESTART_POLL: Duration = Duration::from_millis(250);
-
-fn provisioned_volume_unsupported() -> ExecutionError {
-    machine_error(
-        MachineAction::CreateVolume,
-        RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: "Provisioned Volume execution is not available".into(),
-            details: serde_json::Value::Null,
-        },
-    )
-}
 
 fn failure_outcome_from<E>(
     operations: &[DeployOperation],
@@ -87,8 +76,8 @@ pub(super) trait MachineOperations {
     async fn create_volume(
         &self,
         machine_id: &MachineId,
-        volume: &ServiceVolume,
-    ) -> Result<(), RpcError>;
+        request: CreateVolumeRequest,
+    ) -> Result<DockerVolume, RpcError>;
     async fn create_container(
         &self,
         machine_id: &MachineId,
@@ -164,36 +153,9 @@ impl MachineOperations for Client {
     async fn create_volume(
         &self,
         machine_id: &MachineId,
-        volume: &ServiceVolume,
-    ) -> Result<(), RpcError> {
-        let VolumeSource::Named {
-            name,
-            driver,
-            labels,
-            ..
-        } = &volume.source
-        else {
-            return Err(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "volume creation requires a named Docker Volume".into(),
-                details: Default::default(),
-            });
-        };
-        crate::service::create_volume_on_machine(
-            self,
-            machine_id,
-            CreateVolumeRequest {
-                name: name.clone(),
-                driver: driver
-                    .as_ref()
-                    .map_or_else(|| "local".into(), |driver| driver.name.clone()),
-                options: driver
-                    .as_ref()
-                    .map_or_else(Default::default, |driver| driver.options.clone()),
-                labels: labels.clone(),
-            },
-        )
-        .await
+        request: CreateVolumeRequest,
+    ) -> Result<DockerVolume, RpcError> {
+        crate::service::create_volume_on_machine(self, machine_id, request).await
     }
 
     async fn create_container(
@@ -348,9 +310,9 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
     async fn create_volume(
         &self,
         machine_id: &MachineId,
-        volume: &ServiceVolume,
-    ) -> Result<(), RpcError> {
-        self.inner.create_volume(machine_id, volume).await
+        request: CreateVolumeRequest,
+    ) -> Result<DockerVolume, RpcError> {
+        self.inner.create_volume(machine_id, request).await
     }
 
     async fn create_container(
@@ -463,12 +425,23 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     };
     let mut progress = Progress::new(rows, tx);
     progress.emit();
-    if let Some((index, operation)) = operations
-        .iter()
-        .enumerate()
-        .find(|(_, operation)| matches!(operation, DeployOperation::CreateProvisionedVolume { .. }))
-    {
-        let error = provisioned_volume_unsupported();
+    if let Some((index, operation)) = operations.iter().enumerate().find(|(_, operation)| {
+        matches!(
+            operation,
+            DeployOperation::CreateProvisionedVolume {
+                placement: ProvisionedVolumePlacement::Automatic,
+                ..
+            }
+        )
+    }) {
+        let error = machine_error(
+            MachineAction::CreateVolume,
+            RpcError {
+                code: RpcErrorCode::Unsupported,
+                message: "automatic Provisioned Volume placement is not available; explicitly select a Machine".into(),
+                details: serde_json::Value::Null,
+            },
+        );
         progress.fail(index, error.clone());
         let outcome = DeployOutcome::Failed {
             completed: Vec::new(),
@@ -550,14 +523,49 @@ async fn execute_operation<C: MachineOperations>(
     match operation {
         DeployOperation::CreateVolume { machine_id, volume } => {
             progress.set_running(index, OperationPhase::CreatingVolume);
+            let request = crate::volume::create_volume_request(volume, None)
+                .map_err(|error| machine_error(MachineAction::CreateVolume, error))?;
             client
-                .create_volume(machine_id, volume)
+                .create_volume(machine_id, request)
                 .await
+                .map(|_| ())
                 .map_err(|error| machine_error(MachineAction::CreateVolume, error).into())
         }
-        DeployOperation::CreateProvisionedVolume { .. } => {
-            Err(provisioned_volume_unsupported().into())
+        DeployOperation::CreateProvisionedVolume {
+            machine_id,
+            volume,
+            maximum_bytes,
+            placement: ProvisionedVolumePlacement::ExplicitMachine,
+        } => {
+            progress.set_running(index, OperationPhase::CreatingVolume);
+            let size = crate::volume::ProvisionedVolumeSize::from_maximum_bytes(*maximum_bytes);
+            let request = crate::volume::create_volume_request(volume, Some(&size))
+                .map_err(|error| machine_error(MachineAction::CreateVolume, error))?;
+            let created = client
+                .create_volume(machine_id, request)
+                .await
+                .map_err(|error| machine_error(MachineAction::CreateVolume, error))?;
+            if size.matches(&created) {
+                Ok(())
+            } else {
+                Err(machine_error(
+                    MachineAction::CreateVolume,
+                    RpcError {
+                        code: RpcErrorCode::InvalidArgument,
+                        message: format!(
+                            "Docker Volume {:?} already exists with a different shape and will not be replaced or converted to the requested {maximum_bytes}-byte Provisioned Volume",
+                            created.id.name
+                        ),
+                        details: serde_json::Value::Null,
+                    },
+                )
+                .into())
+            }
         }
+        DeployOperation::CreateProvisionedVolume {
+            placement: ProvisionedVolumePlacement::Automatic,
+            ..
+        } => unreachable!("automatic Provisioned Volume was rejected before execution"),
         DeployOperation::WaitHealthy { dependency, .. } => {
             wait_healthy(client, index, progress, dependency, cancellation)
                 .await

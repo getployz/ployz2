@@ -603,6 +603,10 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "ProvisionedVolumePlacement",
+        Shape::ClosedString(&["explicit_machine", "automatic"]),
+    ),
+    (
         "DeployIntent",
         Shape::Additive {
             params: "",
@@ -779,6 +783,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                         ("machine_id", "MachineId"),
                         ("volume", "ServiceVolume"),
                         ("maximum_bytes", "ProvisionedVolumeMaximumBytes"),
+                        ("placement", "ProvisionedVolumePlacement"),
                     ],
                 ),
                 (

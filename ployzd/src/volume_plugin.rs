@@ -333,19 +333,22 @@ fn parse_size(options: &BTreeMap<String, String>) -> Result<u64> {
         .expect("the only accepted option is size");
     let (amount, suffix) = value.split_at(value.len().saturating_sub(1));
     let multiplier = match suffix {
+        "b" => 1,
         "k" => 1024_u64,
         "m" => 1024_u64.pow(2),
         "g" => 1024_u64.pow(3),
         "t" => 1024_u64.pow(4),
         _ => {
             return Err(format!(
-                "invalid Volume size {value:?}; use a positive integer followed by k, m, g, or t"
+                "invalid Volume size {value:?}; use a positive integer followed by b, k, m, g, or t"
             )
             .into());
         }
     };
     let amount = amount.parse::<u64>().map_err(|_| {
-        format!("invalid Volume size {value:?}; use a positive integer followed by k, m, g, or t")
+        format!(
+            "invalid Volume size {value:?}; use a positive integer followed by b, k, m, g, or t"
+        )
     })?;
     if amount == 0 {
         return Err("Volume size must be greater than zero".into());
@@ -602,6 +605,31 @@ mod tests {
         assert!(log.contains("zfs create -o refquota=1073741824 tank/ployz/data"));
         assert!(log.contains("zfs mount tank/ployz/data"));
         assert!(!log.contains("recordsize"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn docker_driver_accepts_an_exact_internal_byte_bound() {
+        let test = TestDir::new();
+        let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+        let socket = test.0.join("plugin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+        assert_eq!(
+            post(
+                &socket,
+                "/VolumeDriver.Create",
+                json!({"Name":"data","Opts":{"size":"1b"}}),
+            )
+            .await,
+            json!({"Err":""})
+        );
+        assert!(
+            fs::read_to_string(test.0.join("commands"))
+                .unwrap()
+                .contains("zfs create -o refquota=1 tank/ployz/data")
+        );
         server.abort();
     }
 
