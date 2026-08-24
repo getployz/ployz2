@@ -290,7 +290,7 @@ impl VolumePins {
         if !self.provisioned.bounds.contains_key(&spec.name) {
             return Ok(());
         }
-        let explicit = is_explicit_machine_placement(spec, machines);
+        let explicit = spec.placement.machines.len() == 1 && machines.len() == 1;
         let explicit_machine = machines.first().map(|machine| machine.machine.name.clone());
         machines.retain(|machine| {
             matches!(
@@ -310,13 +310,6 @@ impl VolumePins {
             Err(PlanError::ProvisionedVolumeStorageUnavailable)
         }
     }
-}
-
-fn is_explicit_machine_placement(
-    spec: &RequestedServiceSpec,
-    machines: &[&MachineObservation],
-) -> bool {
-    spec.placement.machines.len() == 1 && machines.len() == 1
 }
 
 /// Owned Compose-declared Docker Volumes omitted from this Deploy's target.

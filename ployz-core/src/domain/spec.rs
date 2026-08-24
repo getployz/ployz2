@@ -188,7 +188,10 @@ pub struct VolumeDriver {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DockerVolumeStorageObservation {
     /// A Docker Volume without a Ployz-managed byte bound.
-    Plain { driver: String },
+    Plain {
+        /// Docker driver reported for the ordinary Volume.
+        driver: String,
+    },
     /// A Provisioned Volume observed through the Ployz Docker driver.
     Provisioned {
         /// Current ZFS dataset mountpoint.
@@ -213,6 +216,7 @@ pub struct DockerVolume {
 }
 
 impl DockerVolume {
+    /// Docker driver implied by the observed storage kind.
     #[must_use]
     pub fn driver(&self) -> &str {
         match &self.storage {

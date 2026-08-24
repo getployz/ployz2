@@ -333,10 +333,6 @@ impl PoolStorage {
     /// Returns an error when reserve, backing allocation, Pool growth, or verification fails.
     pub(super) async fn ensure_capacity(&self, pool: &MachinePool, commitment: u64) -> Result<()> {
         let minimum = capacity_with_headroom(commitment)?;
-        self.ensure_capacity_at_least(pool, minimum).await
-    }
-
-    async fn ensure_capacity_at_least(&self, pool: &MachinePool, minimum: u64) -> Result<()> {
         if pool.size_bytes().get() >= minimum {
             return Ok(());
         }
