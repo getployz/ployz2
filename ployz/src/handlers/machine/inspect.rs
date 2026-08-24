@@ -71,12 +71,14 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
 }
 
 #[must_use]
-fn format_storage(storage: Option<MachineStorageObservation>) -> &'static str {
+fn format_storage(storage: Option<MachineStorageObservation>) -> String {
     match storage {
-        None => "-",
-        Some(MachineStorageObservation::Stateless) => "STATELESS",
-        Some(MachineStorageObservation::Ready) => "READY (NO POOL)",
-        Some(MachineStorageObservation::Pool) => "POOL",
+        None => "-".into(),
+        Some(MachineStorageObservation::Stateless) => "STATELESS".into(),
+        Some(MachineStorageObservation::Ready) => "READY (NO POOL)".into(),
+        Some(MachineStorageObservation::Pool { capacity_bytes }) => {
+            format!("POOL ({capacity_bytes} BYTES)")
+        }
     }
 }
 
@@ -321,8 +323,10 @@ mod tests {
             "READY (NO POOL)"
         );
         assert_eq!(
-            format_storage(Some(MachineStorageObservation::Pool)),
-            "POOL"
+            format_storage(Some(MachineStorageObservation::Pool {
+                capacity_bytes: std::num::NonZeroU64::new(4_294_967_296).unwrap(),
+            })),
+            "POOL (4294967296 BYTES)"
         );
     }
 

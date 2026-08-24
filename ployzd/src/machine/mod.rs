@@ -600,13 +600,15 @@ pub fn local_runtime() -> MachineRuntime {
 async fn local_storage(program: &Path, timeout: Duration) -> Option<MachineStorageObservation> {
     let mut command = tokio::process::Command::new(program);
     command
-        .args(["list", "-Hp", "-o", "name,health,readonly"])
+        .args(["list", "-Hp", "-o", "name,size,health,readonly"])
         .kill_on_drop(true);
     match tokio::time::timeout(timeout, command.output()).await {
         Ok(Ok(output)) if output.status.success() => {
             let output = String::from_utf8(output.stdout).ok()?;
             match machine_pool::one_usable(&output) {
-                Ok(Some(_)) => Some(MachineStorageObservation::Pool),
+                Ok(Some(pool)) => Some(MachineStorageObservation::Pool {
+                    capacity_bytes: pool.capacity_bytes(),
+                }),
                 Ok(None) => Some(MachineStorageObservation::Ready),
                 Err(_) => None,
             }
@@ -791,17 +793,31 @@ mod tests {
         for (script, expected) in [
             ("#!/bin/sh\nexit 1\n", None),
             (
-                "#!/bin/sh\nprintf 'tank\\tONLINE\\toff\\n'\n",
-                Some(MachineStorageObservation::Pool),
+                "#!/bin/sh\nprintf 'tank\\t2147483648\\tONLINE\\toff\\n'\n",
+                Some(MachineStorageObservation::Pool {
+                    capacity_bytes: std::num::NonZeroU64::new(2_147_483_648).unwrap(),
+                }),
+            ),
+            (
+                "#!/bin/sh\nprintf 'tank\\t4294967296\\tONLINE\\toff\\n'\n",
+                Some(MachineStorageObservation::Pool {
+                    capacity_bytes: std::num::NonZeroU64::new(4_294_967_296).unwrap(),
+                }),
             ),
             (
                 "#!/bin/sh\nexit 0\n",
                 Some(MachineStorageObservation::Ready),
             ),
-            ("#!/bin/sh\nprintf 'tank\\tONLINE\\ton\\n'\n", None),
-            ("#!/bin/sh\nprintf 'tank\\tFAULTED\\toff\\n'\n", None),
             (
-                "#!/bin/sh\nprintf 'alpha\\tONLINE\\toff\\nbeta\\tDEGRADED\\toff\\n'\n",
+                "#!/bin/sh\nprintf 'tank\\t2147483648\\tONLINE\\ton\\n'\n",
+                None,
+            ),
+            (
+                "#!/bin/sh\nprintf 'tank\\t2147483648\\tFAULTED\\toff\\n'\n",
+                None,
+            ),
+            (
+                "#!/bin/sh\nprintf 'alpha\\t2147483648\\tONLINE\\toff\\nbeta\\t2147483648\\tDEGRADED\\toff\\n'\n",
                 None,
             ),
         ] {

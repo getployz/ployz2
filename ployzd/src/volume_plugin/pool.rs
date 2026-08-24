@@ -11,7 +11,9 @@ use std::{
 use ployzd::machine::DEFAULT_DATA_DIR;
 use ployzd::machine_pool::{self, MachinePool};
 
-use super::{DockerVolumeName, Result, VolumeError, VolumeStorage, checked_command, parse_size};
+use super::{
+    DockerVolumeName, PoolOrigin, Result, VolumeError, VolumeStorage, checked_command, parse_size,
+};
 
 const GIBIBYTE: u64 = 1024_u64.pow(3);
 const POOL_BACKING_PATH: &str = "/var/lib/ployz-machine-pool";
@@ -64,21 +66,28 @@ impl VolumeStorage {
         let requested = parse_size(options)?;
         let _guard = self.mutation.lock().await;
         let _pool_guard = self.pool.lock_mutation().await?;
-        match self.pool.one_usable().await? {
-            Some(pool) => self.create_volume(&pool, name, requested).await,
-            None => match self.pool.recover().await? {
-                Some(pool) => self.create_volume(&pool, name, requested).await,
-                None => {
-                    let pool = self.pool.create(requested).await?;
-                    match self
-                        .create_volume(pool.machine_pool(), name, requested)
-                        .await
-                    {
-                        Ok(()) => Ok(()),
-                        Err(error) => Err(pool.cleanup(error).await),
-                    }
-                }
-            },
+        let existing = match self.pool.one_usable().await? {
+            Some(pool) => Some(pool),
+            None => self.pool.recover().await?,
+        };
+        if let Some(pool) = existing {
+            return self
+                .create_volume(&pool, name, requested, PoolOrigin::Existing)
+                .await;
+        }
+
+        let pool = self.pool.create(requested).await?;
+        match self
+            .create_volume(
+                pool.machine_pool(),
+                name,
+                requested,
+                PoolOrigin::CreatedForRequest,
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => Err(pool.cleanup(error).await),
         }
     }
 }
@@ -160,8 +169,11 @@ impl PoolStorage {
     ///
     /// Returns an error when Pool inspection fails or imported Pool evidence is unusable.
     pub(super) async fn one_usable(&self) -> Result<Option<MachinePool>> {
-        let output =
-            checked_command(&self.zpool, &["list", "-Hp", "-o", "name,health,readonly"]).await?;
+        let output = checked_command(
+            &self.zpool,
+            &["list", "-Hp", "-o", "name,size,health,readonly"],
+        )
+        .await?;
         Ok(machine_pool::one_usable(&output).map_err(|error| error.to_string())?)
     }
 
@@ -243,8 +255,9 @@ impl PoolStorage {
     ///
     /// Returns an error when reserve, allocation, Pool creation, or verification fails.
     pub(super) async fn create(&self, requested: u64) -> Result<CreatedPool<'_>> {
-        let capacity = initial_capacity(requested)?;
-        let ashift = self.check_host_root(capacity).await?;
+        let capacity = capacity_with_headroom(requested)?;
+        let host = self.check_host_root(capacity).await?;
+        let ashift = self.host_root_ashift(&host)?;
         let backing = self.backing_text()?;
         fs::OpenOptions::new()
             .create_new(true)
@@ -308,6 +321,95 @@ impl PoolStorage {
         }
     }
 
+    /// Makes an existing empty Pool large enough for its first bound.
+    ///
+    /// An existing backing file that already has #541's exact headroom is accepted; any extension
+    /// is rounded to a whole GiB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when reserve, backing allocation, Pool growth, or verification fails.
+    pub(super) async fn ensure_first_bound_capacity(
+        &self,
+        pool: &MachinePool,
+        commitment: u64,
+    ) -> Result<()> {
+        let minimum = capacity_with_headroom(commitment)?;
+        self.ensure_capacity_at_least(pool, commitment, minimum)
+            .await
+    }
+
+    /// Makes the managed backing Pool large enough for all additional post-request bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when reserve, backing allocation, Pool growth, or verification fails.
+    pub(super) async fn ensure_capacity(&self, pool: &MachinePool, commitment: u64) -> Result<()> {
+        let minimum = rounded_capacity_with_headroom(commitment)?;
+        self.ensure_capacity_at_least(pool, commitment, minimum)
+            .await
+    }
+
+    async fn ensure_capacity_at_least(
+        &self,
+        pool: &MachinePool,
+        commitment: u64,
+        minimum: u64,
+    ) -> Result<()> {
+        if pool.capacity_bytes().get() >= minimum {
+            return Ok(());
+        }
+        if pool.name() != POOL_NAME {
+            return Err(format!(
+                "Machine Pool {} is not the managed root-backed Pool {POOL_NAME}; automatic growth cannot use {}",
+                pool.name(),
+                self.backing.display()
+            )
+            .into());
+        }
+
+        let backing = self.backing_text()?;
+        let (length, allocated) = self.backing_allocation(backing).await?;
+        let needs_allocation = length < minimum || allocated < length;
+        let target = if needs_allocation {
+            length.max(rounded_capacity_with_headroom(commitment)?)
+        } else {
+            length
+        };
+        if needs_allocation {
+            self.check_host_root(target.saturating_sub(allocated))
+                .await?;
+            let target_text = target.to_string();
+            checked_command(&self.fallocate, &["-l", &target_text, backing]).await?;
+            self.verify_preallocation(backing, target).await?;
+        }
+        checked_command(&self.zpool, &["online", "-e", pool.name(), backing]).await?;
+
+        let expanded = self.one_usable().await?.ok_or_else(|| {
+            VolumeError::from(format!(
+                "expanded Machine Pool {}, but ZFS did not report it",
+                pool.name()
+            ))
+        })?;
+        if expanded.name() != pool.name() {
+            return Err(format!(
+                "expanded Machine Pool {}, but ZFS selected {}",
+                pool.name(),
+                expanded.name()
+            )
+            .into());
+        }
+        if expanded.capacity_bytes().get() < commitment {
+            return Err(format!(
+                "Machine Pool {} has {} bytes after growth, below the {commitment}-byte committed refquota total",
+                pool.name(),
+                expanded.capacity_bytes()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     async fn cleanup(&self, failure: VolumeError) -> VolumeError {
         let pools = match checked_command(&self.zpool, &["list", "-H", "-o", "name"]).await {
             Ok(pools) => pools,
@@ -331,7 +433,7 @@ impl PoolStorage {
         self.cleanup_backing(failure)
     }
 
-    async fn check_host_root(&self, allocation: u64) -> Result<u32> {
+    async fn check_host_root(&self, allocation: u64) -> Result<fs::Metadata> {
         let host = fs::metadata(&self.host_root).map_err(|error| {
             format!(
                 "could not inspect host root {}: {error}",
@@ -378,12 +480,17 @@ impl PoolStorage {
             .checked_add(allocation)
             .ok_or_else(|| VolumeError::from("host-root reserve calculation overflowed u64"))?;
         if available < required {
+            let shortfall = required - available;
             return Err(format!(
-                "Host root has {available} bytes available; Machine Pool needs {allocation} bytes while preserving the {reserve}-byte host-root reserve"
+                "Host root is {shortfall} bytes short: {available} bytes are available, Machine Pool growth needs {allocation} bytes, and the host-root reserve is {reserve} bytes"
             )
             .into());
         }
 
+        Ok(host)
+    }
+
+    fn host_root_ashift(&self, host: &fs::Metadata) -> Result<u32> {
         let device = format!(
             "{}:{}",
             nix::sys::stat::major(host.dev()),
@@ -420,13 +527,19 @@ impl PoolStorage {
         }
     }
 
-    async fn verify_preallocation(&self, backing: &str, expected: u64) -> Result<()> {
-        let output = checked_command(&self.stat, &["-c", "%b %B", backing]).await?;
+    async fn backing_allocation(&self, backing: &str) -> Result<(u64, u64)> {
+        let output = checked_command(&self.stat, &["-c", "%s %b %B", backing]).await?;
         let mut values = output.split_whitespace();
-        let (Some(blocks), Some(block_size), None) = (values.next(), values.next(), values.next())
+        let (Some(length), Some(blocks), Some(block_size), None) =
+            (values.next(), values.next(), values.next(), values.next())
         else {
             return Err(format!("invalid allocation evidence for {backing}: {output}").into());
         };
+        let length = length.parse::<u64>().map_err(|_| {
+            VolumeError::from(format!(
+                "invalid allocation evidence for {backing}: {output}"
+            ))
+        })?;
         let allocated = blocks
             .parse::<u64>()
             .ok()
@@ -441,6 +554,17 @@ impl PoolStorage {
                     "invalid allocation evidence for {backing}: {output}"
                 ))
             })?;
+        Ok((length, allocated))
+    }
+
+    async fn verify_preallocation(&self, backing: &str, expected: u64) -> Result<()> {
+        let (length, allocated) = self.backing_allocation(backing).await?;
+        if length < expected {
+            return Err(format!(
+                "Machine Pool backing file {backing} is only {length} of {expected} bytes long"
+            )
+            .into());
+        }
         if allocated < expected {
             return Err(format!(
                 "Machine Pool backing file {backing} is sparse: {allocated} of {expected} bytes are allocated"
@@ -469,10 +593,16 @@ impl PoolStorage {
     }
 }
 
-fn initial_capacity(requested: u64) -> Result<u64> {
-    requested
-        .checked_add((requested / 10).max(GIBIBYTE))
-        .ok_or_else(|| "initial Machine Pool capacity overflowed u64".into())
+fn capacity_with_headroom(commitment: u64) -> Result<u64> {
+    commitment
+        .checked_add((commitment / 10).max(GIBIBYTE))
+        .ok_or_else(|| "Machine Pool capacity calculation overflowed u64".into())
+}
+
+fn rounded_capacity_with_headroom(commitment: u64) -> Result<u64> {
+    capacity_with_headroom(commitment)?
+        .checked_next_multiple_of(GIBIBYTE)
+        .ok_or_else(|| "Machine Pool capacity rounding overflowed u64".into())
 }
 
 fn parse_host_root_space(output: &str) -> Result<(u64, u64)> {

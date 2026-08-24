@@ -144,6 +144,7 @@ pub(super) struct DiscoveryService {
     pub(super) watch_opens: Arc<AtomicUsize>,
     pub(super) list_rpc_calls: Arc<AtomicUsize>,
     pub(super) inspect_calls: Arc<AtomicUsize>,
+    pub(super) storage: MachineStorageObservation,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
@@ -171,6 +172,7 @@ impl DiscoveryService {
             watch_opens: Arc::new(AtomicUsize::new(0)),
             list_rpc_calls: Arc::new(AtomicUsize::new(0)),
             inspect_calls: Arc::new(AtomicUsize::new(0)),
+            storage: MachineStorageObservation::Ready,
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
@@ -317,9 +319,7 @@ impl MachineRpc for DiscoveryService {
                 rtts: Vec::new(),
                 cloud_paired: self.cloud_paired.load(Ordering::SeqCst),
                 telemetry,
-                storage: inspect
-                    .include_storage
-                    .then_some(MachineStorageObservation::Ready),
+                storage: inspect.include_storage.then_some(self.storage),
             })
             .encode()
             .unwrap(),

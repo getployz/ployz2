@@ -534,11 +534,8 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("hosted_dns_hostname?: string"));
     assert!(dts.contains("export type Machine = Additive<{"));
     assert!(dts.contains("export type StorageChoice = \"none\" | \"zfs\";"));
-    assert!(
-        dts.contains(
-            "export type MachineStorageObservation = \"stateless\" | \"ready\" | \"pool\";"
-        )
-    );
+    assert!(dts.contains("export type MachineStorageObservation ="));
+    assert!(dts.contains("state: \"pool\"; capacity_bytes: number"));
     assert!(dts.contains("export type RegisterRequest = Additive<{"));
     assert!(dts.contains("storage: StorageChoice"));
     assert!(dts.contains("storage?: MachineStorageObservation"));

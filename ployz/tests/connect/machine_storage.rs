@@ -35,7 +35,10 @@ async fn machines_returns_raw_list_machines_observations_without_storage_fanout(
 
 #[tokio::test]
 async fn machine_ls_observes_storage_only_when_the_target_advertises_it() {
-    let service = storage_capable_service();
+    let mut service = storage_capable_service();
+    service.storage = ployz_core::MachineStorageObservation::Pool {
+        capacity_bytes: std::num::NonZeroU64::new(4_294_967_296).unwrap(),
+    };
     let (address, server) = serve_discovery(service.clone()).await;
 
     let output = run_ployz(address, &["machine", "ls", "--output", "json"]).await;
@@ -43,8 +46,14 @@ async fn machine_ls_observes_storage_only_when_the_target_advertises_it() {
     assert!(output.status.success(), "{output:?}");
     let observed: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        observed.pointer("/0/storage").and_then(Value::as_str),
-        Some("ready")
+        observed
+            .pointer("/0/storage/capacity_bytes")
+            .and_then(Value::as_u64),
+        Some(4_294_967_296)
+    );
+    assert_eq!(
+        observed.pointer("/0/storage/state").and_then(Value::as_str),
+        Some("pool")
     );
     assert_eq!(service.inspect_calls.load(Ordering::SeqCst), 1);
     server.abort();
