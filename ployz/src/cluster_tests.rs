@@ -113,6 +113,58 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     assert!(!snapshot.is_observer_complete());
 }
 
+#[test]
+fn targeted_volume_inventory_rejects_unsafe_routing_evidence() {
+    let target = machine_id('a');
+    let failure = |machine, name: &str| ployz_core::VolumeObservationFailure {
+        id: DockerVolumeId {
+            machine_id: machine_id(machine),
+            name: DockerVolumeName::parse(name).unwrap(),
+        },
+        error: unavailable("inspect failed"),
+    };
+
+    for inventory in [
+        VolumeInventory {
+            volumes: vec![docker_volume('b', "wrong-machine")],
+            failures: Vec::new(),
+        },
+        VolumeInventory {
+            volumes: Vec::new(),
+            failures: vec![failure('b', "wrong-machine")],
+        },
+        VolumeInventory {
+            volumes: vec![
+                docker_volume('a', "duplicate"),
+                docker_volume('a', "duplicate"),
+            ],
+            failures: Vec::new(),
+        },
+        VolumeInventory {
+            volumes: vec![docker_volume('a', "contradiction")],
+            failures: vec![failure('a', "contradiction")],
+        },
+    ] {
+        assert_eq!(
+            validate_volume_inventory(target, inventory)
+                .expect_err("unsafe inventory is rejected before MachineSuccess")
+                .code,
+            RpcErrorCode::Internal
+        );
+    }
+
+    assert!(
+        validate_volume_inventory(
+            target,
+            VolumeInventory {
+                volumes: vec![docker_volume('a', "observed")],
+                failures: vec![failure('a', "unavailable")],
+            },
+        )
+        .is_ok()
+    );
+}
+
 fn machine(hex: char) -> MachineObservation {
     MachineObservation {
         machine: Machine {

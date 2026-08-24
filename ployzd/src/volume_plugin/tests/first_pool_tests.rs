@@ -124,6 +124,10 @@ async fn growth_converges_across_multiple_usable_capacity_increases() {
 
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
     assert_eq!(log.matches("zpool online -e ployz ").count(), 3);
+    assert_eq!(
+        fs::read_to_string(test.0.join("allocated")).unwrap(),
+        "5368709120\n"
+    );
     assert!(test.0.join("other").exists());
 }
 

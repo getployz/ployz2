@@ -353,11 +353,11 @@ impl PoolStorage {
         let backing = self.backing_text()?;
         let mut observed = pool.size_bytes().get();
         let (length, _) = self.backing_allocation(backing).await?;
-        // Retry a previously allocated extension before reserving and allocating more bytes.
-        let mut claim_existing_extension = length >= minimum;
+        let mut retry_backing = length > observed;
         loop {
             let (length, allocated) = self.backing_allocation(backing).await?;
-            let target = if claim_existing_extension {
+            let newly_allocated = !retry_backing;
+            let target = if retry_backing {
                 length
             } else {
                 let extension = (minimum - observed)
@@ -395,16 +395,15 @@ impl PoolStorage {
             if expanded_size >= minimum {
                 return Ok(());
             }
-            if expanded_size < observed || (expanded_size == observed && !claim_existing_extension)
-            {
+            if expanded_size < observed || (expanded_size == observed && newly_allocated) {
                 return Err(format!(
                     "Machine Pool {} made no usable-capacity progress after growth; ZFS still reports {expanded_size} bytes, below the required {minimum} bytes including headroom",
                     pool.name()
                 )
                 .into());
             }
+            retry_backing = expanded_size > observed;
             observed = expanded_size;
-            claim_existing_extension = false;
         }
     }
 

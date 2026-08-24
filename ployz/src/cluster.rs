@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
     time::Duration,
 };
@@ -965,11 +965,47 @@ async fn list_volumes_on_machine(
     client
         .read::<op::ListVolumes>(ListVolumesRequest {}, &MachineTarget::from(&machine_id))
         .await
+        .and_then(|inventory| validate_volume_inventory(machine_id, inventory))
         .map(|list| MachineSuccess {
             machine_id,
             value: list,
         })
         .map_err(|error| MachineFailure { machine_id, error })
+}
+
+fn validate_volume_inventory(
+    machine_id: MachineId,
+    inventory: VolumeInventory,
+) -> Result<VolumeInventory, RpcError> {
+    let mut names = BTreeSet::new();
+    for id in inventory
+        .volumes
+        .iter()
+        .map(|volume| &volume.id)
+        .chain(inventory.failures.iter().map(|failure| &failure.id))
+    {
+        if id.machine_id != machine_id {
+            return Err(RpcError {
+                code: RpcErrorCode::Internal,
+                message: format!(
+                    "targeted ListVolumes response from Machine {machine_id} contained Docker Volume '{}' for Machine {}",
+                    id.name, id.machine_id
+                ),
+                details: Value::Null,
+            });
+        }
+        if !names.insert(&id.name) {
+            return Err(RpcError {
+                code: RpcErrorCode::Internal,
+                message: format!(
+                    "targeted ListVolumes response from Machine {machine_id} repeated Docker Volume '{}'",
+                    id.name
+                ),
+                details: Value::Null,
+            });
+        }
+    }
+    Ok(inventory)
 }
 
 async fn list_on_machine(
