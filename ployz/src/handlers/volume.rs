@@ -5,10 +5,12 @@ use std::{
 
 use clap::ArgMatches;
 use ployz_core::{
-    CreateVolumeRequest, DockerVolumeName, DockerVolumeStorageObservation, FanoutSelector,
-    InspectVolumeRequest, ListMachinesRequest, MachineObservation, MachineTarget, NameMatches,
-    PartialResult, RemoveVolumeRequest, RpcError, op, resolve_machine_selectors,
+    CreateVolumeRequest, DockerVolume, DockerVolumeName, DockerVolumeStorageObservation,
+    FanoutSelector, InspectVolumeRequest, ListMachinesRequest, MachineFailure, MachineObservation,
+    MachineSuccess, MachineTarget, NameMatches, PartialResult, RemoveVolumeRequest, RpcError,
+    RpcErrorCode, VolumeInventory, op, resolve_machine_selectors,
 };
+use tokio::task::JoinSet;
 
 use crate::{
     connect::{Client, TARGET_RPC_TIMEOUT},
@@ -48,7 +50,7 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
                 println!("Cancelled. No volume was created.");
                 return Ok(());
             };
-            let volume = client
+            let report = client
                 .invoke::<op::CreateVolume>(
                     CreateVolumeRequest {
                         name,
@@ -60,6 +62,7 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
                     Some(TARGET_RPC_TIMEOUT),
                 )
                 .await?;
+            let volume = crate::service::verified_created_volume(report)?;
             if size.as_ref().is_some_and(|size| !size.matches(&volume)) {
                 return Err(Error::usage(format!(
                     "Docker Volume {:?} already exists with a different Provisioned shape; resizing is not supported; use the future `ployz volume update` capability",
@@ -100,9 +103,20 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
                         volume.volume.driver()
                     );
                 }
+                for failure in volume_failures(&result) {
+                    println!(
+                        "{}\t{}\tUNAVAILABLE\t-\t-\t-",
+                        failure.id.machine_id, failure.id.name
+                    );
+                }
             }
             report_failures(&result);
-            Ok(())
+            report_inventory_failures(&result);
+            if inventories_complete(&result) {
+                Ok(())
+            } else {
+                Err(Error::exit(1))
+            }
         })
     })
 }
@@ -132,24 +146,42 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         .collect::<Vec<_>>();
     with_client(root, |client| {
         Box::pin(async move {
-            let (volumes, result) = discover(client, &selectors).await?;
-            if !result.all_targets_succeeded() {
+            let machines = selected_machines(
+                client
+                    .call::<op::ListMachines>(ListMachinesRequest {}, None)
+                    .await?
+                    .machines,
+                &selectors,
+            )?;
+            let result = inspect_on_machines(client, &machines, &name).await;
+            if result
+                .failures
+                .iter()
+                .any(|failure| failure.error.code != RpcErrorCode::NotFound)
+                || !result.omissions.is_empty()
+            {
                 return Err(Error::usage(failure_summary(&result)));
             }
-            match NameMatches::from_matches(filter_volumes(&volumes, std::slice::from_ref(&name))) {
+            let names = machines
+                .iter()
+                .map(|machine| (machine.machine.id, machine.machine.name.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let volumes = result
+                .successes
+                .into_iter()
+                .map(|success| MachineVolume {
+                    machine_name: names
+                        .get(&success.machine_id)
+                        .cloned()
+                        .expect("inspect target came from the Machine snapshot"),
+                    volume: success.value,
+                })
+                .collect();
+            match NameMatches::from_matches(volumes) {
                 NameMatches::None => Err(Error::usage(format!(
                     "Docker Volume {name:?} was not found"
                 ))),
-                NameMatches::One(mut volume) => {
-                    volume.volume = client
-                        .invoke::<op::InspectVolume>(
-                            InspectVolumeRequest {
-                                name: volume.volume.id.name.clone(),
-                            },
-                            &MachineTarget::from(&volume.volume.id.machine_id),
-                            Some(TARGET_RPC_TIMEOUT),
-                        )
-                        .await?;
+                NameMatches::One(volume) => {
                     println!("{}", serde_json::to_string_pretty(&volume)?);
                     Ok(())
                 }
@@ -181,7 +213,23 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let (volumes, result) = discover(client, &selectors).await?;
             let volumes = filter_volumes(&volumes, &names);
-            if result.all_targets_succeeded()
+            let unavailable = volume_failures(&result)
+                .filter(|failure| names.is_empty() || names.contains(&failure.id.name))
+                .collect::<Vec<_>>();
+            if !unavailable.is_empty() {
+                return Err(Error::usage(format!(
+                    "refusing to remove unavailable Docker Volumes: {}",
+                    unavailable
+                        .iter()
+                        .map(|failure| format!(
+                            "{}/{}: {}",
+                            failure.id.machine_id, failure.id.name, failure.error.message
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )));
+            }
+            if inventories_complete(&result)
                 && let Some(name) = names
                     .iter()
                     .find(|name| !volumes.iter().any(|volume| &volume.volume.id.name == *name))
@@ -192,7 +240,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
             }
             report_partial_removal_discovery(&result);
             if volumes.is_empty() {
-                return Err(Error::usage(failure_summary(&result)));
+                return Err(Error::usage(volume_failure_summary(&result)));
             }
             println!("The following Docker Volumes will be removed:");
             for volume in &volumes {
@@ -233,13 +281,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
 async fn discover(
     client: &mut Client,
     selectors: &[String],
-) -> Result<
-    (
-        Vec<MachineVolume>,
-        PartialResult<Vec<ployz_core::DockerVolume>, RpcError>,
-    ),
-    Error,
-> {
+) -> Result<(Vec<MachineVolume>, PartialResult<VolumeInventory, RpcError>), Error> {
     let machines = selected_machines(
         client
             .call::<op::ListMachines>(ListMachinesRequest {}, None)
@@ -249,6 +291,51 @@ async fn discover(
     )?;
     let result = client.list_volumes(&machines).await;
     Ok((machine_volumes(&machines, &result), result))
+}
+
+async fn inspect_on_machines(
+    client: &Client,
+    machines: &[MachineObservation],
+    name: &DockerVolumeName,
+) -> PartialResult<DockerVolume, RpcError> {
+    let mut requests = JoinSet::new();
+    let mut omissions = Vec::new();
+    for (index, machine) in machines.iter().enumerate() {
+        if !machine.membership.invites_rpc() {
+            omissions.push(machine.machine.id);
+            continue;
+        }
+        let client = client.clone();
+        let machine_id = machine.machine.id;
+        let name = name.clone();
+        requests.spawn(async move {
+            let result = client
+                .invoke::<op::InspectVolume>(
+                    InspectVolumeRequest { name },
+                    &MachineTarget::from(&machine_id),
+                    Some(TARGET_RPC_TIMEOUT),
+                )
+                .await;
+            (index, machine_id, result)
+        });
+    }
+    let mut outcomes = Vec::with_capacity(requests.len());
+    while let Some(outcome) = requests.join_next().await {
+        outcomes.push(outcome.expect("Volume inspection task does not panic"));
+    }
+    outcomes.sort_by_key(|(index, _, _)| *index);
+    let mut result = PartialResult {
+        successes: Vec::new(),
+        failures: Vec::new(),
+        omissions,
+    };
+    for (_, machine_id, outcome) in outcomes {
+        match outcome {
+            Ok(value) => result.successes.push(MachineSuccess { machine_id, value }),
+            Err(error) => result.failures.push(MachineFailure { machine_id, error }),
+        }
+    }
+    result
 }
 
 fn selected_machines(
@@ -344,7 +431,29 @@ fn report_failures<T>(result: &PartialResult<T, RpcError>) {
     }
 }
 
-fn report_partial_removal_discovery<T>(result: &PartialResult<T, RpcError>) {
+fn volume_failures(
+    result: &PartialResult<VolumeInventory, RpcError>,
+) -> impl Iterator<Item = &ployz_core::VolumeObservationFailure> {
+    result
+        .successes
+        .iter()
+        .flat_map(|success| success.value.failures.iter())
+}
+
+fn inventories_complete(result: &PartialResult<VolumeInventory, RpcError>) -> bool {
+    result.all_targets_succeeded() && volume_failures(result).next().is_none()
+}
+
+fn report_inventory_failures(result: &PartialResult<VolumeInventory, RpcError>) {
+    for failure in volume_failures(result) {
+        eprintln!(
+            "{}/{}: {}",
+            failure.id.machine_id, failure.id.name, failure.error.message
+        );
+    }
+}
+
+fn report_partial_removal_discovery(result: &PartialResult<VolumeInventory, RpcError>) {
     for failure in &result.failures {
         eprintln!(
             "WARNING: Machine {} was not checked and may hold a same-named Docker Volume: {}",
@@ -356,6 +465,26 @@ fn report_partial_removal_discovery<T>(result: &PartialResult<T, RpcError>) {
             "WARNING: Machine {machine_id} was not checked and may hold a same-named Docker Volume: no terminal response"
         );
     }
+    for failure in volume_failures(result) {
+        eprintln!(
+            "WARNING: Docker Volume {}/{} could not be checked and will not be removed: {}",
+            failure.id.machine_id, failure.id.name, failure.error.message
+        );
+    }
+}
+
+fn volume_failure_summary(result: &PartialResult<VolumeInventory, RpcError>) -> String {
+    let mut failures = crate::failure::partial_failure_details(result);
+    for failure in volume_failures(result) {
+        if !failures.is_empty() {
+            failures.push_str("; ");
+        }
+        failures.push_str(&format!(
+            "{}/{}: {}",
+            failure.id.machine_id, failure.id.name, failure.error.message
+        ));
+    }
+    format!("one or more Docker Volume observations failed: {failures}")
 }
 
 fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {

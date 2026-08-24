@@ -73,7 +73,16 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     let volumes = PartialResult {
         successes: vec![MachineSuccess {
             machine_id: machine_id('a'),
-            value: vec![volume.clone()],
+            value: VolumeInventory {
+                volumes: vec![volume.clone()],
+                failures: vec![ployz_core::VolumeObservationFailure {
+                    id: ployz_core::DockerVolumeId {
+                        machine_id: machine_id('a'),
+                        name: DockerVolumeName::parse("unavailable").unwrap(),
+                    },
+                    error: unavailable("volume detail failed"),
+                }],
+            },
         }],
         failures: vec![MachineFailure {
             machine_id: machine_id('b'),
@@ -90,6 +99,17 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     assert_eq!(snapshot.machines, machines);
     assert_eq!(snapshot.containers, [container]);
     assert_eq!(snapshot.volumes, [volume]);
+    assert_eq!(snapshot.volume_observation_failures.len(), 1);
+    assert_eq!(
+        snapshot
+            .volume_observation_failures
+            .first()
+            .expect("snapshot includes the named failure")
+            .id
+            .name
+            .as_str(),
+        "unavailable"
+    );
     assert_eq!(snapshot.container_failures, expected_container_failures);
     assert_eq!(snapshot.container_omissions, expected_container_omissions);
     assert_eq!(snapshot.volume_failures, expected_volume_failures);

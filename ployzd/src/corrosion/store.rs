@@ -140,6 +140,7 @@ impl MachinePublicationGuard<'_> {
         machine_id: &MachineId,
         deletions: &[DockerVolumeName],
         upserts: &[DockerVolume],
+        incomplete: &[DockerVolumeName],
     ) -> Result<(), Error> {
         if upserts
             .iter()
@@ -158,6 +159,9 @@ impl MachinePublicationGuard<'_> {
                 )
             })
             .collect::<Vec<_>>();
+        for name in incomplete {
+            statements.push(volume_incomplete(machine_id, name));
+        }
         for volume in upserts {
             statements.push(volume_upsert(volume)?);
         }
@@ -803,6 +807,13 @@ pub(crate) struct LocalVolumeSnapshot {
 }
 
 impl LocalVolumeSnapshot {
+    pub(crate) fn from_inventory(names: impl IntoIterator<Item = DockerVolumeName>) -> Self {
+        Self {
+            inventory: names.into_iter().collect(),
+            observations: BTreeMap::new(),
+        }
+    }
+
     pub(crate) fn observed(&mut self, volume: DockerVolume) {
         self.inventory.insert(volume.id.name.clone());
         self.observations.insert(volume.id.name.clone(), volume);
@@ -829,6 +840,13 @@ fn volume_upsert(volume: &DockerVolume) -> Result<Statement, Error> {
             json!(serde_json::to_string(volume)?),
         ],
     ))
+}
+
+fn volume_incomplete(machine_id: &MachineId, name: &DockerVolumeName) -> Statement {
+    Statement::new(
+        "INSERT INTO volumes (machine_id, name, volume, updated_at) VALUES (?, ?, '', datetime('now')) ON CONFLICT (machine_id, name) DO UPDATE SET volume = excluded.volume, updated_at = excluded.updated_at",
+        [json!(machine_id), json!(name)],
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

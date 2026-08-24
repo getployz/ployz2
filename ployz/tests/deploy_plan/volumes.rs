@@ -1,7 +1,8 @@
 use super::support::*;
 use ployz_core::{
     DockerVolume, DockerVolumeStorageObservation, MachineStorageObservation, PreservedVolume,
-    ProvisionedVolume, ProvisionedVolumeMaximumBytes, ServiceAttempt, ServiceName,
+    ProvisionedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal, RpcError, RpcErrorCode,
+    ServiceAttempt, ServiceName, VolumeObservationFailure,
 };
 use std::{collections::BTreeMap, num::NonZeroU64};
 
@@ -29,6 +30,49 @@ fn automatic_provisioned_intent() -> DeployIntent {
     );
     intent.provisioned_volumes = vec![provisioned("api", "data", 1_073_741_824)];
     intent
+}
+
+#[test]
+fn unavailable_named_volume_blocks_only_a_dependent_service() {
+    let mut dependent = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut dependent, "data");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        volume_observation_failures: vec![VolumeObservationFailure {
+            id: DockerVolumeId {
+                machine_id: machine_id('1'),
+                name: app_volume("data"),
+            },
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "volume detail failed".into(),
+                details: Default::default(),
+            },
+        }],
+        ..Default::default()
+    };
+
+    let error = plan_deploy([&dependent], &snapshot, PlanOptions::default()).unwrap_err();
+    assert!(error.to_string().contains("app_data"), "{error}");
+    assert!(
+        error.to_string().contains("volume detail failed"),
+        "{error}"
+    );
+
+    let unrelated = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let preview = plan_deploy([&unrelated], &snapshot, PlanOptions::default()).unwrap();
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    assert_eq!(
+        preview.prune_refusal,
+        Some(PruneRefusal::IncompleteSnapshot)
+    );
 }
 
 fn explicitly_targeted_provisioned_deploy(

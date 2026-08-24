@@ -15,10 +15,10 @@ use ployz::{
     },
 };
 use ployz_core::{
-    HostBind, HttpProtocol, IngressHostname, MANAGED_LABEL, MachineStorageObservation,
-    PROJECT_NAME_LABEL, PortPublication, ProjectName, ProvisionedVolume,
-    ProvisionedVolumeMaximumBytes, RestartPolicy, ServiceMode, ServiceName, ServiceVolumeReference,
-    TransportProtocol, UpdateOrder, VolumeSource,
+    DockerVolumeId, DockerVolumeName, HostBind, HttpProtocol, IngressHostname, MANAGED_LABEL,
+    MachineStorageObservation, PROJECT_NAME_LABEL, PortPublication, ProjectName, ProvisionedVolume,
+    ProvisionedVolumeMaximumBytes, RestartPolicy, RpcError, RpcErrorCode, ServiceMode, ServiceName,
+    ServiceVolumeReference, TransportProtocol, UpdateOrder, VolumeObservationFailure, VolumeSource,
 };
 
 #[path = "compose/support.rs"]
@@ -720,6 +720,43 @@ volumes:
     )
     .unwrap_err();
     assert_eq!(error.to_string(), "external volumes not found: 'ext-vol'");
+}
+
+#[test]
+fn unavailable_external_volume_is_not_reported_as_absent() {
+    let project = parse_normalized(
+        r#"
+services:
+  app: {image: app, volumes: [{type: volume, source: ext-vol, target: /data}]}
+volumes:
+  ext-vol: {external: true}
+"#,
+        ".",
+    )
+    .unwrap();
+    let machine = machine('a', "one");
+    let error = plan_compose(
+        &project,
+        &DeploySnapshot {
+            machines: vec![machine.clone()],
+            volume_observation_failures: vec![VolumeObservationFailure {
+                id: DockerVolumeId {
+                    machine_id: machine.machine.id,
+                    name: DockerVolumeName::parse("ext-vol").unwrap(),
+                },
+                error: RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "inspect failed".into(),
+                    details: Default::default(),
+                },
+            }],
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, PlanError::DockerVolumeUnavailable { .. }));
+    assert!(error.to_string().contains("inspect failed"), "{error}");
 }
 
 #[test]

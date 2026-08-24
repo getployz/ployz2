@@ -6,7 +6,7 @@ use std::{
 
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
-    ContainerObservation, CreateContainerRequest, DataLoss, DescribeContractRequest, DockerVolume,
+    ContainerObservation, CreateContainerRequest, DataLoss, DescribeContractRequest,
     DockerVolumeName, GetDomainRequest, InspectRequest, ListContainersRequest, ListImagesRequest,
     ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
@@ -15,12 +15,15 @@ use ployz_core::{
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveContainerRequest, RemoveLocalMachineRequest,
     RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc,
     RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest,
-    UnconfirmedDataLoss, derive_live_services, op,
+    UnconfirmedDataLoss, VolumeInventory, derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
 use tokio::task::JoinSet;
 use tonic::{Streaming, codec::ProstCodec, codegen::http::uri::PathAndQuery, transport::Channel};
+
+#[cfg(test)]
+use ployz_core::DockerVolume;
 
 use crate::{
     connect::{
@@ -278,7 +281,7 @@ impl Client {
     pub async fn list_volumes(
         &mut self,
         machines: &[MachineObservation],
-    ) -> PartialResult<Vec<DockerVolume>, RpcError> {
+    ) -> PartialResult<VolumeInventory, RpcError> {
         let mut requests = JoinSet::new();
         let mut omissions = Vec::new();
         for (index, machine) in machines.iter().enumerate() {
@@ -647,7 +650,7 @@ impl Client {
 pub(crate) fn snapshot_from_partial(
     machines: Vec<MachineObservation>,
     containers: PartialResult<Vec<ContainerObservation>, RpcError>,
-    volumes: PartialResult<Vec<DockerVolume>, RpcError>,
+    volumes: PartialResult<VolumeInventory, RpcError>,
     capacity: BTreeMap<MachineId, BridgeEndpointCapacity>,
 ) -> DeploySnapshot {
     let PartialResult {
@@ -667,8 +670,12 @@ pub(crate) fn snapshot_from_partial(
             .flat_map(|success| success.value)
             .collect(),
         volumes: volume_successes
+            .iter()
+            .flat_map(|success| success.value.volumes.iter().cloned())
+            .collect(),
+        volume_observation_failures: volume_successes
             .into_iter()
-            .flat_map(|success| success.value)
+            .flat_map(|success| success.value.failures)
             .collect(),
         container_failures,
         container_omissions,
@@ -866,8 +873,16 @@ async fn data_loss_on_machine(
     Ok(ObservedDataLoss {
         data_loss: volumes
             .value
+            .volumes
             .into_iter()
             .map(|volume| DataLoss::DockerVolume(volume.id))
+            .chain(
+                volumes
+                    .value
+                    .failures
+                    .into_iter()
+                    .map(|failure| DataLoss::DockerVolume(failure.id)),
+            )
             .collect(),
     })
 }
@@ -917,13 +932,13 @@ async fn observe_machine_storage(
 async fn list_volumes_on_machine(
     mut client: Client,
     machine_id: MachineId,
-) -> Result<MachineSuccess<Vec<DockerVolume>>, MachineFailure<RpcError>> {
+) -> Result<MachineSuccess<VolumeInventory>, MachineFailure<RpcError>> {
     client
         .read::<op::ListVolumes>(ListVolumesRequest {}, &MachineTarget::from(&machine_id))
         .await
         .map(|list| MachineSuccess {
             machine_id,
-            value: list.volumes,
+            value: list,
         })
         .map_err(|error| MachineFailure { machine_id, error })
 }

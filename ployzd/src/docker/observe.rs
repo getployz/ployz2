@@ -241,8 +241,20 @@ impl ContainerRuntime {
             .map_err(|_| Error::LocalStorePoisoned)?
             .record()
             .id();
-        let mut live = LocalVolumeSnapshot::default();
-        for volume in self.named_volumes(&machine_id).await? {
+        let inventory = self.named_volumes(&machine_id).await?;
+        let mut live = LocalVolumeSnapshot::from_inventory(
+            inventory
+                .volumes
+                .iter()
+                .map(|volume| volume.id.name.clone())
+                .chain(
+                    inventory
+                        .failures
+                        .iter()
+                        .map(|failure| failure.id.name.clone()),
+                ),
+        );
+        for volume in inventory.volumes {
             live.observed(volume);
         }
         let publication = sink.replicated.machine_publication().await;
@@ -258,7 +270,12 @@ impl ContainerRuntime {
         let existing = publication.local_volumes(&machine_id).await?;
         let changes = local_volume_changes(&existing, &live);
         publication
-            .apply_volume_rows(&machine_id, &changes.deletions, &changes.upserts)
+            .apply_volume_rows(
+                &machine_id,
+                &changes.deletions,
+                &changes.upserts,
+                &changes.incomplete,
+            )
             .await
             .map_err(Error::from)
     }
@@ -303,6 +320,7 @@ fn local_container_changes(
 struct LocalVolumeChanges {
     deletions: Vec<DockerVolumeName>,
     upserts: Vec<DockerVolume>,
+    incomplete: Vec<DockerVolumeName>,
 }
 
 fn local_volume_changes(
@@ -320,6 +338,16 @@ fn local_volume_changes(
             .observations
             .values()
             .filter(|volume| existing.observations.get(&volume.id.name) != Some(volume))
+            .cloned()
+            .collect(),
+        incomplete: current
+            .inventory
+            .iter()
+            .filter(|name| {
+                !current.observations.contains_key(*name)
+                    && (!existing.inventory.contains(*name)
+                        || existing.observations.contains_key(*name))
+            })
             .cloned()
             .collect(),
     }
@@ -483,5 +511,35 @@ mod tests {
 
         assert_eq!(changes.deletions, vec![stale.id.name]);
         assert_eq!(changes.upserts, vec![changed, new]);
+    }
+
+    #[test]
+    fn unavailable_volume_becomes_incomplete_instead_of_deleted_or_stale() {
+        let machine_id = ployz_core::MachineId::parse("b".repeat(32)).unwrap();
+        let name = DockerVolumeName::parse("data").unwrap();
+        let observed = DockerVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id,
+                name: name.clone(),
+            },
+            options: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            storage: ployz_core::DockerVolumeStorageObservation::Provisioned {
+                mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
+                bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
+                used_bytes: 512,
+            },
+        };
+        let existing = LocalVolumeSnapshot {
+            inventory: [name.clone()].into(),
+            observations: [(name.clone(), observed)].into(),
+        };
+        let current = LocalVolumeSnapshot::from_inventory([name.clone()]);
+
+        let changes = local_volume_changes(&existing, &current);
+
+        assert!(changes.deletions.is_empty());
+        assert!(changes.upserts.is_empty());
+        assert_eq!(changes.incomplete, vec![name]);
     }
 }

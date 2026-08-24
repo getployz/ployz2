@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use super::support::*;
 use ployz::deploy::{IngressContext, preview_deploy};
 use ployz_core::{
-    ComposePruneRefusal, ContainerKind, DependencyCondition, MachineFailure, PruneRefusal,
-    QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName,
+    ComposePruneRefusal, ContainerKind, DependencyCondition, DockerVolumeId, MachineFailure,
+    PruneRefusal, QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName,
+    VolumeObservationFailure,
 };
 
 #[test]
@@ -111,6 +112,27 @@ fn required_container_failure_makes_the_snapshot_incomplete() {
         }],
         ..Default::default()
     };
+    assert!(!snapshot.is_observer_complete());
+}
+
+#[test]
+fn required_named_volume_failure_makes_the_snapshot_incomplete() {
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        volume_observation_failures: vec![VolumeObservationFailure {
+            id: DockerVolumeId {
+                machine_id: machine_id('1'),
+                name: app_volume("data"),
+            },
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "detail failed".into(),
+                details: Default::default(),
+            },
+        }],
+        ..Default::default()
+    };
+
     assert!(!snapshot.is_observer_complete());
 }
 

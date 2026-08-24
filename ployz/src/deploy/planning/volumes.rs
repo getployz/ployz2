@@ -698,6 +698,19 @@ fn volume_constraints<'spec>(
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
     let mounted_volumes = mounted_named_volumes(&spec.volume_graph)?;
+    if let Some(failure) = snapshot.volume_observation_failures.iter().find(|failure| {
+        machines
+            .iter()
+            .any(|machine| machine.machine.id == failure.id.machine_id)
+            && mounted_volumes
+                .iter()
+                .any(|volume| named_volume_name(volume) == Some(&failure.id.name))
+    }) {
+        return Err(PlanError::DockerVolumeUnavailable {
+            id: failure.id.clone(),
+            message: failure.error.message.clone(),
+        });
+    }
     let mut missing_volumes = Vec::new();
     for volume in mounted_volumes.iter().copied() {
         machines.retain(|machine| {

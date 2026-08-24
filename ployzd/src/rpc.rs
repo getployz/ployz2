@@ -10,7 +10,7 @@ use ployz_core::{
     ContainerDetails, ContainerList, ContractDescription, Domain, DomainRecords, ImageIngestReason,
     ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, MachineId, MachineLogService,
     MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeList, VolumeRemoved, op,
+    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, watch};
@@ -517,7 +517,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         match containers.list_volumes(&machine_id).await {
-            Ok(volumes) => respond(VolumeList { volumes }),
+            Ok(inventory) => respond(inventory),
             Err(error) => respond(docker_rpc_error(error)),
         }
     }

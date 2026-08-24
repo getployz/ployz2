@@ -5,10 +5,10 @@ use std::{
 
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
-    DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId, MachineName,
-    MachineObservation, MachineTarget, ProjectName, ProvisionedVolumeMaximumBytes,
+    DockerVolumeId, DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId,
+    MachineName, MachineObservation, MachineTarget, ProjectName, ProvisionedVolumeMaximumBytes,
     QualifiedService, RpcError, ServiceName, ServiceObservation, ServiceVolumeReference,
-    derive_services,
+    VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
@@ -57,6 +57,8 @@ pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
     pub containers: Vec<ContainerObservation>,
     pub volumes: Vec<DockerVolume>,
+    /// Named Docker Volumes confirmed present without current detail.
+    pub volume_observation_failures: Vec<VolumeObservationFailure>,
     /// Target-specific Container listing failures from this observer's fan-out.
     pub container_failures: Vec<MachineFailure<RpcError>>,
     /// Required Container queries that produced no terminal response.
@@ -99,6 +101,10 @@ impl DeploySnapshot {
             &self.container_omissions,
             &required,
         ) && !affects_required(&self.volume_failures, &self.volume_omissions, &required)
+            && !self
+                .volume_observation_failures
+                .iter()
+                .any(|failure| required.contains(&failure.id.machine_id))
     }
 }
 
@@ -335,6 +341,8 @@ pub enum PlanError {
     },
     #[error("dependency cycle at service '{service}'")]
     DependencyCycle { service: String },
+    #[error("Docker Volume {id:?} is unavailable: {message}")]
+    DockerVolumeUnavailable { id: DockerVolumeId, message: String },
     #[error("external volumes not found: {}", quoted_names(.names))]
     ExternalVolumesNotFound { names: Vec<DockerVolumeName> },
     #[error("hostname {hostname} is already published by {owner}")]
@@ -417,6 +425,20 @@ pub(crate) fn reject_missing_external_volumes(
         .external_volume_names()
         .filter(|name| !present.contains(name))
         .collect::<Vec<_>>();
+    if let Some(failure) = snapshot
+        .volume_observation_failures
+        .iter()
+        .find(|failure| {
+            names
+                .iter()
+                .any(|name| name.as_str() == failure.id.name.as_str())
+        })
+    {
+        return Err(PlanError::DockerVolumeUnavailable {
+            id: failure.id.clone(),
+            message: failure.error.message.clone(),
+        });
+    }
     if names.is_empty() {
         Ok(())
     } else {
