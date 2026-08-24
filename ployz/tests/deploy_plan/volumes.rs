@@ -40,7 +40,7 @@ fn unavailable_named_volume_blocks_only_a_dependent_service() {
     add_named_volume(&mut dependent, "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot::from_parts(
+        volume_snapshot: VolumeSnapshot::try_from_parts(
             Vec::new(),
             vec![VolumeObservationFailure {
                 id: DockerVolumeId {
@@ -55,7 +55,8 @@ fn unavailable_named_volume_blocks_only_a_dependent_service() {
             }],
             Vec::new(),
             Vec::new(),
-        ),
+        )
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
 
@@ -88,7 +89,7 @@ fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
     add_named_volume(&mut service, "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "incomplete"), machine('2', "healthy")],
-        volume_snapshot: VolumeSnapshot::from_parts(
+        volume_snapshot: VolumeSnapshot::try_from_parts(
             Vec::new(),
             Vec::new(),
             vec![MachineFailure {
@@ -100,7 +101,8 @@ fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
                 },
             }],
             Vec::new(),
-        ),
+        )
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
 
@@ -129,12 +131,13 @@ fn named_volume_planning_rejects_an_only_incomplete_candidate() {
     add_named_volume(&mut dependent, "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "incomplete")],
-        volume_snapshot: VolumeSnapshot::from_parts(
+        volume_snapshot: VolumeSnapshot::try_from_parts(
             Vec::new(),
             Vec::new(),
             Vec::new(),
             vec![machine_id('1')],
-        ),
+        )
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
 

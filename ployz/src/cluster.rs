@@ -684,9 +684,7 @@ impl Client {
         let containers = self.live_services_from(&machines).await?.containers;
         let volumes = self.list_volumes(&machines).await;
         let capacity = capacity::observe(self, &machines).await;
-        Ok(snapshot_from_partial(
-            machines, containers, volumes, capacity,
-        ))
+        snapshot_from_partial(machines, containers, volumes, capacity).map_err(ConnectError::Remote)
     }
 }
 
@@ -695,23 +693,23 @@ pub(crate) fn snapshot_from_partial(
     containers: PartialResult<Vec<ContainerObservation>, RpcError>,
     volumes: PartialResult<VolumeInventory, RpcError>,
     capacity: BTreeMap<MachineId, BridgeEndpointCapacity>,
-) -> DeploySnapshot {
+) -> Result<DeploySnapshot, RpcError> {
     let PartialResult {
         successes: container_successes,
         failures: container_failures,
         omissions: container_omissions,
     } = containers;
-    DeploySnapshot {
+    Ok(DeploySnapshot {
         machines,
         containers: container_successes
             .into_iter()
             .flat_map(|success| success.value)
             .collect(),
-        volume_snapshot: VolumeSnapshot::from_partial(volumes),
+        volume_snapshot: VolumeSnapshot::from_partial(volumes)?,
         container_failures,
         container_omissions,
         capacity: Some(capacity),
-    }
+    })
 }
 
 async fn remove_volumes_on(

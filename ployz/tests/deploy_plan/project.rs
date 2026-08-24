@@ -50,14 +50,15 @@ fn project_removal_deletes_visible_services_and_preserves_volumes() {
 fn incomplete_snapshot_refuses_removal_and_does_not_prune() {
     let spec = requested(ServiceMode::Global);
     let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
+        machines: vec![machine('1', "first"), machine('2', "second")],
         containers: vec![container('b', '1', &spec, &service_id('a'))],
-        volume_snapshot: VolumeSnapshot::from_parts(
+        volume_snapshot: VolumeSnapshot::try_from_parts(
             vec![owned_volume(machine_id('1'), "data")],
             Vec::new(),
             Vec::new(),
-            vec![machine_id('1')],
-        ),
+            vec![machine_id('2')],
+        )
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
@@ -74,12 +75,13 @@ fn incomplete_snapshot_refuses_removal_and_does_not_prune() {
 fn incomplete_empty_view_still_refuses() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot::from_parts(
+        volume_snapshot: VolumeSnapshot::try_from_parts(
             Vec::new(),
             Vec::new(),
             Vec::new(),
             vec![machine_id('1')],
-        ),
+        )
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();

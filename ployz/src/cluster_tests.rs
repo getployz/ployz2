@@ -92,7 +92,8 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     };
     let expected_container_failures = containers.failures.clone();
     let expected_container_omissions = containers.omissions.clone();
-    let snapshot = snapshot_from_partial(machines.clone(), containers, volumes, BTreeMap::new());
+    let snapshot =
+        snapshot_from_partial(machines.clone(), containers, volumes, BTreeMap::new()).unwrap();
 
     assert_eq!(snapshot.machines, machines);
     assert_eq!(snapshot.containers, [container]);
@@ -162,6 +163,87 @@ fn targeted_volume_inventory_rejects_unsafe_routing_evidence() {
             },
         )
         .is_ok()
+    );
+}
+
+#[test]
+fn volume_snapshot_rejects_duplicate_and_contradictory_evidence() {
+    let volume = docker_volume('a', "data");
+    let named_failure = || ployz_core::VolumeObservationFailure {
+        id: volume.id.clone(),
+        error: unavailable("inspect failed"),
+    };
+    let machine_failure = || MachineFailure {
+        machine_id: machine_id('a'),
+        error: unavailable("list failed"),
+    };
+
+    for result in [
+        VolumeSnapshot::try_from_parts(
+            vec![volume.clone(), volume.clone()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ),
+        VolumeSnapshot::try_from_parts(
+            vec![volume.clone()],
+            vec![named_failure()],
+            Vec::new(),
+            Vec::new(),
+        ),
+        VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            vec![named_failure(), named_failure()],
+            Vec::new(),
+            Vec::new(),
+        ),
+        VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            vec![machine_failure(), machine_failure()],
+            Vec::new(),
+        ),
+        VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            vec![machine_failure()],
+            vec![machine_id('a')],
+        ),
+        VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('a'), machine_id('a')],
+        ),
+        VolumeSnapshot::try_from_parts(
+            vec![volume.clone()],
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('a')],
+        ),
+    ] {
+        assert_eq!(
+            result
+                .expect_err("invalid Volume Snapshot evidence is rejected")
+                .code,
+            RpcErrorCode::InvalidArgument
+        );
+    }
+
+    let partial = PartialResult {
+        successes: vec![MachineSuccess {
+            machine_id: machine_id('a'),
+            value: VolumeInventory {
+                volumes: vec![volume],
+                failures: Vec::new(),
+            },
+        }],
+        failures: vec![machine_failure()],
+        omissions: Vec::new(),
+    };
+    assert_eq!(
+        VolumeSnapshot::from_partial(partial).unwrap_err().code,
+        RpcErrorCode::Internal
     );
 }
 

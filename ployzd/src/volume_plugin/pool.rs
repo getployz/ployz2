@@ -353,6 +353,9 @@ impl PoolStorage {
         let backing = self.backing_text()?;
         let mut observed = pool.size_bytes().get();
         let (length, _) = self.backing_allocation(backing).await?;
+        if length < minimum {
+            growth_target(length, observed, minimum)?;
+        }
         let mut retry_backing = length > observed;
         loop {
             let (length, allocated) = self.backing_allocation(backing).await?;
@@ -360,14 +363,7 @@ impl PoolStorage {
             let target = if retry_backing {
                 length
             } else {
-                let extension = (minimum - observed)
-                    .checked_next_multiple_of(GIBIBYTE)
-                    .ok_or_else(|| {
-                        VolumeError::from("Machine Pool capacity rounding overflowed u64")
-                    })?;
-                length.checked_add(extension).ok_or_else(|| {
-                    VolumeError::from("Machine Pool backing capacity overflowed u64")
-                })?
+                growth_target(length, observed, minimum)?
             };
             if allocated < target {
                 self.check_host_root(target - allocated).await?;
@@ -594,6 +590,15 @@ fn capacity_with_headroom(commitment: u64) -> Result<u64> {
     commitment
         .checked_add((commitment / 10).max(GIBIBYTE))
         .ok_or_else(|| "Machine Pool capacity calculation overflowed u64".into())
+}
+
+fn growth_target(length: u64, observed: u64, minimum: u64) -> Result<u64> {
+    let extension = (minimum - observed)
+        .checked_next_multiple_of(GIBIBYTE)
+        .ok_or_else(|| VolumeError::from("Machine Pool capacity rounding overflowed u64"))?;
+    length
+        .checked_add(extension)
+        .ok_or_else(|| VolumeError::from("Machine Pool backing capacity overflowed u64"))
 }
 
 fn parse_host_root_space(output: &str) -> Result<(u64, u64)> {

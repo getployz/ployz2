@@ -168,7 +168,7 @@ mod tests {
             name: DockerVolumeName::parse("data").unwrap(),
         };
         let snapshot = DeploySnapshot {
-            volume_snapshot: VolumeSnapshot::from_parts(
+            volume_snapshot: VolumeSnapshot::try_from_parts(
                 Vec::new(),
                 vec![VolumeObservationFailure {
                     id: id.clone(),
@@ -180,7 +180,8 @@ mod tests {
                 }],
                 Vec::new(),
                 Vec::new(),
-            ),
+            )
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         };
 

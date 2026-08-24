@@ -7,8 +7,9 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId,
     MachineName, MachineObservation, MachineTarget, PartialResult, ProjectName,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName, ServiceObservation,
-    ServiceVolumeReference, VolumeInventory, VolumeObservationFailure, derive_services,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, RpcErrorCode, ServiceName,
+    ServiceObservation, ServiceVolumeReference, VolumeInventory, VolumeObservationFailure,
+    derive_services,
 };
 use thiserror::Error;
 
@@ -62,22 +63,27 @@ pub struct VolumeSnapshot {
 }
 
 impl VolumeSnapshot {
-    pub(crate) fn from_partial(partial: PartialResult<VolumeInventory, RpcError>) -> Self {
+    pub(crate) fn from_partial(
+        partial: PartialResult<VolumeInventory, RpcError>,
+    ) -> Result<Self, RpcError> {
         let PartialResult {
             successes,
             failures: machine_failures,
             omissions,
         } = partial;
-        let mut snapshot = Self {
-            machine_failures,
-            omissions,
-            ..Self::default()
-        };
+        let mut observations = Vec::new();
+        let mut named_failures = Vec::new();
         for success in successes {
-            snapshot.observations.extend(success.value.volumes);
-            snapshot.named_failures.extend(success.value.failures);
+            observations.extend(success.value.volumes);
+            named_failures.extend(success.value.failures);
         }
-        snapshot
+        Self::try_from_parts(observations, named_failures, machine_failures, omissions).map_err(
+            |error| RpcError {
+                code: RpcErrorCode::Internal,
+                message: format!("invalid Docker Volume snapshot: {}", error.message),
+                details: error.details,
+            },
+        )
     }
 
     /// Build a complete snapshot containing only successful observations.
@@ -89,20 +95,76 @@ impl VolumeSnapshot {
         }
     }
 
-    /// Build a snapshot from successful, failed, and omitted observations.
-    #[must_use]
-    pub fn from_parts(
+    /// Build a validated snapshot from successful, failed, and omitted observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcErrorCode::InvalidArgument`] when evidence is duplicated or contradictory.
+    pub fn try_from_parts(
         observations: Vec<DockerVolume>,
         named_failures: Vec<VolumeObservationFailure>,
         machine_failures: Vec<MachineFailure<RpcError>>,
         omissions: Vec<MachineId>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, RpcError> {
+        let snapshot = Self {
             observations,
             named_failures,
             machine_failures,
             omissions,
+        };
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
+    fn validate(&self) -> Result<(), RpcError> {
+        let invalid = |message| RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message,
+            details: serde_json::Value::Null,
+        };
+        let mut ids = BTreeSet::new();
+        for volume in &self.observations {
+            if !ids.insert(&volume.id) {
+                return Err(invalid(format!(
+                    "Docker Volume observation {:?} is repeated",
+                    volume.id
+                )));
+            }
         }
+        for failure in &self.named_failures {
+            if !ids.insert(&failure.id) {
+                return Err(invalid(format!(
+                    "Docker Volume evidence {:?} is repeated or contradictory",
+                    failure.id
+                )));
+            }
+        }
+
+        let mut machine_gaps = BTreeSet::new();
+        for failure in &self.machine_failures {
+            if !machine_gaps.insert(failure.machine_id) {
+                return Err(invalid(format!(
+                    "Docker Volume inventory failure for Machine {} is repeated",
+                    failure.machine_id
+                )));
+            }
+        }
+        for machine_id in &self.omissions {
+            if !machine_gaps.insert(*machine_id) {
+                return Err(invalid(format!(
+                    "Docker Volume inventory gap for Machine {machine_id} is repeated or contradictory"
+                )));
+            }
+        }
+        if let Some(id) = ids
+            .into_iter()
+            .find(|id| machine_gaps.contains(&id.machine_id))
+        {
+            return Err(invalid(format!(
+                "Docker Volume evidence {id:?} contradicts its Machine inventory gap"
+            )));
+        }
+        Ok(())
     }
 
     /// Successful Docker Volume observations.

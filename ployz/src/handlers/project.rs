@@ -103,6 +103,7 @@ mod tests {
     #[test]
     fn listing_warnings_are_observer_relative_and_include_volume_gaps() {
         let machine = MachineId::parse("1".repeat(32)).unwrap();
+        let omitted = MachineId::parse("2".repeat(32)).unwrap();
         let snapshot = DeploySnapshot {
             container_failures: vec![MachineFailure {
                 machine_id: machine,
@@ -112,7 +113,7 @@ mod tests {
                     details: serde_json::Value::Null,
                 },
             }],
-            volume_snapshot: crate::deploy::VolumeSnapshot::from_parts(
+            volume_snapshot: crate::deploy::VolumeSnapshot::try_from_parts(
                 Vec::new(),
                 vec![VolumeObservationFailure {
                     id: DockerVolumeId {
@@ -126,8 +127,9 @@ mod tests {
                     },
                 }],
                 Vec::new(),
-                vec![machine],
-            ),
+                vec![omitted],
+            )
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         };
         assert_eq!(
@@ -135,7 +137,7 @@ mod tests {
             [
                 "WARNING: Live Observation is observer-relative and not globally complete".into(),
                 format!("WARNING: Machine {machine} failed: down"),
-                format!("WARNING: Machine {machine} was omitted listing volumes"),
+                format!("WARNING: Machine {omitted} was omitted listing volumes"),
                 format!("WARNING: Machine {machine} Docker Volume data: inspect failed"),
             ]
         );

@@ -155,6 +155,8 @@ async fn growth_stops_when_usable_capacity_does_not_increase() {
 async fn growth_overflow_is_refused_before_mutation() {
     let test = TestDir::new();
     let (socket, server) = start_pool_with_data(&test).await;
+    fs::write(test.0.join("pool-overhead"), "1\n").unwrap();
+    let commands_before = fs::read_to_string(test.0.join("commands")).unwrap();
 
     let response = post(
         &socket,
@@ -171,7 +173,14 @@ async fn growth_overflow_is_refused_before_mutation() {
         "2147483648\n"
     );
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
-    assert!(!log.contains("zpool online -e"));
+    assert_eq!(
+        log.matches("fallocate -l ").count(),
+        commands_before.matches("fallocate -l ").count()
+    );
+    assert_eq!(
+        log.matches("zpool online -e").count(),
+        commands_before.matches("zpool online -e").count()
+    );
     assert!(!test.0.join("other").exists());
 }
 

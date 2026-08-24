@@ -743,7 +743,7 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
-            volume_snapshot: VolumeSnapshot::from_parts(
+            volume_snapshot: VolumeSnapshot::try_from_parts(
                 Vec::new(),
                 vec![VolumeObservationFailure {
                     id: DockerVolumeId {
@@ -758,7 +758,8 @@ volumes:
                 }],
                 Vec::new(),
                 Vec::new(),
-            ),
+            )
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
     )
@@ -780,7 +781,7 @@ fn failed_external_volume_inventory_is_not_reported_as_absent() {
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
-            volume_snapshot: VolumeSnapshot::from_parts(
+            volume_snapshot: VolumeSnapshot::try_from_parts(
                 Vec::new(),
                 Vec::new(),
                 vec![MachineFailure {
@@ -792,7 +793,8 @@ fn failed_external_volume_inventory_is_not_reported_as_absent() {
                     },
                 }],
                 Vec::new(),
-            ),
+            )
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
     )
@@ -814,12 +816,13 @@ fn omitted_external_volume_inventory_is_not_reported_as_absent() {
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
-            volume_snapshot: VolumeSnapshot::from_parts(
+            volume_snapshot: VolumeSnapshot::try_from_parts(
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 vec![machine.machine.id],
-            ),
+            )
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
     )
