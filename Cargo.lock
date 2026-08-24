@@ -2122,7 +2122,6 @@ dependencies = [
  "hex",
  "http",
  "hyper-util",
- "nix",
  "oci-client",
  "ployz-core",
  "ployz-relay",

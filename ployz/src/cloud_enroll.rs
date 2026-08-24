@@ -48,10 +48,9 @@ pub(crate) struct EnrollIdentity {
     advertised_endpoints: Vec<AdvertisedEndpoint>,
     public_ip: Option<IpAddr>,
     requested_storage: StorageChoice,
-    #[serde(skip_serializing_if = "Option::is_none")]
     memory_total_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     disk_total_bytes: Option<u64>,
+    disk_available_bytes: Option<u64>,
 }
 
 fn serialize_as_wireguard_base64<S>(
@@ -76,27 +75,11 @@ impl EnrollIdentity {
             advertised_endpoints: token.advertised_endpoints.clone(),
             public_ip: token.public_ip,
             requested_storage,
-            memory_total_bytes: memory_total_bytes(),
-            disk_total_bytes: root_disk_total_bytes(),
+            memory_total_bytes: token.memory_total_bytes,
+            disk_total_bytes: token.disk_total_bytes,
+            disk_available_bytes: token.disk_available_bytes,
         }
     }
-}
-
-fn memory_total_bytes() -> Option<u64> {
-    let memory = std::fs::read_to_string("/proc/meminfo").ok()?;
-    memory.lines().find_map(|line| {
-        line.strip_prefix("MemTotal:")?
-            .split_whitespace()
-            .next()?
-            .parse::<u64>()
-            .ok()?
-            .checked_mul(1024)
-    })
-}
-
-fn root_disk_total_bytes() -> Option<u64> {
-    let stat = nix::sys::statvfs::statvfs("/").ok()?;
-    stat.blocks().checked_mul(stat.fragment_size())
 }
 
 /// Successful enroll `join` payload.
@@ -489,6 +472,9 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                memory_total_bytes: None,
+                disk_total_bytes: None,
+                disk_available_bytes: None,
             },
             StorageChoice::None,
         )
@@ -612,6 +598,9 @@ mod tests {
                     "207.246.89.244:51820".parse().unwrap(),
                 )],
                 runtime: Default::default(),
+                memory_total_bytes: Some(8_589_934_592),
+                disk_total_bytes: Some(107_374_182_400),
+                disk_available_bytes: Some(85_899_345_920),
             },
             StorageChoice::Zfs,
         );
@@ -626,7 +615,17 @@ mod tests {
             json.get("requestedStorage"),
             Some(&serde_json::json!("zfs"))
         );
-        assert!(json.get("memoryTotalBytes").is_some());
-        assert!(json.get("diskTotalBytes").is_some());
+        assert_eq!(
+            json.get("memoryTotalBytes"),
+            Some(&serde_json::json!(8_589_934_592_u64))
+        );
+        assert_eq!(
+            json.get("diskTotalBytes"),
+            Some(&serde_json::json!(107_374_182_400_u64))
+        );
+        assert_eq!(
+            json.get("diskAvailableBytes"),
+            Some(&serde_json::json!(85_899_345_920_u64))
+        );
     }
 }
