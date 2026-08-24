@@ -103,10 +103,11 @@ fn deploy_plan_cannot_emit_an_operation_that_destroys_stored_data() {
             [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "first")],
-                volume_snapshot: VolumeSnapshot::from_observations(vec![observed_volume(
+                volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
                     machine_id('1'),
                     "orphan",
-                )]),
+                )])
+                .expect("valid Volume Snapshot fixture"),
                 ..Default::default()
             },
             PlanOptions::default(),
@@ -139,10 +140,11 @@ fn deploy_plan_cannot_emit_an_operation_that_destroys_stored_data() {
                 container('b', '1', &previous, &sid),
                 container('c', '1', &previous, &sid),
             ],
-            volume_snapshot: VolumeSnapshot::from_observations(vec![observed_volume(
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
                 machine_id('1'),
                 "data",
-            )]),
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         PlanOptions::default(),
@@ -161,10 +163,11 @@ fn deploy_plan_cannot_emit_an_operation_that_destroys_stored_data() {
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![container('b', '1', &current, &sid)],
-            volume_snapshot: VolumeSnapshot::from_observations(vec![observed_volume(
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
                 machine_id('1'),
                 "data",
-            )]),
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         PlanOptions::default(),

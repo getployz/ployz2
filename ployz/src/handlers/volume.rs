@@ -213,18 +213,20 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
             let volumes = filter_volumes(&volumes, &names);
             let unavailable = volume_failures(&result)
                 .filter(|failure| names.is_empty() || names.contains(&failure.id.name))
-                .collect::<Vec<_>>();
-            if !unavailable.is_empty() {
+                .map(|failure| {
+                    format!(
+                        "{}/{}: {}",
+                        failure.id.machine_id, failure.id.name, failure.error.message
+                    )
+                })
+                .reduce(|mut summary, failure| {
+                    summary.push_str("; ");
+                    summary.push_str(&failure);
+                    summary
+                });
+            if let Some(unavailable) = unavailable {
                 return Err(Error::usage(format!(
-                    "refusing to remove unavailable Docker Volumes: {}",
-                    unavailable
-                        .iter()
-                        .map(|failure| format!(
-                            "{}/{}: {}",
-                            failure.id.machine_id, failure.id.name, failure.error.message
-                        ))
-                        .collect::<Vec<_>>()
-                        .join("; ")
+                    "refusing to remove unavailable Docker Volumes: {unavailable}"
                 )));
             }
             if inventories_complete(&result)

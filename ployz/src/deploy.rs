@@ -86,13 +86,20 @@ impl VolumeSnapshot {
         )
     }
 
-    /// Build a complete snapshot containing only successful observations.
-    #[must_use]
-    pub fn from_observations(observations: impl IntoIterator<Item = DockerVolume>) -> Self {
-        Self {
-            observations: observations.into_iter().collect(),
-            ..Self::default()
-        }
+    /// Build a validated complete snapshot containing only successful observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcErrorCode::InvalidArgument`] when an observation is duplicated.
+    pub fn try_from_observations(
+        observations: impl IntoIterator<Item = DockerVolume>,
+    ) -> Result<Self, RpcError> {
+        Self::try_from_parts(
+            observations.into_iter().collect(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
     }
 
     /// Build a validated snapshot from successful, failed, and omitted observations.
@@ -202,14 +209,11 @@ impl VolumeSnapshot {
 
     pub(crate) fn named_gap(
         &self,
-        machine_ids: &[MachineId],
-        names: &[&DockerVolumeName],
+        mut relevant: impl FnMut(&DockerVolumeId) -> bool,
     ) -> Option<(DockerVolumeId, String)> {
         self.named_failures
             .iter()
-            .find(|failure| {
-                machine_ids.contains(&failure.id.machine_id) && names.contains(&&failure.id.name)
-            })
+            .find(|failure| relevant(&failure.id))
             .map(|failure| (failure.id.clone(), failure.error.message.clone()))
     }
 

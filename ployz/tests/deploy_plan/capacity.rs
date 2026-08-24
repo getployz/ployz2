@@ -61,10 +61,11 @@ fn unknown_machine_excluded_by_volume_does_not_make_capacity_unknown() {
             [&requested],
             &DeploySnapshot {
                 machines: vec![machine('1', "full-volume-host"), machine('2', "unknown")],
-                volume_snapshot: VolumeSnapshot::from_observations(vec![observed_volume(
+                volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
                     machine_id('1'),
                     "data"
-                )]),
+                )])
+                .expect("valid Volume Snapshot fixture"),
                 capacity: capacity([('1', 0)]),
                 ..Default::default()
             },

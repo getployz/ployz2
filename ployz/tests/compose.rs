@@ -688,10 +688,11 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![existing.clone(), machine('b', "two")],
-            volume_snapshot: VolumeSnapshot::from_observations(vec![snapshot_volume(
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![snapshot_volume(
                 existing.machine.id,
                 "shared",
-            )]),
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
     )
@@ -875,10 +876,11 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![existing.clone(), machine('b', "two")],
-            volume_snapshot: VolumeSnapshot::from_observations(vec![snapshot_volume(
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![snapshot_volume(
                 existing.machine.id,
                 "ext-vol",
-            )]),
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
     )
@@ -963,10 +965,11 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![first.clone(), second.clone()],
-            volume_snapshot: VolumeSnapshot::from_observations(vec![snapshot_volume(
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![snapshot_volume(
                 first.machine.id,
                 "shared",
-            )]),
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
     )
@@ -1623,10 +1626,11 @@ volumes: {data: {}}
     let without_volume = parse_normalized("services: {app: {image: app}}\n", ".").unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine.clone()],
-        volume_snapshot: VolumeSnapshot::from_observations(vec![owned_volume(
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![owned_volume(
             machine.machine.id,
             "data",
-        )]),
+        )])
+        .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
     let plan = plan_compose(&without_volume, &snapshot).unwrap();
@@ -1664,10 +1668,11 @@ volumes: {data: {}}
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
-            volume_snapshot: VolumeSnapshot::from_observations(vec![snapshot_volume(
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![snapshot_volume(
                 machine.machine.id,
                 "data",
-            )]),
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
     )
@@ -1767,12 +1772,13 @@ volumes: {data: {name: demo_data}}
         panic!("unexpected shared Volume: {volume:?}")
     };
     let mut existing_snapshot = snapshot.clone();
-    existing_snapshot.volume_snapshot = VolumeSnapshot::from_observations(
+    existing_snapshot.volume_snapshot = VolumeSnapshot::try_from_observations(
         snapshot
             .machines
             .iter()
             .map(|machine| snapshot_volume(machine.machine.id, existing_name.as_str())),
-    );
+    )
+    .expect("valid Volume Snapshot fixture");
     let existing_on_both = plan_compose(&replicated, &existing_snapshot).unwrap();
     assert!(
         operations(&existing_on_both)
@@ -1848,10 +1854,11 @@ volumes:
         &constrained,
         &DeploySnapshot {
             machines: snapshot.machines.clone(),
-            volume_snapshot: VolumeSnapshot::from_observations(vec![observed_volume(
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
                 existing_machine,
                 "existing",
-            )]),
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
     )

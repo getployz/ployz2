@@ -179,12 +179,7 @@ fn volume_snapshot_rejects_duplicate_and_contradictory_evidence() {
     };
 
     for result in [
-        VolumeSnapshot::try_from_parts(
-            vec![volume.clone(), volume.clone()],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ),
+        VolumeSnapshot::try_from_observations(vec![volume.clone(), volume.clone()]),
         VolumeSnapshot::try_from_parts(
             vec![volume.clone()],
             vec![named_failure()],

@@ -184,7 +184,8 @@ fn explicitly_targeted_provisioned_deploy(
         &intent,
         &DeploySnapshot {
             machines: vec![target],
-            volume_snapshot: VolumeSnapshot::from_observations(volumes),
+            volume_snapshot: VolumeSnapshot::try_from_observations(volumes)
+                .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         IngressContext::default(),
@@ -372,10 +373,11 @@ fn automatic_provisioned_volume_does_not_move_an_existing_plain_volume() {
         &intent,
         &DeploySnapshot {
             machines: vec![pinned, other],
-            volume_snapshot: VolumeSnapshot::from_observations(vec![observed_volume(
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
                 machine_id('1'),
                 "data",
-            )]),
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         IngressContext::default(),
@@ -411,7 +413,8 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
             &intent,
             &DeploySnapshot {
                 machines: vec![pinned, other],
-                volume_snapshot: VolumeSnapshot::from_observations(vec![existing]),
+                volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing])
+                    .expect("valid Volume Snapshot fixture"),
                 ..Default::default()
             },
             IngressContext::default(),
@@ -712,10 +715,11 @@ fn already_owned_volume_names_are_not_prefixed_again() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            volume_snapshot: VolumeSnapshot::from_observations(vec![owned_volume(
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![owned_volume(
                 machine_id('1'),
                 "data",
-            )]),
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         PlanOptions::default(),
@@ -756,10 +760,11 @@ fn sibling_target_volume_is_not_listed_as_preserved_on_a_partial_deploy() {
         ),
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            volume_snapshot: VolumeSnapshot::from_observations(vec![
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![
                 owned_volume(machine_id('1'), "web-data"),
                 owned_volume(machine_id('1'), "worker-data"),
-            ]),
+            ])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         IngressContext::default(),
@@ -779,10 +784,11 @@ fn omitted_owned_volume_is_preserved_in_plan_order() {
         [&requested],
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
-            volume_snapshot: VolumeSnapshot::from_observations(vec![
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![
                 owned_volume(machine_id('1'), "keep-b"),
                 owned_volume(machine_id('1'), "keep-a"),
-            ]),
+            ])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         PlanOptions::default(),

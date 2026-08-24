@@ -734,15 +734,15 @@ fn volume_constraints<'spec>(
             message: format!("Machine '{machine}' {message}"),
         });
     }
-    let machine_ids = machines
-        .iter()
-        .map(|machine| machine.machine.id)
-        .collect::<Vec<_>>();
-    let names = mounted_volumes
-        .iter()
-        .filter_map(|volume| named_volume_name(volume))
-        .collect::<Vec<_>>();
-    if let Some((id, message)) = snapshot.volume_snapshot.named_gap(&machine_ids, &names) {
+    if let Some((id, message)) = snapshot.volume_snapshot.named_gap(|id| {
+        machines
+            .iter()
+            .any(|machine| machine.machine.id == id.machine_id)
+            && mounted_volumes
+                .iter()
+                .filter_map(|volume| named_volume_name(volume))
+                .any(|name| name == &id.name)
+    }) {
         return Err(PlanError::DockerVolumeUnavailable { id, message });
     }
     let mut missing_volumes = Vec::new();
