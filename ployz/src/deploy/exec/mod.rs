@@ -5,9 +5,9 @@ use ployz_core::{
     ContainerRuntimeObservation, CreateContainerRequest, CreateVolumeRequest, DeployEvent,
     DockerVolume, DockerVolumeId, ExecutionError, FailedOperation, HookFailure,
     InspectContainerRequest, MachineAction, MachineId, MachineTarget, MembershipObservation,
-    OperationPhase, OperationRow, ProjectName, ProvisionedVolumePlacement, QualifiedService,
-    RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    StartContainerRequest, StopContainerRequest, UpdateOrder, op,
+    OperationPhase, OperationRow, ProjectName, QualifiedService, RemoveContainerRequest,
+    RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode, StartContainerRequest,
+    StopContainerRequest, UpdateOrder, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -425,40 +425,6 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     };
     let mut progress = Progress::new(rows, tx);
     progress.emit();
-    if let Some((index, operation)) = operations.iter().enumerate().find(|(_, operation)| {
-        matches!(
-            operation,
-            DeployOperation::CreateProvisionedVolume {
-                placement: ProvisionedVolumePlacement::Automatic,
-                ..
-            }
-        )
-    }) {
-        let error = machine_error(
-            MachineAction::CreateVolume,
-            RpcError {
-                code: RpcErrorCode::Unsupported,
-                message: "automatic Provisioned Volume placement is not available; explicitly select a Machine".into(),
-                details: serde_json::Value::Null,
-            },
-        );
-        progress.fail(index, error.clone());
-        let outcome = DeployOutcome::Failed {
-            completed: Vec::new(),
-            failed: FailedOperation::Operation {
-                operation: operation.clone(),
-                error,
-            },
-            unexecuted: operations
-                .iter()
-                .enumerate()
-                .filter(|(candidate, _)| *candidate != index)
-                .map(|(_, operation)| operation.clone())
-                .collect(),
-        };
-        progress.outcome(outcome.clone());
-        return outcome;
-    }
     for (index, operation) in operations.iter().enumerate() {
         if cancellation.is_cancelled() {
             progress.fail(index, ExecutionError::Cancelled);
@@ -535,7 +501,7 @@ async fn execute_operation<C: MachineOperations>(
             machine_id,
             volume,
             maximum_bytes,
-            placement: ProvisionedVolumePlacement::ExplicitMachine,
+            ..
         } => {
             progress.set_running(index, OperationPhase::CreatingVolume);
             let size = crate::volume::ProvisionedVolumeSize::from_maximum_bytes(*maximum_bytes);
@@ -562,10 +528,6 @@ async fn execute_operation<C: MachineOperations>(
                 .into())
             }
         }
-        DeployOperation::CreateProvisionedVolume {
-            placement: ProvisionedVolumePlacement::Automatic,
-            ..
-        } => unreachable!("automatic Provisioned Volume was rejected before execution"),
         DeployOperation::WaitHealthy { dependency, .. } => {
             wait_healthy(client, index, progress, dependency, cancellation)
                 .await

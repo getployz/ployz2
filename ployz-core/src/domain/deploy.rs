@@ -356,13 +356,13 @@ pub struct ReplacementOperation {
     pub skip_health_monitor: bool,
 }
 
-/// Whether a Provisioned Volume has a Machine selected by the caller.
+/// Provenance of the Machine selected for a Provisioned Volume.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProvisionedVolumePlacement {
     /// One explicit Machine Target resolved to this Machine.
     ExplicitMachine,
-    /// Machine selection remains the automatic-placement work tracked by #546.
+    /// The planner selected this Machine automatically.
     Automatic,
 }
 

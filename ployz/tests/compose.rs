@@ -15,9 +15,10 @@ use ployz::{
     },
 };
 use ployz_core::{
-    HostBind, HttpProtocol, IngressHostname, MANAGED_LABEL, PROJECT_NAME_LABEL, PortPublication,
-    ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes, RestartPolicy, ServiceMode,
-    ServiceName, ServiceVolumeReference, TransportProtocol, UpdateOrder, VolumeSource,
+    HostBind, HttpProtocol, IngressHostname, MANAGED_LABEL, MachineStorageObservation,
+    PROJECT_NAME_LABEL, PortPublication, ProjectName, ProvisionedVolume,
+    ProvisionedVolumeMaximumBytes, RestartPolicy, ServiceMode, ServiceName, ServiceVolumeReference,
+    TransportProtocol, UpdateOrder, VolumeSource,
 };
 
 #[path = "compose/support.rs"]
@@ -1175,8 +1176,10 @@ x-volumes: {data: 10G}
         ".",
     )
     .unwrap();
+    let mut ready = machine('a', "one");
+    ready.storage = Some(MachineStorageObservation::Ready);
     let snapshot = DeploySnapshot {
-        machines: vec![machine('a', "one")],
+        machines: vec![ready],
         ..Default::default()
     };
 
@@ -1264,8 +1267,10 @@ fn compose_x_volume_size_stays_out_of_resolved_service_spec() {
     let twenty_gib = load("20G");
     assert_eq!(ten_gib.services, twenty_gib.services);
 
+    let mut ready = machine('a', "one");
+    ready.storage = Some(MachineStorageObservation::Ready);
     let snapshot = DeploySnapshot {
-        machines: vec![machine('a', "one")],
+        machines: vec![ready],
         ..Default::default()
     };
     let ten_preview = plan_compose(&ten_gib, &snapshot).unwrap();
