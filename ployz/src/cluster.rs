@@ -324,15 +324,14 @@ impl Client {
                 omissions.push(machine.machine.id);
                 continue;
             }
-            let client = self.clone();
+            let mut client = self.clone();
             let machine_id = machine.machine.id;
             let name = name.clone();
             requests.spawn(async move {
                 let result = client
-                    .invoke::<op::InspectVolume>(
+                    .read::<op::InspectVolume>(
                         InspectVolumeRequest { name },
                         &MachineTarget::from(&machine_id),
-                        Some(TARGET_RPC_TIMEOUT),
                     )
                     .await;
                 (index, machine_id, result)
@@ -702,29 +701,13 @@ pub(crate) fn snapshot_from_partial(
         failures: container_failures,
         omissions: container_omissions,
     } = containers;
-    let PartialResult {
-        successes,
-        failures: machine_failures,
-        omissions,
-    } = volumes;
-    let mut volume_snapshot = VolumeSnapshot {
-        machine_failures,
-        omissions,
-        ..Default::default()
-    };
-    for success in successes {
-        volume_snapshot.observations.extend(success.value.volumes);
-        volume_snapshot
-            .named_failures
-            .extend(success.value.failures);
-    }
     DeploySnapshot {
         machines,
         containers: container_successes
             .into_iter()
             .flat_map(|success| success.value)
             .collect(),
-        volume_snapshot,
+        volume_snapshot: VolumeSnapshot::from_partial(volumes),
         container_failures,
         container_omissions,
         capacity: Some(capacity),

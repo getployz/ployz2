@@ -8,6 +8,7 @@ use bollard::query_parameters::EventsOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::{
     ContainerId, ContainerObservation, DockerVolume, DockerVolumeName, LocalMachinePhase,
+    VolumeInventory,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -241,14 +242,11 @@ impl ContainerRuntime {
             .map_err(|_| Error::LocalStorePoisoned)?
             .record()
             .id();
-        let inventory = self.list_volumes(&machine_id).await?;
+        let VolumeInventory { volumes, failures } = self.list_volumes(&machine_id).await?;
         let mut live = LocalVolumeSnapshot::from_inventory(
-            inventory
-                .failures
-                .iter()
-                .map(|failure| failure.id.name.clone()),
+            failures.into_iter().map(|failure| failure.id.name),
         );
-        for volume in inventory.volumes {
+        for volume in volumes {
             live.observed(volume);
         }
         let publication = sink.replicated.machine_publication().await;

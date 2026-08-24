@@ -743,8 +743,9 @@ volumes:
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
-            volume_snapshot: VolumeSnapshot {
-                named_failures: vec![VolumeObservationFailure {
+            volume_snapshot: VolumeSnapshot::from_parts(
+                Vec::new(),
+                vec![VolumeObservationFailure {
                     id: DockerVolumeId {
                         machine_id: machine.machine.id,
                         name: DockerVolumeName::parse("ext-vol").unwrap(),
@@ -755,8 +756,9 @@ volumes:
                         details: Default::default(),
                     },
                 }],
-                ..Default::default()
-            },
+                Vec::new(),
+                Vec::new(),
+            ),
             ..Default::default()
         },
     )
@@ -778,8 +780,10 @@ fn failed_external_volume_inventory_is_not_reported_as_absent() {
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
-            volume_snapshot: VolumeSnapshot {
-                machine_failures: vec![MachineFailure {
+            volume_snapshot: VolumeSnapshot::from_parts(
+                Vec::new(),
+                Vec::new(),
+                vec![MachineFailure {
                     machine_id: machine.machine.id,
                     error: RpcError {
                         code: RpcErrorCode::Unavailable,
@@ -787,8 +791,8 @@ fn failed_external_volume_inventory_is_not_reported_as_absent() {
                         details: Default::default(),
                     },
                 }],
-                ..Default::default()
-            },
+                Vec::new(),
+            ),
             ..Default::default()
         },
     )
@@ -810,10 +814,12 @@ fn omitted_external_volume_inventory_is_not_reported_as_absent() {
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
-            volume_snapshot: VolumeSnapshot {
-                omissions: vec![machine.machine.id],
-                ..Default::default()
-            },
+            volume_snapshot: VolumeSnapshot::from_parts(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![machine.machine.id],
+            ),
             ..Default::default()
         },
     )

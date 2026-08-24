@@ -398,25 +398,7 @@ async fn gather_snapshot(
         &snapshot.container_failures,
         &snapshot.container_omissions,
     );
-    warnings.extend(observation_warnings(
-        ObservationKind::Volume,
-        &snapshot.volume_snapshot.machine_failures,
-        &snapshot.volume_snapshot.omissions,
-    ));
-    warnings.extend(
-        snapshot
-            .volume_snapshot
-            .named_failures
-            .iter()
-            .map(|failure| DeployWarning::ObservationFailed {
-                kind: ObservationKind::Volume,
-                machine_id: failure.id.machine_id,
-                message: format!(
-                    "Docker Volume {}: {}",
-                    failure.id.name, failure.error.message
-                ),
-            }),
-    );
+    warnings.extend(snapshot.volume_snapshot.deploy_warnings());
     Ok((snapshot, warnings))
 }
 

@@ -35,6 +35,7 @@ pub(crate) const STEAL_ALLOCATOR: &str = "INSERT INTO cluster (key, value, updat
 pub(crate) const AGE_ALLOCATOR: &str =
     "UPDATE cluster SET updated_at = datetime('now', '-5 seconds') WHERE key = 'allocator'";
 pub(crate) const ALLOCATOR_ROW: &str = "SELECT value AS allocator, updated_at <= datetime('now', '-5 seconds') AS quiet FROM cluster WHERE key = 'allocator'";
+const INCOMPLETE_JSON_DOCUMENT: &str = "{}";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AllocatorRow {
@@ -844,8 +845,12 @@ fn volume_upsert(volume: &DockerVolume) -> Result<Statement, Error> {
 
 fn volume_incomplete(machine_id: &MachineId, name: &DockerVolumeName) -> Statement {
     Statement::new(
-        "INSERT INTO volumes (machine_id, name, volume, updated_at) VALUES (?, ?, '', datetime('now')) ON CONFLICT (machine_id, name) DO UPDATE SET volume = excluded.volume, updated_at = excluded.updated_at",
-        [json!(machine_id), json!(name)],
+        "INSERT INTO volumes (machine_id, name, volume, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (machine_id, name) DO UPDATE SET volume = excluded.volume, updated_at = excluded.updated_at",
+        [
+            json!(machine_id),
+            json!(name),
+            json!(INCOMPLETE_JSON_DOCUMENT),
+        ],
     )
 }
 
@@ -877,7 +882,7 @@ impl RuntimeWatchChanges {
 }
 
 fn is_incomplete_document(encoded: &str) -> bool {
-    encoded.is_empty() || encoded == "{}"
+    encoded == INCOMPLETE_JSON_DOCUMENT
 }
 
 fn decode_json_document<T: DeserializeOwned>(encoded: &str) -> Result<Option<T>, Error> {

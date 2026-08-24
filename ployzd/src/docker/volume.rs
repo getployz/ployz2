@@ -57,7 +57,7 @@ impl ContainerRuntime {
                 .await,
         )?;
         let mut inventory = VolumeInventory::default();
-        let observations = stream::iter(listed.into_iter().map(|volume| async move {
+        let mut observations = stream::iter(listed.into_iter().map(|volume| async move {
             let id = docker_volume_id(machine_id, &volume.name)?;
             let observation = if volume.driver == "ployz" {
                 self.inspect_volume(machine_id, &id.name).await
@@ -66,10 +66,8 @@ impl ContainerRuntime {
             };
             Ok::<_, Error>((id, observation))
         }))
-        .buffered(VOLUME_INSPECTION_CONCURRENCY)
-        .collect::<Vec<_>>()
-        .await;
-        for observation in observations {
+        .buffered(VOLUME_INSPECTION_CONCURRENCY);
+        while let Some(observation) = observations.next().await {
             let (id, observation) = observation?;
             match observation {
                 Ok(volume) => inventory.volumes.push(volume),

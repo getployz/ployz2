@@ -66,7 +66,7 @@ impl VolumePins {
     ) -> impl Iterator<Item = VolumePresence<'pins>> + 'pins {
         snapshot
             .volume_snapshot
-            .observations
+            .observations()
             .iter()
             .map(|observed| VolumePresence {
                 machine_id: observed.id.machine_id,
@@ -258,7 +258,7 @@ impl VolumePins {
                 let Some(existing) =
                     snapshot
                         .volume_snapshot
-                        .observations
+                        .observations()
                         .iter()
                         .find(|existing| {
                             existing.id.machine_id == machine.machine.id
@@ -328,7 +328,7 @@ pub(super) fn preserved_owned_volumes(
 ) -> Vec<PreservedVolume> {
     let declared = declared_physical_names(target);
     let mut preserved = Vec::new();
-    for volume in &snapshot.volume_snapshot.observations {
+    for volume in snapshot.volume_snapshot.observations() {
         if owned_volume_project(&volume.labels).as_ref() != Some(project_name) {
             continue;
         }
@@ -707,12 +707,18 @@ fn volume_constraints<'spec>(
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
     let mounted_volumes = mounted_named_volumes(&spec.volume_graph)?;
     let incomplete = machines.iter().find_map(|machine| {
-        machine_inventory_failure(snapshot, machine.machine.id)
+        snapshot
+            .volume_snapshot
+            .machine_gap(machine.machine.id)
             .map(|message| (machine.machine.id, machine.machine.name.clone(), message))
     });
     if !mounted_volumes.is_empty() {
-        machines
-            .retain(|machine| machine_inventory_failure(snapshot, machine.machine.id).is_none());
+        machines.retain(|machine| {
+            snapshot
+                .volume_snapshot
+                .machine_gap(machine.machine.id)
+                .is_none()
+        });
     }
     if machines.is_empty()
         && let Some((machine_id, machine, message)) = incomplete
@@ -728,23 +734,16 @@ fn volume_constraints<'spec>(
             message: format!("Machine '{machine}' {message}"),
         });
     }
-    if let Some(failure) = snapshot
-        .volume_snapshot
-        .named_failures
+    let machine_ids = machines
         .iter()
-        .find(|failure| {
-            machines
-                .iter()
-                .any(|machine| machine.machine.id == failure.id.machine_id)
-                && mounted_volumes
-                    .iter()
-                    .any(|volume| named_volume_name(volume) == Some(&failure.id.name))
-        })
-    {
-        return Err(PlanError::DockerVolumeUnavailable {
-            id: failure.id.clone(),
-            message: failure.error.message.clone(),
-        });
+        .map(|machine| machine.machine.id)
+        .collect::<Vec<_>>();
+    let names = mounted_volumes
+        .iter()
+        .filter_map(|volume| named_volume_name(volume))
+        .collect::<Vec<_>>();
+    if let Some((id, message)) = snapshot.volume_snapshot.named_gap(&machine_ids, &names) {
+        return Err(PlanError::DockerVolumeUnavailable { id, message });
     }
     let mut missing_volumes = Vec::new();
     for volume in mounted_volumes.iter().copied() {
@@ -784,22 +783,6 @@ fn volume_constraints<'spec>(
         ));
     }
     Ok((mounted_volumes, missing_volumes))
-}
-
-fn machine_inventory_failure(snapshot: &DeploySnapshot, machine_id: MachineId) -> Option<String> {
-    snapshot
-        .volume_snapshot
-        .machine_failures
-        .iter()
-        .find(|failure| failure.machine_id == machine_id)
-        .map(|failure| format!("Docker Volume inventory failed: {}", failure.error.message))
-        .or_else(|| {
-            snapshot
-                .volume_snapshot
-                .omissions
-                .contains(&machine_id)
-                .then(|| "Docker Volume inventory produced no terminal response".into())
-        })
 }
 
 fn no_eligible_shared(

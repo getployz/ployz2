@@ -52,11 +52,12 @@ fn incomplete_snapshot_refuses_removal_and_does_not_prune() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![container('b', '1', &spec, &service_id('a'))],
-        volume_snapshot: VolumeSnapshot {
-            observations: vec![owned_volume(machine_id('1'), "data")],
-            omissions: vec![machine_id('1')],
-            ..Default::default()
-        },
+        volume_snapshot: VolumeSnapshot::from_parts(
+            vec![owned_volume(machine_id('1'), "data")],
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('1')],
+        ),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
@@ -73,10 +74,12 @@ fn incomplete_snapshot_refuses_removal_and_does_not_prune() {
 fn incomplete_empty_view_still_refuses() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot {
-            omissions: vec![machine_id('1')],
-            ..Default::default()
-        },
+        volume_snapshot: VolumeSnapshot::from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('1')],
+        ),
         ..Default::default()
     };
     let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();

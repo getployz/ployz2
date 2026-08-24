@@ -12,10 +12,12 @@ use ployz_core::{
 fn incomplete_snapshot_lists_obsolete_services_and_removes_nothing() {
     let (web, snapshot) = shop_with_obsolete_debug();
     let snapshot = DeploySnapshot {
-        volume_snapshot: VolumeSnapshot {
-            omissions: vec![machine_id('1')],
-            ..Default::default()
-        },
+        volume_snapshot: VolumeSnapshot::from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('1')],
+        ),
         ..snapshot
     };
     let plan = preview_deploy(
@@ -122,8 +124,9 @@ fn required_container_failure_makes_the_snapshot_incomplete() {
 fn required_named_volume_failure_makes_the_snapshot_incomplete() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot {
-            named_failures: vec![VolumeObservationFailure {
+        volume_snapshot: VolumeSnapshot::from_parts(
+            Vec::new(),
+            vec![VolumeObservationFailure {
                 id: DockerVolumeId {
                     machine_id: machine_id('1'),
                     name: app_volume("data"),
@@ -134,8 +137,9 @@ fn required_named_volume_failure_makes_the_snapshot_incomplete() {
                     details: Default::default(),
                 },
             }],
-            ..Default::default()
-        },
+            Vec::new(),
+            Vec::new(),
+        ),
         ..Default::default()
     };
 
@@ -149,10 +153,12 @@ fn down_machine_omissions_do_not_make_the_snapshot_incomplete() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first"), down],
         container_omissions: vec![machine_id('2')],
-        volume_snapshot: VolumeSnapshot {
-            omissions: vec![machine_id('2')],
-            ..Default::default()
-        },
+        volume_snapshot: VolumeSnapshot::from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('2')],
+        ),
         ..Default::default()
     };
     assert!(snapshot.is_observer_complete());

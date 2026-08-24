@@ -92,29 +92,23 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     };
     let expected_container_failures = containers.failures.clone();
     let expected_container_omissions = containers.omissions.clone();
-    let expected_machine_failures = volumes.failures.clone();
     let snapshot = snapshot_from_partial(machines.clone(), containers, volumes, BTreeMap::new());
 
     assert_eq!(snapshot.machines, machines);
     assert_eq!(snapshot.containers, [container]);
-    assert_eq!(snapshot.volume_snapshot.observations, [volume]);
-    assert_eq!(snapshot.volume_snapshot.named_failures.len(), 1);
-    assert_eq!(
-        snapshot
-            .volume_snapshot
-            .named_failures
-            .first()
-            .expect("snapshot includes the named failure")
-            .id
-            .name
-            .as_str(),
-        "unavailable"
-    );
+    assert_eq!(snapshot.volume_snapshot.observations(), [volume]);
+    assert!(snapshot.volume_snapshot.listing_warnings().any(|message| {
+        message.contains(&machine_id('a').to_string())
+            && message.contains("Docker Volume unavailable")
+    }));
     assert_eq!(snapshot.container_failures, expected_container_failures);
     assert_eq!(snapshot.container_omissions, expected_container_omissions);
     assert_eq!(
-        snapshot.volume_snapshot.machine_failures,
-        expected_machine_failures
+        snapshot
+            .volume_snapshot
+            .machine_gap(machine_id('b'))
+            .as_deref(),
+        Some("Docker Volume inventory failed: volume listing failed")
     );
     assert!(!snapshot.is_observer_complete());
 }

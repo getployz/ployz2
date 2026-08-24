@@ -40,8 +40,9 @@ fn unavailable_named_volume_blocks_only_a_dependent_service() {
     add_named_volume(&mut dependent, "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot {
-            named_failures: vec![VolumeObservationFailure {
+        volume_snapshot: VolumeSnapshot::from_parts(
+            Vec::new(),
+            vec![VolumeObservationFailure {
                 id: DockerVolumeId {
                     machine_id: machine_id('1'),
                     name: app_volume("data"),
@@ -52,8 +53,9 @@ fn unavailable_named_volume_blocks_only_a_dependent_service() {
                     details: Default::default(),
                 },
             }],
-            ..Default::default()
-        },
+            Vec::new(),
+            Vec::new(),
+        ),
         ..Default::default()
     };
 
@@ -86,8 +88,10 @@ fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
     add_named_volume(&mut service, "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "incomplete"), machine('2', "healthy")],
-        volume_snapshot: VolumeSnapshot {
-            machine_failures: vec![MachineFailure {
+        volume_snapshot: VolumeSnapshot::from_parts(
+            Vec::new(),
+            Vec::new(),
+            vec![MachineFailure {
                 machine_id: machine_id('1'),
                 error: RpcError {
                     code: RpcErrorCode::Unavailable,
@@ -95,8 +99,8 @@ fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
                     details: Default::default(),
                 },
             }],
-            ..Default::default()
-        },
+            Vec::new(),
+        ),
         ..Default::default()
     };
 
@@ -125,10 +129,12 @@ fn named_volume_planning_rejects_an_only_incomplete_candidate() {
     add_named_volume(&mut dependent, "data");
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "incomplete")],
-        volume_snapshot: VolumeSnapshot {
-            omissions: vec![machine_id('1')],
-            ..Default::default()
-        },
+        volume_snapshot: VolumeSnapshot::from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('1')],
+        ),
         ..Default::default()
     };
 

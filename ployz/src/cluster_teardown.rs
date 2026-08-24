@@ -65,7 +65,7 @@ impl Client {
             &snapshot.containers,
             snapshot
                 .volume_snapshot
-                .observations
+                .observations()
                 .iter()
                 .map(|volume| (&volume.id, &volume.labels)),
         );
@@ -144,7 +144,7 @@ fn cluster_volume_loss(snapshot: &DeploySnapshot) -> ObservedDataLoss {
     ObservedDataLoss {
         data_loss: snapshot
             .volume_snapshot
-            .observations
+            .observations()
             .iter()
             .map(|volume| DataLoss::DockerVolume(volume.id.clone()))
             .collect(),

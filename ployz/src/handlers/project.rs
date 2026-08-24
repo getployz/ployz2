@@ -24,7 +24,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
                 &snapshot.containers,
                 snapshot
                     .volume_snapshot
-                    .observations
+                    .observations()
                     .iter()
                     .map(|volume| (&volume.id, &volume.labels)),
             );
@@ -87,31 +87,16 @@ fn observer_listing_warnings(snapshot: &DeploySnapshot) -> Vec<String> {
             .iter()
             .map(|machine_id| format!("WARNING: Machine {machine_id} was omitted")),
     );
-    lines.extend(
-        snapshot
-            .volume_snapshot
-            .machine_failures
-            .iter()
-            .map(|failure| {
-                format!(
-                    "WARNING: Machine {} failed listing volumes: {}",
-                    failure.machine_id, failure.error.message
-                )
-            }),
-    );
-    lines.extend(
-        snapshot
-            .volume_snapshot
-            .omissions
-            .iter()
-            .map(|machine_id| format!("WARNING: Machine {machine_id} was omitted listing volumes")),
-    );
+    lines.extend(snapshot.volume_snapshot.listing_warnings());
     lines
 }
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{MachineFailure, MachineId, RpcError, RpcErrorCode};
+    use ployz_core::{
+        DockerVolumeId, DockerVolumeName, MachineFailure, MachineId, RpcError, RpcErrorCode,
+        VolumeObservationFailure,
+    };
 
     use super::*;
 
@@ -127,10 +112,22 @@ mod tests {
                     details: serde_json::Value::Null,
                 },
             }],
-            volume_snapshot: crate::deploy::VolumeSnapshot {
-                omissions: vec![machine],
-                ..Default::default()
-            },
+            volume_snapshot: crate::deploy::VolumeSnapshot::from_parts(
+                Vec::new(),
+                vec![VolumeObservationFailure {
+                    id: DockerVolumeId {
+                        machine_id: machine,
+                        name: DockerVolumeName::parse("data").unwrap(),
+                    },
+                    error: RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message: "inspect failed".into(),
+                        details: serde_json::Value::Null,
+                    },
+                }],
+                Vec::new(),
+                vec![machine],
+            ),
             ..Default::default()
         };
         assert_eq!(
@@ -139,6 +136,7 @@ mod tests {
                 "WARNING: Live Observation is observer-relative and not globally complete".into(),
                 format!("WARNING: Machine {machine} failed: down"),
                 format!("WARNING: Machine {machine} was omitted listing volumes"),
+                format!("WARNING: Machine {machine} Docker Volume data: inspect failed"),
             ]
         );
     }
