@@ -72,7 +72,8 @@
       },
       "driver": "local",
       "options": { "type": "none" },
-      "labels": { "purpose": "database" }
+      "labels": { "purpose": "database" },
+      "storage": { "kind": "plain" }
     }
   ],
   "certificates": [

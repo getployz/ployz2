@@ -162,6 +162,7 @@ fn docker_volume(machine: char, name: &str) -> DockerVolume {
         driver: "local".into(),
         options: BTreeMap::from([("type".into(), "none".into())]),
         labels: BTreeMap::from([("keep".into(), "out".into())]),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain,
     }
 }
 

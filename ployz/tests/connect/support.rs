@@ -479,6 +479,7 @@ impl MachineRpc for DiscoveryService {
                 driver: create.driver,
                 options: create.options,
                 labels: create.labels,
+                storage: ployz_core::DockerVolumeStorageObservation::Plain,
             });
         Ok(Response::new(RpcResponse::from(volume).encode().unwrap()))
     }
@@ -524,6 +525,7 @@ impl MachineRpc for DiscoveryService {
                     driver: "local".into(),
                     options: Default::default(),
                     labels: Default::default(),
+                    storage: ployz_core::DockerVolumeStorageObservation::Plain,
                 }],
             })
         };

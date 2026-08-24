@@ -6,7 +6,9 @@ use std::num::NonZeroU64;
 #[derive(Debug, Eq, PartialEq)]
 pub struct MachinePool {
     name: String,
-    capacity_bytes: NonZeroU64,
+    size_bytes: NonZeroU64,
+    used_bytes: u64,
+    free_bytes: u64,
 }
 
 impl MachinePool {
@@ -16,10 +18,22 @@ impl MachinePool {
         &self.name
     }
 
-    /// Current ZFS Pool capacity in bytes.
+    /// Current ZFS Pool size in bytes.
     #[must_use]
-    pub fn capacity_bytes(&self) -> NonZeroU64 {
-        self.capacity_bytes
+    pub fn size_bytes(&self) -> NonZeroU64 {
+        self.size_bytes
+    }
+
+    /// Current allocated ZFS Pool bytes.
+    #[must_use]
+    pub fn used_bytes(&self) -> u64 {
+        self.used_bytes
+    }
+
+    /// Current free ZFS Pool bytes.
+    #[must_use]
+    pub fn free_bytes(&self) -> u64 {
+        self.free_bytes
     }
 }
 
@@ -90,18 +104,29 @@ pub fn importable_names<'output>(output: &'output str) -> Result<Vec<&'output st
 fn parse(line: &str) -> Result<Option<MachinePool>, Error> {
     let mut fields = line.split('\t');
     let invalid = || Error(format!("invalid ZFS Pool output: {line}"));
-    let (Some(name), Some(capacity_bytes), Some(health), Some(readonly), None) = (
+    let (
+        Some(name),
+        Some(size_bytes),
+        Some(used_bytes),
+        Some(free_bytes),
+        Some(health),
+        Some(readonly),
+        None,
+    ) = (
         fields.next(),
         fields.next(),
         fields.next(),
         fields.next(),
         fields.next(),
-    ) else {
+        fields.next(),
+        fields.next(),
+    )
+    else {
         return Err(invalid());
     };
-    let capacity_bytes = capacity_bytes
-        .parse::<NonZeroU64>()
-        .map_err(|_| invalid())?;
+    let size_bytes = size_bytes.parse::<NonZeroU64>().map_err(|_| invalid())?;
+    let used_bytes = used_bytes.parse::<u64>().map_err(|_| invalid())?;
+    let free_bytes = free_bytes.parse::<u64>().map_err(|_| invalid())?;
     if name.is_empty()
         || !matches!(
             health,
@@ -114,7 +139,9 @@ fn parse(line: &str) -> Result<Option<MachinePool>, Error> {
     Ok(
         (matches!(health, "ONLINE" | "DEGRADED") && readonly == "off").then(|| MachinePool {
             name: name.to_owned(),
-            capacity_bytes,
+            size_bytes,
+            used_bytes,
+            free_bytes,
         }),
     )
 }
@@ -126,10 +153,10 @@ mod tests {
     #[test]
     fn malformed_output_is_an_error() {
         assert_eq!(
-            one_usable("broken\tnot-a-size\tONLINE\toff")
+            one_usable("broken\tnot-a-size\t1\t1\tONLINE\toff")
                 .unwrap_err()
                 .to_string(),
-            "invalid ZFS Pool output: broken\tnot-a-size\tONLINE\toff"
+            "invalid ZFS Pool output: broken\tnot-a-size\t1\t1\tONLINE\toff"
         );
     }
 

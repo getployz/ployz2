@@ -180,6 +180,7 @@ impl MachineRpc for DeployService {
             driver: create.driver,
             options: create.options,
             labels: create.labels,
+            storage: ployz_core::DockerVolumeStorageObservation::Plain,
         }))
     }
 

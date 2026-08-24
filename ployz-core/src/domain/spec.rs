@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     net::IpAddr,
-    num::{NonZeroU16, NonZeroU32},
+    num::{NonZeroU16, NonZeroU32, NonZeroU64},
 };
 
 use ipnet::IpNet;
@@ -183,6 +183,23 @@ pub struct VolumeDriver {
     pub options: BTreeMap<String, String>,
 }
 
+/// Current storage evidence for one observed Docker Volume.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DockerVolumeStorageObservation {
+    /// A Docker Volume without a Ployz-managed byte bound.
+    Plain,
+    /// A Provisioned Volume observed through the Ployz Docker driver.
+    Provisioned {
+        /// Current ZFS dataset mountpoint.
+        mountpoint: String,
+        /// Current ZFS dataset byte bound.
+        bound_bytes: NonZeroU64,
+        /// Current referenced ZFS dataset bytes.
+        used_bytes: u64,
+    },
+}
+
 /// One Docker Volume observed on one Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DockerVolume {
@@ -192,6 +209,8 @@ pub struct DockerVolume {
     pub options: BTreeMap<String, String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// Current storage kind and Provisioned Volume usage evidence.
+    pub storage: DockerVolumeStorageObservation,
 }
 
 /// Destroy these Docker Volumes. The list is the confirmation.

@@ -243,6 +243,7 @@ fn owned_volume(machine_id: MachineId, name: &str, project: &str) -> DockerVolum
             (MANAGED_LABEL.to_owned(), String::new()),
             (PROJECT_NAME_LABEL.to_owned(), project.to_owned()),
         ]),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain,
     }
 }
 
@@ -252,5 +253,6 @@ fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
         driver: "local".into(),
         options: Default::default(),
         labels: Default::default(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain,
     }
 }

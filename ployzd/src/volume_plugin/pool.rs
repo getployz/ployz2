@@ -171,7 +171,12 @@ impl PoolStorage {
     pub(super) async fn one_usable(&self) -> Result<Option<MachinePool>> {
         let output = checked_command(
             &self.zpool,
-            &["list", "-Hp", "-o", "name,size,health,readonly"],
+            &[
+                "list",
+                "-Hp",
+                "-o",
+                "name,size,allocated,free,health,readonly",
+            ],
         )
         .await?;
         Ok(machine_pool::one_usable(&output).map_err(|error| error.to_string())?)
@@ -356,7 +361,7 @@ impl PoolStorage {
         commitment: u64,
         minimum: u64,
     ) -> Result<()> {
-        if pool.capacity_bytes().get() >= minimum {
+        if pool.size_bytes().get() >= minimum {
             return Ok(());
         }
         if pool.name() != POOL_NAME {
@@ -399,11 +404,11 @@ impl PoolStorage {
             )
             .into());
         }
-        if expanded.capacity_bytes().get() < commitment {
+        if expanded.size_bytes().get() < commitment {
             return Err(format!(
                 "Machine Pool {} has {} bytes after growth, below the {commitment}-byte committed refquota total",
                 pool.name(),
-                expanded.capacity_bytes()
+                expanded.size_bytes()
             )
             .into());
         }

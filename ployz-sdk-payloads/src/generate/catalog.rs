@@ -67,7 +67,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             variants: &[
                 ("stateless", &[]),
                 ("ready", &[]),
-                ("pool", &[("capacity_bytes", "number")]),
+                (
+                    "pool",
+                    &[
+                        ("size_bytes", "number"),
+                        ("used_bytes", "number"),
+                        ("free_bytes", "number"),
+                    ],
+                ),
             ],
         },
     ),
@@ -450,6 +457,24 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "DockerVolumeStorageObservation",
+        Shape::InternallyTagged {
+            tag: "kind",
+            params: "",
+            variants: &[
+                ("plain", &[]),
+                (
+                    "provisioned",
+                    &[
+                        ("mountpoint", "string"),
+                        ("bound_bytes", "number"),
+                        ("used_bytes", "number"),
+                    ],
+                ),
+            ],
+        },
+    ),
+    (
         "DockerVolume",
         Shape::Additive {
             params: "",
@@ -458,6 +483,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("driver", "string"),
                 ("options", "{ readonly [key: string]: string }"),
                 ("labels", "{ readonly [key: string]: string }"),
+                ("storage", "DockerVolumeStorageObservation"),
             ],
         },
     ),

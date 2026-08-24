@@ -340,6 +340,7 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
             driver: "local".into(),
             options: BTreeMap::from([("type".into(), "none".into())]),
             labels: BTreeMap::from([(PROJECT_NAME_LABEL.into(), "app".into())]),
+            storage: ployz_core::DockerVolumeStorageObservation::Plain,
         }],
     );
     let mut down = machine('b', "down");
@@ -405,7 +406,7 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         ),
         (
             &["volume", "ls"][..],
-            "MACHINE\tVOLUME\tDRIVER\none\tdata\tlocal\n".into(),
+            "MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER\none\tdata\tPLAIN\t-\t-\tlocal\n".into(),
         ),
         (
             &["project", "ls"][..],
@@ -524,6 +525,11 @@ async fn existing_provisioned_volume_accepts_the_same_bound_but_never_resizes() 
         driver: "ployz".into(),
         options: BTreeMap::from([("size".into(), "1g".into())]),
         labels: BTreeMap::new(),
+        storage: ployz_core::DockerVolumeStorageObservation::Provisioned {
+            mountpoint: "/var/lib/ployz-volumes/data".into(),
+            bound_bytes: std::num::NonZeroU64::new(1_073_741_824).unwrap(),
+            used_bytes: 0,
+        },
     });
     let (address, server) = serve_discovery(service).await;
 
@@ -645,6 +651,7 @@ async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is
             driver: "local".into(),
             options: Default::default(),
             labels: Default::default(),
+            storage: ployz_core::DockerVolumeStorageObservation::Plain,
         }],
     );
     let failed = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
