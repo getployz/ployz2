@@ -30,7 +30,8 @@ pub struct RemoveVolumeRequest {
 }
 
 /// One Docker Volume whose name is present but whose current detail is unavailable.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, thiserror::Error)]
+#[error("Docker Volume observation failed: {error}")]
 pub struct VolumeObservationFailure {
     pub id: DockerVolumeId,
     pub error: RpcError,
