@@ -61,9 +61,10 @@ pub struct MachineRuntime {
 }
 
 /// Storage preparation requested while enrolling one Machine.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageChoice {
+    #[default]
     None,
     Zfs,
 }
