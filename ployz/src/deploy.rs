@@ -111,6 +111,13 @@ impl VolumeSnapshot {
         &self.observations
     }
 
+    pub(crate) fn known_ids(&self) -> impl Iterator<Item = &DockerVolumeId> {
+        self.observations
+            .iter()
+            .map(|volume| &volume.id)
+            .chain(self.named_failures.iter().map(|failure| &failure.id))
+    }
+
     fn affects_required(&self, required: &BTreeSet<MachineId>) -> bool {
         affects_required(&self.machine_failures, &self.omissions, required)
             || self

@@ -507,14 +507,19 @@ impl ReplicatedStore {
                 [json!(machine_id)],
             ))
             .await?;
-        let mut snapshot = LocalVolumeSnapshot::default();
+        let mut names = Vec::new();
+        let mut observations = Vec::new();
         for [name, encoded] in query.rows(["name", "volume"])? {
             let name = DockerVolumeName::parse(text(&name, "Docker Volume name")?)?;
             let observation = decode_json_document(text(&encoded, "replicated volume JSON")?)?;
-            snapshot.inventory.insert(name.clone());
+            names.push(name);
             if let Some(observation) = observation {
-                snapshot.observations.insert(name, observation);
+                observations.push(observation);
             }
+        }
+        let mut snapshot = LocalVolumeSnapshot::from_inventory(names);
+        for observation in observations {
+            snapshot.observed(observation);
         }
         Ok(snapshot)
     }
@@ -803,21 +808,28 @@ impl LocalContainerSnapshot {
 
 #[derive(Default)]
 pub(crate) struct LocalVolumeSnapshot {
-    pub(crate) inventory: BTreeSet<DockerVolumeName>,
-    pub(crate) observations: BTreeMap<DockerVolumeName, DockerVolume>,
+    volumes: BTreeMap<DockerVolumeName, Option<DockerVolume>>,
 }
 
 impl LocalVolumeSnapshot {
     pub(crate) fn from_inventory(names: impl IntoIterator<Item = DockerVolumeName>) -> Self {
         Self {
-            inventory: names.into_iter().collect(),
-            observations: BTreeMap::new(),
+            volumes: names.into_iter().map(|name| (name, None)).collect(),
         }
     }
 
     pub(crate) fn observed(&mut self, volume: DockerVolume) {
-        self.inventory.insert(volume.id.name.clone());
-        self.observations.insert(volume.id.name.clone(), volume);
+        self.volumes.insert(volume.id.name.clone(), Some(volume));
+    }
+
+    pub(crate) fn get(&self, name: &DockerVolumeName) -> Option<Option<&DockerVolume>> {
+        self.volumes.get(name).map(Option::as_ref)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&DockerVolumeName, Option<&DockerVolume>)> {
+        self.volumes
+            .iter()
+            .map(|(name, volume)| (name, volume.as_ref()))
     }
 }
 

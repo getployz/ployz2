@@ -321,25 +321,21 @@ fn local_volume_changes(
 ) -> LocalVolumeChanges {
     LocalVolumeChanges {
         deletions: existing
-            .inventory
             .iter()
-            .filter(|name| !current.inventory.contains(name))
+            .filter(|(name, _)| current.get(name).is_none())
+            .map(|(name, _)| name)
             .cloned()
             .collect(),
         upserts: current
-            .observations
-            .values()
-            .filter(|volume| existing.observations.get(&volume.id.name) != Some(volume))
+            .iter()
+            .filter_map(|(_, volume)| volume)
+            .filter(|volume| existing.get(&volume.id.name).flatten() != Some(volume))
             .cloned()
             .collect(),
         incomplete: current
-            .inventory
             .iter()
-            .filter(|name| {
-                !current.observations.contains_key(*name)
-                    && (!existing.inventory.contains(*name)
-                        || existing.observations.contains_key(*name))
-            })
+            .filter(|(name, volume)| volume.is_none() && existing.get(name) != Some(None))
+            .map(|(name, _)| name)
             .cloned()
             .collect(),
     }
@@ -479,26 +475,14 @@ mod tests {
         let changed = volume("c-changed", "custom");
         let new = volume("d-new", "local");
 
-        let existing = LocalVolumeSnapshot {
-            inventory: [stable.clone(), stale.clone(), old_changed.clone()]
-                .into_iter()
-                .map(|item| item.id.name)
-                .collect(),
-            observations: [stable.clone(), stale.clone(), old_changed]
-                .into_iter()
-                .map(|item| (item.id.name.clone(), item))
-                .collect(),
-        };
-        let current = LocalVolumeSnapshot {
-            inventory: [stable.clone(), changed.clone(), new.clone()]
-                .into_iter()
-                .map(|item| item.id.name)
-                .collect(),
-            observations: [stable, changed.clone(), new.clone()]
-                .into_iter()
-                .map(|item| (item.id.name.clone(), item))
-                .collect(),
-        };
+        let mut existing = LocalVolumeSnapshot::default();
+        for volume in [stable.clone(), stale.clone(), old_changed] {
+            existing.observed(volume);
+        }
+        let mut current = LocalVolumeSnapshot::default();
+        for volume in [stable, changed.clone(), new.clone()] {
+            current.observed(volume);
+        }
         let changes = local_volume_changes(&existing, &current);
 
         assert_eq!(changes.deletions, vec![stale.id.name]);
@@ -522,10 +506,8 @@ mod tests {
                 used_bytes: 512,
             },
         };
-        let existing = LocalVolumeSnapshot {
-            inventory: [name.clone()].into(),
-            observations: [(name.clone(), observed)].into(),
-        };
+        let mut existing = LocalVolumeSnapshot::default();
+        existing.observed(observed);
         let current = LocalVolumeSnapshot::from_inventory([name.clone()]);
 
         let changes = local_volume_changes(&existing, &current);
