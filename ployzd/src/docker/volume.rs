@@ -91,6 +91,12 @@ impl ContainerRuntime {
         Ok(inventory)
     }
 
+    /// Observe one named Docker Volume directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Docker inspection or decoding fails, or when Docker
+    /// returns a different Volume name than requested.
     pub async fn inspect_volume(
         &self,
         machine_id: &MachineId,
