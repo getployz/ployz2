@@ -134,6 +134,7 @@ impl MachineOperations for Scripted {
                 driver: request.driver,
                 options: request.options,
                 labels: request.labels,
+                storage: ployz_core::DockerVolumeStorageObservation::Plain,
             }),
             Reply::Volume(volume) => Ok(volume),
             Reply::Error(error) => Err(error),
@@ -370,6 +371,7 @@ fn volume_reply(machine_id: MachineId, driver: &str, size: Option<&str>) -> Repl
             .map(|size| BTreeMap::from([("size".into(), size.into())]))
             .unwrap_or_default(),
         labels: Default::default(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain,
     })
 }
 

@@ -117,7 +117,9 @@ fn missing_storage_evidence_requires_storage_preparation() {
 fn existing_plain_volume_is_not_adopted_as_provisioned() {
     let error = explicitly_targeted_provisioned_deploy(
         Some(MachineStorageObservation::Pool {
-            capacity_bytes: NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
+            size_bytes: NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
+            used_bytes: 0,
+            free_bytes: 10 * 1024_u64.pow(3),
         }),
         vec![observed_volume(machine_id('1'), "data")],
     )
@@ -140,7 +142,9 @@ fn existing_matching_provisioned_volume_is_reused_without_creation() {
 
     let preview = explicitly_targeted_provisioned_deploy(
         Some(MachineStorageObservation::Pool {
-            capacity_bytes: NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
+            size_bytes: NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
+            used_bytes: 0,
+            free_bytes: 10 * 1024_u64.pow(3),
         }),
         vec![existing],
     )
@@ -161,7 +165,9 @@ fn existing_provisioned_volume_is_not_implicitly_resized() {
 
     let error = explicitly_targeted_provisioned_deploy(
         Some(MachineStorageObservation::Pool {
-            capacity_bytes: NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
+            size_bytes: NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
+            used_bytes: 0,
+            free_bytes: 10 * 1024_u64.pow(3),
         }),
         vec![existing],
     )

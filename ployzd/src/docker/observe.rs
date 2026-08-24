@@ -450,6 +450,7 @@ mod tests {
             driver: driver.into(),
             options: BTreeMap::new(),
             labels: BTreeMap::new(),
+            storage: ployz_core::DockerVolumeStorageObservation::Plain,
         };
         let stable = volume("a-stable", "local");
         let stale = volume("b-stale", "local");

@@ -199,7 +199,7 @@ impl VolumeStorage {
                 "list",
                 "-Hp",
                 "-o",
-                "name,refquota,mountpoint,mounted,readonly",
+                "name,refquota,used,mountpoint,mounted,readonly",
                 "-r",
                 pool.name(),
             ])
@@ -249,6 +249,7 @@ impl VolumeStorage {
 struct Dataset {
     name: String,
     refquota: u64,
+    used_bytes: u64,
     mountpoint: String,
     mounted: bool,
     readonly: bool,
@@ -258,19 +259,31 @@ impl Dataset {
     fn parse(line: &str, pool: &str) -> Result<Self> {
         let mut fields = line.split('\t');
         let invalid = || format!("invalid ZFS dataset output for Pool {pool}: {line}");
-        let (Some(name), Some(refquota), Some(mountpoint), Some(mounted), Some(readonly), None) = (
+        let (
+            Some(name),
+            Some(refquota),
+            Some(used_bytes),
+            Some(mountpoint),
+            Some(mounted),
+            Some(readonly),
+            None,
+        ) = (
             fields.next(),
             fields.next(),
             fields.next(),
             fields.next(),
             fields.next(),
             fields.next(),
-        ) else {
+            fields.next(),
+        )
+        else {
             return Err(invalid().into());
         };
+        let used_bytes = used_bytes.parse::<u64>().map_err(|_| invalid())?;
         Ok(Self {
             name: name.to_owned(),
             refquota: parse_zfs_bytes(refquota)?,
+            used_bytes,
             mountpoint: mountpoint.to_owned(),
             mounted: mounted == "yes",
             readonly: match readonly {
@@ -445,6 +458,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Remove", post(removal::remove))
         .route("/VolumeDriver.Get", post(removal::get))
+        .route("/VolumeDriver.List", post(removal::list))
         .route("/VolumeDriver.Mount", post(mount))
         .route("/VolumeDriver.Unmount", post(unmount))
         .route("/VolumeDriver.Path", post(mount))
@@ -536,6 +550,11 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn dataset_missing_usage_is_not_zero() {
+        assert!(Dataset::parse("tank/ployz/data\t1073741824\t-\t/data\tyes\toff", "tank").is_err());
+    }
+
     static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
     struct TestDir(PathBuf);
 
@@ -605,6 +624,28 @@ mod tests {
         assert!(log.contains("zfs create -o refquota=1073741824 tank/ployz/data"));
         assert!(log.contains("zfs mount tank/ployz/data"));
         assert!(!log.contains("recordsize"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn docker_can_get_and_list_provisioned_volume_usage() {
+        let test = TestDir::new();
+        fs::write(test.0.join("root"), "").unwrap();
+        fs::write(test.0.join("volume"), "").unwrap();
+        let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+        let socket = test.0.join("plugin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+        let volume = json!({
+            "Name":"data",
+            "Mountpoint":"/var/lib/ployz-volumes/data",
+            "Status":{"bound_bytes":1073741824,"used_bytes":966367642}
+        });
+
+        assert_eq!(
+            post(&socket, "/VolumeDriver.List", json!({})).await,
+            json!({"Volumes":[volume],"Err":""})
+        );
         server.abort();
     }
 
@@ -791,15 +832,15 @@ mod tests {
         for (pools, expected_error) in [
             (USABLE_POOL, None),
             (
-                "tank\t4294967296\tONLINE\ton\n",
+                "tank\t4294967296\t0\t4294967296\tONLINE\ton\n",
                 Some("no usable existing Machine Pool"),
             ),
             (
-                "tank\t4294967296\tFAULTED\toff\n",
+                "tank\t4294967296\t0\t4294967296\tFAULTED\toff\n",
                 Some("no usable existing Machine Pool"),
             ),
             (
-                "alpha\t4294967296\tONLINE\toff\nbeta\t4294967296\tDEGRADED\toff\n",
+                "alpha\t4294967296\t0\t4294967296\tONLINE\toff\nbeta\t4294967296\t0\t4294967296\tDEGRADED\toff\n",
                 Some("multiple usable Machine Pools"),
             ),
         ] {
@@ -826,7 +867,10 @@ mod tests {
     #[tokio::test]
     async fn create_rejects_malformed_pool_inspection_before_zfs_mutation() {
         let test = TestDir::new();
-        let (zpool, zfs) = fake_zfs(&test.0, "broken\tONLINE\ntank\t4294967296\tONLINE\toff\n");
+        let (zpool, zfs) = fake_zfs(
+            &test.0,
+            "broken\tONLINE\ntank\t4294967296\t0\t4294967296\tONLINE\toff\n",
+        );
         let socket = test.0.join("plugin.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));

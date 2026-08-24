@@ -400,6 +400,7 @@ fn expected_frame() -> RuntimeWatchFrame {
             driver: "local".into(),
             options: [("type".into(), "none".into())].into(),
             labels: [("purpose".into(), "database".into())].into(),
+            storage: ployz_core::DockerVolumeStorageObservation::Plain,
         }],
         certificates: vec![
             CertificateObservation {

@@ -39,7 +39,9 @@ async fn machines_returns_raw_list_machines_observations_without_storage_fanout(
 async fn machine_ls_observes_storage_only_when_the_target_advertises_it() {
     let mut service = storage_capable_service();
     service.storage = ployz_core::MachineStorageObservation::Pool {
-        capacity_bytes: std::num::NonZeroU64::new(4_294_967_296).unwrap(),
+        size_bytes: std::num::NonZeroU64::new(4_294_967_296).unwrap(),
+        used_bytes: 3_865_470_566,
+        free_bytes: 429_496_730,
     };
     let (address, server) = serve_discovery(service.clone()).await;
 
@@ -48,14 +50,13 @@ async fn machine_ls_observes_storage_only_when_the_target_advertises_it() {
     assert!(output.status.success(), "{output:?}");
     let observed: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        observed
-            .pointer("/0/storage/capacity_bytes")
-            .and_then(Value::as_u64),
-        Some(4_294_967_296)
-    );
-    assert_eq!(
-        observed.pointer("/0/storage/state").and_then(Value::as_str),
-        Some("pool")
+        observed.pointer("/0/storage"),
+        Some(&serde_json::json!({
+            "state": "pool",
+            "size_bytes": 4_294_967_296_u64,
+            "used_bytes": 3_865_470_566_u64,
+            "free_bytes": 429_496_730_u64,
+        }))
     );
     assert_eq!(service.inspect_calls.load(Ordering::SeqCst), 1);
     server.abort();

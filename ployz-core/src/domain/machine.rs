@@ -214,8 +214,12 @@ pub enum MachineStorageObservation {
     Ready,
     /// Exactly one writable `ONLINE` or `DEGRADED` Machine Pool is imported.
     Pool {
-        /// Current ZFS Pool capacity in bytes.
-        capacity_bytes: NonZeroU64,
+        /// Current ZFS Pool size in bytes.
+        size_bytes: NonZeroU64,
+        /// Current allocated ZFS Pool bytes.
+        used_bytes: u64,
+        /// Current free ZFS Pool bytes.
+        free_bytes: u64,
     },
 }
 

@@ -514,6 +514,7 @@ fn frame_with_extra_volume(frame: &RuntimeWatchFrame) -> RuntimeWatchFrame {
         driver: "local".into(),
         options: Default::default(),
         labels: Default::default(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain,
     });
     changed
 }

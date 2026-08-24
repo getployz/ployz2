@@ -14,14 +14,14 @@ use ployz_core::{
     ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DependencyHealthFailure,
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
     DeviceMapping, DeviceReservation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    ExecutionError, FailedOperation, HealthFailure, HealthObservation, HealthcheckCommand,
-    HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol, IngressHost,
-    IngressHostname, LocalMachineRemoved, LogDriver, Machine, MachineAction, MachineFailure,
-    MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime,
-    MachineStorageObservation, MachineSuccess, ManagementAddress, MembershipObservation,
-    ObservationKind, ObservedDataLoss, OperationPhase, OperationRow, OperationStatus,
-    PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication, PreDeployHook,
-    PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
+    DockerVolumeStorageObservation, ExecutionError, FailedOperation, HealthFailure,
+    HealthObservation, HealthcheckCommand, HealthcheckSpec, HookContainer, HookFailure, HostBind,
+    HttpProtocol, IngressHost, IngressHostname, LocalMachineRemoved, LogDriver, Machine,
+    MachineAction, MachineFailure, MachineId, MachineName, MachineObservation, MachinePath,
+    MachineRuntime, MachineStorageObservation, MachineSuccess, ManagementAddress,
+    MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase, OperationRow,
+    OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication,
+    PreDeployHook, PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
     ProvisionedVolumePlacement, PruneRefusal, PullPolicy, QualifiedService, RegisterRequest,
     Registered, RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation,
     RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy,
@@ -585,13 +585,26 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             ],
         ),
         (
+            "DockerVolumeStorageObservation",
+            vec![
+                to_value(&DockerVolumeStorageObservation::Plain),
+                to_value(&DockerVolumeStorageObservation::Provisioned {
+                    mountpoint: "/var/lib/ployz-volumes/data".into(),
+                    bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+                    used_bytes: 966_367_642,
+                }),
+            ],
+        ),
+        (
             "MachineStorageObservation",
             vec![
                 to_value(&MachineStorageObservation::Stateless),
                 to_value(&MachineStorageObservation::Ready),
                 to_value(&MachineStorageObservation::Pool {
-                    capacity_bytes: NonZeroU64::new(4_294_967_296)
+                    size_bytes: NonZeroU64::new(4_294_967_296)
                         .expect("fixture capacity is nonzero"),
+                    used_bytes: 3_865_470_566,
+                    free_bytes: 429_496_730,
                 }),
             ],
         ),
@@ -674,9 +687,14 @@ fn docker_volume() -> DockerVolume {
             machine_id: machine_id(MACHINE_ID_HEX),
             name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
         },
-        driver: "local".into(),
-        options: BTreeMap::from([("type".into(), "none".into())]),
+        driver: "ployz".into(),
+        options: BTreeMap::from([("size".into(), "1g".into())]),
         labels: BTreeMap::from([("ployz.managed".into(), "false".into())]),
+        storage: DockerVolumeStorageObservation::Provisioned {
+            mountpoint: "/var/lib/ployz-volumes/data".into(),
+            bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+            used_bytes: 966_367_642,
+        },
     }
 }
 

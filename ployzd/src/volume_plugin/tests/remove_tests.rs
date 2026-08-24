@@ -171,7 +171,7 @@ async fn remove_never_destroys_a_child_below_an_unmanaged_root() {
 }
 
 #[tokio::test]
-async fn get_returns_the_minimal_exact_volume_identity() {
+async fn get_returns_volume_identity_mountpoint_bound_and_usage() {
     let test = TestDir::new();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
@@ -183,7 +183,11 @@ async fn get_returns_the_minimal_exact_volume_identity() {
     assert_eq!(
         post(&socket, "/VolumeDriver.Get", json!({"Name":"data"})).await,
         json!({
-            "Volume":{"Name":"data","Mountpoint":"/var/lib/ployz-volumes/data"},
+            "Volume":{
+                "Name":"data",
+                "Mountpoint":"/var/lib/ployz-volumes/data",
+                "Status":{"bound_bytes":1073741824,"used_bytes":966367642}
+            },
             "Err":""
         })
     );

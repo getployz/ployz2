@@ -622,14 +622,14 @@ case "$name" in
         [ ! -e '{fail_import}' ] || {{ echo 'import failed' >&2; exit 2; }}
         touch '{pool}'
         ;;
-      'list -Hp -o name,size,health,readonly')
+      'list -Hp -o name,size,allocated,free,health,readonly')
         if [ -e '{concurrent}' ] && [ ! -e '{pool}' ]; then
           sleep 0.1
         else
           if [ -e '{pool}' ]; then
             capacity='{allocated}'
             [ ! -e '{claimed}' ] || capacity='{claimed}'
-            printf 'ployz\t%s\tONLINE\toff\n' "$(cat "$capacity")"
+            printf 'ployz\t%s\t0\t%s\tONLINE\toff\n' "$(cat "$capacity")" "$(cat "$capacity")"
           fi
         fi
         ;;
@@ -649,11 +649,11 @@ case "$name" in
     ;;
   zfs)
     case "$*" in
-      'list -Hp -o name,refquota,mountpoint,mounted,readonly -r ployz')
-        printf 'ployz\t0\t/ployz\tyes\toff\n'
-        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t/var/lib/ployz-volumes\tno\toff\n'
-        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t%s\t/var/lib/ployz-volumes/data\tno\toff\n' "$(cat '{volume_bound}')"
-        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
+      'list -Hp -o name,refquota,used,mountpoint,mounted,readonly -r ployz')
+        printf 'ployz\t0\t0\t/ployz\tyes\toff\n'
+        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t0\t/var/lib/ployz-volumes\tno\toff\n'
+        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t%s\t0\t/var/lib/ployz-volumes/data\tno\toff\n' "$(cat '{volume_bound}')"
+        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t0\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
       'create -o refquota='*' ployz/ployz/data')
