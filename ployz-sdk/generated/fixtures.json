@@ -1157,7 +1157,9 @@
           "population_stddev_ns": 250000
         },
         "selected_endpoint": "203.0.113.10:51820",
-        "storage": "ready"
+        "storage": {
+          "state": "ready"
+        }
       }
     ],
     "observed_at": "2024-01-01T00:00:00Z",
@@ -1361,7 +1363,9 @@
           "population_stddev_ns": 250000
         },
         "selected_endpoint": "203.0.113.10:51820",
-        "storage": "ready"
+        "storage": {
+          "state": "ready"
+        }
       }
     ],
     "observed_at": "2024-01-01T00:00:00Z",

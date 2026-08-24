@@ -61,7 +61,15 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     ("StorageChoice", Shape::ClosedString(&["none", "zfs"])),
     (
         "MachineStorageObservation",
-        Shape::ClosedString(&["stateless", "ready", "pool"]),
+        Shape::InternallyTagged {
+            tag: "state",
+            params: "",
+            variants: &[
+                ("stateless", &[]),
+                ("ready", &[]),
+                ("pool", &[("capacity_bytes", "number")]),
+            ],
+        },
     ),
     (
         "UpdateOrder",

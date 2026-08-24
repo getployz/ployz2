@@ -581,7 +581,10 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             vec![
                 to_value(&MachineStorageObservation::Stateless),
                 to_value(&MachineStorageObservation::Ready),
-                to_value(&MachineStorageObservation::Pool),
+                to_value(&MachineStorageObservation::Pool {
+                    capacity_bytes: NonZeroU64::new(4_294_967_296)
+                        .expect("fixture capacity is nonzero"),
+                }),
             ],
         ),
         (

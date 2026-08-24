@@ -70,7 +70,11 @@ export type PullPolicy = "always" | "missing" | "never";
 
 export type StorageChoice = "none" | "zfs";
 
-export type MachineStorageObservation = "stateless" | "ready" | "pool";
+export type MachineStorageObservation =
+  | Additive<{ state: "stateless" }>
+  | Additive<{ state: "ready" }>
+  | Additive<{ state: "pool"; capacity_bytes: number }>
+  | Additive<{ state?: string }>;
 
 export type UpdateOrder = "start_first" | "stop_first";
 

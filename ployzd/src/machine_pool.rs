@@ -1,14 +1,25 @@
 //! Imported Machine Pool eligibility.
 
+use std::num::NonZeroU64;
+
 /// A writable imported Machine Pool with usable health.
 #[derive(Debug, Eq, PartialEq)]
-pub struct MachinePool(String);
+pub struct MachinePool {
+    name: String,
+    capacity_bytes: NonZeroU64,
+}
 
 impl MachinePool {
     /// The imported ZFS Pool name.
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.0
+        &self.name
+    }
+
+    /// Current ZFS Pool capacity in bytes.
+    #[must_use]
+    pub fn capacity_bytes(&self) -> NonZeroU64 {
+        self.capacity_bytes
     }
 }
 
@@ -79,11 +90,18 @@ pub fn importable_names<'output>(output: &'output str) -> Result<Vec<&'output st
 fn parse(line: &str) -> Result<Option<MachinePool>, Error> {
     let mut fields = line.split('\t');
     let invalid = || Error(format!("invalid ZFS Pool output: {line}"));
-    let (Some(name), Some(health), Some(readonly), None) =
-        (fields.next(), fields.next(), fields.next(), fields.next())
-    else {
+    let (Some(name), Some(capacity_bytes), Some(health), Some(readonly), None) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
         return Err(invalid());
     };
+    let capacity_bytes = capacity_bytes
+        .parse::<NonZeroU64>()
+        .map_err(|_| invalid())?;
     if name.is_empty()
         || !matches!(
             health,
@@ -94,8 +112,10 @@ fn parse(line: &str) -> Result<Option<MachinePool>, Error> {
         return Err(invalid());
     }
     Ok(
-        (matches!(health, "ONLINE" | "DEGRADED") && readonly == "off")
-            .then(|| MachinePool(name.to_owned())),
+        (matches!(health, "ONLINE" | "DEGRADED") && readonly == "off").then(|| MachinePool {
+            name: name.to_owned(),
+            capacity_bytes,
+        }),
     )
 }
 
@@ -106,8 +126,10 @@ mod tests {
     #[test]
     fn malformed_output_is_an_error() {
         assert_eq!(
-            one_usable("broken\tONLINE").unwrap_err().to_string(),
-            "invalid ZFS Pool output: broken\tONLINE"
+            one_usable("broken\tnot-a-size\tONLINE\toff")
+                .unwrap_err()
+                .to_string(),
+            "invalid ZFS Pool output: broken\tnot-a-size\tONLINE\toff"
         );
     }
 
