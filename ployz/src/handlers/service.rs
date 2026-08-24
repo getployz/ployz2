@@ -29,14 +29,15 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
                 println!("{}", serde_json::to_string_pretty(&services)?);
             } else {
                 println!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
-                for summary in assemble_service_summaries(&services, &machines) {
+                for service in &services {
+                    let (running, expected) = service_counts(service, &machines);
                     println!(
                         "{}\t{}\t{}/{}\t{}",
-                        summary.service.service_id,
-                        summary.service.identity,
-                        summary.running,
-                        summary.expected,
-                        summary.service.hook_containers.len()
+                        service.service_id,
+                        service.identity,
+                        running,
+                        expected,
+                        service.hook_containers.len()
                     );
                 }
             }
@@ -45,57 +46,29 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-struct ServiceSummary<'service> {
-    service: &'service ServiceObservation,
-    running: usize,
-    expected: usize,
-}
-
-fn assemble_service_summaries<'service>(
-    services: &'service [ServiceObservation],
-    machines: &[MachineObservation],
-) -> Vec<ServiceSummary<'service>> {
-    services
+fn service_counts(service: &ServiceObservation, machines: &[MachineObservation]) -> (usize, usize) {
+    let running = service
+        .containers
         .iter()
-        .map(|service| {
-            let running = service
-                .containers
-                .iter()
-                .filter(|container| {
-                    matches!(
-                        container.as_observation().runtime,
-                        ContainerRuntimeObservation::Running { .. }
-                    )
-                })
-                .count();
-            let expected = service
-                .containers
-                .iter()
-                .max_by_key(|container| {
-                    let observation = container.as_observation();
-                    (
-                        observation.created_at_unix_nanos,
-                        observation.container_id.as_str(),
-                    )
-                })
-                .map(|container| &container.as_observation().resolved_spec)
-                .filter(|spec| spec.mode == ServiceMode::Global)
-                .map_or(service.containers.len(), |spec| {
-                    machines
-                        .iter()
-                        .filter(|machine| machine.membership == MembershipObservation::Up)
-                        .filter(|machine| {
-                            machine_matches_placement(&machine.machine, &spec.placement)
-                        })
-                        .count()
-                });
-            ServiceSummary {
-                service,
-                running,
-                expected,
-            }
+        .filter(|container| {
+            matches!(
+                container.as_observation().runtime,
+                ContainerRuntimeObservation::Running { .. }
+            )
         })
-        .collect()
+        .count();
+    let expected = service
+        .newest_service_container()
+        .map(|container| &container.as_observation().resolved_spec)
+        .filter(|spec| spec.mode == ServiceMode::Global)
+        .map_or(service.containers.len(), |spec| {
+            machines
+                .iter()
+                .filter(|machine| machine.membership == MembershipObservation::Up)
+                .filter(|machine| machine_matches_placement(&machine.machine, &spec.placement))
+                .count()
+        });
+    (running, expected)
 }
 
 /// List observed Service and hook Containers.
@@ -427,13 +400,7 @@ mod tests {
             machine('d', "batch", MembershipObservation::Up),
         ];
 
-        let summaries = assemble_service_summaries(std::slice::from_ref(&service), &machines);
-        let counts = summaries
-            .iter()
-            .map(|summary| (summary.running, summary.expected))
-            .collect::<Vec<_>>();
-
-        assert_eq!(counts, [(1, 2)]);
+        assert_eq!(service_counts(&service, &machines), (1, 2));
     }
 
     #[test]

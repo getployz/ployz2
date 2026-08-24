@@ -27,7 +27,7 @@ use super::{
 use crate::corrosion::{
     CertificateChallenge, CertificateMaterial, CertificateRow, Error, ReplicatedObservations,
 };
-use crate::global_reconcile::GlobalReconcileObservations;
+use crate::global_reconcile::global_reconcile_observations;
 use crate::hosted_dns::Reservation;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -83,7 +83,7 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
         },
         &entry.id,
         Some(&telemetry),
-        &[],
+        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -149,7 +149,7 @@ fn assembled_frame_attaches_reconcile_failures_only_to_the_entry_machine() {
         snapshot(vec![entry.clone(), peer], Vec::new()),
         &entry.id,
         None,
-        std::slice::from_ref(&failure),
+        vec![failure.clone()],
         OBSERVED_AT.into(),
     );
 
@@ -199,7 +199,7 @@ fn incomplete_ids_are_preserved_and_are_not_deletes() {
         },
         &entry.id,
         None,
-        &[],
+        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -264,7 +264,7 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
         },
         &entry.id,
         None,
-        &[],
+        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -344,7 +344,7 @@ fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
         },
         &entry.id,
         None,
-        &[],
+        Vec::new(),
         OBSERVED_AT.into(),
     );
 
@@ -850,7 +850,7 @@ fn serve_sampled(
         },
         ReceiverStream::new(changes),
         ReceiverStream::new(ticks),
-        GlobalReconcileObservations::new(),
+        global_reconcile_observations(),
     )
 }
 

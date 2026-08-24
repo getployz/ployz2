@@ -158,7 +158,7 @@ where
                 snapshot.clone(),
                 &entry_id,
                 latest.telemetry.as_ref(),
-                &global_reconcile.failures(),
+                global_reconcile.borrow().clone(),
                 latest.observed_at.clone(),
             );
             if last
@@ -259,7 +259,7 @@ pub(crate) fn assemble_runtime_watch_frame(
     snapshot: RuntimeWatchSnapshot,
     entry_id: &MachineId,
     telemetry: Option<&RuntimeWatchTelemetry>,
-    global_reconcile_failures: &[ployz_core::GlobalReconcileFailureObservation],
+    global_reconcile_failures: Vec<ployz_core::GlobalReconcileFailureObservation>,
     observed_at: String,
 ) -> RuntimeWatchFrame {
     let mut machines = match telemetry {
@@ -270,7 +270,7 @@ pub(crate) fn assemble_runtime_watch_frame(
         .iter_mut()
         .find(|observation| observation.machine.id == *entry_id)
     {
-        entry.global_reconcile_failures = global_reconcile_failures.to_vec();
+        entry.global_reconcile_failures = global_reconcile_failures;
     }
     let mut containers = snapshot.containers.observations;
     containers.sort_by_key(|container| container.container_id);

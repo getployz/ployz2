@@ -8,7 +8,7 @@ use std::{
 use ployz_core::{
     CaddyConfig, CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged,
     ContainerCreated, ContainerDetails, ContainerList, ContractDescription, Domain, DomainRecords,
-    ImageIngestReason, ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, MachineId,
+    ImageIngestReason, ImagePulled, LocalMachinePhase, LogMetadata, LogOrigin, Machine, MachineId,
     MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload, PROTOCOL_MAJOR,
     QualifiedService, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcRequestBody,
     RpcResponse, VolumeRemoved, op,
@@ -22,7 +22,7 @@ use tonic::{Request, Response, Status};
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
-    global_reconcile::GlobalReconcileObservations,
+    global_reconcile::{GlobalReconcileObservations, global_reconcile_observations},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineStore, StoreError},
     network::MACHINE_API_PORT,
@@ -65,7 +65,7 @@ impl MachineService {
             machine_api_port: MACHINE_API_PORT,
             cloud_pairing: None,
             slot_locks: Arc::new(Mutex::new(HashMap::new())),
-            global_reconcile: GlobalReconcileObservations::new(),
+            global_reconcile: global_reconcile_observations(),
         }
     }
 
@@ -152,6 +152,18 @@ impl MachineService {
         self.local
             .containers()
             .ok_or_else(|| unavailable("Docker is not available"))
+    }
+
+    pub(crate) fn local_machine(&self) -> Result<Machine, RpcError> {
+        self.local_record()
+            .map_err(|error| RpcError {
+                code: RpcErrorCode::Internal,
+                message: error.message().into(),
+                details: Value::Null,
+            })?
+            .machine()
+            .cloned()
+            .ok_or_else(|| unavailable("Machine network is not configured"))
     }
 
     pub(crate) async fn ensure_local_global_slot(

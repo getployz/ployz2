@@ -184,7 +184,7 @@ async fn runtime_watch_snapshot_is_an_error_when_the_store_is_unreachable() {
             store,
             local,
             MachineId::random(),
-            crate::global_reconcile::GlobalReconcileObservations::new(),
+            crate::global_reconcile::global_reconcile_observations(),
         )
         .await
         .is_err()

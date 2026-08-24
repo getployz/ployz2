@@ -33,7 +33,7 @@ use crate::{
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     filesystem::set_ployz_group,
-    global_reconcile::{self, GlobalReconcileObservations},
+    global_reconcile::{self, global_reconcile_observations},
     machine::{LocalMachineBody, LocalMachineStore, StoreError},
     metrics,
     network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane},
@@ -163,7 +163,7 @@ impl Daemon {
         );
         let (participating, participating_rx) =
             watch::channel(local_phase == LocalMachinePhase::Participating);
-        let global_reconcile_observations = GlobalReconcileObservations::new();
+        let global_reconcile_observations = global_reconcile_observations();
         let (cloud_pairing_tx, cloud_pairing_rx) = watch::channel(local_record.cloud_pairing);
         let (reset, reset_rx) = watch::channel(false);
         let certificate_data_dir = config.data_dir.clone();
@@ -318,11 +318,10 @@ impl Daemon {
             };
             let global_reconcile_service = service.clone();
             let global_reconcile = async {
-                match (local_machine.clone(), replicated_store.clone()) {
-                    (Some(machine), Some(replicated)) => {
+                match replicated_store.clone() {
+                    Some(replicated) => {
                         global_reconcile::run(
                             replicated,
-                            machine,
                             global_reconcile_service,
                             global_reconcile_observations,
                             participating_rx.clone(),
@@ -330,7 +329,7 @@ impl Daemon {
                         )
                         .await
                     }
-                    _ => {
+                    None => {
                         shutdown.cancelled().await;
                         Ok(())
                     }
