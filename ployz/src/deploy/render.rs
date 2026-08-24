@@ -577,9 +577,9 @@ mod tests {
     use ployz_core::{
         ContainerId, DeployOperation, DockerVolumeId, DockerVolumeName, MachineId, MachineName,
         OperationRow, OperationStatus, PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes,
-        ProvisionedVolumePlacement, PruneRefusal, QualifiedService, ReplacementOperation,
-        RequestedServiceSpec, ResolvedServiceSpec, ServiceName, ServiceVolume,
-        ServiceVolumeReference, UpdateOrder, VolumeSource,
+        PruneRefusal, QualifiedService, ReplacementOperation, RequestedServiceSpec,
+        ResolvedServiceSpec, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateOrder,
+        VolumeSource,
     };
 
     use super::*;
@@ -667,7 +667,6 @@ mod tests {
                 maximum_bytes: ProvisionedVolumeMaximumBytes::new(
                     NonZeroU64::new(1_073_741_824).unwrap(),
                 ),
-                placement: ProvisionedVolumePlacement::ExplicitMachine,
             },
             Some(MachineName::parse("edge").unwrap()),
             None,

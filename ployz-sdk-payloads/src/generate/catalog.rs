@@ -462,11 +462,11 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             tag: "kind",
             params: "",
             variants: &[
-                ("plain", &[]),
+                ("plain", &[("driver", "string")]),
                 (
                     "provisioned",
                     &[
-                        ("mountpoint", "string"),
+                        ("mountpoint", "MachinePath"),
                         ("bound_bytes", "number"),
                         ("used_bytes", "number"),
                     ],
@@ -480,7 +480,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             params: "",
             fields: &[
                 ("id", "DockerVolumeId"),
-                ("driver", "string"),
                 ("options", "{ readonly [key: string]: string }"),
                 ("labels", "{ readonly [key: string]: string }"),
                 ("storage", "DockerVolumeStorageObservation"),
@@ -627,10 +626,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("maximum_bytes", "ProvisionedVolumeMaximumBytes"),
             ],
         },
-    ),
-    (
-        "ProvisionedVolumePlacement",
-        Shape::ClosedString(&["explicit_machine", "automatic"]),
     ),
     (
         "DeployIntent",
@@ -809,7 +804,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                         ("machine_id", "MachineId"),
                         ("volume", "ServiceVolume"),
                         ("maximum_bytes", "ProvisionedVolumeMaximumBytes"),
-                        ("placement", "ProvisionedVolumePlacement"),
                     ],
                 ),
                 (

@@ -70,6 +70,63 @@ async fn additional_create_grows_the_pool_before_committing_its_bound() {
 }
 
 #[tokio::test]
+async fn growth_requires_zfs_to_report_commitment_plus_headroom() {
+    let test = TestDir::new();
+    let (socket, server) = start_pool_with_data(&test).await;
+    fs::write(test.0.join("underclaim-growth"), "").unwrap();
+
+    let response = post(
+        &socket,
+        "/VolumeDriver.Create",
+        json!({"Name":"other","Opts":{"size":"2g"}}),
+    )
+    .await;
+    server.abort();
+
+    let message = error(&response);
+    assert!(message.contains("4294967296"), "{message}");
+    assert!(!test.0.join("other").exists());
+}
+
+#[tokio::test]
+async fn growth_extends_non_aligned_backing_in_whole_gibibytes() {
+    let test = TestDir::new();
+    let socket = test.0.join("plugin.sock");
+    let server = tokio::spawn(serve(
+        UnixListener::bind(&socket).unwrap(),
+        fake_first_pool(&test.0, 4096),
+    ));
+    assert_eq!(
+        post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"data","Opts":{"size":"11g"}}),
+        )
+        .await,
+        json!({"Err":""})
+    );
+    assert_eq!(
+        post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"other","Opts":{"size":"1g"}}),
+        )
+        .await,
+        json!({"Err":""})
+    );
+    server.abort();
+
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert!(
+        log.contains(&format!(
+            "fallocate -l 15139759718 {}",
+            test.0.join(POOL_BACKING_FILE).display()
+        )),
+        "{log}"
+    );
+}
+
+#[tokio::test]
 async fn sparse_growth_is_refused_before_the_pool_or_dataset_claims_it() {
     let test = TestDir::new();
     let (socket, server) = start_pool_with_data(&test).await;
@@ -577,6 +634,7 @@ fn fake_first_pool(directory: &Path, physical_block_size: u64) -> VolumeStorage 
     let sparse = directory.join("sparse");
     let fail_pool = directory.join("fail-pool");
     let fail_online_once = directory.join("fail-online-once");
+    let underclaim_growth = directory.join("underclaim-growth");
     let fail_volume = directory.join("fail-volume");
     let importable = directory.join("importable");
     let fail_import = directory.join("fail-import");
@@ -641,7 +699,11 @@ case "$name" in
           echo 'online interrupted' >&2
           exit 2
         fi
-        cp '{allocated}' '{claimed}'
+        if [ -e '{underclaim_growth}' ]; then
+          printf '3221225472\n' > '{claimed}'
+        else
+          cp '{allocated}' '{claimed}'
+        fi
         ;;
       'destroy -f ployz') rm -f '{pool}' '{root}' '{volume}' '{volume_bound}' '{other}' '{other_bound}' '{claimed}' ;;
       *) echo "unexpected fake zpool command: $*" >&2; exit 2 ;;
@@ -688,6 +750,7 @@ esac
         sparse = sparse.display(),
         fail_pool = fail_pool.display(),
         fail_online_once = fail_online_once.display(),
+        underclaim_growth = underclaim_growth.display(),
         fail_volume = fail_volume.display(),
         importable = importable.display(),
         fail_import = fail_import.display(),

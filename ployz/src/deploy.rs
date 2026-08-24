@@ -4,7 +4,7 @@ use std::{
 };
 
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolumeId,
+    BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId, MachineName,
     MachineObservation, MachineTarget, ProjectName, ProvisionedVolumeMaximumBytes,
     QualifiedService, RpcError, ServiceName, ServiceObservation, ServiceVolumeReference,
@@ -56,7 +56,7 @@ fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
 pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
     pub containers: Vec<ContainerObservation>,
-    pub volumes: Vec<ObservedDockerVolume>,
+    pub volumes: Vec<DockerVolume>,
     /// Target-specific Container listing failures from this observer's fan-out.
     pub container_failures: Vec<MachineFailure<RpcError>>,
     /// Required Container queries that produced no terminal response.
@@ -111,14 +111,6 @@ fn affects_required(
         .iter()
         .any(|failure| required.contains(&failure.machine_id))
         || omissions.iter().any(|machine| required.contains(machine))
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ObservedDockerVolume {
-    pub id: DockerVolumeId,
-    pub driver: String,
-    pub options: std::collections::BTreeMap<String, String>,
-    pub labels: std::collections::BTreeMap<String, String>,
 }
 
 /// Why [`PlanError::NoEligibleMachines`] found zero Machines.

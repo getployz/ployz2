@@ -1,14 +1,13 @@
 use std::{collections::BTreeMap, future::Future, num::NonZeroU64};
 
 use ployz_core::{
-    CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName, MachineFailure, MachineId,
-    MachineName, MachineObservation, MachineSuccess, PartialResult, ProvisionedVolumeMaximumBytes,
-    RpcError, RpcErrorCode, ServiceVolume, VolumeSource,
+    CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
+    DockerVolumeStorageObservation, MachineFailure, MachineId, MachineName, MachineObservation,
+    MachineSuccess, PartialResult, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode,
+    ServiceVolume, VolumeSource,
 };
 use serde::Serialize;
 use thiserror::Error;
-
-use crate::deploy::ObservedDockerVolume;
 
 /// A positive Provisioned Volume bound accepted by Docker's Ployz driver.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,19 +70,11 @@ impl ProvisionedVolumeSize {
 
     #[must_use]
     pub(crate) fn matches(&self, volume: &DockerVolume) -> bool {
-        self.matches_shape(&volume.driver, &volume.options)
-    }
-
-    /// Whether a Deploy Snapshot Volume has this Ployz-driver bound.
-    #[must_use]
-    pub(crate) fn matches_observed(&self, volume: &ObservedDockerVolume) -> bool {
-        self.matches_shape(&volume.driver, &volume.options)
-    }
-
-    fn matches_shape(&self, driver: &str, options: &BTreeMap<String, String>) -> bool {
-        driver == "ployz"
-            && options.len() == 1
-            && options.get("size").and_then(|size| parse_driver_size(size)) == Some(self.bytes)
+        matches!(
+            volume.storage,
+            DockerVolumeStorageObservation::Provisioned { bound_bytes, .. }
+                if bound_bytes.get() == self.bytes
+        )
     }
 }
 
@@ -124,22 +115,6 @@ pub(crate) fn create_volume_request(
         request.options = BTreeMap::from([("size".into(), size.as_str().into())]);
     }
     Ok(request)
-}
-
-fn parse_driver_size(value: &str) -> Option<u64> {
-    let (amount, multiplier) = match value.as_bytes().last()? {
-        b'b' => (&value[..value.len() - 1], 1),
-        b'k' => (&value[..value.len() - 1], 1024_u64),
-        b'm' => (&value[..value.len() - 1], 1024_u64.pow(2)),
-        b'g' => (&value[..value.len() - 1], 1024_u64.pow(3)),
-        b't' => (&value[..value.len() - 1], 1024_u64.pow(4)),
-        _ => return None,
-    };
-    amount
-        .parse::<NonZeroU64>()
-        .ok()?
-        .get()
-        .checked_mul(multiplier)
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

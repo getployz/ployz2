@@ -22,15 +22,14 @@ use ployz_core::{
     MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase, OperationRow,
     OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication,
     PreDeployHook, PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
-    ProvisionedVolumePlacement, PruneRefusal, PullPolicy, QualifiedService, RegisterRequest,
-    Registered, RemoveVolumesRequest, ReplacementCompensation, ReplacementOperation,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartAttempt, RestartPolicy,
-    RpcError, RpcErrorCode, RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds,
-    RuntimeWatchTransportFrame, SelectedEndpoint, ServiceAttempt, ServiceConfigGraph,
-    ServiceContainer, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceObservation,
-    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, StorageChoice, TransportProtocol,
-    Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder, VolumeDriver, VolumeSource,
-    WireGuardPublicKey,
+    PruneRefusal, PullPolicy, QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest,
+    ReplacementCompensation, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
+    ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
+    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, SelectedEndpoint,
+    ServiceAttempt, ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount,
+    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder,
+    VolumeDriver, VolumeSource, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -578,19 +577,16 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             ],
         ),
         (
-            "ProvisionedVolumePlacement",
-            vec![
-                to_value(&ProvisionedVolumePlacement::ExplicitMachine),
-                to_value(&ProvisionedVolumePlacement::Automatic),
-            ],
-        ),
-        (
             "DockerVolumeStorageObservation",
             vec![
-                to_value(&DockerVolumeStorageObservation::Plain),
+                to_value(&DockerVolumeStorageObservation::Plain {
+                    driver: "local".into(),
+                }),
                 to_value(&DockerVolumeStorageObservation::Provisioned {
-                    mountpoint: "/var/lib/ployz-volumes/data".into(),
-                    bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+                    mountpoint: MachinePath::parse("/var/lib/ployz-volumes/data")
+                        .expect("fixture mountpoint is valid"),
+                    bound_bytes: NonZeroU64::new(1_073_741_824)
+                        .expect("fixture Provisioned Volume bound is positive"),
                     used_bytes: 966_367_642,
                 }),
             ],
@@ -687,12 +683,13 @@ fn docker_volume() -> DockerVolume {
             machine_id: machine_id(MACHINE_ID_HEX),
             name: DockerVolumeName::parse("data").expect("fixture volume name is valid"),
         },
-        driver: "ployz".into(),
         options: BTreeMap::from([("size".into(), "1g".into())]),
         labels: BTreeMap::from([("ployz.managed".into(), "false".into())]),
         storage: DockerVolumeStorageObservation::Provisioned {
-            mountpoint: "/var/lib/ployz-volumes/data".into(),
-            bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+            mountpoint: MachinePath::parse("/var/lib/ployz-volumes/data")
+                .expect("fixture mountpoint is valid"),
+            bound_bytes: NonZeroU64::new(1_073_741_824)
+                .expect("fixture Provisioned Volume bound is positive"),
             used_bytes: 966_367_642,
         },
     }
@@ -848,7 +845,6 @@ fn create_provisioned_volume_operation() -> DeployOperation {
         machine_id: machine_id(MACHINE_ID_HEX),
         volume: service_volume(),
         maximum_bytes: provisioned_volume().maximum_bytes,
-        placement: ProvisionedVolumePlacement::ExplicitMachine,
     }
 }
 

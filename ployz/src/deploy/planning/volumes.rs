@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeId, DockerVolumeName, MachineId, MachineObservation, MachineStorageObservation,
-    MachineTarget, PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
-    ProvisionedVolumePlacement, RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
-    ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
+    DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
+    MachineObservation, MachineStorageObservation, MachineTarget, PreservedVolume, ProjectName,
+    ProvisionedVolume, ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ServiceMode,
+    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph, VolumeSource,
+    machine_matches_target, owned_volume_project,
 };
 
 use crate::deploy::{
@@ -24,13 +25,7 @@ pub(super) struct VolumePins {
     anchors: BTreeMap<DockerVolumeName, MachineId>,
     creates: Vec<(MachineId, ServiceVolume)>,
     provisioned: ProvisionedVolumeBindings,
-    provisioned_plans: BTreeMap<DockerVolumeId, ProvisionedVolumePlan>,
-}
-
-#[derive(Clone, Copy)]
-struct ProvisionedVolumePlan {
-    maximum_bytes: ProvisionedVolumeMaximumBytes,
-    placement: ProvisionedVolumePlacement,
+    provisioned_plans: BTreeMap<DockerVolumeId, ProvisionedVolumeMaximumBytes>,
 }
 
 impl VolumePins {
@@ -75,7 +70,7 @@ impl VolumePins {
             .map(|observed| VolumePresence {
                 machine_id: observed.id.machine_id,
                 name: &observed.id.name,
-                driver: &observed.driver,
+                driver: observed.driver(),
                 options: &observed.options,
             })
             .chain(
@@ -102,8 +97,7 @@ impl VolumePins {
                     Some(provisioned) => DeployOperation::CreateProvisionedVolume {
                         machine_id,
                         volume,
-                        maximum_bytes: provisioned.maximum_bytes,
-                        placement: provisioned.placement,
+                        maximum_bytes: provisioned,
                     },
                     None => DeployOperation::CreateVolume { machine_id, volume },
                 }
@@ -230,29 +224,19 @@ impl VolumePins {
         spec: &RequestedServiceSpec,
         machines: &[&MachineObservation],
     ) -> Result<(), PlanError> {
-        let placement = provisioned_placement(spec, machines);
         for (name, maximum_bytes) in self.provisioned.volumes_for(spec) {
             for machine in machines {
                 let id = DockerVolumeId {
                     machine_id: machine.machine.id,
                     name: name.clone(),
                 };
-                let plan = self
-                    .provisioned_plans
-                    .entry(id)
-                    .or_insert(ProvisionedVolumePlan {
-                        maximum_bytes,
-                        placement,
-                    });
-                if plan.maximum_bytes != maximum_bytes {
+                let plan = self.provisioned_plans.entry(id).or_insert(maximum_bytes);
+                if *plan != maximum_bytes {
                     return Err(PlanError::ConflictingProvisionedVolumeBounds {
                         name: name.clone(),
-                        existing_maximum_bytes: plan.maximum_bytes,
+                        existing_maximum_bytes: *plan,
                         conflicting_maximum_bytes: maximum_bytes,
                     });
-                }
-                if placement == ProvisionedVolumePlacement::Automatic {
-                    plan.placement = placement;
                 }
             }
         }
@@ -275,14 +259,17 @@ impl VolumePins {
                 }) else {
                     continue;
                 };
-                if existing.driver != "ployz" {
+                if !matches!(
+                    existing.storage,
+                    DockerVolumeStorageObservation::Provisioned { .. }
+                ) {
                     return Err(PlanError::ExistingPlainVolume {
                         name: name.clone(),
                         machine: machine.machine.name.clone(),
                     });
                 }
                 if !crate::volume::ProvisionedVolumeSize::from_maximum_bytes(maximum_bytes)
-                    .matches_observed(existing)
+                    .matches(existing)
                 {
                     return Err(PlanError::ExistingProvisionedVolumeMismatch {
                         name: name.clone(),
@@ -303,7 +290,7 @@ impl VolumePins {
         if !self.provisioned.bounds.contains_key(&spec.name) {
             return Ok(());
         }
-        let placement = provisioned_placement(spec, machines);
+        let explicit = is_explicit_machine_placement(spec, machines);
         let explicit_machine = machines.first().map(|machine| machine.machine.name.clone());
         machines.retain(|machine| {
             matches!(
@@ -314,29 +301,22 @@ impl VolumePins {
         if !machines.is_empty() {
             return Ok(());
         }
-        match placement {
-            ProvisionedVolumePlacement::ExplicitMachine => {
-                Err(PlanError::ProvisionedVolumeStorageRequired {
-                    machine: explicit_machine
-                        .expect("explicit Provisioned Volume placement resolved one Machine"),
-                })
-            }
-            ProvisionedVolumePlacement::Automatic => {
-                Err(PlanError::ProvisionedVolumeStorageUnavailable)
-            }
+        if explicit {
+            Err(PlanError::ProvisionedVolumeStorageRequired {
+                machine: explicit_machine
+                    .expect("explicit Provisioned Volume placement resolved one Machine"),
+            })
+        } else {
+            Err(PlanError::ProvisionedVolumeStorageUnavailable)
         }
     }
 }
 
-fn provisioned_placement(
+fn is_explicit_machine_placement(
     spec: &RequestedServiceSpec,
     machines: &[&MachineObservation],
-) -> ProvisionedVolumePlacement {
-    if spec.placement.machines.len() == 1 && machines.len() == 1 {
-        ProvisionedVolumePlacement::ExplicitMachine
-    } else {
-        ProvisionedVolumePlacement::Automatic
-    }
+) -> bool {
+    spec.placement.machines.len() == 1 && machines.len() == 1
 }
 
 /// Owned Compose-declared Docker Volumes omitted from this Deploy's target.

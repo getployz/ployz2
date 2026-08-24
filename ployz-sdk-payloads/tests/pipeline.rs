@@ -91,7 +91,7 @@ fn json_fixtures_round_trip_through_rust_types() {
     );
 
     let volume: DockerVolume = decode_fixture(fixture(&fixtures, "docker_volume"));
-    assert_eq!(volume.driver, "ployz");
+    assert_eq!(volume.driver(), "ployz");
     assert!(matches!(
         volume.storage,
         DockerVolumeStorageObservation::Provisioned {
@@ -193,7 +193,7 @@ fn json_fixtures_round_trip_through_rust_types() {
             .and_then(|row| row.get("value"))
             .expect("success value"),
     );
-    assert_eq!(volume.driver, "ployz");
+    assert_eq!(volume.driver(), "ployz");
     let error: RpcError = decode_fixture(
         failures
             .first()
@@ -450,8 +450,9 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("state?: string"));
     assert!(dts.contains("export type DockerVolume = Additive<{"));
     assert!(dts.contains("export type DockerVolumeStorageObservation ="));
+    assert!(dts.contains("kind: \"plain\"; driver: string"));
     assert!(dts.contains(
-        "kind: \"provisioned\"; mountpoint: string; bound_bytes: number; used_bytes: number"
+        "kind: \"provisioned\"; mountpoint: MachinePath; bound_bytes: number; used_bytes: number"
     ));
     assert!(dts.contains("storage: DockerVolumeStorageObservation"));
     assert!(dts.contains("export type DataLoss ="));
@@ -526,7 +527,7 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("type: \"run_container\""));
     assert!(dts.contains("type: \"wait_healthy\""));
     assert!(dts.contains(
-        "type: \"create_provisioned_volume\"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes; placement: ProvisionedVolumePlacement"
+        "type: \"create_provisioned_volume\"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes"
     ));
     assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
     assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));

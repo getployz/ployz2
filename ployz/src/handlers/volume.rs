@@ -97,7 +97,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
                         kind,
                         bound,
                         used,
-                        volume.volume.driver
+                        volume.volume.driver()
                     );
                 }
             }
@@ -109,7 +109,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
 
 fn format_storage(storage: &DockerVolumeStorageObservation) -> (&'static str, String, String) {
     match storage {
-        DockerVolumeStorageObservation::Plain => ("PLAIN", "-".into(), "-".into()),
+        DockerVolumeStorageObservation::Plain { .. } => ("PLAIN", "-".into(), "-".into()),
         DockerVolumeStorageObservation::Provisioned {
             bound_bytes,
             used_bytes,
@@ -408,12 +408,14 @@ mod tests {
     #[test]
     fn volume_columns_distinguish_plain_and_provisioned_usage() {
         assert_eq!(
-            format_storage(&DockerVolumeStorageObservation::Plain),
+            format_storage(&DockerVolumeStorageObservation::Plain {
+                driver: "local".into(),
+            }),
             ("PLAIN", "-".into(), "-".into())
         );
         assert_eq!(
             format_storage(&DockerVolumeStorageObservation::Provisioned {
-                mountpoint: "/var/lib/ployz-volumes/data".into(),
+                mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
                 bound_bytes: std::num::NonZeroU64::new(1_073_741_824).unwrap(),
                 used_bytes: 966_367_642,
             }),

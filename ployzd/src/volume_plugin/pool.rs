@@ -326,41 +326,17 @@ impl PoolStorage {
         }
     }
 
-    /// Makes an existing empty Pool large enough for its first bound.
-    ///
-    /// An existing backing file that already has #541's exact headroom is accepted; any extension
-    /// is rounded to a whole GiB.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when reserve, backing allocation, Pool growth, or verification fails.
-    pub(super) async fn ensure_first_bound_capacity(
-        &self,
-        pool: &MachinePool,
-        commitment: u64,
-    ) -> Result<()> {
-        let minimum = capacity_with_headroom(commitment)?;
-        self.ensure_capacity_at_least(pool, commitment, minimum)
-            .await
-    }
-
-    /// Makes the managed backing Pool large enough for all additional post-request bounds.
+    /// Makes the managed backing Pool large enough for all requested bounds.
     ///
     /// # Errors
     ///
     /// Returns an error when reserve, backing allocation, Pool growth, or verification fails.
     pub(super) async fn ensure_capacity(&self, pool: &MachinePool, commitment: u64) -> Result<()> {
-        let minimum = rounded_capacity_with_headroom(commitment)?;
-        self.ensure_capacity_at_least(pool, commitment, minimum)
-            .await
+        let minimum = capacity_with_headroom(commitment)?;
+        self.ensure_capacity_at_least(pool, minimum).await
     }
 
-    async fn ensure_capacity_at_least(
-        &self,
-        pool: &MachinePool,
-        commitment: u64,
-        minimum: u64,
-    ) -> Result<()> {
+    async fn ensure_capacity_at_least(&self, pool: &MachinePool, minimum: u64) -> Result<()> {
         if pool.size_bytes().get() >= minimum {
             return Ok(());
         }
@@ -377,7 +353,15 @@ impl PoolStorage {
         let (length, allocated) = self.backing_allocation(backing).await?;
         let needs_allocation = length < minimum || allocated < length;
         let target = if needs_allocation {
-            length.max(rounded_capacity_with_headroom(commitment)?)
+            let extension = minimum
+                .saturating_sub(length)
+                .checked_next_multiple_of(GIBIBYTE)
+                .ok_or_else(|| {
+                    VolumeError::from("Machine Pool capacity rounding overflowed u64")
+                })?;
+            length
+                .checked_add(extension)
+                .ok_or_else(|| VolumeError::from("Machine Pool backing capacity overflowed u64"))?
         } else {
             length
         };
@@ -404,9 +388,9 @@ impl PoolStorage {
             )
             .into());
         }
-        if expanded.size_bytes().get() < commitment {
+        if expanded.size_bytes().get() < minimum {
             return Err(format!(
-                "Machine Pool {} has {} bytes after growth, below the {commitment}-byte committed refquota total",
+                "Machine Pool {} has {} bytes after growth, below the required {minimum} bytes including headroom",
                 pool.name(),
                 expanded.size_bytes()
             )
@@ -602,12 +586,6 @@ fn capacity_with_headroom(commitment: u64) -> Result<u64> {
     commitment
         .checked_add((commitment / 10).max(GIBIBYTE))
         .ok_or_else(|| "Machine Pool capacity calculation overflowed u64".into())
-}
-
-fn rounded_capacity_with_headroom(commitment: u64) -> Result<u64> {
-    capacity_with_headroom(commitment)?
-        .checked_next_multiple_of(GIBIBYTE)
-        .ok_or_else(|| "Machine Pool capacity rounding overflowed u64".into())
 }
 
 fn parse_host_root_space(output: &str) -> Result<(u64, u64)> {

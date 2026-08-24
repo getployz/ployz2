@@ -188,11 +188,11 @@ pub struct VolumeDriver {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DockerVolumeStorageObservation {
     /// A Docker Volume without a Ployz-managed byte bound.
-    Plain,
+    Plain { driver: String },
     /// A Provisioned Volume observed through the Ployz Docker driver.
     Provisioned {
         /// Current ZFS dataset mountpoint.
-        mountpoint: String,
+        mountpoint: MachinePath,
         /// Current ZFS dataset byte bound.
         bound_bytes: NonZeroU64,
         /// Current referenced ZFS dataset bytes.
@@ -204,13 +204,22 @@ pub enum DockerVolumeStorageObservation {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DockerVolume {
     pub id: DockerVolumeId,
-    pub driver: String,
     #[serde(default)]
     pub options: BTreeMap<String, String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
     /// Current storage kind and Provisioned Volume usage evidence.
     pub storage: DockerVolumeStorageObservation,
+}
+
+impl DockerVolume {
+    #[must_use]
+    pub fn driver(&self) -> &str {
+        match &self.storage {
+            DockerVolumeStorageObservation::Plain { driver } => driver,
+            DockerVolumeStorageObservation::Provisioned { .. } => "ployz",
+        }
+    }
 }
 
 /// Destroy these Docker Volumes. The list is the confirmation.

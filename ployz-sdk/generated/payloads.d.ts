@@ -280,13 +280,12 @@ export type DockerVolumeId = Additive<{
 }>;
 
 export type DockerVolumeStorageObservation =
-  | Additive<{ kind: "plain" }>
-  | Additive<{ kind: "provisioned"; mountpoint: string; bound_bytes: number; used_bytes: number }>
+  | Additive<{ kind: "plain"; driver: string }>
+  | Additive<{ kind: "provisioned"; mountpoint: MachinePath; bound_bytes: number; used_bytes: number }>
   | Additive<{ kind?: string }>;
 
 export type DockerVolume = Additive<{
   id: DockerVolumeId;
-  driver: string;
   options: { readonly [key: string]: string };
   labels: { readonly [key: string]: string };
   storage: DockerVolumeStorageObservation;
@@ -374,8 +373,6 @@ export type ProvisionedVolume = Additive<{
   maximum_bytes: ProvisionedVolumeMaximumBytes;
 }>;
 
-export type ProvisionedVolumePlacement = "explicit_machine" | "automatic";
-
 export type DeployIntent = Additive<{
   project_name: ProjectName;
   target: RequestedServiceSpec[];
@@ -453,7 +450,7 @@ export type ReplacementOperation = Additive<{
 
 export type DeployOperation =
   | Additive<{ type: "create_volume"; machine_id: MachineId; volume: ServiceVolume }>
-  | Additive<{ type: "create_provisioned_volume"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes; placement: ProvisionedVolumePlacement }>
+  | Additive<{ type: "create_provisioned_volume"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes }>
   | Additive<{ type: "wait_healthy"; machine_id: MachineId; dependent: QualifiedService; dependency: QualifiedService }>
   | Additive<{ type: "run_container"; machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }>
   | Additive<{ type: "stop_container"; machine_id: MachineId; container_id: ContainerId }>

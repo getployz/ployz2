@@ -7,8 +7,8 @@ use std::{
 use ployz_core::{
     ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
     HealthFailure, HealthObservation, MembershipObservation, ProjectName,
-    ProvisionedVolumeMaximumBytes, ProvisionedVolumePlacement, RpcErrorCode, ServiceName,
-    ServiceVolume, ServiceVolumeReference, VolumeSource,
+    ProvisionedVolumeMaximumBytes, RpcErrorCode, ServiceName, ServiceVolume,
+    ServiceVolumeReference, VolumeSource,
 };
 
 use crate::deploy::{DeployOutcome, DeploySnapshot, FailedOperation};
@@ -131,10 +131,11 @@ impl MachineOperations for Scripted {
                     machine_id: *machine_id,
                     name: request.name,
                 },
-                driver: request.driver,
                 options: request.options,
                 labels: request.labels,
-                storage: ployz_core::DockerVolumeStorageObservation::Plain,
+                storage: ployz_core::DockerVolumeStorageObservation::Plain {
+                    driver: request.driver,
+                },
             }),
             Reply::Volume(volume) => Ok(volume),
             Reply::Error(error) => Err(error),
@@ -366,12 +367,22 @@ fn volume_reply(machine_id: MachineId, driver: &str, size: Option<&str>) -> Repl
             machine_id,
             name: DockerVolumeName::parse("data").unwrap(),
         },
-        driver: driver.into(),
         options: size
             .map(|size| BTreeMap::from([("size".into(), size.into())]))
             .unwrap_or_default(),
         labels: Default::default(),
-        storage: ployz_core::DockerVolumeStorageObservation::Plain,
+        storage: if driver == "ployz" {
+            ployz_core::DockerVolumeStorageObservation::Provisioned {
+                mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
+                bound_bytes: NonZeroU64::new(size.unwrap().trim_end_matches('b').parse().unwrap())
+                    .unwrap(),
+                used_bytes: 0,
+            }
+        } else {
+            ployz_core::DockerVolumeStorageObservation::Plain {
+                driver: driver.into(),
+            }
+        },
     })
 }
 

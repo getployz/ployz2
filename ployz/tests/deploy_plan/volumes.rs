@@ -1,7 +1,7 @@
 use super::support::*;
 use ployz_core::{
-    MachineStorageObservation, PreservedVolume, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
-    ProvisionedVolumePlacement, ServiceAttempt, ServiceName,
+    DockerVolume, DockerVolumeStorageObservation, MachineStorageObservation, PreservedVolume,
+    ProvisionedVolume, ProvisionedVolumeMaximumBytes, ServiceAttempt, ServiceName,
 };
 use std::{collections::BTreeMap, num::NonZeroU64};
 
@@ -33,7 +33,7 @@ fn automatic_provisioned_intent() -> DeployIntent {
 
 fn explicitly_targeted_provisioned_deploy(
     storage: Option<MachineStorageObservation>,
-    volumes: Vec<ObservedDockerVolume>,
+    volumes: Vec<DockerVolume>,
 ) -> Result<DeployPreview, PlanError> {
     let mut service = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
@@ -79,7 +79,6 @@ fn explicitly_targeted_provisioned_volume_precedes_hook_service_and_plain_volume
             DeployOperation::CreateVolume { volume: cache, .. },
             DeployOperation::CreateProvisionedVolume {
                 volume: data,
-                placement: ProvisionedVolumePlacement::ExplicitMachine,
                 ..
             },
             DeployOperation::RunHook { .. },
@@ -137,8 +136,12 @@ fn existing_plain_volume_is_not_adopted_as_provisioned() {
 #[test]
 fn existing_matching_provisioned_volume_is_reused_without_creation() {
     let mut existing = observed_volume(machine_id('1'), "data");
-    existing.driver = "ployz".into();
-    existing.options = BTreeMap::from([("size".into(), "1g".into())]);
+    existing.options = BTreeMap::from([("size".into(), "2g".into())]);
+    existing.storage = DockerVolumeStorageObservation::Provisioned {
+        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+        bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+        used_bytes: 0,
+    };
 
     let preview = explicitly_targeted_provisioned_deploy(
         Some(MachineStorageObservation::Pool {
@@ -160,8 +163,12 @@ fn existing_matching_provisioned_volume_is_reused_without_creation() {
 #[test]
 fn existing_provisioned_volume_is_not_implicitly_resized() {
     let mut existing = observed_volume(machine_id('1'), "data");
-    existing.driver = "ployz".into();
-    existing.options = BTreeMap::from([("size".into(), "2g".into())]);
+    existing.options = BTreeMap::from([("size".into(), "1g".into())]);
+    existing.storage = DockerVolumeStorageObservation::Provisioned {
+        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+        bound_bytes: NonZeroU64::new(2_147_483_648).unwrap(),
+        used_bytes: 0,
+    };
 
     let error = explicitly_targeted_provisioned_deploy(
         Some(MachineStorageObservation::Pool {
@@ -200,13 +207,11 @@ fn automatic_provisioned_volume_uses_a_storage_ready_machine() {
             .iter()
             .all(|operation| operation.machine_id() == machine_id('2'))
     );
-    assert!(operations(&preview).iter().any(|operation| matches!(
-        operation,
-        DeployOperation::CreateProvisionedVolume {
-            placement: ProvisionedVolumePlacement::Automatic,
-            ..
-        }
-    )));
+    assert!(
+        operations(&preview)
+            .iter()
+            .any(|operation| matches!(operation, DeployOperation::CreateProvisionedVolume { .. }))
+    );
 }
 
 #[test]
@@ -267,8 +272,12 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
     let mut other = machine('2', "other");
     other.storage = Some(MachineStorageObservation::Ready);
     let mut existing = observed_volume(machine_id('1'), "data");
-    existing.driver = "ployz".into();
     existing.options = BTreeMap::from([("size".into(), "1g".into())]);
+    existing.storage = DockerVolumeStorageObservation::Provisioned {
+        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+        bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+        used_bytes: 0,
+    };
 
     assert_eq!(
         preview_deploy(

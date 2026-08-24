@@ -155,18 +155,18 @@ fn docker_volume(machine_id: &MachineId, volume: RawVolume) -> Result<DockerVolu
         let bound_bytes = std::num::NonZeroU64::new(status.bound_bytes).ok_or_else(|| {
             Error::InvalidVolumeStatus("Provisioned Volume status has no positive bound_bytes")
         })?;
-        if volume.mountpoint.is_empty() {
-            return Err(Error::InvalidVolumeStatus(
-                "Provisioned Volume status is missing its mountpoint",
-            ));
-        }
+        let mountpoint = ployz_core::MachinePath::parse(volume.mountpoint).map_err(|_| {
+            Error::InvalidVolumeStatus("Provisioned Volume status has an invalid mountpoint")
+        })?;
         DockerVolumeStorageObservation::Provisioned {
-            mountpoint: volume.mountpoint,
+            mountpoint,
             bound_bytes,
             used_bytes: status.used_bytes,
         }
     } else {
-        DockerVolumeStorageObservation::Plain
+        DockerVolumeStorageObservation::Plain {
+            driver: volume.driver,
+        }
     };
     Ok(DockerVolume {
         id: DockerVolumeId {
@@ -176,7 +176,6 @@ fn docker_volume(machine_id: &MachineId, volume: RawVolume) -> Result<DockerVolu
                 source,
             })?,
         },
-        driver: volume.driver,
         options: volume.options.unwrap_or_default().into_iter().collect(),
         labels: volume.labels.unwrap_or_default().into_iter().collect(),
         storage,
@@ -208,7 +207,7 @@ mod tests {
         assert_eq!(
             observed.storage,
             DockerVolumeStorageObservation::Provisioned {
-                mountpoint: "/var/lib/ployz-volumes/data".into(),
+                mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
                 bound_bytes: std::num::NonZeroU64::new(1_073_741_824).unwrap(),
                 used_bytes: 966_367_642,
             }
@@ -229,5 +228,22 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("Provisioned Volume status"));
+    }
+
+    #[test]
+    fn provisioned_volume_rejects_a_relative_mountpoint() {
+        let error = docker_volume(
+            &MachineId::random(),
+            serde_json::from_value(serde_json::json!({
+                "Name":"data",
+                "Driver":"ployz",
+                "Mountpoint":"relative/data",
+                "Status":{"bound_bytes":1073741824,"used_bytes":0}
+            }))
+            .unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("invalid mountpoint"));
     }
 }

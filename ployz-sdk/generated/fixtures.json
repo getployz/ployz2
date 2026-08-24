@@ -180,7 +180,6 @@
   "create_provisioned_volume_operation": {
     "machine_id": "0123456789abcdef0123456789abcdef",
     "maximum_bytes": "1073741824",
-    "placement": "explicit_machine",
     "type": "create_provisioned_volume",
     "volume": {
       "reference": "data",
@@ -404,7 +403,6 @@
     }
   },
   "docker_volume": {
-    "driver": "ployz",
     "id": {
       "machine_id": "0123456789abcdef0123456789abcdef",
       "name": "data"
@@ -423,7 +421,6 @@
     }
   },
   "docker_volume_unknown_fields": {
-    "driver": "ployz",
     "id": {
       "machine_id": "0123456789abcdef0123456789abcdef",
       "name": "data"
@@ -489,7 +486,6 @@
       {
         "machine_id": "0123456789abcdef0123456789abcdef",
         "value": {
-          "driver": "ployz",
           "id": {
             "machine_id": "0123456789abcdef0123456789abcdef",
             "name": "data"
@@ -1251,7 +1247,6 @@
     ],
     "volumes": [
       {
-        "driver": "ployz",
         "id": {
           "machine_id": "0123456789abcdef0123456789abcdef",
           "name": "data"
@@ -1463,7 +1458,6 @@
     ],
     "volumes": [
       {
-        "driver": "ployz",
         "id": {
           "machine_id": "0123456789abcdef0123456789abcdef",
           "name": "data"
