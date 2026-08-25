@@ -506,6 +506,10 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("provisioned_volumes: ProvisionedVolume[]"));
     assert!(dts.contains("export type RequestedServiceSpec = Additive<{"));
     assert!(dts.contains("export type ResolvedServiceSpec = Additive<{"));
+    assert!(dts.contains("export type IngressProxyFragment ="));
+    assert!(dts.contains("backend: \"caddy\"; config: string"));
+    assert!(dts.contains("ingress_proxy_fragment?: IngressProxyFragment"));
+    assert!(!dts.contains("caddy_config?: string"));
     assert!(dts.contains("export type ServiceVolume = Additive<{"));
     assert!(dts.contains("export type VolumeDriver = Additive<{"));
     assert!(dts.contains("driver?: VolumeDriver"));

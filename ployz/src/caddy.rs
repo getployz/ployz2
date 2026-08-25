@@ -4,10 +4,11 @@ use oci_client::{
     Client, ParseError, Reference, errors::OciDistributionError, secrets::RegistryAuth,
 };
 use ployz_core::{
-    ContainerObservation, ContainerPath, ContainerResources, HostBind, MachinePath, MachineTarget,
-    Placement, PortPublication, PullPolicy, QualifiedService, RequestedServiceSpec, RestartPolicy,
-    ServiceContainer, ServiceContainerSpec, ServiceMode, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
+    ContainerObservation, ContainerPath, ContainerResources, HostBind, IngressProxyFragment,
+    MachinePath, MachineTarget, Placement, PortPublication, PullPolicy, QualifiedService,
+    RequestedServiceSpec, RestartPolicy, ServiceContainer, ServiceContainerSpec, ServiceMode,
+    ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol,
+    UpdateConfig, VolumeSource,
 };
 use semver::Version;
 use thiserror::Error;
@@ -74,7 +75,10 @@ pub fn newest_existing_settings<'a>(
             (
                 spec.container.image.clone(),
                 spec.placement.machines.clone(),
-                spec.caddy_config.clone(),
+                spec.ingress_proxy_fragment
+                    .as_ref()
+                    .and_then(IngressProxyFragment::as_caddy)
+                    .map(str::to_owned),
             )
         })
 }
@@ -172,7 +176,11 @@ pub fn service_spec(
         volume_graph,
         config_graph: Default::default(),
         pre_deploy: None,
-        caddy_config,
+        ingress_proxy_fragment: caddy_config
+            .filter(|config| !config.trim().is_empty())
+            .map(IngressProxyFragment::parse_caddy)
+            .transpose()
+            .expect("non-empty Caddy configuration is valid"),
         update: UpdateConfig::default(),
     }
 }
@@ -227,7 +235,8 @@ mod tests {
         newer.created_at_unix_nanos = 2;
         newer.resolved_spec.container.image = "caddy:2.10.2".into();
         newer.resolved_spec.placement.machines = vec![MachineTarget::parse("edge").unwrap()];
-        newer.resolved_spec.caddy_config = Some("{ admin off }".into());
+        newer.resolved_spec.ingress_proxy_fragment =
+            Some(IngressProxyFragment::parse_caddy("{ admin off }").expect("fixture is non-empty"));
         let mut hook = newer.clone();
         hook.kind = ContainerKind::PreDeployHook;
         hook.container_id = ContainerId::parse("c".repeat(64)).unwrap();

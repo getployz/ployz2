@@ -1,9 +1,9 @@
 use chrono::{SecondsFormat, Utc};
 use hex::encode as hex_encode;
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, Machine, MachineId,
-    PortPublication, QualifiedService, ServiceContainer, ServiceName, hostname_owners,
-    service_containers, serving_replicas,
+    CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, IngressProxyFragment,
+    Machine, MachineId, PortPublication, QualifiedService, ServiceContainer, ServiceName,
+    hostname_owners, service_containers, serving_replicas,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -426,8 +426,9 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         && let Some(config) = container
             .as_observation()
             .resolved_spec
-            .caddy_config
-            .as_deref()
+            .ingress_proxy_fragment
+            .as_ref()
+            .and_then(IngressProxyFragment::as_caddy)
     {
         match render_custom_config(config, &container.as_observation().identity(), &eligible) {
             Ok(rendered) => {
@@ -477,8 +478,9 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         let Some(config) = container
             .as_observation()
             .resolved_spec
-            .caddy_config
-            .as_deref()
+            .ingress_proxy_fragment
+            .as_ref()
+            .and_then(IngressProxyFragment::as_caddy)
         else {
             continue;
         };

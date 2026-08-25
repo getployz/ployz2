@@ -87,6 +87,10 @@ export type ServiceMode =
   | Additive<{ mode: "global" }>
   | Additive<{ mode?: string }>;
 
+export type IngressProxyFragment =
+  | Additive<{ backend: "caddy"; config: string }>
+  | Additive<{ backend?: string }>;
+
 export type IngressHostname =
   | Additive<{ kind: "cluster_domain"; label?: string }>
   | Additive<{ kind: "explicit"; hostname: IngressHost }>
@@ -243,7 +247,7 @@ export type RequestedServiceSpec = Additive<{
   mounts?: ServiceMount[];
   configs?: ConfigSpec[];
   pre_deploy?: PreDeployHook;
-  caddy_config?: string;
+  ingress_proxy_fragment?: IngressProxyFragment;
   update?: UpdateConfig;
 }>;
 
@@ -258,7 +262,7 @@ export type ResolvedServiceSpec = Additive<{
   mounts?: ServiceMount[];
   configs?: ConfigSpec[];
   pre_deploy?: PreDeployHook;
-  caddy_config?: string;
+  ingress_proxy_fragment?: IngressProxyFragment;
   update?: ResolvedUpdateConfig;
 }>;
 
