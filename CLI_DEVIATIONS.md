@@ -3,7 +3,7 @@
 - `product-identity` — Rename `uc`, `--uncloud-config`, `UNCLOUD_*`, and the config path to Ployz-owned names; product identity must not expose compatibility aliases.
 - `root-version-flag` — Accept `ployz --version` and `ployz -V` on the root command so the CLI version is available without a subcommand. The frozen `uc` page dropped this flag when Uncloud replaced it with `uc version`.
 - `plain-ingress-config` — Drop `ployz ingress config --no-color`; the Machine RPC returns the selected backend's exact configuration as plain text and Ployz has no coloured mode to disable.
-- `ingress-proxy-vocabulary` — Replace the vendor-named `caddy` command group and `--no-caddy` provisioning flag with `ingress` and `--no-ingress`.
+- `ingress-proxy-vocabulary` — Replace the vendor-named `caddy` command group and `--no-caddy` provisioning flag with `ingress` and `--no-ingress`; founding also accepts `--ingress-backend caddy|zentinel`, defaulting to Zentinel.
 - `native-completion` — Add `ployz completion <SHELL>`; completion is preserved through Clap's native shell generators rather than Cobra's hidden protocol.
 - `local-machine-init-stub` — Make `ployz machine init [DESTINATION]` syntactically optional so the preserved local-initialisation path reaches its explicit not-implemented handler.
 - `no-nightly-daemon-channel` — Reject `--version nightly`; Ployz has `stable`, `beta`, and explicit-version installs only.

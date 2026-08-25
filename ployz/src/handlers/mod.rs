@@ -516,6 +516,77 @@ mod tests {
     }
 
     #[test]
+    fn founding_defaults_to_zentinel_and_accepts_explicit_caddy() {
+        let defaults = crate::cli::command()
+            .try_get_matches_from(["ployz", "machine", "init", "root@host"])
+            .unwrap();
+        let defaults = leaf_matches(&defaults);
+        assert_eq!(
+            defaults.get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
+            Some(&ployz_core::IngressProxyBackend::Zentinel)
+        );
+
+        let caddy = crate::cli::command()
+            .try_get_matches_from([
+                "ployz",
+                "machine",
+                "init",
+                "--ingress-backend",
+                "caddy",
+                "root@host",
+            ])
+            .unwrap();
+        assert_eq!(
+            leaf_matches(&caddy).get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
+            Some(&ployz_core::IngressProxyBackend::Caddy)
+        );
+
+        assert!(
+            crate::cli::command()
+                .try_get_matches_from([
+                    "ployz",
+                    "machine",
+                    "add",
+                    "--ingress-backend",
+                    "caddy",
+                    "root@host",
+                ])
+                .is_err(),
+            "joining Machines must inherit instead of choosing"
+        );
+    }
+
+    #[test]
+    fn cloud_founding_defaults_to_zentinel_and_accepts_explicit_caddy() {
+        for (arguments, expected) in [
+            (
+                vec!["ployz", "cloud", "enroll", "pmet_test"],
+                ployz_core::IngressProxyBackend::Zentinel,
+            ),
+            (
+                vec![
+                    "ployz",
+                    "cloud",
+                    "enroll",
+                    "pmet_test",
+                    "--ingress-backend",
+                    "caddy",
+                ],
+                ployz_core::IngressProxyBackend::Caddy,
+            ),
+        ] {
+            let matches = crate::cli::command()
+                .try_get_matches_from(arguments)
+                .unwrap();
+            assert_eq!(
+                leaf_matches(&matches)
+                    .get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
+                Some(&expected)
+            );
+        }
+    }
+
+    #[test]
     fn dns_show_uses_the_real_handler() {
         let mut command = crate::cli::command();
         let matches = command

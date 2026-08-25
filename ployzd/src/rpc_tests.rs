@@ -4,9 +4,11 @@ use super::{MachineService, local_error, store_error};
 use crate::corrosion::{AdminClient, fake_cluster};
 use crate::machine::{LocalMachineError, LocalMachineStore, StoreError};
 use ployz_core::{
-    AdvertisedEndpoint, GetIngressProxyConfigRequest, IngressProxyBackend, IngressProxyConfig,
-    MachineName, MachineRpc, RpcErrorCode, RpcResponseBody, RuntimeWatchRequest, op,
+    AdvertisedEndpoint, ContainerKind, GetIngressProxyConfigRequest, IngressProxyBackend,
+    IngressProxyConfig, MachineName, MachineRpc, ProjectName, ResolvedServiceSpec, RpcErrorCode,
+    RpcResponseBody, RuntimeWatchRequest, op,
 };
+use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tonic::{Code, Request};
@@ -47,6 +49,58 @@ fn not_allocator_does_not_allocate() {
     };
     assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert_eq!(error.message, "this Machine is not the Allocator");
+}
+
+#[tokio::test]
+async fn zentinel_hooks_use_bridge_while_the_service_uses_host_network() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "ployzd-zentinel-network-{}",
+        ployz_core::MachineId::random()
+    ));
+    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+    let (replicated, server) =
+        fake_cluster::store_with_ingress_proxy_backend_value("zentinel").await;
+    let service = MachineService::with_cluster(
+        store,
+        watch::channel(false).0,
+        Some((replicated, AdminClient::new("/no/such/admin.sock"))),
+    );
+    let spec: ResolvedServiceSpec = serde_json::from_value(json!({
+        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "ingress",
+        "mode": {"mode": "global"},
+        "container": {
+            "image": "example.test/zentinel",
+            "command": ["-c", "/config/zentinel.kdl"],
+            "cap_add": ["NET_BIND_SERVICE"],
+            "cap_drop": ["ALL"],
+            "pull_policy": "missing"
+        }
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        service
+            .local
+            .service_network(
+                ContainerKind::ServiceContainer,
+                &ProjectName::system(),
+                &spec
+            )
+            .await
+            .unwrap(),
+        crate::docker::NetworkAttachment::Host
+    ));
+    assert!(matches!(
+        service
+            .local
+            .service_network(ContainerKind::PreDeployHook, &ProjectName::system(), &spec)
+            .await
+            .unwrap(),
+        crate::docker::NetworkAttachment::Bridge
+    ));
+    server.abort();
+    let _ = std::fs::remove_dir_all(data_dir);
 }
 
 #[tokio::test]

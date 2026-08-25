@@ -188,7 +188,7 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     assert_eq!(initialized.wireguard_mtu, Some(1400));
     assert_eq!(
         initialized.ingress_proxy_backend,
-        IngressProxyBackend::Caddy
+        IngressProxyBackend::Zentinel
     );
     let pairing_json = serde_json::to_value(initialized.cloud_pairing.as_ref().unwrap()).unwrap();
     assert_eq!(
@@ -218,6 +218,59 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     );
 
     wait_for_held(&relay.url, PAIRING, machine_id).await;
+}
+
+#[tokio::test]
+async fn cloud_founding_transmits_each_selected_ingress_backend() {
+    for (selection, expected) in [
+        (None, IngressProxyBackend::Zentinel),
+        (Some("caddy"), IngressProxyBackend::Caddy),
+    ] {
+        let founder = founder_machine();
+        let relay = RelayListen::start().await;
+        let pairing =
+            CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+        let enroll = EnrollListen::start(json!({
+            "kind": "initialize",
+            "storage": "none",
+            "pairing": pairing,
+        }))
+        .await;
+        let daemon = JoinDaemon::new(Registered {
+            assigned_machine: founder,
+            visible_peers: Vec::new(),
+            target_versions: Default::default(),
+        });
+        let machine_addr = serve_machine(daemon.clone()).await;
+        let mut arguments = vec![
+            "--connect".to_owned(),
+            format!("tcp://{machine_addr}"),
+            "cloud".to_owned(),
+            "enroll".to_owned(),
+            TOKEN.to_owned(),
+            "--cloud-url".to_owned(),
+            enroll.url.clone(),
+            "--name".to_owned(),
+            "founder".to_owned(),
+            "--no-ingress".to_owned(),
+            "--no-dns".to_owned(),
+            "--yes".to_owned(),
+        ];
+        if let Some(selection) = selection {
+            arguments.extend(["--ingress-backend".into(), selection.into()]);
+        }
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(arguments)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{expected}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(daemon.initialize_request().ingress_proxy_backend, expected);
+    }
 }
 
 #[tokio::test]
@@ -1152,9 +1205,12 @@ fn global_on(
     project: &str,
     name: &str,
 ) -> ployz_core::ContainerObservation {
-    let mut spec = ployz::ingress::service_spec("caddy:2.10.0".into(), Vec::new(), None);
-    spec.name = ployz_core::ServiceName::parse(name).unwrap();
-    spec.ports.clear();
+    let spec: ployz_core::RequestedServiceSpec = serde_json::from_value(json!({
+        "name": name,
+        "mode": { "mode": "global" },
+        "container": { "image": "nginx", "pull_policy": "missing" }
+    }))
+    .unwrap();
     container_on(
         machine,
         spec.to_resolved(

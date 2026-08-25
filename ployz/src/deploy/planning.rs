@@ -19,8 +19,8 @@ mod volumes;
 
 use capacity::CapacityBudget;
 use placement::{
-    CapacityAdmission, PlacementState, ReplicatedPlacement, is_up_to_date, plan_global,
-    plan_replicated,
+    CapacityAdmission, GlobalPlacement, PlacementState, ReplicatedPlacement, is_up_to_date,
+    plan_global, plan_replicated,
 };
 use volumes::{
     ProvisionedVolumeBindings, VolumePins, constrain_volume_candidates, named_volume_uses,
@@ -569,10 +569,13 @@ fn plan_one_service(
         )?,
         ServiceMode::Global => plan_global(
             requested,
-            &service_id,
-            current,
-            hooks,
-            machines,
+            GlobalPlacement {
+                identity: &identity,
+                service_id: &service_id,
+                current,
+                hooks,
+                machines,
+            },
             placement,
             options,
         )?,

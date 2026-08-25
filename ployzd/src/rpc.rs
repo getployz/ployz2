@@ -381,13 +381,14 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::CreateContainer>(request)?;
-        if let Err(error) = self
+        let network = match self
             .local
-            .require_ingress_proxy_backend(&request.project_name, &request.resolved_spec)
+            .service_network(request.kind, &request.project_name, &request.resolved_spec)
             .await
         {
-            return local_error(error);
-        }
+            Ok(backend) => backend,
+            Err(error) => return local_error(error),
+        };
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
@@ -398,12 +399,13 @@ impl MachineRpc for MachineService {
             .ok_or_else(|| Status::unavailable("Machine network is not configured"))?;
         let gateway = machine.subnet.gateway();
         match containers
-            .create(
+            .create_with_network(
                 &record.id(),
                 gateway,
                 request.kind,
                 &request.project_name,
                 &request.resolved_spec,
+                network,
             )
             .await
         {
@@ -888,6 +890,11 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         LocalMachineError::Cluster(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::IngressProxyBackend(error) => respond(RpcError {
             code: RpcErrorCode::Conflict,
+            message: error.to_string(),
+            details: Value::Null,
+        }),
+        LocalMachineError::IngressProxyServiceSpec(error) => respond(RpcError {
+            code: RpcErrorCode::InvalidArgument,
             message: error.to_string(),
             details: Value::Null,
         }),

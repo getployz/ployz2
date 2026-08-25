@@ -51,6 +51,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         .parse()
         .map_err(|error| Error::usage(format!("invalid Cluster network: {error}")))?;
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
+    let ingress_proxy_backend = *matches
+        .get_one::<ployz_core::IngressProxyBackend>("ingress-backend")
+        .expect("founding Ingress Proxy Backend has a default");
     let yes = matches.get_flag("yes");
     let storage = crate::provisioning::resolve_storage(matches)?;
     if !matches.get_flag("no-install") {
@@ -77,7 +80,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 InitializeRequest {
                     name,
                     cluster_network,
-                    ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+                    ingress_proxy_backend,
                     public_ip: token.public_ip,
                     advertised_endpoints: token.advertised_endpoints,
                     wireguard_mtu,
@@ -119,8 +122,13 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             println!("Reserved Cluster domain: {}", domain.name);
         }
         if want_ingress {
-            let image = crate::ingress::latest_image().await?;
-            let requested = crate::ingress::service_spec(image, Vec::new(), None);
+            let requested = crate::ingress::service_spec_for_backend(
+                ingress_proxy_backend,
+                None,
+                Vec::new(),
+                None,
+            )
+            .await?;
             crate::deploy::apply_requested(&mut ready, &requested).await?;
             if want_dns {
                 crate::dns::update_records_for_ingress(&mut ready).await?;

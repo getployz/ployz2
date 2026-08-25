@@ -204,6 +204,16 @@ fn reference_shape(
             .expect("Machine provisioning commands have --no-caddy upstream");
         flags.insert("no-ingress".into(), flag);
     }
+    if command_path == "ployz machine init" && deviations.contains("ingress-proxy-vocabulary") {
+        flags.insert(
+            "ingress-backend".into(),
+            Flag {
+                short: None,
+                default: Some("zentinel".into()),
+                env: None,
+            },
+        );
+    }
     if matches!(
         command_path.as_str(),
         "ployz machine add" | "ployz machine init"

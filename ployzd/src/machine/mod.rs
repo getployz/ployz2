@@ -25,6 +25,7 @@ use crate::machine_pool;
 use crate::network::WireGuardPrivateKey;
 use crate::network::{allocate_machine_subnet, management_address};
 
+mod ingress;
 mod local_machine;
 
 pub(crate) use local_machine::RuntimeWatchTelemetry;

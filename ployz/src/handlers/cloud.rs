@@ -66,6 +66,9 @@ pub fn enroll_with_installer(
     let reset = matches.get_flag("reset");
     let no_ingress = matches.get_flag("no-ingress");
     let no_dns = matches.get_flag("no-dns");
+    let ingress_proxy_backend = *matches
+        .get_one::<ployz_core::IngressProxyBackend>("ingress-backend")
+        .expect("founding Ingress Proxy Backend has a default");
     let requested_storage = *matches
         .get_one::<StorageChoice>("storage")
         .expect("storage has a default");
@@ -136,8 +139,7 @@ pub fn enroll_with_installer(
                             InitializeRequest {
                                 name,
                                 cluster_network,
-                                ingress_proxy_backend:
-                                    ployz_core::IngressProxyBackend::Caddy,
+                                ingress_proxy_backend,
                                 public_ip: machine_token.public_ip,
                                 advertised_endpoints: machine_token.advertised_endpoints,
                                 wireguard_mtu,
@@ -179,8 +181,13 @@ pub fn enroll_with_installer(
                         println!("Reserved Cluster domain: {}", domain.name);
                     }
                     if !no_ingress {
-                        let image = crate::ingress::latest_image().await?;
-                        let requested = crate::ingress::service_spec(image, Vec::new(), None);
+                        let requested = crate::ingress::service_spec_for_backend(
+                            ingress_proxy_backend,
+                            None,
+                            Vec::new(),
+                            None,
+                        )
+                        .await?;
                         crate::deploy::apply_requested(&mut ready, &requested).await?;
                         if !no_dns {
                             crate::dns::update_records_for_ingress(&mut ready).await?;

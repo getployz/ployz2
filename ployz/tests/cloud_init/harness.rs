@@ -372,6 +372,13 @@ impl MachineRpc for JoinDaemon {
         };
         let joined = self.inner.joined.load(Ordering::SeqCst);
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
+        let ingress_proxy_backend = self
+            .inner
+            .initialize_requests
+            .lock()
+            .unwrap()
+            .last()
+            .map(|request| request.ingress_proxy_backend);
         rpc_ok(MachineDetails {
             id: self.inner.registration.assigned_machine.id,
             phase: if joined {
@@ -392,6 +399,7 @@ impl MachineRpc for JoinDaemon {
             cloud_paired: false,
             telemetry,
             storage: None,
+            ingress_proxy_backend,
         })
     }
 
@@ -906,7 +914,18 @@ pub fn registration() -> Registered {
 }
 
 pub fn ingress_on(machine: &Machine) -> ContainerObservation {
-    let spec = ployz::ingress::service_spec("caddy:2.10.0".into(), Vec::new(), None).to_resolved(
+    let spec: ployz_core::RequestedServiceSpec = serde_json::from_value(serde_json::json!({
+        "name": "ingress",
+        "mode": { "mode": "global" },
+        "container": {
+            "image": "caddy:2.10.0",
+            "pull_policy": "missing",
+            "command": ["caddy", "run", "-c", "/config/caddy/Caddyfile"],
+            "environment": { "CADDY_ADMIN": "unix//run/ingress/caddy/admin.sock" }
+        }
+    }))
+    .unwrap();
+    let spec = spec.to_resolved(
         ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
         ployz_core::ResolvedUpdateConfig::default(),
     );

@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::{service::Routes, transport::Server};
 
 use crate::{
-    caddy, certificates,
+    certificates,
     corrosion::{
         CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
         RunningCorrosion, run_machine_publisher,
@@ -34,6 +34,7 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     filesystem::set_ployz_group,
     global_reconcile::{self, global_reconcile_observation_channel},
+    ingress,
     machine::{LocalMachineBody, LocalMachineStore, StoreError},
     metrics,
     network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane},
@@ -178,12 +179,12 @@ impl Daemon {
         let (reset, reset_rx) = watch::channel(false);
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
-        let caddy_config = caddy::config_path(&config.data_dir);
-        let caddy_admin_socket = config
+        let ingress_data_dir = config.data_dir.clone();
+        let ingress_runtime_dir = config
             .socket
             .parent()
             .unwrap_or_else(|| Path::new("/run/ployz"))
-            .join("ingress/caddy/admin.sock");
+            .join("ingress");
         let service = MachineService::with_cluster(
             Arc::clone(&store),
             reset.clone(),
@@ -227,6 +228,7 @@ impl Daemon {
                 (Some(management), Some(gateway))
             });
         let socket = config.socket.clone();
+        let ingress_docker = containers.as_ref().map(ContainerRuntime::local_docker);
         let store_for_servers = Arc::clone(&store);
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -284,17 +286,18 @@ impl Daemon {
                     }
                 }
             };
-            let caddy = async {
+            let ingress = async {
                 if !wait_for_participation(participating_rx.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
                 match (local_machine.clone(), replicated_store.clone()) {
                     (Some(machine), Some(replicated)) => {
-                        caddy::run(
+                        ingress::run(
                             machine,
                             replicated,
-                            caddy_config,
-                            caddy_admin_socket,
+                            ingress_data_dir,
+                            ingress_runtime_dir,
+                            ingress_docker,
                             shutdown.clone(),
                         )
                         .await
@@ -358,7 +361,7 @@ impl Daemon {
                 network_runner,
                 observer,
                 dns,
-                caddy,
+                ingress,
                 certificates,
                 global_reconcile,
                 relay_register,
