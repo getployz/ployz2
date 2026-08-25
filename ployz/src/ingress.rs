@@ -9,13 +9,8 @@ use thiserror::Error;
 mod caddy;
 mod zentinel;
 
-pub use caddy::{IngressImageError, newest_existing_settings};
+pub use caddy::IngressImageError;
 pub use zentinel::ZENTINEL_IMAGE;
-
-/// Shared host data root owned by the Ingress Proxy responsibility.
-pub const DATA_PATH: &str = "/var/lib/ployz/ingress";
-/// Shared host runtime root owned by the Ingress Proxy responsibility.
-pub const RUNTIME_PATH: &str = "/run/ployz/ingress";
 
 /// Failure while selecting one concrete Ingress Proxy deployment.
 #[derive(Debug, Error)]

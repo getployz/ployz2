@@ -1,6 +1,10 @@
+//! Zentinel ingress lifecycle tracer against the privileged Layer 3 cluster.
+
 use std::{path::Path, process, time::Duration};
 
-use ployz_core::{ContainerAction, IngressProxyBackend, ResolvedServiceSpec, ServiceId};
+use ployz_core::{
+    ContainerAction, INGRESS_VERIFY_PATH, IngressProxyBackend, ResolvedServiceSpec, ServiceId,
+};
 use ployz_testkit::{Cluster, ClusterPlan};
 
 use super::{
@@ -52,6 +56,15 @@ async fn zentinel_recovers_after_its_sole_serving_container_returns() {
             &format!(
                 "test \"$(docker inspect --format '{{{{.HostConfig.NetworkMode}}}}' {})\" = host",
                 ingress.container_id
+            ),
+        )
+        .unwrap();
+    cluster
+        .machine_shell(
+            0,
+            &format!(
+                "test \"$(curl -fsS http://127.0.0.1{INGRESS_VERIFY_PATH})\" = '{}'",
+                machine.id
             ),
         )
         .unwrap();

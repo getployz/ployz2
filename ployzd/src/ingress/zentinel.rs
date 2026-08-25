@@ -1,8 +1,8 @@
 //! Deterministic Zentinel configuration rendering and support files.
 
 use ployz_core::{
-    ContainerId, ContainerObservation, HttpProtocol, IngressHost, IngressProxyBackend, Machine,
-    ingress_proxy_backend,
+    ContainerId, ContainerObservation, HttpProtocol, INGRESS_VERIFY_PATH, IngressHost,
+    IngressProxyBackend, Machine, ingress_proxy_backend,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -23,9 +23,11 @@ use crate::{
     filesystem::atomic_write,
 };
 
+mod apply;
+
 use super::{
-    IngressEndpoint, IngressProjection, IngressSite, certificate_directory, certificate_file_stem,
-    newest_local_ingress, watch as watch_inputs, write_certificate_files,
+    IngressEndpoint, IngressProjection, IngressSite, WatchApply, certificate_directory,
+    certificate_file_stem, newest_local_ingress, watch as watch_inputs, write_certificate_files,
 };
 
 /// Host-private configuration-dump listener address.
@@ -36,6 +38,7 @@ const CONTAINER_CONFIG_DIR: &str = "/config";
 const ZENTINEL_BOOTSTRAP_CERT_FILE: &str = "ployz-bootstrap.crt";
 const ZENTINEL_BOOTSTRAP_KEY_FILE: &str = "ployz-bootstrap.key";
 const ZENTINEL_CHALLENGES_DIR: &str = "challenges";
+const ZENTINEL_VERIFY_DIR: &str = "verify";
 /// Numeric group used by the exact selected Zentinel image.
 pub(crate) const ZENTINEL_GID: u32 = 65_532;
 
@@ -99,27 +102,69 @@ pub(crate) async fn watch(
             WatchInput::derive(machine, observations, certificates).map_err(io::Error::other)
         },
         async move |input| {
-            let process = input.process.as_ref().ok_or_else(|| {
-                io::Error::other("local Zentinel Ingress Proxy container is missing")
-            })?;
-            match crate::zentinel_apply::apply(
-                &input.projection,
-                &config_file,
-                &process.image,
-                &process.container_id,
-                &(&docker, &http),
+            let Some(process) = input.process.as_ref() else {
+                return WatchApply::WaitForChange(io::Error::other(
+                    "local Zentinel Ingress Proxy container is missing",
+                ));
+            };
+            classify_apply(
+                apply::apply(
+                    &input.projection,
+                    &config_file,
+                    &process.image,
+                    &process.container_id,
+                    &(&docker, &http),
+                )
+                .await,
             )
-            .await
-            .map_err(io::Error::other)?
-            {
-                crate::zentinel_apply::ApplyOutcome::Confirmed { .. } => Ok(()),
-                crate::zentinel_apply::ApplyOutcome::ReloadUnconfirmed { .. } => {
-                    Err(io::Error::other("Zentinel reload was not confirmed"))
-                }
-            }
         },
     )
     .await
+}
+
+fn classify_apply(result: Result<apply::ApplyOutcome, apply::Error>) -> WatchApply {
+    match result {
+        Ok(apply::ApplyOutcome::Confirmed { .. }) => WatchApply::Applied,
+        Ok(apply::ApplyOutcome::ReloadUnconfirmed { .. }) => {
+            WatchApply::WaitForChange(io::Error::other("Zentinel reload was not confirmed"))
+        }
+        Err(error @ apply::Error::ValidationRejected { .. }) => {
+            WatchApply::WaitForChange(io::Error::other(error))
+        }
+        Err(error) => WatchApply::Retry(io::Error::other(error)),
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::apply::{ApplyOutcome, Error as ApplyError};
+    use super::*;
+
+    #[test]
+    fn rejection_and_unconfirmed_reload_wait_for_changed_input() {
+        assert!(matches!(
+            classify_apply(Err(ApplyError::ValidationRejected {
+                digest: "digest".into(),
+                reason: "invalid".into(),
+            })),
+            WatchApply::WaitForChange(_)
+        ));
+        assert!(matches!(
+            classify_apply(Ok(ApplyOutcome::ReloadUnconfirmed {
+                digest: "digest".into(),
+                last_observed_digest: None,
+            })),
+            WatchApply::WaitForChange(_)
+        ));
+    }
+
+    #[test]
+    fn transient_apply_error_retries() {
+        assert!(matches!(
+            classify_apply(Err(ApplyError::Filesystem(io::Error::other("temporary")))),
+            WatchApply::Retry(_)
+        ));
+    }
 }
 
 #[must_use]
@@ -228,7 +273,8 @@ pub(crate) fn write_support_files(
     )?;
     let certificates = certificate_directory(config_file)?;
     ensure_bootstrap(&certificates)?;
-    write_challenges(config_file, &projection.sites)
+    write_challenges(config_file, &projection.sites)?;
+    write_verification_file(config_file, &projection.machine)
 }
 
 /// Render one already-derived projection for Zentinel.
@@ -369,12 +415,36 @@ fn write_global_configuration(output: &mut String, projection: &IngressProjectio
     // Exact 26.08_5 initializes proxy/static registries only from top-level resources. Listener
     // namespaces still isolate HTTPS and admin routes, while their handlers consume global pools.
     output.push_str("routes {\n");
+    write_verification_route(output);
     write_challenge_routes(output, &projection.sites, "    ");
     write_proxy_routes(output, &projection.sites, HttpProtocol::Http, "    ");
     output.push_str("}\n\nupstreams {\n");
     write_proxy_upstreams(output, &projection.sites, HttpProtocol::Http, "    ");
     write_proxy_upstreams(output, &projection.sites, HttpProtocol::Https, "    ");
     output.push_str("}\n\n");
+}
+
+fn write_verification_route(output: &mut String) {
+    let _ = write!(
+        output,
+        concat!(
+            "    route \"ployz-verify\" {{\n",
+            "        priority \"critical\"\n",
+            "        matches {{\n",
+            "            path {path:?}\n",
+            "        }}\n",
+            "        static-files {{\n",
+            "            root \"{config_dir}/{verify_dir}\"\n",
+            "            directory-listing #false\n",
+            "            cache-control \"no-store\"\n",
+            "            compress #false\n",
+            "        }}\n",
+            "    }}\n",
+        ),
+        path = INGRESS_VERIFY_PATH,
+        config_dir = CONTAINER_CONFIG_DIR,
+        verify_dir = ZENTINEL_VERIFY_DIR,
+    );
 }
 
 fn write_https_namespace(output: &mut String, projection: &IngressProjection) {
@@ -595,6 +665,18 @@ fn write_challenges(config_file: &Path, sites: &[IngressSite]) -> Result<(), Err
         atomic_write(&path, challenge.response().as_bytes(), 0o644)?;
         set_group(&path)?;
     }
+    Ok(())
+}
+
+fn write_verification_file(config_file: &Path, machine: &Machine) -> Result<(), Error> {
+    let root = config_file
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "config file has no parent"))?
+        .join(ZENTINEL_VERIFY_DIR);
+    prepare_directory(&root)?;
+    let path = root.join(INGRESS_VERIFY_PATH.trim_start_matches('/'));
+    atomic_write(&path, machine.id.to_string().as_bytes(), 0o644)?;
+    set_group(&path)?;
     Ok(())
 }
 

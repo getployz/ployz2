@@ -8,7 +8,6 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use bollard::{
     models::{ContainerCreateBody, HostConfig, Mount, MountType},
     query_parameters::{KillContainerOptionsBuilder, RemoveContainerOptionsBuilder},
@@ -20,12 +19,11 @@ use thiserror::Error;
 use crate::{
     docker::{Error as DockerError, LocalDocker},
     filesystem::atomic_write,
-    ingress::{
-        IngressProjection,
-        zentinel::{
-            self, ADMIN_ADDRESS, projection_digest, render, set_group, write_support_files,
-        },
-    },
+    ingress::IngressProjection,
+};
+
+use super::{
+    self as zentinel, ADMIN_ADDRESS, projection_digest, render, set_group, write_support_files,
 };
 
 const CONFIRMATION_INTERVAL: Duration = Duration::from_millis(100);
@@ -84,7 +82,6 @@ pub(crate) enum ApplyOutcome {
 }
 
 /// External operations at the Zentinel apply seam.
-#[async_trait]
 pub(crate) trait ApplyIo: Sync {
     /// Validate one candidate using the exact selected image.
     ///
@@ -112,7 +109,6 @@ pub(crate) trait ApplyIo: Sync {
     async fn active_digest(&self) -> Result<Option<String>, Error>;
 }
 
-#[async_trait]
 impl ApplyIo for (&LocalDocker, &reqwest::Client) {
     async fn validate_candidate(
         &self,
@@ -263,32 +259,8 @@ async fn validate_candidate(
     image: &str,
     candidate: &Path,
 ) -> Result<ValidationOutcome, DockerError> {
-    let candidate = candidate.canonicalize()?;
-    let source = candidate.to_str().ok_or_else(|| {
-        DockerError::InvalidContainerConfig("Zentinel candidate path is not UTF-8".into())
-    })?;
-    let created = docker
-        .client()
-        .create_container(
-            None::<bollard::query_parameters::CreateContainerOptions>,
-            ContainerCreateBody {
-                image: Some(image.to_owned()),
-                // The selected image's entrypoint is already `/zentinel`.
-                cmd: Some(vec!["test".into(), "-c".into(), "/candidate.kdl".into()]),
-                host_config: Some(HostConfig {
-                    mounts: Some(vec![Mount {
-                        target: Some("/candidate.kdl".into()),
-                        source: Some(source.to_owned()),
-                        typ: Some(MountType::BIND),
-                        read_only: Some(true),
-                        ..Default::default()
-                    }]),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        )
-        .await?;
+    let body = validation_container_body(image, candidate)?;
+    let created = docker.client().create_container(None, body).await?;
     let validation = async {
         docker.client().start_container(&created.id, None).await?;
         match docker
@@ -328,6 +300,39 @@ async fn validate_candidate(
             validation
         }
     }
+}
+
+fn validation_container_body(
+    image: &str,
+    candidate: &Path,
+) -> Result<ContainerCreateBody, DockerError> {
+    let candidate = candidate.canonicalize()?;
+    let candidate_source = candidate.to_str().ok_or_else(|| {
+        DockerError::InvalidContainerConfig("Zentinel candidate path is not UTF-8".into())
+    })?;
+    let support_source = candidate.parent().and_then(Path::to_str).ok_or_else(|| {
+        DockerError::InvalidContainerConfig("Zentinel candidate directory is not UTF-8".into())
+    })?;
+    let read_only_bind = |source: &str, target: &str| Mount {
+        target: Some(target.into()),
+        source: Some(source.into()),
+        typ: Some(MountType::BIND),
+        read_only: Some(true),
+        ..Default::default()
+    };
+    Ok(ContainerCreateBody {
+        image: Some(image.to_owned()),
+        // The selected image's entrypoint is already `/zentinel`.
+        cmd: Some(vec!["test".into(), "-c".into(), "/candidate.kdl".into()]),
+        host_config: Some(HostConfig {
+            mounts: Some(vec![
+                read_only_bind(candidate_source, "/candidate.kdl"),
+                read_only_bind(support_source, "/config"),
+            ]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -477,6 +482,33 @@ pub(crate) fn active_digest(response: &str) -> Result<Option<String>, serde_json
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validator_mounts_the_candidate_and_its_support_root_read_only() {
+        let root = std::env::temp_dir().join(format!(
+            "ployzd-zentinel-validation-mounts-{}",
+            ployz_core::MachineId::random()
+        ));
+        let live = root.join("zentinel.kdl");
+        let candidate = write_candidate(&live, "candidate configuration").unwrap();
+
+        let body = validation_container_body("zentinel:test", candidate.path()).unwrap();
+        assert_eq!(
+            body.cmd.unwrap(),
+            ["test", "-c", "/candidate.kdl"].map(str::to_owned)
+        );
+        let mounts = body.host_config.unwrap().mounts.unwrap();
+        let [candidate_mount, support_mount] = mounts.as_slice() else {
+            panic!("expected candidate and support-root mounts: {mounts:?}");
+        };
+        assert!(mounts.iter().all(|mount| mount.read_only == Some(true)));
+        assert_eq!(candidate_mount.target.as_deref(), Some("/candidate.kdl"));
+        assert_eq!(support_mount.target.as_deref(), Some("/config"));
+        assert_eq!(support_mount.source.as_deref(), root.to_str());
+
+        drop(candidate);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn post_rename_sync_failure_is_a_committed_activation() {

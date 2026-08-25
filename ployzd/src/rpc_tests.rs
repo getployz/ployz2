@@ -5,10 +5,9 @@ use crate::corrosion::{AdminClient, fake_cluster};
 use crate::machine::{LocalMachineError, LocalMachineStore, StoreError};
 use ployz_core::{
     AdvertisedEndpoint, ContainerKind, GetIngressProxyConfigRequest, IngressProxyBackend,
-    IngressProxyConfig, MachineName, MachineRpc, ProjectName, ResolvedServiceSpec, RpcErrorCode,
-    RpcResponseBody, RuntimeWatchRequest, op,
+    IngressProxyConfig, MachineName, MachineRpc, ProjectName, RpcErrorCode, RpcResponseBody,
+    RuntimeWatchRequest, op,
 };
-use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tonic::{Code, Request};
@@ -79,19 +78,16 @@ async fn zentinel_service_is_bootstrapped_before_host_network_is_returned() {
         watch::channel(false).0,
         Some((replicated, AdminClient::new("/no/such/admin.sock"))),
     );
-    let spec: ResolvedServiceSpec = serde_json::from_value(json!({
-        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "name": "ingress",
-        "mode": {"mode": "global"},
-        "container": {
-            "image": "example.test/zentinel",
-            "command": ["-c", "/config/zentinel.kdl"],
-            "cap_add": ["NET_BIND_SERVICE"],
-            "cap_drop": ["ALL"],
-            "pull_policy": "missing"
-        }
-    }))
-    .unwrap();
+    let spec = IngressProxyBackend::Zentinel
+        .requested_service_spec("example.test/zentinel".into(), Vec::new(), None)
+        .unwrap()
+        .to_resolved(
+            ployz_core::ServiceId::parse("a".repeat(32)).unwrap(),
+            ployz_core::ResolvedUpdateConfig {
+                order: ployz_core::UpdateOrder::StopFirst,
+                monitor_millis: None,
+            },
+        );
 
     assert!(matches!(
         service
@@ -182,7 +178,7 @@ async fn ingress_config_rpc_returns_only_the_selected_backend_file() {
             .unwrap();
         let (replicated, server) =
             fake_cluster::store_with_ingress_proxy_backend_value(backend.as_str()).await;
-        let caddy = crate::caddy::config_path(&data_dir);
+        let caddy = crate::ingress::caddy::config_path(&data_dir);
         let zentinel = crate::ingress::zentinel::config_path(&data_dir);
         std::fs::create_dir_all(caddy.parent().unwrap()).unwrap();
         std::fs::create_dir_all(zentinel.parent().unwrap()).unwrap();

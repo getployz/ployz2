@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerObservation, EnsureGlobalSlotRequest, IngressProxyBackend,
+    BridgeEndpointCapacity, ContainerObservation, EnsureGlobalSlotRequest, IngressProxyNetworkMode,
     InspectRequest, ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget,
     ObservedGlobalSlotSpec, QualifiedService, RpcError, ServiceObservation, eligible_global_slot,
     ingress_proxy_backend, missing_global_slots, op, service_containers,
@@ -148,10 +148,9 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         .iter()
         .filter(|slot| {
             let uses_bridge_endpoint = slot.identity() != &QualifiedService::system_ingress()
-                || !matches!(
-                    ingress_proxy_backend(slot.resolved_spec()),
-                    Ok(IngressProxyBackend::Zentinel)
-                );
+                || ingress_proxy_backend(slot.resolved_spec()).map_or(true, |backend| {
+                    matches!(backend.network_mode(), IngressProxyNetworkMode::Bridge)
+                });
             uses_bridge_endpoint
                 && !service_has_slot(&services, this_machine, &slot.resolved_spec().service_id)
         })
@@ -278,14 +277,16 @@ mod tests {
         let joiner = machine('1', "joiner");
         let founder = machine('f', "founder");
         let identity = QualifiedService::system_ingress();
-        let mut requested = requested(ServiceMode::Global);
-        requested.name = identity.name.clone();
-        requested.container.command = ployz_core::ZENTINEL_INGRESS_COMMAND
-            .map(str::to_owned)
-            .to_vec();
-        requested.container.cap_add = vec![ployz_core::ZENTINEL_INGRESS_CAPABILITY.to_owned()];
-        requested.container.cap_drop = vec!["ALL".into()];
-        let spec = requested.to_resolved(service_id('c'), ResolvedUpdateConfig::default());
+        let requested = ployz_core::IngressProxyBackend::Zentinel
+            .requested_service_spec("zentinel:test".into(), Vec::new(), None)
+            .unwrap();
+        let spec = requested.to_resolved(
+            service_id('c'),
+            ResolvedUpdateConfig {
+                order: ployz_core::UpdateOrder::StopFirst,
+                monitor_millis: None,
+            },
+        );
         let current = grouped(identity.clone(), spec.clone(), running_on(&founder, 'a'));
         let target = grouped(identity, spec, running_on(&joiner, 'b'));
         let mut client = FakeCatchUpClient {

@@ -1,7 +1,7 @@
 //! Reserved Ingress Proxy container policy at the Machine trust boundary.
 
 use ployz_core::{
-    ContainerKind, IngressProxyBackend, ProjectName, QualifiedService, ResolvedServiceSpec,
+    ContainerKind, IngressProxyNetworkMode, ProjectName, QualifiedService, ResolvedServiceSpec,
 };
 
 use super::{LocalMachine, LocalMachineError};
@@ -45,14 +45,15 @@ impl LocalMachine {
             .require_ingress_proxy_backend(backend)
             .await
             .map_err(LocalMachineError::IngressProxyBackend)?;
-        if !matches!(
-            (backend, kind),
-            (
-                IngressProxyBackend::Zentinel,
-                ContainerKind::ServiceContainer
-            )
-        ) {
-            return Ok(NetworkAttachment::Bridge);
+        let network = match (kind, backend.network_mode()) {
+            (ContainerKind::ServiceContainer, IngressProxyNetworkMode::Host) => {
+                NetworkAttachment::Host
+            }
+            (ContainerKind::ServiceContainer, IngressProxyNetworkMode::Bridge)
+            | (ContainerKind::PreDeployHook, _) => NetworkAttachment::Bridge,
+        };
+        if matches!(network, NetworkAttachment::Bridge) {
+            return Ok(network);
         }
 
         let _guard = self.ingress_runtime_lock.lock().await;
@@ -68,6 +69,6 @@ impl LocalMachine {
         };
         crate::ingress::zentinel::write_initial_config(&machine, &config_file)
             .map_err(IngressRuntimeError::from)?;
-        Ok(NetworkAttachment::Host)
+        Ok(network)
     }
 }

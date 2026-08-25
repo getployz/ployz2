@@ -19,7 +19,6 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    caddy::{self, CaddyAdmin},
     corrosion::{
         CertificateChallenge, CertificateMaterial, CertificateRow, Error as CorrosionError,
         ReplicatedStore, Subscription,
@@ -30,6 +29,7 @@ use crate::{
 const CERTS_DIR: &str = "certs";
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const WATCH_RETRY: Duration = Duration::from_secs(1);
+const WATCH_RESNAPSHOT: Duration = Duration::from_secs(5);
 
 /// True when this observation is the reserved Ingress Proxy Service.
 #[must_use]
@@ -37,7 +37,10 @@ pub(crate) fn is_system_ingress(observation: &ContainerObservation) -> bool {
     observation.identity() == QualifiedService::system_ingress()
 }
 
+pub(crate) mod caddy;
 pub(crate) mod zentinel;
+
+use caddy::CaddyAdmin;
 
 /// Run the watcher for the immutable Cluster Ingress Proxy Backend.
 pub(crate) async fn run(
@@ -54,10 +57,10 @@ pub(crate) async fn run(
         .map_err(io::Error::other)?
     {
         IngressProxyBackend::Caddy => {
-            crate::caddy::run(
+            caddy::run(
                 machine,
                 replicated,
-                crate::caddy::config_path(&data_dir),
+                caddy::config_path(&data_dir),
                 runtime_dir.join("caddy/admin.sock"),
                 shutdown,
             )
@@ -281,7 +284,7 @@ impl IngressProjection {
                 })
                 .or_insert(container);
         }
-        let service_fragments = newest
+        let service_fragments: BTreeMap<_, _> = newest
             .into_iter()
             .filter_map(|(identity, container)| {
                 container
@@ -292,6 +295,9 @@ impl IngressProjection {
                     .map(|fragment| (identity, fragment))
             })
             .collect();
+        if global_fragment.is_none() && service_fragments.is_empty() {
+            upstreams.clear();
+        }
         Self {
             machine: machine.clone(),
             sites,
@@ -402,10 +408,17 @@ where
             ))
         },
         async move |(projection, _process): &(IngressProjection, Option<ContainerId>)| {
-            let admin = connect().await.map_err(io::Error::other)?;
-            apply_caddy(projection, &config_file, admin.as_ref())
-                .await
-                .map_err(io::Error::other)
+            let applied = async {
+                let admin = connect().await.map_err(io::Error::other)?;
+                apply_caddy(projection, &config_file, admin.as_ref())
+                    .await
+                    .map_err(io::Error::other)
+            }
+            .await;
+            match applied {
+                Ok(()) => WatchApply::Applied,
+                Err(error) => WatchApply::Retry(error),
+            }
         },
     )
     .await
@@ -425,9 +438,9 @@ where
         &[ContainerObservation],
         &BTreeMap<IngressHost, CertificateRow>,
     ) -> io::Result<Input>,
-    Apply: for<'a> AsyncFnMut(&'a Input) -> io::Result<()>,
+    Apply: for<'input> AsyncFnMut(&'input Input) -> WatchApply,
 {
-    let mut last_applied = None;
+    let mut last_input = None;
     'watch: loop {
         let subscriptions = async {
             tokio::try_join!(
@@ -459,16 +472,23 @@ where
                 (Err(error), _) | (_, Err(error)) => Err(io::Error::other(error)),
             };
             match input {
-                Ok(input) if last_applied.as_ref() != Some(&input) => match apply(&input).await {
-                    Ok(()) => last_applied = Some(input),
-                    Err(error) => {
-                        last_applied = None;
+                Ok(input) if last_input.as_ref() != Some(&input) => match apply(&input).await {
+                    WatchApply::Applied => last_input = Some(input),
+                    WatchApply::Retry(error) => {
                         eprintln!("failed to update Ingress Proxy configuration: {error}");
+                        if wait_before_retry(&shutdown).await {
+                            continue;
+                        }
+                        return Ok(());
+                    }
+                    WatchApply::WaitForChange(error) => {
+                        eprintln!("Ingress Proxy configuration awaits changed input: {error}");
+                        last_input = Some(input);
                     }
                 },
                 Ok(_) => {}
                 Err(error) => {
-                    last_applied = None;
+                    last_input = None;
                     eprintln!("failed to rebuild ingress projection: {error}");
                 }
             }
@@ -480,6 +500,7 @@ where
             .await
             {
                 Ok(DebouncedChange::Changed) => {}
+                Ok(DebouncedChange::Resubscribe) => continue 'watch,
                 Ok(DebouncedChange::Shutdown) => return Ok(()),
                 Err(error) if wait_to_retry(&error, &shutdown).await => continue 'watch,
                 Err(_) => return Ok(()),
@@ -512,7 +533,14 @@ pub(crate) async fn apply_caddy<A: CaddyAdmin>(
 
 enum DebouncedChange {
     Changed,
+    Resubscribe,
     Shutdown,
+}
+
+enum WatchApply {
+    Applied,
+    Retry(io::Error),
+    WaitForChange(io::Error),
 }
 
 async fn wait_for_debounced_change(
@@ -523,6 +551,15 @@ async fn wait_for_debounced_change(
     tokio::select! {
         changed = container_changes.changed() => changed?,
         changed = certificate_changes.changed() => changed?,
+        () = tokio::time::sleep(WATCH_RESNAPSHOT) => {
+            return Ok(if container_changes.snapshot_in_progress()
+                || certificate_changes.snapshot_in_progress()
+            {
+                DebouncedChange::Resubscribe
+            } else {
+                DebouncedChange::Changed
+            });
+        }
         () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
     }
     let quiet = tokio::time::sleep(WATCH_DEBOUNCE);
@@ -543,6 +580,9 @@ async fn wait_for_debounced_change(
                     () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
                     changed = container_changes.changed() => changed?,
                     changed = certificate_changes.changed() => changed?,
+                    () = tokio::time::sleep(WATCH_RESNAPSHOT) => {
+                        return Ok(DebouncedChange::Resubscribe);
+                    }
                 }
             }
         }
@@ -554,6 +594,10 @@ async fn wait_for_debounced_change(
 
 async fn wait_to_retry(error: &CorrosionError, shutdown: &CancellationToken) -> bool {
     tracing::warn!(error = %error, "ingress watcher failed, retrying");
+    wait_before_retry(shutdown).await
+}
+
+async fn wait_before_retry(shutdown: &CancellationToken) -> bool {
     tokio::select! {
         () = tokio::time::sleep(WATCH_RETRY) => true,
         () = shutdown.cancelled() => false,

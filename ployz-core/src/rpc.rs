@@ -217,6 +217,7 @@ pub(super) fn default_wireguard_port() -> u16 {
 pub struct InitializeRequest {
     pub name: MachineName,
     pub cluster_network: Ipv4Net,
+    /// Immutable Ingress Proxy Backend selected for the new Cluster.
     pub ingress_proxy_backend: IngressProxyBackend,
     #[serde(default)]
     pub public_ip: Option<IpAddr>,

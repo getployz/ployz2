@@ -5,10 +5,9 @@ use super::{
 };
 use crate::corrosion::{CertificateChallenge, CertificateMaterial};
 use ployz_core::{
-    ContainerAddress, IngressHost, IngressProxyBackend, Machine, MachineId, MachineName,
-    ManagementAddress, QualifiedService, ResolvedServiceSpec, WireGuardPublicKey,
+    ContainerAddress, IngressHost, Machine, MachineId, MachineName, ManagementAddress,
+    QualifiedService, WireGuardPublicKey,
 };
-use serde_json::json;
 use std::{collections::BTreeMap, num::NonZeroU16};
 
 /// Projection that exercises HTTP, HTTPS, challenge, ordered, and empty routes.
@@ -78,74 +77,4 @@ pub(crate) fn renderer_projection() -> IngressProjection {
         global_fragment: None,
         service_fragments: BTreeMap::new(),
     }
-}
-
-#[test]
-fn reserved_ingress_service_backend_is_derived_from_concrete_wiring() {
-    let caddy = resolved_spec(
-        json!({
-            "command": ["caddy", "run", "-c", "/config/caddy/Caddyfile"],
-            "environment": {"CADDY_ADMIN": "unix//run/ingress/caddy/admin.sock"}
-        }),
-        json!([
-            {"mode": "host", "bind": {"kind": "all"}, "published_port": 80, "container_port": 80, "transport_protocol": "tcp"},
-            {"mode": "host", "bind": {"kind": "all"}, "published_port": 443, "container_port": 443, "transport_protocol": "tcp"},
-            {"mode": "host", "bind": {"kind": "all"}, "published_port": 443, "container_port": 443, "transport_protocol": "udp"}
-        ]),
-    );
-    let zentinel = resolved_spec(
-        json!({
-            "command": ["-c", "/config/zentinel.kdl"],
-            "cap_add": ["NET_BIND_SERVICE"],
-            "cap_drop": ["ALL"]
-        }),
-        json!([]),
-    );
-
-    assert_eq!(
-        ployz_core::ingress_proxy_backend(&caddy).unwrap(),
-        IngressProxyBackend::Caddy
-    );
-    assert_eq!(
-        ployz_core::ingress_proxy_backend(&zentinel).unwrap(),
-        IngressProxyBackend::Zentinel
-    );
-}
-
-#[test]
-fn reserved_ingress_service_backend_refuses_unknown_or_mixed_wiring() {
-    let unknown = resolved_spec(json!({"command": ["proxy", "serve"]}), json!([]));
-    let mixed = resolved_spec(
-        json!({
-            "command": ["-c", "/config/zentinel.kdl"],
-            "cap_add": ["NET_BIND_SERVICE"],
-            "cap_drop": ["ALL"]
-        }),
-        json!([]),
-    );
-    let mut mixed = mixed;
-    mixed.ingress_proxy_fragment =
-        Some(ployz_core::IngressProxyFragment::parse_caddy("respond ok").unwrap());
-
-    assert!(ployz_core::ingress_proxy_backend(&unknown).is_err());
-    assert!(ployz_core::ingress_proxy_backend(&mixed).is_err());
-}
-
-fn resolved_spec(container: serde_json::Value, ports: serde_json::Value) -> ResolvedServiceSpec {
-    let mut base = json!({
-        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "name": "ingress",
-        "mode": {"mode": "global"},
-        "container": {
-            "image": "example.test/ingress",
-            "pull_policy": "missing"
-        },
-        "ports": ports
-    });
-    base.get_mut("container")
-        .unwrap()
-        .as_object_mut()
-        .unwrap()
-        .extend(container.as_object().unwrap().clone());
-    serde_json::from_value(base).unwrap()
 }

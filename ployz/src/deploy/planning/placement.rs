@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, IngressProxyBackend,
+    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, IngressProxyNetworkMode,
     MachineId, MachineObservation, PortPublication, QualifiedService, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
     ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder, VolumeSource,
@@ -53,12 +53,12 @@ impl PlacementState {
     }
 }
 
-pub(super) struct GlobalPlacement<'a> {
-    pub(super) identity: &'a QualifiedService,
-    pub(super) service_id: &'a ServiceId,
-    pub(super) current: &'a [ServiceContainer],
-    pub(super) hooks: &'a [HookContainer],
-    pub(super) machines: Vec<&'a MachineObservation>,
+pub(super) struct GlobalPlacement<'placement> {
+    pub(super) identity: &'placement QualifiedService,
+    pub(super) service_id: &'placement ServiceId,
+    pub(super) current: &'placement [ServiceContainer],
+    pub(super) hooks: &'placement [HookContainer],
+    pub(super) machines: Vec<&'placement MachineObservation>,
 }
 
 pub(super) fn plan_global(
@@ -75,10 +75,9 @@ pub(super) fn plan_global(
         machines,
     } = target;
     let uses_bridge_endpoint = identity != &QualifiedService::system_ingress()
-        || !matches!(
-            requested_ingress_proxy_backend(requested),
-            Ok(IngressProxyBackend::Zentinel)
-        );
+        || requested_ingress_proxy_backend(requested).map_or(true, |backend| {
+            matches!(backend.network_mode(), IngressProxyNetworkMode::Bridge)
+        });
     let endpoint_demand = |operation, hook_pending| {
         if uses_bridge_endpoint {
             EndpointDemand::for_operation(operation, hook_pending)

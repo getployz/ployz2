@@ -104,6 +104,7 @@ pub enum Error {
     LockPoisoned,
     #[error(transparent)]
     Cluster(#[from] crate::corrosion::Error),
+    /// The immutable Cluster Ingress Proxy Backend is unavailable or inconsistent.
     #[error("{0}")]
     IngressProxyBackend(#[source] crate::corrosion::Error),
     #[error(transparent)]

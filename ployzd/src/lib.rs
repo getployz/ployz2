@@ -12,7 +12,6 @@ pub struct VolumePluginStatus {
 
 mod docker_image;
 
-pub mod caddy;
 pub(crate) mod certificates;
 pub mod corrosion;
 pub mod daemon;
@@ -35,4 +34,3 @@ pub mod proxy;
 pub mod relay;
 pub mod rpc;
 pub(crate) mod runtime_watch;
-mod zentinel_apply;

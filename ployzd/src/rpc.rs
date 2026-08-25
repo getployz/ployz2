@@ -758,7 +758,7 @@ impl MachineRpc for MachineService {
             return respond(unavailable("Ingress Proxy configuration is not available"));
         };
         let path = match backend {
-            IngressProxyBackend::Caddy => crate::caddy::config_path(data_dir),
+            IngressProxyBackend::Caddy => crate::ingress::caddy::config_path(data_dir),
             IngressProxyBackend::Zentinel => crate::ingress::zentinel::config_path(data_dir),
         };
         match std::fs::read_to_string(&path) {
