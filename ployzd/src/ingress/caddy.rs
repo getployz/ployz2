@@ -1,3 +1,5 @@
+//! Deterministic Caddy configuration rendering and application.
+
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
     HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, IngressProxyFragment, Machine,
@@ -22,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     corrosion::{CertificateChallenge, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
-    ingress::{self, IngressEndpoint, IngressProjection, IngressSite},
+    ingress::{IngressEndpoint, IngressProjection, IngressSite},
 };
 
 pub const CONFIG_FILE: &str = "Caddyfile";
@@ -139,7 +141,7 @@ pub async fn run(
             .parent()
             .ok_or_else(|| io::Error::other("Caddy admin socket has no parent"))?,
     )?;
-    ingress::watch_caddy(machine, replicated, config_file, shutdown, move || {
+    super::watch_caddy(machine, replicated, config_file, shutdown, move || {
         let admin_socket = admin_socket.clone();
         async move { AdminClient::connect_if_available(&admin_socket).await }
     })
@@ -404,7 +406,7 @@ http:// {{\n\
         let Some(route) = site.route(HttpProtocol::Https) else {
             continue;
         };
-        let stem = ingress::certificate_file_stem(&site.hostname, material);
+        let stem = super::certificate_file_stem(&site.hostname, material);
         let tls =
             format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n");
         write_site(&mut output, "https", &site.hostname, route, &tls, None);
@@ -501,5 +503,5 @@ fn write_site(
 }
 
 #[cfg(test)]
-#[path = "caddy_tests.rs"]
+#[path = "../caddy_tests.rs"]
 mod tests;

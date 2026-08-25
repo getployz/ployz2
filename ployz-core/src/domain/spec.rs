@@ -50,8 +50,12 @@ pub enum TransportProtocol {
     try_from = "IngressProxyFragmentWire"
 )]
 pub enum IngressProxyFragment {
+    /// Raw Caddy configuration evaluated only by the Caddy backend.
     #[non_exhaustive]
-    Caddy { config: String },
+    Caddy {
+        /// Non-empty Caddy configuration.
+        config: String,
+    },
 }
 
 impl IngressProxyFragment {
@@ -609,6 +613,7 @@ pub struct RequestedServiceSpec {
     pub volume_graph: ServiceVolumeGraph,
     pub config_graph: ServiceConfigGraph,
     pub pre_deploy: Option<PreDeployHook>,
+    /// Backend-tagged custom configuration for this Service.
     pub ingress_proxy_fragment: Option<IngressProxyFragment>,
     pub update: UpdateConfig,
 }
@@ -626,6 +631,7 @@ pub struct ResolvedServiceSpec {
     pub volume_graph: ServiceVolumeGraph,
     pub config_graph: ServiceConfigGraph,
     pub pre_deploy: Option<PreDeployHook>,
+    /// Backend-tagged custom configuration for this Service.
     pub ingress_proxy_fragment: Option<IngressProxyFragment>,
     pub update: ResolvedUpdateConfig,
 }

@@ -15,7 +15,7 @@ use ployz_core::{
 };
 use ployzd::machine::{
     LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior, LocalMachineRecord,
-    LocalMachineStore, StoreError,
+    LocalMachineStore, ParticipationOrigin, StoreError,
 };
 use ployzd::network::WireGuardPrivateKey;
 
@@ -73,7 +73,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
         "10.210.0.0/16"
     );
     let LocalMachineBody::Participating {
-        founding_cluster: Some(founding),
+        origin: ParticipationOrigin::Founder { cluster: founding },
         ..
     } = &first.record().body
     else {
@@ -695,11 +695,12 @@ fn legal_bodies_round_trip() {
         LocalMachineRecord {
             body: LocalMachineBody::Participating {
                 machine: machine.clone(),
-                founding_cluster: Some(ployzd::machine::FoundingCluster {
-                    network: "10.210.0.0/16".parse().unwrap(),
-                    ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
-                }),
-                bootstrap: Vec::new(),
+                origin: ParticipationOrigin::Founder {
+                    cluster: ployzd::machine::FoundingCluster {
+                        network: "10.210.0.0/16".parse().unwrap(),
+                        ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+                    },
+                },
             },
             wireguard_private_key: key.clone(),
             wireguard_mtu: Some(1400),
@@ -709,8 +710,9 @@ fn legal_bodies_round_trip() {
         LocalMachineRecord {
             body: LocalMachineBody::Participating {
                 machine: machine.clone(),
-                founding_cluster: None,
-                bootstrap: vec![peer],
+                origin: ParticipationOrigin::Join {
+                    bootstrap: vec![peer],
+                },
             },
             wireguard_private_key: key.clone(),
             wireguard_mtu: None,
@@ -721,8 +723,9 @@ fn legal_bodies_round_trip() {
             body: LocalMachineBody::Resetting {
                 prior: Box::new(LocalMachinePrior::Participating {
                     machine,
-                    founding_cluster: None,
-                    bootstrap: Vec::new(),
+                    origin: ParticipationOrigin::Join {
+                        bootstrap: Vec::new(),
+                    },
                 }),
             },
             wireguard_private_key: key,
@@ -731,11 +734,49 @@ fn legal_bodies_round_trip() {
             selected_endpoints: BTreeMap::new(),
         },
     ];
+    let founder = serde_json::to_value(&records[2]).unwrap();
+    let founder = founder.get("body").unwrap().as_object().unwrap();
+    assert_eq!(
+        founder.get("origin").and_then(serde_json::Value::as_str),
+        Some("founder")
+    );
+    assert!(founder.get("bootstrap").is_none());
+    let join = serde_json::to_value(&records[3]).unwrap();
+    let join = join.get("body").unwrap().as_object().unwrap();
+    assert_eq!(
+        join.get("origin").and_then(serde_json::Value::as_str),
+        Some("join")
+    );
+    assert!(join.get("cluster").is_none());
     for record in records {
         let loaded: LocalMachineRecord =
             serde_json::from_slice(&serde_json::to_vec(&record).unwrap()).unwrap();
         assert_eq!(loaded, record);
     }
+}
+
+#[test]
+fn pre_616_participating_authority_shape_is_not_migrated() {
+    let key = WireGuardPrivateKey::generate();
+    let machine = sample_machine(MachineId::random(), key.public_key());
+    let record = LocalMachineRecord {
+        body: LocalMachineBody::Participating {
+            machine,
+            origin: ParticipationOrigin::Join {
+                bootstrap: Vec::new(),
+            },
+        },
+        wireguard_private_key: key,
+        wireguard_mtu: None,
+        cloud_pairing: None,
+        selected_endpoints: BTreeMap::new(),
+    };
+    let mut legacy = serde_json::to_value(record).unwrap();
+    let body = legacy.get_mut("body").unwrap().as_object_mut().unwrap();
+    body.remove("origin");
+    body.insert("founding_cluster".into(), serde_json::Value::Null);
+
+    assert!(serde_json::from_value::<LocalMachineRecord>(legacy).is_err());
 }
 
 fn sample_machine(id: MachineId, public_key: ployz_core::WireGuardPublicKey) -> Machine {

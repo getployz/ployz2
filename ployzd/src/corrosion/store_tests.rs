@@ -19,6 +19,7 @@ use crate::corrosion::store::{
 };
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
+    ParticipationOrigin,
 };
 use crate::runtime_watch::RuntimeWatchSnapshot;
 use tokio_util::sync::CancellationToken;
@@ -287,11 +288,12 @@ fn only_a_participating_founder_claims_allocator() {
     let founder = LocalMachineRecord {
         body: LocalMachineBody::Participating {
             machine: machine.clone(),
-            founding_cluster: Some(crate::machine::FoundingCluster {
-                network: "10.210.0.0/16".parse().unwrap(),
-                ingress_proxy_backend: IngressProxyBackend::Caddy,
-            }),
-            bootstrap: Vec::new(),
+            origin: ParticipationOrigin::Founder {
+                cluster: crate::machine::FoundingCluster {
+                    network: "10.210.0.0/16".parse().unwrap(),
+                    ingress_proxy_backend: IngressProxyBackend::Caddy,
+                },
+            },
         },
         ..joined.clone()
     };
@@ -301,11 +303,12 @@ fn only_a_participating_founder_claims_allocator() {
         body: LocalMachineBody::Resetting {
             prior: Box::new(LocalMachinePrior::Participating {
                 machine: machine.clone(),
-                founding_cluster: Some(crate::machine::FoundingCluster {
-                    network: "10.210.0.0/16".parse().unwrap(),
-                    ingress_proxy_backend: IngressProxyBackend::Caddy,
-                }),
-                bootstrap: Vec::new(),
+                origin: ParticipationOrigin::Founder {
+                    cluster: crate::machine::FoundingCluster {
+                        network: "10.210.0.0/16".parse().unwrap(),
+                        ingress_proxy_backend: IngressProxyBackend::Caddy,
+                    },
+                },
             }),
         },
         ..joined.clone()
@@ -483,8 +486,7 @@ async fn publication_guard_rechecks_the_local_phase() {
 
     let LocalMachineBody::Participating {
         machine: body_machine,
-        founding_cluster,
-        bootstrap,
+        origin,
     } = local.body
     else {
         panic!("fixture is participating");
@@ -493,8 +495,7 @@ async fn publication_guard_rechecks_the_local_phase() {
         body: LocalMachineBody::Resetting {
             prior: Box::new(LocalMachinePrior::Participating {
                 machine: body_machine,
-                founding_cluster,
-                bootstrap,
+                origin,
             }),
         },
         ..local
@@ -514,8 +515,9 @@ fn participating_record() -> (Machine, LocalMachineRecord) {
     let local = LocalMachineRecord {
         body: LocalMachineBody::Participating {
             machine: machine.clone(),
-            founding_cluster: None,
-            bootstrap: Vec::new(),
+            origin: ParticipationOrigin::Join {
+                bootstrap: Vec::new(),
+            },
         },
         wireguard_private_key: crate::network::WireGuardPrivateKey::from_bytes([0; 32]),
         wireguard_mtu: None,

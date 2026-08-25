@@ -571,13 +571,9 @@ async fn start_corrosion(
         .map_err(|_| Error::StorePoisoned)?
         .record()
         .clone();
-    let (machine, bootstrap) = match record.body {
-        LocalMachineBody::Joining {
-            machine, bootstrap, ..
-        }
-        | LocalMachineBody::Participating {
-            machine, bootstrap, ..
-        } => (machine, bootstrap),
+    let machine = match &record.body {
+        LocalMachineBody::Joining { machine, .. }
+        | LocalMachineBody::Participating { machine, .. } => machine,
         LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
             return Ok(None);
         }
@@ -587,7 +583,7 @@ async fn start_corrosion(
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?
         .join("corrosion");
-    let bootstrap = bootstrap.iter().map(|machine| {
+    let bootstrap = record.bootstrap().iter().map(|machine| {
         SocketAddr::new(
             IpAddr::V6(machine.management_address.0),
             CORROSION_GOSSIP_PORT,

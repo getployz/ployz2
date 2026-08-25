@@ -2,8 +2,8 @@
 
 use super::{ingress, observation, reserved};
 use crate::{
-    caddy::{CONFIG_FILE, CaddyAdmin, Error as CaddyError, run},
     corrosion::{ApiClient, ReplicatedStore},
+    ingress::caddy::{CONFIG_FILE, CaddyAdmin, Error as CaddyError, run},
     ingress::watch_caddy,
 };
 use axum::{
@@ -188,7 +188,9 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
         Some([10, 210, 1, 4]),
         vec![ingress("example.com", 80, HttpProtocol::Http)],
     ));
-    state.send(b"{\"columns\":[\"id\",\"container\"]}\n");
+    state.send(
+        b"{\"columns\":[\"id\",\"container\"]}\n{\"row\":[1,[\"replacement\",\"snapshot\"]]}\n",
+    );
     settle().await;
     advance(Duration::from_millis(200)).await;
     settle().await;
@@ -325,6 +327,131 @@ async fn replacing_the_local_caddy_process_reloads_an_unchanged_projection() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn periodic_resnapshot_recovers_a_missed_change_notification() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    timeout(Duration::from_millis(250), load_rx.recv())
+        .await
+        .expect("first snapshot was not loaded")
+        .unwrap();
+    settle().await;
+    pause();
+    state.replace(observation(
+        2,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 3]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    advance(Duration::from_secs(5)).await;
+    settle().await;
+    resume();
+
+    let recovered = timeout(Duration::from_secs(1), load_rx.recv())
+        .await
+        .expect("periodic resnapshot did not recover the missed notification")
+        .unwrap();
+    assert!(recovered.contains("10.210.1.3:80"), "{recovered}");
+    settle().await;
+
+    pause();
+    state.replace(observation(
+        3,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 4]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    state.send(
+        b"{\"columns\":[\"id\",\"container\"]}\n{\"row\":[1,[\"replacement\",\"snapshot\"]]}\n",
+    );
+    settle().await;
+    advance(Duration::from_millis(300)).await;
+    settle().await;
+    assert!(
+        load_rx.try_recv().is_err(),
+        "an incomplete subscription snapshot was applied after debounce"
+    );
+    advance(Duration::from_secs(4)).await;
+    settle().await;
+    assert!(
+        load_rx.try_recv().is_err(),
+        "an incomplete subscription snapshot bypassed the bounded resnapshot wait"
+    );
+    advance(Duration::from_secs(1)).await;
+    settle().await;
+    resume();
+
+    let recovered = timeout(Duration::from_secs(1), load_rx.recv())
+        .await
+        .expect("periodic resnapshot did not recover the incomplete subscription snapshot")
+        .unwrap();
+    assert!(recovered.contains("10.210.1.4:80"), "{recovered}");
+    assert_eq!(
+        state.container_opens.load(Ordering::SeqCst),
+        2,
+        "stuck snapshot recovery must replace the subscription"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn transient_apply_failure_retries_without_a_replicated_event() {
+    let WatcherFixture {
+        machine,
+        address,
+        server,
+        directory,
+        ..
+    } = watcher_fixture().await;
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let admin = RetryAdmin {
+        attempts: Arc::clone(&attempts),
+        loads: load_tx,
+    };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine,
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    timeout(Duration::from_secs(2), load_rx.recv())
+        .await
+        .expect("failed apply was not retried without another event")
+        .unwrap();
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 struct WatcherFixture {
     machine: Machine,
     state: WatchState,
@@ -404,6 +531,26 @@ impl CaddyAdmin for TestAdmin {
             .unwrap()
             .to_owned();
         self.loads.send(caddyfile).unwrap();
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct RetryAdmin {
+    attempts: Arc<AtomicUsize>,
+    loads: mpsc::UnboundedSender<()>,
+}
+
+impl CaddyAdmin for RetryAdmin {
+    async fn adapt(&self, _caddyfile: &str) -> Result<String, CaddyError> {
+        Ok("{}".into())
+    }
+
+    async fn load(&self, _json: &str) -> Result<(), CaddyError> {
+        if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(CaddyError::Admin("temporary load failure".into()));
+        }
+        self.loads.send(()).unwrap();
         Ok(())
     }
 }

@@ -247,6 +247,24 @@ fn projection_resolves_route_endpoints_certificate_and_tagged_fragment() {
 }
 
 #[test]
+fn unrelated_unfragmented_service_does_not_change_the_ingress_projection() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let empty = projection(&local, "node-a", &[], &BTreeMap::new());
+    let unrelated = service_containers([observation(
+        1,
+        &local,
+        "worker",
+        Some([10, 210, 1, 2]),
+        Vec::new(),
+    )]);
+
+    assert_eq!(
+        projection(&local, "node-a", &unrelated, &BTreeMap::new()),
+        empty
+    );
+}
+
+#[test]
 fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let mut shop_old = observation(

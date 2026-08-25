@@ -42,6 +42,18 @@ listeners {
 }
 
 routes {
+    route "ployz-verify" {
+        priority "critical"
+        matches {
+            path "/.ployz-verify"
+        }
+        static-files {
+            root "/config/verify"
+            directory-listing #false
+            cache-control "no-store"
+            compress #false
+        }
+    }
     route "ployz-challenge-example.com" {
         priority "critical"
         matches {

@@ -2,18 +2,19 @@
 
 use super::{
     Error as RendererError, ZENTINEL_BOOTSTRAP_CERT_FILE, ZENTINEL_BOOTSTRAP_KEY_FILE,
-    ZENTINEL_CHALLENGES_DIR, ZENTINEL_GID, certificate_key_pair_matches, render, set_group,
-    write_initial_config, write_support_files,
+    ZENTINEL_CHALLENGES_DIR, ZENTINEL_GID, ZENTINEL_VERIFY_DIR, certificate_key_pair_matches,
+    render, set_group, write_initial_config, write_support_files,
 };
 use crate::{
     corrosion::CertificateChallenge,
-    ingress::{certificate_file_stem, tests::renderer_projection},
-    zentinel_apply::{
+    ingress::zentinel::apply::{
         ApplyIo, ApplyOutcome, Error as ApplyError, ValidationOutcome, active_digest, apply,
     },
+    ingress::{certificate_file_stem, tests::renderer_projection},
 };
-use async_trait::async_trait;
-use ployz_core::{ContainerId, IngressProxyFragment, MachineId, QualifiedService};
+use ployz_core::{
+    ContainerId, INGRESS_VERIFY_PATH, IngressProxyFragment, MachineId, QualifiedService,
+};
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -71,6 +72,32 @@ fn changed_projection_fully_regenerates_static_targets() {
     assert!(!second.kdl().contains("target \"10.210.1.2:8080\""));
     assert!(!second.kdl().contains("target \"10.210.2.2:8080\""));
     assert_ne!(second.digest(), first.digest());
+}
+
+#[test]
+fn verification_route_returns_the_local_machine_identity() {
+    let root = test_root("verification");
+    let config_file = root.join("zentinel.kdl");
+    let projection = renderer_projection();
+
+    write_support_files(&projection, &config_file).unwrap();
+    let rendered = render(&projection).unwrap();
+
+    assert!(rendered.kdl().contains("route \"ployz-verify\""));
+    assert!(
+        rendered
+            .kdl()
+            .contains(&format!("path {INGRESS_VERIFY_PATH:?}"))
+    );
+    assert_eq!(
+        fs::read_to_string(
+            root.join(ZENTINEL_VERIFY_DIR)
+                .join(INGRESS_VERIFY_PATH.trim_start_matches('/'))
+        )
+        .unwrap(),
+        projection.machine.id.to_string()
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -407,7 +434,6 @@ impl FakeIo {
     }
 }
 
-#[async_trait]
 impl ApplyIo for FakeIo {
     async fn validate_candidate(
         &self,
