@@ -31,6 +31,10 @@ const CERTS_DIR: &str = "certs";
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const WATCH_RETRY: Duration = Duration::from_secs(1);
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "ticket #623 wires the selected backend watcher")
+)]
 pub(crate) mod zentinel;
 
 /// Fully derived observer-local input to ingress rendering and application.

@@ -35,3 +35,8 @@ pub mod proxy;
 pub mod relay;
 pub mod rpc;
 pub(crate) mod runtime_watch;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "ticket #623 wires the selected backend watcher")
+)]
+mod zentinel_apply;

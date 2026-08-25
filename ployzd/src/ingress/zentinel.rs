@@ -1,4 +1,4 @@
-//! Deterministic Zentinel configuration rendering.
+//! Deterministic Zentinel configuration rendering and support files.
 
 use ployz_core::{HttpProtocol, IngressHost};
 use sha2::{Digest, Sha256};
@@ -18,33 +18,22 @@ use super::{
 };
 
 /// Host-private configuration-dump listener address.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "ticket #621 consumes the staged renderer")
-)]
 pub(crate) const ADMIN_ADDRESS: &str = "127.0.0.1:2019";
 const CONTAINER_CERTS_DIR: &str = "/config/certs";
 const CONTAINER_CONFIG_DIR: &str = "/config";
 const ZENTINEL_BOOTSTRAP_CERT_FILE: &str = "ployz-bootstrap.crt";
 const ZENTINEL_BOOTSTRAP_KEY_FILE: &str = "ployz-bootstrap.key";
 const ZENTINEL_CHALLENGES_DIR: &str = "challenges";
-const ZENTINEL_GID: u32 = 65_532;
+/// Numeric group used by the exact selected Zentinel image.
+pub(crate) const ZENTINEL_GID: u32 = 65_532;
 
 /// Rendered Zentinel configuration tied to one projection digest.
 #[derive(Debug, Eq, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "ticket #621 consumes the staged renderer")
-)]
 pub(crate) struct RenderedConfig {
     kdl: String,
     digest: String,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "ticket #621 consumes the staged renderer")
-)]
 impl RenderedConfig {
     /// Exact KDL consumed by the pinned Zentinel binary.
     #[must_use]
@@ -61,10 +50,6 @@ impl RenderedConfig {
 
 /// Failure while rendering or preparing Zentinel configuration.
 #[derive(Debug, Error)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "ticket #621 consumes the staged renderer")
-)]
 pub(crate) enum Error {
     /// A tagged fragment belongs to another concrete backend.
     #[error("cannot render caddy Ingress Proxy Fragment with zentinel")]
@@ -87,10 +72,6 @@ pub(crate) enum Error {
 /// Returns when certificate or challenge material cannot be written, when a
 /// challenge token is not one safe path component, or when an existing
 /// bootstrap certificate pair is invalid.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "ticket #621 consumes the staged renderer")
-)]
 pub(crate) fn write_support_files(
     projection: &IngressProjection,
     config_file: &Path,
@@ -114,10 +95,6 @@ pub(crate) fn write_support_files(
 ///
 /// Returns [`Error::BackendMismatch`] when the projection contains a fragment
 /// for another concrete backend.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "ticket #621 consumes the staged renderer")
-)]
 pub(crate) fn render(projection: &IngressProjection) -> Result<RenderedConfig, Error> {
     if projection.global_fragment.is_some() || !projection.service_fragments.is_empty() {
         return Err(Error::BackendMismatch);
@@ -212,7 +189,9 @@ observability {
     Ok(RenderedConfig { kdl, digest })
 }
 
-fn projection_digest(projection: &IngressProjection) -> String {
+/// Stable digest of the complete private Ingress Projection.
+#[must_use]
+pub(crate) fn projection_digest(projection: &IngressProjection) -> String {
     let canonical = serde_json::to_vec(projection)
         .expect("Ingress Projection contains only serializable value types");
     hex::encode(Sha256::digest(canonical))
@@ -500,7 +479,13 @@ fn secure_file(path: &Path, mode: u32) -> io::Result<()> {
     set_group(path)
 }
 
-fn set_group(path: &Path) -> io::Result<()> {
+/// Assign the exact selected Zentinel image's numeric group when running as root.
+///
+/// # Errors
+///
+/// Returns when the path cannot be inspected or its group cannot be changed.
+pub(crate) fn set_group(path: &Path) -> io::Result<()> {
+    fs::metadata(path)?;
     if fs::metadata("/proc/self")?.uid() == 0 {
         chown(path, None, Some(ZENTINEL_GID))?;
     }
