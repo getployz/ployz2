@@ -66,6 +66,12 @@ impl LocalDocker {
         }
     }
 
+    /// Borrow the local Docker API client for a private runtime adapter.
+    #[must_use]
+    pub(crate) fn client(&self) -> &Docker {
+        &self.client
+    }
+
     #[cfg(test)]
     fn connect_socket(socket: &str) -> Result<Self, Error> {
         let socket = socket.trim_start_matches("unix://");
