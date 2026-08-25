@@ -2,8 +2,9 @@
 
 use super::{ingress, observation};
 use crate::{
-    caddy::{CONFIG_FILE, CaddyAdmin, Error as CaddyError, run, run_with_admin},
+    caddy::{CONFIG_FILE, CaddyAdmin, Error as CaddyError, run},
     corrosion::{ApiClient, ReplicatedStore},
+    ingress::watch_caddy,
 };
 use axum::{
     Router,
@@ -141,10 +142,11 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = TestAdmin { loads: load_tx };
     let shutdown = CancellationToken::new();
-    let watcher = tokio::spawn(run_with_admin(
+    let config_file = directory.join(CONFIG_FILE);
+    let watcher = tokio::spawn(watch_caddy(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
-        directory.join(CONFIG_FILE),
+        config_file,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -154,6 +156,19 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
         .expect("first load waited for debounce")
         .unwrap();
     assert!(first.contains("10.210.1.2:80"), "{first}");
+
+    state.mutate(|container| {
+        container
+            .labels
+            .insert("unrelated.example/changed".into(), "true".into());
+    });
+    state.send(b"{\"change\":{}}\n");
+    assert!(
+        timeout(Duration::from_millis(500), load_rx.recv())
+            .await
+            .is_err(),
+        "unrelated Container Observation churn loaded Caddy"
+    );
 
     pause();
     state.replace(observation(
@@ -370,6 +385,10 @@ struct WatchState {
 impl WatchState {
     fn replace(&self, container: ContainerObservation) {
         *self.container.lock().unwrap() = container;
+    }
+
+    fn mutate(&self, mutate: impl FnOnce(&mut ContainerObservation)) {
+        mutate(&mut self.container.lock().unwrap());
     }
 
     fn send(&self, event: &'static [u8]) {
