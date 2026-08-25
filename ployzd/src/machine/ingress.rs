@@ -32,6 +32,14 @@ impl From<crate::ingress::zentinel::Error> for IngressRuntimeError {
     }
 }
 
+impl From<crate::ingress::envoy::Error> for IngressRuntimeError {
+    fn from(source: crate::ingress::envoy::Error) -> Self {
+        Self {
+            source: io::Error::other(source),
+        }
+    }
+}
+
 impl LocalMachine {
     /// Prepare and return the runtime wiring authorized for one container creation.
     ///
@@ -70,11 +78,17 @@ impl LocalMachine {
             IngressProxyBackend::Caddy => Ok(network),
             IngressProxyBackend::Envoy => {
                 let _guard = self.ingress_runtime_lock.lock().await;
-                let config_file = {
+                let (machine, config_file) = {
                     let store = self.lock_store()?;
-                    crate::ingress::envoy::config_path(&store.data_dir)
+                    let machine = store
+                        .record()
+                        .machine()
+                        .cloned()
+                        .ok_or(LocalMachineError::NotParticipating)?;
+                    let config_file = crate::ingress::envoy::config_path(&store.data_dir);
+                    (machine, config_file)
                 };
-                crate::ingress::envoy::write_initial_config(&config_file)
+                crate::ingress::envoy::write_initial_config(&machine, &config_file)
                     .map_err(IngressRuntimeError::from)?;
                 Ok(network)
             }

@@ -207,6 +207,15 @@ async fn envoy_service_is_bootstrapped_before_bridge_network_is_returned() {
     let config = std::fs::read_to_string(&config_file).unwrap();
     assert_eq!(config, crate::ingress::envoy::BOOTSTRAP);
     assert!(!config.contains("admin:"));
+    assert!(config.contains("path_config_source:"));
+    let envoy_dir = config_file.parent().unwrap();
+    assert!(
+        std::fs::read_to_string(envoy_dir.join("rds.yaml"))
+            .unwrap()
+            .contains("/.ployz-verify")
+    );
+    assert!(envoy_dir.join("lds.yaml").exists());
+    assert!(envoy_dir.join("cds.yaml").exists());
     std::fs::write(&config_file, "authoritative\n").unwrap();
     service
         .local
@@ -238,7 +247,7 @@ async fn ingress_config_rpc_returns_only_the_selected_backend_file() {
         ),
         (
             IngressProxyBackend::Envoy,
-            IngressProxyConfig::Envoy("envoy exact\n".into()),
+            IngressProxyConfig::Envoy("envoy-lds\n\n---\nenvoy-rds\n\n---\nenvoy-cds\n".into()),
         ),
     ] {
         let data_dir = std::env::temp_dir().join(format!(
@@ -269,7 +278,9 @@ async fn ingress_config_rpc_returns_only_the_selected_backend_file() {
         std::fs::create_dir_all(envoy.parent().unwrap()).unwrap();
         std::fs::write(&caddy, "caddy exact\n").unwrap();
         std::fs::write(&zentinel, "zentinel exact\n").unwrap();
-        std::fs::write(&envoy, "envoy exact\n").unwrap();
+        std::fs::write(envoy.parent().unwrap().join("lds.yaml"), "envoy-lds\n").unwrap();
+        std::fs::write(envoy.parent().unwrap().join("rds.yaml"), "envoy-rds\n").unwrap();
+        std::fs::write(envoy.parent().unwrap().join("cds.yaml"), "envoy-cds\n").unwrap();
         let service = MachineService::with_cluster(
             Arc::new(Mutex::new(local)),
             watch::channel(false).0,

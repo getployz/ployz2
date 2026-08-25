@@ -80,8 +80,16 @@ pub(crate) async fn run(
             .await
         }
         IngressProxyBackend::Envoy => {
-            shutdown.cancelled().await;
-            Ok(())
+            let docker =
+                docker.ok_or_else(|| io::Error::other("Envoy Ingress Proxy requires Docker"))?;
+            envoy::watch(
+                machine,
+                replicated,
+                envoy::config_path(&data_dir),
+                docker,
+                shutdown,
+            )
+            .await
         }
     }
 }
