@@ -685,14 +685,14 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
                 external: false,
                 driver: None,
                 labels: Default::default(),
-                no_copy: false,
-                subpath: None,
             },
         }],
         vec![ServiceMount {
             volume: reference,
             target: ContainerPath::parse(format!("/{name}")).unwrap(),
             read_only: false,
+            no_copy: false,
+            subpath: None,
         }],
     )
     .unwrap();

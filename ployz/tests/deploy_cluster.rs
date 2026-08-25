@@ -428,8 +428,6 @@ fn named_volume(reference: &str, name: &str) -> ServiceVolume {
             external: false,
             driver: None,
             labels: Default::default(),
-            no_copy: false,
-            subpath: None,
         },
     }
 }

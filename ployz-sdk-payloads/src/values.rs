@@ -990,8 +990,6 @@ fn service_volume() -> ServiceVolume {
             external: false,
             driver: None,
             labels: BTreeMap::new(),
-            no_copy: false,
-            subpath: None,
         },
     }
 }
@@ -1005,8 +1003,6 @@ fn named_volume_with_driver() -> ServiceVolume {
             external: false,
             driver: Some(volume_driver()),
             labels: BTreeMap::from([("keep".into(), "1".into())]),
-            no_copy: true,
-            subpath: Some("db".into()),
         },
     }
 }
@@ -1266,6 +1262,8 @@ fn service_mount() -> ServiceMount {
         volume: ServiceVolumeReference::parse("data").expect("fixture volume reference is valid"),
         target: ContainerPath::parse("/data").expect("fixture container path is valid"),
         read_only: false,
+        no_copy: true,
+        subpath: Some("db".into()),
     }
 }
 

@@ -137,8 +137,6 @@ pub(super) fn volumes(
                     } else {
                         declared.labels.clone()
                     },
-                    no_copy: volume.is_some_and(|volume| volume.nocopy),
-                    subpath: volume.and_then(|volume| volume.subpath.clone()),
                 }
             }
             _ => unreachable!("validated volume kind"),
@@ -157,6 +155,8 @@ pub(super) fn volumes(
             volume: reference,
             target: ContainerPath::parse(target).map_err(invalid)?,
             read_only,
+            no_copy: volume.is_some_and(|volume| volume.nocopy),
+            subpath: volume.and_then(|volume| volume.subpath.clone()),
         });
     }
     Ok((

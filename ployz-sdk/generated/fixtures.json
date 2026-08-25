@@ -188,9 +188,7 @@
         "external": false,
         "kind": "named",
         "labels": {},
-        "name": "data",
-        "no_copy": false,
-        "subpath": null
+        "name": "data"
       }
     }
   },
@@ -306,9 +304,7 @@
             "external": false,
             "kind": "named",
             "labels": {},
-            "name": "data",
-            "no_copy": false,
-            "subpath": null
+            "name": "data"
           }
         }
       },
@@ -902,7 +898,9 @@
     },
     "mounts": [
       {
+        "no_copy": true,
         "read_only": false,
+        "subpath": "db",
         "target": "/data",
         "volume": "data"
       }
@@ -932,9 +930,7 @@
           "labels": {
             "keep": "1"
           },
-          "name": "data",
-          "no_copy": true,
-          "subpath": "db"
+          "name": "data"
         }
       }
     ]
@@ -1064,7 +1060,9 @@
     },
     "mounts": [
       {
+        "no_copy": true,
         "read_only": false,
+        "subpath": "db",
         "target": "/data",
         "volume": "data"
       }
@@ -1095,9 +1093,7 @@
           "labels": {
             "keep": "1"
           },
-          "name": "data",
-          "no_copy": true,
-          "subpath": "db"
+          "name": "data"
         }
       }
     ]

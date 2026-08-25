@@ -144,6 +144,8 @@ fn compatible_named_volume_aliases_and_repeated_mounts_create_once() {
         volume: alias,
         target: ContainerPath::parse("/alias").unwrap(),
         read_only: false,
+        no_copy: false,
+        subpath: None,
     });
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 
@@ -179,8 +181,6 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
             external: false,
             driver: None,
             labels: Default::default(),
-            no_copy: false,
-            subpath: None,
         },
     });
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
@@ -228,14 +228,14 @@ fn conflicting_named_volume_aliases_are_rejected() {
                 options: Default::default(),
             }),
             labels: Default::default(),
-            no_copy: false,
-            subpath: None,
         },
     });
     mounts.push(ServiceMount {
         volume: alias,
         target: ContainerPath::parse("/alias").unwrap(),
         read_only: false,
+        no_copy: false,
+        subpath: None,
     });
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 

@@ -193,8 +193,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                         ("external", "boolean?"),
                         ("driver", "VolumeDriver?"),
                         ("labels", "{ readonly [key: string]: string }?"),
-                        ("no_copy", "boolean?"),
-                        ("subpath", "string?"),
                     ],
                 ),
                 (
@@ -340,6 +338,8 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("volume", "ServiceVolumeReference"),
                 ("target", "ContainerPath"),
                 ("read_only", "boolean?"),
+                ("no_copy", "boolean?"),
+                ("subpath", "string?"),
             ],
         },
     ),

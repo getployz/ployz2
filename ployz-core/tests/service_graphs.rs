@@ -335,8 +335,6 @@ fn named_volume(volume: &str, name: &str) -> ServiceVolume {
             external: false,
             driver: None,
             labels: BTreeMap::new(),
-            no_copy: false,
-            subpath: None,
         },
     }
 }
@@ -346,6 +344,8 @@ fn mount(volume: &str, target: &str) -> ServiceMount {
         volume: reference(volume),
         target: ContainerPath::parse(target).unwrap(),
         read_only: false,
+        no_copy: false,
+        subpath: None,
     }
 }
 

@@ -308,6 +308,8 @@ fn mount(volume: &ServiceVolumeReference, target: &str) -> ServiceMount {
         volume: volume.clone(),
         target: ContainerPath::parse(target).expect("static mount path is valid"),
         read_only: false,
+        no_copy: false,
+        subpath: None,
     }
 }
 
