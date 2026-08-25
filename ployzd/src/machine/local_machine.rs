@@ -8,21 +8,21 @@ use std::{
 };
 
 use ployz_core::{
-    CloudPairing, ContainerCreated, InitializeRequest, Initialized, InspectRequest, JoinAccepted,
-    JoinRequest, LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId,
-    MachineIdentity, MachineList, MachineObservation, MachineRemoved, MachineToken,
-    MachineTokenRequest, MachineUpdated, ManagementAddress, MembershipObservation, ProjectName,
-    PublicIpDiscovery, RegisterRequest, Registered, RemoveLocalMachineRequest,
-    RemoveMachineRequest, ResetAccepted, ResolvedServiceSpec, RttObservation, RttStatistics,
-    SelectedEndpoint, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
-    synthesize_membership,
+    CloudPairing, ContainerCreated, IngressProxyBackend, InitializeRequest, Initialized,
+    InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase, LocalMachineRemoved, Machine,
+    MachineDetails, MachineId, MachineIdentity, MachineList, MachineObservation, MachineRemoved,
+    MachineToken, MachineTokenRequest, MachineUpdated, ManagementAddress, MembershipObservation,
+    ProjectName, PublicIpDiscovery, QualifiedService, RegisterRequest, Registered,
+    RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, ResolvedServiceSpec,
+    RttObservation, RttStatistics, SelectedEndpoint, UpdateMachineRequest, WireGuardInspected,
+    associate_wireguard_peers, synthesize_membership,
 };
 use thiserror::Error;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
-    LocalMachineRecord, LocalMachineStore, STORAGE_OBSERVATION_TIMEOUT, StoreError, local_runtime,
-    local_storage,
+    FoundingCluster, LocalMachineRecord, LocalMachineStore, STORAGE_OBSERVATION_TIMEOUT,
+    StoreError, local_runtime, local_storage,
 };
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
@@ -102,6 +102,8 @@ pub enum Error {
     LockPoisoned,
     #[error(transparent)]
     Cluster(#[from] crate::corrosion::Error),
+    #[error("{0}")]
+    IngressProxyBackend(#[source] crate::corrosion::Error),
     #[error(transparent)]
     Network(#[from] NetworkError),
     #[error(transparent)]
@@ -161,12 +163,34 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
         let _guard = self.global_slot_lock.lock().await;
+        self.require_ingress_proxy_backend(project, spec).await?;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let record = self.record()?;
         let machine = record.machine().ok_or(Error::NotParticipating)?;
         Ok(containers
             .ensure_global_slot(&record.id(), machine.subnet.gateway(), project, spec)
             .await?)
+    }
+
+    /// Refuse reserved Ingress Proxy work without its replicated authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Cluster backend is absent, invalid, or not Caddy.
+    pub(crate) async fn require_ingress_proxy_backend(
+        &self,
+        project: &ProjectName,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), Error> {
+        if QualifiedService::new(project.clone(), spec.name.clone())
+            == QualifiedService::system_caddy()
+        {
+            self.replicated()?
+                .require_ingress_proxy_backend(IngressProxyBackend::Caddy)
+                .await
+                .map_err(Error::IngressProxyBackend)?;
+        }
+        Ok(())
     }
 
     /// The persisted Local Machine record.
@@ -352,7 +376,10 @@ impl LocalMachine {
     pub fn initialize(&self, request: InitializeRequest) -> Result<Initialized, Error> {
         let machine = self.lock_store()?.initialize(
             request.name,
-            request.cluster_network,
+            FoundingCluster {
+                network: request.cluster_network,
+                ingress_proxy_backend: request.ingress_proxy_backend,
+            },
             request.public_ip,
             request.advertised_endpoints,
             request.wireguard_mtu,

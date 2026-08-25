@@ -81,6 +81,10 @@ pub async fn run_machine_publisher(
                     return Ok(());
                 }
             }
+            replicated
+                .ingress_proxy_backend()
+                .await
+                .map_err(io::Error::other)?;
             let publication = replicated.machine_publication().await;
             let completed = {
                 let mut local = local

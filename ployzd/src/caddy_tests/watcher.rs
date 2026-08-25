@@ -396,7 +396,9 @@ struct Statement {
 
 async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
-    if statement.query == "SELECT id, container FROM containers ORDER BY id" {
+    if statement.query == "SELECT value FROM cluster WHERE key = ?" {
+        query_events(&["value"], [vec![json!("caddy")]])
+    } else if statement.query == "SELECT id, container FROM containers ORDER BY id" {
         let container = state.container.lock().unwrap().clone();
         query_events(
             &["id", "container"],

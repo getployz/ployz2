@@ -147,6 +147,15 @@ impl Daemon {
             }
         };
         let corrosion = start_corrosion(&config, &store).await?;
+        if let (Some(corrosion), Some(backend)) = (
+            corrosion.as_ref(),
+            local_record.founding_ingress_proxy_backend(),
+        ) {
+            corrosion
+                .store()
+                .publish_founding_ingress_proxy_backend(backend)
+                .await?;
+        }
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let containers = match (containers, replicated_store.clone()) {

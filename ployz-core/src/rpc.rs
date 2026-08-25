@@ -11,8 +11,8 @@ use thiserror::Error;
 
 use crate::{
     AdvertisedEndpoint, CapabilityName, CloudPairing, ContainerId, ContainerKind,
-    ContainerObservation, DockerVolume, Machine, MachineId, MachineLogService, MachineName,
-    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
+    ContainerObservation, DockerVolume, IngressProxyBackend, Machine, MachineId, MachineLogService,
+    MachineName, MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ProjectName,
     PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardDevice, WireGuardPublicKey,
     framing::{FramingError, grpc_frame_payload},
 };
@@ -217,6 +217,7 @@ pub(super) fn default_wireguard_port() -> u16 {
 pub struct InitializeRequest {
     pub name: MachineName,
     pub cluster_network: Ipv4Net,
+    pub ingress_proxy_backend: IngressProxyBackend,
     #[serde(default)]
     pub public_ip: Option<IpAddr>,
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
