@@ -1,15 +1,12 @@
 use chrono::{SecondsFormat, Utc};
-use hex::encode as hex_encode;
 use ployz_core::{
     CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, IngressProxyFragment,
-    Machine, MachineId, PortPublication, QualifiedService, ServiceContainer, ServiceName,
-    hostname_owners, service_containers, serving_replicas,
+    Machine, QualifiedService, ServiceName,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fmt::Write as _,
     fs,
     future::Future,
@@ -23,19 +20,14 @@ use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{
-        CertificateChallenge, CertificateMaterial, CertificateRow, Error as CorrosionError,
-        ReplicatedStore, Subscription,
-    },
+    corrosion::{CertificateChallenge, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
+    ingress::{self, IngressEndpoint, IngressProjection, IngressSite},
 };
 
 pub const CONFIG_FILE: &str = "Caddyfile";
-const CERTS_DIR: &str = "certs";
 const CONTAINER_CERTS_DIR: &str = "/config/certs";
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
-const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
-const WATCH_RETRY: Duration = Duration::from_secs(1);
 
 /// True when this observation is the reserved Caddy Service.
 #[must_use]
@@ -43,22 +35,31 @@ pub(crate) fn is_system_caddy(observation: &ContainerObservation) -> bool {
     observation.identity() == QualifiedService::system_caddy()
 }
 
+/// Failure while rendering or applying Caddy configuration.
 #[derive(Debug, Error)]
-enum Error {
+pub(crate) enum Error {
+    /// Local filesystem operation failed.
     #[error(transparent)]
     Io(#[from] io::Error),
+    /// Caddy administration request failed.
     #[error(transparent)]
     Http(#[from] reqwest::Error),
+    /// Caddy administration response was malformed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// Caddy rejected or omitted an administration result.
     #[error("{0}")]
     Admin(String),
+    /// Tagged Caddy fragment could not be rendered.
     #[error("{0}")]
     Template(String),
 }
 
-trait CaddyAdmin: Send + Sync {
+/// Caddy's concrete validation and acknowledged-load interface.
+pub(crate) trait CaddyAdmin: Send + Sync {
+    /// Adapt and validate one Caddyfile without applying it.
     fn adapt(&self, caddyfile: &str) -> impl Future<Output = Result<String, Error>> + Send;
+    /// Load adapted Caddy JSON and wait for acknowledgement.
     fn load(&self, json: &str) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
@@ -143,237 +144,31 @@ pub async fn run(
             .parent()
             .ok_or_else(|| io::Error::other("Caddy admin socket has no parent"))?,
     )?;
-    run_with_admin(machine, replicated, config_file, shutdown, move || {
+    ingress::watch_caddy(machine, replicated, config_file, shutdown, move || {
         let admin_socket = admin_socket.clone();
         async move { AdminClient::connect_if_available(&admin_socket).await }
     })
     .await
 }
 
-async fn run_with_admin<A: CaddyAdmin, Connect, ConnectFuture>(
-    machine: Machine,
-    replicated: ReplicatedStore,
-    config_file: PathBuf,
-    shutdown: CancellationToken,
-    mut connect: Connect,
-) -> io::Result<()>
-where
-    Connect: FnMut() -> ConnectFuture,
-    ConnectFuture: Future<Output = Result<Option<A>, Error>>,
-{
-    let mut last_applied = None;
-    'watch: loop {
-        let subscriptions = async {
-            tokio::try_join!(
-                replicated.subscribe_container_changes(),
-                replicated.subscribe_certificate_changes(),
-            )
-        };
-        let changes = tokio::select! {
-            changes = subscriptions => changes,
-            () = shutdown.cancelled() => return Ok(()),
-        };
-        let (mut container_changes, mut certificate_changes) = match changes {
-            Ok(changes) => changes,
-            Err(error) => {
-                if wait_to_retry(&error, &shutdown).await {
-                    continue;
-                }
-                return Ok(());
-            }
-        };
-        loop {
-            let snapshot = match (
-                replicated.containers().await,
-                replicated.certificate_state().await,
-            ) {
-                (Ok(containers), Ok(certificates)) => Some((containers.observations, certificates)),
-                (Err(error), _) | (_, Err(error)) => {
-                    eprintln!("failed to rebuild Caddy projection: {error}");
-                    None
-                }
-            };
-            if let Some(snapshot) = snapshot
-                && last_applied.as_ref() != Some(&snapshot)
-            {
-                let admin = connect().await.map_err(io::Error::other)?;
-                match reconcile(
-                    &machine,
-                    &snapshot.0,
-                    &snapshot.1,
-                    &config_file,
-                    admin.as_ref(),
-                )
-                .await
-                {
-                    Ok(()) => last_applied = Some(snapshot),
-                    Err(error) => {
-                        last_applied = None;
-                        eprintln!("failed to update Caddy configuration: {error}");
-                    }
-                }
-            }
-            match wait_for_debounced_change(
-                &mut container_changes,
-                &mut certificate_changes,
-                &shutdown,
-            )
-            .await
-            {
-                Ok(DebouncedChange::Changed) => {}
-                Ok(DebouncedChange::Shutdown) => return Ok(()),
-                Err(error) if wait_to_retry(&error, &shutdown).await => continue 'watch,
-                Err(_) => return Ok(()),
-            }
-        }
-    }
-}
-
-enum DebouncedChange {
-    Changed,
-    Shutdown,
-}
-
-async fn wait_for_debounced_change(
-    container_changes: &mut Subscription,
-    certificate_changes: &mut Subscription,
-    shutdown: &CancellationToken,
-) -> Result<DebouncedChange, CorrosionError> {
-    tokio::select! {
-        changed = container_changes.changed() => changed?,
-        changed = certificate_changes.changed() => changed?,
-        () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
-    }
-    let quiet = tokio::time::sleep(WATCH_DEBOUNCE);
-    tokio::pin!(quiet);
-    loop {
-        tokio::select! {
-            biased;
-            () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
-            changed = container_changes.changed() => changed?,
-            changed = certificate_changes.changed() => changed?,
-            () = &mut quiet => {
-                let container_snapshot = container_changes.snapshot_in_progress();
-                let certificate_snapshot = certificate_changes.snapshot_in_progress();
-                if !container_snapshot && !certificate_snapshot {
-                    return Ok(DebouncedChange::Changed);
-                }
-                tokio::select! {
-                    () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
-                    changed = container_changes.changed() => changed?,
-                    changed = certificate_changes.changed() => changed?,
-                }
-            }
-        }
-        quiet
-            .as_mut()
-            .reset(tokio::time::Instant::now() + WATCH_DEBOUNCE);
-    }
-}
-
-async fn wait_to_retry(error: &CorrosionError, shutdown: &CancellationToken) -> bool {
-    tracing::warn!(error = %error, "Caddy watcher failed, retrying");
-    tokio::select! {
-        () = tokio::time::sleep(WATCH_RETRY) => true,
-        () = shutdown.cancelled() => false,
-    }
-}
-
-async fn reconcile<A: CaddyAdmin>(
-    machine: &Machine,
-    observations: &[ContainerObservation],
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
+/// Render and apply one already-derived projection through Caddy.
+///
+/// # Errors
+///
+/// Returns a filesystem, rendering, validation, or acknowledged-load error.
+pub(crate) async fn reconcile<A: CaddyAdmin>(
+    projection: &IngressProjection,
     config_file: &Path,
     admin: Option<&A>,
 ) -> Result<(), Error> {
-    // TODO(UT-116): keep the Caddy projection membership-blind until the membership model is
-    // intentionally changed across replicated projections.
-    write_certificate_files(config_file, certificates)?;
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-    let containers = service_containers(observations.iter().cloned());
-    let caddyfile = generate_caddyfile(
-        &machine.id,
-        machine.name.as_str(),
-        &containers,
-        &timestamp,
-        certificates,
-        admin,
-    )
-    .await;
+    let caddyfile = generate_caddyfile(projection, &timestamp, admin).await;
     if let Some(admin) = admin {
         let json = admin.adapt(&caddyfile).await?;
         admin.load(&json).await?;
     }
     write_caddyfile(config_file, &caddyfile)?;
-    remove_stale_certificate_files(config_file, certificates)?;
     Ok(())
-}
-
-fn write_certificate_files(
-    config_file: &Path,
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
-) -> Result<(), Error> {
-    let directory = config_file
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?
-        .join(CERTS_DIR);
-    prepare_directory(&directory)?;
-    for (hostname, row) in certificates {
-        let Some(material) = row.material() else {
-            continue;
-        };
-        let stem = certificate_file_stem(hostname, material);
-        let cert_path = directory.join(format!("{stem}.crt"));
-        let key_path = directory.join(format!("{stem}.key"));
-        atomic_write(&cert_path, material.certificate().as_bytes(), 0o644)?;
-        set_ployz_group(&cert_path)?;
-        atomic_write(&key_path, material.private_key().as_bytes(), 0o600)?;
-        set_ployz_group(&key_path)?;
-    }
-    Ok(())
-}
-
-fn remove_stale_certificate_files(
-    config_file: &Path,
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
-) -> Result<(), Error> {
-    let directory = config_file
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?
-        .join(CERTS_DIR);
-    if !directory.exists() {
-        return Ok(());
-    }
-    let keep: BTreeSet<String> = certificates
-        .iter()
-        .filter_map(|(hostname, row)| {
-            row.material().map(|material| {
-                let stem = certificate_file_stem(hostname, material);
-                [format!("{stem}.crt"), format!("{stem}.key")]
-            })
-        })
-        .flatten()
-        .collect();
-    for entry in fs::read_dir(&directory)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if !keep.contains(name) {
-            fs::remove_file(entry.path())?;
-        }
-    }
-    Ok(())
-}
-
-fn certificate_file_stem(hostname: &IngressHost, material: &CertificateMaterial) -> String {
-    let mut digest = Sha256::new();
-    digest.update((material.certificate().len() as u64).to_le_bytes());
-    digest.update(material.certificate().as_bytes());
-    digest.update((material.private_key().len() as u64).to_le_bytes());
-    digest.update(material.private_key().as_bytes());
-    format!("{hostname}-{}", hex_encode(digest.finalize()))
 }
 
 fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
@@ -393,21 +188,11 @@ fn prepare_directory(path: &Path) -> io::Result<()> {
 }
 
 async fn generate_caddyfile<A: CaddyAdmin>(
-    local_machine: &MachineId,
-    machine_name: &str,
-    containers: &[ServiceContainer],
+    projection: &IngressProjection,
     timestamp: &str,
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
     admin: Option<&A>,
 ) -> String {
-    let mut output = automatic_caddyfile(
-        local_machine,
-        machine_name,
-        containers,
-        timestamp,
-        None,
-        certificates,
-    );
+    let mut output = automatic_caddyfile(projection, timestamp, None);
     let Some(admin) = admin else {
         output.push_str(
             "\n# User-defined Caddy configs are unavailable because Caddy's admin API is not reachable.\n\
@@ -416,34 +201,19 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         return output;
     };
 
-    let healthy = healthy_containers(local_machine, containers);
-    let eligible = eligible_containers(local_machine, containers);
     let mut skipped = Vec::new();
-    if let Some(container) = healthy
-        .iter()
-        .copied()
-        .filter(|container| {
-            let observation = container.as_observation();
-            is_system_caddy(observation) && observation.machine_id == *local_machine
-        })
-        .max_by_key(|container| creation_key(container))
-        && let Some(config) = container
-            .as_observation()
-            .resolved_spec
-            .ingress_proxy_fragment
-            .as_ref()
-            .and_then(IngressProxyFragment::as_caddy)
+    if let Some(config) = projection
+        .global_fragment
+        .as_ref()
+        .and_then(IngressProxyFragment::as_caddy)
     {
-        match render_custom_config(config, &container.as_observation().identity(), &eligible) {
+        match render_custom_config(
+            config,
+            &QualifiedService::system_caddy(),
+            &projection.upstreams,
+        ) {
             Ok(rendered) => {
-                let candidate = automatic_caddyfile(
-                    local_machine,
-                    machine_name,
-                    containers,
-                    timestamp,
-                    Some(&rendered),
-                    certificates,
-                );
+                let candidate = automatic_caddyfile(projection, timestamp, Some(&rendered));
                 // TODO(UT-119): /adapt remains the only validation for custom Caddyfile
                 // candidates and may accept a configuration that /load rejects.
                 match admin.adapt(&candidate).await {
@@ -463,32 +233,11 @@ async fn generate_caddyfile<A: CaddyAdmin>(
         }
     }
 
-    let mut newest = BTreeMap::<QualifiedService, &ServiceContainer>::new();
-    for container in &healthy {
-        let identity = container.as_observation().identity();
-        if is_system_caddy(container.as_observation()) {
-            continue;
-        }
-        newest
-            .entry(identity)
-            .and_modify(|current| {
-                if creation_key(container) > creation_key(current) {
-                    *current = container;
-                }
-            })
-            .or_insert(container);
-    }
-    for (identity, container) in newest {
-        let Some(config) = container
-            .as_observation()
-            .resolved_spec
-            .ingress_proxy_fragment
-            .as_ref()
-            .and_then(IngressProxyFragment::as_caddy)
-        else {
+    for (identity, fragment) in &projection.service_fragments {
+        let Some(config) = fragment.as_caddy() else {
             continue;
         };
-        let rendered = match render_custom_config(config, &identity, &eligible) {
+        let rendered = match render_custom_config(config, identity, &projection.upstreams) {
             Ok(rendered) => rendered,
             Err(error) => {
                 skipped.push(format!("Service '{identity}': rendering failed: {error}"));
@@ -513,52 +262,10 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     output
 }
 
-fn eligible_containers<'a>(
-    local_machine: &MachineId,
-    containers: &'a [ServiceContainer],
-) -> Vec<&'a ServiceContainer> {
-    let mut containers = serving_replicas(containers);
-    containers.sort_by_key(|container| caddy_container_order(local_machine, container));
-    containers
-}
-
-fn healthy_containers<'a>(
-    local_machine: &MachineId,
-    containers: &'a [ServiceContainer],
-) -> Vec<&'a ServiceContainer> {
-    let mut containers = containers
-        .iter()
-        .filter(|container| container.as_observation().runtime.is_healthy())
-        .collect::<Vec<_>>();
-    containers.sort_by_key(|container| caddy_container_order(local_machine, container));
-    containers
-}
-
-fn caddy_container_order<'container>(
-    local_machine: &MachineId,
-    container: &'container ServiceContainer,
-) -> (bool, QualifiedService, i64, &'container str) {
-    let observation = container.as_observation();
-    (
-        observation.machine_id != *local_machine,
-        observation.identity(),
-        observation.created_at_unix_nanos,
-        observation.container_id.as_str(),
-    )
-}
-
-fn creation_key(container: &ServiceContainer) -> (i64, &str) {
-    let observation = container.as_observation();
-    (
-        observation.created_at_unix_nanos,
-        observation.container_id.as_str(),
-    )
-}
-
 fn render_custom_config(
     template: &str,
     current_service: &QualifiedService,
-    containers: &[&ServiceContainer],
+    upstreams_by_service: &BTreeMap<QualifiedService, Vec<ployz_core::ContainerAddress>>,
 ) -> Result<String, Error> {
     let mut rendered = String::new();
     let mut remaining = template;
@@ -572,20 +279,23 @@ fn render_custom_config(
             .map_err(|error| Error::Template(error.to_string()))?;
         let replacement = match tokens.as_slice() {
             [name] if name == ".Name" => current_service.to_string(),
-            [helper] if helper == "upstreams" => upstreams(containers, current_service, None),
+            [helper] if helper == "upstreams" => {
+                upstreams(upstreams_by_service, current_service, None)
+            }
             [helper, argument] if helper == "upstreams" => match argument.parse::<u16>() {
-                Ok(port) => upstreams(containers, current_service, Some(port)),
+                Ok(port) => upstreams(upstreams_by_service, current_service, Some(port)),
                 Err(_) => {
-                    let identity = upstream_identity(current_service, argument, containers)?;
-                    upstreams(containers, &identity, None)
+                    let identity =
+                        upstream_identity(current_service, argument, upstreams_by_service)?;
+                    upstreams(upstreams_by_service, &identity, None)
                 }
             },
             [helper, service, port] if helper == "upstreams" => {
-                let identity = upstream_identity(current_service, service, containers)?;
+                let identity = upstream_identity(current_service, service, upstreams_by_service)?;
                 let port = port
                     .parse::<u16>()
                     .map_err(|_| Error::Template(format!("invalid upstream port '{port}'")))?;
-                upstreams(containers, &identity, Some(port))
+                upstreams(upstreams_by_service, &identity, Some(port))
             }
             _ => {
                 return Err(Error::Template(format!(
@@ -604,7 +314,7 @@ fn render_custom_config(
 fn upstream_identity(
     current_service: &QualifiedService,
     argument: &str,
-    containers: &[&ServiceContainer],
+    upstreams: &BTreeMap<QualifiedService, Vec<ployz_core::ContainerAddress>>,
 ) -> Result<QualifiedService, Error> {
     if argument == ".Name" {
         return Ok(current_service.clone());
@@ -616,10 +326,7 @@ fn upstream_identity(
             .map_err(|_| Error::Template(format!("Service '{argument}' was not found")))?;
         QualifiedService::new(current_service.project.clone(), name)
     };
-    if containers
-        .iter()
-        .any(|container| container.as_observation().identity() == identity)
-    {
+    if upstreams.contains_key(&identity) {
         Ok(identity)
     } else {
         Err(Error::Template(format!(
@@ -629,15 +336,14 @@ fn upstream_identity(
 }
 
 fn upstreams(
-    containers: &[&ServiceContainer],
+    upstreams: &BTreeMap<QualifiedService, Vec<ployz_core::ContainerAddress>>,
     identity: &QualifiedService,
     port: Option<u16>,
 ) -> String {
-    containers
-        .iter()
-        .map(|container| container.as_observation())
-        .filter(|observation| observation.identity() == *identity)
-        .filter_map(|observation| observation.address)
+    upstreams
+        .get(identity)
+        .into_iter()
+        .flatten()
         .map(|address| match port {
             Some(port) => format!("{}:{port}", address.0),
             None => address.0.to_string(),
@@ -647,75 +353,12 @@ fn upstreams(
 }
 
 fn automatic_caddyfile(
-    local_machine: &MachineId,
-    machine_name: &str,
-    containers: &[ServiceContainer],
+    projection: &IngressProjection,
     timestamp: &str,
     global_config: Option<&str>,
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
 ) -> String {
-    let owners = hostname_owners(containers.iter().map(ServiceContainer::as_observation));
-    let mut sites = BTreeMap::<IngressHost, Site<'_>>::new();
-    for container in containers {
-        let observation = container.as_observation();
-        let identity = observation.identity();
-        for port in &observation.resolved_spec.ports {
-            let PortPublication::Ingress {
-                hostname,
-                http_protocol,
-                ..
-            } = port
-            else {
-                continue;
-            };
-            let Some(hostname) = hostname.as_explicit_host() else {
-                continue;
-            };
-            if owners.get(hostname) == Some(&identity) {
-                sites
-                    .entry(hostname.clone())
-                    .or_default()
-                    .publish(*http_protocol);
-            }
-        }
-    }
-    let containers = eligible_containers(local_machine, containers);
-    for container in containers {
-        let observation = container.as_observation();
-        let address = observation.address.expect("address was filtered above");
-        let identity = observation.identity();
-        for port in &observation.resolved_spec.ports {
-            let PortPublication::Ingress {
-                hostname,
-                container_port,
-                http_protocol,
-                ..
-            } = port
-            else {
-                continue;
-            };
-            let Some(hostname) = hostname.as_explicit_host() else {
-                // TODO(UT-112): Caddy does not route L4 TCP/UDP ingress; host publication remains
-                // the supported path. Cluster Domain assignment is resolved before Caddy.
-                continue;
-            };
-            if owners.get(hostname) != Some(&identity) {
-                continue;
-            }
-            let upstream = format!("{}:{container_port}", address.0);
-            sites
-                .get_mut(hostname)
-                .expect("published hostname was collected above")
-                .publish(*http_protocol)
-                .push(upstream);
-        }
-    }
-    for (hostname, row) in certificates {
-        let site = sites.entry(hostname.clone()).or_default();
-        site.challenge = row.challenge();
-        site.material = row.material();
-    }
-
+    let machine_name = projection.machine.name.as_str();
+    let local_machine = &projection.machine.id;
     let mut output = format!(
         "# Caddyfile autogenerated by Ployz on Machine '{machine_name}' (DO NOT EDIT): {timestamp}\n\
 # Automatically updated on Service or health status changes.\n\
@@ -741,73 +384,83 @@ http:// {{\n\
 \tfail_duration 30s\n\
 }}\n"
     );
-    if sites.values().any(|site| {
-        site.http.is_some()
-            || site.challenge.is_some()
-            || (site.https.is_some() && site.material.is_some())
+    if projection.sites.iter().any(|site| {
+        site.route(HttpProtocol::Http).is_some()
+            || site.challenge().is_some()
+            || (site.route(HttpProtocol::Https).is_some() && site.material().is_some())
     }) {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
-    for (hostname, site) in &sites {
-        if site.http.is_some() || site.challenge.is_some() {
+    for site in &projection.sites {
+        let http = site.route(HttpProtocol::Http);
+        if http.is_some() || site.challenge().is_some() {
             write_site(
                 &mut output,
                 "http",
-                hostname,
-                site.http.as_deref().unwrap_or_default(),
+                &site.hostname,
+                http.unwrap_or_default(),
                 "",
-                site.challenge,
+                site.challenge(),
             );
         }
-        let Some(material) = site.material else {
+        let Some(material) = site.material() else {
             continue;
         };
-        let Some(upstreams) = site.https.as_deref() else {
+        let Some(route) = site.route(HttpProtocol::Https) else {
             continue;
         };
-        let stem = certificate_file_stem(hostname, material);
+        let stem = ingress::certificate_file_stem(&site.hostname, material);
         let tls =
             format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n");
-        write_site(&mut output, "https", hostname, upstreams, &tls, None);
+        write_site(&mut output, "https", &site.hostname, route, &tls, None);
     }
-    write_certificate_errors(&mut output, certificates);
+    write_certificate_errors(&mut output, &projection.sites);
     output
 }
 
-fn write_certificate_errors(
-    output: &mut String,
-    certificates: &BTreeMap<IngressHost, CertificateRow>,
-) {
+fn write_certificate_errors(output: &mut String, sites: &[IngressSite]) {
     let mut header = false;
-    for (hostname, row) in certificates {
-        if row.material().is_some() {
+    for site in sites {
+        let Some(certificate) = &site.certificate else {
+            continue;
+        };
+        if certificate.material.is_some() {
             continue;
         }
-        let Some(error) = row.last_error().filter(|error| !error.is_empty()) else {
+        let Some(error) = certificate
+            .last_error
+            .as_deref()
+            .filter(|error| !error.is_empty())
+        else {
             continue;
         };
         if !header {
             output.push_str("\n# Skipped certificate issuance:\n");
             header = true;
         }
-        let _ = writeln!(output, "# - {hostname}: {error}");
+        let _ = writeln!(output, "# - {}: {error}", site.hostname);
     }
 }
 
-#[derive(Default)]
-struct Site<'certificate> {
-    http: Option<Vec<String>>,
-    https: Option<Vec<String>>,
-    challenge: Option<&'certificate CertificateChallenge>,
-    material: Option<&'certificate CertificateMaterial>,
-}
-
-impl Site<'_> {
-    fn publish(&mut self, protocol: HttpProtocol) -> &mut Vec<String> {
+impl IngressSite {
+    fn route(&self, protocol: HttpProtocol) -> Option<&[crate::ingress::IngressEndpoint]> {
+        let publication = self.publication.as_ref()?;
         match protocol {
-            HttpProtocol::Http => self.http.get_or_insert_default(),
-            HttpProtocol::Https => self.https.get_or_insert_default(),
+            HttpProtocol::Http => publication.http.as_deref(),
+            HttpProtocol::Https => publication.https.as_deref(),
         }
+    }
+
+    fn challenge(&self) -> Option<&CertificateChallenge> {
+        self.certificate
+            .as_ref()
+            .and_then(|certificate| certificate.challenge.as_ref())
+    }
+
+    fn material(&self) -> Option<&crate::corrosion::CertificateMaterial> {
+        self.certificate
+            .as_ref()
+            .and_then(|certificate| certificate.material.as_ref())
     }
 }
 
@@ -843,7 +496,7 @@ fn write_site(
     output: &mut String,
     protocol: &str,
     hostname: &IngressHost,
-    upstreams: &[String],
+    endpoints: &[IngressEndpoint],
     tls: &str,
     challenge: Option<&CertificateChallenge>,
 ) {
@@ -856,12 +509,16 @@ fn write_site(
             )
         })
         .unwrap_or_default();
-    let proxy = if upstreams.is_empty() {
+    let proxy = if endpoints.is_empty() {
         "\trespond \"Bad Gateway\" 502\n".to_owned()
     } else {
         format!(
             "\treverse_proxy {} {{\n\t\timport common_proxy\n\t}}\n",
-            upstreams.join(" ")
+            endpoints
+                .iter()
+                .map(|endpoint| format!("{}:{}", endpoint.address.0, endpoint.port))
+                .collect::<Vec<_>>()
+                .join(" ")
         )
     };
     let _ = write!(
