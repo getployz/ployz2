@@ -442,28 +442,6 @@ fn write_certificate_errors(output: &mut String, sites: &[IngressSite]) {
     }
 }
 
-impl IngressSite {
-    fn route(&self, protocol: HttpProtocol) -> Option<&[crate::ingress::IngressEndpoint]> {
-        let publication = self.publication.as_ref()?;
-        match protocol {
-            HttpProtocol::Http => publication.http.as_deref(),
-            HttpProtocol::Https => publication.https.as_deref(),
-        }
-    }
-
-    fn challenge(&self) -> Option<&CertificateChallenge> {
-        self.certificate
-            .as_ref()
-            .and_then(|certificate| certificate.challenge.as_ref())
-    }
-
-    fn material(&self) -> Option<&crate::corrosion::CertificateMaterial> {
-        self.certificate
-            .as_ref()
-            .and_then(|certificate| certificate.material.as_ref())
-    }
-}
-
 fn write_global_options(output: &mut String, global_config: Option<&str>) {
     // Caddy never issues certificates. The daemon pins material when it has any.
     match global_config {
