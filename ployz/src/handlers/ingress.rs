@@ -3,7 +3,7 @@
 use std::{fs, path::Path};
 
 use clap::ArgMatches;
-use ployz_core::{GetIngressProxyConfigRequest, MachineTarget, op};
+use ployz_core::{GetIngressProxyConfigRequest, InspectRequest, MachineTarget, op};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
 use crate::connect::TARGET_RPC_TIMEOUT;
@@ -50,17 +50,20 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let force_recreate = matches.get_flag("recreate");
     let skip_health_monitor = matches.get_flag("skip-health");
     runtime()?.block_on(async {
-        let image = match image {
-            Some(image) => image,
-            None => crate::ingress::latest_image().await?,
-        };
-        let requested = crate::ingress::service_spec(image, machines, caddy_config);
         let context = root
             .get_one::<String>("context")
             .map(String::as_str)
             .unwrap_or("default");
         let mut client =
             connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
+        let backend = client
+            .call::<op::Inspect>(InspectRequest::default(), None)
+            .await?
+            .ingress_proxy_backend
+            .ok_or_else(|| Error::usage("Cluster Ingress Proxy Backend is missing"))?;
+        let requested =
+            crate::ingress::service_spec_for_backend(backend, image, machines, caddy_config)
+                .await?;
         crate::deploy::deploy_spec(
             &mut client,
             &requested,

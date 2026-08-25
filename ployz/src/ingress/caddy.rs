@@ -6,10 +6,11 @@ use oci_client::{
     Client, ParseError, Reference, errors::OciDistributionError, secrets::RegistryAuth,
 };
 use ployz_core::{
-    ContainerPath, ContainerResources, HostBind, IngressProxyFragment, MachinePath, MachineTarget,
-    Placement, PortPublication, PullPolicy, QualifiedService, RequestedServiceSpec, RestartPolicy,
-    ServiceContainer, ServiceContainerSpec, ServiceMode, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
+    CADDY_INGRESS_ADMIN, CADDY_INGRESS_COMMAND, ContainerPath, ContainerResources, HostBind,
+    IngressProxyFragment, MachinePath, MachineTarget, Placement, PortPublication, PullPolicy,
+    QualifiedService, RequestedServiceSpec, RestartPolicy, ServiceContainer, ServiceContainerSpec,
+    ServiceMode, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    TransportProtocol, UpdateConfig, VolumeSource,
 };
 use semver::Version;
 use thiserror::Error;
@@ -141,17 +142,9 @@ pub fn service_spec(
         mode: ServiceMode::Global,
         container: ServiceContainerSpec {
             image,
-            command: vec![
-                "caddy".into(),
-                "run".into(),
-                "-c".into(),
-                "/config/caddy/Caddyfile".into(),
-            ],
+            command: CADDY_INGRESS_COMMAND.map(str::to_owned).into(),
             entrypoint: Vec::new(),
-            environment: BTreeMap::from([(
-                "CADDY_ADMIN".into(),
-                "unix//run/ingress/caddy/admin.sock".into(),
-            )]),
+            environment: BTreeMap::from([("CADDY_ADMIN".into(), CADDY_INGRESS_ADMIN.into())]),
             labels: Default::default(),
             hostname: None,
             extra_hosts: Vec::new(),

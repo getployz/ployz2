@@ -329,6 +329,7 @@ impl MachineRpc for DiscoveryService {
                 cloud_paired: self.cloud_paired.load(Ordering::SeqCst),
                 telemetry,
                 storage: inspect.include_storage.then_some(self.storage),
+                ingress_proxy_backend: Some(ployz_core::IngressProxyBackend::Caddy),
             })
             .encode()
             .unwrap(),

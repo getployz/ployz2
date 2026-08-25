@@ -1,9 +1,9 @@
 //! Observer-local ingress derivation, watching, and shared filesystem state.
 
 use ployz_core::{
-    ContainerAddress, ContainerObservation, HttpProtocol, IngressHost, IngressProxyFragment,
-    Machine, MachineId, PortPublication, QualifiedService, ServiceContainer, hostname_owners,
-    service_containers, serving_replicas,
+    ContainerAddress, ContainerObservation, HttpProtocol, IngressHost, IngressProxyBackend,
+    IngressProxyFragment, Machine, MachineId, PortPublication, QualifiedService, ServiceContainer,
+    hostname_owners, service_containers, serving_replicas,
 };
 use serde::Serialize;
 use std::{
@@ -37,11 +37,46 @@ pub(crate) fn is_system_ingress(observation: &ContainerObservation) -> bool {
     observation.identity() == QualifiedService::system_ingress()
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "ticket #623 wires the selected backend watcher")
-)]
 pub(crate) mod zentinel;
+
+/// Run the watcher for the immutable Cluster Ingress Proxy Backend.
+pub(crate) async fn run(
+    machine: Machine,
+    replicated: ReplicatedStore,
+    data_dir: PathBuf,
+    runtime_dir: PathBuf,
+    docker: Option<crate::docker::LocalDocker>,
+    shutdown: CancellationToken,
+) -> io::Result<()> {
+    match replicated
+        .ingress_proxy_backend()
+        .await
+        .map_err(io::Error::other)?
+    {
+        IngressProxyBackend::Caddy => {
+            crate::caddy::run(
+                machine,
+                replicated,
+                crate::caddy::config_path(&data_dir),
+                runtime_dir.join("caddy/admin.sock"),
+                shutdown,
+            )
+            .await
+        }
+        IngressProxyBackend::Zentinel => {
+            let docker =
+                docker.ok_or_else(|| io::Error::other("Zentinel Ingress Proxy requires Docker"))?;
+            zentinel::watch(
+                machine,
+                replicated,
+                zentinel::config_path(&data_dir),
+                docker,
+                shutdown,
+            )
+            .await
+        }
+    }
+}
 
 /// Fully derived observer-local input to ingress rendering and application.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -341,6 +376,43 @@ where
     Connect: FnMut() -> ConnectFuture,
     ConnectFuture: Future<Output = Result<Option<A>, caddy::Error>>,
 {
+    watch(
+        machine,
+        replicated,
+        shutdown,
+        |machine, observations, certificates| {
+            Ok(IngressProjection::derive(
+                machine,
+                observations,
+                certificates,
+            ))
+        },
+        async move |projection| {
+            let admin = connect().await.map_err(io::Error::other)?;
+            apply_caddy(projection, &config_file, admin.as_ref())
+                .await
+                .map_err(io::Error::other)
+        },
+    )
+    .await
+}
+
+async fn watch<Input, Derive, Apply>(
+    machine: Machine,
+    replicated: ReplicatedStore,
+    shutdown: CancellationToken,
+    mut derive: Derive,
+    mut apply: Apply,
+) -> io::Result<()>
+where
+    Input: Eq,
+    Derive: FnMut(
+        &Machine,
+        &[ContainerObservation],
+        &BTreeMap<IngressHost, CertificateRow>,
+    ) -> io::Result<Input>,
+    Apply: for<'a> AsyncFnMut(&'a Input) -> io::Result<()>,
+{
     let mut last_applied = None;
     'watch: loop {
         let subscriptions = async {
@@ -363,30 +435,27 @@ where
             }
         };
         loop {
-            let projection = match (
+            let input = match (
                 replicated.containers().await,
                 replicated.certificate_state().await,
             ) {
-                (Ok(containers), Ok(certificates)) => Some(IngressProjection::derive(
-                    &machine,
-                    &containers.observations,
-                    &certificates,
-                )),
-                (Err(error), _) | (_, Err(error)) => {
-                    eprintln!("failed to rebuild ingress projection: {error}");
-                    None
+                (Ok(containers), Ok(certificates)) => {
+                    derive(&machine, &containers.observations, &certificates)
                 }
+                (Err(error), _) | (_, Err(error)) => Err(io::Error::other(error)),
             };
-            if let Some(projection) = projection
-                && last_applied.as_ref() != Some(&projection)
-            {
-                let admin = connect().await.map_err(io::Error::other)?;
-                match apply_caddy(&projection, &config_file, admin.as_ref()).await {
-                    Ok(()) => last_applied = Some(projection),
+            match input {
+                Ok(input) if last_applied.as_ref() != Some(&input) => match apply(&input).await {
+                    Ok(()) => last_applied = Some(input),
                     Err(error) => {
                         last_applied = None;
-                        eprintln!("failed to update Caddy configuration: {error}");
+                        eprintln!("failed to update Ingress Proxy configuration: {error}");
                     }
+                },
+                Ok(_) => {}
+                Err(error) => {
+                    last_applied = None;
+                    eprintln!("failed to rebuild ingress projection: {error}");
                 }
             }
             match wait_for_debounced_change(

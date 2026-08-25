@@ -1,20 +1,29 @@
 //! Deterministic Zentinel configuration rendering and support files.
 
-use ployz_core::{HttpProtocol, IngressHost};
+use ployz_core::{
+    ContainerId, ContainerObservation, HttpProtocol, IngressHost, IngressProxyBackend, Machine,
+    ingress_proxy_backend, service_containers,
+};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fmt::Write as _,
     fs, io,
     os::unix::fs::{MetadataExt, PermissionsExt, chown},
-    path::Path,
+    path::{Path, PathBuf},
 };
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
-use crate::filesystem::atomic_write;
+use crate::{
+    corrosion::{CertificateRow, ReplicatedStore},
+    docker::LocalDocker,
+    filesystem::atomic_write,
+};
 
 use super::{
     IngressEndpoint, IngressProjection, IngressSite, certificate_directory, certificate_file_stem,
-    write_certificate_files,
+    is_system_ingress, watch as watch_inputs, write_certificate_files,
 };
 
 /// Host-private configuration-dump listener address.
@@ -27,6 +36,101 @@ const ZENTINEL_BOOTSTRAP_KEY_FILE: &str = "ployz-bootstrap.key";
 const ZENTINEL_CHALLENGES_DIR: &str = "challenges";
 /// Numeric group used by the exact selected Zentinel image.
 pub(crate) const ZENTINEL_GID: u32 = 65_532;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct IngressProcess {
+    container_id: ContainerId,
+    image: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WatchInput {
+    projection: IngressProjection,
+    process: Option<IngressProcess>,
+}
+
+impl WatchInput {
+    fn derive(
+        machine: &Machine,
+        observations: &[ContainerObservation],
+        certificates: &BTreeMap<IngressHost, CertificateRow>,
+    ) -> Result<Self, ployz_core::IngressProxyServiceSpecError> {
+        let process = service_containers(observations.iter().cloned())
+            .into_iter()
+            .filter(|container| {
+                let observation = container.as_observation();
+                observation.machine_id == machine.id && is_system_ingress(observation)
+            })
+            .max_by_key(|container| {
+                let observation = container.as_observation();
+                (
+                    observation.created_at_unix_nanos,
+                    observation.container_id.to_string(),
+                )
+            })
+            .map(|container| {
+                let observation = container.as_observation();
+                if ingress_proxy_backend(&observation.resolved_spec)?
+                    != IngressProxyBackend::Zentinel
+                {
+                    return Err(ployz_core::IngressProxyServiceSpecError);
+                }
+                Ok(IngressProcess {
+                    container_id: observation.container_id,
+                    image: observation.resolved_spec.container.image.clone(),
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            projection: IngressProjection::derive(machine, observations, certificates),
+            process,
+        })
+    }
+}
+
+/// Watch the common projection and apply it through the selected Zentinel process.
+pub(crate) async fn watch(
+    machine: Machine,
+    replicated: ReplicatedStore,
+    config_file: PathBuf,
+    docker: LocalDocker,
+    shutdown: CancellationToken,
+) -> io::Result<()> {
+    replicated
+        .require_ingress_proxy_backend(IngressProxyBackend::Zentinel)
+        .await
+        .map_err(io::Error::other)?;
+    let http = reqwest::Client::new();
+    watch_inputs(
+        machine,
+        replicated,
+        shutdown,
+        |machine, observations, certificates| {
+            WatchInput::derive(machine, observations, certificates).map_err(io::Error::other)
+        },
+        async move |input| {
+            let process = input.process.as_ref().ok_or_else(|| {
+                io::Error::other("local Zentinel Ingress Proxy container is missing")
+            })?;
+            match crate::zentinel_apply::apply(
+                &input.projection,
+                &config_file,
+                &process.image,
+                &process.container_id,
+                &(&docker, &http),
+            )
+            .await
+            .map_err(io::Error::other)?
+            {
+                crate::zentinel_apply::ApplyOutcome::Confirmed { .. } => Ok(()),
+                crate::zentinel_apply::ApplyOutcome::ReloadUnconfirmed { .. } => {
+                    Err(io::Error::other("Zentinel reload was not confirmed"))
+                }
+            }
+        },
+    )
+    .await
+}
 
 #[must_use]
 pub(crate) fn config_path(data_dir: &Path) -> std::path::PathBuf {
