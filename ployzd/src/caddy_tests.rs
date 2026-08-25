@@ -7,8 +7,8 @@ use crate::{
     ingress::{IngressProjection, apply_caddy, tests::renderer_projection},
 };
 use ployz_core::{
-    AdvertisedEndpoint, CADDY_VERIFY_PATH, ContainerAddress, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol,
+    AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
+    ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol, INGRESS_VERIFY_PATH,
     IngressHost, IngressHostname, IngressProxyFragment, Machine, MachineId, MachineName,
     ManagementAddress, PortPublication, ProjectName, QualifiedService, ResolvedServiceSpec,
     ServiceContainer, ServiceId, ServiceName, TransportProtocol, WireGuardPublicKey,
@@ -136,7 +136,7 @@ fn automatic_sites_match_the_frozen_caddyfile_contract() {
 \n\
 # Health check endpoint to verify Caddy reachability on this Machine.\n\
 http:// {{\n\
-\thandle {CADDY_VERIFY_PATH} {{\n\
+\thandle {INGRESS_VERIFY_PATH} {{\n\
 \t\trespond \"{local}\" 200\n\
 \t}}\n\
 \trespond \"Not Found\" 404\n\
@@ -173,7 +173,7 @@ fn shared_renderer_projection_drives_caddy() {
     );
     assert!(
         caddyfile.contains(
-            "tls /config/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.crt /config/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.key"
+            "tls /config/caddy/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.crt /config/caddy/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.key"
         ),
         "{caddyfile}"
     );
@@ -377,7 +377,7 @@ fn https_site_with_material_pins_tls_paths() {
 
     let pin = pinned_tls_line(&caddyfile, "secure.example.com").expect("https pin");
     assert!(
-        pin.contains("tls /config/certs/secure.example.com-")
+        pin.contains("tls /config/caddy/certs/secure.example.com-")
             && pin.contains(".crt")
             && pin.contains(".key"),
         "{pin}"
@@ -399,7 +399,7 @@ fn https_site_with_material_pins_tls_paths() {
 \tlog\n\
 }\n"
     ));
-    assert!(!caddyfile.contains("tls /config/certs/example.com"));
+    assert!(!caddyfile.contains("tls /config/caddy/certs/example.com"));
 }
 
 #[test]
@@ -675,7 +675,7 @@ fn automatic_sites_keep_unreachable_hosts_and_omit_unassigned_ports() {
         None,
         &BTreeMap::new(),
     );
-    assert!(caddyfile.contains(CADDY_VERIFY_PATH));
+    assert!(caddyfile.contains(INGRESS_VERIFY_PATH));
     assert!(caddyfile.contains(
         "http://missing.example {\n\
 \trespond \"Bad Gateway\" 502\n\
@@ -810,7 +810,7 @@ async fn user_project_caddy_does_not_supply_global_config() {
         reserved(observation(
             1,
             &local,
-            "caddy",
+            "ingress",
             Some([10, 210, 1, 1]),
             Vec::new(),
         )),
@@ -848,7 +848,7 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
             1,
             1,
             &local,
-            "caddy",
+            "ingress",
             "{\n\tadmin unix/{{upstreams \"app/api\"}}\n}",
             [10, 210, 1, 1],
         )),
@@ -911,7 +911,7 @@ async fn custom_configs_use_latest_specs_render_upstreams_and_isolate_failures()
 # Automatically updated on Service or health status changes.\n\
 # Docs: https://github.com/getployz/ployz2\n\
 \n\
-# User-defined global config from Service 'ployz-system/caddy'.\n\
+# User-defined global config from Service 'ployz-system/ingress'.\n\
 {\n\tauto_https off\n\tadmin unix/10.210.1.2 10.210.2.2\n}\n\n"
     ));
     assert!(caddyfile.contains(
@@ -979,7 +979,7 @@ async fn custom_upstream_short_names_do_not_cross_projects() {
             1,
             1,
             &local,
-            "caddy",
+            "ingress",
             "{\n\tadmin unix/{{upstreams \"api\"}}\n}",
             [10, 210, 1, 1],
         )),
@@ -1000,7 +1000,7 @@ async fn custom_upstream_short_names_do_not_cross_projects() {
     )
     .await;
 
-    assert!(caddyfile.contains("Service 'ployz-system/caddy': rendering failed:"));
+    assert!(caddyfile.contains("Service 'ployz-system/ingress': rendering failed:"));
     assert!(caddyfile.contains("Service 'shop-staging/web': rendering failed:"));
     assert!(caddyfile.contains(
         "# User-defined config for Service 'shop-prod/web'.\n\
@@ -1046,7 +1046,7 @@ async fn broken_global_template_does_not_hide_valid_service_configs() {
             1,
             1,
             &local,
-            "caddy",
+            "ingress",
             "{{unknown\ninjected.example { respond owned }\n}}",
             [10, 210, 1, 1],
         )),
@@ -1069,7 +1069,7 @@ async fn broken_global_template_does_not_hide_valid_service_configs() {
         Some(&FakeAdmin::default()),
     )
     .await;
-    assert!(caddyfile.contains("Service 'ployz-system/caddy': rendering failed"));
+    assert!(caddyfile.contains("Service 'ployz-system/ingress': rendering failed"));
     assert!(caddyfile.contains("#   injected.example { respond owned }"));
     assert!(
         !caddyfile
@@ -1166,13 +1166,13 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
     assert!(
         adapted
             .last()
-            .is_some_and(|config| config.contains(&format!("tls /config/certs/{cert_name}")))
+            .is_some_and(|config| config.contains(&format!("tls /config/caddy/certs/{cert_name}")))
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 fn pinned_tls_line<'a>(caddyfile: &'a str, hostname: &str) -> Option<&'a str> {
-    let needle = format!("tls /config/certs/{hostname}-");
+    let needle = format!("tls /config/caddy/certs/{hostname}-");
     caddyfile.lines().find(|line| line.contains(&needle))
 }
 

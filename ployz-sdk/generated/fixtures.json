@@ -1,6 +1,5 @@
 {
   "capabilities": [
-    "ployz.caddy.config.v1",
     "ployz.certificates.policy.v1",
     "ployz.container.create.v1",
     "ployz.container.ensure-global-slot.v1",
@@ -18,6 +17,7 @@
     "ployz.image.ingest.ensure.v1",
     "ployz.image.list.v1",
     "ployz.image.pull-from-machine.v1",
+    "ployz.ingress.config.v1",
     "ployz.machine.initialize.v1",
     "ployz.machine.inspect.v1",
     "ployz.machine.join.v1",
@@ -1157,7 +1157,7 @@
           {
             "last_error": "image pull failed",
             "observed_at": "2024-01-01T00:00:00Z",
-            "service": "ployz-system/caddy"
+            "service": "ployz-system/ingress"
           }
         ],
         "machine": {
@@ -1375,7 +1375,7 @@
           {
             "last_error": "image pull failed",
             "observed_at": "2024-01-01T00:00:00Z",
-            "service": "ployz-system/caddy"
+            "service": "ployz-system/ingress"
           }
         ],
         "machine": {

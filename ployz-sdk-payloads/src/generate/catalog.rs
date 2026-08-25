@@ -101,6 +101,17 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "IngressProxyConfig",
+        Shape::InternallyTagged {
+            tag: "backend",
+            params: "",
+            variants: &[
+                ("caddy", &[("config", "string")]),
+                ("zentinel", &[("config", "string")]),
+            ],
+        },
+    ),
+    (
         "IngressHostname",
         Shape::InternallyTagged {
             tag: "kind",

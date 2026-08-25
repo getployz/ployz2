@@ -11,13 +11,13 @@ use clap_complete::{Shell, generate};
 use crate::failure::Failure;
 
 mod build;
-mod caddy;
 mod cloud;
 mod context;
 mod data_loss;
 mod deploy;
 mod dns;
 mod image;
+mod ingress;
 mod machine;
 mod operator;
 mod project;
@@ -200,9 +200,9 @@ macro_rules! stub_handlers {
 
 stub_handlers! {
     build(root) { build::run(root) } => "build";
-    caddy_config(root) { caddy::config(root) } => "caddy config";
-    caddy_deploy(root) { caddy::deploy(root) } => "caddy deploy";
-    caddy_logs(root) { operator::caddy_logs(root) } => "caddy logs";
+    ingress_config(root) { ingress::config(root) } => "ingress config";
+    ingress_deploy(root) { ingress::deploy(root) } => "ingress deploy";
+    ingress_logs(root) { operator::ingress_logs(root) } => "ingress logs";
     context(root) { context::select(root, None) } => "ctx";
     context_connection(root) {
         context::connection(
@@ -464,7 +464,7 @@ mod tests {
                 "10.220.0.0/16",
                 "--storage",
                 "zfs",
-                "--no-caddy",
+                "--no-ingress",
                 "--no-dns",
                 "--reset",
                 "--yes",
@@ -488,7 +488,7 @@ mod tests {
             enroll.get_one::<ployz_core::StorageChoice>("storage"),
             Some(&ployz_core::StorageChoice::Zfs)
         );
-        assert!(enroll.get_flag("no-caddy"));
+        assert!(enroll.get_flag("no-ingress"));
         assert!(enroll.get_flag("reset"));
         assert!(enroll.get_flag("no-dns"));
         assert!(enroll.get_flag("yes"));

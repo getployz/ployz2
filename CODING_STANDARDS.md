@@ -8,7 +8,7 @@ Issue #607 is a narrow daemon-policy exception: ployzd owns periodic, Machine-lo
 
 ## Names
 
-Accessors omit `get_`: `name()`, `as_str()`. Wire RPC method names that already exist on the contract (`get_caddy_config`) stay as they are.
+Accessors omit `get_`: `name()`, `as_str()`. Wire RPC method names that already exist on the contract (`get_ingress_proxy_config`) stay as they are.
 
 Conversion prefixes:
 

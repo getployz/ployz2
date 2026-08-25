@@ -1,7 +1,9 @@
+//! CLI handlers for neutral Ingress Proxy operations.
+
 use std::{fs, path::Path};
 
 use clap::ArgMatches;
-use ployz_core::{GetCaddyConfigRequest, MachineTarget, op};
+use ployz_core::{GetIngressProxyConfigRequest, MachineTarget, op};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
 use crate::connect::TARGET_RPC_TIMEOUT;
@@ -12,23 +14,23 @@ pub(super) fn config(root: &ArgMatches) -> Result<(), Error> {
     runtime()?.block_on(async {
         let mut client = connect_client(root, None).await?;
         let target = selector.map(MachineTarget::parse).transpose()?;
-        let caddyfile = match target.as_ref() {
+        let config = match target.as_ref() {
             None => {
                 client
-                    .call::<op::GetCaddyConfig>(GetCaddyConfigRequest {}, None)
+                    .call::<op::GetIngressProxyConfig>(GetIngressProxyConfigRequest {}, None)
                     .await?
             }
             Some(target) => {
                 client
-                    .invoke::<op::GetCaddyConfig>(
-                        GetCaddyConfigRequest {},
+                    .invoke::<op::GetIngressProxyConfig>(
+                        GetIngressProxyConfigRequest {},
                         target,
                         Some(TARGET_RPC_TIMEOUT),
                     )
                     .await?
             }
         };
-        print!("{}", caddyfile.caddyfile);
+        print!("{}", config.config());
         Ok(())
     })
 }
@@ -50,9 +52,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     runtime()?.block_on(async {
         let image = match image {
             Some(image) => image,
-            None => crate::caddy::latest_image().await?,
+            None => crate::ingress::latest_image().await?,
         };
-        let requested = crate::caddy::service_spec(image, machines, caddy_config);
+        let requested = crate::ingress::service_spec(image, machines, caddy_config);
         let context = root
             .get_one::<String>("context")
             .map(String::as_str)

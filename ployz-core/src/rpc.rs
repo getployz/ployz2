@@ -31,7 +31,7 @@ pub const UNREGISTRY_PORT: u16 = 51500;
 pub enum CapabilityAdvertisement {
     Always,
     Container,
-    Caddy,
+    Ingress,
     Cluster,
 }
 
@@ -407,7 +407,8 @@ pub struct PullImageFromMachineRequest {
 pub struct ImagePulled {}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct GetCaddyConfigRequest {}
+/// Request the selected Ingress Proxy backend's exact generated configuration.
+pub struct GetIngressProxyConfigRequest {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReserveDomainRequest {
@@ -672,8 +673,35 @@ pub struct MachineImages {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CaddyConfig {
-    pub caddyfile: String,
+#[serde(tag = "backend", content = "config", rename_all = "snake_case")]
+/// Exact generated configuration, tagged by the backend that consumes it.
+///
+/// The enum prevents a backend tag from disagreeing with the configuration
+/// variant carried by the response.
+pub enum IngressProxyConfig {
+    /// Exact Caddyfile consumed by Caddy.
+    Caddy(String),
+    /// Exact KDL configuration consumed by Zentinel.
+    Zentinel(String),
+}
+
+impl IngressProxyConfig {
+    /// Tag an exact generated configuration with its selected backend.
+    #[must_use]
+    pub fn for_backend(backend: IngressProxyBackend, config: String) -> Self {
+        match backend {
+            IngressProxyBackend::Caddy => Self::Caddy(config),
+            IngressProxyBackend::Zentinel => Self::Zentinel(config),
+        }
+    }
+
+    /// Borrow the backend's exact generated configuration.
+    #[must_use]
+    pub fn config(&self) -> &str {
+        match self {
+            Self::Caddy(config) | Self::Zentinel(config) => config,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -794,7 +822,7 @@ define_responses! {
     MachineImages(MachineImages) => "machine_images";
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
     ImagePulled(ImagePulled) => "image_pulled";
-    CaddyConfig(CaddyConfig) => "caddy_config";
+    IngressProxyConfig(IngressProxyConfig) => "ingress_proxy_config";
     Domain(Domain) => "domain";
     DomainRecords(DomainRecords) => "domain_records";
     MachineUpdated(MachineUpdated) => "machine_updated";

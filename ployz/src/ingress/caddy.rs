@@ -1,30 +1,39 @@
+//! Concrete Caddy deployment wiring for the Ingress Proxy.
+
 use std::{collections::BTreeMap, num::NonZeroU16};
 
 use oci_client::{
     Client, ParseError, Reference, errors::OciDistributionError, secrets::RegistryAuth,
 };
 use ployz_core::{
-    ContainerObservation, ContainerPath, ContainerResources, HostBind, IngressProxyFragment,
-    MachinePath, MachineTarget, Placement, PortPublication, PullPolicy, QualifiedService,
-    RequestedServiceSpec, RestartPolicy, ServiceContainer, ServiceContainerSpec, ServiceMode,
-    ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol,
-    UpdateConfig, VolumeSource,
+    ContainerPath, ContainerResources, HostBind, IngressProxyFragment, MachinePath, MachineTarget,
+    Placement, PortPublication, PullPolicy, QualifiedService, RequestedServiceSpec, RestartPolicy,
+    ServiceContainer, ServiceContainerSpec, ServiceMode, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig, VolumeSource,
 };
 use semver::Version;
 use thiserror::Error;
 
-pub const DATA_PATH: &str = "/var/lib/ployz/caddy";
-pub const RUNTIME_PATH: &str = "/run/ployz/caddy";
+use super::{DATA_PATH, RUNTIME_PATH, is_system_ingress};
 
+/// Failure while discovering the current Caddy image for ingress deployment.
 #[derive(Debug, Error)]
-pub enum CaddyImageError {
+pub enum IngressImageError {
+    /// The configured image reference could not be parsed.
     #[error("parse Caddy image reference: {0}")]
     Reference(#[from] ParseError),
+    /// Docker Hub tags could not be listed.
     #[error("list Docker Hub Caddy tags: {0}")]
     ListTags(#[from] OciDistributionError),
 }
 
-pub async fn latest_image() -> Result<String, CaddyImageError> {
+/// Discover the latest stable Caddy 2 image used by the current ingress backend.
+///
+/// # Errors
+///
+/// Returns [`IngressImageError`] when the image reference is invalid or Docker
+/// Hub cannot list its tags.
+pub async fn latest_image() -> Result<String, IngressImageError> {
     let reference = "docker.io/library/caddy:latest".parse::<Reference>()?;
     let response = Client::default()
         .list_tags(&reference, &RegistryAuth::Anonymous, None, None)
@@ -33,7 +42,7 @@ pub async fn latest_image() -> Result<String, CaddyImageError> {
 }
 
 #[must_use]
-pub fn select_image(tags: &[String]) -> String {
+fn select_image(tags: &[String]) -> String {
     tags.iter()
         .filter_map(|tag| {
             Version::parse(tag).ok().filter(|version| {
@@ -50,19 +59,14 @@ pub fn select_image(tags: &[String]) -> String {
         )
 }
 
-/// True when this observation is the reserved Caddy Service.
-#[must_use]
-pub fn is_system_caddy(observation: &ContainerObservation) -> bool {
-    observation.identity() == QualifiedService::system_caddy()
-}
-
+/// Recover the newest observed settings for the reserved Ingress Proxy Service.
 #[must_use]
 pub fn newest_existing_settings<'a>(
     containers: impl IntoIterator<Item = &'a ServiceContainer>,
 ) -> Option<(String, Vec<MachineTarget>, Option<String>)> {
     containers
         .into_iter()
-        .filter(|container| is_system_caddy(container.as_observation()))
+        .filter(|container| is_system_ingress(container.as_observation()))
         .max_by_key(|container| {
             let observation = container.as_observation();
             (
@@ -84,13 +88,14 @@ pub fn newest_existing_settings<'a>(
 }
 
 #[must_use]
+/// Build the concrete Caddy Service Spec behind the neutral ingress identity.
 pub fn service_spec(
     image: String,
     machines: Vec<MachineTarget>,
     caddy_config: Option<String>,
 ) -> RequestedServiceSpec {
-    let volume = ServiceVolumeReference::parse("caddy-data").expect("static volume is valid");
-    let runtime = ServiceVolumeReference::parse("caddy-runtime").expect("static volume is valid");
+    let volume = ServiceVolumeReference::parse("ingress-data").expect("static volume is valid");
+    let runtime = ServiceVolumeReference::parse("ingress-runtime").expect("static volume is valid");
     let mount = |volume: &ServiceVolumeReference, target: &str| ServiceMount {
         volume: volume.clone(),
         target: ContainerPath::parse(target).expect("static mount path is valid"),
@@ -127,12 +132,12 @@ pub fn service_spec(
         vec![
             mount(&volume, "/config"),
             mount(&volume, "/data"),
-            mount(&runtime, "/run/caddy"),
+            mount(&runtime, "/run/ingress"),
         ],
     )
     .expect("static Caddy Volume graph is valid");
     RequestedServiceSpec {
-        name: QualifiedService::system_caddy().name,
+        name: QualifiedService::system_ingress().name,
         mode: ServiceMode::Global,
         container: ServiceContainerSpec {
             image,
@@ -140,12 +145,12 @@ pub fn service_spec(
                 "caddy".into(),
                 "run".into(),
                 "-c".into(),
-                "/config/Caddyfile".into(),
+                "/config/caddy/Caddyfile".into(),
             ],
             entrypoint: Vec::new(),
             environment: BTreeMap::from([(
                 "CADDY_ADMIN".into(),
-                "unix//run/caddy/admin.sock".into(),
+                "unix//run/ingress/caddy/admin.sock".into(),
             )]),
             labels: Default::default(),
             hostname: None,
@@ -189,7 +194,7 @@ pub fn service_spec(
 mod tests {
     use ployz_core::{
         ContainerId, ContainerKind, ContainerObservation, MachineTarget, PortPublication,
-        ServiceContainer, TransportProtocol, service_containers,
+        ServiceContainer, ServiceName, TransportProtocol, service_containers,
     };
 
     use super::*;
@@ -211,19 +216,19 @@ mod tests {
     }
 
     #[test]
-    fn machine_add_reuses_the_newest_observed_caddy_settings() {
+    fn machine_add_reuses_the_newest_observed_ingress_settings() {
         let mut older: ContainerObservation = serde_json::from_value(serde_json::json!({
             "container_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "display_name": "caddy-old",
+            "display_name": "ingress-old",
             "machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "project_name": "ployz-system",
             "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "service_name": "caddy",
+            "service_name": "ingress",
             "kind": "service_container",
             "runtime": { "state": "created" },
             "resolved_spec": {
                 "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "name": "caddy",
+                "name": "ingress",
                 "mode": { "mode": "global" },
                 "container": { "image": "caddy:2.9.1", "pull_policy": "missing" }
             }
@@ -260,20 +265,21 @@ mod tests {
     }
 
     #[test]
-    fn service_spec_owns_caddy_ports_paths_and_admin_socket() {
+    fn service_spec_uses_neutral_identity_roots_and_concrete_caddy_wiring() {
         let spec = service_spec("caddy:2.10.0".into(), Vec::new(), None);
 
+        assert_eq!(spec.name, ServiceName::parse("ingress").unwrap());
         assert_eq!(spec.mode, ServiceMode::Global);
         assert_eq!(
             spec.container.command,
-            ["caddy", "run", "-c", "/config/Caddyfile"]
+            ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
         );
         assert_eq!(
             spec.container
                 .environment
                 .get("CADDY_ADMIN")
                 .map(String::as_str),
-            Some("unix//run/caddy/admin.sock")
+            Some("unix//run/ingress/caddy/admin.sock")
         );
         assert_eq!(spec.ports.len(), 3);
         assert!(matches!(
@@ -284,6 +290,17 @@ mod tests {
             })
         ));
         assert_eq!(spec.mounts().len(), 3);
+        assert_eq!(
+            spec.volume_graph
+                .volumes()
+                .iter()
+                .filter_map(|volume| match &volume.source {
+                    VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
+                    VolumeSource::Named { .. } | VolumeSource::Tmpfs { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            [DATA_PATH, RUNTIME_PATH]
+        );
         assert!(spec.config_graph.mounts().is_empty());
     }
 }

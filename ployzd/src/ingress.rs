@@ -31,6 +31,12 @@ const CERTS_DIR: &str = "certs";
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const WATCH_RETRY: Duration = Duration::from_secs(1);
 
+/// True when this observation is the reserved Ingress Proxy Service.
+#[must_use]
+pub(crate) fn is_system_ingress(observation: &ContainerObservation) -> bool {
+    observation.identity() == QualifiedService::system_ingress()
+}
+
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "ticket #623 wires the selected backend watcher")
@@ -211,7 +217,7 @@ impl IngressProjection {
             .filter(|container| {
                 let observation = container.as_observation();
                 observation.runtime.is_healthy()
-                    && caddy::is_system_caddy(observation)
+                    && is_system_ingress(observation)
                     && observation.machine_id == machine.id
             })
             .max_by_key(|container| creation_key(container))
@@ -228,7 +234,7 @@ impl IngressProjection {
             .filter(|container| container.as_observation().runtime.is_healthy())
         {
             let identity = container.as_observation().identity();
-            if caddy::is_system_caddy(container.as_observation()) {
+            if is_system_ingress(container.as_observation()) {
                 continue;
             }
             newest
