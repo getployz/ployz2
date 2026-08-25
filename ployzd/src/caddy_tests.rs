@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow},
-    ingress::{IngressProjection, apply_caddy},
+    ingress::{IngressProjection, apply_caddy, tests::renderer_projection},
 };
 use ployz_core::{
     AdvertisedEndpoint, CADDY_VERIFY_PATH, ContainerAddress, ContainerId, ContainerKind,
@@ -159,6 +159,23 @@ http://example.com {{\n\
 \tlog\n\
 }}\n"
         )
+    );
+}
+
+#[test]
+fn shared_renderer_projection_drives_caddy() {
+    let caddyfile = render_automatic_caddyfile(&renderer_projection(), "TIMESTAMP", None);
+
+    assert!(caddyfile.contains("http://empty.example.com {\n\trespond \"Bad Gateway\" 502"));
+    assert!(
+        caddyfile.contains("reverse_proxy 10.210.1.2:8080 10.210.2.2:8080"),
+        "{caddyfile}"
+    );
+    assert!(
+        caddyfile.contains(
+            "tls /config/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.crt /config/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.key"
+        ),
+        "{caddyfile}"
     );
 }
 

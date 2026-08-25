@@ -5,6 +5,7 @@ use ployz_core::{
     Machine, MachineId, PortPublication, QualifiedService, ServiceContainer, hostname_owners,
     service_containers, serving_replicas,
 };
+use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -30,8 +31,10 @@ const CERTS_DIR: &str = "certs";
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const WATCH_RETRY: Duration = Duration::from_secs(1);
 
+pub(crate) mod zentinel;
+
 /// Fully derived observer-local input to ingress rendering and application.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct IngressProjection {
     /// Local Machine whose ingress process consumes this projection.
     pub(super) machine: Machine,
@@ -46,7 +49,7 @@ pub(crate) struct IngressProjection {
 }
 
 /// All projected ingress state for one hostname.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct IngressSite {
     /// Published hostname or certificate hostname.
     pub(super) hostname: IngressHost,
@@ -57,7 +60,7 @@ pub(crate) struct IngressSite {
 }
 
 /// A hostname's singular owner and at-most-one publication per protocol.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct IngressPublication {
     /// Qualified Service that owns the hostname.
     pub(super) owner: QualifiedService,
@@ -68,7 +71,7 @@ pub(crate) struct IngressPublication {
 }
 
 /// One Serving Container address and container port.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct IngressEndpoint {
     /// Serving Container address.
     pub(super) address: ContainerAddress,
@@ -77,7 +80,7 @@ pub(crate) struct IngressEndpoint {
 }
 
 /// Certificate state that can affect ingress behavior or generated output.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct ProjectedCertificate {
     /// Pending HTTP-01 challenge.
     pub(super) challenge: Option<CertificateChallenge>,
@@ -85,6 +88,34 @@ pub(crate) struct ProjectedCertificate {
     pub(super) material: Option<CertificateMaterial>,
     /// Operator-visible issuance refusal included in generated output.
     pub(super) last_error: Option<String>,
+}
+
+impl IngressSite {
+    /// Ordered endpoints published for one HTTP protocol, when published.
+    #[must_use]
+    pub(super) fn route(&self, protocol: HttpProtocol) -> Option<&[IngressEndpoint]> {
+        let publication = self.publication.as_ref()?;
+        match protocol {
+            HttpProtocol::Http => publication.http.as_deref(),
+            HttpProtocol::Https => publication.https.as_deref(),
+        }
+    }
+
+    /// Pending HTTP-01 challenge, when present.
+    #[must_use]
+    pub(super) fn challenge(&self) -> Option<&CertificateChallenge> {
+        self.certificate
+            .as_ref()
+            .and_then(|certificate| certificate.challenge.as_ref())
+    }
+
+    /// Ployz-owned certificate material, when present.
+    #[must_use]
+    pub(super) fn material(&self) -> Option<&CertificateMaterial> {
+        self.certificate
+            .as_ref()
+            .and_then(|certificate| certificate.material.as_ref())
+    }
 }
 
 impl IngressProjection {
@@ -374,7 +405,13 @@ pub(crate) async fn apply_caddy<A: CaddyAdmin>(
     config_file: &Path,
     admin: Option<&A>,
 ) -> Result<(), caddy::Error> {
-    write_certificate_files(config_file, &projection.sites)?;
+    write_certificate_files(
+        config_file,
+        &projection.sites,
+        0o600,
+        prepare_directory,
+        set_ployz_group,
+    )?;
     caddy::reconcile(projection, config_file, admin).await?;
     remove_stale_certificate_files(config_file, &projection.sites)?;
     Ok(())
@@ -430,9 +467,15 @@ async fn wait_to_retry(error: &CorrosionError, shutdown: &CancellationToken) -> 
     }
 }
 
-fn write_certificate_files(config_file: &Path, sites: &[IngressSite]) -> io::Result<()> {
+fn write_certificate_files(
+    config_file: &Path,
+    sites: &[IngressSite],
+    key_mode: u32,
+    prepare: fn(&Path) -> io::Result<()>,
+    set_group: fn(&Path) -> io::Result<()>,
+) -> io::Result<()> {
     let directory = certificate_directory(config_file)?;
-    prepare_directory(&directory)?;
+    prepare(&directory)?;
     for site in sites {
         let Some(certificate) = &site.certificate else {
             continue;
@@ -444,9 +487,9 @@ fn write_certificate_files(config_file: &Path, sites: &[IngressSite]) -> io::Res
         let cert_path = directory.join(format!("{stem}.crt"));
         let key_path = directory.join(format!("{stem}.key"));
         atomic_write(&cert_path, material.certificate().as_bytes(), 0o644)?;
-        set_ployz_group(&cert_path)?;
-        atomic_write(&key_path, material.private_key().as_bytes(), 0o600)?;
-        set_ployz_group(&key_path)?;
+        set_group(&cert_path)?;
+        atomic_write(&key_path, material.private_key().as_bytes(), key_mode)?;
+        set_group(&key_path)?;
     }
     Ok(())
 }
@@ -511,3 +554,7 @@ fn prepare_directory(path: &Path) -> io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o750))?;
     set_ployz_group(path)
 }
+
+#[cfg(test)]
+#[path = "ingress_tests.rs"]
+pub(crate) mod tests;
