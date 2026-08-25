@@ -52,12 +52,26 @@ fn not_allocator_does_not_allocate() {
 }
 
 #[tokio::test]
-async fn zentinel_hooks_use_bridge_while_the_service_uses_host_network() {
+async fn zentinel_service_is_bootstrapped_before_host_network_is_returned() {
     let data_dir = std::env::temp_dir().join(format!(
         "ployzd-zentinel-network-{}",
         ployz_core::MachineId::random()
     ));
-    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    store
+        .initialize(
+            MachineName::parse("edge").unwrap(),
+            crate::machine::FoundingCluster {
+                network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Zentinel,
+            },
+            None,
+            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            None,
+            None,
+        )
+        .unwrap();
+    let store = Arc::new(Mutex::new(store));
     let (replicated, server) =
         fake_cluster::store_with_ingress_proxy_backend_value("zentinel").await;
     let service = MachineService::with_cluster(
@@ -82,7 +96,18 @@ async fn zentinel_hooks_use_bridge_while_the_service_uses_host_network() {
     assert!(matches!(
         service
             .local
-            .service_network(
+            .prepare_service_runtime(ContainerKind::PreDeployHook, &ProjectName::system(), &spec,)
+            .await
+            .unwrap(),
+        crate::docker::NetworkAttachment::Bridge
+    ));
+    let config_file = crate::ingress::zentinel::config_path(&data_dir);
+    assert!(!config_file.exists());
+
+    assert!(matches!(
+        service
+            .local
+            .prepare_service_runtime(
                 ContainerKind::ServiceContainer,
                 &ProjectName::system(),
                 &spec
@@ -91,13 +116,35 @@ async fn zentinel_hooks_use_bridge_while_the_service_uses_host_network() {
             .unwrap(),
         crate::docker::NetworkAttachment::Host
     ));
+    let config = std::fs::read_to_string(&config_file).unwrap();
+    assert!(config.contains("schema-version \"1.0\""));
+    assert!(config.contains(crate::ingress::zentinel::ADMIN_ADDRESS));
+    std::fs::write(&config_file, "authoritative\n").unwrap();
+    service
+        .local
+        .prepare_service_runtime(
+            ContainerKind::ServiceContainer,
+            &ProjectName::system(),
+            &spec,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&config_file).unwrap(),
+        "authoritative\n"
+    );
+    std::fs::remove_dir_all(data_dir.join("ingress")).unwrap();
+    std::fs::write(data_dir.join("ingress"), "not a directory").unwrap();
     assert!(matches!(
         service
             .local
-            .service_network(ContainerKind::PreDeployHook, &ProjectName::system(), &spec)
-            .await
-            .unwrap(),
-        crate::docker::NetworkAttachment::Bridge
+            .prepare_service_runtime(
+                ContainerKind::ServiceContainer,
+                &ProjectName::system(),
+                &spec,
+            )
+            .await,
+        Err(crate::machine::LocalMachineError::IngressRuntime(_))
     ));
     server.abort();
     let _ = std::fs::remove_dir_all(data_dir);

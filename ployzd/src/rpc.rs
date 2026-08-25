@@ -383,7 +383,7 @@ impl MachineRpc for MachineService {
         let request = expect::<op::CreateContainer>(request)?;
         let network = match self
             .local
-            .service_network(request.kind, &request.project_name, &request.resolved_spec)
+            .prepare_service_runtime(request.kind, &request.project_name, &request.resolved_spec)
             .await
         {
             Ok(backend) => backend,
@@ -898,6 +898,7 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             message: error.to_string(),
             details: Value::Null,
         }),
+        LocalMachineError::IngressRuntime(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Network(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Docker(error) => respond(RpcError::from(&error)),
         LocalMachineError::Cleanup(message) => respond(RpcError {

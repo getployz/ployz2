@@ -1,9 +1,9 @@
 //! Observer-local ingress derivation, watching, and shared filesystem state.
 
 use ployz_core::{
-    ContainerAddress, ContainerObservation, HttpProtocol, IngressHost, IngressProxyBackend,
-    IngressProxyFragment, Machine, MachineId, PortPublication, QualifiedService, ServiceContainer,
-    hostname_owners, service_containers, serving_replicas,
+    ContainerAddress, ContainerId, ContainerObservation, HttpProtocol, IngressHost,
+    IngressProxyBackend, IngressProxyFragment, Machine, MachineId, PortPublication,
+    QualifiedService, ServiceContainer, hostname_owners, service_containers, serving_replicas,
 };
 use serde::Serialize;
 use std::{
@@ -359,6 +359,19 @@ fn creation_key(container: &ServiceContainer) -> (i64, &str) {
     )
 }
 
+fn newest_local_ingress(
+    machine: &Machine,
+    observations: &[ContainerObservation],
+) -> Option<ServiceContainer> {
+    service_containers(observations.iter().cloned())
+        .into_iter()
+        .filter(|container| {
+            let observation = container.as_observation();
+            observation.machine_id == machine.id && is_system_ingress(observation)
+        })
+        .max_by(|left, right| creation_key(left).cmp(&creation_key(right)))
+}
+
 /// Watch replicated ingress inputs and concretely apply changed projections to Caddy.
 ///
 /// # Errors
@@ -381,13 +394,14 @@ where
         replicated,
         shutdown,
         |machine, observations, certificates| {
-            Ok(IngressProjection::derive(
-                machine,
-                observations,
-                certificates,
+            let process = newest_local_ingress(machine, observations)
+                .map(|container| container.as_observation().container_id);
+            Ok((
+                IngressProjection::derive(machine, observations, certificates),
+                process,
             ))
         },
-        async move |projection| {
+        async move |(projection, _process): &(IngressProjection, Option<ContainerId>)| {
             let admin = connect().await.map_err(io::Error::other)?;
             apply_caddy(projection, &config_file, admin.as_ref())
                 .await

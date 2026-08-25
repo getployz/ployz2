@@ -3,7 +3,7 @@
 use super::{
     Error as RendererError, ZENTINEL_BOOTSTRAP_CERT_FILE, ZENTINEL_BOOTSTRAP_KEY_FILE,
     ZENTINEL_CHALLENGES_DIR, ZENTINEL_GID, certificate_key_pair_matches, render, set_group,
-    write_support_files,
+    write_initial_config, write_support_files,
 };
 use crate::{
     corrosion::CertificateChallenge,
@@ -143,6 +143,21 @@ fn support_files_are_stable_valid_and_readable_by_the_container() {
     assert!(matches!(error, RendererError::InvalidBootstrapPair));
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn initial_config_reports_an_unwritable_parent() {
+    let root = std::env::temp_dir().join(format!(
+        "ployz-zentinel-initial-config-test-{}",
+        MachineId::random()
+    ));
+    fs::write(&root, "not a directory").unwrap();
+    let projection = renderer_projection();
+
+    let error = write_initial_config(&projection.machine, &root.join("zentinel.kdl")).unwrap_err();
+
+    assert!(matches!(error, RendererError::Filesystem(_)));
+    fs::remove_file(root).unwrap();
 }
 
 #[test]

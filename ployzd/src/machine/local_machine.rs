@@ -42,6 +42,8 @@ pub struct LocalMachine {
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
     global_slot_lock: Arc<AsyncMutex<()>>,
+    /// Serializes first-process Ingress Proxy filesystem preparation.
+    pub(super) ingress_runtime_lock: Arc<AsyncMutex<()>>,
 }
 
 #[derive(Clone)]
@@ -106,6 +108,9 @@ pub enum Error {
     IngressProxyBackend(#[source] crate::corrosion::Error),
     #[error(transparent)]
     IngressProxyServiceSpec(#[from] ployz_core::IngressProxyServiceSpecError),
+    /// Backend runtime preparation failed before container creation.
+    #[error(transparent)]
+    IngressRuntime(#[from] super::ingress::IngressRuntimeError),
     #[error(transparent)]
     Network(#[from] NetworkError),
     #[error(transparent)]
@@ -130,6 +135,7 @@ impl LocalMachine {
             cluster: None,
             containers: None,
             global_slot_lock: Arc::new(AsyncMutex::new(())),
+            ingress_runtime_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -166,7 +172,7 @@ impl LocalMachine {
     ) -> Result<ContainerCreated, Error> {
         let _guard = self.global_slot_lock.lock().await;
         let network = self
-            .service_network(ContainerKind::ServiceContainer, project, spec)
+            .prepare_service_runtime(ContainerKind::ServiceContainer, project, spec)
             .await?;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let record = self.record()?;
@@ -191,7 +197,7 @@ impl LocalMachine {
         Ok(self.lock_store()?.record().clone())
     }
 
-    fn lock_store(&self) -> Result<MutexGuard<'_, LocalMachineStore>, Error> {
+    pub(super) fn lock_store(&self) -> Result<MutexGuard<'_, LocalMachineStore>, Error> {
         self.store.lock().map_err(|_| Error::LockPoisoned)
     }
 
