@@ -2,7 +2,8 @@
 - `daemon-version-matches-cli` — Default `ployz machine init` and `ployz machine add` daemon provisioning to this CLI's version instead of Uncloud's `latest`; an explicit `--version` still wins.
 - `product-identity` — Rename `uc`, `--uncloud-config`, `UNCLOUD_*`, and the config path to Ployz-owned names; product identity must not expose compatibility aliases.
 - `root-version-flag` — Accept `ployz --version` and `ployz -V` on the root command so the CLI version is available without a subcommand. The frozen `uc` page dropped this flag when Uncloud replaced it with `uc version`.
-- `plain-caddy-config` — Drop `ployz caddy config --no-color`; the Machine RPC returns the owned Caddyfile as plain text and Ployz has no coloured mode to disable.
+- `plain-ingress-config` — Drop `ployz ingress config --no-color`; the Machine RPC returns the selected backend's exact configuration as plain text and Ployz has no coloured mode to disable.
+- `ingress-proxy-vocabulary` — Replace the vendor-named `caddy` command group and `--no-caddy` provisioning flag with `ingress` and `--no-ingress`; founding also accepts `--ingress-backend caddy|zentinel`, defaulting to Zentinel.
 - `native-completion` — Add `ployz completion <SHELL>`; completion is preserved through Clap's native shell generators rather than Cobra's hidden protocol.
 - `local-machine-init-stub` — Make `ployz machine init [DESTINATION]` syntactically optional so the preserved local-initialisation path reaches its explicit not-implemented handler.
 - `no-nightly-daemon-channel` — Reject `--version nightly`; Ployz has `stable`, `beta`, and explicit-version installs only.
@@ -15,7 +16,7 @@
 - `fixed-wireguard-port` — Keep `ployz machine add --wg-port` at the daemon-supported port 51820; reject other values instead of advertising a port the WireGuard interface and firewall do not apply.
 - `machine-enrollment-storage` — Add `--storage none|zfs` to `ployz machine init` and `ployz machine add` so enrollment can prepare the current Machine for Provisioned Volumes.
 - `provisioned-volume-size` — Add `ployz volume create --size` as the strict operator surface for creating a bounded Volume through Docker's Ployz driver.
-- `deploy-intent-flags` — Add `--skip-health` to `run`, `service run`, `scale`, `service scale`, and `caddy deploy`, and `--recreate` to `run`, `service run`, and `caddy deploy`, so every Deploy command can set the shared planning options bag. Uncloud exposes these only on `uc deploy`. Scale has no `--recreate`.
+- `deploy-intent-flags` — Add `--skip-health` to `run`, `service run`, `scale`, `service scale`, and `ingress deploy`, and `--recreate` to `run`, `service run`, and `ingress deploy`, so every Deploy command can set the shared planning options bag. Uncloud exposes these only on `uc deploy`. Scale has no `--recreate`.
 - `direct-push-reference-boundary` — Reject digest and port-qualified-registry references for direct image push: Docker cannot push a digest or nest a registry-port colon below the temporary loopback registry without changing the reference. Build resolution remains exact, and external `--push-registry` delivery remains supported.
 - `images-json-output` — Add `-o, --output json` to `ployz images` and `ployz image ls` so consumers can still read raw `CREATED` and `SIZE` after the table becomes human-formatted.
 - `listing-json-output` — Add `-o, --output json` to `ployz ls`, `ployz ps`, `ployz service ls`, `ployz volume ls`, and `ployz project ls` so automation can consume the full observed objects instead of table projections.
