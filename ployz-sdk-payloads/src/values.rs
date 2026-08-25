@@ -17,8 +17,8 @@ use ployz_core::{
     DockerVolumeName, DockerVolumeStorageObservation, ExecutionError, FailedOperation,
     GlobalReconcileFailureObservation, HealthFailure, HealthObservation, HealthcheckCommand,
     HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol, IngressHost,
-    IngressHostname, LocalMachineRemoved, LogDriver, Machine, MachineAction, MachineFailure,
-    MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime,
+    IngressHostname, IngressProxyFragment, LocalMachineRemoved, LogDriver, Machine, MachineAction,
+    MachineFailure, MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime,
     MachineStorageObservation, MachineSuccess, ManagementAddress, MembershipObservation,
     ObservationKind, ObservedDataLoss, OperationPhase, OperationRow, OperationStatus,
     PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication, PreDeployHook,
@@ -363,6 +363,13 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
     };
     BTreeMap::from([
         ("DataLoss", vec![to_value(&data_loss())]),
+        (
+            "IngressProxyFragment",
+            vec![to_value(
+                &IngressProxyFragment::parse_caddy("reverse_proxy localhost:8080")
+                    .expect("fixture is non-empty"),
+            )],
+        ),
         (
             "CreateVolumeReport",
             vec![
@@ -1070,6 +1077,10 @@ fn configured_healthcheck() -> HealthcheckSpec {
 
 fn typed_requested_spec() -> RequestedServiceSpec {
     let mut spec = requested_spec();
+    spec.ingress_proxy_fragment = Some(
+        IngressProxyFragment::parse_caddy("reverse_proxy localhost:8080")
+            .expect("fixture is non-empty"),
+    );
     spec.volume_graph =
         ServiceVolumeGraph::parse(vec![named_volume_with_driver()], vec![service_mount()])
             .expect("typed volume graph is valid");

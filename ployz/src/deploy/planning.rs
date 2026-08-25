@@ -179,7 +179,7 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
             .iter()
             .find(|candidate| candidate.name == spec.name)
             .expect("apply-set names are drawn from the Intent target");
-        let mut planned = normalize(scoped);
+        let mut planned = scoped.clone();
         crate::dns::expand_ingress_ports(
             &mut planned,
             &intent.project_name,
@@ -658,16 +658,6 @@ fn placement_error(spec: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> Pl
         constraints.push(EliminatingConstraint::MachineDown { names: down });
     }
     PlanError::no_eligible_machines(constraints)
-}
-
-fn normalize(requested: &RequestedServiceSpec) -> RequestedServiceSpec {
-    let mut requested = requested.clone();
-    requested.caddy_config = requested
-        .caddy_config
-        .take()
-        .map(|config| config.trim().to_owned())
-        .filter(|config| !config.is_empty());
-    requested
 }
 
 fn placement_state(seed: u64, name: &ServiceName) -> u64 {

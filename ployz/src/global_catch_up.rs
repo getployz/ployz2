@@ -695,7 +695,7 @@ mod tests {
             volume_graph: Default::default(),
             config_graph: Default::default(),
             pre_deploy: None,
-            caddy_config: None,
+            ingress_proxy_fragment: None,
             update: UpdateConfig::default(),
         }
     }

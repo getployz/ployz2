@@ -93,6 +93,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "IngressProxyFragment",
+        Shape::InternallyTagged {
+            tag: "backend",
+            params: "",
+            variants: &[("caddy", &[("config", "string")])],
+        },
+    ),
+    (
         "IngressHostname",
         Shape::InternallyTagged {
             tag: "kind",
@@ -400,7 +408,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("mounts", "ServiceMount[]?"),
                 ("configs", "ConfigSpec[]?"),
                 ("pre_deploy", "PreDeployHook?"),
-                ("caddy_config", "string?"),
+                ("ingress_proxy_fragment", "IngressProxyFragment?"),
                 ("update", "UpdateConfig?"),
             ],
         },
@@ -420,7 +428,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("mounts", "ServiceMount[]?"),
                 ("configs", "ConfigSpec[]?"),
                 ("pre_deploy", "PreDeployHook?"),
-                ("caddy_config", "string?"),
+                ("ingress_proxy_fragment", "IngressProxyFragment?"),
                 ("update", "ResolvedUpdateConfig?"),
             ],
         },

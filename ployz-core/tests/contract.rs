@@ -14,19 +14,19 @@ use ployz_core::{
     FanoutOutcome, FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY,
     GetCaddyConfigRequest, HealthObservation, HealthcheckCommand, HealthcheckSpec, HttpProtocol,
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageSummary,
-    IngressHost, IngressHostname, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
-    ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
-    MachineName, MachinePath, MachineRpc, MachineRpcClient, MachineRpcServer, MachineSubnet,
-    MachineSuccess, MachineTarget, MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload,
-    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult,
-    Placement, PortPublication, PreDeployHook, ProjectName, ProvisionedVolume, PublicIpDiscovery,
-    PublicIpUpdate, PullImageFromMachineRequest, PullPolicy, QualifiedService,
-    RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
-    RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec,
-    ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest, UpdateOrder,
-    VolumeSource, encode_grpc_frame, grpc_frames, op,
+    IngressHost, IngressHostname, IngressProxyFragment, InspectWireGuardRequest,
+    LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway,
+    MachineId, MachineImages, MachineName, MachinePath, MachineRpc, MachineRpcClient,
+    MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget, MachineTokenRequest,
+    MachineUpdate, NameMatches, OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication, PreDeployHook,
+    ProjectName, ProvisionedVolume, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest,
+    PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest,
+    RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest,
+    ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount,
+    ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest,
+    UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -1484,7 +1484,9 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
             timeout_millis: Some(30_000),
             user: None,
         }),
-        caddy_config: Some("reverse_proxy localhost:8080".into()),
+        ingress_proxy_fragment: Some(
+            IngressProxyFragment::parse_caddy("reverse_proxy localhost:8080").unwrap(),
+        ),
         update: UpdateConfig {
             order: None,
             monitor_millis: Some(5_000),
@@ -1500,7 +1502,7 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         volume_graph: requested.volume_graph.clone(),
         config_graph: requested.config_graph.clone(),
         pre_deploy: requested.pre_deploy.clone(),
-        caddy_config: requested.caddy_config.clone(),
+        ingress_proxy_fragment: requested.ingress_proxy_fragment.clone(),
         update: ployz_core::ResolvedUpdateConfig {
             order: UpdateOrder::StartFirst,
             monitor_millis: Some(5_000),
@@ -1561,6 +1563,46 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
             "resolved_spec": dangling
         }))
         .is_err()
+    );
+}
+
+#[test]
+fn service_ingress_proxy_fragment_is_backend_tagged_without_a_caddy_alias() {
+    let spec: RequestedServiceSpec = serde_json::from_value(json!({
+        "name": "api",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "api:1", "pull_policy": "missing" },
+        "ingress_proxy_fragment": {
+            "backend": "caddy",
+            "config": "  reverse_proxy localhost:8080\n"
+        }
+    }))
+    .unwrap();
+
+    let value = serde_json::to_value(spec).unwrap();
+    assert_eq!(
+        value.get("ingress_proxy_fragment"),
+        Some(&json!({
+            "backend": "caddy",
+            "config": "reverse_proxy localhost:8080"
+        }))
+    );
+    assert!(!value.as_object().unwrap().contains_key("caddy_config"));
+
+    assert!(
+        IngressProxyFragment::parse_caddy(" \n ")
+            .unwrap_err()
+            .to_string()
+            .contains("non-empty configuration")
+    );
+    assert!(
+        serde_json::from_value::<IngressProxyFragment>(json!({
+            "backend": "caddy",
+            "config": ""
+        }))
+        .unwrap_err()
+        .to_string()
+        .contains("non-empty configuration")
     );
 }
 

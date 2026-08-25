@@ -3,9 +3,9 @@ use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow
 use ployz_core::{
     AdvertisedEndpoint, CADDY_VERIFY_PATH, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, HealthObservation, HostBind, HttpProtocol,
-    IngressHost, IngressHostname, Machine, MachineId, MachineName, ManagementAddress,
-    PortPublication, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName, TransportProtocol,
-    WireGuardPublicKey, service_containers,
+    IngressHost, IngressHostname, IngressProxyFragment, Machine, MachineId, MachineName,
+    ManagementAddress, PortPublication, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName,
+    TransportProtocol, WireGuardPublicKey, service_containers,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -1121,6 +1121,7 @@ fn custom_observation(
 ) -> ContainerObservation {
     let mut observation = observation(suffix, machine_id, service_name, Some(address), Vec::new());
     observation.created_at_unix_nanos = created_at_unix_nanos;
-    observation.resolved_spec.caddy_config = Some(caddy_config.into());
+    observation.resolved_spec.ingress_proxy_fragment =
+        Some(IngressProxyFragment::parse_caddy(caddy_config).expect("fixture is non-empty"));
     observation
 }
