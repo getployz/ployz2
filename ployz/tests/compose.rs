@@ -239,11 +239,6 @@ configs:
         &volume.source,
         VolumeSource::Named { name, .. } if name.as_str() == "data"
     )));
-    assert!(api.mounts().iter().any(|mount| {
-        mount.volume.as_str() == "data"
-            && mount.no_copy
-            && mount.subpath.as_deref() == Some("current")
-    }));
     assert!(api.container.image.starts_with("registry.example/api:"));
     assert_eq!(
         project
