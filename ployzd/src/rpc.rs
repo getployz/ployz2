@@ -760,6 +760,7 @@ impl MachineRpc for MachineService {
         let path = match backend {
             IngressProxyBackend::Caddy => crate::ingress::caddy::config_path(data_dir),
             IngressProxyBackend::Zentinel => crate::ingress::zentinel::config_path(data_dir),
+            IngressProxyBackend::Envoy => crate::ingress::envoy::config_path(data_dir),
         };
         match std::fs::read_to_string(&path) {
             Ok(config) => respond(IngressProxyConfig::for_backend(backend, config)),

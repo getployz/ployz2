@@ -375,6 +375,7 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
             vec![
                 to_value(&IngressProxyConfig::Caddy("caddy exact\n".into())),
                 to_value(&IngressProxyConfig::Zentinel("zentinel exact\n".into())),
+                to_value(&IngressProxyConfig::Envoy("envoy exact\n".into())),
             ],
         ),
         (

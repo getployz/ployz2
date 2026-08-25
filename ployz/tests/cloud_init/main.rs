@@ -225,6 +225,7 @@ async fn cloud_founding_transmits_each_selected_ingress_backend() {
     for (selection, expected) in [
         (None, IngressProxyBackend::Zentinel),
         (Some("caddy"), IngressProxyBackend::Caddy),
+        (Some("envoy"), IngressProxyBackend::Envoy),
     ] {
         let founder = founder_machine();
         let relay = RelayListen::start().await;

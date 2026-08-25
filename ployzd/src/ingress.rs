@@ -38,6 +38,7 @@ pub(crate) fn is_system_ingress(observation: &ContainerObservation) -> bool {
 }
 
 pub(crate) mod caddy;
+pub(crate) mod envoy;
 pub(crate) mod zentinel;
 
 use caddy::CaddyAdmin;
@@ -77,6 +78,10 @@ pub(crate) async fn run(
                 shutdown,
             )
             .await
+        }
+        IngressProxyBackend::Envoy => {
+            shutdown.cancelled().await;
+            Ok(())
         }
     }
 }
