@@ -237,9 +237,13 @@ configs:
     )));
     assert!(api.volumes().iter().any(|volume| matches!(
         &volume.source,
-        VolumeSource::Named { name, no_copy: true, subpath: Some(subpath), .. }
-            if name.as_str() == "data" && subpath == "current"
+        VolumeSource::Named { name, .. } if name.as_str() == "data"
     )));
+    assert!(api.mounts().iter().any(|mount| {
+        mount.volume.as_str() == "data"
+            && mount.no_copy
+            && mount.subpath.as_deref() == Some("current")
+    }));
     assert!(api.container.image.starts_with("registry.example/api:"));
     assert_eq!(
         project
@@ -260,6 +264,40 @@ configs:
             .as_ref()
             .and_then(IngressProxyFragment::as_caddy),
         Some("app.example { reverse_proxy :80 }")
+    );
+}
+
+#[test]
+fn one_named_volume_can_have_different_options_per_mount() {
+    let project = parse_normalized(
+        r#"
+services:
+  app:
+    image: app:1
+    volumes:
+      - {type: volume, source: data, target: /current, volume: {nocopy: true, subpath: current}}
+      - {type: volume, source: data, target: /archive, volume: {subpath: archive}}
+volumes: {data: {}}
+"#,
+        ".",
+    )
+    .unwrap();
+
+    let app = service(&project, "app");
+    assert_eq!(app.volumes().len(), 1);
+    assert_eq!(
+        app.mounts()
+            .iter()
+            .map(|mount| (
+                mount.target.as_str(),
+                mount.no_copy,
+                mount.subpath.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("/current", true, Some("current")),
+            ("/archive", false, Some("archive")),
+        ]
     );
 }
 

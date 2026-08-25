@@ -119,7 +119,7 @@ export type VolumeDriver = Additive<{
 
 export type VolumeSource =
   | Additive<{ kind: "bind"; machine_path: MachinePath; create_machine_path?: boolean; propagation?: string; recursive?: string }>
-  | Additive<{ kind: "named"; name: DockerVolumeName; external?: boolean; driver?: VolumeDriver; labels?: { readonly [key: string]: string }; no_copy?: boolean; subpath?: string }>
+  | Additive<{ kind: "named"; name: DockerVolumeName; external?: boolean; driver?: VolumeDriver; labels?: { readonly [key: string]: string } }>
   | Additive<{ kind: "tmpfs"; size_bytes?: number; mode?: number; options?: string[][] }>
   | Additive<{ kind?: string }>;
 
@@ -195,6 +195,8 @@ export type ServiceMount = Additive<{
   volume: ServiceVolumeReference;
   target: ContainerPath;
   read_only?: boolean;
+  no_copy?: boolean;
+  subpath?: string;
 }>;
 
 export type ServiceVolume = Additive<{

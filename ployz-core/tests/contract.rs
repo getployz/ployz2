@@ -320,8 +320,6 @@ fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
         external: false,
         driver: None,
         labels: Default::default(),
-        no_copy: false,
-        subpath: None,
     };
     named.scope_to_project(&project);
     named.scope_to_project(&project);
@@ -344,8 +342,6 @@ fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
         external: true,
         driver: None,
         labels: Default::default(),
-        no_copy: false,
-        subpath: None,
     };
     external.scope_to_project(&project);
     match &external {
@@ -363,8 +359,6 @@ fn named_volume_scope_to_project_is_idempotent_and_skips_external() {
         external: false,
         driver: None,
         labels: BTreeMap::from([(PROJECT_NAME_LABEL.into(), "blog".into())]),
-        no_copy: false,
-        subpath: None,
     };
     foreign.scope_to_project(&project);
     match &foreign {
@@ -1452,6 +1446,8 @@ fn requested_and_resolved_specs_and_mounts_round_trip() {
         volume: reference,
         target: ContainerPath::parse("/var/lib/api").unwrap(),
         read_only: false,
+        no_copy: false,
+        subpath: None,
     };
     let requested = RequestedServiceSpec {
         name: ServiceName::parse("api").unwrap(),

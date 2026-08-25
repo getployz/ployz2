@@ -201,10 +201,6 @@ pub enum VolumeSource {
         driver: Option<VolumeDriver>,
         #[serde(default)]
         labels: BTreeMap<String, String>,
-        #[serde(default)]
-        no_copy: bool,
-        #[serde(default)]
-        subpath: Option<String>,
     },
     Tmpfs {
         #[serde(default)]
@@ -312,6 +308,10 @@ pub struct ServiceMount {
     pub target: ContainerPath,
     #[serde(default)]
     pub read_only: bool,
+    #[serde(default)]
+    pub no_copy: bool,
+    #[serde(default)]
+    pub subpath: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

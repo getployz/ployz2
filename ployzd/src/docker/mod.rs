@@ -990,15 +990,16 @@ mod tests {
             ],
             "mounts": [
                 {"volume":"host","target":"/host"},
-                {"volume":"alias","target":"/data","read_only":true},
+                {"volume":"alias","target":"/data","read_only":true,"no_copy":true,"subpath":"current"},
+                {"volume":"alias","target":"/archive","subpath":"archive"},
                 {"volume":"memory","target":"/run/cache"}
             ]
         }))
         .unwrap();
 
         let mounts = docker_mounts(&spec.volume_graph).unwrap();
-        let [bind_mount, named_mount, tmpfs_mount] = mounts.as_slice() else {
-            panic!("expected three mounts: {mounts:?}")
+        let [bind_mount, named_mount, archive_mount, tmpfs_mount] = mounts.as_slice() else {
+            panic!("expected four mounts: {mounts:?}")
         };
         assert_eq!(bind_mount.typ, Some(MountType::BIND));
         assert_eq!(bind_mount.source.as_deref(), Some("/srv/api"));
@@ -1104,11 +1105,11 @@ mod tests {
         assert_eq!(named_mount.typ, Some(MountType::VOLUME));
         assert_eq!(named_mount.source.as_deref(), Some("database"));
         assert_eq!(named_mount.read_only, Some(true));
+        let named_options = named_mount.volume_options.as_ref().unwrap();
+        assert_eq!(named_options.no_copy, Some(true));
+        assert_eq!(named_options.subpath.as_deref(), Some("current"));
         assert_eq!(
-            named_mount
-                .volume_options
-                .as_ref()
-                .unwrap()
+            named_options
                 .driver_config
                 .as_ref()
                 .unwrap()
@@ -1116,6 +1117,10 @@ mod tests {
                 .as_deref(),
             Some("local")
         );
+        assert_eq!(archive_mount.source.as_deref(), Some("database"));
+        let archive_options = archive_mount.volume_options.as_ref().unwrap();
+        assert_eq!(archive_options.no_copy, Some(false));
+        assert_eq!(archive_options.subpath.as_deref(), Some("archive"));
         assert_eq!(tmpfs_mount.typ, Some(MountType::TMPFS));
         assert!(tmpfs_mount.source.is_none());
         assert_eq!(
