@@ -17,13 +17,13 @@ use ployz_core::{
     DockerVolumeName, DockerVolumeStorageObservation, ExecutionError, FailedOperation,
     GlobalReconcileFailureObservation, HealthFailure, HealthObservation, HealthcheckCommand,
     HealthcheckSpec, HookContainer, HookFailure, HostBind, HttpProtocol, IngressHost,
-    IngressHostname, IngressProxyFragment, LocalMachineRemoved, LogDriver, Machine, MachineAction,
-    MachineFailure, MachineId, MachineName, MachineObservation, MachinePath, MachineRuntime,
-    MachineStorageObservation, MachineSuccess, ManagementAddress, MembershipObservation,
-    ObservationKind, ObservedDataLoss, OperationPhase, OperationRow, OperationStatus,
-    PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication, PreDeployHook,
-    PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal,
-    PullPolicy, QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest,
+    IngressHostname, IngressProxyConfig, IngressProxyFragment, LocalMachineRemoved, LogDriver,
+    Machine, MachineAction, MachineFailure, MachineId, MachineName, MachineObservation,
+    MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess, ManagementAddress,
+    MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase, OperationRow,
+    OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication,
+    PreDeployHook, PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
+    PruneRefusal, PullPolicy, QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest,
     ReplacementCompensation, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
     ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, SelectedEndpoint,
@@ -369,6 +369,13 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                 &IngressProxyFragment::parse_caddy("reverse_proxy localhost:8080")
                     .expect("fixture is non-empty"),
             )],
+        ),
+        (
+            "IngressProxyConfig",
+            vec![
+                to_value(&IngressProxyConfig::Caddy("caddy exact\n".into())),
+                to_value(&IngressProxyConfig::Zentinel("zentinel exact\n".into())),
+            ],
         ),
         (
             "CreateVolumeReport",
@@ -1147,7 +1154,7 @@ fn runtime_watch_frame() -> RuntimeWatchFrame {
                 population_stddev_ns: 250_000,
             }),
             global_reconcile_failures: vec![GlobalReconcileFailureObservation {
-                service: QualifiedService::system_caddy(),
+                service: QualifiedService::system_ingress(),
                 last_error: "image pull failed".into(),
                 observed_at: "2024-01-01T00:00:00Z".into(),
             }],

@@ -95,8 +95,8 @@ pub(crate) fn joined_catch_up_error(error: CatchUpError) -> String {
     if !error.missing.is_empty() {
         message.push_str("\nMissing eligible Globals:");
         for identity in error.missing {
-            if identity == QualifiedService::system_caddy() {
-                message.push_str("\n- ployz-system/caddy: run `ployz caddy deploy`.");
+            if identity == QualifiedService::system_ingress() {
+                message.push_str("\n- ployz-system/ingress: run `ployz ingress deploy`.");
             } else {
                 message.push_str(&format!(
                     "\n- {identity}: redeploy Project Service `{identity}`."
@@ -112,11 +112,11 @@ pub(crate) fn joined_catch_up_error(error: CatchUpError) -> String {
 pub fn plan_global_catch_up(
     services: &[ServiceObservation],
     this_machine: &Machine,
-    skip_caddy: bool,
+    skip_ingress: bool,
 ) -> Vec<ObservedGlobalSlotSpec> {
     missing_global_slots(services, this_machine)
         .into_iter()
-        .filter(|slot| !skip_caddy || slot.identity() != &QualifiedService::system_caddy())
+        .filter(|slot| !skip_ingress || slot.identity() != &QualifiedService::system_ingress())
         .collect()
 }
 
@@ -129,7 +129,7 @@ pub fn plan_global_catch_up(
 pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     client: &mut C,
     this_machine: &Machine,
-    skip_caddy: bool,
+    skip_ingress: bool,
 ) -> Result<(), CatchUpError> {
     let live = client
         .live_services()
@@ -139,10 +139,10 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let initially_eligible = services
         .iter()
         .filter_map(|service| eligible_global_slot(service, this_machine))
-        .filter(|slot| !skip_caddy || slot.identity() != &QualifiedService::system_caddy())
+        .filter(|slot| !skip_ingress || slot.identity() != &QualifiedService::system_ingress())
         .map(|slot| (slot.identity().clone(), slot))
         .collect::<BTreeMap<_, _>>();
-    let slots = plan_global_catch_up(&services, this_machine, skip_caddy);
+    let slots = plan_global_catch_up(&services, this_machine, skip_ingress);
     let initially_missing: Vec<_> = slots.iter().map(|slot| slot.identity().clone()).collect();
     let endpoint_creates = slots
         .iter()
@@ -446,18 +446,18 @@ mod tests {
         let founder = machine('f', "founder");
         let first = machine('1', "first");
         let second = machine('2', "second");
-        let caddy = global_service(
-            QualifiedService::system_caddy(),
+        let ingress = global_service(
+            QualifiedService::system_ingress(),
             'c',
             Placement::default(),
             running_on(&founder, 'a'),
         );
 
-        let first_slots = plan_global_catch_up(std::slice::from_ref(&caddy), &first, false);
-        let second_slots = plan_global_catch_up(std::slice::from_ref(&caddy), &second, false);
+        let first_slots = plan_global_catch_up(std::slice::from_ref(&ingress), &first, false);
+        let second_slots = plan_global_catch_up(std::slice::from_ref(&ingress), &second, false);
 
-        assert_eq!(identities(&first_slots), ["ployz-system/caddy"]);
-        assert_eq!(identities(&second_slots), ["ployz-system/caddy"]);
+        assert_eq!(identities(&first_slots), ["ployz-system/ingress"]);
+        assert_eq!(identities(&second_slots), ["ployz-system/ingress"]);
         assert!(
             first_slots
                 .iter()
@@ -467,12 +467,12 @@ mod tests {
     }
 
     #[test]
-    fn skip_caddy_omits_system_caddy_and_keeps_other_globals() {
+    fn skip_ingress_omits_system_ingress_and_keeps_other_globals() {
         let joiner = machine('1', "joiner");
         let founder = machine('f', "founder");
         let services = [
             global_service(
-                QualifiedService::system_caddy(),
+                QualifiedService::system_ingress(),
                 'c',
                 Placement::default(),
                 running_on(&founder, 'a'),
@@ -491,7 +491,7 @@ mod tests {
         );
         assert_eq!(
             identities(&plan_global_catch_up(&services, &joiner, false)),
-            ["ployz-system/caddy", "app/api"]
+            ["ployz-system/ingress", "app/api"]
         );
     }
 
@@ -558,12 +558,12 @@ mod tests {
     }
 
     #[test]
-    fn machine_add_places_user_globals_not_only_caddy() {
+    fn machine_add_places_user_globals_not_only_ingress() {
         let added = machine('2', "edge");
         let founder = machine('f', "founder");
         let services = [
             global_service(
-                QualifiedService::system_caddy(),
+                QualifiedService::system_ingress(),
                 'c',
                 Placement::default(),
                 running_on(&founder, 'a'),
@@ -577,7 +577,7 @@ mod tests {
         ];
         assert_eq!(
             identities(&plan_global_catch_up(&services, &added, false)),
-            ["ployz-system/caddy", "shop/worker"]
+            ["ployz-system/ingress", "shop/worker"]
         );
     }
 

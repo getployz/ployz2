@@ -5,7 +5,7 @@ use std::{
 
 use ployz::deploy::{IngressContext, preview_deploy};
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerAction, ContainerId, ContainerKind, GetCaddyConfigRequest,
+    ContainerAction, ContainerId, ContainerKind, GetIngressProxyConfigRequest, INGRESS_VERIFY_PATH,
     ListMachinesRequest, Machine, MachineId, MachineTarget, MembershipObservation, ProjectName,
     RequestedServiceSpec, ResolvedServiceSpec, ServiceId, StartContainerRequest,
     StopContainerRequest, op,
@@ -33,13 +33,13 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             config.contains("admin API is not reachable")
         })
         .await;
-        assert!(config.contains(CADDY_VERIFY_PATH));
+        assert!(config.contains(INGRESS_VERIFY_PATH));
     }
 
     cli(
         &direct,
         &[
-            "caddy",
+            "ingress",
             "deploy",
             "--image",
             "caddy:2.10.2",
@@ -47,15 +47,15 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             machines[0].id.as_str(),
         ],
     );
-    let caddy_id = wait_service(&mut client, "caddy", 1).await;
+    let caddy_id = wait_service(&mut client, "ingress", 1).await;
     assert!(
         wait_running(&mut client, &caddy_id, 1)
             .await
             .iter()
             .all(|container| container.resolved_spec.container.image == "caddy:2.10.2")
     );
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    assert_eq!(wait_service(&mut client, "caddy", 3).await, caddy_id);
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    assert_eq!(wait_service(&mut client, "ingress", 3).await, caddy_id);
     assert!(
         wait_running(&mut client, &caddy_id, 3)
             .await
@@ -104,7 +104,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         assert_eq!(
             cli(
                 &direct,
-                &["caddy", "config", "--machine", machine.id.as_str()],
+                &["ingress", "config", "--machine", machine.id.as_str()],
             ),
             config
         );
@@ -120,7 +120,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             cluster
                 .machine_shell(
                     index,
-                    &format!("curl -fsS http://127.0.0.1{CADDY_VERIFY_PATH}")
+                    &format!("curl -fsS http://127.0.0.1{INGRESS_VERIFY_PATH}")
                 )
                 .unwrap()
                 .trim(),
@@ -131,7 +131,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
                 .machine_shell(
                     index,
                     &format!(
-                        "curl -fsS -H 'Host: example.test' http://127.0.0.1{CADDY_VERIFY_PATH}"
+                        "curl -fsS -H 'Host: example.test' http://127.0.0.1{INGRESS_VERIFY_PATH}"
                     ),
                 )
                 .unwrap()
@@ -139,13 +139,13 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             "ok"
         );
         cluster
-            .machine_shell(index, "test ! -e /var/lib/ployz/caddy/caddy.json")
+            .machine_shell(index, "test ! -e /var/lib/ployz/ingress/caddy/caddy.json")
             .unwrap();
     }
 
-    let logs = run_cli(&direct, &["caddy", "logs", "--tail", "1"]);
+    let logs = run_cli(&direct, &["ingress", "logs", "--tail", "1"]);
     let logs = [logs.stdout, logs.stderr].concat();
-    assert!(String::from_utf8(logs).unwrap().contains(" caddy/"));
+    assert!(String::from_utf8(logs).unwrap().contains(" ingress/"));
 
     assert_health_transition(&mut client, &machines, &api_containers, &observations).await;
 
@@ -185,8 +185,8 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     .await
     .unwrap();
 
-    cli(&direct, &["caddy", "deploy", "--image", "caddy:2.10.2"]);
-    wait_service(&mut client, "caddy", 1).await;
+    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    wait_service(&mut client, "ingress", 1).await;
 
     let api: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
         "service_id": ServiceId::random(),
@@ -214,14 +214,14 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     })
     .await;
     assert!(
-        !before.contains("tls /config/certs/secure.example.test"),
+        !before.contains("tls /config/caddy/certs/secure.example.test"),
         "{before}"
     );
 
     let (first_cert, first_key) = self_signed_material("secure.example.test", "first");
     publish_certificate_row(&cluster, 0, "secure.example.test", &first_cert, &first_key);
     wait_config(&mut client, &first, |config| {
-        config.contains("tls /config/certs/secure.example.test-")
+        config.contains("tls /config/caddy/certs/secure.example.test-")
     })
     .await;
     assert_eq!(curl_https(&cluster, 0, &first_cert).trim(), "ok");
@@ -250,7 +250,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     cli(
         &direct,
         &[
-            "caddy",
+            "ingress",
             "deploy",
             "--image",
             "caddy:2.10.2",
@@ -259,7 +259,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
         ],
     );
     wait_config(&mut client, &second, |config| {
-        config.contains("tls /config/certs/secure.example.test-")
+        config.contains("tls /config/caddy/certs/secure.example.test-")
     })
     .await;
     tokio::time::timeout(Duration::from_secs(60), async {
@@ -309,13 +309,14 @@ async fn assert_failed_load_retry(
     machine: &Machine,
 ) {
     let stable = client
-        .call::<op::GetCaddyConfig>(
-            GetCaddyConfigRequest {},
+        .call::<op::GetIngressProxyConfig>(
+            GetIngressProxyConfigRequest {},
             Some(&MachineTarget::from(&machine.id)),
         )
         .await
         .unwrap()
-        .caddyfile;
+        .config()
+        .to_owned();
     let load_failure: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
         "service_id": ServiceId::random(),
         "name": "load-failure",
@@ -348,13 +349,13 @@ async fn assert_failed_load_retry(
     wait_log_count(cluster, "failed to update Caddy configuration", 2).await;
     assert_eq!(
         client
-            .call::<op::GetCaddyConfig>(
-                GetCaddyConfigRequest {},
+            .call::<op::GetIngressProxyConfig>(
+                GetIngressProxyConfigRequest {},
                 Some(&MachineTarget::from(&machine.id)),
             )
             .await
             .unwrap()
-            .caddyfile,
+            .config(),
         stable
     );
     assert_eq!(
@@ -393,15 +394,15 @@ async fn assert_membership_blind(
     cluster.stop(2).unwrap();
     wait_down(cluster, &machines[2]).await;
     let retained = client
-        .call::<op::GetCaddyConfig>(
-            GetCaddyConfigRequest {},
+        .call::<op::GetIngressProxyConfig>(
+            GetIngressProxyConfigRequest {},
             Some(&MachineTarget::from(&machines[0].id)),
         )
         .await
         .unwrap();
     assert!(
         retained
-            .caddyfile
+            .config()
             .contains(&format!("{}:8080", retained_address.0))
     );
 }
@@ -523,7 +524,7 @@ async fn assert_start_first_gap(
         .address
         .unwrap();
     let delayed = cluster
-        .machine_shell(2, "cat /var/lib/ployz/caddy/Caddyfile")
+        .machine_shell(2, "cat /var/lib/ployz/ingress/caddy/Caddyfile")
         .unwrap();
     assert!(delayed.contains(&format!("{}:8081", old_address.0)));
     assert!(!delayed.contains(&format!("{}:8081", new_address.0)));
@@ -746,15 +747,15 @@ async fn wait_config(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
         match client
-            .call::<op::GetCaddyConfig>(
-                GetCaddyConfigRequest {},
+            .call::<op::GetIngressProxyConfig>(
+                GetIngressProxyConfigRequest {},
                 Some(&MachineTarget::from(&machine.id)),
             )
             .await
         {
-            Ok(config) if expected(&config.caddyfile) => return config.caddyfile,
+            Ok(config) if expected(config.config()) => return config.config().to_owned(),
             Ok(config) if tokio::time::Instant::now() >= deadline => {
-                panic!("Caddyfile did not converge:\n{}", config.caddyfile)
+                panic!("Caddyfile did not converge:\n{}", config.config())
             }
             Err(error) if tokio::time::Instant::now() >= deadline => {
                 panic!("Caddyfile was unavailable: {error}")

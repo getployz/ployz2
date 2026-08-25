@@ -19,6 +19,7 @@ use super::{
 
 /// Host-private configuration-dump listener address.
 pub(crate) const ADMIN_ADDRESS: &str = "127.0.0.1:2019";
+pub(crate) const CONFIG_FILE: &str = "zentinel.kdl";
 const CONTAINER_CERTS_DIR: &str = "/config/certs";
 const CONTAINER_CONFIG_DIR: &str = "/config";
 const ZENTINEL_BOOTSTRAP_CERT_FILE: &str = "ployz-bootstrap.crt";
@@ -26,6 +27,11 @@ const ZENTINEL_BOOTSTRAP_KEY_FILE: &str = "ployz-bootstrap.key";
 const ZENTINEL_CHALLENGES_DIR: &str = "challenges";
 /// Numeric group used by the exact selected Zentinel image.
 pub(crate) const ZENTINEL_GID: u32 = 65_532;
+
+#[must_use]
+pub(crate) fn config_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("ingress").join("zentinel").join(CONFIG_FILE)
+}
 
 /// Rendered Zentinel configuration tied to one projection digest.
 #[derive(Debug, Eq, PartialEq)]

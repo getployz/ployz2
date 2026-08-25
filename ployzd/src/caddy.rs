@@ -1,7 +1,7 @@
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    CADDY_VERIFY_PATH, ContainerObservation, HttpProtocol, IngressHost, IngressProxyFragment,
-    Machine, QualifiedService, ServiceName,
+    HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, IngressProxyFragment, Machine,
+    QualifiedService, ServiceName,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -26,14 +26,8 @@ use crate::{
 };
 
 pub const CONFIG_FILE: &str = "Caddyfile";
-const CONTAINER_CERTS_DIR: &str = "/config/certs";
+const CONTAINER_CERTS_DIR: &str = "/config/caddy/certs";
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// True when this observation is the reserved Caddy Service.
-#[must_use]
-pub(crate) fn is_system_caddy(observation: &ContainerObservation) -> bool {
-    observation.identity() == QualifiedService::system_caddy()
-}
 
 /// Failure while rendering or applying Caddy configuration.
 #[derive(Debug, Error)]
@@ -124,8 +118,9 @@ impl CaddyAdmin for AdminClient {
 }
 
 #[must_use]
-pub fn caddyfile_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("caddy").join(CONFIG_FILE)
+/// Return the Caddy configuration path beneath the shared ingress data root.
+pub(crate) fn config_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("ingress").join("caddy").join(CONFIG_FILE)
 }
 
 pub async fn run(
@@ -196,7 +191,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     let Some(admin) = admin else {
         output.push_str(
             "\n# User-defined Caddy configs are unavailable because Caddy's admin API is not reachable.\n\
-# Run `ployz caddy logs` and `ployz inspect caddy` to troubleshoot.\n",
+# Run `ployz ingress logs` and `ployz ingress config` to troubleshoot.\n",
         );
         return output;
     };
@@ -209,7 +204,7 @@ async fn generate_caddyfile<A: CaddyAdmin>(
     {
         match render_custom_config(
             config,
-            &QualifiedService::system_caddy(),
+            &QualifiedService::system_ingress(),
             &projection.upstreams,
         ) {
             Ok(rendered) => {
@@ -221,14 +216,14 @@ async fn generate_caddyfile<A: CaddyAdmin>(
                     Err(error) => {
                         skipped.push(format!(
                             "Service '{}': validation failed: {error}",
-                            QualifiedService::system_caddy()
+                            QualifiedService::system_ingress()
                         ));
                     }
                 }
             }
             Err(error) => skipped.push(format!(
                 "Service '{}': rendering failed: {error}",
-                QualifiedService::system_caddy()
+                QualifiedService::system_ingress()
             )),
         }
     }
@@ -370,7 +365,7 @@ fn automatic_caddyfile(
         output,
         "# Health check endpoint to verify Caddy reachability on this Machine.\n\
 http:// {{\n\
-\thandle {CADDY_VERIFY_PATH} {{\n\
+\thandle {INGRESS_VERIFY_PATH} {{\n\
 \t\trespond \"{local_machine}\" 200\n\
 \t}}\n\
 \trespond \"Not Found\" 404\n\
@@ -449,7 +444,7 @@ fn write_global_options(output: &mut String, global_config: Option<&str>) {
             let _ = writeln!(
                 output,
                 "# User-defined global config from Service '{}'.",
-                QualifiedService::system_caddy()
+                QualifiedService::system_ingress()
             );
             output.push_str(&merge_auto_https(user));
             output.push_str("\n\n");

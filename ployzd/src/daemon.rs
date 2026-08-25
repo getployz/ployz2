@@ -178,12 +178,12 @@ impl Daemon {
         let (reset, reset_rx) = watch::channel(false);
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
-        let caddyfile = caddy::caddyfile_path(&config.data_dir);
+        let caddy_config = caddy::config_path(&config.data_dir);
         let caddy_admin_socket = config
             .socket
             .parent()
             .unwrap_or_else(|| Path::new("/run/ployz"))
-            .join("caddy/admin.sock");
+            .join("ingress/caddy/admin.sock");
         let service = MachineService::with_cluster(
             Arc::clone(&store),
             reset.clone(),
@@ -192,7 +192,7 @@ impl Daemon {
                 .map(|running| (running.store().clone(), running.admin_client())),
         )
         .with_optional_containers(containers.clone())
-        .with_caddyfile(caddyfile.clone())
+        .with_ingress_data_dir(config.data_dir.clone())
         .with_image_ingest(Arc::clone(&ingest))
         .with_cloud_pairing(cloud_pairing_tx)
         .with_global_reconcile_observations(global_reconcile_observations);
@@ -293,7 +293,7 @@ impl Daemon {
                         caddy::run(
                             machine,
                             replicated,
-                            caddyfile,
+                            caddy_config,
                             caddy_admin_socket,
                             shutdown.clone(),
                         )

@@ -458,7 +458,7 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
-    async fn get_caddy_config(
+    async fn get_ingress_proxy_config(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

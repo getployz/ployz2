@@ -30,7 +30,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::MachineId;
 
-pub const CADDY_VERIFY_PATH: &str = "/.ployz-verify";
+/// HTTP path served by the Ingress Proxy to prove Machine reachability.
+pub const INGRESS_VERIFY_PATH: &str = "/.ployz-verify";
 
 /// A name lookup result. Duplicate names are a normal observable state.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

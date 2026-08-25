@@ -5,28 +5,28 @@ use std::{
 };
 
 use ployz_core::{
-    CREATE_CONTAINER_CAPABILITY, CaddyConfig, CapabilityName, CodecError, ConfigMount, ConfigSpec,
+    CREATE_CONTAINER_CAPABILITY, CapabilityName, CodecError, ConfigMount, ConfigSpec,
     ConfiguredHealthcheck, ContainerCreated, ContainerHostname, ContainerKind, ContainerLabels,
     ContainerPath, ContainerResources, ContainerRuntimeObservation, ContractDescription,
     CreateContainerRequest, CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY,
     DescribeContractRequest, DnsRecord, DnsRecordType, DockerVolumeName, Domain, DomainRecords,
     ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost, FanoutFailure,
-    FanoutOutcome, FanoutResponse, FramingError, GET_CADDY_CONFIG_CAPABILITY,
-    GetCaddyConfigRequest, HealthObservation, HealthcheckCommand, HealthcheckSpec, HttpProtocol,
-    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageSummary,
-    IngressHost, IngressHostname, IngressProxyFragment, InspectWireGuardRequest,
-    LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway,
-    MachineId, MachineImages, MachineName, MachinePath, MachineRpc, MachineRpcClient,
-    MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget, MachineTokenRequest,
-    MachineUpdate, NameMatches, OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication, PreDeployHook,
-    ProjectName, ProvisionedVolume, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest,
-    PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest,
-    RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest, ResetAccepted, ResetRequest,
-    ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount,
-    ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig, UpdateMachineRequest,
-    UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    FanoutOutcome, FanoutResponse, FramingError, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
+    GetIngressProxyConfigRequest, HealthObservation, HealthcheckCommand, HealthcheckSpec,
+    HttpProtocol, ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled,
+    ImageSummary, IngressHost, IngressHostname, IngressProxyConfig, IngressProxyFragment,
+    InspectWireGuardRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
+    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachinePath, MachineRpc,
+    MachineRpcClient, MachineRpcServer, MachineSubnet, MachineSuccess, MachineTarget,
+    MachineTokenRequest, MachineUpdate, NameMatches, OpaquePayload, PROJECT_NAME_LABEL,
+    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, Placement, PortPublication,
+    PreDeployHook, ProjectName, ProvisionedVolume, PublicIpDiscovery, PublicIpUpdate,
+    PullImageFromMachineRequest, PullPolicy, QualifiedService, RESET_MACHINE_CAPABILITY,
+    RemoveLocalMachineRequest, RemoveMachineRequest, RequestedServiceSpec, ReserveDomainRequest,
+    ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind, RestartPolicy, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceContainerSpec, ServiceId,
+    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateConfig,
+    UpdateMachineRequest, UpdateOrder, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -87,7 +87,7 @@ fn response_kinds_match_the_frozen_wire_contract() {
         (ResponseKind::MachineImages, "machine_images"),
         (ResponseKind::ImageIngestOpened, "image_ingest_opened"),
         (ResponseKind::ImagePulled, "image_pulled"),
-        (ResponseKind::CaddyConfig, "caddy_config"),
+        (ResponseKind::IngressProxyConfig, "ingress_proxy_config"),
         (ResponseKind::Domain, "domain"),
         (ResponseKind::DomainRecords, "domain_records"),
         (ResponseKind::MachineUpdated, "machine_updated"),
@@ -179,8 +179,8 @@ fn qualified_service_is_project_slash_name() {
         identity
     );
     assert_eq!(
-        ployz_core::QualifiedService::system_caddy().to_string(),
-        "ployz-system/caddy"
+        ployz_core::QualifiedService::system_ingress().to_string(),
+        "ployz-system/ingress"
     );
     assert_eq!(
         serde_json::to_string(&identity).unwrap(),
@@ -857,25 +857,30 @@ fn peer_image_pull_contract_names_the_source_gateway_destination() {
 }
 
 #[test]
-fn caddy_config_contract_returns_the_owned_plain_file() {
-    let request = op::GetCaddyConfig::into_request(GetCaddyConfigRequest {});
+fn ingress_proxy_config_contract_tags_the_exact_backend_file() {
+    let request = op::GetIngressProxyConfig::into_request(GetIngressProxyConfigRequest {});
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
 
-    let response = RpcResponse::from(CaddyConfig {
-        caddyfile: "example.test { respond ok }\n".into(),
-    });
+    let config = IngressProxyConfig::Caddy("example.test { respond ok }\n".into());
+    let response = RpcResponse::from(config.clone());
     assert_eq!(
         response
             .encode()
             .unwrap()
             .decode_response()
             .unwrap()
-            .decode::<op::GetCaddyConfig>()
-            .unwrap()
-            .caddyfile,
-        "example.test { respond ok }\n"
+            .decode::<op::GetIngressProxyConfig>()
+            .unwrap(),
+        config
     );
-    assert_eq!(GET_CADDY_CONFIG_CAPABILITY, "ployz.caddy.config.v1");
+    assert_eq!(
+        serde_json::to_value(&config).unwrap(),
+        json!({ "backend": "caddy", "config": "example.test { respond ok }\n" })
+    );
+    assert_eq!(
+        GET_INGRESS_PROXY_CONFIG_CAPABILITY,
+        "ployz.ingress.config.v1"
+    );
 }
 
 #[test]

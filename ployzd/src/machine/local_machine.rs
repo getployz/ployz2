@@ -183,7 +183,7 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
     ) -> Result<(), Error> {
         if QualifiedService::new(project.clone(), spec.name.clone())
-            == QualifiedService::system_caddy()
+            == QualifiedService::system_ingress()
         {
             self.replicated()?
                 .require_ingress_proxy_backend(IngressProxyBackend::Caddy)
