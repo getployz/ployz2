@@ -188,9 +188,9 @@ pub(crate) fn write_initial_config(machine: &Machine, config_file: &Path) -> Res
 }
 
 fn write_xds(directory: &Path, rendered: &RenderedConfig) -> io::Result<()> {
-    atomic_write(&directory.join(LDS_FILE), rendered.lds.as_bytes(), 0o644)?;
-    atomic_write(&directory.join(RDS_FILE), rendered.rds.as_bytes(), 0o644)?;
-    atomic_write(&directory.join(CDS_FILE), rendered.cds.as_bytes(), 0o644)
+    atomic_write(&directory.join(LDS_FILE), rendered.lds().as_bytes(), 0o644)?;
+    atomic_write(&directory.join(RDS_FILE), rendered.rds().as_bytes(), 0o644)?;
+    atomic_write(&directory.join(CDS_FILE), rendered.cds().as_bytes(), 0o644)
 }
 
 /// Rendered Envoy xDS tied to one projection digest.
