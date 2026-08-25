@@ -429,7 +429,10 @@ async fn founder_publisher_backdates_allocator() {
         &LocalMachineRecord {
             body: LocalMachineBody::Participating {
                 machine: published.clone(),
-                cluster_network: Some("10.210.0.0/16".parse().unwrap()),
+                founding_cluster: Some(crate::machine::FoundingCluster {
+                    network: "10.210.0.0/16".parse().unwrap(),
+                    ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
+                }),
                 bootstrap: Vec::new(),
             },
             wireguard_private_key: WireGuardPrivateKey::generate(),

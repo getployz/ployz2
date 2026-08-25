@@ -134,6 +134,10 @@ pub async fn run(
     admin_socket: PathBuf,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
+    replicated
+        .require_ingress_proxy_backend(ployz_core::IngressProxyBackend::Caddy)
+        .await
+        .map_err(io::Error::other)?;
     prepare_directory(
         admin_socket
             .parent()

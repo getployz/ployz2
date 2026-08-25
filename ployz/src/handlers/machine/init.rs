@@ -77,6 +77,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 InitializeRequest {
                     name,
                     cluster_network,
+                    ingress_proxy_backend: ployz_core::IngressProxyBackend::Caddy,
                     public_ip: token.public_ip,
                     advertised_endpoints: token.advertised_endpoints,
                     wireguard_mtu,

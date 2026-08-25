@@ -14,8 +14,9 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CloudPairing, LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineStorageObservation,
-    MachineUpdate, MachineUpdateError, SelectedEndpoint, apply_machine_update,
+    CloudPairing, IngressProxyBackend, LocalMachinePhase, Machine, MachineId, MachineRuntime,
+    MachineStorageObservation, MachineUpdate, MachineUpdateError, SelectedEndpoint,
+    apply_machine_update,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -40,6 +41,15 @@ const LOCK_FILE_NAME: &str = ".ployzd.lock";
 const DOCKER_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Founder-only seed for immutable replicated Cluster values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FoundingCluster {
+    /// Cluster IPv4 pool selected by the founder.
+    pub network: Ipv4Net,
+    /// Ingress Proxy Backend selected by the founder.
+    pub ingress_proxy_backend: IngressProxyBackend,
+}
+
 /// On-disk Local Machine Phase. Each variant owns only that phase's fields.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
@@ -56,7 +66,7 @@ pub enum LocalMachineBody {
     Participating {
         machine: Machine,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        cluster_network: Option<Ipv4Net>,
+        founding_cluster: Option<FoundingCluster>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         bootstrap: Vec<Machine>,
     },
@@ -81,7 +91,7 @@ pub enum LocalMachinePrior {
     Participating {
         machine: Machine,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        cluster_network: Option<Ipv4Net>,
+        founding_cluster: Option<FoundingCluster>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         bootstrap: Vec<Machine>,
     },
@@ -123,8 +133,8 @@ impl LocalMachinePrior {
     fn cluster_network(&self) -> Option<Ipv4Net> {
         match self {
             Self::Participating {
-                cluster_network, ..
-            } => *cluster_network,
+                founding_cluster, ..
+            } => founding_cluster.map(|founding| founding.network),
             Self::Uninitialized { .. } | Self::Joining { .. } => None,
         }
     }
@@ -175,8 +185,8 @@ impl LocalMachineBody {
     fn cluster_network(&self) -> Option<Ipv4Net> {
         match self {
             Self::Participating {
-                cluster_network, ..
-            } => *cluster_network,
+                founding_cluster, ..
+            } => founding_cluster.map(|founding| founding.network),
             Self::Resetting { prior } => prior.cluster_network(),
             Self::Uninitialized { .. } | Self::Joining { .. } => None,
         }
@@ -214,11 +224,11 @@ impl LocalMachineBody {
             },
             Self::Participating {
                 machine,
-                cluster_network,
+                founding_cluster,
                 bootstrap,
             } => LocalMachinePrior::Participating {
                 machine,
-                cluster_network,
+                founding_cluster,
                 bootstrap,
             },
             Self::Resetting { .. } => {
@@ -251,6 +261,19 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn cluster_network(&self) -> Option<Ipv4Net> {
         self.body.cluster_network()
+    }
+
+    /// Founder-selected backend that seeds the replicated Cluster authority.
+    #[must_use]
+    pub(crate) fn founding_ingress_proxy_backend(&self) -> Option<IngressProxyBackend> {
+        match &self.body {
+            LocalMachineBody::Participating {
+                founding_cluster, ..
+            } => founding_cluster.map(|founding| founding.ingress_proxy_backend),
+            LocalMachineBody::Uninitialized { .. }
+            | LocalMachineBody::Joining { .. }
+            | LocalMachineBody::Resetting { .. } => None,
+        }
     }
 
     /// Bootstrap Machines persisted for join and catch-up.
@@ -435,7 +458,7 @@ impl LocalMachineStore {
     pub fn initialize(
         &mut self,
         name: ployz_core::MachineName,
-        cluster_network: Ipv4Net,
+        founding_cluster: FoundingCluster,
         public_ip: Option<IpAddr>,
         advertised_endpoints: Vec<ployz_core::AdvertisedEndpoint>,
         wireguard_mtu: Option<u32>,
@@ -449,7 +472,7 @@ impl LocalMachineStore {
         let machine = Machine {
             id: self.record.id(),
             name,
-            subnet: allocate_machine_subnet(cluster_network, [])
+            subnet: allocate_machine_subnet(founding_cluster.network, [])
                 .map_err(|error| StoreError::InvalidNetwork(error.to_string()))?,
             management_address: management_address(public_key),
             public_key,
@@ -460,7 +483,7 @@ impl LocalMachineStore {
         let mut initialized = self.record.clone();
         initialized.body = LocalMachineBody::Participating {
             machine: machine.clone(),
-            cluster_network: Some(cluster_network),
+            founding_cluster: Some(founding_cluster),
             bootstrap: Vec::new(),
         };
         initialized.wireguard_mtu = wireguard_mtu;
@@ -533,7 +556,7 @@ impl LocalMachineStore {
         };
         participating.body = LocalMachineBody::Participating {
             machine,
-            cluster_network: None,
+            founding_cluster: None,
             bootstrap,
         };
         save(&self.data_dir, &participating)?;

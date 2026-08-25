@@ -9,8 +9,8 @@ use harness::{
     caddy_on, founder_machine, registration, serve_machine, wait_for_held,
 };
 use ployz_core::{
-    CloudPairing, InitializeRequest, InspectRequest, LocalMachinePhase, PairingCredential,
-    Registered, SetCloudPairingRequest, op,
+    CloudPairing, IngressProxyBackend, InitializeRequest, InspectRequest, LocalMachinePhase,
+    PairingCredential, Registered, SetCloudPairingRequest, op,
 };
 use serde_json::json;
 
@@ -186,6 +186,10 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     assert_eq!(initialized.name.as_str(), "founder");
     assert_eq!(initialized.cluster_network.to_string(), "10.210.0.0/16");
     assert_eq!(initialized.wireguard_mtu, Some(1400));
+    assert_eq!(
+        initialized.ingress_proxy_backend,
+        IngressProxyBackend::Caddy
+    );
     let pairing_json = serde_json::to_value(initialized.cloud_pairing.as_ref().unwrap()).unwrap();
     assert_eq!(
         pairing_json,
@@ -677,6 +681,7 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
             InitializeRequest {
                 name: founder.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Caddy,
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints,
                 wireguard_mtu: None,
@@ -725,6 +730,7 @@ async fn initialize_without_pairing_stays_off_list_until_set_cloud_pairing() {
             InitializeRequest {
                 name: founder.name.clone(),
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Caddy,
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints.clone(),
                 wireguard_mtu: None,
@@ -768,6 +774,7 @@ async fn set_cloud_pairing_none_leaves_relay_list() {
             InitializeRequest {
                 name: founder.name.clone(),
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Caddy,
                 public_ip: None,
                 advertised_endpoints: founder.advertised_endpoints.clone(),
                 wireguard_mtu: None,

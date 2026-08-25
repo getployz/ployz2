@@ -380,6 +380,13 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::CreateContainer>(request)?;
+        if let Err(error) = self
+            .local
+            .require_ingress_proxy_backend(&request.project_name, &request.resolved_spec)
+            .await
+        {
+            return local_error(error);
+        }
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
@@ -730,6 +737,20 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::GetCaddyConfig>(request)?;
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        if let Err(error) = replicated
+            .require_ingress_proxy_backend(ployz_core::IngressProxyBackend::Caddy)
+            .await
+        {
+            return respond(RpcError {
+                code: RpcErrorCode::Conflict,
+                message: error.to_string(),
+                details: Value::Null,
+            });
+        }
         let Some(path) = &self.caddyfile else {
             return respond(unavailable("Caddy configuration is not available"));
         };
@@ -857,6 +878,11 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::internal("local Machine record lock poisoned"))
         }
         LocalMachineError::Cluster(error) => Err(Status::internal(error.to_string())),
+        LocalMachineError::IngressProxyBackend(error) => respond(RpcError {
+            code: RpcErrorCode::Conflict,
+            message: error.to_string(),
+            details: Value::Null,
+        }),
         LocalMachineError::Network(error) => Err(Status::internal(error.to_string())),
         LocalMachineError::Docker(error) => respond(RpcError::from(&error)),
         LocalMachineError::Cleanup(message) => respond(RpcError {

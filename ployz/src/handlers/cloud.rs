@@ -136,6 +136,8 @@ pub fn enroll_with_installer(
                             InitializeRequest {
                                 name,
                                 cluster_network,
+                                ingress_proxy_backend:
+                                    ployz_core::IngressProxyBackend::Caddy,
                                 public_ip: machine_token.public_ip,
                                 advertised_endpoints: machine_token.advertised_endpoints,
                                 wireguard_mtu,
