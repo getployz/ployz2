@@ -2,13 +2,15 @@
 
 use ployz_core::{
     ContainerId, ContainerObservation, HttpProtocol, IngressHost, IngressProxyBackend, Machine,
-    ingress_proxy_backend, service_containers,
+    ingress_proxy_backend,
 };
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fmt::Write as _,
-    fs, io,
+    fs,
+    fs::File,
+    io,
     os::unix::fs::{MetadataExt, PermissionsExt, chown},
     path::{Path, PathBuf},
 };
@@ -23,7 +25,7 @@ use crate::{
 
 use super::{
     IngressEndpoint, IngressProjection, IngressSite, certificate_directory, certificate_file_stem,
-    is_system_ingress, watch as watch_inputs, write_certificate_files,
+    newest_local_ingress, watch as watch_inputs, write_certificate_files,
 };
 
 /// Host-private configuration-dump listener address.
@@ -55,19 +57,7 @@ impl WatchInput {
         observations: &[ContainerObservation],
         certificates: &BTreeMap<IngressHost, CertificateRow>,
     ) -> Result<Self, ployz_core::IngressProxyServiceSpecError> {
-        let process = service_containers(observations.iter().cloned())
-            .into_iter()
-            .filter(|container| {
-                let observation = container.as_observation();
-                observation.machine_id == machine.id && is_system_ingress(observation)
-            })
-            .max_by_key(|container| {
-                let observation = container.as_observation();
-                (
-                    observation.created_at_unix_nanos,
-                    observation.container_id.to_string(),
-                )
-            })
+        let process = newest_local_ingress(machine, observations)
             .map(|container| {
                 let observation = container.as_observation();
                 if ingress_proxy_backend(&observation.resolved_spec)?
@@ -135,6 +125,48 @@ pub(crate) async fn watch(
 #[must_use]
 pub(crate) fn config_path(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("ingress").join("zentinel").join(CONFIG_FILE)
+}
+
+/// Install the generated configuration required before the first Zentinel process starts.
+///
+/// Existing configuration is authoritative and is only replaced by the validated apply path.
+///
+/// # Errors
+///
+/// Returns when the empty local projection cannot be rendered or durably written.
+pub(crate) fn write_initial_config(machine: &Machine, config_file: &Path) -> Result<(), Error> {
+    if config_file.try_exists()? {
+        return Ok(());
+    }
+    let projection = IngressProjection::derive(machine, &[], &BTreeMap::new());
+    let rendered = render(&projection)?;
+    let parent = config_file
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "config file has no parent"))?;
+    prepare_directory(parent)?;
+    write_support_files(&projection, config_file)?;
+    install_initial_config(config_file, rendered.kdl())?;
+    Ok(())
+}
+
+fn install_initial_config(config_file: &Path, contents: &str) -> io::Result<()> {
+    let candidate = config_file.with_extension("bootstrap.kdl");
+    atomic_write(&candidate, contents.as_bytes(), 0o640)?;
+    set_group(&candidate)?;
+    let installed = match fs::hard_link(&candidate, config_file) {
+        Ok(()) => File::open(
+            config_file
+                .parent()
+                .expect("candidate and live path share a parent"),
+        )?
+        .sync_all(),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = fs::remove_file(&candidate) {
+        tracing::warn!(path = %candidate.display(), %error, "failed to remove Zentinel bootstrap candidate");
+    }
+    installed
 }
 
 /// Rendered Zentinel configuration tied to one projection digest.

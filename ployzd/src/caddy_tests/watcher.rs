@@ -1,6 +1,6 @@
 //! Caddy watcher recovery at the Corrosion HTTP boundary.
 
-use super::{ingress, observation};
+use super::{ingress, observation, reserved};
 use crate::{
     caddy::{CONFIG_FILE, CaddyAdmin, Error as CaddyError, run},
     corrosion::{ApiClient, ReplicatedStore},
@@ -15,8 +15,8 @@ use axum::{
 };
 use futures_util::StreamExt;
 use ployz_core::{
-    AdvertisedEndpoint, ContainerObservation, HttpProtocol, Machine, MachineId, MachineName,
-    ManagementAddress, WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerId, ContainerObservation, HttpProtocol, Machine, MachineId,
+    MachineName, ManagementAddress, WireGuardPublicKey,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -287,6 +287,44 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn replacing_the_local_caddy_process_reloads_an_unchanged_projection() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine,
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        directory.join(CONFIG_FILE),
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    timeout(Duration::from_millis(250), load_rx.recv())
+        .await
+        .expect("first Caddy process was not loaded")
+        .unwrap();
+    state.replace_ingress_id(ContainerId::parse("e".repeat(64)).unwrap());
+    state.send(b"{\"change\":{}}\n");
+
+    timeout(Duration::from_secs(1), load_rx.recv())
+        .await
+        .expect("replacement Caddy process did not receive the unchanged projection")
+        .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 struct WatcherFixture {
     machine: Machine,
     state: WatchState,
@@ -307,13 +345,16 @@ async fn watcher_fixture() -> WatcherFixture {
         runtime: Default::default(),
     };
     let state = WatchState {
-        container: Arc::new(Mutex::new(observation(
-            1,
-            &machine.id,
-            "api",
-            Some([10, 210, 1, 2]),
-            vec![ingress("example.com", 80, HttpProtocol::Http)],
-        ))),
+        containers: Arc::new(Mutex::new(vec![
+            observation(
+                1,
+                &machine.id,
+                "api",
+                Some([10, 210, 1, 2]),
+                vec![ingress("example.com", 80, HttpProtocol::Http)],
+            ),
+            reserved(observation(9, &machine.id, "ingress", None, Vec::new())),
+        ])),
         container_opens: Arc::new(AtomicUsize::new(0)),
         stall_container: Arc::new(AtomicBool::new(false)),
         container_subscriptions: Arc::new(Mutex::new(Vec::new())),
@@ -375,7 +416,7 @@ async fn settle() {
 
 #[derive(Clone)]
 struct WatchState {
-    container: Arc<Mutex<ContainerObservation>>,
+    containers: Arc<Mutex<Vec<ContainerObservation>>>,
     container_opens: Arc<AtomicUsize>,
     stall_container: Arc<AtomicBool>,
     container_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
@@ -384,11 +425,31 @@ struct WatchState {
 
 impl WatchState {
     fn replace(&self, container: ContainerObservation) {
-        *self.container.lock().unwrap() = container;
+        *self
+            .containers
+            .lock()
+            .unwrap()
+            .first_mut()
+            .expect("watch fixture has an API container") = container;
     }
 
     fn mutate(&self, mutate: impl FnOnce(&mut ContainerObservation)) {
-        mutate(&mut self.container.lock().unwrap());
+        mutate(
+            self.containers
+                .lock()
+                .unwrap()
+                .first_mut()
+                .expect("watch fixture has an API container"),
+        );
+    }
+
+    fn replace_ingress_id(&self, container_id: ContainerId) {
+        self.containers
+            .lock()
+            .unwrap()
+            .get_mut(1)
+            .expect("watch fixture has an ingress container")
+            .container_id = container_id;
     }
 
     fn send(&self, event: &'static [u8]) {
@@ -418,13 +479,15 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
     if statement.query == "SELECT value FROM cluster WHERE key = ?" {
         query_events(&["value"], [vec![json!("caddy")]])
     } else if statement.query == "SELECT id, container FROM containers ORDER BY id" {
-        let container = state.container.lock().unwrap().clone();
+        let containers = state.containers.lock().unwrap();
         query_events(
             &["id", "container"],
-            [vec![
-                json!(container.container_id),
-                json!(serde_json::to_string(&container).unwrap()),
-            ]],
+            containers.iter().map(|container| {
+                vec![
+                    json!(container.container_id),
+                    json!(serde_json::to_string(container).unwrap()),
+                ]
+            }),
         )
     } else if statement.query == "SELECT hostname, body FROM certificates ORDER BY hostname" {
         query_events(&["hostname", "body"], [])

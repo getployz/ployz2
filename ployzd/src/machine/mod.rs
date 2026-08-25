@@ -28,6 +28,7 @@ use crate::network::{allocate_machine_subnet, management_address};
 mod ingress;
 mod local_machine;
 
+pub use ingress::IngressRuntimeError;
 pub(crate) use local_machine::RuntimeWatchTelemetry;
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
 

@@ -13,6 +13,9 @@ use ployz_core::{
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
 
+#[path = "ingress_cluster/zentinel.rs"]
+mod zentinel;
+
 #[tokio::test]
 #[ignore = "Layer 3: requires the privileged Ployz testkit image"]
 async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
@@ -333,7 +336,7 @@ async fn assert_failed_load_retry(
     }))
     .unwrap();
     let rejected = create_and_start(client, machine, load_failure).await;
-    wait_log_count(cluster, "failed to update Caddy configuration", 1).await;
+    wait_log_count(cluster, "failed to update Ingress Proxy configuration", 1).await;
     let tick: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
         "service_id": ServiceId::random(),
         "name": "tick",
@@ -346,7 +349,7 @@ async fn assert_failed_load_retry(
     }))
     .unwrap();
     create_and_start(client, machine, tick).await;
-    wait_log_count(cluster, "failed to update Caddy configuration", 2).await;
+    wait_log_count(cluster, "failed to update Ingress Proxy configuration", 2).await;
     assert_eq!(
         client
             .call::<op::GetIngressProxyConfig>(
@@ -358,13 +361,7 @@ async fn assert_failed_load_retry(
             .config(),
         stable
     );
-    assert_eq!(
-        cluster
-            .machine_shell(0, "curl -fsS -H 'Host: example.test' http://127.0.0.1")
-            .unwrap()
-            .trim(),
-        "ok"
-    );
+    assert_eq!(request(cluster, "example.test"), (200, "ok\n".into()));
     client
         .call::<op::StopContainer>(
             StopContainerRequest {
@@ -422,7 +419,7 @@ async fn assert_invalid_template(client: &mut ployz::connect::Client, machine: &
     .unwrap();
     create_and_start(client, machine, broken).await;
     let config = wait_config(client, machine, |config| {
-        config.contains("Service 'broken': rendering failed")
+        config.contains("Service 'app/broken': rendering failed")
     })
     .await;
     assert!(config.contains("http://example.test"));
@@ -573,7 +570,7 @@ async fn deploy(
     };
     let plan = preview_deploy(
         &ployz::deploy::DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
+            ProjectName::parse("start-first").unwrap(),
             [requested],
             ployz::deploy::PlanOptions {
                 skip_health_monitor: true,
@@ -640,6 +637,19 @@ async fn wait_log_count(cluster: &Cluster, needle: &str, count: usize) {
     })
     .await
     .unwrap();
+}
+
+fn request(cluster: &Cluster, hostname: &str) -> (u16, String) {
+    let response = cluster
+        .machine_shell(
+            0,
+            &format!(
+                "curl -sS -H 'Host: {hostname}' -o /tmp/ployz-ingress-response -w '%{{http_code}}\\n' http://127.0.0.1; cat /tmp/ployz-ingress-response"
+            ),
+        )
+        .unwrap();
+    let (status, body) = response.split_once('\n').unwrap();
+    (status.parse().unwrap(), body.to_owned())
 }
 
 async fn create_and_start(
@@ -755,10 +765,13 @@ async fn wait_config(
         {
             Ok(config) if expected(config.config()) => return config.config().to_owned(),
             Ok(config) if tokio::time::Instant::now() >= deadline => {
-                panic!("Caddyfile did not converge:\n{}", config.config())
+                panic!(
+                    "Ingress Proxy configuration did not converge:\n{}",
+                    config.config()
+                )
             }
             Err(error) if tokio::time::Instant::now() >= deadline => {
-                panic!("Caddyfile was unavailable: {error}")
+                panic!("Ingress Proxy configuration was unavailable: {error}")
             }
             _ => {}
         }
