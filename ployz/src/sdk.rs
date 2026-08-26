@@ -19,9 +19,8 @@ use ployz_core::{
     ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployOutcome,
     DescribeContractRequest, DockerVolumeName, ExecutionError, LocalMachineRemoved, MachineId,
     MachineTarget, ObservedDataLoss, OpaquePayload, PartialResult, ProjectName,
-    RUNTIME_WATCH_CAPABILITY, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RegisterRequest, Registered,
-    RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest,
-    derive_services, op,
+    RUNTIME_WATCH_CAPABILITY, RegisterRequest, Registered, RemoveVolumesRequest, RpcError,
+    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, decode_runtime_watch_frame, op,
 };
 
 struct SessionInner {
@@ -568,21 +567,8 @@ impl Watch {
                 *guard = None;
                 Ok(None)
             }
-            // Tonic limits compressed bytes, so retain the JSON ceiling after decompression.
-            Some(Ok(Some(payload))) if payload.json.len() > RUNTIME_WATCH_MESSAGE_SIZE_LIMIT => {
-                *guard = None;
-                Err(RpcError {
-                    code: RpcErrorCode::Internal,
-                    message: format!(
-                        "Runtime Watch message length too large: found {} bytes, the limit is {RUNTIME_WATCH_MESSAGE_SIZE_LIMIT} bytes",
-                        payload.json.len()
-                    ),
-                    details: Value::Null,
-                })
-            }
-            Some(Ok(Some(payload))) => match payload.decode_json::<RuntimeWatchFrame>() {
+            Some(Ok(Some(payload))) => match decode_runtime_watch_frame(&payload) {
                 Ok(mut frame) => {
-                    frame.services = derive_services(frame.containers.iter().cloned());
                     tokio::select! {
                         () = self.cancel.cancelled() => {
                             *guard = None;
@@ -595,7 +581,11 @@ impl Watch {
                 }
                 Err(error) => {
                     *guard = None;
-                    Err(RpcError::from(ConnectError::from(error)))
+                    Err(RpcError {
+                        code: RpcErrorCode::Internal,
+                        message: error.to_string(),
+                        details: Value::Null,
+                    })
                 }
             },
             Some(Err(status))

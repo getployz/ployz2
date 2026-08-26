@@ -6,8 +6,9 @@ use ployz::sdk;
 use ployz_core::{
     CapabilityName, ContainerId, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DockerVolume,
     DockerVolumeId, DockerVolumeName, MACHINE_STORAGE_OBSERVATION_CAPABILITY, MachineId,
-    MachineRpcClient, MachineStorageObservation, PROTOCOL_MAJOR, RUNTIME_WATCH_CAPABILITY,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, op,
+    MachineRpcClient, MachineStorageObservation, OpaquePayload, PROTOCOL_MAJOR,
+    RUNTIME_WATCH_CAPABILITY, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RpcErrorCode, RuntimeWatchFrame,
+    RuntimeWatchRequest, op,
 };
 use serde_json::Value;
 use tokio::time::timeout;
@@ -56,9 +57,7 @@ async fn missing_watch_capability_is_unsupported_and_never_polls_list_rpcs() {
 async fn first_watch_derives_services_from_containers() {
     let (client, service, _session, _machine) = watching_session().await;
     let expected = frozen_frame();
-    let mut sent = expected.clone();
-    sent.services.clear();
-    service.push_watch_frame(sent);
+    service.push_watch_frame(expected.clone());
     let watch = client.watch().await.unwrap();
 
     let frame = next_frame(&watch).await;
@@ -96,10 +95,7 @@ async fn first_watch_derives_services_from_containers() {
 #[tokio::test]
 async fn watch_negotiates_gzip() {
     let (client, service, _session, _machine) = watching_session().await;
-    service.push_watch_frame(frozen_frame());
-    let watch = client.watch().await.unwrap();
-
-    let _frame = next_frame(&watch).await;
+    let _watch = client.watch().await.unwrap();
 
     assert!(
         service
@@ -409,7 +405,7 @@ async fn frame_above_ceiling_errors_without_closing_session() {
     let (client, service, _session, _machine) = watching_session().await;
     let mut frame = frozen_frame();
     frame.observed_at = "x".repeat(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
-    service.push_watch_frame(frame);
+    service.push_watch_payload(OpaquePayload::from_json(&frame).unwrap());
     let watch = client.watch().await.unwrap();
 
     let error = timeout(Duration::from_secs(10), watch.next())

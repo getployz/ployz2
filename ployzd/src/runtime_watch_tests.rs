@@ -13,9 +13,10 @@ use ployz_core::{
     ContainerRuntimeObservation, DockerVolume, DockerVolumeId, DockerVolumeName,
     GlobalReconcileFailureObservation, HealthObservation, IngressHost, IssuanceClock,
     IssuanceFailure, Machine, MachineId, MachineName, MachineObservation, MachineRuntime,
-    ManagementAddress, MembershipObservation, OpaquePayload, ProjectName, QualifiedService,
+    ManagementAddress, MembershipObservation, ProjectName, QualifiedService,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RttObservation, RttStatistics,
-    SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey,
+    SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey, decode_runtime_watch_frame,
+    derive_services, encode_runtime_watch_frame,
 };
 use serde_json::{Value, json};
 
@@ -49,7 +50,7 @@ const PAIRING: &str = "pairing-credential-secret";
 const DIAL: &str = "dial-credential-secret";
 
 #[test]
-fn assembled_frame_keeps_replicated_rows_without_duplicate_services() {
+fn assembled_frame_keeps_replicated_rows_and_derives_services() {
     let entry = machine("edge", ENTRY_ID, 1);
     let peer = machine("peer", PEER_ID, 2);
     let service = container(CONTAINER_ID, "api", ContainerKind::ServiceContainer);
@@ -98,7 +99,10 @@ fn assembled_frame_keeps_replicated_rows_without_duplicate_services() {
         ]
     );
     assert_eq!(frame.containers, vec![service.clone(), hook.clone()]);
-    assert!(frame.services.is_empty());
+    assert_eq!(
+        frame.services,
+        derive_services(frame.containers.iter().cloned())
+    );
     assert_eq!(frame.volumes, vec![volume]);
     assert_eq!(
         frame.certificates,
@@ -279,7 +283,7 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
         ]
     );
 
-    let encoded = OpaquePayload::from_json(&frame).unwrap();
+    let encoded = encode_runtime_watch_frame(&frame).unwrap();
     let round_trip: Value = encoded.decode_json().unwrap();
     assert_no_secret_material(&round_trip.to_string());
     assert_eq!(
@@ -473,6 +477,29 @@ async fn watch_stream_yields_the_first_complete_frame_immediately() {
             .is_err(),
         "first yield must not wait for a timer or a store change"
     );
+}
+
+#[tokio::test]
+async fn watch_stream_omits_services_duplicated_by_containers() {
+    let entry = machine("edge", ENTRY_ID, 1);
+    let mut current = snapshot(vec![entry.clone()], Vec::new());
+    current.containers = observations(vec![container(
+        CONTAINER_ID,
+        "api",
+        ContainerKind::ServiceContainer,
+    )]);
+    let fixture = WatchFixture::new(current);
+    let (_wake, changes) = mpsc::channel(1);
+    let mut stream = serve_fixture(entry.id, &fixture, changes);
+
+    let payload = tokio::time::timeout(Duration::from_secs(1), stream.next())
+        .await
+        .expect("Watch frame")
+        .expect("open stream")
+        .expect("Watch status");
+    let wire: Value = payload.decode_json().unwrap();
+
+    assert!(wire.get("services").is_none());
 }
 
 #[tokio::test]
@@ -877,7 +904,7 @@ async fn next_frame(stream: &mut crate::logs::RpcStream) -> ployz_core::RuntimeW
         .expect("Watch frame")
         .expect("open stream")
         .expect("Watch status");
-    payload.decode_json().unwrap()
+    decode_runtime_watch_frame(&payload).unwrap()
 }
 
 fn snapshot(machines: Vec<Machine>, volumes: Vec<DockerVolume>) -> RuntimeWatchSnapshot {

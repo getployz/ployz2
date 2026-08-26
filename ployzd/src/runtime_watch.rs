@@ -11,8 +11,9 @@ use futures_util::{Stream, StreamExt};
 use ployz_core::{
     CertificateAvailability, CertificateBackoff, CertificateFailureKind, CertificateObservation,
     ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IngressHost, IssuanceClock,
-    IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation, OpaquePayload,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RuntimeWatchFrame, RuntimeWatchIncompleteIds,
+    IssuanceFailure, Machine, MachineId, MachineObservation, MembershipObservation,
+    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError, derive_services,
+    encode_runtime_watch_frame,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -168,23 +169,19 @@ where
                 .as_ref()
                 .is_none_or(|previous| observation_changed(previous, &frame))
             {
-                let payload = match OpaquePayload::from_json(&frame) {
+                let payload = match encode_runtime_watch_frame(&frame) {
                     Ok(payload) => payload,
+                    Err(error @ RuntimeWatchPayloadError::MessageTooLarge { .. }) => {
+                        let _ = sender
+                            .send(Err(Status::out_of_range(error.to_string())))
+                            .await;
+                        return;
+                    }
                     Err(error) => {
                         let _ = sender.send(Err(Status::internal(error.to_string()))).await;
                         return;
                     }
                 };
-                // Tonic limits compressed bytes, so bound the JSON before compression.
-                if payload.json.len() > RUNTIME_WATCH_MESSAGE_SIZE_LIMIT {
-                    let _ = sender
-                        .send(Err(Status::out_of_range(format!(
-                            "Runtime Watch message length too large: found {} bytes, the limit is {RUNTIME_WATCH_MESSAGE_SIZE_LIMIT} bytes",
-                            payload.json.len()
-                        ))))
-                        .await;
-                    return;
-                }
                 if sender.send(Ok(payload)).await.is_err() {
                     return;
                 }
@@ -263,10 +260,9 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
 
 /// Assemble one complete Runtime Watch frame.
 ///
-/// Service observations are left for clients to derive from replicated Containers.
-/// Certificate Material, HTTP-01 challenge bytes, hosted DNS token/endpoint, Relay
-/// credentials, and Pairing credentials are not copied onto the frame. Incomplete IDs
-/// are preserved as IDs.
+/// Service observations are derived from replicated Containers. Certificate Material,
+/// HTTP-01 challenge bytes, hosted DNS token/endpoint, Relay credentials, and Pairing
+/// credentials are not copied onto the frame. Incomplete IDs are preserved as IDs.
 ///
 /// When `telemetry` is `None`, replicated Machine rows stay and membership is unknown
 /// except the entry Machine, which is Up, with no selected endpoint or RTT.
@@ -290,6 +286,7 @@ pub(crate) fn assemble_runtime_watch_frame(
     }
     let mut containers = snapshot.containers.observations;
     containers.sort_by_key(|container| container.container_id);
+    let services = derive_services(containers.iter().cloned());
     let certificates = snapshot
         .certificates
         .observations
@@ -299,7 +296,7 @@ pub(crate) fn assemble_runtime_watch_frame(
     RuntimeWatchFrame {
         machines,
         containers,
-        services: Vec::new(),
+        services,
         volumes: snapshot.volumes.observations,
         certificates,
         hosted_dns_hostname: snapshot.hosted_dns.map(|reservation| reservation.name),

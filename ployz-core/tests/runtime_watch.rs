@@ -2,14 +2,15 @@ use std::collections::BTreeSet;
 
 use ployz_core::{
     AdvertisedEndpoint, CertificateAvailability, CertificateBackoff, CertificateFailureKind,
-    CertificateObservation, ContainerId, ContainerKind, ContainerObservation,
+    CertificateObservation, CodecError, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, ContractDescription, DockerVolume, DockerVolumeId,
     DockerVolumeName, HealthObservation, IngressHost, Machine, MachineId, MachineName,
     MachineObservation, MachineRuntime, ManagementAddress, MembershipObservation, OpaquePayload,
     PROTOCOL_MAJOR, ProjectName, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody,
-    RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchRequest,
-    SelectedEndpoint, ServiceContainer, ServiceId, ServiceName, ServiceObservation,
-    WireGuardPublicKey, op,
+    RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
+    RuntimeWatchRequest, SelectedEndpoint, ServiceContainer, ServiceId, ServiceName,
+    ServiceObservation, WireGuardPublicKey, decode_runtime_watch_frame, encode_runtime_watch_frame,
+    op,
 };
 use serde_json::{Value, json};
 
@@ -57,8 +58,19 @@ fn runtime_watch_request_is_empty_and_catalogued() {
 fn frozen_runtime_watch_frame_round_trips_complete_observations() {
     let frame: RuntimeWatchFrame = serde_json::from_str(FROZEN_FRAME).unwrap();
     assert_eq!(frame, expected_frame());
-    let encoded = OpaquePayload::from_json(&frame).unwrap();
-    assert_eq!(encoded.decode_json::<RuntimeWatchFrame>().unwrap(), frame);
+    let encoded = encode_runtime_watch_frame(&frame).unwrap();
+    let wire: Value = encoded.decode_json().unwrap();
+    assert!(wire.get("services").is_none());
+    assert_eq!(decode_runtime_watch_frame(&encoded).unwrap(), frame);
+}
+
+#[test]
+fn runtime_watch_payload_rejects_malformed_json() {
+    let error = decode_runtime_watch_frame(&OpaquePayload::new(b"{".to_vec())).unwrap_err();
+    assert!(matches!(
+        error,
+        RuntimeWatchPayloadError::Codec(CodecError::DecodeJson(_))
+    ));
 }
 
 #[test]
