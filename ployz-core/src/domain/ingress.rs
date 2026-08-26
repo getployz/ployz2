@@ -38,6 +38,7 @@ pub const INGRESS_PROXY_BACKEND_CLUSTER_KEY: &str = "ingress_proxy_backend";
 /// Concrete Ingress Proxy implementation selected when a Cluster is founded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum IngressProxyBackend {
     /// Caddy with bridge networking and host-published ports.
     Caddy,

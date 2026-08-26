@@ -104,7 +104,32 @@ for (const name of forbidden) {
   }
 }
 
+// match() routes known tags to their arm and everything else to `unknown`, which
+// is how a consumer survives a Machine running a newer ployzd.
+{
+  const seen = sdk.match({ state: "pool", free_bytes: 7 }, "state", {
+    pool: (value) => value.free_bytes,
+    unknown: () => -1,
+  });
+  if (seen !== 7) {
+    throw new Error(`match must dispatch a known tag, got ${seen}`);
+  }
+  const unknown = sdk.match({ state: "from_a_newer_daemon" }, "state", {
+    pool: () => -1,
+    unknown: (value) => value.state,
+  });
+  if (unknown !== "from_a_newer_daemon") {
+    throw new Error(`match must route an unknown tag to unknown, got ${unknown}`);
+  }
+}
+
 const dts = fs.readFileSync(require.resolve("@ployz/sdk/index.d.ts"), "utf8");
+if (!dts.includes("export declare function match")) {
+  throw new Error("index.d.ts is missing match");
+}
+if (dts.includes("Additive")) {
+  throw new Error("index.d.ts must not reference Additive");
+}
 if (!dts.includes("export declare function connect")) {
   throw new Error("index.d.ts is missing connect");
 }

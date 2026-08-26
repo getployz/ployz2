@@ -35,6 +35,7 @@ pub(super) fn resolve_machine_text<'a>(
 
 /// One Machine's durable advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct Machine {
     pub id: MachineId,
     pub name: MachineName,
@@ -51,6 +52,7 @@ pub struct Machine {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct MachineRuntime {
     pub daemon_version: String,
     pub docker_version: String,
@@ -63,6 +65,7 @@ pub struct MachineRuntime {
 /// Storage preparation requested while enrolling one Machine.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum StorageChoice {
     #[default]
     None,
@@ -173,6 +176,7 @@ mod machine_token_tests {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct MachineIdentity {
     pub id: MachineId,
     pub name: MachineName,
@@ -252,6 +256,7 @@ pub fn apply_machine_update(
 
 /// Current storage evidence observed from one Machine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum MachineStorageObservation {
     /// Usable ZFS support was not observed.
@@ -271,6 +276,7 @@ pub enum MachineStorageObservation {
 
 /// The latest failed Global reconciliation attempt for one Service on a Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct GlobalReconcileFailureObservation {
     /// Global Service whose local slot could not be ensured.
     pub service: QualifiedService,
@@ -282,6 +288,7 @@ pub struct GlobalReconcileFailureObservation {
 
 /// An observer-relative view layered over a Machine's advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct MachineObservation {
     pub machine: Machine,
     pub membership: MembershipObservation,
@@ -423,6 +430,7 @@ pub fn synthesize_membership(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct RttStatistics {
     pub median_ns: u64,
     pub population_stddev_ns: u64,
@@ -479,6 +487,7 @@ pub struct WireGuardDevice {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct WireGuardPeer {
     pub public_key: WireGuardPublicKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -488,6 +497,7 @@ pub struct WireGuardPeer {
     pub received_bytes: u64,
     pub sent_bytes: u64,
     #[serde(default)]
+    #[cfg_attr(feature = "typescript", ts(type = "string[]"))]
     pub allowed_ips: Vec<IpNet>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<MachineIdentity>,
@@ -551,6 +561,7 @@ pub const DIAL_IN_PAIRING: &str = "Cloud Pairing must not carry a Dial Credentia
 /// here and is never stored on a Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct CloudPairing {
     relay_url: String,
     secret: PairingCredential,

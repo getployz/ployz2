@@ -18,15 +18,30 @@ crate::value::open_string_enum!(HealthObservation, Unrecognized {
 
 /// Docker state as observed, including the untouched value of a future state.
 #[derive(Clone, Debug, PartialEq)]
+// `Serialize` is hand-written below, so `ts-rs` cannot derive the wire shape.
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(
+        type = "{ state: \"created\" } | { state: \"running\"; health: HealthObservation } | { state: \"paused\" } | { state: \"restarting\" } | { state: \"exited\"; code: number } | { state: \"removing\" } | { state: \"dead\" } | { state?: string }"
+    )
+)]
 pub enum ContainerRuntimeObservation {
     Created,
-    Running { health: HealthObservation },
+    Running {
+        health: HealthObservation,
+    },
     Paused,
     Restarting,
-    Exited { code: i64 },
+    Exited {
+        code: i64,
+    },
     Removing,
     Dead,
-    Unknown { raw: Value },
+    Unknown {
+        #[cfg_attr(feature = "typescript", ts(type = "JsonValue"))]
+        raw: Value,
+    },
 }
 
 impl ContainerRuntimeObservation {
@@ -117,6 +132,7 @@ fn insert_state(object: &mut Map<String, Value>, state: &'static str) {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum ContainerKind {
     ServiceContainer,
     PreDeployHook,
@@ -124,6 +140,7 @@ pub enum ContainerKind {
 
 /// A local observation of one managed container. Replication redacts it at the store boundary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ContainerObservation {
     pub container_id: ContainerId,
     /// Generated Docker name for display, never identity or selection.
@@ -159,6 +176,8 @@ impl ContainerObservation {
 /// A Service Container after its role has been proven from a mixed observation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ContainerObservation", into = "ContainerObservation")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "ContainerObservation"))]
 pub struct ServiceContainer {
     observation: ContainerObservation,
 }
@@ -166,6 +185,8 @@ pub struct ServiceContainer {
 /// A Hook Container after its role has been proven from a mixed observation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ContainerObservation", into = "ContainerObservation")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "ContainerObservation"))]
 pub struct HookContainer {
     observation: ContainerObservation,
 }

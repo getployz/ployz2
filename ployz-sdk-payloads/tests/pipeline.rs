@@ -8,9 +8,9 @@ use ployz_core::{
     CreateVolumeReport, DESCRIBE_CONTRACT_CAPABILITY, DataLoss, DataLossConfirmation, DeployIntent,
     DeployOperation, DeployOutcome, DeployPreview, DockerVolume, DockerVolumeStorageObservation,
     ExecutionError, HealthObservation, HealthcheckSpec, IngressHostname, LocalMachineRemoved,
-    MembershipObservation, ObservedDataLoss, PlanOptions, RUNTIME_WATCH_CAPABILITY,
-    RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode, RuntimeWatchFrame,
-    ServiceAttempt, StorageChoice, UnconfirmedDataLoss, VolumeInventory, VolumeSource,
+    MembershipObservation, ObservedDataLoss, PlanOptions, RequestedServiceSpec,
+    ResolvedServiceSpec, RpcError, RuntimeWatchFrame, ServiceAttempt, StorageChoice,
+    UnconfirmedDataLoss, VolumeInventory, VolumeSource,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -468,167 +468,52 @@ fn observation_enums_keep_an_unknown_case() {
 }
 
 #[test]
-fn generated_typescript_encodes_additive_evolution_rules() {
+fn generated_typescript_encodes_evolution_rules() {
     let dts = ployz_sdk_payloads::artifacts().payloads_dts;
-    assert!(dts.contains("export type Additive<T extends object> = T & JsonObject;"));
-    assert!(dts.contains("export type MembershipObservation ="));
-    assert!(dts.contains("| (string & {});"));
-    assert!(dts.contains("export type ContainerRuntimeObservation ="));
-    assert!(dts.contains("state?: string"));
-    assert!(dts.contains("export type DockerVolume = Additive<{"));
-    assert!(dts.contains("export type DockerVolumeStorageObservation ="));
-    assert!(dts.contains("kind: \"plain\"; driver: string"));
-    assert!(dts.contains(
-        "kind: \"provisioned\"; mountpoint: MachinePath; bound_bytes: number; used_bytes: number"
-    ));
-    assert!(dts.contains("storage: DockerVolumeStorageObservation"));
-    assert!(dts.contains("export type DataLoss ="));
-    assert!(dts.contains("DockerVolume: DockerVolumeId"));
-    assert!(dts.contains("export type ObservedDataLoss = Additive<{"));
-    assert!(dts.contains("data_loss: DataLoss[]"));
-    assert!(dts.contains("export type DataLossConfirmation = Additive<{"));
-    assert!(dts.contains("confirmed: DataLoss[]"));
-    assert!(dts.contains("export type UnconfirmedDataLoss = Additive<{"));
-    assert!(dts.contains("missing: DataLoss[]"));
-    assert!(dts.contains("export type LocalMachineRemoved = Additive<{"));
-    assert!(dts.contains("reset_warning?: string"));
-    assert!(dts.contains("export type ClusterTeardown = Additive<{"));
-    assert!(dts.contains("destroyed_projects: ProjectName[]"));
-    assert!(dts.contains("machines: PartialResult<LocalMachineRemoved, RpcError>"));
-    assert!(dts.contains("pairing_revoked: boolean"));
-    assert!(dts.contains("export type MachineTarget = string"));
-    assert!(dts.contains("export type ContractDescription = Additive<{"));
-    assert!(dts.contains("readonly __brand: \"ProjectName\""));
-    assert!(dts.contains("export type QualifiedService = string"));
-    assert!(dts.contains("identity: QualifiedService"));
-    assert!(dts.contains("export type DeployIntent = Additive<{"));
-    assert!(dts.contains("project_name: ProjectName"));
-    assert!(dts.contains("target: RequestedServiceSpec[]"));
-    assert!(dts.contains("export type ProvisionedVolume = Additive<{"));
-    assert!(dts.contains("service: ServiceName"));
-    assert!(dts.contains("reference: ServiceVolumeReference"));
-    assert!(dts.contains("export type ProvisionedVolumeMaximumBytes = string"));
-    assert!(dts.contains("maximum_bytes: ProvisionedVolumeMaximumBytes"));
-    assert!(dts.contains("provisioned_volumes: ProvisionedVolume[]"));
-    assert!(dts.contains("export type RequestedServiceSpec = Additive<{"));
-    assert!(dts.contains("export type ResolvedServiceSpec = Additive<{"));
-    assert!(dts.contains("export type IngressProxyFragment ="));
-    assert!(dts.contains("backend: \"caddy\"; config: string"));
-    assert!(dts.contains("export type IngressProxyConfig ="));
-    assert!(dts.contains("backend: \"zentinel\"; config: string"));
-    assert!(dts.contains("backend: \"envoy\"; config: string"));
+
+    // Payloads are plain objects. An intersected index signature is absorbed by
+    // consumer mapped types (Inngest `Jsonify`, Electric `Row`) and erases the
+    // named fields it was meant to protect.
+    assert!(!dts.contains("Additive"));
+
+    // Ids do not cross-assign.
+    for id in [
+        "MachineId",
+        "ContainerId",
+        "ServiceId",
+        "ServiceName",
+        "ProjectName",
+    ] {
+        assert!(
+            dts.contains(&format!(
+                "export type {id} = string & {{ readonly __brand: \"{id}\" }};"
+            )),
+            "{id} must stay branded"
+        );
+    }
+
+    // A newer daemon may send a tag or wire string this build has never heard of.
+    assert!(dts.contains("| { state?: string }"));
+    assert!(dts.contains("| (string & {})"));
+
+    // 64-bit integers cross the wire as JSON numbers; `bigint` would never parse.
+    assert!(!dts.contains("bigint"));
+
+    // Free-form payloads stay explicitly free-form.
+    assert!(dts.contains("details?: JsonValue"));
+    assert!(!dts.contains("export type RequestedServiceSpec = JsonValue"));
+
+    // The Ingress Proxy Backend contract, and the pre-#616 name that replaced it.
+    for backend in ["caddy", "zentinel", "envoy"] {
+        assert!(dts.contains(&format!("\"backend\": \"{backend}\"")));
+    }
     assert!(dts.contains(
         "GET_INGRESS_PROXY_CONFIG_CAPABILITY: CapabilityName = \"ployz.ingress.config.v1\""
     ));
     assert!(!dts.contains("GET_CADDY_CONFIG_CAPABILITY"));
-    assert!(dts.contains("ingress_proxy_fragment?: IngressProxyFragment"));
-    assert!(!dts.contains("caddy_config?: string"));
-    assert!(dts.contains("export type ServiceVolume = Additive<{"));
-    assert!(dts.contains("export type VolumeDriver = Additive<{"));
-    assert!(dts.contains("driver?: VolumeDriver"));
-    assert!(dts.contains("export type ConfigSpec = Additive<{"));
-    assert!(dts.contains("content?: number[]"));
-    assert!(dts.contains("configs?: ConfigSpec[]"));
-    assert!(dts.contains("export type ConfigMount = Additive<{"));
-    assert!(dts.contains("config_mounts?: ConfigMount[]"));
-    assert!(dts.contains("export type DeviceMapping = Additive<{"));
-    assert!(dts.contains("devices?: DeviceMapping[]"));
-    assert!(dts.contains("export type DeviceReservation = Additive<{"));
-    assert!(dts.contains("device_reservations?: DeviceReservation[]"));
-    assert!(dts.contains("export type Ulimit = Additive<{"));
-    assert!(dts.contains("ulimits?: { readonly [key: string]: Ulimit }"));
-    assert!(dts.contains("effective_healthcheck: HealthcheckSpec | null"));
-    assert!(dts.contains("details?: JsonValue;"));
-    assert!(!dts.contains("export type RequestedServiceSpec = JsonValue"));
-    assert!(!dts.contains("export type ResolvedServiceSpec = JsonValue"));
-    assert!(dts.contains("readonly __brand: \"MachineId\""));
-    assert!(dts.contains("readonly __brand: \"ServiceId\""));
-    assert!(dts.contains("readonly __brand: \"ContainerId\""));
-    assert!(dts.contains("readonly __brand: \"ServiceName\""));
-    assert!(dts.contains("export type ObservationKind ="));
-    assert!(dts.contains("export type DeployWarning ="));
-    assert!(dts.contains("SkippedDependencyHealth:"));
-    assert!(dts.contains("export type DeployPreview = Additive<{"));
-    assert!(dts.contains("operations: OperationRow[]"));
-    assert!(dts.contains("export type OperationRow = Additive<{"));
-    assert!(dts.contains("export type DeployEvent ="));
-    assert!(dts.contains("export type OperationStatus ="));
-    assert!(dts.contains("export type OperationPhase ="));
-    assert!(dts.contains("type: \"waiting_for_health\""));
-    assert!(dts.contains("elapsed_ms: number"));
-    assert!(dts.contains("deadline_ms: number"));
-    assert!(dts.contains("warnings: DeployWarning[]"));
-    assert!(dts.contains("would_remove: QualifiedService[]"));
-    assert!(dts.contains("preserved_volumes: PreservedVolume[]"));
-    assert!(dts.contains("prune_refusal?: PruneRefusal"));
-    assert!(dts.contains("export type PruneRefusal ="));
-    assert!(dts.contains("selected: ServiceAttempt[]"));
-    assert!(dts.contains("export type DeployOperation ="));
-    assert!(dts.contains("type: \"run_container\""));
-    assert!(dts.contains("type: \"wait_healthy\""));
-    assert!(dts.contains(
-        "type: \"create_provisioned_volume\"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes"
-    ));
-    assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
-    assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));
-    assert!(dts.contains("export type ExecutionError ="));
-    assert!(dts.contains("export type MachineAction ="));
-    assert!(dts.contains("export type HealthFailure ="));
-    assert!(dts.contains("export type DependencyHealthFailure ="));
-    assert!(dts.contains("export type HookFailure ="));
-    assert!(dts.contains("type: \"success\""));
-    assert!(dts.contains("type: \"failed\""));
-    assert!(!dts.contains("Success: { completed: DeployOperation[] }"));
-    assert!(dts.contains("unexecuted: DeployOperation[]"));
-    assert!(dts.contains("failed: FailedOperation<E>"));
-    assert!(dts.contains("export type RuntimeWatchFrame = Additive<{"));
-    assert!(dts.contains("incomplete_ids: RuntimeWatchIncompleteIds"));
-    assert!(dts.contains("hosted_dns_hostname?: string"));
-    assert!(dts.contains("export type Machine = Additive<{"));
-    assert!(dts.contains("export type StorageChoice = \"none\" | \"zfs\";"));
-    assert!(dts.contains("export type MachineStorageObservation ="));
-    assert!(
-        dts.contains("state: \"pool\"; size_bytes: number; used_bytes: number; free_bytes: number")
-    );
-    assert!(dts.contains("export type RegisterRequest = Additive<{"));
-    assert!(dts.contains("storage: StorageChoice"));
-    assert!(dts.contains("storage?: MachineStorageObservation"));
-    assert!(dts.contains("public_key: WireGuardPublicKey"));
-    assert!(dts.contains("export type Registered = Additive<{"));
-    assert!(dts.contains("assigned_machine: Machine"));
-    assert!(dts.contains("visible_peers: Machine[]"));
-    assert!(dts.contains("target_versions: { readonly [key: string]: number }"));
-    assert!(dts.contains("export type ContainerObservation = Additive<{"));
-    assert!(dts.contains("export type ServiceObservation = Additive<{"));
-    assert!(dts.contains("export type RttStatistics = Additive<{"));
-    assert!(dts.contains("export type CertificateObservation = Additive<{"));
-    assert!(dts.contains("resolved_spec: ResolvedServiceSpec"));
-    assert!(!dts.contains("export declare function connect"));
-    assert!(!dts.contains("export declare class Client"));
-    assert!(dts.contains("export const RUNTIME_WATCH_CAPABILITY: CapabilityName"));
-    assert!(dts.contains(RUNTIME_WATCH_CAPABILITY));
-    assert!(dts.contains("export const DESCRIBE_CONTRACT_CAPABILITY: CapabilityName"));
-    assert!(dts.contains(DESCRIBE_CONTRACT_CAPABILITY));
-    assert!(dts.contains(CERTIFICATE_POLICY_CAPABILITY));
-    assert!(dts.contains("export declare function packageName(): \"@ployz/sdk\";"));
-    for wire in MembershipObservation::known_wires() {
-        assert!(
-            dts.contains(&format!("\"{wire}\"")),
-            "MembershipObservation TypeScript is missing {wire}"
-        );
-    }
-    for wire in HealthObservation::known_wires() {
-        assert!(
-            dts.contains(&format!("\"{wire}\"")),
-            "HealthObservation TypeScript is missing {wire}"
-        );
-    }
-    for wire in RpcErrorCode::known_wires() {
-        assert!(
-            dts.contains(&format!("\"{wire}\"")),
-            "RpcErrorCode TypeScript is missing {wire}"
-        );
-    }
+
+    // Wire structs are an implementation detail of serde, never a public name.
+    assert!(!dts.contains("SpecWire"));
 }
 
 #[test]

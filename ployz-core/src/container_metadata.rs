@@ -26,6 +26,11 @@ fn validate_container_label_key(key: &str) -> Result<(), ValueError> {
     try_from = "BTreeMap<String, String>",
     into = "BTreeMap<String, String>"
 )]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "{ readonly [key: string]: string }")
+)]
 pub struct ContainerLabels(BTreeMap<String, String>);
 
 impl ContainerLabels {
@@ -86,6 +91,8 @@ fn is_rfc1123_hostname(value: &str) -> bool {
 /// A container's UTS hostname. It has no Service, DNS, ingress, placement, or Machine meaning.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
 pub struct ContainerHostname(String);
 
 impl ContainerHostname {
@@ -145,6 +152,8 @@ impl From<ContainerHostname> for String {
 /// One container-local Docker `/etc/hosts` entry.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
 pub struct ExtraHost(String);
 
 impl ExtraHost {

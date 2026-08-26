@@ -10,11 +10,9 @@ export type JsonValue =
 
 export type JsonObject = { readonly [key: string]: JsonValue | undefined };
 
-export type Additive<T extends object> = T & JsonObject;
-
 export type SerdeResult<T, E> =
-  | Additive<{ Ok: T }>
-  | Additive<{ Err: E }>;
+  | { Ok: T }
+  | { Err: E };
 
 export type MachineId = string & { readonly __brand: "MachineId" };
 
@@ -70,11 +68,19 @@ export type PullPolicy = "always" | "missing" | "never";
 
 export type StorageChoice = "none" | "zfs";
 
-export type MachineStorageObservation =
-  | Additive<{ state: "stateless" }>
-  | Additive<{ state: "ready" }>
-  | Additive<{ state: "pool"; size_bytes: number; used_bytes: number; free_bytes: number }>
-  | Additive<{ state?: string }>;
+export type MachineStorageObservation = { "state": "stateless" } | { "state": "ready" } | { "state": "pool", 
+/**
+ * Current ZFS Pool size in bytes.
+ */
+size_bytes: number, 
+/**
+ * Current allocated ZFS Pool bytes.
+ */
+used_bytes: number, 
+/**
+ * Current free ZFS Pool bytes.
+ */
+free_bytes: number, };
 
 export type UpdateOrder = "start_first" | "stop_first";
 
@@ -82,195 +88,81 @@ export type HttpProtocol = "http" | "https";
 
 export type TransportProtocol = "tcp" | "udp";
 
-export type ServiceMode =
-  | Additive<{ mode: "replicated"; replicas: number }>
-  | Additive<{ mode: "global" }>
-  | Additive<{ mode?: string }>;
+export type ServiceMode = { "mode": "replicated", replicas: number, } | { "mode": "global" };
 
-export type IngressProxyFragment =
-  | Additive<{ backend: "caddy"; config: string }>
-  | Additive<{ backend?: string }>;
+export type IngressProxyFragment = { "backend": "caddy", 
+/**
+ * Non-empty Caddy configuration.
+ */
+config: string, };
 
-export type IngressProxyConfig =
-  | Additive<{ backend: "caddy"; config: string }>
-  | Additive<{ backend: "zentinel"; config: string }>
-  | Additive<{ backend: "envoy"; config: string }>
-  | Additive<{ backend?: string }>;
+export type IngressProxyConfig = { "backend": "caddy", "config": string } | { "backend": "zentinel", "config": string } | { "backend": "envoy", "config": string };
 
-export type IngressHostname =
-  | Additive<{ kind: "cluster_domain"; label?: string }>
-  | Additive<{ kind: "explicit"; hostname: IngressHost }>
-  | Additive<{ kind?: string }>;
+export type IngressHostname = { "kind": "cluster_domain", label?: ClusterDomainLabel | null, } | { "kind": "explicit", hostname: IngressHost, };
 
-export type HostBind =
-  | Additive<{ kind: "all" }>
-  | Additive<{ kind: "address"; address: string }>
-  | Additive<{ kind: "prefix"; prefix: string }>
-  | Additive<{ kind?: string }>;
+export type HostBind = { "kind": "all" } | { "kind": "address", address: string, } | { "kind": "prefix", prefix: string, };
 
-export type PortPublication =
-  | Additive<{ mode: "ingress"; hostname: IngressHostname; load_balancer_port: number; container_port: number; http_protocol: HttpProtocol }>
-  | Additive<{ mode: "host"; bind: HostBind; published_port: number; container_port: number; transport_protocol: TransportProtocol }>
-  | Additive<{ mode?: string }>;
+export type PortPublication = { "mode": "ingress", hostname: IngressHostname, load_balancer_port: number, container_port: number, http_protocol: HttpProtocol, } | { "mode": "host", bind: HostBind, published_port: number, container_port: number, transport_protocol: TransportProtocol, };
 
-export type VolumeDriver = Additive<{
-  name: string;
-  options: { readonly [key: string]: string };
-}>;
+export type VolumeDriver = { name: string, options: { [key in string]: string }, };
 
-export type VolumeSource =
-  | Additive<{ kind: "bind"; machine_path: MachinePath; create_machine_path?: boolean; propagation?: string; recursive?: string }>
-  | Additive<{ kind: "named"; name: DockerVolumeName; external?: boolean; driver?: VolumeDriver; labels?: { readonly [key: string]: string }; no_copy?: boolean; subpath?: string }>
-  | Additive<{ kind: "tmpfs"; size_bytes?: number; mode?: number; options?: string[][] }>
-  | Additive<{ kind?: string }>;
+export type VolumeSource = { "kind": "bind", machine_path: MachinePath, create_machine_path: boolean, propagation: BindPropagation | null, recursive: BindRecursive | null, } | { "kind": "named", name: DockerVolumeName, external: boolean, driver: VolumeDriver | null, labels: { [key in string]: string }, no_copy: boolean, subpath: string | null, } | { "kind": "tmpfs", size_bytes: number | null, mode: number | null, options: Array<Array<string>>, };
 
-export type HealthcheckSpec =
-  | Additive<{ state: "disabled" }>
-  | Additive<{ state: "configured"; test: string[]; interval_millis?: number; timeout_millis?: number; start_period_millis?: number; start_interval_millis?: number; retries?: number }>
-  | Additive<{ state?: string }>;
+export type HealthcheckSpec = { "state": "disabled" } | { "state": "configured" } & ConfiguredHealthcheck;
 
-export type RestartPolicy =
-  | Additive<{ name: "no" }>
-  | Additive<{ name: "always" }>
-  | Additive<{ name: "unless-stopped" }>
-  | Additive<{ name: "on-failure"; maximum_retry_count?: number }>
-  | Additive<{ name?: string }>;
+export type RestartPolicy = { "name": "no" } | { "name": "always" } | { "name": "unless-stopped" } | { "name": "on-failure", maximum_retry_count?: number | null, };
 
-export type LogDriver = Additive<{
-  name: string;
-  options: { readonly [key: string]: string };
-}>;
+export type LogDriver = { name: string, options: { [key in string]: string }, };
 
-export type DeviceMapping = Additive<{
-  machine_path: MachinePath;
-  container_path: ContainerPath;
-  cgroup_permissions: string;
-}>;
+export type DeviceMapping = { machine_path: MachinePath, container_path: ContainerPath, cgroup_permissions: string, };
 
-export type DeviceReservation = Additive<{
-  driver?: string;
-  count?: number;
-  device_ids?: string[];
-  capabilities?: string[][];
-  options?: { readonly [key: string]: string };
-}>;
+export type DeviceReservation = { driver: string | null, count: number | null, device_ids: Array<string>, capabilities: Array<Array<string>>, options: { [key in string]: string }, };
 
-export type Ulimit = Additive<{
-  soft: number;
-  hard: number;
-}>;
+export type Ulimit = { soft: number, hard: number, };
 
-export type ContainerResources = Additive<{
-  cpu_nanos?: number;
-  memory_bytes?: number;
-  memory_reservation_bytes?: number;
-  shared_memory_bytes?: number;
-  devices?: DeviceMapping[];
-  device_reservations?: DeviceReservation[];
-  ulimits?: { readonly [key: string]: Ulimit };
-}>;
+export type ContainerResources = { cpu_nanos: number | null, memory_bytes: number | null, memory_reservation_bytes: number | null, shared_memory_bytes: number | null, devices: Array<DeviceMapping>, device_reservations: Array<DeviceReservation>, ulimits: { [key in string]: Ulimit }, };
 
-export type UpdateConfig = Additive<{
-  order?: UpdateOrder;
-  monitor_millis?: number;
-}>;
+export type UpdateConfig = { 
+/**
+ * Absence means derive the order from the deploy snapshot.
+ */
+order: UpdateOrder | null, monitor_millis: number | null, };
 
-export type ResolvedUpdateConfig = Additive<{
-  order: UpdateOrder;
-  monitor_millis?: number;
-}>;
+export type ResolvedUpdateConfig = { order: UpdateOrder, monitor_millis: number | null, };
 
-export type Placement = Additive<{
-  machines?: MachineTarget[];
-}>;
+export type Placement = { 
+/**
+ * Machine Targets. An empty list remains every eligible Machine.
+ */
+machines: Array<MachineTarget>, };
 
-export type PreDeployHook = Additive<{
-  command: string[];
-  environment?: { readonly [key: string]: string };
-  privileged?: boolean;
-  timeout_millis?: number;
-  user?: string;
-}>;
+export type PreDeployHook = { command: Array<string>, environment: { [key in string]: string }, privileged: boolean | null, timeout_millis: number | null, user: string | null, };
 
-export type ServiceMount = Additive<{
-  volume: ServiceVolumeReference;
-  target: ContainerPath;
-  read_only?: boolean;
-}>;
+export type ServiceMount = { volume: ServiceVolumeReference, target: ContainerPath, read_only: boolean, };
 
-export type ServiceVolume = Additive<{
-  reference: ServiceVolumeReference;
-  source: VolumeSource;
-}>;
+export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeSource, };
 
-export type ConfigSpec = Additive<{
-  name: string;
-  content?: number[];
-}>;
+export type ConfigSpec = { name: string, content: Array<number>, };
 
-export type ConfigMount = Additive<{
-  config_name: string;
-  target?: ContainerPath;
-  uid?: number;
-  gid?: number;
-  mode?: number;
-}>;
+export type ConfigMount = { config_name: string, target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ServiceContainerSpec = Additive<{
-  image: string;
-  command?: string[];
-  entrypoint?: string[];
-  environment?: { readonly [key: string]: string };
-  labels?: ContainerLabels;
-  hostname?: ContainerHostname;
-  extra_hosts?: ExtraHost[];
-  cap_add?: string[];
-  cap_drop?: string[];
-  healthcheck?: HealthcheckSpec;
-  pull_policy: PullPolicy;
-  init?: boolean;
-  user?: string;
-  working_directory?: ContainerPath;
-  tty?: boolean;
-  open_stdin?: boolean;
-  privileged?: boolean;
-  pid_mode?: PidMode;
-  log_driver?: LogDriver;
-  resources?: ContainerResources;
-  stop_timeout_secs?: number;
-  sysctls?: { readonly [key: string]: string };
-  restart?: RestartPolicy;
-  config_mounts?: ConfigMount[];
-}>;
+export type ServiceContainerSpec = { config_mounts: Array<ConfigMount>, image: string, command: Array<string>, entrypoint: Array<string>, environment: { [key in string]: string }, 
+/**
+ * User Docker labels, excluding Ployz's reserved management namespace.
+ */
+labels: ContainerLabels, 
+/**
+ * The container's UTS hostname, with no Ployz identity or routing meaning.
+ */
+hostname: ContainerHostname | null, 
+/**
+ * Container-local Docker `/etc/hosts` entries.
+ */
+extra_hosts: Array<ExtraHost>, cap_add: Array<string>, cap_drop: Array<string>, healthcheck: HealthcheckSpec | null, pull_policy: PullPolicy, init: boolean | null, user: string | null, working_directory: ContainerPath | null, tty: boolean, open_stdin: boolean, privileged: boolean, pid_mode: PidMode | null, log_driver: LogDriver | null, resources: ContainerResources, stop_timeout_secs: number | null, sysctls: { [key in string]: string }, restart: RestartPolicy, };
 
-export type RequestedServiceSpec = Additive<{
-  name: ServiceName;
-  mode: ServiceMode;
-  container: ServiceContainerSpec;
-  placement?: Placement;
-  ports?: PortPublication[];
-  volumes?: ServiceVolume[];
-  mounts?: ServiceMount[];
-  configs?: ConfigSpec[];
-  pre_deploy?: PreDeployHook;
-  ingress_proxy_fragment?: IngressProxyFragment;
-  update?: UpdateConfig;
-}>;
+export type RequestedServiceSpec = { name: ServiceName, mode: ServiceMode, container: ServiceContainerSpec, placement: Placement, ports: Array<PortPublication>, volumes: Array<ServiceVolume>, mounts: Array<ServiceMount>, configs: Array<ConfigSpec>, pre_deploy: PreDeployHook | null, ingress_proxy_fragment: IngressProxyFragment | null, update: UpdateConfig, };
 
-export type ResolvedServiceSpec = Additive<{
-  service_id: ServiceId;
-  name: ServiceName;
-  mode: ServiceMode;
-  container: ServiceContainerSpec;
-  placement?: Placement;
-  ports?: PortPublication[];
-  volumes?: ServiceVolume[];
-  mounts?: ServiceMount[];
-  configs?: ConfigSpec[];
-  pre_deploy?: PreDeployHook;
-  ingress_proxy_fragment?: IngressProxyFragment;
-  update?: ResolvedUpdateConfig;
-}>;
+export type ResolvedServiceSpec = { service_id: ServiceId, name: ServiceName, mode: ServiceMode, container: ServiceContainerSpec, placement: Placement, ports: Array<PortPublication>, volumes: Array<ServiceVolume>, mounts: Array<ServiceMount>, configs: Array<ConfigSpec>, pre_deploy: PreDeployHook | null, ingress_proxy_fragment: IngressProxyFragment | null, update: ResolvedUpdateConfig, };
 
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | (string & {});
 
@@ -284,371 +176,340 @@ export type CertificateFailureKind = "does_not_resolve" | "resolves_elsewhere" |
 
 export type ContainerKind = "service_container" | "pre_deploy_hook";
 
-export type DockerVolumeId = Additive<{
-  machine_id: MachineId;
-  name: DockerVolumeName;
-}>;
+export type DockerVolumeId = { machine_id: MachineId, name: DockerVolumeName, };
 
-export type DockerVolumeStorageObservation =
-  | Additive<{ kind: "plain"; driver: string }>
-  | Additive<{ kind: "provisioned"; mountpoint: MachinePath; bound_bytes: number; used_bytes: number }>
-  | Additive<{ kind?: string }>;
+export type DockerVolumeStorageObservation = { "kind": "plain", 
+/**
+ * Docker driver reported for the ordinary Volume.
+ */
+driver: string, } | { "kind": "provisioned", 
+/**
+ * Current ZFS dataset mountpoint.
+ */
+mountpoint: MachinePath, 
+/**
+ * Current ZFS dataset byte bound.
+ */
+bound_bytes: number, 
+/**
+ * Current referenced ZFS dataset bytes.
+ */
+used_bytes: number, };
 
-export type DockerVolume = Additive<{
-  id: DockerVolumeId;
-  options: { readonly [key: string]: string };
-  labels: { readonly [key: string]: string };
-  storage: DockerVolumeStorageObservation;
-}>;
+export type DockerVolume = { id: DockerVolumeId, options: { [key in string]: string }, labels: { [key in string]: string }, 
+/**
+ * Current storage kind and Provisioned Volume usage evidence.
+ */
+storage: DockerVolumeStorageObservation, };
 
-export type VolumeObservationFailure = Additive<{
-  id: DockerVolumeId;
-  error: RpcError;
-}>;
+export type VolumeObservationFailure = { id: DockerVolumeId, error: RpcError, };
 
-export type VolumeInventory = Additive<{
-  volumes: DockerVolume[];
-  failures: VolumeObservationFailure[];
-}>;
+export type VolumeInventory = { volumes: Array<DockerVolume>, failures: Array<VolumeObservationFailure>, };
 
-export type CreateVolumeReport =
-  | Additive<{ verification: "verified"; volume: DockerVolume }>
-  | Additive<{ verification: "unverified"; id: DockerVolumeId; error: RpcError }>
-  | Additive<{ verification?: string }>;
+export type CreateVolumeReport = { "verification": "verified", volume: DockerVolume, } | { "verification": "unverified", id: DockerVolumeId, error: RpcError, };
 
-export type RemoveVolumesRequest = Additive<{
-  volumes: DockerVolumeId[];
-  force?: boolean;
-}>;
+export type RemoveVolumesRequest = { volumes: Array<DockerVolumeId>, 
+/**
+ * Force-remove an in-use Docker Volume. Defaults to false.
+ */
+force: boolean, };
 
-export type DataLoss =
-  | Additive<{ DockerVolume: DockerVolumeId }>;
+export type DataLoss = { "DockerVolume": DockerVolumeId };
 
-export type ObservedDataLoss = Additive<{
-  data_loss: DataLoss[];
-}>;
+export type ObservedDataLoss = { data_loss: Array<DataLoss>, };
 
-export type DataLossConfirmation = Additive<{
-  confirmed: DataLoss[];
-}>;
+export type DataLossConfirmation = { confirmed: Array<DataLoss>, };
 
-export type UnconfirmedDataLoss = Additive<{
-  missing: DataLoss[];
-}>;
+export type UnconfirmedDataLoss = { missing: Array<DataLoss>, };
 
-export type LocalMachineRemoved = Additive<{
-  reset_warning?: string;
-}>;
+export type LocalMachineRemoved = { reset_warning?: string | null, };
 
-export type ClusterTeardown = Additive<{
-  destroyed_projects: ProjectName[];
-  machines: PartialResult<LocalMachineRemoved, RpcError>;
-  pairing_revoked: boolean;
-}>;
+export type ClusterTeardown = { destroyed_projects: Array<ProjectName>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
 
-export type ContractDescription = Additive<{
-  machine_id: MachineId;
-  protocol_major: number;
-  daemon_version: string;
-  capabilities: CapabilityName[];
-}>;
+export type ContractDescription = { machine_id: MachineId, protocol_major: number, 
+/**
+ * Diagnostic only. Callers select behavior using capability names.
+ */
+daemon_version: string, capabilities: Array<CapabilityName>, };
 
-export type RpcError = Additive<{
-  code: RpcErrorCode;
-  message: string;
-  details?: JsonValue;
-}>;
+export type RpcError = { code: RpcErrorCode, message: string, details?: JsonValue, };
 
-export type MachineSuccess<T> = Additive<{
-  machine_id: MachineId;
-  value: T;
-}>;
+export type MachineSuccess<T> = { machine_id: MachineId, value: T, };
 
-export type MachineFailure<E> = Additive<{
-  machine_id: MachineId;
-  error: E;
-}>;
+export type MachineFailure<E> = { machine_id: MachineId, error: E, };
 
-export type PartialResult<T, E> = Additive<{
-  successes: Array<MachineSuccess<T>>;
-  failures: Array<MachineFailure<E>>;
-  omissions: MachineId[];
-}>;
+export type PartialResult<T, E> = { successes: Array<MachineSuccess<T>>, failures: Array<MachineFailure<E>>, 
+/**
+ * Targets selected by the entry Machine that produced no terminal response.
+ */
+omissions: Array<MachineId>, };
 
-export type ContainerRuntimeObservation =
-  | Additive<{ state: "created" }>
-  | Additive<{ state: "running"; health: HealthObservation }>
-  | Additive<{ state: "paused" }>
-  | Additive<{ state: "restarting" }>
-  | Additive<{ state: "exited"; code: number }>
-  | Additive<{ state: "removing" }>
-  | Additive<{ state: "dead" }>
-  | Additive<{ state?: string }>;
+export type ContainerRuntimeObservation = { state: "created" } | { state: "running"; health: HealthObservation } | { state: "paused" } | { state: "restarting" } | { state: "exited"; code: number } | { state: "removing" } | { state: "dead" } | { state?: string };
 
-export type PlanOptions = Additive<{
-  force_recreate: boolean;
-  skip_health_monitor: boolean;
-  placement_seed: number;
-  selected: ServiceAttempt[];
-}>;
+export type PlanOptions = { 
+/**
+ * Recreate containers even when the resolved spec matches.
+ */
+force_recreate: boolean, 
+/**
+ * Skip waiting on container health after start or replace.
+ */
+skip_health_monitor: boolean, 
+/**
+ * Caller-supplied entropy keeps the planner pure while varying equal-priority placement.
+ */
+placement_seed: number, 
+/**
+ * Service Names this command applies. Empty means full reconciliation.
+ */
+selected: Array<ServiceAttempt>, };
 
-export type ServiceAttempt = Additive<{
-  name: ServiceName;
-}>;
+export type ServiceAttempt = { 
+/**
+ * Service Name to apply from `DeployIntent.target`.
+ */
+name: ServiceName, };
 
-export type ProvisionedVolume = Additive<{
-  service: ServiceName;
-  reference: ServiceVolumeReference;
-  maximum_bytes: ProvisionedVolumeMaximumBytes;
-}>;
+export type ProvisionedVolume = { 
+/**
+ * Service whose local Volume Reference is declared.
+ */
+service: ServiceName, 
+/**
+ * Service-local reference that resolves to the Docker Volume declaration.
+ */
+reference: ServiceVolumeReference, 
+/**
+ * Required positive storage bound in bytes.
+ */
+maximum_bytes: ProvisionedVolumeMaximumBytes, };
 
-export type DeployIntent = Additive<{
-  project_name: ProjectName;
-  target: RequestedServiceSpec[];
-  provisioned_volumes: ProvisionedVolume[];
-  options: PlanOptions;
-}>;
+export type DeployIntent = { 
+/**
+ * Project that will own Containers this Deploy creates.
+ */
+project_name: ProjectName, 
+/**
+ * Complete desired Services for this Cluster.
+ */
+target: Array<RequestedServiceSpec>, 
+/**
+ * Bounded Provisioned Volumes referenced by Services in `target`.
+ */
+provisioned_volumes: Array<ProvisionedVolume>, 
+/**
+ * Planner knobs for this Deploy, including the selected Service list.
+ */
+options: PlanOptions, };
 
 export type ObservationKind = "container" | "volume";
 
-export type DeployWarning =
-  | Additive<{ ObservationFailed: { kind: ObservationKind; machine_id: MachineId; message: string } }>
-  | Additive<{ ObservationOmitted: { kind: ObservationKind; machine_id: MachineId } }>
-  | Additive<{ IngressHostname: string }>
-  | "ObserverRelativeHostnameConflict"
-  | Additive<{ SkippedDependencyHealth: { dependent: QualifiedService; dependency: QualifiedService } }>;
+export type DeployWarning = { "ObservationFailed": { kind: ObservationKind, machine_id: MachineId, message: string, } } | { "ObservationOmitted": { kind: ObservationKind, machine_id: MachineId, } } | { "IngressHostname": string } | "ObserverRelativeHostnameConflict" | { "SkippedDependencyHealth": { dependent: QualifiedService, dependency: QualifiedService, } };
 
 export type PruneRefusal = "incomplete_snapshot" | "selected_services" | "filtered_profiles" | "guessed_project_name";
 
-export type PreservedVolume = Additive<{
-  id: DockerVolumeId;
-  machine_name?: MachineName;
-}>;
+export type PreservedVolume = { 
+/**
+ * Machine-local Docker Volume identity.
+ */
+id: DockerVolumeId, 
+/**
+ * Machine Name from this observer's snapshot when known.
+ */
+machine_name?: MachineName | null, };
 
-export type DeployPreview = Additive<{
-  project_name: ProjectName;
-  operations: OperationRow[];
-  warnings: DeployWarning[];
-  would_remove: QualifiedService[];
-  preserved_volumes: PreservedVolume[];
-  prune_refusal?: PruneRefusal;
-}>;
+export type DeployPreview = { 
+/**
+ * Project this preview was planned for. Confirm uses this name; it does not re-plan.
+ */
+project_name: ProjectName, 
+/**
+ * Pending rows for the operations this snapshot would execute.
+ */
+operations: Array<OperationRow>, 
+/**
+ * Observer-relative warnings for this snapshot, including ingress DNS misses.
+ */
+warnings: Array<DeployWarning>, 
+/**
+ * Visible Services in the Project that Compose no longer declares.
+ */
+would_remove: Array<QualifiedService>, 
+/**
+ * Compose-declared Docker Volumes owned by this Project that this Compose
+ * input no longer declares. They are not deleted.
+ */
+preserved_volumes: Array<PreservedVolume>, 
+/**
+ * Why pruning will not run. `None` means obsolete Services are removed.
+ */
+prune_refusal?: PruneRefusal | null, };
 
-export type OperationRow = Additive<{
-  index: number;
-  machine_id: MachineId;
-  machine_name?: MachineName;
-  operation: DeployOperation;
-  display_name?: string;
-  service_name?: ServiceName;
-  status: OperationStatus;
-}>;
+export type OperationRow = { 
+/**
+ * Zero-based index in the Deploy Plan.
+ */
+index: number, 
+/**
+ * Machine this operation targets.
+ */
+machine_id: MachineId, 
+/**
+ * Human-facing Machine Name when known from the snapshot.
+ */
+machine_name?: MachineName | null, 
+/**
+ * Planned operation.
+ */
+operation: DeployOperation, 
+/**
+ * Container display name when known.
+ */
+display_name?: string | null, 
+/**
+ * Service Name when known from the spec or snapshot.
+ */
+service_name?: ServiceName | null, 
+/**
+ * Current status of this row.
+ */
+status: OperationStatus, };
 
-export type OperationStatus =
-  | Additive<{ type: "pending" }>
-  | Additive<{ type: "running"; phase: OperationPhase }>
-  | Additive<{ type: "completed" }>
-  | Additive<{ type: "failed"; error: ExecutionError }>
-  | Additive<{ type: "unexecuted" }>
-  | Additive<{ type?: string }>;
+export type OperationStatus = { "type": "pending" } | { "type": "running", phase: OperationPhase, } | { "type": "completed" } | { "type": "failed", error: ExecutionError, } | { "type": "unexecuted" };
 
-export type OperationPhase =
-  | Additive<{ type: "starting" }>
-  | Additive<{ type: "creating_volume" }>
-  | Additive<{ type: "creating_container" }>
-  | Additive<{ type: "starting_container" }>
-  | Additive<{ type: "waiting_for_health"; container_id: ContainerId; health?: HealthObservation; elapsed_ms: number; deadline_ms: number }>
-  | Additive<{ type: "waiting_for_hook"; container_id: ContainerId; elapsed_ms: number; deadline_ms: number }>
-  | Additive<{ type: "stopping_container" }>
-  | Additive<{ type: "removing_container" }>
-  | Additive<{ type: "removing_volume" }>
-  | Additive<{ type: "compensating" }>
-  | Additive<{ type?: string }>;
+export type OperationPhase = { "type": "starting" } | { "type": "creating_volume" } | { "type": "creating_container" } | { "type": "starting_container" } | { "type": "waiting_for_health", container_id: ContainerId, health?: HealthObservation | null, elapsed_ms: number, deadline_ms: number, } | { "type": "waiting_for_hook", container_id: ContainerId, elapsed_ms: number, deadline_ms: number, } | { "type": "stopping_container" } | { "type": "removing_container" } | { "type": "removing_volume" } | { "type": "compensating" };
 
-export type DeployEvent =
-  | Additive<{ type: "progress"; completed: number; total: number; rows: OperationRow[] }>
-  | Additive<{ type: "outcome"; outcome: DeployOutcome }>
-  | Additive<{ type?: string }>;
+export type DeployEvent = { "type": "progress", completed: number, total: number, rows: Array<OperationRow>, } | { "type": "outcome", outcome: DeployOutcome<ExecutionError>, };
 
-export type ReplacementOperation = Additive<{
-  machine_id: MachineId;
-  old_container_id: ContainerId;
-  spec: ResolvedServiceSpec;
-  skip_health_monitor: boolean;
-}>;
+export type ReplacementOperation = { 
+/**
+ * Machine that hosts both containers.
+ */
+machine_id: MachineId, 
+/**
+ * Container being replaced.
+ */
+old_container_id: ContainerId, 
+/**
+ * Spec for the replacement container.
+ */
+spec: ResolvedServiceSpec, 
+/**
+ * Skip waiting on container health after the replacement starts.
+ */
+skip_health_monitor: boolean, };
 
-export type DeployOperation =
-  | Additive<{ type: "create_volume"; machine_id: MachineId; volume: ServiceVolume }>
-  | Additive<{ type: "create_provisioned_volume"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes }>
-  | Additive<{ type: "wait_healthy"; machine_id: MachineId; dependent: QualifiedService; dependency: QualifiedService }>
-  | Additive<{ type: "run_container"; machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }>
-  | Additive<{ type: "stop_container"; machine_id: MachineId; container_id: ContainerId }>
-  | Additive<{ type: "remove_container"; machine_id: MachineId; container_id: ContainerId }>
-  | Additive<{ type: "replace_container"; machine_id: MachineId; old_container_id: ContainerId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }>
-  | Additive<{ type: "stop_hook"; machine_id: MachineId; container_id: ContainerId }>
-  | Additive<{ type: "run_hook"; machine_id: MachineId; spec: ResolvedServiceSpec; old_hook_containers: Array<[MachineId, ContainerId]> }>
-  | Additive<{ type: "remove_volume"; id: DockerVolumeId }>
-  | Additive<{ type?: string }>;
+export type DeployOperation = { "type": "create_volume", machine_id: MachineId, volume: ServiceVolume, } | { "type": "create_provisioned_volume", machine_id: MachineId, volume: ServiceVolume, maximum_bytes: ProvisionedVolumeMaximumBytes, } | { "type": "wait_healthy", machine_id: MachineId, dependent: QualifiedService, dependency: QualifiedService, } | { "type": "run_container", machine_id: MachineId, spec: ResolvedServiceSpec, skip_health_monitor: boolean, } | { "type": "stop_container", machine_id: MachineId, container_id: ContainerId, } | { "type": "remove_container", machine_id: MachineId, container_id: ContainerId, } | { "type": "replace_container" } & ReplacementOperation | { "type": "stop_hook", machine_id: MachineId, container_id: ContainerId, } | { "type": "run_hook", machine_id: MachineId, spec: ResolvedServiceSpec, old_hook_containers: Array<[MachineId, ContainerId]>, } | { "type": "remove_volume", id: DockerVolumeId, };
 
 export type MachineAction = "CreateVolume" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
-export type HealthFailure =
-  | Additive<{ type: "cancelled" }>
-  | Additive<{ type: "timed_out" }>
-  | Additive<{ type: "runtime"; observation: ContainerRuntimeObservation }>
-  | Additive<{ type?: string }>;
+export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out" } | { "type": "runtime", observation: ContainerRuntimeObservation, };
 
-export type HookFailure =
-  | Additive<{ type: "cancelled"; stop_error: RpcError | null }>
-  | Additive<{ type: "timed_out"; stop_error: RpcError | null }>
-  | Additive<{ type: "exit"; code: number }>
-  | Additive<{ type?: string }>;
+export type HookFailure = { "type": "cancelled", stop_error: RpcError | null, } | { "type": "timed_out", stop_error: RpcError | null, } | { "type": "exit", code: number, };
 
-export type DependencyHealthFailure =
-  | Additive<{ type: "cancelled" }>
-  | Additive<{ type: "no_containers" }>
-  | Additive<{ type: "observation"; error: RpcError }>
-  | Additive<{ type: "container"; container_id: ContainerId; failure: HealthFailure }>
-  | Additive<{ type?: string }>;
+export type DependencyHealthFailure = { "type": "cancelled" } | { "type": "no_containers" } | { "type": "observation", error: RpcError, } | { "type": "container", container_id: ContainerId, failure: HealthFailure, };
 
-export type ExecutionError =
-  | Additive<{ type: "machine"; action: MachineAction; error: RpcError }>
-  | Additive<{ type: "health"; container_id: ContainerId; failure: HealthFailure }>
-  | Additive<{ type: "dependency_health"; dependency: QualifiedService; failure: DependencyHealthFailure }>
-  | Additive<{ type: "hook"; container_id: ContainerId; failure: HookFailure }>
-  | Additive<{ type: "cancelled" }>
-  | Additive<{ type?: string }>;
+export type ExecutionError = { "type": "machine", action: MachineAction, error: RpcError, } | { "type": "health", container_id: ContainerId, failure: HealthFailure, } | { "type": "dependency_health", dependency: QualifiedService, failure: DependencyHealthFailure, } | { "type": "hook", container_id: ContainerId, failure: HookFailure, } | { "type": "cancelled" };
 
-export type RestartAttempt<E = ExecutionError> =
-  | "NotAttempted"
-  | Additive<{ Attempted: SerdeResult<null, E> }>;
+export type RestartAttempt<E> = "NotAttempted" | { "Attempted": { Ok : null } | { Err : E } };
 
-export type ReplacementCompensation<E = ExecutionError> =
-  | Additive<{ StartFirst: { stop_new_container: SerdeResult<null, E> } }>
-  | Additive<{ StopFirst: { stop_new_container: SerdeResult<null, E>; restart_old_container: RestartAttempt<E> } }>;
+export type ReplacementCompensation<E> = { "StartFirst": { stop_new_container: { Ok : null } | { Err : E }, } } | { "StopFirst": { stop_new_container: { Ok : null } | { Err : E }, restart_old_container: RestartAttempt<E>, } };
 
-export type FailedOperation<E = ExecutionError> =
-  | Additive<{ type: "operation"; operation: DeployOperation; error: E }>
-  | Additive<{ type: "replacement_health"; operation: ReplacementOperation; error: E; compensation: ReplacementCompensation<E> }>
-  | Additive<{ type?: string }>;
+export type FailedOperation<E> = { "type": "operation", operation: DeployOperation, error: E, } | { "type": "replacement_health", operation: ReplacementOperation, error: E, compensation: ReplacementCompensation<E>, };
 
-export type DeployOutcome<E = ExecutionError> =
-  | Additive<{ type: "success"; completed: DeployOperation[] }>
-  | Additive<{ type: "failed"; completed: DeployOperation[]; failed: FailedOperation<E>; unexecuted: DeployOperation[] }>
-  | Additive<{ type?: string }>;
+export type DeployOutcome<E> = { "type": "success", completed: Array<DeployOperation>, } | { "type": "failed", completed: Array<DeployOperation>, failed: FailedOperation<E>, unexecuted: Array<DeployOperation>, };
 
-export type MachineRuntime = Additive<{
-  daemon_version: string;
-  docker_version: string;
-  hostname: string;
-  architecture: string;
-  os_pretty_name: string;
-  kernel_version: string;
-}>;
+export type MachineRuntime = { daemon_version: string, docker_version: string, hostname: string, architecture: string, os_pretty_name: string, kernel_version: string, };
 
-export type Machine = Additive<{
-  id: MachineId;
-  name: MachineName;
-  subnet: MachineSubnet;
-  management_address: ManagementAddress;
-  public_key: WireGuardPublicKey;
-  public_ip?: string;
-  advertised_endpoints: AdvertisedEndpoint[];
-  runtime: MachineRuntime;
-}>;
+export type Machine = { id: MachineId, name: MachineName, subnet: MachineSubnet, management_address: ManagementAddress, public_key: WireGuardPublicKey, public_ip?: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
 
-export type RegisterRequest = Additive<{
-  name: MachineName;
-  storage: StorageChoice;
-  public_key: WireGuardPublicKey;
-  public_ip?: string;
-  advertised_endpoints: AdvertisedEndpoint[];
-  runtime: MachineRuntime;
-}>;
+export type RegisterRequest = { name: MachineName, storage: StorageChoice, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
 
-export type Registered = Additive<{
-  assigned_machine: Machine;
-  visible_peers: Machine[];
-  target_versions: { readonly [key: string]: number };
-}>;
+export type Registered = { assigned_machine: Machine, visible_peers: Array<Machine>, target_versions: { [key in string]: number }, };
 
-export type RttStatistics = Additive<{
-  median_ns: number;
-  population_stddev_ns: number;
-}>;
+export type RttStatistics = { median_ns: number, population_stddev_ns: number, };
 
-export type GlobalReconcileFailureObservation = Additive<{
-  service: QualifiedService;
-  last_error: string;
-  observed_at: string;
-}>;
+export type GlobalReconcileFailureObservation = { 
+/**
+ * Global Service whose local slot could not be ensured.
+ */
+service: QualifiedService, 
+/**
+ * Last error returned by this Machine's Global slot ensure path.
+ */
+last_error: string, 
+/**
+ * RFC 3339 time of the failed ensure attempt.
+ */
+observed_at: string, };
 
-export type MachineObservation = Additive<{
-  machine: Machine;
-  membership: MembershipObservation;
-  storage?: MachineStorageObservation;
-  selected_endpoint: SelectedEndpoint | null;
-  rtt?: RttStatistics;
-  global_reconcile_failures?: GlobalReconcileFailureObservation[];
-}>;
+export type MachineObservation = { machine: Machine, membership: MembershipObservation, 
+/**
+ * Current storage evidence, absent when this observer could not obtain it.
+ */
+storage?: MachineStorageObservation | null, selected_endpoint: SelectedEndpoint | null, 
+/**
+ * Entry-local RTT. `ListMachines` omits it; Runtime Watch may include it.
+ */
+rtt?: RttStatistics | null, 
+/**
+ * Current failed Machine-local Global reconciliations. Success removes an entry.
+ */
+global_reconcile_failures?: Array<GlobalReconcileFailureObservation>, };
 
-export type ContainerObservation = Additive<{
-  container_id: ContainerId;
-  display_name: string;
-  created_at_unix_nanos: number;
-  machine_id: MachineId;
-  project_name: ProjectName;
-  service_id: ServiceId;
-  service_name: ServiceName;
-  kind: ContainerKind;
-  runtime: ContainerRuntimeObservation;
-  effective_healthcheck: HealthcheckSpec | null;
-  resolved_spec: ResolvedServiceSpec;
-  address: ContainerAddress | null;
-  labels: { readonly [key: string]: string };
-}>;
+export type ContainerObservation = { container_id: ContainerId, 
+/**
+ * Generated Docker name for display, never identity or selection.
+ */
+display_name: string, 
+/**
+ * Docker creation time, used only to select the newest observed Service spec.
+ */
+created_at_unix_nanos: number, machine_id: MachineId, project_name: ProjectName, service_id: ServiceId, service_name: ServiceName, kind: ContainerKind, runtime: ContainerRuntimeObservation, 
+/**
+ * Effective Docker health check, including image-inherited configuration.
+ */
+effective_healthcheck: HealthcheckSpec | null, 
+/**
+ * Historical spec used to create this container; not a current Service spec.
+ */
+resolved_spec: ResolvedServiceSpec, address: ContainerAddress | null, labels: { [key in string]: string }, };
 
 export type ServiceContainer = ContainerObservation;
 
 export type HookContainer = ContainerObservation;
 
-export type ServiceObservation = Additive<{
-  identity: QualifiedService;
-  service_id: ServiceId;
-  containers: ServiceContainer[];
-  hook_containers: HookContainer[];
-}>;
+export type ServiceObservation = { identity: QualifiedService, service_id: ServiceId, containers: Array<ServiceContainer>, hook_containers: Array<HookContainer>, };
 
-export type CertificateBackoff = Additive<{
-  failure_kind: CertificateFailureKind;
-  next_attempt_at: string;
-  failures: number;
-}>;
+export type CertificateBackoff = { failure_kind: CertificateFailureKind, next_attempt_at: string, failures: number, };
 
-export type CertificateObservation = Additive<{
-  hostname: IngressHost;
-  status: CertificateAvailability;
-  last_error?: string;
-  backoff?: CertificateBackoff;
-}>;
+export type CertificateObservation = { hostname: IngressHost, status: CertificateAvailability, last_error?: string | null, backoff?: CertificateBackoff | null, };
 
-export type RuntimeWatchIncompleteIds = Additive<{
-  machines: MachineId[];
-  containers: ContainerId[];
-  volumes: DockerVolumeId[];
-  certificates: IngressHost[];
-}>;
+export type RuntimeWatchIncompleteIds = { machines: Array<MachineId>, containers: Array<ContainerId>, volumes: Array<DockerVolumeId>, certificates: Array<IngressHost>, };
 
-export type RuntimeWatchFrame = Additive<{
-  machines: MachineObservation[];
-  containers: ContainerObservation[];
-  services: ServiceObservation[];
-  volumes: DockerVolume[];
-  certificates: CertificateObservation[];
-  hosted_dns_hostname?: string;
-  incomplete_ids: RuntimeWatchIncompleteIds;
-  observed_at: string;
-}>;
+export type RuntimeWatchFrame = { machines: Array<MachineObservation>, containers: Array<ContainerObservation>, services: Array<ServiceObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>, 
+/**
+ * Hosted DNS hostname only; never the renewal token or endpoint.
+ */
+hosted_dns_hostname?: string | null, incomplete_ids: RuntimeWatchIncompleteIds, 
+/**
+ * Freshness of the entry-local membership/RTT sample. Not Cluster truth.
+ */
+observed_at: string, };
+
+export type HealthcheckCommand = string[];
+
+export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "slave" | "rslave";
+
+export type BindRecursive = "disabled" | "writable" | "readonly";
+
+export type ClusterDomainLabel = string;
+
+export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
+
+export type ServiceConfigGraph = { configs: Array<ConfigSpec>, mounts: Array<ConfigMount>, };
+
+export type ServiceVolumeGraph = { volumes: Array<ServiceVolume>, mounts: Array<ServiceMount>, };
 
 export const CERTIFICATE_POLICY_CAPABILITY: CapabilityName = "ployz.certificates.policy.v1";
 export const CREATE_CONTAINER_CAPABILITY: CapabilityName = "ployz.container.create.v1";

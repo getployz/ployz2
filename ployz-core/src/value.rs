@@ -63,9 +63,14 @@ fn is_hostname(value: &str) -> bool {
 }
 
 macro_rules! hex_id_newtype {
-    ($(#[$attribute:meta])* $name:ident, $label:literal, $len:expr, $expected:literal) => {
+    ($(#[$attribute:meta])* $name:ident, $label:literal, $len:expr, $expected:literal, $ts:literal) => {
         $(#[$attribute])*
         #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+        #[cfg_attr(
+            feature = "typescript",
+            ts(type = $ts)
+        )]
         #[serde(try_from = "String", into = "String")]
         pub struct $name([u8; $len]);
 
@@ -122,9 +127,14 @@ macro_rules! hex_id_newtype {
 }
 
 macro_rules! validated_string_newtype {
-    ($(#[$attribute:meta])* $name:ident, $label:literal, $expected:expr, |$value:ident| $valid:expr) => {
+    ($(#[$attribute:meta])* $name:ident, $label:literal, $expected:expr, $ts:literal, |$value:ident| $valid:expr) => {
         $(#[$attribute])*
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+        #[cfg_attr(
+            feature = "typescript",
+            ts(type = $ts)
+        )]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
 
@@ -178,25 +188,29 @@ hex_id_newtype!(
     MachineId,
     "Machine ID",
     32,
-    "32 lowercase hexadecimal characters"
+    "32 lowercase hexadecimal characters",
+    "string & { readonly __brand: \"MachineId\" }"
 );
 hex_id_newtype!(
     ServiceId,
     "Service ID",
     32,
-    "32 lowercase hexadecimal characters"
+    "32 lowercase hexadecimal characters",
+    "string & { readonly __brand: \"ServiceId\" }"
 );
 hex_id_newtype!(
     TunnelId,
     "Tunnel ID",
     32,
-    "32 lowercase hexadecimal characters"
+    "32 lowercase hexadecimal characters",
+    "string"
 );
 hex_id_newtype!(
     ContainerId,
     "Container ID",
     64,
-    "64 lowercase hexadecimal characters"
+    "64 lowercase hexadecimal characters",
+    "string & { readonly __brand: \"ContainerId\" }"
 );
 
 impl MachineId {
@@ -272,6 +286,31 @@ macro_rules! open_string_enum {
                 })
             }
         }
+
+        // Hand-written so the TypeScript union is built from `known_wires()`. A
+        // literal `#[ts(type = ...)]` would be a second copy of the wires to drift.
+        #[cfg(feature = "typescript")]
+        impl ts_rs::TS for $name {
+            type WithoutGenerics = Self;
+            type OptionInnerType = Self;
+
+            fn name(_: &ts_rs::Config) -> String {
+                stringify!($name).to_owned()
+            }
+
+            fn inline(cfg: &ts_rs::Config) -> String {
+                <Self as ts_rs::TS>::name(cfg)
+            }
+
+            fn decl(_: &ts_rs::Config) -> String {
+                let known = Self::known_wires()
+                    .iter()
+                    .map(|wire| format!("\"{wire}\""))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                format!("type {} = {known} | (string & {{}});", stringify!($name))
+            }
+        }
     };
 }
 
@@ -282,12 +321,14 @@ validated_string_newtype!(
     MachineName,
     "Machine Name",
     "a 1-63 character lowercase DNS label",
+    "string",
     |value| is_dns_label(value)
 );
 validated_string_newtype!(
     DockerVolumeName,
     "Docker Volume name",
     "a non-empty string",
+    "string",
     |value| !value.is_empty()
 );
 
@@ -295,18 +336,21 @@ validated_string_newtype!(
     ServiceVolumeReference,
     "Service Volume Reference",
     "a non-empty string",
+    "string",
     |value| !value.is_empty()
 );
 validated_string_newtype!(
     MachinePath,
     "Bind Mount Machine path",
     "an absolute Unix path",
+    "string",
     |value| value.starts_with('/')
 );
 validated_string_newtype!(
     ContainerPath,
     "container mount target",
     "an absolute Unix path",
+    "string",
     |value| value.starts_with('/')
 );
 validated_string_newtype!(
@@ -314,6 +358,7 @@ validated_string_newtype!(
     MachineTarget,
     "Machine Target",
     "a non-empty Machine identity that is not a wildcard",
+    "string",
     |value| !value.is_empty() && value != "*"
 );
 validated_string_newtype!(
@@ -321,6 +366,7 @@ validated_string_newtype!(
     ServiceSelector,
     "Service Selector",
     "a Service ID, Qualified Service (project/name), or Service Name",
+    "string",
     |value| is_service_selector(value)
 );
 validated_string_newtype!(
@@ -328,6 +374,7 @@ validated_string_newtype!(
     ContainerSelector,
     "Container Selector",
     "a non-empty Container ID, display name, or ID prefix",
+    "string",
     |value| !value.is_empty()
 );
 
@@ -407,6 +454,7 @@ impl From<FanoutSelector> for String {
 
 /// A machine-local Docker Volume identity.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct DockerVolumeId {
     pub machine_id: MachineId,
     pub name: DockerVolumeName,
@@ -417,6 +465,7 @@ validated_string_newtype!(
     ServiceName,
     "Service Name",
     "a 1-63 character lowercase DNS label",
+    "string & { readonly __brand: \"ServiceName\" }",
     |value| is_dns_label(value)
 );
 validated_string_newtype!(
@@ -424,6 +473,7 @@ validated_string_newtype!(
     ProjectName,
     "Project Name",
     "a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
+    "string & { readonly __brand: \"ProjectName\" }",
     |value| is_dns_label(value)
 );
 
@@ -461,6 +511,8 @@ impl ProjectName {
 /// A Service ID is a separate opaque deployment identity that survives updates.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
 pub struct QualifiedService {
     pub project: ProjectName,
     pub name: ServiceName,
@@ -598,6 +650,7 @@ validated_string_newtype!(
     ClusterDomainLabel,
     "Cluster Domain label",
     "a 1-63 character lowercase DNS label",
+    "string",
     |value| is_dns_label(value)
 );
 
@@ -606,6 +659,7 @@ validated_string_newtype!(
     IngressHost,
     "Ingress Hostname",
     "a 1-253 character lowercase DNS hostname",
+    "string",
     |value| is_hostname(value)
 );
 
@@ -614,6 +668,8 @@ validated_string_newtype!(
 /// A Machine Subnet is always an IPv4 `/24`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
 pub struct MachineSubnet(Ipv4Net);
 
 impl MachineSubnet {
@@ -699,6 +755,8 @@ impl From<MachineSubnet> for String {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
 pub struct ManagementAddress(pub Ipv6Addr);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -707,18 +765,26 @@ pub struct MachineGateway(pub Ipv4Addr);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
 pub struct ContainerAddress(pub Ipv4Addr);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
 pub struct AdvertisedEndpoint(pub SocketAddr);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
 pub struct SelectedEndpoint(pub SocketAddr);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "number[]"))]
 pub struct WireGuardPublicKey(pub [u8; 32]);
 
 impl fmt::Display for WireGuardPublicKey {
@@ -732,6 +798,7 @@ validated_string_newtype!(
     CapabilityName,
     "capability name",
     "at least three dot-separated lowercase namespace segments",
+    "string",
     |value| {
         let valid_segment = |segment: &str| {
             !segment.is_empty()
@@ -749,6 +816,7 @@ validated_string_newtype!(
 /// lives on a Machine.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct PairingCredential(String);
 
 impl PairingCredential {

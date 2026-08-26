@@ -214,8 +214,10 @@ pub(super) fn default_wireguard_port() -> u16 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct InitializeRequest {
     pub name: MachineName,
+    #[cfg_attr(feature = "typescript", ts(type = "string"))]
     pub cluster_network: Ipv4Net,
     /// Immutable Ingress Proxy Backend selected for the new Cluster.
     pub ingress_proxy_backend: IngressProxyBackend,
@@ -229,6 +231,7 @@ pub struct InitializeRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct RegisterRequest {
     pub name: MachineName,
     pub storage: StorageChoice,
@@ -622,6 +625,7 @@ pub struct Initialized {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct Registered {
     pub assigned_machine: Machine,
     pub visible_peers: Vec<Machine>,
@@ -679,6 +683,7 @@ pub struct MachineImages {
 ///
 /// The enum prevents a backend tag from disagreeing with the configuration
 /// variant carried by the response.
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum IngressProxyConfig {
     /// Exact Caddyfile consumed by Caddy.
     Caddy(String),
@@ -724,6 +729,7 @@ pub struct MachineUpdated {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct LocalMachineRemoved {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_warning: Option<String>,
@@ -913,6 +919,7 @@ impl<'de> Deserialize<'de> for RpcResponse {
 
 /// The capabilities currently advertised by one Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ContractDescription {
     pub machine_id: MachineId,
     pub protocol_major: u32,
@@ -944,10 +951,12 @@ crate::value::open_string_enum!(RpcErrorCode, Unknown {
 
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize)]
 #[error("{message}")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct RpcError {
     pub code: RpcErrorCode,
     pub message: String,
     #[serde(default, skip_serializing_if = "Value::is_null")]
+    #[cfg_attr(feature = "typescript", ts(type = "JsonValue"))]
     pub details: Value,
 }
 

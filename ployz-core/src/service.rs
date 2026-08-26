@@ -11,6 +11,7 @@ use crate::{
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ServiceObservation {
     pub identity: QualifiedService,
     pub service_id: ServiceId,
