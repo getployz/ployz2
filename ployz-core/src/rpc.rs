@@ -20,7 +20,7 @@ use crate::{
 mod docker;
 mod inspect;
 
-pub use crate::{CORROSION_API_PORT, CORROSION_GOSSIP_PORT, MACHINE_API_PORT, UNREGISTRY_PORT};
+pub use crate::UNREGISTRY_PORT;
 pub use docker::*;
 pub use inspect::*;
 
