@@ -232,17 +232,15 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
                     tokio::time::sleep(retry_after).await;
                 }
             },
-            Err(error)
-                if error.is_transport() && transport_attempts + 1 < MAX_TRANSPORT_ATTEMPTS =>
-            {
-                transport_attempts += 1;
-                tokio::time::sleep(Duration::from_secs(DEFAULT_RETRY_AFTER)).await;
-            }
             Err(error) if error.is_transport() => {
-                return Err(Error::RetrySameCommand {
-                    operation: "enrollment",
-                    detail: error.to_string(),
-                });
+                transport_attempts += 1;
+                if transport_attempts == MAX_TRANSPORT_ATTEMPTS {
+                    return Err(Error::RetrySameCommand {
+                        operation: "enrollment",
+                        detail: error.to_string(),
+                    });
+                }
+                tokio::time::sleep(Duration::from_secs(DEFAULT_RETRY_AFTER)).await;
             }
             Err(error) => return Err(error),
         }
