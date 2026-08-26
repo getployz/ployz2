@@ -524,7 +524,7 @@ pub enum PlanError {
     /// Storage capability was unavailable for every otherwise eligible Machine.
     #[error(
         "storage could not be checked on {}; retry after those Machines can report storage capability",
-        machine_names(.names)
+        MachineNames(.names)
     )]
     ProvisionedVolumeStorageUnknown {
         /// Placement-matching Machines without storage evidence.
@@ -605,17 +605,11 @@ fn quoted_names(names: &[DockerVolumeName]) -> String {
     quoted
 }
 
-fn machine_names(names: &[MachineName]) -> String {
-    match names {
-        [name] => format!("Machine '{name}'"),
-        _ => format!(
-            "Machines {}",
-            names
-                .iter()
-                .map(|name| format!("'{name}'"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+struct MachineNames<'names>(&'names [MachineName]);
+
+impl fmt::Display for MachineNames<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_machine_names(f, self.0)
     }
 }
 

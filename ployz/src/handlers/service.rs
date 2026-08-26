@@ -39,8 +39,11 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
                         service_count_text(counts),
                         service.hook_containers.len()
                     );
-                    if let Some(warning) = storage_eligibility_warning(service, counts.2) {
-                        eprintln!("{warning}");
+                    if counts.2 > 0 {
+                        eprintln!(
+                            "WARNING: {} has unknown storage eligibility on {} Machine(s)",
+                            service.identity, counts.2
+                        );
                     }
                 }
             }
@@ -92,15 +95,6 @@ fn service_count_text((running, expected, unknown): (usize, usize, usize)) -> St
     } else {
         format!("{running}/{expected} (+{unknown} unknown)")
     }
-}
-
-fn storage_eligibility_warning(service: &ServiceObservation, unknown: usize) -> Option<String> {
-    (unknown > 0).then(|| {
-        format!(
-            "WARNING: {} has unknown storage eligibility on {unknown} Machine(s)",
-            service.identity
-        )
-    })
 }
 
 /// List observed Service and hook Containers.
@@ -503,10 +497,6 @@ mod tests {
             .extend(containers.iter().skip(3).cloned());
         assert_eq!(service_counts(&service, &machines), (6, 3, 1));
         assert_eq!(service_count_text((6, 3, 0)), "6/3");
-        assert_eq!(
-            storage_eligibility_warning(&service, 1),
-            Some("WARNING: app/api has unknown storage eligibility on 1 Machine(s)".into())
-        );
     }
 
     #[test]
