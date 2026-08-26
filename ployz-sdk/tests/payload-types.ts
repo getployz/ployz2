@@ -13,6 +13,16 @@ import type {
 } from "../generated/payloads";
 import fixtures from "../generated/fixtures.json";
 
+// `resolveJsonModule` widens every JSON string to `string`, so a fixture never
+// matches the discriminant of a tagged union. serde wrote the tag, so restating
+// it here is sound, and the rest of the shape is still checked against the arm.
+function tagged<T extends { state: string }, Tag extends string>(
+  value: T,
+  state: Tag,
+): Omit<T, "state"> & { state: Tag } {
+  return { ...value, state };
+}
+
 const spec = fixtures.requested_service_spec_typed;
 const source = spec.volumes[0].source;
 
@@ -23,12 +33,14 @@ fixtures.config_mount satisfies ConfigMount;
 spec.container.resources.devices[0] satisfies DeviceMapping;
 fixtures.device_reservation satisfies DeviceReservation;
 spec.container.resources.ulimits.nofile satisfies Ulimit;
-spec.container.healthcheck satisfies HealthcheckSpec;
+tagged(spec.container.healthcheck, "configured") satisfies HealthcheckSpec;
 fixtures.resolved_service_spec_typed.configs satisfies NonNullable<
   ResolvedServiceSpec["configs"]
 >;
-fixtures.container_observation_disabled_healthcheck
-  .effective_healthcheck satisfies ContainerObservation["effective_healthcheck"];
+tagged(
+  fixtures.container_observation_disabled_healthcheck.effective_healthcheck,
+  "disabled",
+) satisfies ContainerObservation["effective_healthcheck"];
 
 // @ts-expect-error VolumeDriver options values are strings
 const invalidDriver: VolumeDriver = { name: "nfs", options: { share: 1 } };
