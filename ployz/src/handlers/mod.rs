@@ -516,14 +516,14 @@ mod tests {
     }
 
     #[test]
-    fn founding_defaults_to_zentinel_and_accepts_explicit_caddy() {
+    fn founding_defaults_to_envoy_and_accepts_explicit_backends() {
         let defaults = crate::cli::command()
             .try_get_matches_from(["ployz", "machine", "init", "root@host"])
             .unwrap();
         let defaults = leaf_matches(&defaults);
         assert_eq!(
             defaults.get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
-            Some(&ployz_core::IngressProxyBackend::Zentinel)
+            Some(&ployz_core::IngressProxyBackend::Envoy)
         );
 
         let caddy = crate::cli::command()
@@ -539,6 +539,21 @@ mod tests {
         assert_eq!(
             leaf_matches(&caddy).get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
             Some(&ployz_core::IngressProxyBackend::Caddy)
+        );
+
+        let zentinel = crate::cli::command()
+            .try_get_matches_from([
+                "ployz",
+                "machine",
+                "init",
+                "--ingress-backend",
+                "zentinel",
+                "root@host",
+            ])
+            .unwrap();
+        assert_eq!(
+            leaf_matches(&zentinel).get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
+            Some(&ployz_core::IngressProxyBackend::Zentinel)
         );
 
         let envoy = crate::cli::command()
@@ -572,10 +587,21 @@ mod tests {
     }
 
     #[test]
-    fn cloud_founding_defaults_to_zentinel_and_accepts_explicit_caddy() {
+    fn cloud_founding_defaults_to_envoy_and_accepts_explicit_backends() {
         for (arguments, expected) in [
             (
                 vec!["ployz", "cloud", "enroll", "pmet_test"],
+                ployz_core::IngressProxyBackend::Envoy,
+            ),
+            (
+                vec![
+                    "ployz",
+                    "cloud",
+                    "enroll",
+                    "pmet_test",
+                    "--ingress-backend",
+                    "zentinel",
+                ],
                 ployz_core::IngressProxyBackend::Zentinel,
             ),
             (
