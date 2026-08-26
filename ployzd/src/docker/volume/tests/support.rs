@@ -254,13 +254,13 @@ pub(super) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource
 }
 
 pub(super) fn ordinary_source(name: &str) -> VolumeSource {
-    VolumeSource::Named {
+    VolumeSource::Ordinary {
         name: DockerVolumeName::parse(name).unwrap(),
-        external: false,
-        driver: Some(ployz_core::VolumeDriver {
-            name: "example-driver".into(),
-            options: BTreeMap::from([("mode".into(), "safe".into())]),
-        }),
+        driver: ployz_core::VolumeDriver::parse(
+            "example-driver",
+            BTreeMap::from([("mode".into(), "safe".into())]),
+        )
+        .unwrap(),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
     }
 }

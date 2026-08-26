@@ -153,17 +153,13 @@ fn preview_from(
             .into_iter()
             .filter_map(|(machine_id, volume)| {
                 let (name, maximum_bytes) = match volume.source {
-                    VolumeSource::Named {
-                        name,
-                        external: false,
-                        ..
-                    } => (name, None),
+                    VolumeSource::Ordinary { name, .. } => (name, None),
                     VolumeSource::Provisioned {
                         name,
                         maximum_bytes,
                         ..
                     } => (name, Some(maximum_bytes)),
-                    VolumeSource::Named { external: true, .. }
+                    VolumeSource::External { .. }
                     | VolumeSource::Bind { .. }
                     | VolumeSource::Tmpfs { .. } => return None,
                 };
@@ -202,7 +198,7 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
         .iter()
         .cloned()
         .map(|spec| scope_requested(spec, &intent.project_name))
-        .collect();
+        .collect::<Result<_, _>>()?;
     let mut requested = Vec::new();
     for spec in specs {
         let scoped = target

@@ -32,20 +32,12 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
     ) -> Result<(), Error> {
         let mut mounted = BTreeMap::<DockerVolumeName, &VolumeSource>::new();
-        for mount in spec.volume_graph.mounts() {
-            let source = &spec.volume_graph.volume_for(mount).source;
+        for volume in spec.volume_graph.mounted_volumes() {
+            let source = &volume.source;
             let Some(name) = volume_name(source) else {
                 continue;
             };
-            match mounted.get(name) {
-                Some(existing) if !volume_sources_compatible(existing, source) => {
-                    return Err(Error::ConflictingMountedVolumeSources(name.clone()));
-                }
-                Some(_) => {}
-                None => {
-                    mounted.insert(name.clone(), source);
-                }
-            }
+            mounted.entry(name.clone()).or_insert(source);
         }
         for source in mounted.values() {
             self.ensure_volume_source(machine_id, source).await?;
@@ -61,7 +53,7 @@ impl ContainerRuntime {
         let Some(name) = volume_name(source) else {
             return Ok(());
         };
-        if matches!(source, VolumeSource::Named { external: true, .. }) {
+        if matches!(source, VolumeSource::External { .. }) {
             return match ensure_volume_exists(&self.docker.client, name.as_str()).await {
                 Err(error) if volume_not_found(&error) => {
                     Err(Error::ExternalVolumeNotFound(name.clone()))
@@ -202,29 +194,10 @@ impl ContainerRuntime {
 
 fn volume_name(source: &VolumeSource) -> Option<&DockerVolumeName> {
     match source {
-        VolumeSource::Named { name, .. } | VolumeSource::Provisioned { name, .. } => Some(name),
+        VolumeSource::External { name }
+        | VolumeSource::Ordinary { name, .. }
+        | VolumeSource::Provisioned { name, .. } => Some(name),
         VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => None,
-    }
-}
-
-fn volume_sources_compatible(left: &VolumeSource, right: &VolumeSource) -> bool {
-    match (left, right) {
-        (
-            VolumeSource::Named { external: true, .. },
-            VolumeSource::Named { external: true, .. },
-        ) => true,
-        (
-            VolumeSource::Named {
-                external: false, ..
-            },
-            VolumeSource::Named {
-                external: false, ..
-            },
-        )
-        | (VolumeSource::Provisioned { .. }, VolumeSource::Provisioned { .. }) => {
-            left.to_create_volume_request() == right.to_create_volume_request()
-        }
-        _ => false,
     }
 }
 

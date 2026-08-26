@@ -10,23 +10,18 @@ use support::*;
 mod support;
 
 #[tokio::test]
-async fn duplicate_aliases_compare_their_managed_or_external_contract() {
+async fn duplicate_compatible_aliases_ensure_one_volume() {
     let (runtime, fake) = fake_runtime().await;
     let name = DockerVolumeName::parse("aliases").unwrap();
     let managed = spec_with_sources(vec![
-        VolumeSource::Named {
+        VolumeSource::Ordinary {
             name: name.clone(),
-            external: false,
-            driver: None,
+            driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
         },
-        VolumeSource::Named {
+        VolumeSource::Ordinary {
             name: name.clone(),
-            external: false,
-            driver: Some(ployz_core::VolumeDriver {
-                name: "local".into(),
-                options: BTreeMap::new(),
-            }),
+            driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
         },
     ]);
@@ -50,21 +45,8 @@ async fn duplicate_aliases_compare_their_managed_or_external_contract() {
         serde_json::json!({"Name":name,"Driver":"anything","Mountpoint":""}),
     );
     let external = spec_with_sources(vec![
-        VolumeSource::Named {
-            name: name.clone(),
-            external: true,
-            driver: None,
-            labels: BTreeMap::new(),
-        },
-        VolumeSource::Named {
-            name,
-            external: true,
-            driver: Some(ployz_core::VolumeDriver {
-                name: "ignored".into(),
-                options: BTreeMap::from([("ignored".into(), "value".into())]),
-            }),
-            labels: BTreeMap::from([("ignored".into(), "label".into())]),
-        },
+        VolumeSource::External { name: name.clone() },
+        VolumeSource::External { name },
     ]);
     runtime
         .ensure_mounted_volumes(&MachineId::random(), &external)
@@ -192,14 +174,8 @@ async fn existence_rejects_a_missing_volume() {
 #[tokio::test]
 async fn external_volume_is_checked_for_existence_only() {
     let (runtime, fake) = fake_runtime().await;
-    let source = VolumeSource::Named {
+    let source = VolumeSource::External {
         name: DockerVolumeName::parse("malformed").unwrap(),
-        external: true,
-        driver: Some(ployz_core::VolumeDriver {
-            name: "ignored".into(),
-            options: [("ignored".into(), "value".into())].into(),
-        }),
-        labels: [("ignored".into(), "value".into())].into(),
     };
 
     runtime
@@ -217,13 +193,13 @@ async fn external_volume_is_checked_for_existence_only() {
 #[tokio::test]
 async fn missing_ordinary_volume_uses_exact_declared_shape() {
     let (runtime, fake) = fake_runtime().await;
-    let source = VolumeSource::Named {
+    let source = VolumeSource::Ordinary {
         name: DockerVolumeName::parse("ordinary").unwrap(),
-        external: false,
-        driver: Some(ployz_core::VolumeDriver {
-            name: "example-driver".into(),
-            options: BTreeMap::from([("mode".into(), "safe".into())]),
-        }),
+        driver: ployz_core::VolumeDriver::parse(
+            "example-driver",
+            BTreeMap::from([("mode".into(), "safe".into())]),
+        )
+        .unwrap(),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
     };
 
@@ -249,12 +225,11 @@ async fn missing_ordinary_volume_uses_exact_declared_shape() {
 }
 
 #[tokio::test]
-async fn omitted_ordinary_driver_means_local_with_no_options() {
+async fn normalized_local_driver_uses_no_options() {
     let (runtime, fake) = fake_runtime().await;
-    let source = VolumeSource::Named {
+    let source = VolumeSource::Ordinary {
         name: DockerVolumeName::parse("default-driver").unwrap(),
-        external: false,
-        driver: None,
+        driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
         labels: BTreeMap::new(),
     };
 
@@ -389,11 +364,8 @@ async fn existing_managed_volume_refuses_every_unsafe_shape_mismatch() {
 #[tokio::test]
 async fn missing_external_volume_fails_without_create() {
     let (runtime, fake) = fake_runtime().await;
-    let source = VolumeSource::Named {
+    let source = VolumeSource::External {
         name: DockerVolumeName::parse("external-missing").unwrap(),
-        external: true,
-        driver: None,
-        labels: BTreeMap::new(),
     };
 
     assert!(matches!(
@@ -465,10 +437,9 @@ async fn a_later_volume_failure_does_not_roll_back_an_earlier_create() {
         }),
     );
     let spec = spec_with_sources(vec![
-        VolumeSource::Named {
+        VolumeSource::Ordinary {
             name: DockerVolumeName::parse("a-created").unwrap(),
-            external: false,
-            driver: None,
+            driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
         },
         ordinary_source("z-mismatch"),
@@ -493,10 +464,9 @@ async fn a_later_volume_failure_does_not_roll_back_an_earlier_create() {
 #[tokio::test]
 async fn a_volume_created_before_container_creation_failure_is_left_for_retry() {
     let (runtime, fake) = fake_runtime().await;
-    let spec = spec_with_sources(vec![VolumeSource::Named {
+    let spec = spec_with_sources(vec![VolumeSource::Ordinary {
         name: DockerVolumeName::parse("created-before-container-failure").unwrap(),
-        external: false,
-        driver: None,
+        driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
         labels: BTreeMap::new(),
     }]);
 

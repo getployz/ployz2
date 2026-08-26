@@ -77,11 +77,8 @@ mod tests {
             false,
         );
         let external = volume_graph(
-            VolumeSource::Named {
+            VolumeSource::External {
                 name: DockerVolumeName::parse("external").unwrap(),
-                external: true,
-                driver: None,
-                labels: BTreeMap::new(),
             },
             true,
         );
