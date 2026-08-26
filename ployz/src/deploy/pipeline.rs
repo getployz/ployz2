@@ -406,7 +406,14 @@ async fn gather_deploy_snapshot(
     mut machines: Vec<MachineObservation>,
     intent: &DeployIntent,
 ) -> Result<(DeploySnapshot, Vec<DeployWarning>), DeployError> {
-    if !intent.provisioned_volumes.is_empty() {
+    if intent.target.iter().any(|spec| {
+        spec.volume_graph.mounts().iter().any(|mount| {
+            matches!(
+                spec.volume_graph.volume_for(mount).source,
+                ployz_core::VolumeSource::Provisioned { .. }
+            )
+        })
+    }) {
         client.observe_machine_storage(&mut machines).await;
     }
     gather_snapshot(client, machines).await

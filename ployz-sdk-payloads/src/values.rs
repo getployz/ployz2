@@ -22,8 +22,8 @@ use ployz_core::{
     MachinePath, MachineRuntime, MachineStorageObservation, MachineSuccess, ManagementAddress,
     MembershipObservation, ObservationKind, ObservedDataLoss, OperationPhase, OperationRow,
     OperationStatus, PROTOCOL_MAJOR, PartialResult, Placement, PlanOptions, PortPublication,
-    PreDeployHook, PreservedVolume, ProjectName, ProvisionedVolume, ProvisionedVolumeMaximumBytes,
-    PruneRefusal, PullPolicy, QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest,
+    PreDeployHook, PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes, PruneRefusal,
+    PullPolicy, QualifiedService, RegisterRequest, Registered, RemoveVolumesRequest,
     ReplacementCompensation, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
     ResolvedUpdateConfig, RestartAttempt, RestartPolicy, RpcError, RpcErrorCode, RttStatistics,
     RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchTransportFrame, SelectedEndpoint,
@@ -139,7 +139,10 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     );
     fixtures.insert("capabilities".into(), Value::Array(capability_wires()));
     fixtures.insert("service_attempt".into(), to_value(&service_attempt()));
-    fixtures.insert("provisioned_volume".into(), to_value(&provisioned_volume()));
+    fixtures.insert(
+        "provisioned_volume_source".into(),
+        to_value(&provisioned_volume_source()),
+    );
     fixtures.insert(
         "create_provisioned_volume_operation".into(),
         to_value(&create_provisioned_volume_operation()),
@@ -259,7 +262,6 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ),
         ("ClusterTeardown", to_value(&cluster_teardown())),
         ("DeployIntent", to_value(&deploy_intent())),
-        ("ProvisionedVolume", to_value(&provisioned_volume())),
         ("DeployPreview", to_value(&deploy_preview())),
         ("PreservedVolume", to_value(&preserved_volume())),
         ("RequestedServiceSpec", to_value(&requested_spec())),
@@ -565,6 +567,7 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
                 }),
                 to_value(&service_volume().source),
                 to_value(&named_volume_with_driver().source),
+                to_value(&provisioned_volume_source()),
                 to_value(&VolumeSource::Tmpfs {
                     size_bytes: Some(64),
                     mode: Some(0o755),
@@ -811,14 +814,13 @@ fn service_attempt() -> ServiceAttempt {
     }
 }
 
-fn provisioned_volume() -> ProvisionedVolume {
-    ProvisionedVolume {
-        service: ServiceName::parse("api").expect("fixture Service Name is valid"),
-        reference: ServiceVolumeReference::parse("data")
-            .expect("fixture Service Volume Reference is valid"),
+fn provisioned_volume_source() -> VolumeSource {
+    VolumeSource::Provisioned {
+        name: DockerVolumeName::parse("data").expect("fixture Volume name is valid"),
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(
             NonZeroU64::new(1_073_741_824).expect("fixture Provisioned Volume bound is positive"),
         ),
+        labels: BTreeMap::from([("backup".into(), "daily".into())]),
     }
 }
 
@@ -930,8 +932,10 @@ fn replacement_operation() -> ReplacementOperation {
 fn create_provisioned_volume_operation() -> DeployOperation {
     DeployOperation::CreateProvisionedVolume {
         machine_id: machine_id(MACHINE_ID_HEX),
-        volume: service_volume(),
-        maximum_bytes: provisioned_volume().maximum_bytes,
+        volume: ServiceVolume {
+            reference: ServiceVolumeReference::parse("data").unwrap(),
+            source: provisioned_volume_source(),
+        },
     }
 }
 

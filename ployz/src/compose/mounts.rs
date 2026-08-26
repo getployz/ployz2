@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use hex::encode as hex_encode;
 use ployz_core::{
-    ContainerPath, DockerVolumeName, MachinePath, ServiceMount, ServiceVolume,
-    ServiceVolumeReference, VolumeDriver, VolumeSource,
+    ContainerPath, DockerVolumeName, MachinePath, ProvisionedVolumeMaximumBytes, ServiceMount,
+    ServiceVolume, ServiceVolumeReference, VolumeDriver, VolumeSource,
 };
 use sha2::{Digest, Sha256};
 
@@ -15,6 +15,7 @@ use super::{
 pub(super) fn volumes(
     service: &RawService,
     root: &RawProject,
+    provisioned_volume_bounds: &BTreeMap<ServiceVolumeReference, ProvisionedVolumeMaximumBytes>,
 ) -> Result<(Vec<ServiceVolume>, Vec<ServiceMount>), ComposeError> {
     if let Some(source) = relative_bind_source(service) {
         return Err(invalid(format!("bind mount source '{source}' is relative")));
@@ -123,20 +124,30 @@ pub(super) fn volumes(
                 } else {
                     key.clone()
                 };
-                VolumeSource::Named {
-                    name: DockerVolumeName::parse(docker_name).map_err(invalid)?,
-                    external,
-                    driver: (!external
-                        && (declared.driver.is_some() || !declared.driver_opts.is_empty()))
-                    .then(|| VolumeDriver {
-                        name: declared.driver.clone().unwrap_or_default(),
-                        options: declared.driver_opts.clone(),
-                    }),
-                    labels: if external {
-                        BTreeMap::new()
-                    } else {
-                        declared.labels.clone()
-                    },
+                let name = DockerVolumeName::parse(docker_name).map_err(invalid)?;
+                let reference = ServiceVolumeReference::parse(key.clone()).map_err(invalid)?;
+                if let Some(maximum_bytes) = provisioned_volume_bounds.get(&reference) {
+                    VolumeSource::Provisioned {
+                        name,
+                        maximum_bytes: *maximum_bytes,
+                        labels: BTreeMap::new(),
+                    }
+                } else {
+                    VolumeSource::Named {
+                        name,
+                        external,
+                        driver: (!external
+                            && (declared.driver.is_some() || !declared.driver_opts.is_empty()))
+                        .then(|| VolumeDriver {
+                            name: declared.driver.clone().unwrap_or_default(),
+                            options: declared.driver_opts.clone(),
+                        }),
+                        labels: if external {
+                            BTreeMap::new()
+                        } else {
+                            declared.labels.clone()
+                        },
+                    }
                 }
             }
             _ => unreachable!("validated volume kind"),

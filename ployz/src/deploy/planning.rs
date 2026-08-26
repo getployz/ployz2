@@ -23,9 +23,9 @@ use placement::{
     plan_global, plan_replicated,
 };
 use volumes::{
-    ProvisionedVolumeBindings, VolumePins, constrain_volume_candidates, named_volume_uses,
-    plan_volume_operations, prepare_shared_replicated_volumes, preserved_owned_volumes,
-    reject_mixed_volume_modes, scope_requested,
+    VolumePins, constrain_volume_candidates, named_volume_uses, plan_volume_operations,
+    prepare_shared_replicated_volumes, preserved_owned_volumes, reject_mixed_volume_modes,
+    scope_requested,
 };
 
 /// Whether Project removal keeps or destroys observer-visible managed volumes.
@@ -48,7 +48,6 @@ pub struct IngressContext<'domain> {
 struct BoundIntent {
     target: Vec<RequestedServiceSpec>,
     requested: Vec<RequestedServiceSpec>,
-    provisioned_volumes: ProvisionedVolumeBindings,
 }
 
 /// Operations and prune results before pending rows are attached.
@@ -171,8 +170,6 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
         .cloned()
         .map(|spec| scope_requested(spec, &intent.project_name))
         .collect();
-    let provisioned_volumes =
-        ProvisionedVolumeBindings::parse(&target, &intent.provisioned_volumes)?;
     let mut requested = Vec::new();
     for spec in specs {
         let scoped = target
@@ -187,11 +184,7 @@ fn bind(intent: &DeployIntent, ingress: IngressContext<'_>) -> Result<BoundInten
         )?;
         requested.push(planned);
     }
-    Ok(BoundIntent {
-        target,
-        requested,
-        provisioned_volumes,
-    })
+    Ok(BoundIntent { target, requested })
 }
 
 fn hostname_policy_for(
@@ -217,16 +210,12 @@ fn assemble_plan(
     snapshot: &DeploySnapshot,
     mut warnings: Vec<DeployWarning>,
 ) -> Result<Planned, PlanError> {
-    let BoundIntent {
-        target,
-        requested,
-        provisioned_volumes,
-    } = bound;
+    let BoundIntent { target, requested } = bound;
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
-    let mut pins = VolumePins::new(provisioned_volumes);
-    pins.validate_provisioned_volume_bounds(&target, snapshot, &intent.options)?;
+    let mut pins = VolumePins::new();
+    pins.validate_provisioned_volume_definitions(&target, snapshot, &intent.options)?;
     let name_errors_with_service = requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
     let mut capacity = CapacityBudget::from_snapshot(snapshot);

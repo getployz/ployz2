@@ -10,7 +10,8 @@ use ployz_core::{
     ExecutionError, HealthObservation, HealthcheckSpec, IngressHostname, LocalMachineRemoved,
     MembershipObservation, ObservedDataLoss, PlanOptions, RUNTIME_WATCH_CAPABILITY,
     RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode, RuntimeWatchTransportFrame,
-    ServiceAttempt, StorageChoice, UnconfirmedDataLoss, VolumeInventory, VolumeSource,
+    ServiceAttempt, ServiceVolume, StorageChoice, UnconfirmedDataLoss, VolumeInventory,
+    VolumeSource,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -235,18 +236,24 @@ fn json_fixtures_round_trip_through_rust_types() {
     let intent: DeployIntent = decode_fixture(fixture(&fixtures, "deploy_intent"));
     assert_eq!(intent.project_name.as_str(), "app");
     assert!(intent.target.is_empty());
-    assert!(intent.provisioned_volumes.is_empty());
-    let provisioned: ployz_core::ProvisionedVolume =
-        decode_fixture(fixture(&fixtures, "provisioned_volume"));
-    assert_eq!(provisioned.service.as_str(), "api");
-    assert_eq!(provisioned.reference.as_str(), "data");
-    assert_eq!(provisioned.maximum_bytes.get(), 1_073_741_824);
+    let provisioned: VolumeSource = decode_fixture(fixture(&fixtures, "provisioned_volume_source"));
+    assert!(matches!(
+        provisioned,
+        VolumeSource::Provisioned { maximum_bytes, labels, .. }
+            if maximum_bytes.get() == 1_073_741_824
+                && labels.get("backup").map(String::as_str) == Some("daily")
+    ));
     let operation: DeployOperation =
         decode_fixture(fixture(&fixtures, "create_provisioned_volume_operation"));
     assert!(matches!(
         operation,
-        DeployOperation::CreateProvisionedVolume { maximum_bytes, .. }
-            if maximum_bytes.get() == 1_073_741_824
+        DeployOperation::CreateProvisionedVolume {
+            volume: ServiceVolume {
+                source: VolumeSource::Provisioned { maximum_bytes, .. },
+                ..
+            },
+            ..
+        } if maximum_bytes.get() == 1_073_741_824
     ));
     assert!(intent.options.selected.is_empty());
     assert_eq!(intent.options, PlanOptions::default());
@@ -507,12 +514,10 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("export type DeployIntent = Additive<{"));
     assert!(dts.contains("project_name: ProjectName"));
     assert!(dts.contains("target: RequestedServiceSpec[]"));
-    assert!(dts.contains("export type ProvisionedVolume = Additive<{"));
-    assert!(dts.contains("service: ServiceName"));
-    assert!(dts.contains("reference: ServiceVolumeReference"));
     assert!(dts.contains("export type ProvisionedVolumeMaximumBytes = string"));
     assert!(dts.contains("maximum_bytes: ProvisionedVolumeMaximumBytes"));
-    assert!(dts.contains("provisioned_volumes: ProvisionedVolume[]"));
+    assert!(dts.contains("kind: \"provisioned\"; name: DockerVolumeName; maximum_bytes: ProvisionedVolumeMaximumBytes"));
+    assert!(!dts.contains("provisioned_volumes: ProvisionedVolume[]"));
     assert!(dts.contains("export type RequestedServiceSpec = Additive<{"));
     assert!(dts.contains("export type ResolvedServiceSpec = Additive<{"));
     assert!(dts.contains("export type IngressProxyFragment ="));
@@ -569,7 +574,10 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("type: \"run_container\""));
     assert!(dts.contains("type: \"wait_healthy\""));
     assert!(dts.contains(
-        "type: \"create_provisioned_volume\"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes"
+        "type: \"create_provisioned_volume\"; machine_id: MachineId; volume: ServiceVolume"
+    ));
+    assert!(!dts.contains(
+        "type: \"create_provisioned_volume\"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes"
     ));
     assert!(dts.contains("export type FailedOperation<E = ExecutionError> ="));
     assert!(dts.contains("export type DeployOutcome<E = ExecutionError> ="));

@@ -196,6 +196,14 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                     ],
                 ),
                 (
+                    "provisioned",
+                    &[
+                        ("name", "DockerVolumeName"),
+                        ("maximum_bytes", "ProvisionedVolumeMaximumBytes"),
+                        ("labels", "{ readonly [key: string]: string }?"),
+                    ],
+                ),
+                (
                     "tmpfs",
                     &[
                         ("size_bytes", "number?"),
@@ -674,24 +682,12 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
-        "ProvisionedVolume",
-        Shape::Additive {
-            params: "",
-            fields: &[
-                ("service", "ServiceName"),
-                ("reference", "ServiceVolumeReference"),
-                ("maximum_bytes", "ProvisionedVolumeMaximumBytes"),
-            ],
-        },
-    ),
-    (
         "DeployIntent",
         Shape::Additive {
             params: "",
             fields: &[
                 ("project_name", "ProjectName"),
                 ("target", "RequestedServiceSpec[]"),
-                ("provisioned_volumes", "ProvisionedVolume[]"),
                 ("options", "PlanOptions"),
             ],
         },
@@ -857,11 +853,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ),
                 (
                     "create_provisioned_volume",
-                    &[
-                        ("machine_id", "MachineId"),
-                        ("volume", "ServiceVolume"),
-                        ("maximum_bytes", "ProvisionedVolumeMaximumBytes"),
-                    ],
+                    &[("machine_id", "MachineId"), ("volume", "ServiceVolume")],
                 ),
                 (
                     "wait_healthy",

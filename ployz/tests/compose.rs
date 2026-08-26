@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeMap,
     fs,
-    num::NonZeroU64,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
@@ -17,9 +16,8 @@ use ployz::{
 use ployz_core::{
     DockerVolumeId, DockerVolumeName, HostBind, HttpProtocol, IngressHostname,
     IngressProxyFragment, MANAGED_LABEL, MachineFailure, MachineStorageObservation,
-    PROJECT_NAME_LABEL, PortPublication, ProjectName, ProvisionedVolume,
-    ProvisionedVolumeMaximumBytes, RestartPolicy, RpcError, RpcErrorCode, ServiceMode, ServiceName,
-    ServiceVolumeReference, TransportProtocol, UpdateOrder, VolumeObservationFailure, VolumeSource,
+    PROJECT_NAME_LABEL, PortPublication, ProjectName, RestartPolicy, RpcError, RpcErrorCode,
+    ServiceMode, TransportProtocol, UpdateOrder, VolumeObservationFailure, VolumeSource,
 };
 
 #[path = "compose/support.rs"]
@@ -1346,18 +1344,11 @@ x-volumes: {data: 10G}
     };
 
     let mut compose_preview = plan_compose(&project, &snapshot).unwrap();
-    let mut sdk_intent = DeployIntent::apply_all(
+    let sdk_intent = DeployIntent::apply_all(
         ProjectName::parse("app").unwrap(),
         project.services.values(),
         PlanOptions::default(),
     );
-    sdk_intent.provisioned_volumes = vec![ProvisionedVolume {
-        service: ServiceName::parse("app").unwrap(),
-        reference: ServiceVolumeReference::parse("data").unwrap(),
-        maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-            NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
-        ),
-    }];
     let sdk_preview = preview_deploy(&sdk_intent, &snapshot, IngressContext::default()).unwrap();
     let sdk_row = sdk_preview
         .operations
@@ -1415,7 +1406,54 @@ fn compose_x_volume_scalar_and_object_forms_are_equivalent() {
 }
 
 #[test]
-fn compose_x_volume_size_stays_out_of_resolved_service_spec() {
+fn mounted_x_volume_resolves_to_a_provisioned_source() {
+    let project = parse_normalized(
+        "services: {app: {image: app, volumes: [data:/data]}}\nx-volumes: {data: 10G}\n",
+        ".",
+    )
+    .unwrap();
+
+    let volume = service(&project, "app")
+        .volumes()
+        .first()
+        .expect("fixture mounts one volume");
+    assert!(matches!(
+        &volume.source,
+        VolumeSource::Provisioned { name, maximum_bytes, labels }
+            if name.as_str() == "data"
+                && maximum_bytes.get() == 10 * 1024_u64.pow(3)
+                && labels.is_empty()
+    ));
+}
+
+#[test]
+fn unused_x_volume_definition_is_inert() {
+    let project = parse_normalized(
+        "services: {app: {image: app}}\nx-volumes: {data: 10G}\n",
+        ".",
+    )
+    .unwrap();
+    let mut stateless = machine('a', "one");
+    stateless.storage = Some(MachineStorageObservation::Stateless);
+
+    let preview = plan_compose(
+        &project,
+        &DeploySnapshot {
+            machines: vec![stateless],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert!(service(&project, "app").volumes().is_empty());
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+}
+
+#[test]
+fn compose_x_volume_size_stays_in_resolved_service_spec() {
     let load = |size: &str| {
         parse_normalized(
             &format!(
@@ -1427,7 +1465,7 @@ fn compose_x_volume_size_stays_out_of_resolved_service_spec() {
     };
     let ten_gib = load("10G");
     let twenty_gib = load("20G");
-    assert_eq!(ten_gib.services, twenty_gib.services);
+    assert_ne!(ten_gib.services, twenty_gib.services);
 
     let mut ready = machine('a', "one");
     ready.storage = Some(MachineStorageObservation::Ready);
@@ -1451,7 +1489,21 @@ fn compose_x_volume_size_stays_out_of_resolved_service_spec() {
     let ten_spec = run_spec(&ten_preview);
     let mut twenty_spec = run_spec(&twenty_preview);
     twenty_spec.service_id = ten_spec.service_id;
-    assert_eq!(ten_spec, twenty_spec);
+    assert_ne!(ten_spec, twenty_spec);
+
+    let source_bound = |spec: &ployz_core::ResolvedServiceSpec| {
+        let volume = spec
+            .volume_graph
+            .volumes()
+            .first()
+            .expect("fixture mounts one volume");
+        let VolumeSource::Provisioned { maximum_bytes, .. } = &volume.source else {
+            panic!("x-volume did not remain provisioned in resolved spec")
+        };
+        maximum_bytes.get()
+    };
+    assert_eq!(source_bound(&ten_spec), 10 * 1024_u64.pow(3));
+    assert_eq!(source_bound(&twenty_spec), 20 * 1024_u64.pow(3));
 
     let bound = |preview: &ployz::deploy::DeployPreview| {
         let row = preview
@@ -1464,8 +1516,11 @@ fn compose_x_volume_size_stays_out_of_resolved_service_spec() {
                 )
             })
             .unwrap();
-        let DeployOperation::CreateProvisionedVolume { maximum_bytes, .. } = &row.operation else {
+        let DeployOperation::CreateProvisionedVolume { volume, .. } = &row.operation else {
             unreachable!("matched a CreateProvisionedVolume row")
+        };
+        let VolumeSource::Provisioned { maximum_bytes, .. } = &volume.source else {
+            unreachable!("Provisioned Volume operation carries a Provisioned source")
         };
         maximum_bytes.get()
     };

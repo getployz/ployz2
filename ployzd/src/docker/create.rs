@@ -369,6 +369,22 @@ pub(super) fn docker_mounts(graph: &ServiceVolumeGraph) -> Result<Vec<Mount>, Er
                         subpath: mount.subpath.clone(),
                     });
                 }
+                source @ VolumeSource::Provisioned { .. } => {
+                    let request = source
+                        .to_create_volume_request()
+                        .expect("Provisioned Volumes are managed Docker Volumes");
+                    translated.typ = Some(MountType::VOLUME);
+                    translated.source = Some(request.name.to_string());
+                    translated.volume_options = Some(MountVolumeOptions {
+                        no_copy: Some(mount.no_copy),
+                        labels: Some(request.labels.into_iter().collect()),
+                        driver_config: Some(MountVolumeOptionsDriverConfig {
+                            name: Some(request.driver),
+                            options: Some(request.options.into_iter().collect()),
+                        }),
+                        subpath: mount.subpath.clone(),
+                    });
+                }
                 VolumeSource::Tmpfs {
                     size_bytes,
                     mode,

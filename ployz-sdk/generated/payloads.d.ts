@@ -120,6 +120,7 @@ export type VolumeDriver = Additive<{
 export type VolumeSource =
   | Additive<{ kind: "bind"; machine_path: MachinePath; create_machine_path?: boolean; propagation?: string; recursive?: string }>
   | Additive<{ kind: "named"; name: DockerVolumeName; external?: boolean; driver?: VolumeDriver; labels?: { readonly [key: string]: string } }>
+  | Additive<{ kind: "provisioned"; name: DockerVolumeName; maximum_bytes: ProvisionedVolumeMaximumBytes; labels?: { readonly [key: string]: string } }>
   | Additive<{ kind: "tmpfs"; size_bytes?: number; mode?: number; options?: string[][] }>
   | Additive<{ kind?: string }>;
 
@@ -397,16 +398,9 @@ export type ServiceAttempt = Additive<{
   name: ServiceName;
 }>;
 
-export type ProvisionedVolume = Additive<{
-  service: ServiceName;
-  reference: ServiceVolumeReference;
-  maximum_bytes: ProvisionedVolumeMaximumBytes;
-}>;
-
 export type DeployIntent = Additive<{
   project_name: ProjectName;
   target: RequestedServiceSpec[];
-  provisioned_volumes: ProvisionedVolume[];
   options: PlanOptions;
 }>;
 
@@ -480,7 +474,7 @@ export type ReplacementOperation = Additive<{
 
 export type DeployOperation =
   | Additive<{ type: "create_volume"; machine_id: MachineId; volume: ServiceVolume }>
-  | Additive<{ type: "create_provisioned_volume"; machine_id: MachineId; volume: ServiceVolume; maximum_bytes: ProvisionedVolumeMaximumBytes }>
+  | Additive<{ type: "create_provisioned_volume"; machine_id: MachineId; volume: ServiceVolume }>
   | Additive<{ type: "wait_healthy"; machine_id: MachineId; dependent: QualifiedService; dependency: QualifiedService }>
   | Additive<{ type: "run_container"; machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }>
   | Additive<{ type: "stop_container"; machine_id: MachineId; container_id: ContainerId }>

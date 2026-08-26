@@ -345,6 +345,19 @@ fn volume() -> ServiceVolume {
     }
 }
 
+fn provisioned_volume() -> ServiceVolume {
+    ServiceVolume {
+        reference: ServiceVolumeReference::parse("data").unwrap(),
+        source: VolumeSource::Provisioned {
+            name: DockerVolumeName::parse("data").unwrap(),
+            maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                NonZeroU64::new(1_073_741_824).unwrap(),
+            ),
+            labels: Default::default(),
+        },
+    }
+}
+
 fn create_volume_call(machine_id: MachineId, driver: &str, size: Option<&str>) -> Call {
     Call::CreateVolume(
         machine_id,
