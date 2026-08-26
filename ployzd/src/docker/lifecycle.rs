@@ -184,10 +184,7 @@ impl ContainerRuntime {
                     }))
                 }
                 ServicePlacementEligibility::Ineligible(reason) => {
-                    for slot in existing {
-                        self.stop(&slot.container_id, None, None).await?;
-                        self.remove(&slot.container_id, false, false).await?;
-                    }
+                    self.retire_global_slots(existing).await?;
                     Ok(GlobalSlotConvergence::Ineligible(reason))
                 }
                 ServicePlacementEligibility::Unknown(reason) => {
@@ -205,10 +202,7 @@ impl ContainerRuntime {
                 Ok(GlobalSlotConvergence::Ensured(created))
             }
             ContainerAdmission::Ineligible(reason) => {
-                for slot in existing {
-                    self.stop(&slot.container_id, None, None).await?;
-                    self.remove(&slot.container_id, false, false).await?;
-                }
+                self.retire_global_slots(existing).await?;
                 Ok(GlobalSlotConvergence::Ineligible(reason))
             }
             ContainerAdmission::Unknown(reason) => Ok(GlobalSlotConvergence::Unknown(reason)),
@@ -224,55 +218,61 @@ impl ContainerRuntime {
         >,
         reserved_name: Option<String>,
     ) -> Result<ContainerAdmission, Error> {
-        let mut body = create::container_create_body(
+        let ContainerRequest {
+            kind,
+            project_name,
+            spec,
+            network,
+            storage,
+        } = request;
+        let body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),
-            request.kind,
-            request.project_name,
-            request.spec,
-            request.network,
+            kind,
+            project_name,
+            spec,
+            network,
         )?;
-        let mounts = body
-            .host_config
-            .get_or_insert_default()
-            .mounts
-            .get_or_insert_default();
         prepare_image(
             &self.docker.client,
-            &request.spec.container.image,
-            request.spec.container.pull_policy,
+            &spec.container.image,
+            spec.container.pull_policy,
         )
         .await?;
-        let mut config_operation = self.specs.config_operation().await;
-        mounts.extend(docker_config_mounts(&mut config_operation, request.spec).await?);
-        self.finish_create(machine, request, body, config_operation, reserved_name)
+        match self
+            .admit_and_ensure_volumes(machine, spec, storage)
+            .await?
+        {
+            ServicePlacementEligibility::Eligible => {}
+            ServicePlacementEligibility::Ineligible(reason) => {
+                return Ok(ContainerAdmission::Ineligible(reason));
+            }
+            ServicePlacementEligibility::Unknown(reason) => {
+                return Ok(ContainerAdmission::Unknown(reason));
+            }
+        }
+        self.finish_create(machine, kind, spec, network, body, reserved_name)
             .await
+            .map(ContainerAdmission::Admitted)
     }
 
     async fn finish_create(
         &self,
         machine: &Machine,
-        request: ContainerRequest<
-            '_,
-            impl Future<Output = Option<MachineStorageObservation>> + Send,
-        >,
-        body: bollard::models::ContainerCreateBody,
-        mut config_operation: ConfigOperation<'_>,
+        kind: ContainerKind,
+        spec: &ResolvedServiceSpec,
+        network: NetworkAttachment,
+        mut body: bollard::models::ContainerCreateBody,
         reserved_name: Option<String>,
-    ) -> Result<ContainerAdmission, Error> {
+    ) -> Result<ContainerCreated, Error> {
+        let mut config_operation = self.specs.config_operation().await;
+        let mounts = body
+            .host_config
+            .get_or_insert_default()
+            .mounts
+            .get_or_insert_default();
+        mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
         let result = async {
-            match self
-                .admit_and_ensure_volumes(machine, request.spec, request.storage)
-                .await?
-            {
-                ServicePlacementEligibility::Eligible => {}
-                ServicePlacementEligibility::Ineligible(reason) => {
-                    return Ok(ContainerAdmission::Ineligible(reason));
-                }
-                ServicePlacementEligibility::Unknown(reason) => {
-                    return Ok(ContainerAdmission::Unknown(reason));
-                }
-            }
             let (created, display_name) = match reserved_name {
                 Some(display_name) => {
                     let options = CreateContainerOptionsBuilder::default()
@@ -280,7 +280,7 @@ impl ContainerRuntime {
                         .build();
                     match self
                         .docker
-                        .create_container(Some(options), body, request.network)
+                        .create_container(Some(options), body, network)
                         .await
                     {
                         Ok(created) => (created, display_name),
@@ -291,10 +291,10 @@ impl ContainerRuntime {
                             let existing = self
                                 .inspect_managed_by_name(&machine.id, &display_name)
                                 .await?;
-                            return Ok(ContainerAdmission::Admitted(ContainerCreated {
+                            return Ok(ContainerCreated {
                                 container_id: existing.container_id,
                                 display_name: existing.display_name,
-                            }));
+                            });
                         }
                         Err(error) => return Err(error),
                     }
@@ -304,12 +304,12 @@ impl ContainerRuntime {
                     loop {
                         attempt += 1;
                         let suffix = MachineId::random().as_str()[..4].to_owned();
-                        let display_name = match request.kind {
+                        let display_name = match kind {
                             ContainerKind::ServiceContainer => {
-                                format!("{}-{suffix}", request.spec.name)
+                                format!("{}-{suffix}", spec.name)
                             }
                             ContainerKind::PreDeployHook => {
-                                format!("{}-pre-deploy-{suffix}", request.spec.name)
+                                format!("{}-pre-deploy-{suffix}", spec.name)
                             }
                         };
                         let options = CreateContainerOptionsBuilder::default()
@@ -317,7 +317,7 @@ impl ContainerRuntime {
                             .build();
                         match self
                             .docker
-                            .create_container(Some(options), body.clone(), request.network)
+                            .create_container(Some(options), body.clone(), network)
                             .await
                         {
                             Ok(created) => break (created, display_name),
@@ -332,22 +332,33 @@ impl ContainerRuntime {
                     field: "container ID",
                     source,
                 })?;
-            if let Err(error) = config_operation.put(&container_id, request.spec).await {
+            if let Err(error) = config_operation.put(&container_id, spec).await {
                 self.force_remove_container(&container_id).await?;
                 return Err(error.into());
             }
-            Ok(ContainerAdmission::Admitted(ContainerCreated {
+            Ok(ContainerCreated {
                 container_id,
                 display_name,
-            }))
+            })
         };
         let result = result.await;
-        if !matches!(&result, Ok(ContainerAdmission::Admitted(_)))
+        if result.is_err()
             && let Err(error) = config_operation.garbage_collect_configs().await
         {
             eprintln!("failed to reclaim materialized configs: {error}");
         }
         result
+    }
+
+    async fn retire_global_slots(
+        &self,
+        slots: Vec<ployz_core::ContainerObservation>,
+    ) -> Result<(), Error> {
+        for slot in slots {
+            self.stop(&slot.container_id, None, None).await?;
+            self.remove(&slot.container_id, false, false).await?;
+        }
+        Ok(())
     }
 
     async fn admit_and_ensure_volumes(
