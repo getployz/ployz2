@@ -6,7 +6,7 @@ use clap::ArgMatches;
 use ployz_core::{
     CloudEnrollToken, DescribeContractRequest, InitializeRequest, InspectRequest, JoinRequest,
     LocalMachinePhase, MachineName, MachineTokenRequest, ReserveDomainRequest, ResetRequest,
-    RpcErrorCode, SetCloudPairingRequest, StorageChoice, op,
+    SetCloudPairingRequest, StorageChoice, op,
 };
 
 use super::{Error, config_path, connect_client, leaf_matches, required, runtime};
@@ -76,137 +76,167 @@ pub fn enroll_with_installer(
     runtime()?.block_on(async {
         let mut client = connect_machine(matches).await?;
         client = synchronize_daemon(matches, client, installer).await?;
-        loop {
-            client = ensure_uninitialized(matches, yes, reset, client).await?;
-            let machine_token = client
-                .call::<op::MachineToken>(MachineTokenRequest::default(), None)
-                .await?;
-            let name =
-                crate::handlers::machine::machine_name(requested_name.clone(), &machine_token)?;
-            let identity = EnrollIdentity::from_machine_token(
-                name.clone(),
-                &machine_token,
-                requested_storage,
-            );
-            let outcome = cloud_enroll::enroll(&url, &identity).await?;
-            let storage = match &outcome {
-                Outcome::Join(join) => join.storage,
-                Outcome::Initialize { storage, .. } => *storage,
-            };
-            crate::provisioning::announce_storage(storage);
-            if storage == StorageChoice::Zfs {
-                if !matches!(client.connection().transport(), Transport::Unix(_)) {
-                    return Err(Error::usage(format!(
-                        "zfs storage preparation requires running ployz cloud enroll on the Machine itself; connected through {}",
-                        client.connection()
-                    )));
-                }
-                crate::provisioning::provision_local(storage)?;
-            }
-            match outcome {
-                Outcome::Join(join) => {
-                    let assigned = join.registration.assigned_machine.clone();
-                    client
-                        .call::<op::Join>(
-                            JoinRequest {
-                                registration: join.registration,
-                                wireguard_mtu,
-                                cloud_pairing: Some(join.pairing),
-                            },
-                            None,
-                        )
-                        .await?;
-                    let mut ready = wait_phase(
-                        matches,
-                        LocalMachinePhase::Participating,
-                        "joined Machine did not become ready",
+        let details = client
+            .call::<op::Inspect>(InspectRequest::default(), None)
+            .await?;
+        let machine_token = client
+            .call::<op::MachineToken>(MachineTokenRequest::default(), None)
+            .await?;
+        let name = crate::handlers::machine::machine_name(requested_name.clone(), &machine_token)?;
+        let identity =
+            EnrollIdentity::from_machine_token(name.clone(), &machine_token, requested_storage);
+        let outcome = cloud_enroll::enroll(&url, &identity).await?;
+        match outcome {
+            Outcome::Join(join) => {
+                client = ensure_uninitialized(matches, yes, reset, client).await?;
+                provision_storage(&client, join.storage)?;
+                let assigned = join.registration.assigned_machine.clone();
+                client
+                    .call::<op::Join>(
+                        JoinRequest {
+                            registration: join.registration,
+                            wireguard_mtu,
+                            cloud_pairing: Some(join.pairing),
+                        },
+                        None,
                     )
                     .await?;
-                    if let Err(error) =
-                        crate::global_catch_up::catch_up_globals(&mut ready, &assigned, no_ingress)
-                            .await
-                    {
-                        return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
-                            error,
+                let mut ready = wait_phase(
+                    matches,
+                    LocalMachinePhase::Participating,
+                    "joined Machine did not become ready",
+                )
+                .await?;
+                if let Err(error) =
+                    crate::global_catch_up::catch_up_globals(&mut ready, &assigned, no_ingress)
+                        .await
+                {
+                    return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
+                        error,
+                    )));
+                }
+                println!("Joined Machine {} ({})", assigned.name, assigned.id);
+                Ok(())
+            }
+            Outcome::Initialize {
+                resumed,
+                pairing,
+                storage,
+            } => {
+                let backend = if resumed && details.phase == LocalMachinePhase::Participating {
+                    details.ingress_proxy_backend.ok_or_else(|| {
+                        Error::usage(
+                            "matching founding Machine has no Ingress Proxy Backend".to_owned(),
+                        )
+                    })?
+                } else {
+                    ingress_proxy_backend
+                };
+                let ingress = if no_ingress {
+                    None
+                } else {
+                    Some(
+                        crate::ingress::service_spec_for_backend(backend, None, Vec::new(), None)
+                            .await?,
+                    )
+                };
+                let (machine, mut ready) = if resumed
+                    && details.phase == LocalMachinePhase::Participating
+                {
+                    let machine = details.machine.ok_or_else(|| {
+                        Error::usage(
+                            "matching founding Machine has no participating identity".to_owned(),
+                        )
+                    })?;
+                    (machine, client)
+                } else {
+                    if resumed && details.phase != LocalMachinePhase::Uninitialized {
+                        return Err(Error::usage(format!(
+                            "matching founding Machine cannot resume from local phase {:?}",
+                            details.phase
                         )));
                     }
-                    println!("Joined Machine {} ({})", assigned.name, assigned.id);
-                    return Ok(());
-                }
-                Outcome::Initialize { pairing, .. } => {
-                    let initialized = match client
+                    client = ensure_uninitialized(matches, yes, reset, client).await?;
+                    provision_storage(&client, storage)?;
+                    let initialized = client
                         .call::<op::Initialize>(
                             InitializeRequest {
                                 name,
                                 cluster_network,
-                                ingress_proxy_backend,
+                                ingress_proxy_backend: backend,
                                 public_ip: machine_token.public_ip,
                                 advertised_endpoints: machine_token.advertised_endpoints,
                                 wireguard_mtu,
-                                cloud_pairing: no_ingress.then(|| pairing.clone()),
+                                cloud_pairing: None,
                             },
                             None,
                         )
-                        .await
-                    {
-                        Ok(initialized) => initialized,
-                        Err(error) if pairing_revoked(&error) => continue,
-                        Err(error) => return Err(error.into()),
-                    };
-                    let machine = initialized.machine;
-                    let mut ready = wait_phase(
+                        .await?;
+                    let ready = wait_phase(
                         matches,
                         LocalMachinePhase::Participating,
                         "initial Machine did not become ready",
                     )
                     .await?;
-                    if let Err(error) = cloud_enroll::callback(
-                        &cloud_enroll::callback_url(cloud_url, &token),
-                        machine.id,
-                    )
-                    .await
-                    {
-                        // List, not callback, is the lock.
-                        eprintln!("{}", Error::warned("enroll callback failed", error));
-                    }
-                    if !no_dns {
-                        let domain = ready
-                            .call::<op::ReserveDomain>(
-                                ReserveDomainRequest {
-                                    endpoint: crate::dns::HOSTED_DNS_ENDPOINT.to_owned(),
-                                },
-                                None,
-                            )
-                            .await?;
-                        println!("Reserved Cluster domain: {}", domain.name);
-                    }
-                    if !no_ingress {
-                        let requested = crate::ingress::service_spec_for_backend(
-                            ingress_proxy_backend,
-                            None,
-                            Vec::new(),
-                            None,
-                        )
-                        .await?;
-                        crate::deploy::apply_requested(&mut ready, &requested).await?;
-                        if !no_dns {
-                            crate::dns::update_records_for_ingress(&mut ready).await?;
+                    (initialized.machine, ready)
+                };
+                if !no_dns {
+                    match ready.domain_if_reserved().await? {
+                        Some(domain) => println!("Using reserved Cluster domain: {domain}"),
+                        None => {
+                            let domain = ready
+                                .call::<op::ReserveDomain>(
+                                    ReserveDomainRequest {
+                                        endpoint: crate::dns::HOSTED_DNS_ENDPOINT.to_owned(),
+                                    },
+                                    None,
+                                )
+                                .await?;
+                            println!("Reserved Cluster domain: {}", domain.name);
                         }
-                        ready
-                            .call::<op::SetCloudPairing>(
-                                SetCloudPairingRequest {
-                                    cloud_pairing: Some(pairing),
-                                },
-                                None,
-                            )
-                            .await?;
                     }
-                    println!("Initialised Machine {} ({})", machine.name, machine.id);
-                    return Ok(());
                 }
+                if let Some(requested) = ingress {
+                    crate::deploy::apply_requested(&mut ready, &requested).await?;
+                    if !no_dns {
+                        crate::dns::update_records_for_ingress(&mut ready).await?;
+                    }
+                }
+                let pairing_credential = pairing.secret().as_str().to_owned();
+                ready
+                    .call::<op::SetCloudPairing>(
+                        SetCloudPairingRequest {
+                            cloud_pairing: Some(pairing),
+                        },
+                        None,
+                    )
+                    .await?;
+                cloud_enroll::callback(
+                    &cloud_enroll::callback_url(cloud_url, &token),
+                    machine.id,
+                    &pairing_credential,
+                )
+                .await?;
+                println!("Initialised Machine {} ({})", machine.name, machine.id);
+                Ok(())
             }
         }
     })
+}
+
+fn provision_storage(client: &Client, storage: StorageChoice) -> Result<(), Error> {
+    crate::provisioning::announce_storage(storage);
+    if storage != StorageChoice::Zfs {
+        return Ok(());
+    }
+    if !matches!(client.connection().transport(), Transport::Unix(_)) {
+        return Err(Error::usage(format!(
+            "zfs storage preparation requires running ployz cloud enroll on the Machine itself; connected through {}",
+            client.connection()
+        )));
+    }
+    crate::provisioning::provision_local(storage)?;
+    Ok(())
 }
 
 async fn synchronize_daemon(
@@ -302,13 +332,6 @@ async fn ensure_uninitialized(
         "Machine did not reset",
     )
     .await
-}
-
-fn pairing_revoked(error: &ConnectError) -> bool {
-    matches!(
-        error,
-        ConnectError::Remote(error) if error.code == RpcErrorCode::Unauthenticated
-    )
 }
 
 async fn wait_phase(

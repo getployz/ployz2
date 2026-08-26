@@ -5,8 +5,8 @@ mod daemon_sync;
 mod harness;
 
 use harness::{
-    CLUSTER_DOMAIN, EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, assert_not_held,
-    founder_machine, ingress_on, registration, serve_machine, wait_for_held,
+    CLUSTER_DOMAIN, EnrollListen, EventLog, JoinDaemon, PAIRING, RelayListen, TOKEN,
+    assert_not_held, founder_machine, ingress_on, registration, serve_machine, wait_for_held,
 };
 use ployz_core::{
     CloudPairing, IngressProxyBackend, InitializeRequest, InspectRequest, LocalMachinePhase,
@@ -58,7 +58,6 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
         stdout.contains(&format!("Joined Machine joiner ({machine_id})")),
         "{stdout}"
     );
-
     let joined = daemon.join_request();
     let pairing_json = serde_json::to_value(joined.cloud_pairing.as_ref().unwrap()).unwrap();
     assert_eq!(
@@ -135,17 +134,23 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     let relay = RelayListen::start().await;
     let pairing =
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let enroll = EnrollListen::start(json!({
-        "kind": "initialize",
-        "storage": "none",
-        "pairing": pairing,
-    }))
+    let events = EventLog::default();
+    let enroll = EnrollListen::script_recording(
+        [json!({
+            "kind": "initialize",
+            "resumed": false,
+            "storage": "none",
+            "pairing": pairing,
+        })],
+        events.clone(),
+    )
     .await;
     let daemon = JoinDaemon::new(Registered {
         assigned_machine: founder,
         visible_peers: Vec::new(),
         target_versions: Default::default(),
-    });
+    })
+    .with_events(events.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
 
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
@@ -190,15 +195,10 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
         initialized.ingress_proxy_backend,
         IngressProxyBackend::Zentinel
     );
-    let pairing_json = serde_json::to_value(initialized.cloud_pairing.as_ref().unwrap()).unwrap();
-    assert_eq!(
-        pairing_json,
-        json!({
-            "relayUrl": relay.url,
-            "secret": PAIRING,
-        })
+    assert!(
+        initialized.cloud_pairing.is_none(),
+        "Cloud Pairing is published only after founder setup"
     );
-    assert!(pairing_json.get("dial").is_none());
 
     assert_eq!(
         enroll.paths(),
@@ -209,12 +209,19 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     );
     assert_eq!(
         enroll.callbacks(),
-        [json!({ "machineId": machine_id.as_str() })]
+        [json!({
+            "machineId": machine_id.as_str(),
+            "pairingCredential": PAIRING,
+        })]
     );
 
     assert!(
         daemon.reserve_request().is_none(),
         "initialize with --no-dns must not ReserveDomain"
+    );
+    assert_eq!(
+        events.entries(),
+        ["initialize", "set_cloud_pairing", "callback"]
     );
 
     wait_for_held(&relay.url, PAIRING, machine_id).await;
@@ -232,6 +239,7 @@ async fn cloud_founding_transmits_each_selected_ingress_backend() {
             CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
         let enroll = EnrollListen::start(json!({
             "kind": "initialize",
+            "resumed": false,
             "storage": "none",
             "pairing": pairing,
         }))
@@ -274,7 +282,7 @@ async fn cloud_founding_transmits_each_selected_ingress_backend() {
 }
 
 #[tokio::test]
-async fn cloud_init_initialize_reserves_hosted_dns() {
+async fn caddy_lookup_failure_happens_before_initialize() {
     let founder = founder_machine();
     let machine_id = founder.id;
     let relay = RelayListen::start().await;
@@ -282,6 +290,7 @@ async fn cloud_init_initialize_reserves_hosted_dns() {
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::start(json!({
         "kind": "initialize",
+        "resumed": false,
         "storage": "none",
         "pairing": pairing,
     }))
@@ -291,6 +300,70 @@ async fn cloud_init_initialize_reserves_hosted_dns() {
         visible_peers: Vec::new(),
         target_versions: Default::default(),
     });
+    let machine_addr = serve_machine(daemon.clone()).await;
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "founder",
+            "--ingress-backend",
+            "caddy",
+            "--no-dns",
+            "--yes",
+        ])
+        .env("HTTPS_PROXY", &proxy)
+        .env("https_proxy", &proxy)
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env("no_proxy", "127.0.0.1,localhost")
+        .output()
+        .await
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("list Docker Hub Caddy tags"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(daemon.initialize_requests().is_empty());
+    assert!(enroll.callbacks().is_empty());
+    assert_not_held(&relay.url, PAIRING, machine_id).await;
+}
+
+#[tokio::test]
+async fn cloud_init_initialize_reserves_hosted_dns() {
+    let founder = founder_machine();
+    let machine_id = founder.id;
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let events = EventLog::default();
+    let enroll = EnrollListen::script_recording(
+        [json!({
+            "kind": "initialize",
+            "resumed": false,
+            "storage": "none",
+            "pairing": pairing,
+        })],
+        events.clone(),
+    )
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder,
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    })
+    .with_events(events.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
 
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
@@ -335,7 +408,19 @@ async fn cloud_init_initialize_reserves_hosted_dns() {
     );
     assert_eq!(
         enroll.callbacks(),
-        [json!({ "machineId": machine_id.as_str() })]
+        [json!({
+            "machineId": machine_id.as_str(),
+            "pairingCredential": PAIRING,
+        })]
+    );
+    assert_eq!(
+        events.entries(),
+        [
+            "initialize",
+            "reserve_domain",
+            "set_cloud_pairing",
+            "callback"
+        ]
     );
 }
 
@@ -390,6 +475,16 @@ async fn cloud_init_retries_not_yet_then_joins() {
     let posts = enroll.posts();
     assert_eq!(posts.len(), 2);
     assert_eq!(posts.first(), posts.get(1));
+    assert_eq!(
+        posts.first().and_then(|post| post.get("protocolVersion")),
+        Some(&json!(2))
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Another Machine is founding this Organization; waiting"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(enroll.paths(), vec![format!("/api/enroll/{TOKEN}"); 2]);
     assert!(
         enroll.callbacks().is_empty(),
@@ -409,6 +504,7 @@ async fn cloud_init_retries_not_yet_then_initializes() {
         json!({"kind": "not_yet", "retryAfter": 0}),
         json!({
             "kind": "initialize",
+            "resumed": false,
             "storage": "none",
             "pairing": pairing,
         }),
@@ -456,26 +552,38 @@ async fn cloud_init_retries_not_yet_then_initializes() {
     assert_eq!(posts.first(), posts.get(1));
     assert_eq!(
         enroll.callbacks(),
-        [json!({ "machineId": machine_id.as_str() })]
+        [json!({
+            "machineId": machine_id.as_str(),
+            "pairingCredential": PAIRING,
+        })]
     );
     daemon.initialize_request();
     wait_for_held(&relay.url, PAIRING, machine_id).await;
 }
 
 #[tokio::test]
-async fn cloud_init_initialize_callback_failure_is_nonfatal_when_on_list() {
+async fn cloud_init_completion_failure_requires_rerunning_the_same_command() {
     let founder = founder_machine();
     let machine_id = founder.id;
     let relay = RelayListen::start().await;
     let pairing =
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let enroll = EnrollListen::start(json!({
-        "kind": "initialize",
-        "storage": "none",
-        "pairing": pairing,
-    }))
+    let enroll = EnrollListen::script([
+        json!({
+            "kind": "initialize",
+            "resumed": false,
+            "storage": "none",
+            "pairing": pairing,
+        }),
+        json!({
+            "kind": "initialize",
+            "resumed": true,
+            "storage": "none",
+            "pairing": pairing,
+        }),
+    ])
     .await;
-    enroll.fail_callbacks(500);
+    enroll.set_callback_status(500);
     let daemon = JoinDaemon::new(Registered {
         assigned_machine: founder,
         visible_peers: Vec::new(),
@@ -501,22 +609,36 @@ async fn cloud_init_initialize_callback_failure_is_nonfatal_when_on_list() {
         .output()
         .await
         .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("rerun the same ployz cloud enroll command"),
+        "{stderr}"
+    );
+    assert_eq!(
+        enroll.callbacks(),
+        vec![json!({ "machineId": machine_id.as_str(), "pairingCredential": PAIRING }); 3]
+    );
+    wait_for_held(&relay.url, PAIRING, machine_id).await;
+
+    enroll.set_callback_status(200);
+    let output = init_cloud(
+        &format!("tcp://{machine_addr}"),
+        &enroll.url,
+        "founder",
+        false,
+        true,
+    )
+    .await;
     assert!(
         output.status.success(),
         "stderr: {}\nstdout: {}",
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("WARNING: enroll callback failed"),
-        "{stderr}"
-    );
-    assert_eq!(
-        enroll.callbacks(),
-        [json!({ "machineId": machine_id.as_str() })]
-    );
-    wait_for_held(&relay.url, PAIRING, machine_id).await;
+    assert_eq!(daemon.initialize_requests().len(), 1);
+    assert_eq!(daemon.reset_count(), 0);
+    assert_eq!(enroll.callbacks().len(), 4);
 }
 
 const DEAD: &str = "expired-pairing";
@@ -556,76 +678,18 @@ async fn init_cloud(
 }
 
 #[tokio::test]
-async fn revoked_pairing_resets_and_joins() {
-    let founder = founder_machine();
-    let machine_id = founder.id;
-    let registration = Registered {
-        assigned_machine: founder.clone(),
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-    };
-    let relay = RelayListen::start().await;
-    relay.revoke(DEAD).await;
-    let dead = pairing_on(&relay, DEAD);
-    let live = pairing_on(&relay, PAIRING);
-    let enroll = EnrollListen::script([
-        json!({ "kind": "initialize", "storage": "none", "pairing": dead }),
-        json!({
-            "kind": "join",
-            "storage": "none",
-            "pairing": live,
-            "registration": registration,
-        }),
-    ])
-    .await;
-    let daemon = JoinDaemon::new(registration);
-    let machine_addr = serve_machine(daemon.clone()).await;
-    let connect = format!("tcp://{machine_addr}");
-
-    let output = init_cloud(&connect, &enroll.url, "founder", true, true).await;
-    assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Joined Machine founder ({machine_id})")),
-        "{stdout}"
-    );
-
-    assert_eq!(daemon.reset_count(), 1);
-    assert_eq!(enroll.posts().len(), 2);
-    assert!(
-        enroll.callbacks().is_empty(),
-        "join must not POST enroll callback"
-    );
-    assert_eq!(
-        daemon
-            .initialize_requests()
-            .first()
-            .and_then(|init| init.cloud_pairing.as_ref()),
-        Some(&dead)
-    );
-    assert_eq!(daemon.join_request().cloud_pairing.as_ref(), Some(&live));
-
-    assert_not_held(&relay.url, DEAD, machine_id).await;
-    wait_for_held(&relay.url, PAIRING, machine_id).await;
-}
-
-#[tokio::test]
-async fn revoked_pairing_resets_and_initializes_with_new_pairing() {
+async fn revoked_pairing_does_not_release_or_transfer_founding() {
     let founder = founder_machine();
     let machine_id = founder.id;
     let relay = RelayListen::start().await;
     relay.revoke(DEAD).await;
     let dead = pairing_on(&relay, DEAD);
-    let live = pairing_on(&relay, PAIRING);
-    let enroll = EnrollListen::script([
-        json!({ "kind": "initialize", "storage": "none", "pairing": dead }),
-        json!({ "kind": "initialize", "storage": "none", "pairing": live }),
-    ])
+    let enroll = EnrollListen::start(json!({
+        "kind": "initialize",
+        "resumed": false,
+        "storage": "none",
+        "pairing": dead,
+    }))
     .await;
     let daemon = JoinDaemon::new(Registered {
         assigned_machine: founder,
@@ -635,79 +699,17 @@ async fn revoked_pairing_resets_and_initializes_with_new_pairing() {
     let machine_addr = serve_machine(daemon.clone()).await;
     let connect = format!("tcp://{machine_addr}");
 
-    let output = init_cloud(&connect, &enroll.url, "founder", true, true).await;
+    let output = init_cloud(&connect, &enroll.url, "founder", false, true).await;
+    assert!(!output.status.success());
     assert!(
-        output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
+        String::from_utf8_lossy(&output.stderr).contains("invalid Pairing Credential"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
-        "{stdout}"
-    );
-
-    assert_eq!(daemon.reset_count(), 1);
-    assert_eq!(enroll.posts().len(), 2);
-    assert_eq!(
-        enroll.callbacks(),
-        [json!({ "machineId": machine_id.as_str() })]
-    );
-    let requests = daemon.initialize_requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(
-        requests
-            .first()
-            .and_then(|init| init.cloud_pairing.as_ref()),
-        Some(&dead)
-    );
-    assert_eq!(
-        requests.get(1).and_then(|init| init.cloud_pairing.as_ref()),
-        Some(&live)
-    );
-
-    assert_not_held(&relay.url, DEAD, machine_id).await;
-    wait_for_held(&relay.url, PAIRING, machine_id).await;
-}
-
-#[tokio::test]
-async fn revoked_pairing_reset_confirms_unless_yes() {
-    let founder = founder_machine();
-    let machine_id = founder.id;
-    let relay = RelayListen::start().await;
-    relay.revoke(DEAD).await;
-    let dead = pairing_on(&relay, DEAD);
-    let enroll =
-        EnrollListen::start(json!({ "kind": "initialize", "storage": "none", "pairing": dead }))
-            .await;
-    let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder,
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-    });
-    let machine_addr = serve_machine(daemon.clone()).await;
-    let connect = format!("tcp://{machine_addr}");
-
-    let output = init_cloud(&connect, &enroll.url, "founder", true, false).await;
-    assert!(
-        !output.status.success(),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("pass --yes"), "{stderr}");
     assert_eq!(daemon.reset_count(), 0);
+    assert_eq!(daemon.initialize_requests().len(), 1);
     assert_eq!(enroll.posts().len(), 1);
     assert!(enroll.callbacks().is_empty());
-    assert_eq!(
-        daemon
-            .initialize_requests()
-            .first()
-            .and_then(|init| init.cloud_pairing.as_ref()),
-        Some(&dead)
-    );
     assert_not_held(&relay.url, DEAD, machine_id).await;
 }
 
@@ -719,9 +721,10 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
         PairingCredential::parse(PAIRING).unwrap(),
     )
     .unwrap();
-    let enroll =
-        EnrollListen::start(json!({ "kind": "initialize", "storage": "none", "pairing": pairing }))
-            .await;
+    let enroll = EnrollListen::start(
+        json!({ "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing }),
+    )
+    .await;
     let daemon = JoinDaemon::new(Registered {
         assigned_machine: founder.clone(),
         visible_peers: Vec::new(),
@@ -760,7 +763,159 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(daemon.reset_count(), 0);
-    assert!(enroll.posts().is_empty());
+    assert_eq!(enroll.posts().len(), 1);
+}
+
+#[tokio::test]
+async fn resumed_founder_uses_the_matching_participating_machine() {
+    let founder = founder_machine();
+    let machine_id = founder.id;
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "initialize",
+        "resumed": true,
+        "storage": "none",
+        "pairing": pairing,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder.clone(),
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let machine_addr = serve_machine(daemon.clone()).await;
+    connect_daemon(machine_addr)
+        .await
+        .call::<op::Initialize>(
+            InitializeRequest {
+                name: founder.name,
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Caddy,
+                public_ip: None,
+                advertised_endpoints: founder.advertised_endpoints,
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let output = init_cloud(
+        &format!("tcp://{machine_addr}"),
+        &enroll.url,
+        "founder",
+        false,
+        true,
+    )
+    .await;
+
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(daemon.initialize_requests().len(), 1);
+    assert_eq!(
+        enroll.callbacks(),
+        [json!({
+            "machineId": machine_id.as_str(),
+            "pairingCredential": PAIRING,
+        })]
+    );
+}
+
+#[tokio::test]
+async fn resumed_founder_converges_before_pairing_and_final_completion() {
+    let mut founder = founder_machine();
+    founder.public_ip = Some("192.0.2.1".parse().unwrap());
+    let machine_id = founder.id;
+    let requested = IngressProxyBackend::Zentinel
+        .requested_service_spec(ployz::ingress::ZENTINEL_IMAGE.to_owned(), Vec::new(), None)
+        .unwrap();
+    let ingress = container_on(
+        &founder,
+        requested.to_resolved(
+            ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+            ployz_core::ResolvedUpdateConfig {
+                order: ployz_core::UpdateOrder::StopFirst,
+                monitor_millis: None,
+            },
+        ),
+        ployz_core::ProjectName::system(),
+        'c',
+    );
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder.clone(),
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    })
+    .with_containers(vec![ingress])
+    .with_reserved_domain();
+    let machine_addr = serve_machine(daemon.clone()).await;
+    connect_daemon(machine_addr)
+        .await
+        .call::<op::Initialize>(
+            InitializeRequest {
+                name: founder.name,
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Zentinel,
+                public_ip: founder.public_ip,
+                advertised_endpoints: founder.advertised_endpoints,
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let events = EventLog::default();
+    let daemon = daemon.with_events(events.clone());
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::script_recording(
+        [json!({
+            "kind": "initialize",
+            "resumed": true,
+            "storage": "none",
+            "pairing": pairing,
+        })],
+        events.clone(),
+    )
+    .await;
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{machine_addr}"),
+            "cloud",
+            "enroll",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "founder",
+            "--no-dns",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(daemon.initialize_requests().len(), 1);
+    assert!(daemon.reserve_request().is_none());
+    assert_eq!(events.entries(), ["set_cloud_pairing", "callback"]);
+    wait_for_held(&relay.url, PAIRING, machine_id).await;
 }
 
 #[tokio::test]

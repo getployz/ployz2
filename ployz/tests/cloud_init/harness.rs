@@ -20,7 +20,7 @@ use ployz_core::{
     MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachineRpc,
     MachineRpcServer, MachineToken, ManagementAddress, MembershipObservation, OpaquePayload,
     PROTOCOL_MAJOR, PairingCredential, Registered, ReserveDomainRequest, ResetAccepted, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, WireGuardPublicKey,
+    RpcErrorCode, RpcRequestBody, RpcResponse, VolumeInventory, WireGuardPublicKey,
 };
 use ployz_relay::{ClientError, DialCredential, Open, RegisterRequest, Relay, RelayClient};
 use tokio::{
@@ -38,6 +38,19 @@ pub const TOKEN: &str = "pmet_test";
 pub const PAIRING: &str = "pairing-secret";
 const DIAL: &str = "dial-secret";
 pub const CLUSTER_DOMAIN: &str = "abcd12.ployz.dev";
+
+#[derive(Clone, Default)]
+pub struct EventLog(Arc<Mutex<Vec<&'static str>>>);
+
+impl EventLog {
+    fn record(&self, event: &'static str) {
+        self.0.lock().unwrap().push(event);
+    }
+
+    pub fn entries(&self) -> Vec<&'static str> {
+        self.0.lock().unwrap().clone()
+    }
+}
 
 pub struct RelayListen {
     pub url: String,
@@ -79,6 +92,13 @@ impl EnrollListen {
     }
 
     pub async fn script(bodies: impl IntoIterator<Item = serde_json::Value>) -> Self {
+        Self::script_recording(bodies, EventLog::default()).await
+    }
+
+    pub async fn script_recording(
+        bodies: impl IntoIterator<Item = serde_json::Value>,
+        events: EventLog,
+    ) -> Self {
         let mut remaining: VecDeque<Vec<u8>> = bodies
             .into_iter()
             .map(|body| serde_json::to_vec(&body).unwrap())
@@ -113,6 +133,7 @@ impl EnrollListen {
                 let is_callback = path.ends_with("/callback");
                 recorded_paths.lock().unwrap().push(path);
                 if is_callback {
+                    events.record("callback");
                     recorded_callbacks
                         .lock()
                         .unwrap()
@@ -157,7 +178,7 @@ impl EnrollListen {
         self.callbacks.lock().unwrap().clone()
     }
 
-    pub fn fail_callbacks(&self, status: u16) {
+    pub fn set_callback_status(&self, status: u16) {
         self.callback_status.store(status, Ordering::SeqCst);
     }
 }
@@ -182,6 +203,9 @@ struct JoinInner {
     join_request: Mutex<Option<JoinRequest>>,
     initialize_requests: Mutex<Vec<InitializeRequest>>,
     reserve_request: Mutex<Option<ReserveDomainRequest>>,
+    domain_reserved: AtomicBool,
+    cloud_paired: AtomicBool,
+    events: Mutex<EventLog>,
     resets: AtomicUsize,
     containers: Mutex<Vec<ContainerObservation>>,
     ensure_requests: Mutex<Vec<EnsureGlobalSlotRequest>>,
@@ -205,6 +229,9 @@ impl JoinDaemon {
                 join_request: Mutex::new(None),
                 initialize_requests: Mutex::new(Vec::new()),
                 reserve_request: Mutex::new(None),
+                domain_reserved: AtomicBool::new(false),
+                cloud_paired: AtomicBool::new(false),
+                events: Mutex::new(EventLog::default()),
                 resets: AtomicUsize::new(0),
                 containers: Mutex::new(Vec::new()),
                 ensure_requests: Mutex::new(Vec::new()),
@@ -255,6 +282,20 @@ impl JoinDaemon {
     pub fn with_containers(self, containers: Vec<ContainerObservation>) -> Self {
         *self.inner.containers.lock().unwrap() = containers;
         self
+    }
+
+    pub fn with_reserved_domain(self) -> Self {
+        self.inner.domain_reserved.store(true, Ordering::SeqCst);
+        self
+    }
+
+    pub fn with_events(self, events: EventLog) -> Self {
+        *self.inner.events.lock().unwrap() = events;
+        self
+    }
+
+    fn record(&self, event: &'static str) {
+        self.inner.events.lock().unwrap().record(event);
     }
 
     pub fn fail_ensure(self) -> Self {
@@ -396,7 +437,7 @@ impl MachineRpc for JoinDaemon {
                 .clone(),
             store_version: Default::default(),
             rtts: Vec::new(),
-            cloud_paired: false,
+            cloud_paired: self.inner.cloud_paired.load(Ordering::SeqCst),
             telemetry,
             storage: None,
             ingress_proxy_backend,
@@ -468,11 +509,14 @@ impl MachineRpc for JoinDaemon {
                     &self.inner._register,
                 )
                 .await?;
+                self.inner.cloud_paired.store(true, Ordering::SeqCst);
+                self.record("set_cloud_pairing");
             }
             None => {
                 if let Some(old) = self.inner._register.lock().unwrap().take() {
                     old.abort();
                 }
+                self.inner.cloud_paired.store(false, Ordering::SeqCst);
             }
         }
         rpc_ok(CloudPairingSet {})
@@ -493,6 +537,7 @@ impl MachineRpc for JoinDaemon {
         let mut machine = self.inner.registration.assigned_machine.clone();
         machine.name = init.name.clone();
         self.inner.initialize_requests.lock().unwrap().push(init);
+        self.record("initialize");
         self.inner.joined.store(true, Ordering::SeqCst);
         if let Some(pairing) = pairing
             && let Err(status) = hold_register(
@@ -581,7 +626,7 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        rpc_ok(VolumeInventory::default())
     }
     async fn inspect_volume(
         &self,
@@ -718,6 +763,8 @@ impl MachineRpc for JoinDaemon {
             return Err(Status::invalid_argument("expected ReserveDomain"));
         };
         *self.inner.reserve_request.lock().unwrap() = Some(reserve);
+        self.inner.domain_reserved.store(true, Ordering::SeqCst);
+        self.record("reserve_domain");
         rpc_ok(Domain {
             name: CLUSTER_DOMAIN.into(),
         })
@@ -726,11 +773,17 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        rpc_ok(RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "no reserved domain".into(),
-            details: serde_json::Value::Null,
-        })
+        if self.inner.domain_reserved.load(Ordering::SeqCst) {
+            rpc_ok(Domain {
+                name: CLUSTER_DOMAIN.into(),
+            })
+        } else {
+            rpc_ok(RpcError {
+                code: RpcErrorCode::NotFound,
+                message: "no reserved domain".into(),
+                details: serde_json::Value::Null,
+            })
+        }
     }
     async fn release_domain(
         &self,
