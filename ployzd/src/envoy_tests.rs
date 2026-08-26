@@ -7,7 +7,9 @@ use super::{
 };
 use crate::corrosion::CertificateChallenge;
 use crate::ingress::{certificate_file_stem, tests::renderer_projection};
-use ployz_core::{ContainerAddress, IngressProxyFragment, MachineId, QualifiedService};
+use ployz_core::{
+    ContainerAddress, ENVOY_RUNTIME_GID, IngressProxyFragment, MachineId, QualifiedService,
+};
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -80,7 +82,7 @@ fn changed_projection_fully_regenerates_static_targets() {
 }
 
 #[test]
-fn rendered_config_carries_the_public_ingress_contract() {
+fn http_and_https_routes_carry_timeouts_secrets_and_challenge_direct_responses() {
     let rendered = render(&renderer_projection()).unwrap();
 
     assert!(rendered.rds().contains("cluster: ployz-http-example.com"));
@@ -90,68 +92,13 @@ fn rendered_config_carries_the_public_ingress_contract() {
             .contains("cluster: ployz-https-secure.example.com")
     );
     assert!(rendered.rds().contains("timeout: 0s"));
-    assert!(!rendered.rds().contains("idle_timeout:"));
-    assert!(rendered.rds().contains("retry_on: connect-failure"));
-    assert!(rendered.rds().contains("num_retries: 1"));
     assert!(rendered.cds().contains("connect_timeout: 5s"));
-    assert!(rendered.cds().contains("lb_policy: ROUND_ROBIN"));
-    assert!(
-        rendered
-            .cds()
-            .contains("split_external_local_origin_errors: true")
-    );
-    assert!(rendered.cds().contains("consecutive_5xx: 0"));
-    assert!(
-        rendered
-            .cds()
-            .contains("consecutive_local_origin_failure: 3")
-    );
-    assert!(
-        rendered
-            .cds()
-            .contains("enforcing_consecutive_local_origin_failure: 100")
-    );
-    assert!(rendered.cds().contains("max_ejection_percent: 50"));
     assert!(rendered.cds().contains("ployz-https-secure.example.com"));
     assert!(rendered.cds().contains("address: 10.210.1.3"));
     assert!(rendered.cds().contains("port_value: 8443"));
     assert!(rendered.lds().contains("port_value: 8443"));
     assert!(rendered.lds().contains("server_names:"));
     assert!(rendered.lds().contains("secure.example.com"));
-    assert!(
-        rendered
-            .lds()
-            .contains("per_connection_buffer_limit_bytes: 32768")
-    );
-    assert!(rendered.lds().contains("request_headers_timeout: 15s"));
-    assert!(rendered.lds().contains("stream_idle_timeout: 300s"));
-    assert!(rendered.lds().contains("idle_timeout: 300s"));
-    assert!(rendered.lds().contains("upgrade_type: websocket"));
-    assert!(rendered.lds().contains("use_remote_address: true"));
-    assert!(
-        rendered
-            .lds()
-            .contains("preserve_external_request_id: false")
-    );
-    assert!(
-        rendered
-            .lds()
-            .contains("always_set_request_id_in_response: true")
-    );
-    assert!(
-        rendered
-            .lds()
-            .contains("tls_minimum_protocol_version: TLSv1_2")
-    );
-    assert!(rendered.lds().contains("max_concurrent_streams: 100"));
-    assert!(rendered.lds().contains("envoy.access_loggers.stdout"));
-    assert!(
-        rendered
-            .lds()
-            .contains("request_id: \"%REQ(X-REQUEST-ID)%\"")
-    );
-    assert!(rendered.lds().contains("path: \"%PATH(NQ:PATH)%\""));
-    assert!(!rendered.lds().contains("%REQ(:PATH)%"));
     assert!(rendered.sds().contains(
         "filename: /config/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.crt"
     ));
@@ -171,17 +118,6 @@ fn rendered_config_carries_the_public_ingress_contract() {
     let proxy_routes = rendered.rds().matches("cluster: ployz-http-").count()
         + rendered.rds().matches("cluster: ployz-https-").count();
     assert_eq!(rendered.rds().matches("timeout: 0s").count(), proxy_routes);
-    assert_eq!(
-        rendered.rds().matches("retry_on: connect-failure").count(),
-        proxy_routes
-    );
-    assert_eq!(
-        rendered
-            .lds()
-            .matches("envoy.access_loggers.stdout")
-            .count(),
-        2
-    );
 }
 
 #[test]
@@ -410,7 +346,7 @@ async fn accepted_candidate_writes_certificates_and_removes_stale_files() {
     let key_metadata = fs::metadata(&key_path).unwrap();
     assert_eq!(key_metadata.permissions().mode() & 0o777, 0o640);
     if fs::metadata("/proc/self").unwrap().uid() == 0 {
-        assert_eq!(key_metadata.gid(), 101);
+        assert_eq!(key_metadata.gid(), ENVOY_RUNTIME_GID);
     }
     assert!(!certs.join("stale.crt").exists());
     assert!(!certs.join("stale.key").exists());

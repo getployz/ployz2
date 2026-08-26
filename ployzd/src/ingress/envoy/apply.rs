@@ -12,6 +12,7 @@ use bollard::{
     query_parameters::RemoveContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
+use ployz_core::ENVOY_RUNTIME_GID;
 use thiserror::Error;
 
 use crate::{
@@ -310,8 +311,6 @@ fn write_candidate(
     Ok(Candidate(Some(path)))
 }
 
-/// Numeric group of the runtime identity in the official Envoy image.
-const ENVOY_GID: u32 = 101;
 const ENVOY_PRIVATE_KEY_MODE: u32 = 0o640;
 
 fn write_envoy_certificates(config_file: &Path, projection: &IngressProjection) -> io::Result<()> {
@@ -333,7 +332,7 @@ fn prepare_directory(path: &Path) -> io::Result<()> {
 fn set_group(path: &Path) -> io::Result<()> {
     fs::metadata(path)?;
     if fs::metadata("/proc/self")?.uid() == 0 {
-        chown(path, None, Some(ENVOY_GID))?;
+        chown(path, None, Some(ENVOY_RUNTIME_GID))?;
     }
     Ok(())
 }

@@ -517,59 +517,54 @@ mod tests {
 
     #[test]
     fn founding_defaults_to_envoy_and_accepts_explicit_backends() {
-        let defaults = crate::cli::command()
-            .try_get_matches_from(["ployz", "machine", "init", "root@host"])
-            .unwrap();
-        let defaults = leaf_matches(&defaults);
-        assert_eq!(
-            defaults.get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
-            Some(&ployz_core::IngressProxyBackend::Envoy)
-        );
-
-        let caddy = crate::cli::command()
-            .try_get_matches_from([
-                "ployz",
-                "machine",
-                "init",
-                "--ingress-backend",
-                "caddy",
-                "root@host",
-            ])
-            .unwrap();
-        assert_eq!(
-            leaf_matches(&caddy).get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
-            Some(&ployz_core::IngressProxyBackend::Caddy)
-        );
-
-        let zentinel = crate::cli::command()
-            .try_get_matches_from([
-                "ployz",
-                "machine",
-                "init",
-                "--ingress-backend",
-                "zentinel",
-                "root@host",
-            ])
-            .unwrap();
-        assert_eq!(
-            leaf_matches(&zentinel).get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
-            Some(&ployz_core::IngressProxyBackend::Zentinel)
-        );
-
-        let envoy = crate::cli::command()
-            .try_get_matches_from([
-                "ployz",
-                "machine",
-                "init",
-                "--ingress-backend",
-                "envoy",
-                "root@host",
-            ])
-            .unwrap();
-        assert_eq!(
-            leaf_matches(&envoy).get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
-            Some(&ployz_core::IngressProxyBackend::Envoy)
-        );
+        for (arguments, expected) in [
+            (
+                vec!["ployz", "machine", "init", "root@host"],
+                ployz_core::IngressProxyBackend::Envoy,
+            ),
+            (
+                vec![
+                    "ployz",
+                    "machine",
+                    "init",
+                    "--ingress-backend",
+                    "caddy",
+                    "root@host",
+                ],
+                ployz_core::IngressProxyBackend::Caddy,
+            ),
+            (
+                vec![
+                    "ployz",
+                    "machine",
+                    "init",
+                    "--ingress-backend",
+                    "zentinel",
+                    "root@host",
+                ],
+                ployz_core::IngressProxyBackend::Zentinel,
+            ),
+            (
+                vec![
+                    "ployz",
+                    "machine",
+                    "init",
+                    "--ingress-backend",
+                    "envoy",
+                    "root@host",
+                ],
+                ployz_core::IngressProxyBackend::Envoy,
+            ),
+        ] {
+            let matches = crate::cli::command()
+                .try_get_matches_from(arguments)
+                .unwrap();
+            assert_eq!(
+                leaf_matches(&matches)
+                    .get_one::<ployz_core::IngressProxyBackend>("ingress-backend"),
+                Some(&expected)
+            );
+        }
 
         assert!(
             crate::cli::command()
