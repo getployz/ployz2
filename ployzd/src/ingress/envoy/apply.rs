@@ -7,7 +7,7 @@ use std::{
 };
 
 use bollard::{
-    models::{ContainerCreateBody, HostConfig, Mount, MountType},
+    models::{ContainerCreateBody, ContainerWaitResponse, HostConfig, Mount, MountType},
     query_parameters::RemoveContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
@@ -166,21 +166,13 @@ async fn validate_candidate(
     let created = docker.client().create_container(None, body).await?;
     let validation = async {
         docker.client().start_container(&created.id, None).await?;
-        match docker
-            .client()
-            .wait_container(&created.id, None)
-            .next()
-            .await
-        {
-            Some(Ok(_)) => Ok(ValidationOutcome::Accepted),
-            Some(Err(bollard::errors::Error::DockerContainerWaitError { error, code })) => Ok(
-                ValidationOutcome::Rejected(format!("exit status {code}: {error}")),
-            ),
-            Some(Err(error)) => Err(DockerError::Docker(error)),
-            None => Err(DockerError::InvalidContainerConfig(
-                "Envoy validation wait ended without an exit status".into(),
-            )),
-        }
+        classify_validation_wait(
+            docker
+                .client()
+                .wait_container(&created.id, None)
+                .next()
+                .await,
+        )
     }
     .await;
     let cleanup = docker
@@ -202,6 +194,27 @@ async fn validate_candidate(
             cleanup?;
             validation
         }
+    }
+}
+
+// Wait stream item from `wait_container`. Bollard converts some nonzero exits
+// to DockerContainerWaitError; a successful body can still carry status_code.
+fn classify_validation_wait(
+    wait: Option<Result<ContainerWaitResponse, bollard::errors::Error>>,
+) -> Result<ValidationOutcome, DockerError> {
+    match wait {
+        Some(Ok(response)) if response.status_code == 0 => Ok(ValidationOutcome::Accepted),
+        Some(Ok(response)) => Ok(ValidationOutcome::Rejected(format!(
+            "exit status {}",
+            response.status_code
+        ))),
+        Some(Err(bollard::errors::Error::DockerContainerWaitError { error, code })) => Ok(
+            ValidationOutcome::Rejected(format!("exit status {code}: {error}")),
+        ),
+        Some(Err(error)) => Err(DockerError::Docker(error)),
+        None => Err(DockerError::InvalidContainerConfig(
+            "Envoy validation wait ended without an exit status".into(),
+        )),
     }
 }
 
@@ -405,6 +418,30 @@ mod tests {
 
         drop(candidate);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nonzero_wait_status_rejects_the_candidate() {
+        let wait = Some(Ok(ContainerWaitResponse {
+            status_code: 1,
+            error: Some(bollard::models::ContainerWaitExitError { message: None }),
+        }));
+        assert_eq!(
+            classify_validation_wait(wait).unwrap(),
+            ValidationOutcome::Rejected("exit status 1".into())
+        );
+    }
+
+    #[test]
+    fn zero_wait_status_accepts_the_candidate() {
+        let wait = Some(Ok(ContainerWaitResponse {
+            status_code: 0,
+            error: None,
+        }));
+        assert_eq!(
+            classify_validation_wait(wait).unwrap(),
+            ValidationOutcome::Accepted
+        );
     }
 
     #[test]
