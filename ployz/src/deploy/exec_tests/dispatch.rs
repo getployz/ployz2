@@ -186,34 +186,42 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
 }
 
 #[tokio::test]
-async fn create_then_start_failure_keeps_the_container_without_cleanup() {
-    let machine = machine('1');
-    let created_id = container('a');
-    let plan = vec![run(&machine, spec(None, None, None), false)];
-    let client = Scripted::new(vec![
-        created(
-            Call::Create(machine, ContainerKind::ServiceContainer),
-            &created_id,
-        ),
-        failed(Call::Start(machine, created_id), "start failed"),
-    ]);
+async fn create_then_start_failure_removes_the_candidate() {
+    for remove_ok in [true, false] {
+        let machine = machine('1');
+        let created_id = container('a');
+        let plan = vec![run(&machine, spec(None, None, None), false)];
+        let mut steps = vec![
+            created(
+                Call::Create(machine, ContainerKind::ServiceContainer),
+                &created_id,
+            ),
+            failed(Call::Start(machine, created_id), "start failed"),
+        ];
+        steps.push(if remove_ok {
+            ok(Call::Remove(machine, created_id))
+        } else {
+            failed(Call::Remove(machine, created_id), "remove failed")
+        });
+        let client = Scripted::new(steps);
 
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(matches!(
-        outcome,
-        DeployOutcome::Failed {
-            failed: FailedOperation::Operation {
-                error: ExecutionError::Machine {
-                    action: MachineAction::StartContainer,
+        assert!(matches!(
+            outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::Machine {
+                        action: MachineAction::StartContainer,
+                        ..
+                    },
                     ..
                 },
                 ..
-            },
-            ..
-        }
-    ));
-    client.assert_done();
+            }
+        ));
+        client.assert_done();
+    }
 }
 
 #[tokio::test]

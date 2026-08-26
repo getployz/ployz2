@@ -325,6 +325,7 @@ async fn stop_first_create_or_start_failure_runs_no_compensation() {
             steps.extend([
                 created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
                 failed(Call::Start(machine, new), "start failed"),
+                ok(Call::Remove(machine, new)),
             ]);
         } else {
             steps.push(failed(
