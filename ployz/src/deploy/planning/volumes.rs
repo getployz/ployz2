@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::{
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
     MachineObservation, MachineTarget, PreservedVolume, ProjectName, RequestedServiceSpec,
-    ServiceMode, ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph, VolumeSource,
-    machine_matches_target, owned_volume_project,
+    ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility, ServiceVolume,
+    ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
+    service_placement_eligibility,
 };
 
 use crate::deploy::{
@@ -118,19 +119,29 @@ impl VolumePins {
     ) -> Result<(), PlanError> {
         let name_errors_with_service = target.len() > 1;
         for spec in target {
-            if spec
-                .volume_graph
-                .mounted_provisioned_volumes()
-                .next()
-                .is_none()
-            {
+            if !spec.volume_graph.has_mounted_provisioned_volume() {
                 continue;
             }
             let result = (|| {
-                let mut machines = super::placement_candidates(spec, snapshot)?;
+                let candidates = super::placement_candidates(spec, snapshot)?;
+                self.record_provisioned(spec, &candidates)?;
+                let mut machines = candidates
+                    .into_iter()
+                    .filter(|machine| {
+                        service_placement_eligibility(
+                            &spec.placement,
+                            &spec.volume_graph,
+                            &machine.machine,
+                            machine.storage.as_ref(),
+                        ) == ServicePlacementEligibility::Eligible
+                    })
+                    .collect::<Vec<_>>();
+                if machines.is_empty() {
+                    return Ok(());
+                }
                 self.validate_provisioned_volumes(spec, &machines, snapshot)?;
                 volume_constraints(spec, snapshot, self, &mut machines)?;
-                self.record_provisioned(spec, &machines)
+                Ok(())
             })();
             result.map_err(|source| {
                 super::service_error(name_errors_with_service, spec.name.as_str(), source)
@@ -269,16 +280,16 @@ fn declared_physical_names(target: &[RequestedServiceSpec]) -> BTreeSet<DockerVo
 }
 
 #[derive(Clone, Copy)]
-struct VolumePresence<'a> {
+struct VolumePresence<'volume> {
     machine_id: MachineId,
-    name: &'a DockerVolumeName,
-    shape: VolumePresenceShape<'a>,
+    name: &'volume DockerVolumeName,
+    shape: VolumePresenceShape<'volume>,
 }
 
 #[derive(Clone, Copy)]
-enum VolumePresenceShape<'a> {
-    Observed(&'a ployz_core::DockerVolume),
-    Planned(&'a VolumeSource),
+enum VolumePresenceShape<'volume> {
+    Observed(&'volume ployz_core::DockerVolume),
+    Planned(&'volume VolumeSource),
 }
 
 fn planned_presence(machine_id: MachineId, volume: &ServiceVolume) -> Option<VolumePresence<'_>> {
@@ -310,10 +321,10 @@ impl VolumePresence<'_> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct NamedVolumeUse<'a> {
-    service_name: &'a str,
-    service: &'a RequestedServiceSpec,
-    volume: &'a ServiceVolume,
+pub(super) struct NamedVolumeUse<'service> {
+    service_name: &'service str,
+    service: &'service RequestedServiceSpec,
+    volume: &'service ServiceVolume,
     global: bool,
 }
 
@@ -363,13 +374,16 @@ pub(super) fn reject_mixed_volume_modes(
     Ok(())
 }
 
-struct SharedVolumeComponent<'a> {
-    volumes: Vec<(&'a DockerVolumeName, &'a Vec<NamedVolumeUse<'a>>)>,
+struct SharedVolumeComponent<'volume_use> {
+    volumes: Vec<(
+        &'volume_use DockerVolumeName,
+        &'volume_use Vec<NamedVolumeUse<'volume_use>>,
+    )>,
 }
 
-fn shared_volume_components<'a>(
-    volume_uses: &'a BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'a>>>,
-) -> Vec<SharedVolumeComponent<'a>> {
+fn shared_volume_components<'volume_use>(
+    volume_uses: &'volume_use BTreeMap<DockerVolumeName, Vec<NamedVolumeUse<'volume_use>>>,
+) -> Vec<SharedVolumeComponent<'volume_use>> {
     let mut remaining = volume_uses
         .iter()
         .filter(|(_, uses)| uses.len() > 1 && uses.iter().all(|volume_use| !volume_use.global))

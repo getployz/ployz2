@@ -87,7 +87,7 @@ async fn storage_admission_runs_after_preparation_and_before_volume_or_container
                     project_name: &ployz_core::ProjectName::parse("app").unwrap(),
                     spec: &spec,
                     network: crate::docker::NetworkAttachment::Host,
-                    storage: None,
+                    storage: std::future::ready(None),
                 },
             )
             .await,
@@ -510,7 +510,7 @@ async fn a_volume_created_before_container_creation_failure_is_left_for_retry() 
                     project_name: &ployz_core::ProjectName::parse("app").unwrap(),
                     spec: &spec,
                     network: crate::docker::NetworkAttachment::Host,
-                    storage: None,
+                    storage: std::future::ready(None),
                 },
             )
             .await
@@ -573,7 +573,7 @@ async fn run_replacement_hook_and_missing_global_reach_the_same_volume_ensure() 
                         project_name: &project,
                         spec: &spec,
                         network: crate::docker::NetworkAttachment::Host,
-                        storage: None,
+                        storage: std::future::ready(None),
                     },
                 )
                 .await,
@@ -590,7 +590,7 @@ async fn run_replacement_hook_and_missing_global_reach_the_same_volume_ensure() 
                     project_name: &project,
                     spec: &spec,
                     network: crate::docker::NetworkAttachment::Host,
-                    storage: None,
+                    storage: std::future::ready(None),
                 },
             )
             .await,
@@ -656,7 +656,7 @@ async fn existing_global_slot_is_verified_before_early_return_or_restart() {
                         project_name: &project,
                         spec: &spec,
                         network: crate::docker::NetworkAttachment::Host,
-                        storage: None,
+                        storage: std::future::ready(None),
                     },
                 )
                 .await,

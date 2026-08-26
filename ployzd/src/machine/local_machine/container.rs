@@ -8,7 +8,7 @@ use ployz_core::{
 };
 
 use super::{Error, LocalMachine};
-use crate::docker::{ContainerRequest, StorageObservation};
+use crate::docker::ContainerRequest;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 impl LocalMachine {
@@ -42,7 +42,7 @@ impl LocalMachine {
                     project_name: project,
                     spec,
                     network,
-                    storage: self.storage_observation(spec),
+                    storage: self.observe_storage(),
                 },
             )
             .await?)
@@ -75,7 +75,7 @@ impl LocalMachine {
                     project_name: project,
                     spec,
                     network,
-                    storage: self.storage_observation(spec),
+                    storage: self.observe_storage(),
                 },
             )
             .await?)
@@ -91,17 +91,6 @@ impl LocalMachine {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         containers.stop(container_id, None, None).await?;
         Ok(containers.remove(container_id, false, false).await?)
-    }
-
-    fn storage_observation<'a>(
-        &'a self,
-        spec: &ResolvedServiceSpec,
-    ) -> Option<StorageObservation<'a>> {
-        if spec.volume_graph.has_mounted_provisioned_volume() {
-            Some(Box::pin(self.observe_storage()))
-        } else {
-            None
-        }
     }
 }
 
