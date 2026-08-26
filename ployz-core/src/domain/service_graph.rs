@@ -48,11 +48,8 @@ impl ServiceVolumeGraph {
                     reference: volume.reference.clone(),
                 });
             }
-            let name = match &volume.source {
-                VolumeSource::External { name }
-                | VolumeSource::Ordinary { name, .. }
-                | VolumeSource::Provisioned { name, .. } => name,
-                VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => continue,
+            let Some(name) = volume.source.docker_volume_name() else {
+                continue;
             };
             if docker_volumes
                 .insert(name, &volume.source)

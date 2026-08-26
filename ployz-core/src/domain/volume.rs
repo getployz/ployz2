@@ -80,6 +80,19 @@ pub enum VolumeSource {
 }
 
 impl VolumeSource {
+    /// Borrow the machine-local Docker Volume name for a named source.
+    ///
+    /// Bind Mounts and Tmpfs Mounts do not address Docker Volumes and return `None`.
+    #[must_use]
+    pub fn docker_volume_name(&self) -> Option<&DockerVolumeName> {
+        match self {
+            Self::External { name }
+            | Self::Ordinary { name, .. }
+            | Self::Provisioned { name, .. } => Some(name),
+            Self::Bind { .. } | Self::Tmpfs { .. } => None,
+        }
+    }
+
     /// Bind an ordinary or Provisioned Volume to `project`: physical name and ownership labels.
     pub fn scope_to_project(&mut self, project: &ProjectName) {
         let (name, labels) = match self {
