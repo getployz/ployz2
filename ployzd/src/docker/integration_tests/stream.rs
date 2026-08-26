@@ -87,26 +87,27 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     assert!(frames.contains(&ExecResponseFrame::Stderr(b"err".to_vec())));
     assert!(frames.contains(&ExecResponseFrame::Exit(42)));
 
-    let open_config = exec_config(&created.container_id, ["sh", "-c", "exit 7"], false);
-    let (request_sender, request_receiver) = tokio::sync::mpsc::channel(1);
-    request_sender.send(open_config).await.unwrap();
-    let mut request = Request::new(ReceiverStream::new(request_receiver));
-    request
-        .metadata_mut()
-        .insert("machine", machine.id.as_str().parse().unwrap());
-    let mut output = client.exec(request).await.unwrap().into_inner();
-    let open_frames = tokio::time::timeout(Duration::from_secs(5), async {
-        let mut frames = Vec::new();
-        while let Some(frame) = output.message().await? {
-            frames.push(ExecResponseFrame::decode(&frame).unwrap());
-        }
-        Ok::<_, Status>(frames)
-    })
+    let open_frames = exec_with_held_request(
+        &mut client,
+        &machine.id,
+        &created.container_id,
+        ["sh", "-c", "exit 7"],
+        false,
+    )
     .await
-    .expect("exec output must close while the request stream remains open")
     .unwrap();
     assert!(open_frames.contains(&ExecResponseFrame::Exit(7)));
-    drop(request_sender);
+
+    let stdin_held = exec_with_held_request(
+        &mut client,
+        &machine.id,
+        &created.container_id,
+        ["sh", "-c", "exit 9"],
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(stdin_held.contains(&ExecResponseFrame::Exit(9)));
 
     let detached = exec_frames(
         &mut client,
@@ -185,6 +186,46 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         .unwrap();
     server.abort();
     cleanup_ployz_network(&docker.client, created_network).await;
+}
+
+async fn exec_with_held_request<const N: usize>(
+    client: &mut MachineRpcClient<tonic::transport::Channel>,
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+    command: [&str; N],
+    attach_stdin: bool,
+) -> Result<Vec<ExecResponseFrame>, Status> {
+    let config = ExecRequestFrame::Config(ExecConfig {
+        container_id: *container_id,
+        options: ExecOptions {
+            command: command.into_iter().map(ToOwned::to_owned).collect(),
+            attach_stdin,
+            attach_stdout: true,
+            attach_stderr: true,
+            tty: false,
+            detach: false,
+        },
+    })
+    .encode()
+    .unwrap();
+    let (request_sender, request_receiver) = tokio::sync::mpsc::channel(1);
+    request_sender.send(config).await.unwrap();
+    let mut request = Request::new(ReceiverStream::new(request_receiver));
+    request
+        .metadata_mut()
+        .insert("machine", machine_id.as_str().parse().unwrap());
+    let mut output = client.exec(request).await?.into_inner();
+    let frames = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut frames = Vec::new();
+        while let Some(frame) = output.message().await? {
+            frames.push(ExecResponseFrame::decode(&frame).unwrap());
+        }
+        Ok::<_, Status>(frames)
+    })
+    .await
+    .expect("exec output must close while the request stream remains open")?;
+    drop(request_sender);
+    Ok(frames)
 }
 
 async fn exec_frames<const N: usize>(
