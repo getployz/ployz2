@@ -267,6 +267,19 @@ pub(super) fn container_request<'spec, Storage>(
     }
 }
 
+pub(super) fn global_slot_request<'spec, Storage>(
+    project_name: &'spec ProjectName,
+    spec: &'spec ResolvedServiceSpec,
+    storage: Storage,
+) -> GlobalSlotRequest<'spec, Storage, std::future::Ready<Result<NetworkAttachment, Error>>> {
+    GlobalSlotRequest {
+        project_name,
+        spec,
+        network: std::future::ready(Ok(NetworkAttachment::Host)),
+        storage,
+    }
+}
+
 pub(super) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource {
     VolumeSource::Provisioned {
         name: DockerVolumeName::parse(name).unwrap(),

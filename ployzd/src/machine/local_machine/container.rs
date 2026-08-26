@@ -7,7 +7,7 @@ use ployz_core::{
 };
 
 use super::{Error, LocalMachine};
-use crate::docker::{ContainerRequest, GlobalSlotConvergence};
+use crate::docker::{ContainerRequest, GlobalSlotConvergence, GlobalSlotRequest};
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 impl LocalMachine {
@@ -63,8 +63,7 @@ impl LocalMachine {
         containers
             .converge_global_slot(
                 machine,
-                ContainerRequest {
-                    kind: ContainerKind::ServiceContainer,
+                GlobalSlotRequest {
                     project_name: project,
                     spec,
                     network: self.prepare_service_runtime(

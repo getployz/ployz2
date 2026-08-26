@@ -39,6 +39,18 @@ pub(crate) struct ContainerRequest<'spec, Storage, Network> {
     pub(crate) storage: Storage,
 }
 
+/// Exact inputs for Machine-local Global Service Container convergence.
+pub(crate) struct GlobalSlotRequest<'spec, Storage, Network> {
+    /// Project that owns the Global slot.
+    pub(crate) project_name: &'spec ProjectName,
+    /// Fully resolved Global Service specification to persist and execute.
+    pub(crate) spec: &'spec ResolvedServiceSpec,
+    /// Deferred Docker network preparation, awaited only after final admission.
+    pub(crate) network: Network,
+    /// Fresh local storage observation deferred to final container admission.
+    pub(crate) storage: Storage,
+}
+
 /// Result of one fresh target-Machine Global convergence decision.
 #[derive(Debug)]
 pub(crate) enum GlobalSlotConvergence {
@@ -150,15 +162,14 @@ impl ContainerRuntime {
     pub(crate) async fn converge_global_slot<Storage, Network, E>(
         &self,
         machine: &Machine,
-        request: ContainerRequest<'_, Storage, Network>,
+        request: GlobalSlotRequest<'_, Storage, Network>,
     ) -> Result<GlobalSlotConvergence, E>
     where
         Storage: Future<Output = Option<MachineStorageObservation>> + Send,
         Network: Future<Output = Result<NetworkAttachment, E>> + Send,
         E: From<Error>,
     {
-        let ContainerRequest {
-            kind,
+        let GlobalSlotRequest {
             project_name,
             spec,
             network,
@@ -212,7 +223,7 @@ impl ContainerRuntime {
         let created = self
             .prepare_and_create(
                 machine,
-                kind,
+                ContainerKind::ServiceContainer,
                 project_name,
                 spec,
                 network,
