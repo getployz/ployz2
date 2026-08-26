@@ -416,6 +416,11 @@ fn automatic_provisioned_volume_uses_a_storage_ready_machine() {
         &intent,
         &DeploySnapshot {
             machines: vec![stateless, ready],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+                machine_id('1'),
+                "data",
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         IngressContext::default(),
@@ -445,6 +450,11 @@ fn automatic_provisioned_volume_uses_known_eligible_and_warns_about_unknown() {
         &intent,
         &DeploySnapshot {
             machines: vec![ready, unknown],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+                machine_id('2'),
+                "data",
+            )])
+            .expect("valid Volume Snapshot fixture"),
             ..Default::default()
         },
         IngressContext::default(),

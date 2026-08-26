@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin};
+use std::future::Future;
 
 use bollard::{
     errors::Error as DockerError,
@@ -21,11 +21,8 @@ use super::{
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
 
-pub(crate) type StorageObservation<'a> =
-    Pin<Box<dyn Future<Output = Option<MachineStorageObservation>> + Send + 'a>>;
-
 /// Resolved container inputs shared by every Machine-local creation entry path.
-pub(crate) struct ContainerRequest<'spec> {
+pub(crate) struct ContainerRequest<'spec, Storage> {
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
     pub(crate) kind: ContainerKind,
     /// Project that owns the resulting container.
@@ -35,7 +32,7 @@ pub(crate) struct ContainerRequest<'spec> {
     /// Docker network attachment prepared for this Service kind and backend.
     pub(crate) network: NetworkAttachment,
     /// Fresh local storage observation deferred to final container admission.
-    pub(crate) storage: Option<StorageObservation<'spec>>,
+    pub(crate) storage: Storage,
 }
 
 impl ContainerRuntime {
@@ -56,7 +53,7 @@ impl ContainerRuntime {
                 project_name,
                 spec,
                 network: NetworkAttachment::Bridge,
-                storage: None,
+                storage: std::future::ready(None),
             },
         )
         .await
@@ -67,12 +64,15 @@ impl ContainerRuntime {
     /// # Errors
     ///
     /// Returns when preparation, final admission, Volume Ensure, or Docker creation fails.
-    pub(crate) async fn create_with_network(
+    pub(crate) async fn create_with_network<Storage>(
         &self,
         machine_id: &MachineId,
         gateway: MachineGateway,
-        request: ContainerRequest<'_>,
-    ) -> Result<ContainerCreated, Error> {
+        request: ContainerRequest<'_, Storage>,
+    ) -> Result<ContainerCreated, Error>
+    where
+        Storage: Future<Output = Option<MachineStorageObservation>> + Send,
+    {
         // TODO(UT-030): direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
         tracing::info!(
@@ -94,15 +94,17 @@ impl ContainerRuntime {
     ///
     /// Returns when listing managed Containers, ensuring mounted Volumes, pulling
     /// the image, creating the Container, or starting it fails.
-    pub(crate) async fn ensure_global_slot(
+    pub(crate) async fn ensure_global_slot<Storage>(
         &self,
         machine_id: &MachineId,
         gateway: MachineGateway,
-        mut request: ContainerRequest<'_>,
-    ) -> Result<ContainerCreated, Error> {
+        request: ContainerRequest<'_, Storage>,
+    ) -> Result<ContainerCreated, Error>
+    where
+        Storage: Future<Output = Option<MachineStorageObservation>> + Send,
+    {
         if let Some(existing) = self.existing_global_slot(machine_id, request.spec).await? {
-            let storage = request.storage.take();
-            self.admit_storage_and_ensure_volumes(machine_id, request.spec, storage)
+            self.admit_storage_and_ensure_volumes(machine_id, request.spec, request.storage)
                 .await?;
             if !runtime_is_running(&existing.runtime) {
                 self.start(&existing.container_id).await?;
@@ -144,13 +146,16 @@ impl ContainerRuntime {
         Ok(found)
     }
 
-    async fn prepare_and_create(
+    async fn prepare_and_create<Storage>(
         &self,
         machine_id: &MachineId,
         gateway: MachineGateway,
-        request: ContainerRequest<'_>,
+        request: ContainerRequest<'_, Storage>,
         reserved_name: Option<String>,
-    ) -> Result<ContainerCreated, Error> {
+    ) -> Result<ContainerCreated, Error>
+    where
+        Storage: Future<Output = Option<MachineStorageObservation>> + Send,
+    {
         let mut body = create::container_create_body(
             machine_id,
             gateway,
@@ -176,17 +181,19 @@ impl ContainerRuntime {
             .await
     }
 
-    async fn finish_create(
+    async fn finish_create<Storage>(
         &self,
         machine_id: &MachineId,
-        mut request: ContainerRequest<'_>,
+        request: ContainerRequest<'_, Storage>,
         body: bollard::models::ContainerCreateBody,
         mut config_operation: ConfigOperation<'_>,
         reserved_name: Option<String>,
-    ) -> Result<ContainerCreated, Error> {
+    ) -> Result<ContainerCreated, Error>
+    where
+        Storage: Future<Output = Option<MachineStorageObservation>> + Send,
+    {
         let result = async {
-            let storage = request.storage.take();
-            self.admit_storage_and_ensure_volumes(machine_id, request.spec, storage)
+            self.admit_storage_and_ensure_volumes(machine_id, request.spec, request.storage)
                 .await?;
             let (created, display_name) = match reserved_name {
                 Some(display_name) => {
@@ -265,17 +272,17 @@ impl ContainerRuntime {
         result
     }
 
-    async fn admit_storage_and_ensure_volumes(
+    async fn admit_storage_and_ensure_volumes<Storage>(
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
-        storage: Option<StorageObservation<'_>>,
-    ) -> Result<(), Error> {
+        storage: Storage,
+    ) -> Result<(), Error>
+    where
+        Storage: Future<Output = Option<MachineStorageObservation>>,
+    {
         if spec.volume_graph.has_mounted_provisioned_volume() {
-            match match storage {
-                Some(observe) => observe.await,
-                None => None,
-            } {
+            match storage.await {
                 Some(MachineStorageObservation::Ready | MachineStorageObservation::Pool { .. }) => {
                 }
                 Some(MachineStorageObservation::Stateless) => {

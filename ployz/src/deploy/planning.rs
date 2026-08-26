@@ -619,11 +619,11 @@ fn service_error(name_errors_with_service: bool, service: &str, source: PlanErro
     }
 }
 
-fn eligible_machines<'a>(
+fn eligible_machines<'snapshot>(
     requested: &RequestedServiceSpec,
-    snapshot: &'a DeploySnapshot,
+    snapshot: &'snapshot DeploySnapshot,
     options: &PlanOptions,
-) -> Result<Vec<&'a MachineObservation>, PlanError> {
+) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
     let candidates = placement_candidates(requested, snapshot)?;
     let mut unknown = Vec::new();
     let mut machines = Vec::new();
@@ -662,10 +662,10 @@ fn eligible_machines<'a>(
     Ok(machines)
 }
 
-fn placement_candidates<'a>(
+fn placement_candidates<'snapshot>(
     requested: &RequestedServiceSpec,
-    snapshot: &'a DeploySnapshot,
-) -> Result<Vec<&'a MachineObservation>, PlanError> {
+    snapshot: &'snapshot DeploySnapshot,
+) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
     let candidates = snapshot
         .machines
         .iter()

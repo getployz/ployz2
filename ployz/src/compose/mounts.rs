@@ -130,7 +130,7 @@ pub(super) fn volumes(
                     key.clone()
                 };
                 let name = DockerVolumeName::parse(docker_name).map_err(invalid)?;
-                let reference = ServiceVolumeReference::parse(key.clone()).map_err(invalid)?;
+                let reference = ServiceVolumeReference::parse(key).map_err(invalid)?;
                 if let Some(maximum_bytes) = provisioned_volume_bounds.get(&reference) {
                     VolumeSource::Provisioned {
                         name,

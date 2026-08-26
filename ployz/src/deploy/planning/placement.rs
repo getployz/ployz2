@@ -6,7 +6,7 @@ use ployz_core::{
     ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, IngressProxyNetworkMode,
     MachineId, MachineObservation, PortPublication, QualifiedService, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, SpecChange, UpdateOrder, compare_specs,
+    ServiceName, ServiceObservation, SpecChange, UpdateOrder, VolumeSource, compare_specs,
     requested_ingress_proxy_backend,
 };
 
@@ -528,7 +528,12 @@ fn determine_update_order(
     }) {
         return UpdateOrder::StopFirst;
     }
-    if requested.volume_graph.has_mounted_docker_volume() {
+    if requested.volume_graph.mounted_volumes().any(|volume| {
+        matches!(
+            volume.source,
+            VolumeSource::Named { .. } | VolumeSource::Provisioned { .. }
+        )
+    }) {
         return UpdateOrder::StopFirst;
     }
     UpdateOrder::StartFirst
