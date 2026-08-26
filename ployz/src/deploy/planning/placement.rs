@@ -6,8 +6,8 @@ use ployz_core::{
     ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, IngressProxyNetworkMode,
     MachineId, MachineObservation, PortPublication, QualifiedService, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, ServiceVolumeGraph, SpecChange, UpdateOrder, VolumeSource,
-    compare_specs, requested_ingress_proxy_backend,
+    ServiceName, ServiceObservation, SpecChange, UpdateOrder, compare_specs,
+    requested_ingress_proxy_backend,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
@@ -528,19 +528,10 @@ fn determine_update_order(
     }) {
         return UpdateOrder::StopFirst;
     }
-    if has_mounted_docker_volume(&requested.volume_graph) {
+    if requested.volume_graph.has_mounted_docker_volume() {
         return UpdateOrder::StopFirst;
     }
     UpdateOrder::StartFirst
-}
-
-fn has_mounted_docker_volume(graph: &ServiceVolumeGraph) -> bool {
-    graph.mounts().iter().any(|mount| {
-        matches!(
-            graph.volume_for(mount).source,
-            VolumeSource::Named { .. } | VolumeSource::Provisioned { .. }
-        )
-    })
 }
 
 fn host_ports_conflict(left: &PortPublication, right: &PortPublication) -> bool {

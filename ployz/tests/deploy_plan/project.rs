@@ -14,7 +14,7 @@ fn project_removal_deletes_visible_services_and_preserves_volumes() {
         containers: vec![container('b', '1', &spec, &service_id('a'))],
         volume_snapshot: VolumeSnapshot::try_from_observations(vec![
             owned_volume(machine_id('1'), "data"),
-            observed_volume(machine_id('1'), "orphan"),
+            unowned_volume(machine_id('1'), "orphan"),
         ])
         .expect("valid Volume Snapshot fixture"),
         ..Default::default()
@@ -114,7 +114,7 @@ fn destroying_volumes_emits_remove_volume_only_when_complete() {
 fn unlabeled_volumes_are_never_assigned_or_removed() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
-        volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![unowned_volume(
             machine_id('1'),
             "orphan",
         )])
@@ -238,7 +238,7 @@ fn destroying_volumes_names_owned_docker_volumes_only() {
         machines: vec![machine('1', "first")],
         volume_snapshot: VolumeSnapshot::try_from_observations(vec![
             owned_volume(machine_id('1'), "data"),
-            observed_volume(machine_id('1'), "orphan"),
+            unowned_volume(machine_id('1'), "orphan"),
         ])
         .expect("valid Volume Snapshot fixture"),
         ..Default::default()

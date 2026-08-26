@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
-    MachineObservation, MachineTarget, PROVISIONED_VOLUME_DRIVER, PreservedVolume, ProjectName,
-    RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation, ServiceVolume,
-    ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
+    MachineObservation, MachineTarget, PreservedVolume, ProjectName, RequestedServiceSpec,
+    ServiceMode, ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph, VolumeSource,
+    machine_matches_target, owned_volume_project,
 };
 
 use crate::deploy::{
@@ -65,8 +65,7 @@ impl VolumePins {
             .map(|observed| VolumePresence {
                 machine_id: observed.id.machine_id,
                 name: &observed.id.name,
-                driver: observed.driver(),
-                options: &observed.options,
+                shape: VolumePresenceShape::Observed(observed),
             })
             .chain(
                 self.creates
@@ -119,7 +118,9 @@ impl VolumePins {
     ) -> Result<(), PlanError> {
         let name_errors_with_service = target.len() > 1;
         for spec in target {
-            if mounted_provisioned_volumes(&spec.volume_graph)
+            if spec
+                .volume_graph
+                .mounted_provisioned_volumes()
                 .next()
                 .is_none()
             {
@@ -143,7 +144,7 @@ impl VolumePins {
         spec: &RequestedServiceSpec,
         machines: &[&MachineObservation],
     ) -> Result<(), PlanError> {
-        for volume in mounted_provisioned_volumes(&spec.volume_graph) {
+        for volume in spec.volume_graph.mounted_provisioned_volumes() {
             let VolumeSource::Provisioned { name, .. } = &volume.source else {
                 unreachable!("mounted_provisioned_volumes filters source kinds")
             };
@@ -171,7 +172,7 @@ impl VolumePins {
         machines: &[&MachineObservation],
         snapshot: &DeploySnapshot,
     ) -> Result<(), PlanError> {
-        for volume in mounted_provisioned_volumes(&spec.volume_graph) {
+        for volume in spec.volume_graph.mounted_provisioned_volumes() {
             let VolumeSource::Provisioned {
                 name,
                 maximum_bytes,
@@ -202,7 +203,7 @@ impl VolumePins {
                         machine: machine.machine.name.clone(),
                     });
                 }
-                if !crate::volume::matches_provisioned_maximum(existing, *maximum_bytes) {
+                if !volume.source.matches_managed_volume(existing) {
                     return Err(PlanError::ExistingProvisionedVolumeMismatch {
                         name: name.clone(),
                         machine: machine.machine.name.clone(),
@@ -267,56 +268,43 @@ fn declared_physical_names(target: &[RequestedServiceSpec]) -> BTreeSet<DockerVo
         .collect()
 }
 
-static EMPTY_VOLUME_OPTIONS: BTreeMap<String, String> = BTreeMap::new();
-
 #[derive(Clone, Copy)]
 struct VolumePresence<'a> {
     machine_id: MachineId,
     name: &'a DockerVolumeName,
-    driver: &'a str,
-    options: &'a BTreeMap<String, String>,
+    shape: VolumePresenceShape<'a>,
+}
+
+#[derive(Clone, Copy)]
+enum VolumePresenceShape<'a> {
+    Observed(&'a ployz_core::DockerVolume),
+    Planned(&'a VolumeSource),
 }
 
 fn planned_presence(machine_id: MachineId, volume: &ServiceVolume) -> Option<VolumePresence<'_>> {
-    let (name, driver, options) = match &volume.source {
-        VolumeSource::Named { name, driver, .. } => (
-            name,
-            driver
-                .as_ref()
-                .map_or("local", |driver| driver.name.as_str()),
-            driver
-                .as_ref()
-                .map_or(&EMPTY_VOLUME_OPTIONS, |driver| &driver.options),
-        ),
-        VolumeSource::Provisioned { name, .. } => {
-            (name, PROVISIONED_VOLUME_DRIVER, &EMPTY_VOLUME_OPTIONS)
-        }
+    let name = match &volume.source {
+        VolumeSource::Named { name, .. } | VolumeSource::Provisioned { name, .. } => name,
         VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => return None,
     };
     Some(VolumePresence {
         machine_id,
         name,
-        driver,
-        options,
+        shape: VolumePresenceShape::Planned(&volume.source),
     })
 }
 
 impl VolumePresence<'_> {
     fn matches(self, volume: &ServiceVolume) -> bool {
-        match &volume.source {
-            VolumeSource::Named { name, driver, .. } => {
-                self.name == name
-                    && driver.as_ref().map_or_else(
-                        || self.driver != PROVISIONED_VOLUME_DRIVER,
-                        |required| {
-                            required.name == self.driver && required.options == *self.options
-                        },
-                    )
+        if named_volume_name(volume) != Some(self.name) {
+            return false;
+        }
+        match self.shape {
+            VolumePresenceShape::Observed(observed) => {
+                volume.source.matches_managed_volume(observed)
             }
-            VolumeSource::Provisioned { name, .. } => {
-                self.name == name && self.driver == PROVISIONED_VOLUME_DRIVER
+            VolumePresenceShape::Planned(source) => {
+                volume.source.to_create_volume_request() == source.to_create_volume_request()
             }
-            VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => false,
         }
     }
 }
@@ -808,11 +796,4 @@ fn mounted_named_volumes(graph: &ServiceVolumeGraph) -> Result<Vec<&ServiceVolum
         }
     }
     Ok(by_docker_name.into_values().collect())
-}
-
-fn mounted_provisioned_volumes(graph: &ServiceVolumeGraph) -> impl Iterator<Item = &ServiceVolume> {
-    graph.mounts().iter().filter_map(|mount| {
-        let volume = graph.volume_for(mount);
-        matches!(volume.source, VolumeSource::Provisioned { .. }).then_some(volume)
-    })
 }

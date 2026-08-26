@@ -95,6 +95,34 @@ impl ServiceVolumeGraph {
             .expect("ServiceVolumeGraph::parse rejects dangling mounts")
     }
 
+    /// Volume definitions used by mounts, including repeated mounts of one definition.
+    pub fn mounted_volumes(&self) -> impl Iterator<Item = &ServiceVolume> {
+        self.mounts.iter().map(|mount| self.volume_for(mount))
+    }
+
+    /// Mounted Provisioned Volume definitions, including repeated mounts.
+    pub fn mounted_provisioned_volumes(&self) -> impl Iterator<Item = &ServiceVolume> {
+        self.mounted_volumes()
+            .filter(|volume| matches!(volume.source, VolumeSource::Provisioned { .. }))
+    }
+
+    /// Whether any mounted source requires Provisioned storage capability.
+    #[must_use]
+    pub fn has_mounted_provisioned_volume(&self) -> bool {
+        self.mounted_provisioned_volumes().next().is_some()
+    }
+
+    /// Whether any mount uses a machine-local Docker Volume.
+    #[must_use]
+    pub fn has_mounted_docker_volume(&self) -> bool {
+        self.mounted_volumes().any(|volume| {
+            matches!(
+                volume.source,
+                VolumeSource::Named { .. } | VolumeSource::Provisioned { .. }
+            )
+        })
+    }
+
     pub(crate) fn into_parts(self) -> (Vec<ServiceVolume>, Vec<ServiceMount>) {
         (self.volumes, self.mounts)
     }

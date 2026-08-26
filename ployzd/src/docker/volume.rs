@@ -232,59 +232,11 @@ fn verify_volume(source: &VolumeSource, observed: &DockerVolume) -> Result<(), E
     let expected = source
         .to_create_volume_request()
         .expect("only managed Docker Volume sources are verified");
-    let mismatch = |reason| Error::VolumeShapeMismatch {
-        name: expected.name.clone(),
-        reason,
-    };
-
-    match (source, &observed.storage) {
-        (VolumeSource::Named { .. }, DockerVolumeStorageObservation::Plain { .. })
-        | (VolumeSource::Provisioned { .. }, DockerVolumeStorageObservation::Provisioned { .. }) => {
-        }
-        (VolumeSource::Named { .. }, DockerVolumeStorageObservation::Provisioned { .. }) => {
-            return Err(mismatch(
-                "expected ordinary storage, observed Provisioned storage".into(),
-            ));
-        }
-        (VolumeSource::Provisioned { .. }, DockerVolumeStorageObservation::Plain { .. }) => {
-            return Err(mismatch(
-                "expected Provisioned storage, observed ordinary storage".into(),
-            ));
-        }
-        (VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. }, _) => unreachable!(),
-    }
-    if observed.driver() != expected.driver {
-        return Err(mismatch(format!(
-            "expected driver {:?}, observed {:?}",
-            expected.driver,
-            observed.driver()
-        )));
-    }
-    if observed.options != expected.options {
-        return Err(mismatch(format!(
-            "expected options {:?}, observed {:?}",
-            expected.options, observed.options
-        )));
-    }
-    for (key, value) in &expected.labels {
-        if observed.labels.get(key) != Some(value) {
-            return Err(mismatch(format!(
-                "expected label {key:?}={value:?}, observed {:?}",
-                observed.labels.get(key)
-            )));
-        }
-    }
-    if let (
-        VolumeSource::Provisioned { maximum_bytes, .. },
-        DockerVolumeStorageObservation::Provisioned { bound_bytes, .. },
-    ) = (source, &observed.storage)
-        && bound_bytes.get() != maximum_bytes.get()
-    {
-        return Err(mismatch(format!(
-            "expected enforced maximum {} bytes, observed {} bytes",
-            maximum_bytes.get(),
-            bound_bytes
-        )));
+    if !source.matches_managed_volume(observed) {
+        return Err(Error::VolumeShapeMismatch {
+            name: expected.name,
+            reason: "requested and observed managed shapes differ".into(),
+        });
     }
     Ok(())
 }

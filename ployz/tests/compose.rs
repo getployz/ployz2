@@ -561,6 +561,10 @@ secrets:
             "services: {app: {image: app, volumes: [{type: tmpfs, target: /tmp, tmpfs: {size: huge}}]}}",
             "tmpfs.size",
         ),
+        (
+            "services: {app: {image: app, volumes: [data:/data]}}\nvolumes: {data: {driver_opts: {type: tmpfs}}}",
+            "driver_opts requires driver",
+        ),
     ];
     for (yaml, expected) in cases {
         let error = parse_normalized(yaml, ".").unwrap_err().to_string();
@@ -1854,7 +1858,7 @@ volumes: {data: {name: demo_data}}
         snapshot
             .machines
             .iter()
-            .map(|machine| snapshot_volume(machine.machine.id, existing_name.as_str())),
+            .map(|machine| managed_snapshot_volume(machine.machine.id, existing_name.as_str())),
     )
     .expect("valid Volume Snapshot fixture");
     let existing_on_both = plan_compose(&replicated, &existing_snapshot).unwrap();

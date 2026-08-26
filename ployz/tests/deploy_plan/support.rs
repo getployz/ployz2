@@ -62,10 +62,10 @@ pub(super) use ployz_core::{
     DockerVolumeStorageObservation, HealthObservation, HostBind, LogDriver, MANAGED_LABEL, Machine,
     MachineId, MachineName, MachineObservation, MachinePath, MachineTarget, ManagementAddress,
     MembershipObservation, PROJECT_NAME_LABEL, PidMode, Placement, PortPublication, PreDeployHook,
-    ProjectName, PullPolicy, RequestedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
-    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig, UpdateOrder,
-    VolumeSource, WireGuardPublicKey,
+    ProjectName, ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec,
+    ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
+    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
+    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, VolumeSource, WireGuardPublicKey,
 };
 pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     RequestedServiceSpec {
@@ -170,6 +170,26 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
     requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
 }
 
+pub(super) fn make_provisioned(spec: &mut RequestedServiceSpec, reference: &str, bytes: u64) {
+    let mut volumes = spec.volume_graph.volumes().to_vec();
+    let mounts = spec.volume_graph.mounts().to_vec();
+    let volume = volumes
+        .iter_mut()
+        .find(|volume| volume.reference.as_str() == reference)
+        .expect("fixture volume exists");
+    let VolumeSource::Named { name, labels, .. } = &volume.source else {
+        panic!("fixture volume starts ordinary")
+    };
+    volume.source = VolumeSource::Provisioned {
+        name: name.clone(),
+        maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+            std::num::NonZeroU64::new(bytes).unwrap(),
+        ),
+        labels: labels.clone(),
+    };
+    spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+}
+
 pub(super) fn app_volume(logical: &str) -> DockerVolumeName {
     ProjectName::parse("app")
         .unwrap()
@@ -177,20 +197,6 @@ pub(super) fn app_volume(logical: &str) -> DockerVolumeName {
 }
 
 pub(super) fn observed_volume(machine_id: MachineId, logical: &str) -> DockerVolume {
-    DockerVolume {
-        id: DockerVolumeId {
-            machine_id,
-            name: app_volume(logical),
-        },
-        options: Default::default(),
-        labels: Default::default(),
-        storage: DockerVolumeStorageObservation::Plain {
-            driver: "local".into(),
-        },
-    }
-}
-
-pub(super) fn owned_volume(machine_id: MachineId, logical: &str) -> DockerVolume {
     DockerVolume {
         id: DockerVolumeId {
             machine_id,
@@ -205,6 +211,16 @@ pub(super) fn owned_volume(machine_id: MachineId, logical: &str) -> DockerVolume
             driver: "local".into(),
         },
     }
+}
+
+pub(super) fn owned_volume(machine_id: MachineId, logical: &str) -> DockerVolume {
+    observed_volume(machine_id, logical)
+}
+
+pub(super) fn unowned_volume(machine_id: MachineId, logical: &str) -> DockerVolume {
+    let mut volume = observed_volume(machine_id, logical);
+    volume.labels.clear();
+    volume
 }
 
 pub(super) fn scoped_spec(spec: &RequestedServiceSpec) -> RequestedServiceSpec {

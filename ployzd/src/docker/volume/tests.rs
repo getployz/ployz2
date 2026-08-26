@@ -87,8 +87,8 @@ async fn storage_admission_runs_after_preparation_and_before_volume_or_container
                     project_name: &ployz_core::ProjectName::parse("app").unwrap(),
                     spec: &spec,
                     network: crate::docker::NetworkAttachment::Host,
+                    storage: None,
                 },
-                async || Err(Error::StorageUnobservable),
             )
             .await,
         Err(Error::StorageUnobservable)
@@ -510,8 +510,8 @@ async fn a_volume_created_before_container_creation_failure_is_left_for_retry() 
                     project_name: &ployz_core::ProjectName::parse("app").unwrap(),
                     spec: &spec,
                     network: crate::docker::NetworkAttachment::Host,
+                    storage: None,
                 },
-                async || Ok(()),
             )
             .await
             .is_err()
@@ -573,8 +573,8 @@ async fn run_replacement_hook_and_missing_global_reach_the_same_volume_ensure() 
                         project_name: &project,
                         spec: &spec,
                         network: crate::docker::NetworkAttachment::Host,
+                        storage: None,
                     },
-                    async || Ok(()),
                 )
                 .await,
             Err(Error::VolumeShapeMismatch { .. })
@@ -585,10 +585,13 @@ async fn run_replacement_hook_and_missing_global_reach_the_same_volume_ensure() 
             .ensure_global_slot(
                 &machine,
                 gateway,
-                &project,
-                &spec,
-                crate::docker::NetworkAttachment::Host,
-                async || Ok(()),
+                crate::docker::ContainerRequest {
+                    kind: ployz_core::ContainerKind::ServiceContainer,
+                    project_name: &project,
+                    spec: &spec,
+                    network: crate::docker::NetworkAttachment::Host,
+                    storage: None,
+                },
             )
             .await,
         Err(Error::VolumeShapeMismatch { .. })
@@ -609,12 +612,14 @@ async fn existing_global_slot_is_verified_before_early_return_or_restart() {
     for state in ["running", "exited"] {
         let (runtime, fake) = fake_runtime().await;
         fake.volumes.lock().unwrap().insert(
-            "unsafe".into(),
+            "bounded".into(),
             serde_json::json!({
-                "Name":"unsafe","Driver":"local","Mountpoint":"/volumes/unsafe"
+                "Name":"bounded","Driver":"ployz","Mountpoint":"/volumes/bounded",
+                "Options":{"size":"1073741824b"},"Labels":{"backup":"daily"},
+                "Status":{"bound_bytes":1073741824,"used_bytes":0}
             }),
         );
-        let spec = spec_with_sources(vec![ordinary_source("unsafe")]);
+        let spec = spec_with_sources(vec![provisioned_source("bounded", 1_073_741_824)]);
         let machine = MachineId::random();
         let project = ployz_core::ProjectName::parse("app").unwrap();
         let container_id = ployz_core::ContainerId::parse("a".repeat(64)).unwrap();
@@ -646,16 +651,21 @@ async fn existing_global_slot_is_verified_before_early_return_or_restart() {
                 .ensure_global_slot(
                     &machine,
                     ployz_core::MachineGateway("10.210.0.1".parse().unwrap()),
-                    &project,
-                    &spec,
-                    crate::docker::NetworkAttachment::Host,
-                    async || Err(Error::StorageUnobservable),
+                    crate::docker::ContainerRequest {
+                        kind: ployz_core::ContainerKind::ServiceContainer,
+                        project_name: &project,
+                        spec: &spec,
+                        network: crate::docker::NetworkAttachment::Host,
+                        storage: None,
+                    },
                 )
                 .await,
-            Err(Error::VolumeShapeMismatch { .. })
+            Err(Error::StorageUnobservable)
         ));
         assert!(fake.requests.lock().unwrap().iter().all(|(method, path)| {
-            !(method == Method::POST && path.contains("/containers/")) && method != Method::DELETE
+            !(method == Method::POST && path.contains("/containers/"))
+                && !path.ends_with("/start")
+                && method != Method::DELETE
         }));
     }
 }

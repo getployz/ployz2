@@ -1,19 +1,17 @@
 use std::{
     collections::BTreeMap,
-    fmt::{self, Display, Formatter},
     net::IpAddr,
-    num::{NonZeroU16, NonZeroU32, NonZeroU64},
+    num::{NonZeroU16, NonZeroU32},
 };
 
 use ipnet::IpNet;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+use serde::{Deserialize, Serialize};
 
 use super::{ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph};
 use crate::{
-    BindPropagation, BindRecursive, ClusterDomainLabel, ContainerHostname, ContainerLabels,
-    ContainerPath, DockerVolumeId, DockerVolumeName, ExtraHost, IngressHost, MANAGED_LABEL,
-    MachinePath, MachineTarget, PROJECT_NAME_LABEL, PidMode, ProjectName, RestartPolicy, ServiceId,
-    ServiceName, ServiceVolumeReference, ValueError,
+    ClusterDomainLabel, ContainerHostname, ContainerLabels, ContainerPath, ExtraHost, IngressHost,
+    MachinePath, MachineTarget, PidMode, RestartPolicy, ServiceId, ServiceMount, ServiceName,
+    ServiceVolume, ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -180,198 +178,6 @@ pub enum PortPublication {
         container_port: NonZeroU16,
         transport_protocol: TransportProtocol,
     },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum VolumeSource {
-    Bind {
-        machine_path: MachinePath,
-        #[serde(default)]
-        create_machine_path: bool,
-        #[serde(default)]
-        propagation: Option<BindPropagation>,
-        #[serde(default)]
-        recursive: Option<BindRecursive>,
-    },
-    Named {
-        name: DockerVolumeName,
-        #[serde(default)]
-        external: bool,
-        #[serde(default)]
-        driver: Option<VolumeDriver>,
-        #[serde(default)]
-        labels: BTreeMap<String, String>,
-    },
-    /// A bounded Docker Volume backed by a Machine Pool.
-    Provisioned {
-        /// Machine-local Docker Volume name after Project scoping.
-        name: DockerVolumeName,
-        /// Required positive storage maximum.
-        maximum_bytes: ProvisionedVolumeMaximumBytes,
-        /// Labels applied when the Docker Volume is created.
-        #[serde(default)]
-        labels: BTreeMap<String, String>,
-    },
-    Tmpfs {
-        #[serde(default)]
-        size_bytes: Option<u64>,
-        #[serde(default)]
-        mode: Option<u32>,
-        #[serde(default)]
-        options: Vec<Vec<String>>,
-    },
-}
-
-impl VolumeSource {
-    /// Bind a non-external named volume to `project`: physical Docker name and ownership labels.
-    pub fn scope_to_project(&mut self, project: &ProjectName) {
-        let (name, labels) = match self {
-            Self::Named {
-                external: false,
-                name,
-                labels,
-                ..
-            }
-            | Self::Provisioned { name, labels, .. } => (name, labels),
-            Self::Named { external: true, .. } | Self::Bind { .. } | Self::Tmpfs { .. } => return,
-        };
-        if labels.contains_key(PROJECT_NAME_LABEL) {
-            // Already bound: scale from a Resolved Service Spec, or a volume that
-            // already carries ownership. Do not prefix again or rewrite a foreign owner.
-            return;
-        }
-        *name = project.volume_name(name);
-        labels.insert(MANAGED_LABEL.into(), String::new());
-        labels.insert(PROJECT_NAME_LABEL.into(), project.to_string());
-    }
-}
-
-/// Reserved Docker driver used only by [`VolumeSource::Provisioned`].
-pub const PROVISIONED_VOLUME_DRIVER: &str = "ployz";
-
-/// A positive maximum byte count for one Provisioned Volume.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ProvisionedVolumeMaximumBytes(NonZeroU64);
-
-impl ProvisionedVolumeMaximumBytes {
-    /// Construct a Provisioned Volume bound from a positive byte count.
-    #[must_use]
-    pub const fn new(bytes: NonZeroU64) -> Self {
-        Self(bytes)
-    }
-
-    /// The positive maximum byte count.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0.get()
-    }
-}
-
-impl Display for ProvisionedVolumeMaximumBytes {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl Serialize for ProvisionedVolumeMaximumBytes {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for ProvisionedVolumeMaximumBytes {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse()
-            .map(Self)
-            .map_err(D::Error::custom)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct VolumeDriver {
-    pub name: String,
-    #[serde(default)]
-    pub options: BTreeMap<String, String>,
-}
-
-/// Current storage evidence for one observed Docker Volume.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DockerVolumeStorageObservation {
-    /// A Docker Volume without a Ployz-managed byte bound.
-    Plain {
-        /// Docker driver reported for the ordinary Volume.
-        driver: String,
-    },
-    /// A Provisioned Volume observed through the Ployz Docker driver.
-    Provisioned {
-        /// Current ZFS dataset mountpoint.
-        mountpoint: MachinePath,
-        /// Current ZFS dataset byte bound.
-        bound_bytes: NonZeroU64,
-        /// Current referenced ZFS dataset bytes.
-        used_bytes: u64,
-    },
-}
-
-/// One Docker Volume observed on one Machine.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DockerVolume {
-    pub id: DockerVolumeId,
-    #[serde(default)]
-    pub options: BTreeMap<String, String>,
-    #[serde(default)]
-    pub labels: BTreeMap<String, String>,
-    /// Current storage kind and Provisioned Volume usage evidence.
-    pub storage: DockerVolumeStorageObservation,
-}
-
-impl DockerVolume {
-    /// Docker driver implied by the observed storage kind.
-    #[must_use]
-    pub fn driver(&self) -> &str {
-        match &self.storage {
-            DockerVolumeStorageObservation::Plain { driver } => driver,
-            DockerVolumeStorageObservation::Provisioned { .. } => PROVISIONED_VOLUME_DRIVER,
-        }
-    }
-}
-
-/// Destroy these Docker Volumes. The list is the confirmation.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RemoveVolumesRequest {
-    pub volumes: Vec<DockerVolumeId>,
-    /// Force-remove an in-use Docker Volume. Defaults to false.
-    #[serde(default)]
-    pub force: bool,
-}
-
-/// A storage source declared under a service-local reference.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ServiceVolume {
-    pub reference: ServiceVolumeReference,
-    pub source: VolumeSource,
-}
-
-/// A container mount that refers to a declared Service Volume by its local name.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ServiceMount {
-    pub volume: ServiceVolumeReference,
-    pub target: ContainerPath,
-    #[serde(default)]
-    pub read_only: bool,
-    #[serde(default)]
-    pub no_copy: bool,
-    #[serde(default)]
-    pub subpath: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -114,6 +114,11 @@ pub(super) fn volumes(
                         invalid(format!("volume '{key}' not found in project volumes"))
                     })?;
                 let external = is_external(&declared.external);
+                if declared.driver.is_none() && !declared.driver_opts.is_empty() {
+                    return Err(invalid(format!(
+                        "volume '{key}': driver_opts requires driver"
+                    )));
+                }
                 let docker_name = if external {
                     declared
                         .name
@@ -136,10 +141,8 @@ pub(super) fn volumes(
                     VolumeSource::Named {
                         name,
                         external,
-                        driver: (!external
-                            && (declared.driver.is_some() || !declared.driver_opts.is_empty()))
-                        .then(|| VolumeDriver {
-                            name: declared.driver.clone().unwrap_or_default(),
+                        driver: (!external && declared.driver.is_some()).then(|| VolumeDriver {
+                            name: declared.driver.clone().expect("driver presence checked"),
                             options: declared.driver_opts.clone(),
                         }),
                         labels: if external {
