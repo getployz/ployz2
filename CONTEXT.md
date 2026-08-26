@@ -112,6 +112,10 @@ _Avoid_: ComposeProject, Compose project, deployment resource
 The loaded Compose input for one command. It is not a Cluster-side Project.
 _Avoid_: Project
 
+**Direct Image Transfer**:
+A bounded operation that makes a local Docker image available on selected Machines without requiring an external registry. It preserves layer-aware transfer and may use a Machine that already holds the image as the source for other Machines.
+_Avoid_: Unregistry, image ingest as a product term
+
 **Deploy**:
 A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow.
 _Avoid_: Deployment resource, reconciliation loop
@@ -121,7 +125,7 @@ A bounded membership-command operation that establishes this Machine's running S
 _Avoid_: scheduler, Cluster-wide Deploy
 
 **Global slot convergence**:
-Machine-local maintenance that restores this participating Machine's missing eligible Global slots from its observations. It is add-only and never schedules replicated Services or removes stale slots.
+Machine-local maintenance that converges this participating Machine to one slot for every observed eligible Global. It creates missing eligible slots, retires definitely ineligible slots, and leaves unknown eligibility unchanged.
 _Avoid_: Cluster-wide reconciler, scheduler, stale-slot pruning
 
 **Observed Global Slot Spec**:
@@ -219,6 +223,30 @@ _Avoid_: Management Address, globally unique container address
 **Serving Container**:
 A Service Container that is healthy and has a Container Address. It is observer-derived eligibility to receive traffic, not a replica identity.
 _Avoid_: replica, endpoint, upstream
+
+**Public Ingress**:
+The public HTTP request path from DNS resolution through a Machine's Ingress Proxy to a Serving Container. It is a diagnostic boundary, not a single process or globally authoritative edge.
+_Avoid_: Edge
+
+**Ingress Proxy**:
+The Machine-local process that receives published HTTP traffic and routes it toward Serving Containers. It is one component of Public Ingress, not the whole public request path.
+_Avoid_: Edge, public ingress as a process
+
+**Published Ingress Configuration**:
+A validated routing configuration made available to a Machine's Ingress Proxy. Publication records the daemon's completed handoff; it does not claim that the Ingress Proxy has adopted the configuration or successfully served traffic from it.
+_Avoid_: Activated configuration, accepted configuration
+
+**Ingress Request ID**:
+An opaque correlation value for one request observed by an Ingress Proxy. It connects the public response to internal diagnostic evidence; it is not authenticated identity or a durable request record.
+_Avoid_: Request identity, trace as proof of identity
+
+**Public Ingress Diagnosis**:
+An evidence-based classification of the earliest proven failure stage for one public request. It may remain Unknown and may name insufficient capacity only when direct capacity evidence exists; a 503 alone is not capacity evidence.
+_Avoid_: Root cause as certainty, 503 as capacity failure
+
+**Ingress Access Event**:
+A Machine-local structured observation of one request handled by an Ingress Proxy, correlated by its Ingress Request ID. It excludes request and response bodies, credentials, cookies, and query strings, and is evidence for diagnosis rather than a durable request record.
+_Avoid_: Request archive, audit record, Public Ingress Diagnosis as certainty
 
 **Internal DNS Answer**:
 An observer-local, TTL-zero A answer derived from replicated healthy Service Container observations and optionally filtered by this Machine's Membership Observations. It is not persisted or Cluster truth even though the DNS response is authoritative for the `.internal` zone.

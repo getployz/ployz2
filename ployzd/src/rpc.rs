@@ -14,7 +14,6 @@ use ployz_core::{
 };
 use serde_json::Value;
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 use tonic::transport::Endpoint;
 use tonic::{Request, Response, Status};
 
@@ -59,7 +58,7 @@ impl MachineService {
             local: LocalMachine::new(store, restart).with_cluster(cluster),
             hosted_dns: crate::hosted_dns::HostedDns::new(),
             ingress_data_dir: None,
-            ingest: ImageIngest::new(None, CancellationToken::new(), None),
+            ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
             cloud_pairing: None,
             global_reconcile: global_reconcile_observation_channel().1,
@@ -381,37 +380,11 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::CreateContainer>(request)?;
-        let network = match self
-            .local
-            .prepare_service_runtime(request.kind, &request.project_name, &request.resolved_spec)
-            .await
-        {
-            Ok(backend) => backend,
-            Err(error) => return local_error(error),
-        };
-        let containers = match self.containers() {
-            Ok(containers) => containers,
-            Err(error) => return respond(error),
-        };
-        let record = self.local_record()?;
-        let machine = record
-            .machine()
-            .ok_or_else(|| Status::unavailable("Machine network is not configured"))?;
-        let gateway = machine.subnet.gateway();
-        match containers
-            .create_with_network(
-                &record.id(),
-                gateway,
-                request.kind,
-                &request.project_name,
-                &request.resolved_spec,
-                network,
-            )
-            .await
-        {
-            Ok(created) => respond(created),
-            Err(error) => respond(RpcError::from(&error)),
-        }
+        finish(
+            self.local
+                .create_container(request.kind, &request.project_name, &request.resolved_spec)
+                .await,
+        )
     }
 
     async fn ensure_global_slot(
@@ -708,7 +681,7 @@ impl MachineRpc for MachineService {
                 ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
             );
         };
-        match self.ingest.open(machine.subnet.gateway()).await {
+        match self.ingest.open(machine.management_address).await {
             Ok(opened) => respond(opened),
             Err(error) => respond(error),
         }

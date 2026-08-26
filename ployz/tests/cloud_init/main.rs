@@ -197,7 +197,7 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     assert_eq!(initialized.wireguard_mtu, Some(1400));
     assert_eq!(
         initialized.ingress_proxy_backend,
-        IngressProxyBackend::Zentinel
+        IngressProxyBackend::Caddy
     );
     assert!(
         initialized.cloud_pairing.is_none(),
@@ -234,8 +234,9 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
 #[tokio::test]
 async fn cloud_founding_transmits_each_selected_ingress_backend() {
     for (selection, expected) in [
-        (None, IngressProxyBackend::Zentinel),
+        (None, IngressProxyBackend::Caddy),
         (Some("caddy"), IngressProxyBackend::Caddy),
+        (Some("zentinel"), IngressProxyBackend::Zentinel),
         (Some("envoy"), IngressProxyBackend::Envoy),
     ] {
         let founder = founder_machine();
@@ -905,7 +906,9 @@ async fn join_places_observed_envoy_ingress_on_this_machine() {
             .iter()
             .filter_map(|volume| match &volume.source {
                 VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
-                VolumeSource::Named { .. } | VolumeSource::Tmpfs { .. } => None,
+                VolumeSource::Named { .. }
+                | VolumeSource::Provisioned { .. }
+                | VolumeSource::Tmpfs { .. } => None,
             })
             .eq(["/var/lib/ployz/ingress/envoy"])
     );

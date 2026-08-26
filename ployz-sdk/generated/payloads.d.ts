@@ -58,7 +58,25 @@ export type ContainerPath = string;
 
 export type ServiceVolumeReference = string;
 
-export type ProvisionedVolumeMaximumBytes = string;
+export type ProvisionedVolumeMaximumBytes = number;
+
+export type VolumeToCreate = { 
+/**
+ * Machine where the container operation will ensure the Volume.
+ */
+machine_id: MachineId, 
+/**
+ * Human-facing Machine Name from this observer's snapshot when known.
+ */
+machine_name?: MachineName | null, 
+/**
+ * Physical Docker Volume Name that is currently absent on the Machine.
+ */
+name: DockerVolumeName, 
+/**
+ * Positive Provisioned Volume bound; absent for an ordinary named Volume.
+ */
+maximum_bytes?: ProvisionedVolumeMaximumBytes | null, };
 
 export type MachineTarget = string;
 
@@ -106,7 +124,19 @@ export type PortPublication = { "mode": "ingress", hostname: IngressHostname, lo
 
 export type VolumeDriver = { name: string, options: { [key in string]: string }, };
 
-export type VolumeSource = { "kind": "bind", machine_path: MachinePath, create_machine_path: boolean, propagation: BindPropagation | null, recursive: BindRecursive | null, } | { "kind": "named", name: DockerVolumeName, external: boolean, driver: VolumeDriver | null, labels: { [key in string]: string }, no_copy: boolean, subpath: string | null, } | { "kind": "tmpfs", size_bytes: number | null, mode: number | null, options: Array<Array<string>>, };
+export type VolumeSource = { "kind": "bind", machine_path: MachinePath, create_machine_path: boolean, propagation: BindPropagation | null, recursive: BindRecursive | null, } | { "kind": "named", name: DockerVolumeName, external: boolean, driver: VolumeDriver | null, labels: { [key in string]: string }, } | { "kind": "provisioned", 
+/**
+ * Machine-local Docker Volume name after Project scoping.
+ */
+name: DockerVolumeName, 
+/**
+ * Required positive storage maximum.
+ */
+maximum_bytes: ProvisionedVolumeMaximumBytes, 
+/**
+ * Labels applied when the Docker Volume is created.
+ */
+labels: { [key in string]: string }, } | { "kind": "tmpfs", size_bytes: number | null, mode: number | null, options: Array<Array<string>>, };
 
 export type HealthcheckSpec = { "state": "disabled" } | { "state": "configured" } & ConfiguredHealthcheck;
 
@@ -138,7 +168,27 @@ machines: Array<MachineTarget>, };
 
 export type PreDeployHook = { command: Array<string>, environment: { [key in string]: string }, privileged: boolean | null, timeout_millis: number | null, user: string | null, };
 
-export type ServiceMount = { volume: ServiceVolumeReference, target: ContainerPath, read_only: boolean, };
+export type ServiceMount = { 
+/**
+ * Service-local Volume Reference to mount.
+ */
+volume: ServiceVolumeReference, 
+/**
+ * Absolute path inside the container.
+ */
+target: ContainerPath, 
+/**
+ * Mount the source read-only.
+ */
+read_only: boolean, 
+/**
+ * Disable Docker's initial copy into a named Volume for this mount.
+ */
+no_copy: boolean, 
+/**
+ * Mount only this Volume subdirectory.
+ */
+subpath: string | null, };
 
 export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeSource, };
 
@@ -270,20 +320,6 @@ export type ServiceAttempt = {
  */
 name: ServiceName, };
 
-export type ProvisionedVolume = { 
-/**
- * Service whose local Volume Reference is declared.
- */
-service: ServiceName, 
-/**
- * Service-local reference that resolves to the Docker Volume declaration.
- */
-reference: ServiceVolumeReference, 
-/**
- * Required positive storage bound in bytes.
- */
-maximum_bytes: ProvisionedVolumeMaximumBytes, };
-
 export type DeployIntent = { 
 /**
  * Project that will own Containers this Deploy creates.
@@ -294,17 +330,17 @@ project_name: ProjectName,
  */
 target: Array<RequestedServiceSpec>, 
 /**
- * Bounded Provisioned Volumes referenced by Services in `target`.
- */
-provisioned_volumes: Array<ProvisionedVolume>, 
-/**
  * Planner knobs for this Deploy, including the selected Service list.
  */
 options: PlanOptions, };
 
 export type ObservationKind = "container" | "volume";
 
-export type DeployWarning = { "ObservationFailed": { kind: ObservationKind, machine_id: MachineId, message: string, } } | { "ObservationOmitted": { kind: ObservationKind, machine_id: MachineId, } } | { "IngressHostname": string } | "ObserverRelativeHostnameConflict" | { "SkippedDependencyHealth": { dependent: QualifiedService, dependency: QualifiedService, } };
+export type DeployWarning = { "ObservationFailed": { kind: ObservationKind, machine_id: MachineId, message: string, } } | { "ObservationOmitted": { kind: ObservationKind, machine_id: MachineId, } } | { "StorageObservationUnknown": { 
+/**
+ * Machine whose storage capability could not be checked.
+ */
+machine_id: MachineId, } } | { "IngressHostname": string } | "ObserverRelativeHostnameConflict" | { "SkippedDependencyHealth": { dependent: QualifiedService, dependency: QualifiedService, } };
 
 export type PruneRefusal = "incomplete_snapshot" | "selected_services" | "filtered_profiles" | "guessed_project_name";
 
@@ -331,6 +367,11 @@ operations: Array<OperationRow>,
  * Observer-relative warnings for this snapshot, including ingress DNS misses.
  */
 warnings: Array<DeployWarning>, 
+/**
+ * Missing managed Docker Volumes the shown container operations would create on their target
+ * Machines during Volume Ensure. These are informational, not executable plan rows.
+ */
+volumes_to_create: Array<VolumeToCreate>, 
 /**
  * Visible Services in the Project that Compose no longer declares.
  */
@@ -377,7 +418,7 @@ status: OperationStatus, };
 
 export type OperationStatus = { "type": "pending" } | { "type": "running", phase: OperationPhase, } | { "type": "completed" } | { "type": "failed", error: ExecutionError, } | { "type": "unexecuted" };
 
-export type OperationPhase = { "type": "starting" } | { "type": "creating_volume" } | { "type": "creating_container" } | { "type": "starting_container" } | { "type": "waiting_for_health", container_id: ContainerId, health?: HealthObservation | null, elapsed_ms: number, deadline_ms: number, } | { "type": "waiting_for_hook", container_id: ContainerId, elapsed_ms: number, deadline_ms: number, } | { "type": "stopping_container" } | { "type": "removing_container" } | { "type": "removing_volume" } | { "type": "compensating" };
+export type OperationPhase = { "type": "starting" } | { "type": "creating_container" } | { "type": "starting_container" } | { "type": "waiting_for_health", container_id: ContainerId, health?: HealthObservation | null, elapsed_ms: number, deadline_ms: number, } | { "type": "waiting_for_hook", container_id: ContainerId, elapsed_ms: number, deadline_ms: number, } | { "type": "stopping_container" } | { "type": "removing_container" } | { "type": "removing_volume" } | { "type": "compensating" };
 
 export type DeployEvent = { "type": "progress", completed: number, total: number, rows: Array<OperationRow>, } | { "type": "outcome", outcome: DeployOutcome<ExecutionError>, };
 
@@ -399,9 +440,9 @@ spec: ResolvedServiceSpec,
  */
 skip_health_monitor: boolean, };
 
-export type DeployOperation = { "type": "create_volume", machine_id: MachineId, volume: ServiceVolume, } | { "type": "create_provisioned_volume", machine_id: MachineId, volume: ServiceVolume, maximum_bytes: ProvisionedVolumeMaximumBytes, } | { "type": "wait_healthy", machine_id: MachineId, dependent: QualifiedService, dependency: QualifiedService, } | { "type": "run_container", machine_id: MachineId, spec: ResolvedServiceSpec, skip_health_monitor: boolean, } | { "type": "stop_container", machine_id: MachineId, container_id: ContainerId, } | { "type": "remove_container", machine_id: MachineId, container_id: ContainerId, } | { "type": "replace_container" } & ReplacementOperation | { "type": "stop_hook", machine_id: MachineId, container_id: ContainerId, } | { "type": "run_hook", machine_id: MachineId, spec: ResolvedServiceSpec, old_hook_containers: Array<[MachineId, ContainerId]>, } | { "type": "remove_volume", id: DockerVolumeId, };
+export type DeployOperation = { "type": "wait_healthy", machine_id: MachineId, dependent: QualifiedService, dependency: QualifiedService, } | { "type": "run_container", machine_id: MachineId, spec: ResolvedServiceSpec, skip_health_monitor: boolean, } | { "type": "stop_container", machine_id: MachineId, container_id: ContainerId, } | { "type": "remove_container", machine_id: MachineId, container_id: ContainerId, } | { "type": "replace_container" } & ReplacementOperation | { "type": "stop_hook", machine_id: MachineId, container_id: ContainerId, } | { "type": "run_hook", machine_id: MachineId, spec: ResolvedServiceSpec, old_hook_containers: Array<[MachineId, ContainerId]>, } | { "type": "remove_volume", id: DockerVolumeId, };
 
-export type MachineAction = "CreateVolume" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
+export type MachineAction = "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
 export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out" } | { "type": "runtime", observation: ContainerRuntimeObservation, };
 
@@ -431,15 +472,15 @@ export type RttStatistics = { median_ns: number, population_stddev_ns: number, }
 
 export type GlobalReconcileFailureObservation = { 
 /**
- * Global Service whose local slot could not be ensured.
+ * Global Service whose local slot could not be reconciled.
  */
 service: QualifiedService, 
 /**
- * Last error returned by this Machine's Global slot ensure path.
+ * Last error returned by this Machine's Global slot ensure or retirement path.
  */
 last_error: string, 
 /**
- * RFC 3339 time of the failed ensure attempt.
+ * RFC 3339 time of the failed reconciliation attempt.
  */
 observed_at: string, };
 

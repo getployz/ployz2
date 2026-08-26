@@ -3,18 +3,16 @@
 use std::{
     collections::BTreeMap,
     fmt::{self, Display, Formatter},
-    num::NonZeroU64,
 };
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+use serde::{Deserialize, Serialize};
 
 use super::{
     ContainerRuntimeObservation, HealthObservation, RequestedServiceSpec, ResolvedServiceSpec,
-    ServiceVolume,
 };
 use crate::{
-    ContainerId, DockerVolumeId, MachineId, MachineName, ProjectName, QualifiedService, RpcError,
-    ServiceName, ServiceVolumeReference,
+    ContainerId, DockerVolumeId, DockerVolumeName, MachineId, MachineName, ProjectName,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName,
 };
 use thiserror::Error;
 
@@ -45,65 +43,6 @@ pub struct ServiceAttempt {
     pub name: ServiceName,
 }
 
-/// A positive maximum byte count for one Provisioned Volume.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
-pub struct ProvisionedVolumeMaximumBytes(NonZeroU64);
-
-impl ProvisionedVolumeMaximumBytes {
-    /// Construct a Provisioned Volume bound from a positive byte count.
-    #[must_use]
-    pub const fn new(bytes: NonZeroU64) -> Self {
-        Self(bytes)
-    }
-
-    /// The positive maximum byte count.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0.get()
-    }
-}
-
-impl Display for ProvisionedVolumeMaximumBytes {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl Serialize for ProvisionedVolumeMaximumBytes {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for ProvisionedVolumeMaximumBytes {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse()
-            .map(Self)
-            .map_err(D::Error::custom)
-    }
-}
-
-/// One Provisioned Volume declaration in a Deploy Intent.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-pub struct ProvisionedVolume {
-    /// Service whose local Volume Reference is declared.
-    pub service: ServiceName,
-    /// Service-local reference that resolves to the Docker Volume declaration.
-    pub reference: ServiceVolumeReference,
-    /// Required positive storage bound in bytes.
-    pub maximum_bytes: ProvisionedVolumeMaximumBytes,
-}
-
 /// Complete desired Services plus which of those Services this command applies.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -112,8 +51,6 @@ pub struct DeployIntent {
     pub project_name: ProjectName,
     /// Complete desired Services for this Cluster.
     pub target: Vec<RequestedServiceSpec>,
-    /// Bounded Provisioned Volumes referenced by Services in `target`.
-    pub provisioned_volumes: Vec<ProvisionedVolume>,
     /// Planner knobs for this Deploy, including the selected Service list.
     pub options: PlanOptions,
     // ponytail: planner graph, not wire. Split if Cloud ever sends depends_on.
@@ -142,7 +79,6 @@ impl DeployIntent {
         Self {
             project_name,
             target,
-            provisioned_volumes: Vec::new(),
             options,
             dependencies: BTreeMap::new(),
             service_profiles: BTreeMap::new(),
@@ -372,17 +308,6 @@ pub struct ReplacementOperation {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum DeployOperation {
-    /// Create a Service Volume on `machine_id`.
-    CreateVolume {
-        machine_id: MachineId,
-        volume: ServiceVolume,
-    },
-    /// Create a bounded Provisioned Volume on `machine_id`.
-    CreateProvisionedVolume {
-        machine_id: MachineId,
-        volume: ServiceVolume,
-        maximum_bytes: ProvisionedVolumeMaximumBytes,
-    },
     /// Wait for every observed Service Container of `dependency` before starting `dependent`.
     WaitHealthy {
         machine_id: MachineId,
@@ -435,6 +360,10 @@ pub struct DeployPreview {
     pub operations: Vec<OperationRow>,
     /// Observer-relative warnings for this snapshot, including ingress DNS misses.
     pub warnings: Vec<DeployWarning>,
+    /// Missing managed Docker Volumes the shown container operations would create on their target
+    /// Machines during Volume Ensure. These are informational, not executable plan rows.
+    #[serde(default)]
+    pub volumes_to_create: Vec<VolumeToCreate>,
     /// Visible Services in the Project that Compose no longer declares.
     #[serde(default)]
     pub would_remove: Vec<QualifiedService>,
@@ -445,6 +374,22 @@ pub struct DeployPreview {
     /// Why pruning will not run. `None` means obsolete Services are removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prune_refusal: Option<PruneRefusal>,
+}
+
+/// One managed Docker Volume current observations indicate a container operation would create.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+pub struct VolumeToCreate {
+    /// Machine where the container operation will ensure the Volume.
+    pub machine_id: MachineId,
+    /// Human-facing Machine Name from this observer's snapshot when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_name: Option<MachineName>,
+    /// Physical Docker Volume Name that is currently absent on the Machine.
+    pub name: DockerVolumeName,
+    /// Positive Provisioned Volume bound; absent for an ordinary named Volume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_bytes: Option<ProvisionedVolumeMaximumBytes>,
 }
 
 /// A Compose-declared Docker Volume this Deploy keeps because it is omitted
@@ -523,6 +468,7 @@ impl DeployPreview {
             project_name,
             operations,
             warnings,
+            volumes_to_create: Vec::new(),
             would_remove: Vec::new(),
             preserved_volumes: Vec::new(),
             prune_refusal: None,
@@ -569,6 +515,11 @@ pub enum DeployWarning {
         kind: ObservationKind,
         machine_id: MachineId,
     },
+    /// A placement-matching Machine could not report required storage capability.
+    StorageObservationUnknown {
+        /// Machine whose storage capability could not be checked.
+        machine_id: MachineId,
+    },
     /// An Ingress Hostname misses this Cluster. The string is the CLI warning body.
     IngressHostname(String),
     /// Conflict detection used this Machine's current view and does not claim uniqueness.
@@ -591,6 +542,10 @@ impl Display for DeployWarning {
             Self::ObservationOmitted { kind, machine_id } => {
                 write!(f, "{kind} observation omitted {machine_id}")
             }
+            Self::StorageObservationUnknown { machine_id } => write!(
+                f,
+                "storage could not be checked on Machine {machine_id}; Provisioned Volume placement ignored that Machine"
+            ),
             Self::IngressHostname(message) => f.write_str(message),
             Self::ObserverRelativeHostnameConflict => f.write_str(
                 "Hostname conflict detection is observer-relative to this Machine's current visible fan-out and does not claim uniqueness.",
@@ -610,7 +565,6 @@ impl Display for DeployWarning {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum MachineAction {
-    CreateVolume,
     CreateContainer,
     StartContainer,
     InspectContainer,
@@ -750,7 +704,6 @@ pub enum OperationStatus {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum OperationPhase {
     Starting,
-    CreatingVolume,
     CreatingContainer,
     StartingContainer,
     WaitingForHealth {
@@ -798,9 +751,7 @@ impl DeployOperation {
     #[must_use]
     pub fn machine_id(&self) -> MachineId {
         match self {
-            Self::CreateVolume { machine_id, .. }
-            | Self::CreateProvisionedVolume { machine_id, .. }
-            | Self::WaitHealthy { machine_id, .. }
+            Self::WaitHealthy { machine_id, .. }
             | Self::RunContainer { machine_id, .. }
             | Self::StopContainer { machine_id, .. }
             | Self::RemoveContainer { machine_id, .. }
@@ -818,9 +769,7 @@ impl DeployOperation {
             Self::WaitHealthy { dependent, .. } => Some(&dependent.name),
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(&spec.name),
             Self::ReplaceContainer(replacement) => Some(&replacement.spec.name),
-            Self::CreateVolume { .. }
-            | Self::CreateProvisionedVolume { .. }
-            | Self::StopContainer { .. }
+            Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
             | Self::StopHook { .. }
             | Self::RemoveVolume { .. } => None,
@@ -835,11 +784,23 @@ impl DeployOperation {
             | Self::RemoveContainer { container_id, .. }
             | Self::StopHook { container_id, .. } => Some(*container_id),
             Self::ReplaceContainer(replacement) => Some(replacement.old_container_id),
-            Self::CreateVolume { .. }
-            | Self::CreateProvisionedVolume { .. }
-            | Self::WaitHealthy { .. }
+            Self::WaitHealthy { .. }
             | Self::RunContainer { .. }
             | Self::RunHook { .. }
+            | Self::RemoveVolume { .. } => None,
+        }
+    }
+
+    /// Resolved Service specification carried by a container-creation operation.
+    #[must_use]
+    pub fn spec(&self) -> Option<&ResolvedServiceSpec> {
+        match self {
+            Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(spec),
+            Self::ReplaceContainer(replacement) => Some(&replacement.spec),
+            Self::WaitHealthy { .. }
+            | Self::StopContainer { .. }
+            | Self::RemoveContainer { .. }
+            | Self::StopHook { .. }
             | Self::RemoveVolume { .. } => None,
         }
     }
