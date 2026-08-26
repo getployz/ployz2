@@ -87,7 +87,11 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     assert!(frames.contains(&ExecResponseFrame::Stderr(b"err".to_vec())));
     assert!(frames.contains(&ExecResponseFrame::Exit(42)));
 
-    let open_config = exec_config(&created.container_id, ["sh", "-c", "exit 7"], false);
+    let open_config = exec_config(
+        &created.container_id,
+        ["sh", "-c", "sleep 30 & exit 7"],
+        false,
+    );
     let (request_sender, request_receiver) = tokio::sync::mpsc::channel(1);
     request_sender.send(open_config).await.unwrap();
     let mut request = Request::new(ReceiverStream::new(request_receiver));

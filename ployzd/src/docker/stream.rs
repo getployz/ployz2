@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bollard::{
     container::LogOutput,
     exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions, StartExecResults},
@@ -118,9 +120,22 @@ impl ContainerRuntime {
                 let exec_id = created.id;
                 let tty = config.options.tty;
                 tokio::spawn(async move {
-                    let _ = async {
-                        while let Some(output) = output.next().await {
-                            match output {
+                    // ponytail: one inspect per 100 ms; use a Docker exec wait API if one appears.
+                    let process_exited = async {
+                        loop {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            match docker.inspect_exec(&exec_id).await {
+                                Ok(inspected) if inspected.running == Some(false) => {
+                                    break send_exec_exit(&sender, inspected.exit_code).await;
+                                }
+                                Ok(_) => {}
+                                Err(error) => break send_exec_error(&sender, error).await,
+                            }
+                        }
+                    };
+                    let stream_completed = async {
+                        while let Some(next) = output.next().await {
+                            match next {
                                 Ok(output) => {
                                     send_exec(&sender, exec_output(output, tty)).await?;
                                 }
@@ -128,15 +143,15 @@ impl ContainerRuntime {
                             }
                         }
                         match docker.inspect_exec(&exec_id).await {
-                            Ok(inspected) => {
-                                let code = inspected.exit_code.unwrap_or(1);
-                                let code = i32::try_from(code).unwrap_or(1);
-                                send_exec(&sender, ExecResponseFrame::Exit(code)).await
-                            }
+                            Ok(inspected) => send_exec_exit(&sender, inspected.exit_code).await,
                             Err(error) => send_exec_error(&sender, error).await,
                         }
-                    }
-                    .await;
+                    };
+                    let _ = tokio::select! {
+                        biased;
+                        result = process_exited => result,
+                        result = stream_completed => result,
+                    };
                     if let Some(task) = stdin_task {
                         task.abort();
                     }
@@ -220,6 +235,17 @@ async fn send_exec_error(
             message: error.to_string(),
             details: Value::Null,
         }),
+    )
+    .await
+}
+
+async fn send_exec_exit(
+    sender: &mpsc::Sender<Result<OpaquePayload, Status>>,
+    code: Option<i64>,
+) -> Result<(), Status> {
+    send_exec(
+        sender,
+        ExecResponseFrame::Exit(code.and_then(|code| i32::try_from(code).ok()).unwrap_or(1)),
     )
     .await
 }
