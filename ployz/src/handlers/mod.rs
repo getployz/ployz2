@@ -516,11 +516,11 @@ mod tests {
     }
 
     #[test]
-    fn founding_defaults_to_envoy_and_accepts_explicit_backends() {
+    fn founding_defaults_to_caddy_and_accepts_explicit_backends() {
         for (arguments, expected) in [
             (
                 vec!["ployz", "machine", "init", "root@host"],
-                ployz_core::IngressProxyBackend::Envoy,
+                ployz_core::IngressProxyBackend::Caddy,
             ),
             (
                 vec![
@@ -582,11 +582,11 @@ mod tests {
     }
 
     #[test]
-    fn cloud_founding_defaults_to_envoy_and_accepts_explicit_backends() {
+    fn cloud_founding_defaults_to_caddy_and_accepts_explicit_backends() {
         for (arguments, expected) in [
             (
                 vec!["ployz", "cloud", "enroll", "pmet_test"],
-                ployz_core::IngressProxyBackend::Envoy,
+                ployz_core::IngressProxyBackend::Caddy,
             ),
             (
                 vec![
