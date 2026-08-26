@@ -234,7 +234,6 @@ pub fn unregistry_matches(
     management_address: Ipv6Addr,
 ) -> bool {
     let socket_path = socket.to_string_lossy();
-    let management_address = management_address.to_string();
     let Some(config) = container.config.as_ref() else {
         return false;
     };
@@ -244,6 +243,7 @@ pub fn unregistry_matches(
     let expected_env = unregistry_config(socket, management_address)
         .env
         .expect("unregistry environment");
+    let management_address = management_address.to_string();
     let Some(host) = container.host_config.as_ref() else {
         return false;
     };
