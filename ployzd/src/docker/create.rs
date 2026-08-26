@@ -351,21 +351,25 @@ pub(super) fn docker_mounts(graph: &ServiceVolumeGraph) -> Result<Vec<Mount>, Er
                 }
                 VolumeSource::Named {
                     name,
+                    external,
                     driver,
                     labels,
-                    ..
                 } => {
                     translated.typ = Some(MountType::VOLUME);
                     translated.source = Some(name.to_string());
                     translated.volume_options = Some(MountVolumeOptions {
                         no_copy: Some(mount.no_copy),
-                        labels: Some(labels.clone().into_iter().collect()),
-                        driver_config: driver.as_ref().map(|driver| {
-                            MountVolumeOptionsDriverConfig {
-                                name: Some(driver.name.clone()),
-                                options: Some(driver.options.clone().into_iter().collect()),
-                            }
-                        }),
+                        labels: (!external).then(|| labels.clone().into_iter().collect()),
+                        driver_config: if *external {
+                            None
+                        } else {
+                            driver
+                                .as_ref()
+                                .map(|driver| MountVolumeOptionsDriverConfig {
+                                    name: Some(driver.name.clone()),
+                                    options: Some(driver.options.clone().into_iter().collect()),
+                                })
+                        },
                         subpath: mount.subpath.clone(),
                     });
                 }

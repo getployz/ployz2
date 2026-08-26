@@ -44,7 +44,6 @@ pub struct LocalMachine {
 }
 
 mod container;
-mod global_reconcile;
 
 #[derive(Clone)]
 struct ClusterContext {

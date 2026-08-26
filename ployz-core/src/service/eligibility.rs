@@ -1,8 +1,7 @@
 //! Shared placement and storage eligibility policy for Services on Machines.
 
 use crate::{
-    Machine, MachineStorageObservation, Placement, ServiceVolumeGraph, VolumeSource,
-    machine_matches_placement,
+    Machine, MachineStorageObservation, Placement, ServiceVolumeGraph, machine_matches_placement,
 };
 
 /// Whether one Machine can host a Service under current placement and storage evidence.
@@ -30,12 +29,7 @@ pub fn service_placement_eligibility(
     if !machine_matches_placement(machine, placement) {
         return ServicePlacementEligibility::Ineligible;
     }
-    if !volumes.mounts().iter().any(|mount| {
-        matches!(
-            volumes.volume_for(mount).source,
-            VolumeSource::Provisioned { .. }
-        )
-    }) {
+    if !volumes.has_mounted_provisioned_volume() {
         return ServicePlacementEligibility::Eligible;
     }
     match storage {

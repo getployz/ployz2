@@ -201,6 +201,8 @@ async fn fake_docker(
             }
             (StatusCode::CREATED, observed)
         }
+    } else if method == Method::POST && path.ends_with("/start") {
+        (StatusCode::NO_CONTENT, serde_json::Value::Null)
     } else {
         (
             StatusCode::NOT_FOUND,

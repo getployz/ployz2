@@ -10,24 +10,6 @@ fn maximum_bytes(bytes: u64) -> ProvisionedVolumeMaximumBytes {
     ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(bytes).unwrap())
 }
 
-fn make_provisioned(spec: &mut RequestedServiceSpec, reference: &str, bytes: u64) {
-    let mut volumes = spec.volume_graph.volumes().to_vec();
-    let mounts = spec.volume_graph.mounts().to_vec();
-    let volume = volumes
-        .iter_mut()
-        .find(|volume| volume.reference.as_str() == reference)
-        .expect("fixture volume exists");
-    let VolumeSource::Named { name, labels, .. } = &volume.source else {
-        panic!("fixture volume starts ordinary")
-    };
-    volume.source = VolumeSource::Provisioned {
-        name: name.clone(),
-        maximum_bytes: maximum_bytes(bytes),
-        labels: labels.clone(),
-    };
-    spec.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
-}
-
 fn automatic_provisioned_intent() -> DeployIntent {
     let mut service = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
@@ -309,9 +291,44 @@ fn ordinary_volume_does_not_adopt_an_existing_provisioned_volume() {
 }
 
 #[test]
+fn omitted_driver_means_exactly_local_with_no_options() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut requested, "data");
+    for mut existing in [
+        {
+            let mut volume = observed_volume(machine_id('1'), "data");
+            volume.storage = DockerVolumeStorageObservation::Plain {
+                driver: "foreign".into(),
+            };
+            volume
+        },
+        {
+            let mut volume = observed_volume(machine_id('1'), "data");
+            volume.options.insert("type".into(), "tmpfs".into());
+            volume
+        },
+    ] {
+        existing.id.machine_id = machine_id('1');
+        let error = plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "first")],
+                volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing]).unwrap(),
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, PlanError::NoEligibleMachines { .. }));
+    }
+}
+
+#[test]
 fn existing_matching_provisioned_volume_is_reused_without_creation() {
     let mut existing = observed_volume(machine_id('1'), "data");
-    existing.options = BTreeMap::from([("size".into(), "2g".into())]);
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
     existing.storage = DockerVolumeStorageObservation::Provisioned {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
@@ -341,9 +358,32 @@ fn existing_matching_provisioned_volume_is_reused_without_creation() {
 }
 
 #[test]
+fn provisioned_volume_requires_requested_labels() {
+    let mut existing = observed_volume(machine_id('1'), "data");
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
+    existing.labels.remove(PROJECT_NAME_LABEL);
+    existing.storage = DockerVolumeStorageObservation::Provisioned {
+        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+        bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+        used_bytes: 0,
+    };
+
+    let error = explicitly_targeted_provisioned_deploy(
+        Some(MachineStorageObservation::Ready),
+        vec![existing],
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        PlanError::ExistingProvisionedVolumeMismatch { .. }
+    ));
+}
+
+#[test]
 fn existing_provisioned_volume_is_not_implicitly_resized() {
     let mut existing = observed_volume(machine_id('1'), "data");
-    existing.options = BTreeMap::from([("size".into(), "1g".into())]);
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
     existing.storage = DockerVolumeStorageObservation::Provisioned {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(2_147_483_648).unwrap(),
@@ -491,7 +531,7 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
     let mut other = machine('2', "other");
     other.storage = Some(MachineStorageObservation::Ready);
     let mut existing = observed_volume(machine_id('1'), "data");
-    existing.options = BTreeMap::from([("size".into(), "1g".into())]);
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
     existing.storage = DockerVolumeStorageObservation::Provisioned {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),

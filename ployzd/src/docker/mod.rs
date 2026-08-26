@@ -34,7 +34,7 @@ use tokio::sync::Mutex;
 use observe::ObservationSink;
 
 pub(crate) use create::NetworkAttachment;
-pub(crate) use lifecycle::ContainerRequest;
+pub(crate) use lifecycle::{ContainerRequest, StorageObservation};
 pub(crate) use managed_service::ManagedService;
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
@@ -1198,6 +1198,37 @@ mod tests {
         };
         assert_eq!(named.typ, Some(MountType::VOLUME));
         assert_eq!(named.source.as_deref(), Some("missing"));
+
+        let external: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+            "service_id": "11111111111111111111111111111111",
+            "name": "api",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
+            "volumes": [{"reference":"data","source":{
+                "kind":"named",
+                "name":"external-data",
+                "external":true,
+                "driver":{"name":"foreign","options":{"mode":"owned-elsewhere"}},
+                "labels":{"owner":"foreign"}
+            }}],
+            "mounts": [{
+                "volume":"data",
+                "target":"/data",
+                "no_copy":true,
+                "subpath":"current"
+            }]
+        }))
+        .unwrap();
+        let external = docker_mounts(&external.volume_graph).unwrap().remove(0);
+        assert_eq!(external.source.as_deref(), Some("external-data"));
+        assert_eq!(
+            external.volume_options,
+            Some(bollard::models::MountVolumeOptions {
+                no_copy: Some(true),
+                subpath: Some("current".into()),
+                ..Default::default()
+            })
+        );
     }
 
     #[test]

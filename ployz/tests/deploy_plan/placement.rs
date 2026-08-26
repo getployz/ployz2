@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, num::NonZeroU64};
 
 use super::support::*;
-use ployz_core::{MachineStorageObservation, ProvisionedVolumeMaximumBytes};
+use ployz_core::MachineStorageObservation;
 #[test]
 fn new_replicated_service_runs_the_requested_count_across_available_machines() {
     let requested = requested(ServiceMode::Replicated {
@@ -536,21 +536,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
             add_named_volume(&mut requested, "data");
         }
         if provisioned {
-            let mut volumes = requested.volume_graph.volumes().to_vec();
-            let mounts = requested.volume_graph.mounts().to_vec();
-            let volume = volumes.first_mut().expect("fixture mounts one volume");
-            let VolumeSource::Named { name, labels, .. } = &volume.source else {
-                unreachable!("fixture starts ordinary")
-            };
-            volume.source = VolumeSource::Provisioned {
-                name: name.clone(),
-                maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-                    NonZeroU64::new(1_073_741_824).unwrap(),
-                ),
-                labels: labels.clone(),
-            };
-            requested.volume_graph =
-                ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+            make_provisioned(&mut requested, "data", 1_073_741_824);
         }
         if with_port {
             requested.ports.push(host_port(8080));
@@ -567,6 +553,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
         if with_volume {
             let mut existing = observed_volume(machine_id('1'), "data");
             if provisioned {
+                existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
                 existing.storage = DockerVolumeStorageObservation::Provisioned {
                     mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
                     bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),

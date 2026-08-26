@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, future::Future, num::NonZeroU64};
 
 use ployz_core::{
     DockerVolume, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineFailure,
-    MachineId, MachineName, MachineObservation, MachineSuccess, PartialResult,
-    ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode, VolumeInventory,
+    MachineId, MachineName, MachineObservation, MachineSuccess, PartialResult, RpcError,
+    RpcErrorCode, VolumeInventory,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -66,18 +66,6 @@ impl ProvisionedVolumeSize {
                 if bound_bytes.get() == self.bytes
         )
     }
-}
-
-#[must_use]
-pub(crate) fn matches_provisioned_maximum(
-    volume: &DockerVolume,
-    maximum_bytes: ProvisionedVolumeMaximumBytes,
-) -> bool {
-    matches!(
-        volume.storage,
-        DockerVolumeStorageObservation::Provisioned { bound_bytes, .. }
-            if bound_bytes.get() == maximum_bytes.get()
-    )
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

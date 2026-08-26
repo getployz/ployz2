@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use bollard::{
     errors::Error as DockerError,
     models::{ContainerCreateBody, Mount, MountType},
@@ -7,7 +9,7 @@ use bollard::{
 };
 use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerRuntimeObservation, MachineGateway,
-    MachineId, ProjectName, ResolvedServiceSpec,
+    MachineId, MachineStorageObservation, ProjectName, ResolvedServiceSpec,
 };
 
 use crate::docker_image::prepare_image;
@@ -19,7 +21,9 @@ use super::{
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
 
-#[derive(Clone, Copy)]
+pub(crate) type StorageObservation<'a> =
+    Pin<Box<dyn Future<Output = Option<MachineStorageObservation>> + Send + 'a>>;
+
 /// Resolved container inputs shared by every Machine-local creation entry path.
 pub(crate) struct ContainerRequest<'spec> {
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
@@ -30,10 +34,13 @@ pub(crate) struct ContainerRequest<'spec> {
     pub(crate) spec: &'spec ResolvedServiceSpec,
     /// Docker network attachment prepared for this Service kind and backend.
     pub(crate) network: NetworkAttachment,
+    /// Fresh local storage observation deferred to final container admission.
+    pub(crate) storage: Option<StorageObservation<'spec>>,
 }
 
 impl ContainerRuntime {
-    pub async fn create(
+    #[cfg(test)]
+    pub(crate) async fn create_for_test(
         &self,
         machine_id: &MachineId,
         gateway: MachineGateway,
@@ -49,13 +56,13 @@ impl ContainerRuntime {
                 project_name,
                 spec,
                 network: NetworkAttachment::Bridge,
+                storage: None,
             },
-            async || Ok(()),
         )
         .await
     }
 
-    /// Prepare a container, run its final Machine-local admission, and create it.
+    /// Prepare a container, run final storage admission, and create it.
     ///
     /// # Errors
     ///
@@ -65,7 +72,6 @@ impl ContainerRuntime {
         machine_id: &MachineId,
         gateway: MachineGateway,
         request: ContainerRequest<'_>,
-        before_create: impl AsyncFnOnce() -> Result<(), Error>,
     ) -> Result<ContainerCreated, Error> {
         // TODO(UT-030): direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
@@ -78,7 +84,7 @@ impl ContainerRuntime {
             },
             "create container"
         );
-        self.prepare_and_create(machine_id, gateway, request, None, before_create)
+        self.prepare_and_create(machine_id, gateway, request, None)
             .await
     }
 
@@ -92,13 +98,12 @@ impl ContainerRuntime {
         &self,
         machine_id: &MachineId,
         gateway: MachineGateway,
-        project_name: &ProjectName,
-        spec: &ResolvedServiceSpec,
-        network: NetworkAttachment,
-        before_create: impl AsyncFnOnce() -> Result<(), Error>,
+        mut request: ContainerRequest<'_>,
     ) -> Result<ContainerCreated, Error> {
-        if let Some(existing) = self.existing_global_slot(machine_id, spec).await? {
-            self.ensure_mounted_volumes(machine_id, spec).await?;
+        if let Some(existing) = self.existing_global_slot(machine_id, request.spec).await? {
+            let storage = request.storage.take();
+            self.admit_storage_and_ensure_volumes(machine_id, request.spec, storage)
+                .await?;
             if !runtime_is_running(&existing.runtime) {
                 self.start(&existing.container_id).await?;
             }
@@ -107,19 +112,9 @@ impl ContainerRuntime {
                 display_name: existing.display_name,
             });
         }
+        let name = global_slot_name(request.spec);
         let created = self
-            .prepare_and_create(
-                machine_id,
-                gateway,
-                ContainerRequest {
-                    kind: ContainerKind::ServiceContainer,
-                    project_name,
-                    spec,
-                    network,
-                },
-                Some(global_slot_name(spec)),
-                before_create,
-            )
+            .prepare_and_create(machine_id, gateway, request, Some(name))
             .await?;
         self.start(&created.container_id).await?;
         Ok(created)
@@ -155,7 +150,6 @@ impl ContainerRuntime {
         gateway: MachineGateway,
         request: ContainerRequest<'_>,
         reserved_name: Option<String>,
-        before_create: impl AsyncFnOnce() -> Result<(), Error>,
     ) -> Result<ContainerCreated, Error> {
         let mut body = create::container_create_body(
             machine_id,
@@ -178,29 +172,21 @@ impl ContainerRuntime {
         .await?;
         let mut config_operation = self.specs.config_operation().await;
         mounts.extend(docker_config_mounts(&mut config_operation, request.spec).await?);
-        self.finish_create(
-            machine_id,
-            request,
-            body,
-            config_operation,
-            reserved_name,
-            before_create,
-        )
-        .await
+        self.finish_create(machine_id, request, body, config_operation, reserved_name)
+            .await
     }
 
     async fn finish_create(
         &self,
         machine_id: &MachineId,
-        request: ContainerRequest<'_>,
+        mut request: ContainerRequest<'_>,
         body: bollard::models::ContainerCreateBody,
         mut config_operation: ConfigOperation<'_>,
         reserved_name: Option<String>,
-        before_create: impl AsyncFnOnce() -> Result<(), Error>,
     ) -> Result<ContainerCreated, Error> {
         let result = async {
-            before_create().await?;
-            self.ensure_mounted_volumes(machine_id, request.spec)
+            let storage = request.storage.take();
+            self.admit_storage_and_ensure_volumes(machine_id, request.spec, storage)
                 .await?;
             let (created, display_name) = match reserved_name {
                 Some(display_name) => {
@@ -277,6 +263,28 @@ impl ContainerRuntime {
             eprintln!("failed to reclaim materialized configs: {error}");
         }
         result
+    }
+
+    async fn admit_storage_and_ensure_volumes(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+        storage: Option<StorageObservation<'_>>,
+    ) -> Result<(), Error> {
+        if spec.volume_graph.has_mounted_provisioned_volume() {
+            match match storage {
+                Some(observe) => observe.await,
+                None => None,
+            } {
+                Some(MachineStorageObservation::Ready | MachineStorageObservation::Pool { .. }) => {
+                }
+                Some(MachineStorageObservation::Stateless) => {
+                    return Err(Error::ProvisionedStorageUnsupported);
+                }
+                None => return Err(Error::StorageUnobservable),
+            }
+        }
+        self.ensure_mounted_volumes(machine_id, spec).await
     }
 
     async fn inspect_managed_by_name(
@@ -516,10 +524,6 @@ fn global_slot_name(spec: &ResolvedServiceSpec) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, num::NonZeroU64};
-
-    use ployz_core::{PROVISIONED_VOLUME_DRIVER, VolumeSource};
-
     use super::*;
 
     #[test]
@@ -536,28 +540,5 @@ mod tests {
         assert!(retry_name_conflict(1, &conflict));
         assert!(!retry_name_conflict(CONTAINER_NAME_ATTEMPTS, &conflict));
         assert!(!retry_name_conflict(1, &server_error));
-    }
-
-    #[test]
-    fn global_provisioned_volume_request_never_downgrades_to_local() {
-        let request = VolumeSource::Provisioned {
-            name: ployz_core::DockerVolumeName::parse("app_data").unwrap(),
-            maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
-                NonZeroU64::new(1_073_741_824).unwrap(),
-            ),
-            labels: BTreeMap::from([("backup".into(), "daily".into())]),
-        }
-        .to_create_volume_request()
-        .unwrap();
-
-        assert_eq!(request.driver, PROVISIONED_VOLUME_DRIVER);
-        assert_eq!(
-            request.options,
-            BTreeMap::from([("size".into(), "1073741824b".into())])
-        );
-        assert_eq!(
-            request.labels.get("backup").map(String::as_str),
-            Some("daily")
-        );
     }
 }

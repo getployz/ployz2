@@ -3,12 +3,12 @@
 use std::path::Path;
 
 use ployz_core::{
-    ContainerCreated, ContainerKind, MachineStorageObservation, ProjectName, ResolvedServiceSpec,
-    VolumeSource,
+    ContainerCreated, ContainerId, ContainerKind, MachineStorageObservation, ProjectName,
+    ResolvedServiceSpec,
 };
 
 use super::{Error, LocalMachine};
-use crate::docker::ContainerRequest;
+use crate::docker::{ContainerRequest, StorageObservation};
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 impl LocalMachine {
@@ -42,8 +42,8 @@ impl LocalMachine {
                     project_name: project,
                     spec,
                     network,
+                    storage: self.storage_observation(spec),
                 },
-                async || self.ensure_container_storage(spec).await,
             )
             .await?)
     }
@@ -70,62 +70,51 @@ impl LocalMachine {
             .ensure_global_slot(
                 &record.id(),
                 machine.subnet.gateway(),
-                project,
-                spec,
-                network,
-                async || self.ensure_container_storage(spec).await,
+                ContainerRequest {
+                    kind: ContainerKind::ServiceContainer,
+                    project_name: project,
+                    spec,
+                    network,
+                    storage: self.storage_observation(spec),
+                },
             )
             .await?)
     }
 
-    async fn ensure_container_storage(
-        &self,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<(), crate::docker::Error> {
-        if !has_mounted_provisioned_volume(spec) {
-            return Ok(());
-        }
-        authorize_container_storage(self.observe_storage().await)
+    /// Stop and remove one local Global slot without removing its volumes.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable or the Container cannot be stopped or removed.
+    pub(crate) async fn retire_global_slot(&self, container_id: &ContainerId) -> Result<(), Error> {
+        let _guard = self.global_slot_lock.lock().await;
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        containers.stop(container_id, None, None).await?;
+        Ok(containers.remove(container_id, false, false).await?)
     }
-}
 
-fn has_mounted_provisioned_volume(spec: &ResolvedServiceSpec) -> bool {
-    spec.volume_graph.mounts().iter().any(|mount| {
-        matches!(
-            spec.volume_graph.volume_for(mount).source,
-            VolumeSource::Provisioned { .. }
-        )
-    })
-}
-
-fn authorize_container_storage(
-    storage: Option<MachineStorageObservation>,
-) -> Result<(), crate::docker::Error> {
-    match storage {
-        Some(MachineStorageObservation::Ready | MachineStorageObservation::Pool { .. }) => Ok(()),
-        Some(MachineStorageObservation::Stateless) => {
-            Err(crate::docker::Error::ProvisionedStorageUnsupported)
+    fn storage_observation<'a>(
+        &'a self,
+        spec: &ResolvedServiceSpec,
+    ) -> Option<StorageObservation<'a>> {
+        if spec.volume_graph.has_mounted_provisioned_volume() {
+            Some(Box::pin(self.observe_storage()))
+        } else {
+            None
         }
-        None => Err(crate::docker::Error::StorageUnobservable),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        num::NonZeroU64,
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
 
     use ployz_core::{
-        DockerVolumeName, MachineId, MachineStorageObservation, ProjectName,
-        ProvisionedVolumeMaximumBytes, ResolvedServiceSpec, ServiceId, ServiceMode, ServiceMount,
-        ServiceName, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, VolumeSource,
+        ContainerId, MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceMode,
+        ServiceName,
     };
     use serde_json::json;
 
-    use super::{authorize_container_storage, has_mounted_provisioned_volume};
     use crate::machine::{LocalMachine, LocalMachineError, LocalMachineStore};
 
     #[tokio::test]
@@ -152,58 +141,20 @@ mod tests {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
-    #[test]
-    fn provisioned_mounts_require_current_storage_capability() {
-        let pool = MachineStorageObservation::Pool {
-            size_bytes: NonZeroU64::new(1).unwrap(),
-            used_bytes: 1,
-            free_bytes: 0,
-        };
-
-        assert!(authorize_container_storage(Some(MachineStorageObservation::Ready)).is_ok());
-        assert!(authorize_container_storage(Some(pool)).is_ok());
-        assert!(matches!(
-            authorize_container_storage(Some(MachineStorageObservation::Stateless)),
-            Err(crate::docker::Error::ProvisionedStorageUnsupported)
+    #[tokio::test]
+    async fn retirement_reports_missing_docker() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "ployzd-local-global-slot-retire-{}",
+            MachineId::random()
         ));
-        assert!(matches!(
-            authorize_container_storage(None),
-            Err(crate::docker::Error::StorageUnobservable)
-        ));
-        assert!(has_mounted_provisioned_volume(&provisioned_spec(true)));
-        assert!(!has_mounted_provisioned_volume(&provisioned_spec(false)));
-    }
+        let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+        let (restart, _) = tokio::sync::watch::channel(false);
+        let local = LocalMachine::new(store, restart);
+        let container_id = ContainerId::parse("1".repeat(64)).unwrap();
 
-    fn provisioned_spec(mounted: bool) -> ResolvedServiceSpec {
-        let mut spec: ResolvedServiceSpec = serde_json::from_value(json!({
-            "service_id": ServiceId::random(),
-            "name": "api",
-            "mode": { "mode": "replicated", "replicas": 1 },
-            "container": { "image": "example.test/api", "pull_policy": "missing" }
-        }))
-        .unwrap();
-        let reference = ServiceVolumeReference::parse("data").unwrap();
-        let mounts = mounted.then(|| ServiceMount {
-            volume: reference.clone(),
-            target: ployz_core::ContainerPath::parse("/data").unwrap(),
-            read_only: false,
-            no_copy: false,
-            subpath: None,
-        });
-        spec.volume_graph = ServiceVolumeGraph::parse(
-            vec![ServiceVolume {
-                reference,
-                source: VolumeSource::Provisioned {
-                    name: DockerVolumeName::parse("data").unwrap(),
-                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-                        NonZeroU64::new(1_073_741_824).unwrap(),
-                    ),
-                    labels: BTreeMap::new(),
-                },
-            }],
-            mounts.into_iter().collect(),
-        )
-        .unwrap();
-        spec
+        let error = local.retire_global_slot(&container_id).await.unwrap_err();
+
+        assert!(matches!(error, LocalMachineError::DockerUnavailable));
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 }
