@@ -1,10 +1,9 @@
 use std::{collections::BTreeMap, future::Future, num::NonZeroU64};
 
 use ployz_core::{
-    CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachineSuccess, PartialResult, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode,
-    ServiceVolume, VolumeInventory,
+    DockerVolume, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineFailure,
+    MachineId, MachineName, MachineObservation, MachineSuccess, PartialResult,
+    ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode, VolumeInventory,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -79,24 +78,6 @@ pub(crate) fn matches_provisioned_maximum(
         DockerVolumeStorageObservation::Provisioned { bound_bytes, .. }
             if bound_bytes.get() == maximum_bytes.get()
     )
-}
-
-/// Builds Docker's named-Volume creation request from a Service mount.
-///
-/// # Errors
-///
-/// Returns `InvalidArgument` when the mount does not use a named Docker Volume.
-pub(crate) fn create_volume_request(
-    volume: &ServiceVolume,
-) -> Result<CreateVolumeRequest, RpcError> {
-    volume
-        .source
-        .to_create_volume_request()
-        .ok_or_else(|| RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: "volume creation requires a managed Docker Volume".into(),
-            details: serde_json::Value::Null,
-        })
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

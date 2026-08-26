@@ -4,8 +4,8 @@ use ployz_core::{
     ContainerAction, DataLoss, DependencyCondition, HookContainer, IngressHost, MachineId,
     MachineObservation, MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName,
     PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServicePlacementEligibility, explicit_ingress_hosts, hostname_owners,
-    machine_matches_target, same_service_mode_kind, service_placement_eligibility,
+    ServiceObservation, ServicePlacementEligibility, VolumeToCreate, explicit_ingress_hosts,
+    hostname_owners, machine_matches_target, same_service_mode_kind, service_placement_eligibility,
 };
 
 use super::{
@@ -53,6 +53,7 @@ struct BoundIntent {
 /// Operations and prune results before pending rows are attached.
 struct Planned {
     operations: Vec<DeployOperation>,
+    volumes_to_create: Vec<(MachineId, ployz_core::ServiceVolume)>,
     would_remove: Vec<QualifiedService>,
     preserved_volumes: Vec<PreservedVolume>,
     prune_refusal: Option<PruneRefusal>,
@@ -146,6 +147,19 @@ fn preview_from(
         project_name: project_name.clone(),
         operations: super::pending_rows(&planned.operations, snapshot),
         warnings: planned.warnings,
+        volumes_to_create: planned
+            .volumes_to_create
+            .into_iter()
+            .map(|(machine_id, volume)| VolumeToCreate {
+                machine_id,
+                machine_name: snapshot
+                    .machines
+                    .iter()
+                    .find(|machine| machine.machine.id == machine_id)
+                    .map(|machine| machine.machine.name.clone()),
+                volume,
+            })
+            .collect(),
         would_remove: planned.would_remove,
         preserved_volumes: planned.preserved_volumes,
         prune_refusal: planned.prune_refusal,
@@ -247,9 +261,7 @@ fn assemble_plan(
             | DeployOperation::ReplaceContainer(ReplacementOperation { machine_id, .. }) => {
                 Some(*machine_id)
             }
-            DeployOperation::CreateVolume { .. }
-            | DeployOperation::CreateProvisionedVolume { .. }
-            | DeployOperation::WaitHealthy { .. }
+            DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
@@ -280,8 +292,8 @@ fn assemble_plan(
         }
         service_operations.extend(operations);
     }
-    let mut operations = pins.into_creates();
-    operations.extend(service_operations);
+    let volumes_to_create = pins.into_creates_for(&service_operations);
+    let mut operations = service_operations;
     let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
     let preserved_volumes = preserved_owned_volumes(&intent.project_name, &target, snapshot);
@@ -290,6 +302,7 @@ fn assemble_plan(
     }
     Ok(Planned {
         operations,
+        volumes_to_create,
         would_remove,
         preserved_volumes,
         prune_refusal,
@@ -763,9 +776,7 @@ fn pre_deploy_operations(
                 machine_id, spec, ..
             }) if hook_machine == Some(machine_id) => Some((machine_id, spec)),
             DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => None,
-            DeployOperation::CreateVolume { .. }
-            | DeployOperation::CreateProvisionedVolume { .. }
-            | DeployOperation::WaitHealthy { .. }
+            DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }

@@ -17,9 +17,9 @@ use super::placement::{ReplicatedCapacityReservation, reserve_replicated_service
 /// Planner-internal assignment of Docker Volumes to Machines.
 ///
 /// Anchors override Deploy Snapshot observations for a shared replicated
-/// Docker Volume (the chosen Machine is the only legal location). `creates` is
-/// the one CreateVolume list later specs consult; it is not a reconstructed
-/// observation list.
+/// Docker Volume (the chosen Machine is the only legal location). `creates`
+/// records missing managed Volumes for the informational preview and lets
+/// later specs plan against the chosen location; it is not an executable list.
 pub(super) struct VolumePins {
     anchors: BTreeMap<DockerVolumeName, MachineId>,
     creates: Vec<(MachineId, ServiceVolume)>,
@@ -75,19 +75,52 @@ impl VolumePins {
             )
     }
 
-    pub(super) fn into_creates(self) -> Vec<DeployOperation> {
+    pub(super) fn into_creates_for(
+        self,
+        operations: &[DeployOperation],
+    ) -> Vec<(MachineId, ServiceVolume)> {
         self.creates
             .into_iter()
-            .map(|(machine_id, volume)| match &volume.source {
-                VolumeSource::Provisioned { .. } => {
-                    DeployOperation::CreateProvisionedVolume { machine_id, volume }
-                }
-                VolumeSource::Named { .. } => DeployOperation::CreateVolume { machine_id, volume },
-                VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => {
-                    unreachable!("only Docker Volumes are planned for creation")
-                }
+            .filter(|(machine_id, volume)| {
+                operations.iter().any(|operation| {
+                    operation_spec_on(operation, *machine_id).is_some_and(|spec| {
+                        spec.volume_graph.mounts().iter().any(|mount| {
+                            named_volume_name(spec.volume_graph.volume_for(mount))
+                                == named_volume_name(volume)
+                        })
+                    })
+                })
             })
             .collect()
+    }
+}
+
+fn operation_spec_on(
+    operation: &DeployOperation,
+    machine_id: MachineId,
+) -> Option<&ployz_core::ResolvedServiceSpec> {
+    match operation {
+        DeployOperation::RunContainer {
+            machine_id: target,
+            spec,
+            ..
+        }
+        | DeployOperation::RunHook {
+            machine_id: target,
+            spec,
+            ..
+        } if *target == machine_id => Some(spec),
+        DeployOperation::ReplaceContainer(replacement) if replacement.machine_id == machine_id => {
+            Some(&replacement.spec)
+        }
+        DeployOperation::WaitHealthy { .. }
+        | DeployOperation::RunContainer { .. }
+        | DeployOperation::StopContainer { .. }
+        | DeployOperation::RemoveContainer { .. }
+        | DeployOperation::ReplaceContainer(_)
+        | DeployOperation::StopHook { .. }
+        | DeployOperation::RunHook { .. }
+        | DeployOperation::RemoveVolume { .. } => None,
     }
 }
 
@@ -775,8 +808,15 @@ fn volume_anchor(
 
 fn named_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {
     match &volume.source {
-        VolumeSource::Named { name, .. } | VolumeSource::Provisioned { name, .. } => Some(name),
-        VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => None,
+        VolumeSource::Named {
+            name,
+            external: false,
+            ..
+        }
+        | VolumeSource::Provisioned { name, .. } => Some(name),
+        VolumeSource::Named { external: true, .. }
+        | VolumeSource::Bind { .. }
+        | VolumeSource::Tmpfs { .. } => None,
     }
 }
 

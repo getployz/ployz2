@@ -739,6 +739,17 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
         },
     ),
     (
+        "VolumeToCreate",
+        Shape::Additive {
+            params: "",
+            fields: &[
+                ("machine_id", "MachineId"),
+                ("machine_name", "MachineName?"),
+                ("volume", "ServiceVolume"),
+            ],
+        },
+    ),
+    (
         "DeployPreview",
         Shape::Additive {
             params: "",
@@ -747,6 +758,7 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                 ("operations", "OperationRow[]"),
                 ("warnings", "DeployWarning[]"),
                 ("would_remove", "QualifiedService[]"),
+                ("volumes_to_create", "VolumeToCreate[]"),
                 ("preserved_volumes", "PreservedVolume[]"),
                 ("prune_refusal", "PruneRefusal?"),
             ],
@@ -788,7 +800,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             params: "",
             variants: &[
                 ("starting", &[]),
-                ("creating_volume", &[]),
                 ("creating_container", &[]),
                 ("starting_container", &[]),
                 (
@@ -852,14 +863,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             params: "",
             variants: &[
                 (
-                    "create_volume",
-                    &[("machine_id", "MachineId"), ("volume", "ServiceVolume")],
-                ),
-                (
-                    "create_provisioned_volume",
-                    &[("machine_id", "MachineId"), ("volume", "ServiceVolume")],
-                ),
-                (
                     "wait_healthy",
                     &[
                         ("machine_id", "MachineId"),
@@ -911,7 +914,6 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
     (
         "MachineAction",
         Shape::ClosedString(&[
-            "CreateVolume",
             "CreateContainer",
             "StartContainer",
             "InspectContainer",

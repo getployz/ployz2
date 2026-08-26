@@ -101,9 +101,7 @@ fn new_named_volume_containers_default_to_stop_first_in_every_mode() {
             .into_iter()
             .filter_map(|operation| match operation {
                 DeployOperation::RunContainer { spec, .. } => Some(spec.update.order),
-                DeployOperation::CreateVolume { .. }
-                | DeployOperation::CreateProvisionedVolume { .. }
-                | DeployOperation::WaitHealthy { .. }
+                DeployOperation::WaitHealthy { .. }
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::ReplaceContainer(_)
@@ -380,9 +378,7 @@ fn placement_by_ambiguous_machine_name_keeps_every_match() {
         .iter()
         .map(|row| match &row.operation {
             DeployOperation::RunContainer { machine_id, .. } => *machine_id,
-            other @ (DeployOperation::CreateVolume { .. }
-            | DeployOperation::CreateProvisionedVolume { .. }
-            | DeployOperation::WaitHealthy { .. }
+            other @ (DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(..)
@@ -407,9 +403,7 @@ fn empty_placement_keeps_every_eligible_machine_and_all_is_a_name() {
             .iter()
             .map(|row| match &row.operation {
                 DeployOperation::RunContainer { machine_id, .. } => *machine_id,
-                other @ (DeployOperation::CreateVolume { .. }
-                | DeployOperation::CreateProvisionedVolume { .. }
-                | DeployOperation::WaitHealthy { .. }
+                other @ (DeployOperation::WaitHealthy { .. }
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::ReplaceContainer(..)
@@ -455,7 +449,7 @@ fn mounted_docker_volume_anchors_all_replicas_to_its_machine() {
 }
 
 #[test]
-fn missing_mounted_volume_is_created_before_replicas_on_one_machine() {
+fn missing_mounted_volume_is_previewed_for_replicas_on_one_machine() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(2).unwrap(),
     });
@@ -466,18 +460,20 @@ fn missing_mounted_volume_is_created_before_replicas_on_one_machine() {
     };
 
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+    let volume = plan
+        .volumes_to_create
+        .first()
+        .expect("missing managed Volume is previewed");
 
     assert!(matches!(
         operations(&plan).as_slice(),
         [
-            DeployOperation::CreateVolume { machine_id: volume_machine, volume },
             DeployOperation::RunContainer { machine_id: first, .. },
             DeployOperation::RunContainer { machine_id: second, .. },
-        ] if volume_machine == &machine_id('1')
-            && first == volume_machine
-            && second == volume_machine
+        ] if first == &machine_id('1')
+            && second == first
             && matches!(
-                &volume.source,
+                &volume.volume.source,
                 VolumeSource::Named { name, external: false, labels, .. }
                     if name.as_str() == "app_data"
                         && labels.get(MANAGED_LABEL) == Some(&String::new())
@@ -487,7 +483,7 @@ fn missing_mounted_volume_is_created_before_replicas_on_one_machine() {
 }
 
 #[test]
-fn missing_named_volume_is_created_before_three_replicas() {
+fn missing_named_volume_is_previewed_for_three_replicas() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(3).unwrap(),
     });
@@ -504,9 +500,10 @@ fn missing_named_volume_is_created_before_three_replicas() {
 
     assert!(matches!(
         operations(&plan).first(),
-        Some(DeployOperation::CreateVolume { .. })
+        Some(DeployOperation::RunContainer { .. })
     ));
-    assert_eq!(plan.operations.len(), 4);
+    assert_eq!(plan.operations.len(), 3);
+    assert_eq!(plan.volumes_to_create.len(), 1);
 }
 
 #[test]
@@ -593,9 +590,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
             .iter()
             .find_map(|row| match &row.operation {
                 DeployOperation::ReplaceContainer(operation) => Some(operation.spec.update.order),
-                DeployOperation::CreateVolume { .. }
-                | DeployOperation::CreateProvisionedVolume { .. }
-                | DeployOperation::WaitHealthy { .. }
+                DeployOperation::WaitHealthy { .. }
                 | DeployOperation::RunContainer { .. }
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
@@ -655,20 +650,9 @@ fn two_global_services_sharing_a_missing_volume_create_it_once_per_machine() {
 
     assert_eq!(snapshot, before);
     let created_on = plan
-        .operations
+        .volumes_to_create
         .iter()
-        .filter_map(|row| match &row.operation {
-            DeployOperation::CreateVolume { machine_id, .. }
-            | DeployOperation::CreateProvisionedVolume { machine_id, .. } => Some(*machine_id),
-            DeployOperation::RunContainer { .. }
-            | DeployOperation::WaitHealthy { .. }
-            | DeployOperation::StopContainer { .. }
-            | DeployOperation::RemoveContainer { .. }
-            | DeployOperation::ReplaceContainer(_)
-            | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }
-            | DeployOperation::RemoveVolume { .. } => None,
-        })
+        .map(|item| item.machine_id)
         .collect::<Vec<_>>();
     assert_eq!(created_on.len(), 2);
     assert!(created_on.contains(&machine_id('1')));
@@ -695,13 +679,7 @@ fn two_services_sharing_a_named_volume_create_it_once() {
     let plan = plan_deploy([&first, &second], &snapshot, PlanOptions::default()).unwrap();
 
     assert_eq!(snapshot, before);
-    assert_eq!(
-        plan.operations
-            .iter()
-            .filter(|row| matches!(row.operation, DeployOperation::CreateVolume { .. }))
-            .count(),
-        1
-    );
+    assert_eq!(plan.volumes_to_create.len(), 1);
 }
 
 #[test]
@@ -731,11 +709,17 @@ fn shared_volume_anchor_skips_machine_without_capacity_for_all_services() {
     assert!(matches!(
         operations(&plan).as_slice(),
         [
-            DeployOperation::CreateVolume { machine_id: volume, .. },
             DeployOperation::RunContainer { machine_id: first, .. },
             DeployOperation::RunContainer { machine_id: second, .. },
-        ] if volume == &machine_id('2') && first == volume && second == volume
+        ] if first == &machine_id('2') && second == first
     ));
+    assert_eq!(
+        plan.volumes_to_create
+            .first()
+            .expect("missing managed Volume is previewed")
+            .machine_id,
+        machine_id('2')
+    );
 }
 
 #[test]
@@ -774,12 +758,13 @@ fn shared_volume_anchor_accounts_for_replacements_and_hooks() {
     )
     .unwrap();
 
-    assert!(operations(&plan).iter().any(|operation| {
-        matches!(
-            operation,
-            DeployOperation::CreateVolume { machine_id: target, .. } if target == &machine_id('2')
-        )
-    }));
+    assert_eq!(
+        plan.volumes_to_create
+            .first()
+            .expect("missing managed Volume is previewed")
+            .machine_id,
+        machine_id('2')
+    );
     assert!(operations(&plan).iter().filter(|operation| {
         matches!(
             operation,
@@ -812,12 +797,15 @@ fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
 
     assert!(matches!(
         operations(&plan).as_slice(),
-        [DeployOperation::CreateVolume { machine_id: volume_machine, volume }, rest @ ..]
-            if volume_machine == &machine_id('1')
-                && matches!(&volume.source, VolumeSource::Named { name, .. } if name.as_str() == "app_multi_missing")
-                && rest.iter().all(|operation| matches!(operation,
+        operations
+            if operations.iter().all(|operation| matches!(operation,
                     DeployOperation::RunContainer { machine_id: container_machine, .. }
                         if container_machine == &machine_id('1')))
+    ));
+    assert!(matches!(
+        &plan.volumes_to_create[..],
+        [item] if item.machine_id == machine_id('1')
+            && matches!(&item.volume.source, VolumeSource::Named { name, .. } if name.as_str() == "app_multi_missing")
     ));
 }
 
@@ -986,9 +974,7 @@ fn run_machine_ids(plan: &DeployPreview) -> Vec<MachineId> {
         .iter()
         .filter_map(|row| match &row.operation {
             DeployOperation::RunContainer { machine_id, .. } => Some(*machine_id),
-            DeployOperation::CreateVolume { .. }
-            | DeployOperation::CreateProvisionedVolume { .. }
-            | DeployOperation::WaitHealthy { .. }
+            DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)

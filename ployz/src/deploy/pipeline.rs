@@ -285,7 +285,6 @@ pub(super) async fn plan_project(
         .with_requested_profiles(hints.requested_profiles)
         .with_compose_refusal(hints.compose_refusal);
     let (snapshot, warnings) = gather_deploy_snapshot(client, machines, &intent).await?;
-    super::reject_missing_external_volumes(project, &snapshot)?;
     Ok(preview_gathered(client, snapshot, warnings, &intent).await?)
 }
 
@@ -465,9 +464,7 @@ fn preview_ports(preview: &DeployPreview) -> impl Iterator<Item = &PortPublicati
                 spec.ports.as_slice()
             }
             DeployOperation::ReplaceContainer(replacement) => replacement.spec.ports.as_slice(),
-            DeployOperation::CreateVolume { .. }
-            | DeployOperation::CreateProvisionedVolume { .. }
-            | DeployOperation::WaitHealthy { .. }
+            DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
