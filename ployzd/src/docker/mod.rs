@@ -601,9 +601,6 @@ pub enum Error {
         name: DockerVolumeName,
         reason: String,
     },
-    /// Two mounted declarations resolve to incompatible shapes for one Docker name.
-    #[error("mounted declarations for Docker Volume '{0}' have conflicting sources")]
-    ConflictingMountedVolumeSources(DockerVolumeName),
     /// Docker created a Volume but its resulting state could not be observed.
     #[error("Docker Volume creation succeeded but verification failed for {id:?}: {error}")]
     VolumeCreatedButUnverified {
@@ -661,8 +658,7 @@ impl Error {
                 status_code: 409,
                 ..
             })
-            | Self::VolumeShapeMismatch { .. }
-            | Self::ConflictingMountedVolumeSources(_) => RpcErrorCode::Conflict,
+            | Self::VolumeShapeMismatch { .. } => RpcErrorCode::Conflict,
             Self::VolumeCreatedButUnverified { .. } | Self::StorageUnobservable => {
                 RpcErrorCode::Unavailable
             }
@@ -1040,7 +1036,7 @@ mod tests {
             "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
             "volumes": [
                 {"reference":"host","source":{"kind":"bind","machine_path":"/srv/api"}},
-                {"reference":"alias","source":{"kind":"named","name":"database","driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
+                {"reference":"alias","source":{"kind":"ordinary","name":"database","driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
                 {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096,"mode":448}}
             ],
             "mounts": [
@@ -1203,7 +1199,7 @@ mod tests {
                 "name": "api",
                 "mode": { "mode": "replicated", "replicas": 1 },
                 "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
-                "volumes": [{"reference":"data","source":{"kind":"named","name":"missing"}}],
+                "volumes": [{"reference":"data","source":{"kind":"ordinary","name":"missing","driver":{"name":"local","options":{}}}}],
                 "mounts": [{"volume":"data","target":"/data"}]
             }))
             .unwrap();
@@ -1220,11 +1216,8 @@ mod tests {
             "mode": { "mode": "replicated", "replicas": 1 },
             "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
             "volumes": [{"reference":"data","source":{
-                "kind":"named",
-                "name":"external-data",
-                "external":true,
-                "driver":{"name":"foreign","options":{"mode":"owned-elsewhere"}},
-                "labels":{"owner":"foreign"}
+                "kind":"external",
+                "name":"external-data"
             }}],
             "mounts": [{
                 "volume":"data",

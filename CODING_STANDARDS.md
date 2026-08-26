@@ -8,6 +8,8 @@ Issues #607 and #613 are narrow daemon-policy exceptions: ployzd owns periodic, 
 
 Issue #616 is a narrow greenfield contract exception: the pre-release Caddy-only daemon and RPC names are replaced in lockstep by the immutable Ingress Proxy Backend contract. Clusters and daemons from before #616 are not migrated or supported through compatibility aliases. This exception does not relax lagged-daemon compatibility for later changes to the new contract.
 
+Issue #662 is a narrow greenfield contract exception: the pre-release combined named Service Volume source is replaced in lockstep by distinct External, Ordinary, and Provisioned source forms. Clients and daemons from before #662 are not migrated or supported through compatibility aliases. This exception does not relax lagged-daemon compatibility for later changes to the new contract.
+
 Runtime Watch's pre-release normalized transport is a narrow greenfield exception: ployz and ployzd switch in lockstep to direct `RuntimeWatchFrame` JSON with negotiated gzip. Pre-change daemon/client pairs are unsupported, and clients derive Services from the transmitted Containers. This exception does not relax lagged-daemon compatibility for later Runtime Watch changes.
 
 ## Names
