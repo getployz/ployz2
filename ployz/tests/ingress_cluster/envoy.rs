@@ -25,20 +25,7 @@ async fn envoy_founding_deploys_a_healthy_pinned_bridge_proxy() {
         .await
         .unwrap();
     cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if cluster
-                .machines(0)
-                .await
-                .is_ok_and(|machines| machines.iter().any(|entry| entry.machine.id == machine.id))
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_machine_present(&cluster, &machine).await;
     let direct = cluster.api_address(0).unwrap();
     let mut client =
         ployz::connect::connect(Path::new("/missing-ployz-test-config"), Some(&direct), None)
@@ -102,20 +89,7 @@ async fn envoy_routes_http_through_file_watched_xds() {
         .await
         .unwrap();
     cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if cluster
-                .machines(0)
-                .await
-                .is_ok_and(|machines| machines.iter().any(|entry| entry.machine.id == machine.id))
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_machine_present(&cluster, &machine).await;
     let direct = cluster.api_address(0).unwrap();
     let mut client =
         ployz::connect::connect(Path::new("/missing-ployz-test-config"), Some(&direct), None)
@@ -128,25 +102,12 @@ async fn envoy_routes_http_through_file_watched_xds() {
     let ingress_container = ingress.container_id;
 
     let api_id = ServiceId::random();
-    let api: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
-        "service_id": api_id,
-        "name": "api",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": {
-            "image": "alpine:3.23.3",
-            "command": ["sh", "-c", "while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n' | nc -l -p 8080; done"],
-            "pull_policy": "missing"
-        },
-        "ports": [{
-            "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "envoy.test" },
-            "load_balancer_port": 80,
-            "container_port": 8080,
-            "http_protocol": "http"
-        }]
-    }))
-    .unwrap();
-    let api_container = create_and_start(&mut client, &machine, api).await;
+    let api_container = create_and_start(
+        &mut client,
+        &machine,
+        http_service(api_id, "api", "envoy.test"),
+    )
+    .await;
     let observation = wait_running(&mut client, &api_id, 1).await.remove(0);
     let address = observation.address.unwrap();
 
@@ -221,20 +182,7 @@ async fn envoy_serves_https_with_rotated_material_without_restart() {
         .await
         .unwrap();
     cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if cluster
-                .machines(0)
-                .await
-                .is_ok_and(|machines| machines.iter().any(|entry| entry.machine.id == machine.id))
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_machine_present(&cluster, &machine).await;
     let direct = cluster.api_address(0).unwrap();
     let mut client =
         ployz::connect::connect(Path::new("/missing-ployz-test-config"), Some(&direct), None)
@@ -368,7 +316,6 @@ async fn envoy_obtains_a_managed_certificate_over_http01() {
     assert_eq!(ca.ordered(), Vec::<String>::new());
     assert_eq!(request(&cluster, "plain.example.com"), (200, "ok\n".into()));
 
-    point_hostname(&cluster, 0, "app.example.com", ip);
     let custom_id = ServiceId::random();
     let custom = create_and_start(
         &mut client,

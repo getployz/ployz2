@@ -556,7 +556,7 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(
+        assert!(
             requested
                 .volume_graph
                 .volumes()
@@ -565,8 +565,7 @@ mod tests {
                     VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
                     VolumeSource::Named { .. } | VolumeSource::Tmpfs { .. } => None,
                 })
-                .collect::<Vec<_>>(),
-            ["/var/lib/ployz/ingress/envoy"]
+                .eq(["/var/lib/ployz/ingress/envoy"])
         );
     }
 

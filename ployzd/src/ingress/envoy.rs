@@ -214,26 +214,31 @@ pub(crate) struct RenderedConfig {
 }
 
 impl RenderedConfig {
+    /// Listener Discovery Service YAML consumed by file-watched Envoy.
     #[must_use]
     pub(crate) fn lds(&self) -> &str {
         &self.lds
     }
 
+    /// Route Discovery Service YAML consumed by file-watched Envoy.
     #[must_use]
     pub(crate) fn rds(&self) -> &str {
         &self.rds
     }
 
+    /// Cluster Discovery Service YAML consumed by file-watched Envoy.
     #[must_use]
     pub(crate) fn cds(&self) -> &str {
         &self.cds
     }
 
+    /// Secret Discovery Service YAML consumed by file-watched Envoy.
     #[must_use]
     pub(crate) fn sds(&self) -> &str {
         &self.sds
     }
 
+    /// Stable digest of the complete private Ingress Projection.
     #[must_use]
     pub(crate) fn digest(&self) -> &str {
         &self.digest

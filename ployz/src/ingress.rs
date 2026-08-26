@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(zentinel.update.order, Some(UpdateOrder::StopFirst));
         assert!(zentinel.ports.is_empty());
         assert!(zentinel.ingress_proxy_fragment.is_none());
-        assert_eq!(
+        assert!(
             zentinel
                 .volume_graph
                 .volumes()
@@ -129,8 +129,7 @@ mod tests {
                     VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
                     VolumeSource::Named { .. } | VolumeSource::Tmpfs { .. } => None,
                 })
-                .collect::<Vec<_>>(),
-            ["/var/lib/ployz/ingress/zentinel"]
+                .eq(["/var/lib/ployz/ingress/zentinel"])
         );
 
         assert_eq!(envoy.name, QualifiedService::system_ingress().name);
@@ -160,7 +159,7 @@ mod tests {
             ]
         );
         assert!(envoy.ingress_proxy_fragment.is_none());
-        assert_eq!(
+        assert!(
             envoy
                 .volume_graph
                 .volumes()
@@ -169,8 +168,7 @@ mod tests {
                     VolumeSource::Bind { machine_path, .. } => Some(machine_path.as_str()),
                     VolumeSource::Named { .. } | VolumeSource::Tmpfs { .. } => None,
                 })
-                .collect::<Vec<_>>(),
-            ["/var/lib/ployz/ingress/envoy"]
+                .eq(["/var/lib/ployz/ingress/envoy"])
         );
     }
 

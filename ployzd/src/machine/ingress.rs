@@ -75,39 +75,34 @@ impl LocalMachine {
             return Ok(network);
         }
         match backend {
-            IngressProxyBackend::Caddy => Ok(network),
-            IngressProxyBackend::Envoy => {
-                let _guard = self.ingress_runtime_lock.lock().await;
-                let (machine, config_file) = {
-                    let store = self.lock_store()?;
-                    let machine = store
-                        .record()
-                        .machine()
-                        .cloned()
-                        .ok_or(LocalMachineError::NotParticipating)?;
-                    let config_file = crate::ingress::envoy::config_path(&store.data_dir);
-                    (machine, config_file)
-                };
-                crate::ingress::envoy::write_initial_config(&machine, &config_file)
-                    .map_err(IngressRuntimeError::from)?;
-                Ok(network)
-            }
-            IngressProxyBackend::Zentinel => {
-                let _guard = self.ingress_runtime_lock.lock().await;
-                let (machine, config_file) = {
-                    let store = self.lock_store()?;
-                    let machine = store
-                        .record()
-                        .machine()
-                        .cloned()
-                        .ok_or(LocalMachineError::NotParticipating)?;
-                    let config_file = crate::ingress::zentinel::config_path(&store.data_dir);
-                    (machine, config_file)
-                };
-                crate::ingress::zentinel::write_initial_config(&machine, &config_file)
-                    .map_err(IngressRuntimeError::from)?;
-                Ok(network)
-            }
+            IngressProxyBackend::Caddy => return Ok(network),
+            IngressProxyBackend::Envoy | IngressProxyBackend::Zentinel => {}
         }
+        let _guard = self.ingress_runtime_lock.lock().await;
+        let (machine, data_dir) = {
+            let store = self.lock_store()?;
+            let machine = store
+                .record()
+                .machine()
+                .cloned()
+                .ok_or(LocalMachineError::NotParticipating)?;
+            (machine, store.data_dir.clone())
+        };
+        match backend {
+            IngressProxyBackend::Caddy => {
+                unreachable!("Caddy returned before the initial-config lock")
+            }
+            IngressProxyBackend::Envoy => crate::ingress::envoy::write_initial_config(
+                &machine,
+                &crate::ingress::envoy::config_path(&data_dir),
+            )
+            .map_err(IngressRuntimeError::from)?,
+            IngressProxyBackend::Zentinel => crate::ingress::zentinel::write_initial_config(
+                &machine,
+                &crate::ingress::zentinel::config_path(&data_dir),
+            )
+            .map_err(IngressRuntimeError::from)?,
+        }
+        Ok(network)
     }
 }

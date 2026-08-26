@@ -191,6 +191,23 @@ fn write_initial_config_is_idempotent_and_installs_file_watched_xds() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn read_generated_config_errors_when_an_xds_file_is_missing() {
+    let root = test_root("missing-sds");
+    let generated = root.join("ingress").join("envoy");
+    fs::create_dir_all(&generated).unwrap();
+    fs::write(generated.join("lds.yaml"), "lds: true\n").unwrap();
+    fs::write(generated.join("rds.yaml"), "rds: true\n").unwrap();
+    fs::write(generated.join("cds.yaml"), "cds: true\n").unwrap();
+    let error = super::read_generated_config(&root).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert!(
+        error.to_string().contains("sds.yaml"),
+        "missing SDS file: {error}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[tokio::test]
 async fn rejected_candidate_leaves_live_configuration_untouched() {
     let root = test_root("rejected");
