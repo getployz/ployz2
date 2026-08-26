@@ -685,7 +685,7 @@ async fn direct_image_transfer_reconciles_and_stays_machine_only() {
                     "--rm",
                     "--network",
                     "ployz",
-                    "alpine:3.23.3",
+                    "busybox:1.37.0",
                     "wget",
                     "-T",
                     "1",
