@@ -8,9 +8,9 @@ use std::{
 };
 
 use ployz_core::{
-    CloudPairing, ContainerCreated, ContainerId, ContainerKind, InitializeRequest, Initialized,
-    InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase, LocalMachineRemoved, Machine,
-    MachineDetails, MachineId, MachineIdentity, MachineList, MachineObservation, MachineRemoved,
+    CloudPairing, ContainerCreated, ContainerKind, InitializeRequest, Initialized, InspectRequest,
+    JoinAccepted, JoinRequest, LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails,
+    MachineId, MachineIdentity, MachineList, MachineObservation, MachineRemoved,
     MachineStorageObservation, MachineToken, MachineTokenRequest, MachineUpdated,
     ManagementAddress, MembershipObservation, ProjectName, PublicIpDiscovery, RegisterRequest,
     Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted,
@@ -24,6 +24,8 @@ use super::{
     FoundingCluster, LocalMachineRecord, LocalMachineStore, STORAGE_OBSERVATION_TIMEOUT,
     StoreError, local_runtime, local_storage,
 };
+
+mod global_reconcile;
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
     docker::ContainerRuntime,
@@ -192,18 +194,6 @@ impl LocalMachine {
     /// Fresh local storage capability for placement and container safety checks.
     pub(crate) async fn observe_storage(&self) -> Option<MachineStorageObservation> {
         local_storage(std::path::Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
-    }
-
-    /// Stop and remove one local Global slot without removing its volumes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when Docker is unavailable or the Container cannot be stopped or removed.
-    pub(crate) async fn retire_global_slot(&self, container_id: &ContainerId) -> Result<(), Error> {
-        let _guard = self.global_slot_lock.lock().await;
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-        containers.stop(container_id, None, None).await?;
-        Ok(containers.remove(container_id, false, false).await?)
     }
 
     /// The persisted Local Machine record.
@@ -842,23 +832,6 @@ mod tests {
         let project = ProjectName::parse("app").unwrap();
 
         let error = local.ensure_global_slot(&project, &spec).await.unwrap_err();
-
-        assert!(matches!(error, Error::DockerUnavailable));
-        std::fs::remove_dir_all(data_dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn retire_global_slot_reports_missing_docker_at_local_machine_seam() {
-        let data_dir = std::env::temp_dir().join(format!(
-            "ployzd-local-global-slot-retire-{}",
-            MachineId::random()
-        ));
-        let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
-        let (restart, _) = tokio::sync::watch::channel(false);
-        let local = LocalMachine::new(store, restart);
-        let container_id = ployz_core::ContainerId::parse("1".repeat(64)).unwrap();
-
-        let error = local.retire_global_slot(&container_id).await.unwrap_err();
 
         assert!(matches!(error, Error::DockerUnavailable));
         std::fs::remove_dir_all(data_dir).unwrap();

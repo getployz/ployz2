@@ -39,10 +39,10 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
                         service_count_text(counts),
                         service.hook_containers.len()
                     );
-                    if counts.2 > 0 {
+                    if counts.unknown > 0 {
                         eprintln!(
                             "WARNING: {} has unknown storage eligibility on {} Machine(s)",
-                            service.identity, counts.2
+                            service.identity, counts.unknown
                         );
                     }
                 }
@@ -52,10 +52,7 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn service_counts(
-    service: &ServiceObservation,
-    machines: &[MachineObservation],
-) -> (usize, usize, usize) {
+fn service_counts(service: &ServiceObservation, machines: &[MachineObservation]) -> ServiceCounts {
     let running = service
         .containers
         .iter()
@@ -67,7 +64,11 @@ fn service_counts(
         })
         .count();
     let Some(spec) = service.observed_global_slot_spec() else {
-        return (running, service.containers.len(), 0);
+        return ServiceCounts {
+            running,
+            expected: service.containers.len(),
+            unknown: 0,
+        };
     };
     let mut eligible = 0;
     let mut unknown = 0;
@@ -86,10 +87,27 @@ fn service_counts(
             ServicePlacementEligibility::Ineligible => {}
         }
     }
-    (running, eligible, unknown)
+    ServiceCounts {
+        running,
+        expected: eligible,
+        unknown,
+    }
 }
 
-fn service_count_text((running, expected, unknown): (usize, usize, usize)) -> String {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ServiceCounts {
+    running: usize,
+    expected: usize,
+    unknown: usize,
+}
+
+fn service_count_text(
+    ServiceCounts {
+        running,
+        expected,
+        unknown,
+    }: ServiceCounts,
+) -> String {
     if unknown == 0 {
         format!("{running}/{expected}")
     } else {
@@ -426,7 +444,14 @@ mod tests {
             machine('d', "batch", MembershipObservation::Up),
         ];
 
-        assert_eq!(service_counts(&service, &machines), (1, 2, 0));
+        assert_eq!(
+            service_counts(&service, &machines),
+            ServiceCounts {
+                running: 1,
+                expected: 2,
+                unknown: 0,
+            }
+        );
     }
 
     #[test]
@@ -487,7 +512,14 @@ mod tests {
             machine.storage = Some(MachineStorageObservation::Stateless);
         }
 
-        assert_eq!(service_counts(&service, &machines), (3, 3, 1));
+        assert_eq!(
+            service_counts(&service, &machines),
+            ServiceCounts {
+                running: 3,
+                expected: 3,
+                unknown: 1,
+            }
+        );
         assert_eq!(
             service_count_text(service_counts(&service, &machines)),
             "3/3 (+1 unknown)"
@@ -495,8 +527,22 @@ mod tests {
         service
             .containers
             .extend(containers.iter().skip(3).cloned());
-        assert_eq!(service_counts(&service, &machines), (6, 3, 1));
-        assert_eq!(service_count_text((6, 3, 0)), "6/3");
+        assert_eq!(
+            service_counts(&service, &machines),
+            ServiceCounts {
+                running: 6,
+                expected: 3,
+                unknown: 1,
+            }
+        );
+        assert_eq!(
+            service_count_text(ServiceCounts {
+                running: 6,
+                expected: 3,
+                unknown: 0,
+            }),
+            "6/3"
+        );
     }
 
     #[test]

@@ -1,3 +1,5 @@
+//! Shared placement and storage eligibility policy for Services on Machines.
+
 use crate::{
     Machine, MachineStorageObservation, Placement, ServiceVolumeGraph, VolumeSource,
     machine_matches_placement,
