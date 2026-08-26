@@ -13,6 +13,7 @@ use crate::{DockerVolumeId, LocalMachineRemoved, ProjectName, RpcError, RpcError
 /// Identity is per kind: a Docker Volume carries its Machine together with its
 /// name. A kind cannot be paired with an identity that does not belong to it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum DataLoss {
     /// A Docker Volume identified by its Machine together with its name.
     DockerVolume(DockerVolumeId),
@@ -40,12 +41,14 @@ impl fmt::Display for DataLoss {
 
 /// Live Observation of Data Loss. Not a complete Cluster view.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ObservedDataLoss {
     pub data_loss: Vec<DataLoss>,
 }
 
 /// Exact Data Loss identities approved from one Live Observation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct DataLossConfirmation {
     confirmed: Vec<DataLoss>,
 }
@@ -103,6 +106,7 @@ impl ObservedDataLoss {
     "Data Loss is not covered by the confirmation: {missing}",
     missing = .missing.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
 )]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct UnconfirmedDataLoss {
     pub missing: Vec<DataLoss>,
 }
@@ -135,6 +139,7 @@ impl UnconfirmedDataLoss {
 /// independent of Machine reset so a repeated attempt can finish leftover work
 /// over Dial after Register is already closed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ClusterTeardown {
     pub destroyed_projects: Vec<ProjectName>,
     pub machines: PartialResult<LocalMachineRemoved, RpcError>,

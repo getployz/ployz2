@@ -73,6 +73,7 @@ pub struct RemoveVolumeRequest {
 /// One Docker Volume whose name is present but whose current detail is unavailable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, thiserror::Error)]
 #[error("Docker Volume observation failed: {error}")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct VolumeObservationFailure {
     pub id: DockerVolumeId,
     pub error: RpcError,
@@ -80,6 +81,7 @@ pub struct VolumeObservationFailure {
 
 /// Partial live inventory for one Machine.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct VolumeInventory {
     #[serde(default)]
     pub volumes: Vec<DockerVolume>,
@@ -90,6 +92,7 @@ pub struct VolumeInventory {
 /// Successful Docker mutation followed by its independent verification outcome.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verification", rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum CreateVolumeReport {
     Verified { volume: DockerVolume },
     Unverified { id: DockerVolumeId, error: RpcError },

@@ -15,6 +15,7 @@ use crate::{
 
 /// A storage source declared under a service-local reference.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ServiceVolume {
     pub reference: ServiceVolumeReference,
     pub source: VolumeSource,
@@ -22,6 +23,7 @@ pub struct ServiceVolume {
 
 /// A container mount that refers to a declared Service Volume by its local name.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ServiceMount {
     /// Service-local Volume Reference to mount.
     pub volume: ServiceVolumeReference,
@@ -40,6 +42,7 @@ pub struct ServiceMount {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum VolumeSource {
     Bind {
         machine_path: MachinePath,
@@ -134,6 +137,7 @@ pub const PROVISIONED_VOLUME_DRIVER: &str = "ployz";
 
 /// A positive maximum byte count for one Provisioned Volume.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ProvisionedVolumeMaximumBytes(NonZeroU64);
 
 impl ProvisionedVolumeMaximumBytes {
@@ -178,6 +182,7 @@ impl<'de> Deserialize<'de> for ProvisionedVolumeMaximumBytes {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct VolumeDriver {
     pub name: String,
     #[serde(default)]
@@ -187,6 +192,7 @@ pub struct VolumeDriver {
 /// Current storage evidence for one observed Docker Volume.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum DockerVolumeStorageObservation {
     /// A Docker Volume without a Ployz-managed byte bound.
     Plain {
@@ -206,6 +212,7 @@ pub enum DockerVolumeStorageObservation {
 
 /// One Docker Volume observed on one Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct DockerVolume {
     pub id: DockerVolumeId,
     #[serde(default)]
@@ -229,6 +236,7 @@ impl DockerVolume {
 
 /// Destroy these Docker Volumes. The list is the confirmation.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct RemoveVolumesRequest {
     pub volumes: Vec<DockerVolumeId>,
     /// Force-remove an in-use Docker Volume. Defaults to false.

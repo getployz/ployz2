@@ -6,6 +6,7 @@ use crate::ValueError;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "name", rename_all = "kebab-case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum RestartPolicy {
     No,
     Always,
@@ -49,6 +50,7 @@ impl RestartPolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum BindRecursive {
     Disabled,
     Writable,
@@ -74,6 +76,7 @@ impl FromStr for BindRecursive {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum BindPropagation {
     Private,
     Rprivate,
@@ -105,6 +108,8 @@ impl FromStr for BindPropagation {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
 pub enum PidMode {
     Host,
     Container(String),

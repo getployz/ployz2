@@ -11,9 +11,10 @@ name = "generate-sdk-types"
 path = "src/bin/generate-sdk-types.rs"
 
 [dependencies]
-ployz-core.workspace = true
+ployz-core = { workspace = true, features = ["typescript"] }
 serde = "1.0.229"
 serde_json = "1.0.151"
+ts-rs = "12"
 
 [lints]
 workspace = true

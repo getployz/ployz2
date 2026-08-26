@@ -16,6 +16,7 @@ use crate::{
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "mode")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum ServiceMode {
     Replicated { replicas: NonZeroU32 },
     Global,
@@ -28,6 +29,7 @@ pub fn same_service_mode_kind(left: &ServiceMode, right: &ServiceMode) -> bool {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum HttpProtocol {
     Http,
     Https,
@@ -35,6 +37,7 @@ pub enum HttpProtocol {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum TransportProtocol {
     Tcp,
     Udp,
@@ -48,6 +51,7 @@ pub enum TransportProtocol {
     tag = "backend",
     try_from = "IngressProxyFragmentWire"
 )]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum IngressProxyFragment {
     /// Raw Caddy configuration evaluated only by the Caddy backend.
     #[non_exhaustive]
@@ -105,15 +109,22 @@ impl TryFrom<IngressProxyFragmentWire> for IngressProxyFragment {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum HostBind {
     All,
-    Address { address: IpAddr },
-    Prefix { prefix: IpNet },
+    Address {
+        address: IpAddr,
+    },
+    Prefix {
+        #[cfg_attr(feature = "typescript", ts(type = "string"))]
+        prefix: IpNet,
+    },
 }
 
 /// How an HTTP ingress publication obtains its hostname.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum IngressHostname {
     ClusterDomain {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,6 +176,7 @@ impl IngressHostname {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "mode")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum PortPublication {
     Ingress {
         hostname: IngressHostname,
@@ -181,6 +193,7 @@ pub enum PortPublication {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ConfigSpec {
     pub name: String,
     #[serde(default)]
@@ -188,6 +201,7 @@ pub struct ConfigSpec {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ConfigMount {
     pub config_name: String,
     #[serde(default)]
@@ -201,6 +215,7 @@ pub struct ConfigMount {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct Placement {
     /// Machine Targets. An empty list remains every eligible Machine.
     #[serde(default)]
@@ -213,6 +228,7 @@ pub const HEALTHCHECK_DISABLE_SENTINEL: &str = "NONE";
 /// A present Healthcheck: explicitly disabled, or configured with a real command.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "state")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum HealthcheckSpec {
     Disabled,
     Configured(ConfiguredHealthcheck),
@@ -232,6 +248,8 @@ impl HealthcheckSpec {
 /// A Healthcheck command that is non-empty and does not begin with Docker's disable sentinel.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "Vec<String>", into = "Vec<String>")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string[]"))]
 pub struct HealthcheckCommand(Vec<String>);
 
 impl HealthcheckCommand {
@@ -284,6 +302,7 @@ impl TryFrom<Vec<String>> for HealthcheckCommand {
 
 /// Timing and command for a Configured Healthcheck.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ConfiguredHealthcheck {
     pub test: HealthcheckCommand,
     #[serde(default)]
@@ -299,6 +318,7 @@ pub struct ConfiguredHealthcheck {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct LogDriver {
     pub name: String,
     #[serde(default)]
@@ -306,6 +326,7 @@ pub struct LogDriver {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct DeviceMapping {
     pub machine_path: MachinePath,
     pub container_path: ContainerPath,
@@ -313,6 +334,7 @@ pub struct DeviceMapping {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct DeviceReservation {
     #[serde(default)]
     pub driver: Option<String>,
@@ -327,12 +349,14 @@ pub struct DeviceReservation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct Ulimit {
     pub soft: i64,
     pub hard: i64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ContainerResources {
     #[serde(default)]
     pub cpu_nanos: Option<i64>,
@@ -351,6 +375,7 @@ pub struct ContainerResources {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct PreDeployHook {
     pub command: Vec<String>,
     #[serde(default)]
@@ -364,6 +389,7 @@ pub struct PreDeployHook {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct UpdateConfig {
     /// Absence means derive the order from the deploy snapshot.
     #[serde(default)]
@@ -374,6 +400,7 @@ pub struct UpdateConfig {
 
 /// Update configuration after deploy-time order resolution.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ResolvedUpdateConfig {
     pub order: UpdateOrder,
     #[serde(default)]
@@ -391,6 +418,7 @@ impl Default for ResolvedUpdateConfig {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum PullPolicy {
     Always,
     Missing,
@@ -399,6 +427,7 @@ pub enum PullPolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum UpdateOrder {
     StartFirst,
     StopFirst,
@@ -414,6 +443,7 @@ pub enum SpecChange {
 
 /// Runtime configuration shared by requested and resolved Service Specs.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ServiceContainerSpec {
     pub image: String,
     #[serde(default)]
@@ -470,6 +500,10 @@ pub struct ServiceContainerSpec {
     try_from = "RequestedServiceSpecWire",
     into = "RequestedServiceSpecWire"
 )]
+// serde writes the wire struct, not these fields; `ts-rs` reads the Rust type,
+// so it has to be pointed at the same place serde goes.
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(as = "RequestedServiceSpecWire"))]
 pub struct RequestedServiceSpec {
     pub name: ServiceName,
     pub mode: ServiceMode,
@@ -487,6 +521,10 @@ pub struct RequestedServiceSpec {
 /// The exact, fully resolved Service Spec attached to one created container.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ResolvedServiceSpecWire", into = "ResolvedServiceSpecWire")]
+// serde writes the wire struct, not these fields; `ts-rs` reads the Rust type,
+// so it has to be pointed at the same place serde goes.
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(as = "ResolvedServiceSpecWire"))]
 pub struct ResolvedServiceSpec {
     pub service_id: ServiceId,
     pub name: ServiceName,
@@ -502,8 +540,13 @@ pub struct ResolvedServiceSpec {
     pub update: ResolvedUpdateConfig,
 }
 
+/// The wire form of [`ServiceContainerSpec`]: its own fields, plus the Config
+/// mounts serde flattens alongside them. This is the shape TypeScript sees.
 #[derive(Serialize, Deserialize)]
-struct ServiceContainerSpecWire {
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(rename = "ServiceContainerSpec"))]
+#[doc(hidden)]
+pub struct ServiceContainerSpecWire {
     #[serde(flatten)]
     spec: ServiceContainerSpec,
     #[serde(default)]
@@ -511,6 +554,8 @@ struct ServiceContainerSpecWire {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(rename = "RequestedServiceSpec"))]
 struct RequestedServiceSpecWire {
     name: ServiceName,
     mode: ServiceMode,
@@ -534,6 +579,8 @@ struct RequestedServiceSpecWire {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(rename = "ResolvedServiceSpec"))]
 struct ResolvedServiceSpecWire {
     service_id: ServiceId,
     name: ServiceName,

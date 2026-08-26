@@ -24,6 +24,26 @@ import type {
 } from "./generated/payloads";
 export * from "./generated/payloads";
 
+/**
+ * Cases for `match`: one arm per known tag value, plus a required `unknown` arm.
+ *
+ * Generated unions are non-exhaustive on purpose — a Machine running a newer
+ * ployzd can send a tag this SDK build has never heard of. Omitting `unknown`
+ * is a compile error, so that case cannot be forgotten.
+ */
+export type Matcher<T, K extends keyof T & string, R> = {
+  [V in T[K] & string]: (value: Extract<T, Record<K, V>>) => R;
+} & {
+  unknown: (value: Omit<T, K> & Record<K, string>) => R;
+};
+
+/** Exhaustively handle a tagged payload union, including unknown tags. */
+export declare function match<
+  T extends Record<K, string>,
+  K extends keyof T & string,
+  R,
+>(value: T, tag: K, cases: Matcher<T, K, R>): R;
+
 export type ConnectOptions = {
   readonly relayUrl: string;
   readonly bearer: string;

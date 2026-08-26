@@ -22,6 +22,7 @@ use thiserror::Error;
 /// reconciliation of `DeployIntent.target`. Non-empty means partial. There is
 /// no independent prune flag.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct PlanOptions {
     /// Recreate containers even when the resolved spec matches.
     pub force_recreate: bool,
@@ -36,6 +37,7 @@ pub struct PlanOptions {
 
 /// One Service Name this Deploy will apply from the target.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ServiceAttempt {
     /// Service Name to apply from `DeployIntent.target`.
     pub name: ServiceName,
@@ -43,6 +45,7 @@ pub struct ServiceAttempt {
 
 /// Complete desired Services plus which of those Services this command applies.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct DeployIntent {
     /// Project that will own Containers this Deploy creates.
     pub project_name: ProjectName,
@@ -233,6 +236,7 @@ pub fn profiles_enable_start(service_profiles: &[String], requested_profiles: &[
     clippy::large_enum_variant,
     reason = "Failed must own the named op and unexecuted operations; boxing would not change the states"
 )]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum DeployOutcome<E> {
     /// Every planned operation completed.
     Success { completed: Vec<DeployOperation> },
@@ -247,6 +251,7 @@ pub enum DeployOutcome<E> {
 /// Why a Deploy Operation did not complete.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum FailedOperation<E> {
     /// The named operation returned `error` or caused the plan to be rejected in preflight.
     Operation {
@@ -263,6 +268,7 @@ pub enum FailedOperation<E> {
 
 /// Compensation after a replacement health failure.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum ReplacementCompensation<E> {
     /// New container started first; `stop_new_container` is that stop attempt.
     StartFirst { stop_new_container: Result<(), E> },
@@ -275,6 +281,7 @@ pub enum ReplacementCompensation<E> {
 
 /// Whether restarting the old container was attempted after stop-first replacement failure.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum RestartAttempt<E> {
     /// Restart was not attempted.
     NotAttempted,
@@ -284,6 +291,7 @@ pub enum RestartAttempt<E> {
 
 /// Replace one container with a newly resolved spec on the same Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ReplacementOperation {
     /// Machine that hosts both containers.
     pub machine_id: MachineId,
@@ -298,6 +306,7 @@ pub struct ReplacementOperation {
 /// One step in a Deploy Plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum DeployOperation {
     /// Wait for every observed Service Container of `dependency` before starting `dependent`.
     WaitHealthy {
@@ -343,6 +352,7 @@ pub enum DeployOperation {
 /// Live Observation shaped for a decision, not persisted state. Confirming executes
 /// these operations; it does not re-plan.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct DeployPreview {
     /// Project this preview was planned for. Confirm uses this name; it does not re-plan.
     pub project_name: ProjectName,
@@ -368,6 +378,7 @@ pub struct DeployPreview {
 
 /// One managed Docker Volume current observations indicate a container operation would create.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct VolumeToCreate {
     /// Machine where the container operation will ensure the Volume.
     pub machine_id: MachineId,
@@ -384,6 +395,7 @@ pub struct VolumeToCreate {
 /// A Compose-declared Docker Volume this Deploy keeps because it is omitted
 /// from this Deploy's target.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct PreservedVolume {
     /// Machine-local Docker Volume identity.
     pub id: DockerVolumeId,
@@ -413,6 +425,7 @@ impl From<ComposePruneRefusal> for PruneRefusal {
 /// Why a full reconciliation must not remove visible drift.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum PruneRefusal {
     /// Required Container or Docker Volume evidence is missing from this Machine's visible fan-out.
     IncompleteSnapshot,
@@ -472,6 +485,7 @@ impl DeployPreview {
 /// Kind of Machine observation that failed or was omitted while gathering a snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum ObservationKind {
     Container,
     Volume,
@@ -488,6 +502,7 @@ impl Display for ObservationKind {
 
 /// A warning attached to a Deploy Preview. Display matches the CLI warning body.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum DeployWarning {
     /// Listing containers or volumes on `machine_id` returned `message`.
     ObservationFailed {
@@ -548,6 +563,7 @@ impl Display for DeployWarning {
 
 /// Machine RPC invoked while executing one Deploy Operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum MachineAction {
     CreateContainer,
     StartContainer,
@@ -560,6 +576,7 @@ pub enum MachineAction {
 /// Why health monitoring rejected a started container.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum HealthFailure {
     Cancelled,
     TimedOut,
@@ -571,6 +588,7 @@ pub enum HealthFailure {
 /// Why a `service_healthy` dependency gate failed.
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum DependencyHealthFailure {
     #[error("deploy cancelled")]
     Cancelled,
@@ -588,6 +606,7 @@ pub enum DependencyHealthFailure {
 /// Why a pre-deploy hook container did not succeed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum HookFailure {
     Cancelled { stop_error: Option<RpcError> },
     TimedOut { stop_error: Option<RpcError> },
@@ -597,6 +616,7 @@ pub enum HookFailure {
 /// Error from preflighting or executing one Deploy Operation.
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum ExecutionError {
     #[error("{action:?} failed: {}", error.message)]
     Machine {
@@ -629,6 +649,7 @@ pub enum ExecutionError {
     clippy::large_enum_variant,
     reason = "Outcome owns the completed operations, failed op, and unexecuted operations"
 )]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum DeployEvent {
     /// Full snapshot of every planned row.
     Progress {
@@ -644,6 +665,7 @@ pub enum DeployEvent {
 
 /// One planned operation plus its current execution status.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct OperationRow {
     /// Zero-based index in the Deploy Plan.
     pub index: u32,
@@ -667,6 +689,7 @@ pub struct OperationRow {
 /// Status of one operation in a Deploy Progress snapshot.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum OperationStatus {
     Pending,
     Running { phase: OperationPhase },
@@ -678,6 +701,7 @@ pub enum OperationStatus {
 /// Phase of a running operation. Wait phases carry clocks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum OperationPhase {
     Starting,
     CreatingContainer,

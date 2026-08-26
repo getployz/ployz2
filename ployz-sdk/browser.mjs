@@ -6,6 +6,14 @@ function fail() {
   );
 }
 
+// Pure payload helper: no native binding, so it works wherever a payload does.
+export function match(value, tag, cases) {
+  const arm = Object.prototype.hasOwnProperty.call(cases, value[tag])
+    ? cases[value[tag]]
+    : cases.unknown;
+  return arm(value);
+}
+
 export const connect = fail;
 export const listHeld = fail;
 export const register = fail;

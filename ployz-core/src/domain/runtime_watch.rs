@@ -24,6 +24,7 @@ crate::value::open_string_enum!(CertificateFailureKind, Unrecognized {
 
 /// Shared backoff clock after a refusal or an authority failure.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct CertificateBackoff {
     pub failure_kind: CertificateFailureKind,
     pub next_attempt_at: String,
@@ -34,6 +35,7 @@ pub struct CertificateBackoff {
 ///
 /// Never carries Certificate Material or HTTP-01 challenge bytes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct CertificateObservation {
     pub hostname: IngressHost,
     pub status: CertificateAvailability,
@@ -45,6 +47,7 @@ pub struct CertificateObservation {
 
 /// Typed incomplete replicated IDs. An incomplete row is not a delete.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct RuntimeWatchIncompleteIds {
     #[serde(default)]
     pub machines: Vec<MachineId>,
@@ -58,6 +61,7 @@ pub struct RuntimeWatchIncompleteIds {
 
 /// One complete Runtime Watch observation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct RuntimeWatchFrame {
     #[serde(default)]
     pub machines: Vec<MachineObservation>,

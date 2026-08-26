@@ -1,4 +1,4 @@
-//! Rust values that become JSON fixtures and Additive serde examples.
+//! Rust values that become JSON fixtures and plain-object serde examples.
 
 use std::{
     collections::BTreeMap,
@@ -212,7 +212,7 @@ pub fn fixtures() -> BTreeMap<String, Value> {
     fixtures
 }
 
-pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
+pub(super) fn object_examples() -> BTreeMap<&'static str, Value> {
     let frame = runtime_watch_frame();
     let machine_observation = frame
         .machines

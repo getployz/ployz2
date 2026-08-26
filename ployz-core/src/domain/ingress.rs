@@ -42,6 +42,7 @@ pub const ENVOY_RUNTIME_GID: u32 = 101;
 /// Concrete Ingress Proxy implementation selected when a Cluster is founded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub enum IngressProxyBackend {
     /// Caddy with bridge networking and host-published ports.
     Caddy,

@@ -192,8 +192,16 @@ async function connect(options) {
   return new Client(await native.connect(options));
 }
 
+function match(value, tag, cases) {
+  const arm = Object.prototype.hasOwnProperty.call(cases, value[tag])
+    ? cases[value[tag]]
+    : cases.unknown;
+  return arm(value);
+}
+
 module.exports = {
   connect,
+  match,
   listHeld: native.listHeld,
   register: native.register,
   revokePairing: native.revokePairing,

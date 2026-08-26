@@ -14,6 +14,7 @@ use crate::ServiceVolumeReference;
 /// Duplicate references and dangling mounts are rejected. Unused definitions,
 /// repeated mounts, and aliases that share a Docker Volume name stay legal.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ServiceVolumeGraph {
     volumes: Vec<ServiceVolume>,
     mounts: Vec<ServiceMount>,
@@ -140,6 +141,7 @@ impl<'de> Deserialize<'de> for ServiceVolumeGraph {
 /// Duplicate names and dangling mounts are rejected. Unused definitions and
 /// repeated mounts stay legal.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ServiceConfigGraph {
     configs: Vec<ConfigSpec>,
     mounts: Vec<ConfigMount>,
