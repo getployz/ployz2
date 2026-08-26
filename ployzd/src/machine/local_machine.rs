@@ -468,44 +468,46 @@ impl LocalMachine {
                 Some(_) | None => return Err(Error::NotAllocator),
             }
             let snapshot = replicated.machines().await?;
-            if let Some(machine) = snapshot
+            match snapshot
                 .observations
                 .iter()
                 .find(|machine| machine.public_key == request.public_key)
             {
-                if machine.name != request.name
-                    || machine.public_ip != request.public_ip
-                    || machine.advertised_endpoints != request.advertised_endpoints
-                    || machine.runtime != request.runtime
+                Some(machine)
+                    if machine.name == request.name
+                        && machine.public_ip == request.public_ip
+                        && machine.advertised_endpoints == request.advertised_endpoints
+                        && machine.runtime == request.runtime =>
                 {
-                    return Err(Error::DuplicateMachine);
+                    machine.clone()
                 }
-                machine.clone()
-            } else {
-                if snapshot
+                Some(_) => return Err(Error::DuplicateMachine),
+                None if snapshot
                     .observations
                     .iter()
-                    .any(|machine| machine.name == request.name)
+                    .any(|machine| machine.name == request.name) =>
                 {
                     return Err(Error::DuplicateMachine);
                 }
-                let network = replicated.cluster_network().await?;
-                let assigned_machine = Machine {
-                    id: MachineId::random(),
-                    name: request.name,
-                    subnet: allocate_machine_subnet(
-                        network,
-                        snapshot.observations.iter().map(|machine| machine.subnet),
-                    )?,
-                    management_address: management_address(request.public_key),
-                    public_key: request.public_key,
-                    public_ip: request.public_ip,
-                    advertised_endpoints: request.advertised_endpoints,
-                    runtime: request.runtime,
-                };
-                // TODO(UT-140): cross-process registration stays unfenced and has no rollback.
-                publication.publish(&assigned_machine).await?;
-                assigned_machine
+                None => {
+                    let network = replicated.cluster_network().await?;
+                    let assigned_machine = Machine {
+                        id: MachineId::random(),
+                        name: request.name,
+                        subnet: allocate_machine_subnet(
+                            network,
+                            snapshot.observations.iter().map(|machine| machine.subnet),
+                        )?,
+                        management_address: management_address(request.public_key),
+                        public_key: request.public_key,
+                        public_ip: request.public_ip,
+                        advertised_endpoints: request.advertised_endpoints,
+                        runtime: request.runtime,
+                    };
+                    // TODO(UT-140): cross-process registration stays unfenced and has no rollback.
+                    publication.publish(&assigned_machine).await?;
+                    assigned_machine
+                }
             }
         };
         let target_versions = replicated.version().await?;

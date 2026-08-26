@@ -4,7 +4,7 @@ use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
     AdvertisedEndpoint, CloudEnrollToken, CloudPairing, MachineId, MachineName, MachineToken,
-    Registered, StorageChoice, WireGuardPublicKey,
+    PairingCredential, Registered, StorageChoice, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
@@ -12,7 +12,6 @@ use thiserror::Error;
 const DEFAULT_RETRY_AFTER: u64 = 2;
 const PROTOCOL_VERSION: u8 = 2;
 const MAX_TRANSPORT_ATTEMPTS: u8 = 3;
-const COMPLETION_RETRY_DELAY: Duration = Duration::from_secs(DEFAULT_RETRY_AFTER);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // Healthy production enroll measured 8.15s for Relay List + registerHeld.
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
@@ -107,10 +106,23 @@ pub(crate) struct Join {
 pub(crate) enum Outcome {
     Join(Box<Join>),
     Initialize {
-        resumed: bool,
+        mode: InitializeMode,
         pairing: CloudPairing,
         storage: StorageChoice,
     },
+}
+
+/// Whether Cloud granted a new Founding Claim or resumed the current one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InitializeMode {
+    New,
+    Resume,
+}
+
+impl From<bool> for InitializeMode {
+    fn from(resumed: bool) -> Self {
+        if resumed { Self::Resume } else { Self::New }
+    }
 }
 
 /// One enroll POST body.
@@ -118,7 +130,7 @@ pub(crate) enum Outcome {
 pub(crate) enum Response {
     Join(Box<Join>),
     Initialize {
-        resumed: bool,
+        mode: InitializeMode,
         pairing: CloudPairing,
         storage: StorageChoice,
     },
@@ -178,9 +190,9 @@ fn cloud_origin(cloud_url: &str) -> String {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct EnrollCallback {
+struct EnrollCallback<'a> {
     machine_id: MachineId,
-    pairing_credential: String,
+    pairing_credential: &'a PairingCredential,
 }
 
 /// POST identity until Cloud returns `initialize` or `join`.
@@ -201,12 +213,12 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
             Ok(bytes) => match parse_enroll(&bytes)? {
                 Response::Join(join) => return Ok(Outcome::Join(join)),
                 Response::Initialize {
-                    resumed,
+                    mode,
                     pairing,
                     storage,
                 } => {
                     return Ok(Outcome::Initialize {
-                        resumed,
+                        mode,
                         pairing,
                         storage,
                     });
@@ -245,18 +257,18 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
 pub(crate) async fn callback(
     url: &str,
     machine_id: MachineId,
-    pairing_credential: &str,
+    pairing_credential: &PairingCredential,
 ) -> Result<(), Error> {
     let http = http_client()?;
     let body = EnrollCallback {
         machine_id,
-        pairing_credential: pairing_credential.to_owned(),
+        pairing_credential,
     };
     for attempt in 0..MAX_TRANSPORT_ATTEMPTS {
         match post_json(&http, url, &body).await {
             Ok(_) => return Ok(()),
             Err(_) if attempt + 1 < MAX_TRANSPORT_ATTEMPTS => {
-                tokio::time::sleep(COMPLETION_RETRY_DELAY).await;
+                tokio::time::sleep(Duration::from_secs(DEFAULT_RETRY_AFTER)).await;
             }
             Err(error) => {
                 return Err(Error::RetrySameCommand {
@@ -334,7 +346,7 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
             storage,
             dial: None,
         } => Ok(Response::Initialize {
-            resumed,
+            mode: resumed.into(),
             pairing,
             storage,
         }),
@@ -457,14 +469,12 @@ mod tests {
             },
         });
         let Response::Initialize {
-            resumed,
-            pairing: got,
-            ..
+            mode, pairing: got, ..
         } = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
         else {
             panic!("expected initialize");
         };
-        assert!(!resumed);
+        assert_eq!(mode, InitializeMode::New);
         assert_eq!(got, pairing());
     }
 

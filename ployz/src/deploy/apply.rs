@@ -308,9 +308,32 @@ fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), Failure> {
     if !text.is_empty() {
         print!("{text}");
     }
+    let retryable = matches!(
+        &outcome,
+        DeployOutcome::Failed { failed, .. }
+            if matches!(
+                failed_error(failed),
+                ExecutionError::Machine { error, .. }
+                    if matches!(
+                        error.code,
+                        ployz_core::RpcErrorCode::Unavailable
+                            | ployz_core::RpcErrorCode::Ambiguous
+                    )
+            )
+    );
     match outcome {
         DeployOutcome::Success { .. } => Ok(()),
+        DeployOutcome::Failed { .. } if retryable => {
+            Err(Failure::retryable_usage(text.trim().to_owned()))
+        }
         DeployOutcome::Failed { .. } => Err(Failure::usage(text.trim().to_owned())),
+    }
+}
+
+fn failed_error(failed: &ployz_core::FailedOperation<ExecutionError>) -> &ExecutionError {
+    match failed {
+        ployz_core::FailedOperation::Operation { error, .. }
+        | ployz_core::FailedOperation::ReplacementHealth { error, .. } => error,
     }
 }
 
