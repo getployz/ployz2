@@ -1,5 +1,4 @@
 use std::{
-    fmt,
     io::{self, IsTerminal, Write},
     num::NonZeroU32,
 };
@@ -123,15 +122,6 @@ impl ApplyError {
                 )
             ),
             Self::Prepare(_) => false,
-        }
-    }
-}
-
-impl fmt::Display for ApplyError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Prepare(error) => error.fmt(formatter),
-            Self::Execute(outcome) => formatter.write_str(render::outcome_text(outcome).trim()),
         }
     }
 }

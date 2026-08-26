@@ -329,7 +329,7 @@ async fn retry_founder_operation<C, T, E>(
     mut run: impl AsyncFnMut(&mut C) -> Result<T, E>,
 ) -> Result<T, Error>
 where
-    E: std::fmt::Display + Into<Error>,
+    E: Into<Error>,
 {
     for attempt in 0..3 {
         match run(context).await {
@@ -338,6 +338,7 @@ where
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
             Err(error) if retryable(&error) => {
+                let error: Error = error.into();
                 return Err(Error::usage(format!(
                     "{operation} failed after brief retries: {error}; rerun the same ployz cloud enroll command"
                 )));
@@ -486,6 +487,36 @@ mod tests {
     use std::{io, path::PathBuf};
 
     use crate::context::ConnectionSource;
+
+    struct RetryFailure;
+
+    impl From<RetryFailure> for Error {
+        fn from(_: RetryFailure) -> Self {
+            Self::usage("safe transport detail".to_owned())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn terminal_retry_formats_the_converted_cli_failure() {
+        let mut attempts = 0;
+        let error = retry_founder_operation(
+            &mut attempts,
+            "operation",
+            |_| true,
+            async |attempts| {
+                *attempts += 1;
+                Err::<(), _>(RetryFailure)
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(attempts, 3);
+        assert_eq!(
+            error.to_string(),
+            "operation failed after brief retries: safe transport detail; rerun the same ployz cloud enroll command"
+        );
+    }
 
     #[test]
     fn wait_retries_no_config_and_unreachable_connect_errors() {
