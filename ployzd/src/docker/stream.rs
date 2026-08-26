@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bollard::{
     container::LogOutput,
     exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions, StartExecResults},
@@ -119,12 +121,29 @@ impl ContainerRuntime {
                 let tty = config.options.tty;
                 tokio::spawn(async move {
                     let _ = async {
-                        while let Some(output) = output.next().await {
-                            match output {
-                                Ok(output) => {
-                                    send_exec(&sender, exec_output(output, tty)).await?;
+                        let exit_wait = wait_for_exec_exit(&docker, &exec_id);
+                        tokio::pin!(exit_wait);
+                        let mut closed_stdin = false;
+                        loop {
+                            tokio::select! {
+                                next = output.next() => match next {
+                                    Some(Ok(chunk)) => {
+                                        send_exec(&sender, exec_output(chunk, tty)).await?;
+                                    }
+                                    Some(Err(error)) => {
+                                        if closed_stdin {
+                                            break;
+                                        }
+                                        return send_exec_error(&sender, error).await;
+                                    }
+                                    None => break,
+                                },
+                                () = &mut exit_wait, if !closed_stdin => {
+                                    if let Some(task) = &stdin_task {
+                                        task.abort();
+                                    }
+                                    closed_stdin = true;
                                 }
-                                Err(error) => return send_exec_error(&sender, error).await,
                             }
                         }
                         match docker.inspect_exec(&exec_id).await {
@@ -183,6 +202,15 @@ impl ContainerRuntime {
                     .map_err(|error| JournalError::Docker(error.to_string()))
             });
         Ok(Box::pin(stream))
+    }
+}
+
+async fn wait_for_exec_exit(docker: &bollard::Docker, exec_id: &str) {
+    loop {
+        match docker.inspect_exec(exec_id).await {
+            Ok(inspect) if inspect.running == Some(false) => return,
+            _ => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
     }
 }
 

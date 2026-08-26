@@ -387,20 +387,27 @@ async fn send_terminal_size(
 async fn copy_exec_output(
     mut output: impl Stream<Item = Result<OpaquePayload, tonic::Status>> + Unpin,
 ) -> Result<i32, Error> {
-    let mut exit = 0;
     while let Some(payload) = output.next().await {
         match ExecResponseFrame::decode(&payload?)? {
             ExecResponseFrame::ExecId(_) => {}
             ExecResponseFrame::Stdout(bytes) => write_stdout_frame(&mut std::io::stdout(), &bytes)?,
             ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
-            ExecResponseFrame::Exit(code) => exit = code,
+            ExecResponseFrame::Exit(code) => return Ok(code),
             ExecResponseFrame::Error(error) => return Err(error.into()),
         }
     }
-    Ok(exit)
+    Ok(0)
 }
 
-struct StdinReader;
+struct StdinReader {
+    forward: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for StdinReader {
+    fn drop(&mut self) {
+        self.forward.abort();
+    }
+}
 
 fn spawn_stdin(sender: tokio::sync::mpsc::Sender<OpaquePayload>) -> StdinReader {
     spawn_stdin_reader(std::io::stdin(), sender)
@@ -410,6 +417,14 @@ fn spawn_stdin_reader(
     mut stdin: impl std::io::Read + Send + 'static,
     sender: tokio::sync::mpsc::Sender<OpaquePayload>,
 ) -> StdinReader {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let forward = tokio::spawn(async move {
+        while let Some(payload) = rx.recv().await {
+            if sender.send(payload).await.is_err() {
+                return;
+            }
+        }
+    });
     // ponytail: a stalled reader can linger until CLI exit; add cancellable OS I/O if exec becomes reusable.
     drop(std::thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
@@ -421,12 +436,12 @@ fn spawn_stdin_reader(
             let Ok(payload) = frame.encode() else {
                 return;
             };
-            if sender.blocking_send(payload).is_err() {
+            if tx.blocking_send(payload).is_err() {
                 return;
             }
         }
     }));
-    StdinReader
+    StdinReader { forward }
 }
 
 #[cfg(unix)]
