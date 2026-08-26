@@ -26,15 +26,15 @@ use super::{
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
 
 /// Resolved container inputs shared by every Machine-local creation entry path.
-pub(crate) struct ContainerRequest<'spec, Storage> {
+pub(crate) struct ContainerRequest<'spec, Storage, Network> {
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
     pub(crate) kind: ContainerKind,
     /// Project that owns the resulting container.
     pub(crate) project_name: &'spec ProjectName,
     /// Fully resolved Service specification to persist and execute.
     pub(crate) spec: &'spec ResolvedServiceSpec,
-    /// Docker network attachment prepared for this Service kind and backend.
-    pub(crate) network: NetworkAttachment,
+    /// Deferred Docker network preparation, awaited only after final admission.
+    pub(crate) network: Network,
     /// Fresh local storage observation deferred to final container admission.
     pub(crate) storage: Storage,
 }
@@ -65,22 +65,6 @@ impl GlobalSlotConvergence {
     }
 }
 
-enum ContainerAdmission {
-    Admitted(ContainerCreated),
-    Ineligible(ServicePlacementIneligibleReason),
-    Unknown(ServicePlacementUnknownReason),
-}
-
-impl ContainerAdmission {
-    fn into_container(self) -> Result<ContainerCreated, Error> {
-        match self {
-            Self::Admitted(created) => Ok(created),
-            Self::Ineligible(reason) => Err(ineligible_error(reason)),
-            Self::Unknown(reason) => Err(unknown_error(reason)),
-        }
-    }
-}
-
 impl ContainerRuntime {
     #[cfg(test)]
     pub(crate) async fn create_for_test(
@@ -98,40 +82,63 @@ impl ContainerRuntime {
                 kind,
                 project_name,
                 spec,
-                network: NetworkAttachment::Bridge,
+                network: std::future::ready(Ok::<_, Error>(NetworkAttachment::Bridge)),
                 storage: std::future::ready(None),
             },
         )
         .await
     }
 
-    /// Prepare a container, run final storage admission, and create it.
+    /// Run final admission, prepare the deferred runtime, and create a container.
     ///
     /// # Errors
     ///
-    /// Returns when preparation, final admission, Volume Ensure, or Docker creation fails.
-    pub(crate) async fn create_with_network(
+    /// Returns when final admission, Volume Ensure, runtime preparation, or Docker creation fails.
+    pub(crate) async fn create_with_network<Storage, Network, E>(
         &self,
         machine: &Machine,
-        request: ContainerRequest<
-            '_,
-            impl Future<Output = Option<MachineStorageObservation>> + Send,
-        >,
-    ) -> Result<ContainerCreated, Error> {
+        request: ContainerRequest<'_, Storage, Network>,
+    ) -> Result<ContainerCreated, E>
+    where
+        Storage: Future<Output = Option<MachineStorageObservation>> + Send,
+        Network: Future<Output = Result<NetworkAttachment, E>> + Send,
+        E: From<Error>,
+    {
+        let ContainerRequest {
+            kind,
+            project_name,
+            spec,
+            network,
+            storage,
+        } = request;
         // TODO(UT-030): direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
         tracing::info!(
-            project = request.project_name.as_str(),
-            service = request.spec.name.as_str(),
-            kind = match request.kind {
+            project = project_name.as_str(),
+            service = spec.name.as_str(),
+            kind = match kind {
                 ContainerKind::ServiceContainer => "service_container",
                 ContainerKind::PreDeployHook => "pre_deploy_hook",
             },
             "create container"
         );
-        self.prepare_and_create(machine, request, None)
-            .await?
-            .into_container()
+        match self
+            .admit_and_ensure_volumes(machine, spec, storage)
+            .await
+            .map_err(E::from)?
+        {
+            ServicePlacementEligibility::Eligible => {}
+            ServicePlacementEligibility::Ineligible(reason) => {
+                return Err(E::from(ineligible_error(reason)));
+            }
+            ServicePlacementEligibility::Unknown(reason) => {
+                return Err(E::from(unknown_error(reason)));
+            }
+        }
+        let network = network.await?;
+        self.prepare_and_create(machine, kind, project_name, spec, network, None)
+            .await
+            .map_err(E::from)
     }
 
     /// Converge one Global Service against fresh target-Machine eligibility evidence.
@@ -140,84 +147,16 @@ impl ContainerRuntime {
     ///
     /// Returns when listing managed Containers, ensuring mounted Volumes, pulling the image,
     /// or the required create, start, stop, or remove operation fails.
-    pub(crate) async fn converge_global_slot(
+    pub(crate) async fn converge_global_slot<Storage, Network, E>(
         &self,
         machine: &Machine,
-        request: ContainerRequest<
-            '_,
-            impl Future<Output = Option<MachineStorageObservation>> + Send,
-        >,
-    ) -> Result<GlobalSlotConvergence, Error> {
-        let mut existing = self
-            .list_managed(&machine.id)
-            .await?
-            .into_iter()
-            .filter(|observation| {
-                observation.kind == ContainerKind::ServiceContainer
-                    && &observation.project_name == request.project_name
-                    && observation.service_name == request.spec.name
-            })
-            .collect::<Vec<_>>();
-        if let Some(current_index) = existing
-            .iter()
-            .position(|slot| slot.service_id == request.spec.service_id)
-        {
-            return match self
-                .admit_and_ensure_volumes(machine, request.spec, request.storage)
-                .await?
-            {
-                ServicePlacementEligibility::Eligible => {
-                    let current_index = existing
-                        .iter()
-                        .position(|slot| {
-                            slot.service_id == request.spec.service_id
-                                && runtime_is_running(&slot.runtime)
-                        })
-                        .unwrap_or(current_index);
-                    let existing = existing.swap_remove(current_index);
-                    if !runtime_is_running(&existing.runtime) {
-                        self.start(&existing.container_id).await?;
-                    }
-                    Ok(GlobalSlotConvergence::Ensured(ContainerCreated {
-                        container_id: existing.container_id,
-                        display_name: existing.display_name,
-                    }))
-                }
-                ServicePlacementEligibility::Ineligible(reason) => {
-                    self.retire_global_slots(existing).await?;
-                    Ok(GlobalSlotConvergence::Ineligible(reason))
-                }
-                ServicePlacementEligibility::Unknown(reason) => {
-                    Ok(GlobalSlotConvergence::Unknown(reason))
-                }
-            };
-        }
-        let name = global_slot_name(request.spec);
-        let outcome = self
-            .prepare_and_create(machine, request, Some(name))
-            .await?;
-        match outcome {
-            ContainerAdmission::Admitted(created) => {
-                self.start(&created.container_id).await?;
-                Ok(GlobalSlotConvergence::Ensured(created))
-            }
-            ContainerAdmission::Ineligible(reason) => {
-                self.retire_global_slots(existing).await?;
-                Ok(GlobalSlotConvergence::Ineligible(reason))
-            }
-            ContainerAdmission::Unknown(reason) => Ok(GlobalSlotConvergence::Unknown(reason)),
-        }
-    }
-
-    async fn prepare_and_create(
-        &self,
-        machine: &Machine,
-        request: ContainerRequest<
-            '_,
-            impl Future<Output = Option<MachineStorageObservation>> + Send,
-        >,
-        reserved_name: Option<String>,
-    ) -> Result<ContainerAdmission, Error> {
+        request: ContainerRequest<'_, Storage, Network>,
+    ) -> Result<GlobalSlotConvergence, E>
+    where
+        Storage: Future<Output = Option<MachineStorageObservation>> + Send,
+        Network: Future<Output = Result<NetworkAttachment, E>> + Send,
+        E: From<Error>,
+    {
         let ContainerRequest {
             kind,
             project_name,
@@ -225,6 +164,75 @@ impl ContainerRuntime {
             network,
             storage,
         } = request;
+        let mut existing = self
+            .list_managed(&machine.id)
+            .await
+            .map_err(E::from)?
+            .into_iter()
+            .filter(|observation| {
+                observation.kind == ContainerKind::ServiceContainer
+                    && &observation.project_name == project_name
+                    && observation.service_name == spec.name
+            })
+            .collect::<Vec<_>>();
+        match self
+            .admit_and_ensure_volumes(machine, spec, storage)
+            .await
+            .map_err(E::from)?
+        {
+            ServicePlacementEligibility::Eligible => {}
+            ServicePlacementEligibility::Ineligible(reason) => {
+                self.retire_global_slots(existing).await.map_err(E::from)?;
+                return Ok(GlobalSlotConvergence::Ineligible(reason));
+            }
+            ServicePlacementEligibility::Unknown(reason) => {
+                return Ok(GlobalSlotConvergence::Unknown(reason));
+            }
+        }
+        let network = network.await?;
+        if let Some(current_index) = existing
+            .iter()
+            .position(|slot| slot.service_id == spec.service_id)
+        {
+            let current_index = existing
+                .iter()
+                .position(|slot| {
+                    slot.service_id == spec.service_id && runtime_is_running(&slot.runtime)
+                })
+                .unwrap_or(current_index);
+            let existing = existing.swap_remove(current_index);
+            if !runtime_is_running(&existing.runtime) {
+                self.start(&existing.container_id).await.map_err(E::from)?;
+            }
+            return Ok(GlobalSlotConvergence::Ensured(ContainerCreated {
+                container_id: existing.container_id,
+                display_name: existing.display_name,
+            }));
+        }
+        let created = self
+            .prepare_and_create(
+                machine,
+                kind,
+                project_name,
+                spec,
+                network,
+                Some(global_slot_name(spec)),
+            )
+            .await
+            .map_err(E::from)?;
+        self.start(&created.container_id).await.map_err(E::from)?;
+        Ok(GlobalSlotConvergence::Ensured(created))
+    }
+
+    async fn prepare_and_create(
+        &self,
+        machine: &Machine,
+        kind: ContainerKind,
+        project_name: &ProjectName,
+        spec: &ResolvedServiceSpec,
+        network: NetworkAttachment,
+        reserved_name: Option<String>,
+    ) -> Result<ContainerCreated, Error> {
         let body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),
@@ -239,21 +247,8 @@ impl ContainerRuntime {
             spec.container.pull_policy,
         )
         .await?;
-        match self
-            .admit_and_ensure_volumes(machine, spec, storage)
-            .await?
-        {
-            ServicePlacementEligibility::Eligible => {}
-            ServicePlacementEligibility::Ineligible(reason) => {
-                return Ok(ContainerAdmission::Ineligible(reason));
-            }
-            ServicePlacementEligibility::Unknown(reason) => {
-                return Ok(ContainerAdmission::Unknown(reason));
-            }
-        }
         self.finish_create(machine, kind, spec, network, body, reserved_name)
             .await
-            .map(ContainerAdmission::Admitted)
     }
 
     async fn finish_create(

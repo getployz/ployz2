@@ -257,12 +257,12 @@ pub(super) fn container_request<'spec, Storage>(
     project_name: &'spec ProjectName,
     spec: &'spec ResolvedServiceSpec,
     storage: Storage,
-) -> ContainerRequest<'spec, Storage> {
+) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<NetworkAttachment, Error>>> {
     ContainerRequest {
         kind,
         project_name,
         spec,
-        network: NetworkAttachment::Host,
+        network: std::future::ready(Ok(NetworkAttachment::Host)),
         storage,
     }
 }
