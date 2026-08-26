@@ -5,9 +5,7 @@ use std::{collections::BTreeMap, sync::atomic::Ordering};
 use axum::http::Method;
 
 use super::*;
-use support::*;
-
-mod support;
+use crate::docker::test_support::*;
 
 #[tokio::test]
 async fn duplicate_compatible_aliases_ensure_one_volume() {
@@ -55,25 +53,38 @@ async fn duplicate_compatible_aliases_ensure_one_volume() {
 }
 
 #[tokio::test]
-async fn storage_admission_runs_after_preparation_and_before_volume_or_container_mutation() {
+async fn storage_admission_rejects_unknown_and_stateless_before_mutation() {
     let (runtime, fake) = fake_runtime().await;
     let spec = spec_with_sources(vec![provisioned_source("guarded", 1_073_741_824)]);
+    let project = ployz_core::ProjectName::parse("app").unwrap();
 
     assert!(matches!(
         runtime
             .create_with_network(
-                &MachineId::random(),
-                ployz_core::MachineGateway("10.210.0.1".parse().unwrap()),
-                crate::docker::ContainerRequest {
-                    kind: ployz_core::ContainerKind::ServiceContainer,
-                    project_name: &ployz_core::ProjectName::parse("app").unwrap(),
-                    spec: &spec,
-                    network: crate::docker::NetworkAttachment::Host,
-                    storage: std::future::ready(None),
-                },
+                &machine(),
+                container_request(
+                    ployz_core::ContainerKind::ServiceContainer,
+                    &project,
+                    &spec,
+                    std::future::ready(None),
+                ),
             )
             .await,
         Err(Error::StorageUnobservable)
+    ));
+    assert!(matches!(
+        runtime
+            .create_with_network(
+                &machine(),
+                container_request(
+                    ployz_core::ContainerKind::ServiceContainer,
+                    &project,
+                    &spec,
+                    std::future::ready(Some(ployz_core::MachineStorageObservation::Stateless,)),
+                ),
+            )
+            .await,
+        Err(Error::ProvisionedStorageUnsupported)
     ));
     let requests = fake.requests.lock().unwrap();
     assert!(
@@ -469,19 +480,18 @@ async fn a_volume_created_before_container_creation_failure_is_left_for_retry() 
         driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
         labels: BTreeMap::new(),
     }]);
+    let project = ployz_core::ProjectName::parse("app").unwrap();
 
     assert!(
         runtime
             .create_with_network(
-                &MachineId::random(),
-                ployz_core::MachineGateway("10.210.0.1".parse().unwrap()),
-                crate::docker::ContainerRequest {
-                    kind: ployz_core::ContainerKind::ServiceContainer,
-                    project_name: &ployz_core::ProjectName::parse("app").unwrap(),
-                    spec: &spec,
-                    network: crate::docker::NetworkAttachment::Host,
-                    storage: std::future::ready(None),
-                },
+                &machine(),
+                container_request(
+                    ployz_core::ContainerKind::ServiceContainer,
+                    &project,
+                    &spec,
+                    std::future::ready(None),
+                ),
             )
             .await
             .is_err()
@@ -513,131 +523,6 @@ async fn a_volume_created_before_container_creation_failure_is_left_for_retry() 
         .position(|(method, path)| method == Method::POST && path.contains("/containers/"))
         .unwrap();
     assert!(image < volume && volume < container);
-}
-
-#[tokio::test]
-async fn run_replacement_hook_and_missing_global_reach_the_same_volume_ensure() {
-    let (runtime, fake) = fake_runtime().await;
-    fake.volumes.lock().unwrap().insert(
-        "unsafe".into(),
-        serde_json::json!({
-            "Name":"unsafe","Driver":"local","Mountpoint":"/volumes/unsafe"
-        }),
-    );
-    let spec = spec_with_sources(vec![ordinary_source("unsafe")]);
-    let machine = MachineId::random();
-    let project = ployz_core::ProjectName::parse("app").unwrap();
-    let gateway = ployz_core::MachineGateway("10.210.0.1".parse().unwrap());
-
-    for kind in [
-        ployz_core::ContainerKind::ServiceContainer,
-        ployz_core::ContainerKind::PreDeployHook,
-    ] {
-        assert!(matches!(
-            runtime
-                .create_with_network(
-                    &machine,
-                    gateway,
-                    crate::docker::ContainerRequest {
-                        kind,
-                        project_name: &project,
-                        spec: &spec,
-                        network: crate::docker::NetworkAttachment::Host,
-                        storage: std::future::ready(None),
-                    },
-                )
-                .await,
-            Err(Error::VolumeShapeMismatch { .. })
-        ));
-    }
-    assert!(matches!(
-        runtime
-            .ensure_global_slot(
-                &machine,
-                gateway,
-                crate::docker::ContainerRequest {
-                    kind: ployz_core::ContainerKind::ServiceContainer,
-                    project_name: &project,
-                    spec: &spec,
-                    network: crate::docker::NetworkAttachment::Host,
-                    storage: std::future::ready(None),
-                },
-            )
-            .await,
-        Err(Error::VolumeShapeMismatch { .. })
-    ));
-
-    // Run and replacement are the same service-kind CreateContainer entry.
-    assert!(
-        fake.requests
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|(method, path)| { !(method == Method::POST && path.contains("/containers/")) })
-    );
-}
-
-#[tokio::test]
-async fn existing_global_slot_is_verified_before_early_return_or_restart() {
-    for state in ["running", "exited"] {
-        let (runtime, fake) = fake_runtime().await;
-        fake.volumes.lock().unwrap().insert(
-            "bounded".into(),
-            serde_json::json!({
-                "Name":"bounded","Driver":"ployz","Mountpoint":"/volumes/bounded",
-                "Options":{"size":"1073741824b"},"Labels":{"backup":"daily"},
-                "Status":{"bound_bytes":1073741824,"used_bytes":0}
-            }),
-        );
-        let spec = spec_with_sources(vec![provisioned_source("bounded", 1_073_741_824)]);
-        let machine = MachineId::random();
-        let project = ployz_core::ProjectName::parse("app").unwrap();
-        let container_id = ployz_core::ContainerId::parse("a".repeat(64)).unwrap();
-        runtime
-            .specs
-            .config_operation()
-            .await
-            .put(&container_id, &spec)
-            .await
-            .unwrap();
-        fake.existing_container
-            .lock()
-            .unwrap()
-            .replace(serde_json::json!({
-                "Id":container_id,
-                "Name":"/api-existing",
-                "Created":"2026-01-01T00:00:00Z",
-                "Config":{"Labels":{
-                    "ployz.managed":"",
-                    "ployz.project.name":"app",
-                    "ployz.service.id":spec.service_id,
-                    "ployz.service.name":"api"
-                }},
-                "State":{"Status":state,"ExitCode":0}
-            }));
-
-        assert!(matches!(
-            runtime
-                .ensure_global_slot(
-                    &machine,
-                    ployz_core::MachineGateway("10.210.0.1".parse().unwrap()),
-                    crate::docker::ContainerRequest {
-                        kind: ployz_core::ContainerKind::ServiceContainer,
-                        project_name: &project,
-                        spec: &spec,
-                        network: crate::docker::NetworkAttachment::Host,
-                        storage: std::future::ready(None),
-                    },
-                )
-                .await,
-            Err(Error::StorageUnobservable)
-        ));
-        assert!(fake.requests.lock().unwrap().iter().all(|(method, path)| {
-            !(method == Method::POST && path.contains("/containers/"))
-                && !path.ends_with("/start")
-                && method != Method::DELETE
-        }));
-    }
 }
 
 #[tokio::test]

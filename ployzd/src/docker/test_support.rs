@@ -18,9 +18,8 @@ use axum::{
 };
 use bollard::Docker;
 
-use super::super::*;
-use crate::docker::{LocalDocker, MachineSpecStore};
-use ployz_core::VolumeSource;
+use super::*;
+use ployz_core::{Machine, MachineGateway, MachineId, ResolvedServiceSpec, VolumeSource};
 
 #[derive(Clone, Default)]
 pub(super) struct FakeDocker {
@@ -201,7 +200,10 @@ async fn fake_docker(
             }
             (StatusCode::CREATED, observed)
         }
-    } else if method == Method::POST && path.ends_with("/start") {
+    } else if method == Method::POST && (path.ends_with("/start") || path.ends_with("/stop")) {
+        (StatusCode::NO_CONTENT, serde_json::Value::Null)
+    } else if method == Method::DELETE && path.contains("/containers/") {
+        fake.existing_container.lock().unwrap().take();
         (StatusCode::NO_CONTENT, serde_json::Value::Null)
     } else {
         (
@@ -241,6 +243,28 @@ pub(super) async fn fake_runtime() -> (ContainerRuntime, FakeDocker) {
         ContainerRuntime::new(LocalDocker::from_client(docker), specs),
         fake,
     )
+}
+
+pub(super) fn machine() -> Machine {
+    crate::docker::lifecycle::test_machine(
+        &MachineId::random(),
+        MachineGateway("10.210.0.1".parse().unwrap()),
+    )
+}
+
+pub(super) fn container_request<'spec, Storage>(
+    kind: ContainerKind,
+    project_name: &'spec ProjectName,
+    spec: &'spec ResolvedServiceSpec,
+    storage: Storage,
+) -> ContainerRequest<'spec, Storage> {
+    ContainerRequest {
+        kind,
+        project_name,
+        spec,
+        network: NetworkAttachment::Host,
+        storage,
+    }
 }
 
 pub(super) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource {
