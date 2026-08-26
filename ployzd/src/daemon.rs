@@ -36,7 +36,6 @@ use crate::{
     global_reconcile::{self, global_reconcile_observation_channel},
     ingress,
     machine::{LocalMachineBody, LocalMachineStore, StoreError},
-    metrics,
     network::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, NetworkError, NetworkPlane},
     proxy::MachineProxy,
     rpc::MachineService,
@@ -55,7 +54,6 @@ pub enum ContainerMode {
 pub struct DaemonConfig {
     pub data_dir: PathBuf,
     pub socket: PathBuf,
-    pub metrics_address: SocketAddr,
     pub dns_upstreams: Vec<SocketAddr>,
     pub machine_api_address: Option<SocketAddr>,
     pub containerd_socket: Option<PathBuf>,
@@ -107,7 +105,6 @@ impl Daemon {
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
         let store = Arc::new(Mutex::new(LocalMachineStore::open(&config.data_dir)?));
         let (rpc_listener, socket_lock) = bind_socket(&config.socket)?;
-        let metrics_listener = TcpListener::bind(config.metrics_address).await?;
         let local_record = store
             .lock()
             .map_err(|_| Error::StorePoisoned)?
@@ -212,11 +209,6 @@ impl Daemon {
             proxy.clone(),
             UnixListenerStream::new(rpc_listener),
             shutdown.clone().cancelled_owned(),
-        );
-        let metrics = metrics::serve(
-            metrics_listener,
-            env!("CARGO_PKG_VERSION"),
-            shutdown.clone(),
         );
         let publisher = run_machine_publisher(
             replicated_store.clone(),
@@ -356,7 +348,6 @@ impl Daemon {
             };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
-                metrics,
                 publisher,
                 network_rpc,
                 network_runner,
@@ -728,7 +719,6 @@ fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
 mod tests {
     use std::{
         fs,
-        net::{SocketAddr, TcpListener},
         path::{Path, PathBuf},
     };
 
@@ -759,13 +749,6 @@ mod tests {
         }
     }
 
-    fn unused_address() -> SocketAddr {
-        TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-    }
-
     fn test_config(root: &Path, containers: ContainerMode) -> (DaemonConfig, PathBuf) {
         fs::create_dir_all(root).unwrap();
         let socket = root.join("run/ployz.sock");
@@ -773,7 +756,6 @@ mod tests {
             DaemonConfig {
                 data_dir: root.join("data"),
                 socket: socket.clone(),
-                metrics_address: unused_address(),
                 dns_upstreams: Vec::new(),
                 machine_api_address: None,
                 containerd_socket: None,
@@ -853,7 +835,6 @@ mod tests {
         let first = Daemon::start(DaemonConfig {
             data_dir: root.0.join("data-a"),
             socket: socket.clone(),
-            metrics_address: unused_address(),
             dns_upstreams: Vec::new(),
             machine_api_address: None,
             containerd_socket: None,
@@ -864,7 +845,6 @@ mod tests {
         let second = Daemon::start(DaemonConfig {
             data_dir: root.0.join("data-b"),
             socket,
-            metrics_address: unused_address(),
             dns_upstreams: Vec::new(),
             machine_api_address: None,
             containerd_socket: None,
