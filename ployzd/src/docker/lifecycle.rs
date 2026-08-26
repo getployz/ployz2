@@ -1,8 +1,6 @@
 use bollard::{
-    Docker,
     errors::Error as DockerError,
-    models::ContainerCreateBody,
-    models::{Mount, MountType},
+    models::{ContainerCreateBody, Mount, MountType},
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
     },
@@ -22,11 +20,16 @@ use super::{
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
 
 #[derive(Clone, Copy)]
-struct ContainerRequest<'spec> {
-    kind: ContainerKind,
-    project_name: &'spec ProjectName,
-    spec: &'spec ResolvedServiceSpec,
-    network: NetworkAttachment,
+/// Resolved container inputs shared by every Machine-local creation entry path.
+pub(crate) struct ContainerRequest<'spec> {
+    /// Whether this is a long-running Service Container or a Pre-deploy Hook.
+    pub(crate) kind: ContainerKind,
+    /// Project that owns the resulting container.
+    pub(crate) project_name: &'spec ProjectName,
+    /// Fully resolved Service specification to persist and execute.
+    pub(crate) spec: &'spec ResolvedServiceSpec,
+    /// Docker network attachment prepared for this Service kind and backend.
+    pub(crate) network: NetworkAttachment,
 }
 
 impl ContainerRuntime {
@@ -41,53 +44,49 @@ impl ContainerRuntime {
         self.create_with_network(
             machine_id,
             gateway,
-            kind,
-            project_name,
-            spec,
-            NetworkAttachment::Bridge,
+            ContainerRequest {
+                kind,
+                project_name,
+                spec,
+                network: NetworkAttachment::Bridge,
+            },
+            async || Ok(()),
         )
         .await
     }
 
+    /// Prepare a container, run its final Machine-local admission, and create it.
+    ///
+    /// # Errors
+    ///
+    /// Returns when preparation, final admission, Volume Ensure, or Docker creation fails.
     pub(crate) async fn create_with_network(
         &self,
         machine_id: &MachineId,
         gateway: MachineGateway,
-        kind: ContainerKind,
-        project_name: &ProjectName,
-        spec: &ResolvedServiceSpec,
-        network: NetworkAttachment,
+        request: ContainerRequest<'_>,
+        before_create: impl AsyncFnOnce() -> Result<(), Error>,
     ) -> Result<ContainerCreated, Error> {
         // TODO(UT-030): direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
         tracing::info!(
-            project = project_name.as_str(),
-            service = spec.name.as_str(),
-            kind = match kind {
+            project = request.project_name.as_str(),
+            service = request.spec.name.as_str(),
+            kind = match request.kind {
                 ContainerKind::ServiceContainer => "service_container",
                 ContainerKind::PreDeployHook => "pre_deploy_hook",
             },
             "create container"
         );
-        self.prepare_and_create(
-            machine_id,
-            gateway,
-            ContainerRequest {
-                kind,
-                project_name,
-                spec,
-                network,
-            },
-            None,
-        )
-        .await
+        self.prepare_and_create(machine_id, gateway, request, None, before_create)
+            .await
     }
 
     /// One running Service Container for this Global on this Machine. No loop after return.
     ///
     /// # Errors
     ///
-    /// Returns when listing managed Containers, creating named Volumes, pulling
+    /// Returns when listing managed Containers, ensuring mounted Volumes, pulling
     /// the image, creating the Container, or starting it fails.
     pub(crate) async fn ensure_global_slot(
         &self,
@@ -96,8 +95,10 @@ impl ContainerRuntime {
         project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
         network: NetworkAttachment,
+        before_create: impl AsyncFnOnce() -> Result<(), Error>,
     ) -> Result<ContainerCreated, Error> {
         if let Some(existing) = self.existing_global_slot(machine_id, spec).await? {
+            self.ensure_mounted_volumes(machine_id, spec).await?;
             if !runtime_is_running(&existing.runtime) {
                 self.start(&existing.container_id).await?;
             }
@@ -106,7 +107,6 @@ impl ContainerRuntime {
                 display_name: existing.display_name,
             });
         }
-        self.ensure_mounted_volumes(machine_id, spec).await?;
         let created = self
             .prepare_and_create(
                 machine_id,
@@ -118,6 +118,7 @@ impl ContainerRuntime {
                     network,
                 },
                 Some(global_slot_name(spec)),
+                before_create,
             )
             .await?;
         self.start(&created.container_id).await?;
@@ -148,35 +149,13 @@ impl ContainerRuntime {
         Ok(found)
     }
 
-    async fn ensure_mounted_volumes(
-        &self,
-        machine_id: &MachineId,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<(), Error> {
-        let mut created = std::collections::BTreeSet::new();
-        for mount in spec.volume_graph.mounts() {
-            let volume = spec.volume_graph.volume_for(mount);
-            let Some(request) = volume.source.to_create_volume_request() else {
-                continue;
-            };
-            if !created.insert(request.name.clone()) {
-                continue;
-            }
-            match self.create_volume(machine_id, request).await {
-                Ok(_) => {}
-                Err(error) if volume_conflict(&error) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(())
-    }
-
     async fn prepare_and_create(
         &self,
         machine_id: &MachineId,
         gateway: MachineGateway,
         request: ContainerRequest<'_>,
         reserved_name: Option<String>,
+        before_create: impl AsyncFnOnce() -> Result<(), Error>,
     ) -> Result<ContainerCreated, Error> {
         let mut body = create::container_create_body(
             machine_id,
@@ -191,7 +170,6 @@ impl ContainerRuntime {
             .get_or_insert_default()
             .mounts
             .get_or_insert_default();
-        preflight_named_volumes(&self.docker.client, mounts).await?;
         prepare_image(
             &self.docker.client,
             &request.spec.container.image,
@@ -200,8 +178,15 @@ impl ContainerRuntime {
         .await?;
         let mut config_operation = self.specs.config_operation().await;
         mounts.extend(docker_config_mounts(&mut config_operation, request.spec).await?);
-        self.finish_create(machine_id, request, body, config_operation, reserved_name)
-            .await
+        self.finish_create(
+            machine_id,
+            request,
+            body,
+            config_operation,
+            reserved_name,
+            before_create,
+        )
+        .await
     }
 
     async fn finish_create(
@@ -211,8 +196,12 @@ impl ContainerRuntime {
         body: bollard::models::ContainerCreateBody,
         mut config_operation: ConfigOperation<'_>,
         reserved_name: Option<String>,
+        before_create: impl AsyncFnOnce() -> Result<(), Error>,
     ) -> Result<ContainerCreated, Error> {
         let result = async {
+            before_create().await?;
+            self.ensure_mounted_volumes(machine_id, request.spec)
+                .await?;
             let (created, display_name) = match reserved_name {
                 Some(display_name) => {
                     let options = CreateContainerOptionsBuilder::default()
@@ -460,21 +449,6 @@ impl super::LocalDocker {
     }
 }
 
-async fn preflight_named_volumes(docker: &Docker, mounts: &[Mount]) -> Result<(), Error> {
-    // TODO(UT-127): non-local drivers intentionally receive no special handling.
-    for mount in mounts
-        .iter()
-        .filter(|mount| mount.typ == Some(MountType::VOLUME))
-    {
-        let name = mount.source.as_deref().ok_or_else(|| {
-            Error::InvalidContainerConfig("named Volume source is missing".into())
-        })?;
-        super::volume::ensure_volume_exists(docker, name).await?;
-        // TODO(UT-128): existence is the only mount-time check; do not recheck driver/options.
-    }
-    Ok(())
-}
-
 async fn docker_config_mounts(
     configs: &mut ConfigOperation<'_>,
     spec: &ResolvedServiceSpec,
@@ -540,16 +514,6 @@ fn global_slot_name(spec: &ResolvedServiceSpec) -> String {
     format!("{}-{suffix}", spec.name)
 }
 
-fn volume_conflict(error: &Error) -> bool {
-    matches!(
-        error,
-        Error::Docker(DockerError::DockerResponseServerError {
-            status_code: 409,
-            ..
-        })
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, num::NonZeroU64};
@@ -572,20 +536,6 @@ mod tests {
         assert!(retry_name_conflict(1, &conflict));
         assert!(!retry_name_conflict(CONTAINER_NAME_ATTEMPTS, &conflict));
         assert!(!retry_name_conflict(1, &server_error));
-    }
-
-    #[test]
-    fn named_volume_409_is_conflict() {
-        let conflict = Error::Docker(DockerError::DockerResponseServerError {
-            status_code: 409,
-            message: "already exists".into(),
-        });
-        let missing = Error::Docker(DockerError::DockerResponseServerError {
-            status_code: 404,
-            message: "no such volume".into(),
-        });
-        assert!(volume_conflict(&conflict));
-        assert!(!volume_conflict(&missing));
     }
 
     #[test]

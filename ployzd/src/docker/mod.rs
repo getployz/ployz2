@@ -21,7 +21,7 @@ use bollard::{
 };
 use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, DockerVolumeName,
+    ContainerObservation, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
     HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
     ImageSummary, MachineId, MachineImages, MachineTelemetry, ProjectName, QualifiedService,
     RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
@@ -34,6 +34,7 @@ use tokio::sync::Mutex;
 use observe::ObservationSink;
 
 pub(crate) use create::NetworkAttachment;
+pub(crate) use lifecycle::ContainerRequest;
 pub(crate) use managed_service::ManagedService;
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
@@ -585,6 +586,30 @@ pub enum Error {
         requested: DockerVolumeName,
         actual: String,
     },
+    /// A mounted external Volume is absent from the target Machine.
+    #[error("external Docker Volume '{0}' does not exist on this Machine")]
+    ExternalVolumeNotFound(DockerVolumeName),
+    /// An existing managed Volume differs from the resolved mounted source.
+    #[error("Docker Volume '{name}' does not match its resolved source: {reason}")]
+    VolumeShapeMismatch {
+        name: DockerVolumeName,
+        reason: String,
+    },
+    /// Two mounted declarations resolve to incompatible shapes for one Docker name.
+    #[error("mounted declarations for Docker Volume '{0}' have conflicting sources")]
+    ConflictingMountedVolumeSources(DockerVolumeName),
+    /// Docker created a Volume but its resulting state could not be observed.
+    #[error("Docker Volume creation succeeded but verification failed for {id:?}: {error}")]
+    VolumeCreatedButUnverified {
+        id: DockerVolumeId,
+        error: Box<RpcError>,
+    },
+    /// Fresh local storage evidence was unavailable for a Provisioned Volume container.
+    #[error("local storage could not be observed for a mounted Provisioned Volume")]
+    StorageUnobservable,
+    /// The target Machine has no storage capable of hosting a Provisioned Volume.
+    #[error("this Machine cannot host a mounted Provisioned Volume")]
+    ProvisionedStorageUnsupported,
     #[error("container is not managed by Ployz")]
     NotManaged,
     #[error("resolved spec not found in machine.db for {0}")]
@@ -613,6 +638,7 @@ impl Error {
         match self {
             Self::ContainerNotFound(_)
             | Self::SpecNotFound(_)
+            | Self::ExternalVolumeNotFound(_)
             | Self::Docker(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404,
                 ..
@@ -620,7 +646,13 @@ impl Error {
             Self::Docker(bollard::errors::Error::DockerResponseServerError {
                 status_code: 409,
                 ..
-            }) => RpcErrorCode::Conflict,
+            })
+            | Self::VolumeShapeMismatch { .. }
+            | Self::ConflictingMountedVolumeSources(_) => RpcErrorCode::Conflict,
+            Self::VolumeCreatedButUnverified { .. } | Self::StorageUnobservable => {
+                RpcErrorCode::Unavailable
+            }
+            Self::ProvisionedStorageUnsupported => RpcErrorCode::Conflict,
             Self::MissingPreDeployHook
             | Self::EndpointCapacity
             | Self::DurationOverflow
@@ -649,10 +681,18 @@ impl Error {
 
 impl From<&Error> for RpcError {
     fn from(error: &Error) -> Self {
+        let details = if let Error::VolumeCreatedButUnverified { id, error } = error {
+            serde_json::json!({
+                "created_volume": id,
+                "verification_error": error,
+            })
+        } else {
+            serde_json::Value::Null
+        };
         Self {
             code: error.rpc_code(),
             message: error.to_string(),
-            details: serde_json::Value::Null,
+            details,
         }
     }
 }
