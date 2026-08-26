@@ -64,15 +64,15 @@ impl ContainerRuntime {
     /// # Errors
     ///
     /// Returns when preparation, final admission, Volume Ensure, or Docker creation fails.
-    pub(crate) async fn create_with_network<Storage>(
+    pub(crate) async fn create_with_network(
         &self,
         machine_id: &MachineId,
         gateway: MachineGateway,
-        request: ContainerRequest<'_, Storage>,
-    ) -> Result<ContainerCreated, Error>
-    where
-        Storage: Future<Output = Option<MachineStorageObservation>> + Send,
-    {
+        request: ContainerRequest<
+            '_,
+            impl Future<Output = Option<MachineStorageObservation>> + Send,
+        >,
+    ) -> Result<ContainerCreated, Error> {
         // TODO(UT-030): direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
         tracing::info!(
@@ -94,15 +94,15 @@ impl ContainerRuntime {
     ///
     /// Returns when listing managed Containers, ensuring mounted Volumes, pulling
     /// the image, creating the Container, or starting it fails.
-    pub(crate) async fn ensure_global_slot<Storage>(
+    pub(crate) async fn ensure_global_slot(
         &self,
         machine_id: &MachineId,
         gateway: MachineGateway,
-        request: ContainerRequest<'_, Storage>,
-    ) -> Result<ContainerCreated, Error>
-    where
-        Storage: Future<Output = Option<MachineStorageObservation>> + Send,
-    {
+        request: ContainerRequest<
+            '_,
+            impl Future<Output = Option<MachineStorageObservation>> + Send,
+        >,
+    ) -> Result<ContainerCreated, Error> {
         if let Some(existing) = self.existing_global_slot(machine_id, request.spec).await? {
             self.admit_storage_and_ensure_volumes(machine_id, request.spec, request.storage)
                 .await?;
@@ -146,16 +146,16 @@ impl ContainerRuntime {
         Ok(found)
     }
 
-    async fn prepare_and_create<Storage>(
+    async fn prepare_and_create(
         &self,
         machine_id: &MachineId,
         gateway: MachineGateway,
-        request: ContainerRequest<'_, Storage>,
+        request: ContainerRequest<
+            '_,
+            impl Future<Output = Option<MachineStorageObservation>> + Send,
+        >,
         reserved_name: Option<String>,
-    ) -> Result<ContainerCreated, Error>
-    where
-        Storage: Future<Output = Option<MachineStorageObservation>> + Send,
-    {
+    ) -> Result<ContainerCreated, Error> {
         let mut body = create::container_create_body(
             machine_id,
             gateway,
@@ -181,17 +181,17 @@ impl ContainerRuntime {
             .await
     }
 
-    async fn finish_create<Storage>(
+    async fn finish_create(
         &self,
         machine_id: &MachineId,
-        request: ContainerRequest<'_, Storage>,
+        request: ContainerRequest<
+            '_,
+            impl Future<Output = Option<MachineStorageObservation>> + Send,
+        >,
         body: bollard::models::ContainerCreateBody,
         mut config_operation: ConfigOperation<'_>,
         reserved_name: Option<String>,
-    ) -> Result<ContainerCreated, Error>
-    where
-        Storage: Future<Output = Option<MachineStorageObservation>> + Send,
-    {
+    ) -> Result<ContainerCreated, Error> {
         let result = async {
             self.admit_storage_and_ensure_volumes(machine_id, request.spec, request.storage)
                 .await?;
@@ -272,15 +272,12 @@ impl ContainerRuntime {
         result
     }
 
-    async fn admit_storage_and_ensure_volumes<Storage>(
+    async fn admit_storage_and_ensure_volumes(
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
-        storage: Storage,
-    ) -> Result<(), Error>
-    where
-        Storage: Future<Output = Option<MachineStorageObservation>>,
-    {
+        storage: impl Future<Output = Option<MachineStorageObservation>>,
+    ) -> Result<(), Error> {
         if spec.volume_graph.has_mounted_provisioned_volume() {
             match storage.await {
                 Some(MachineStorageObservation::Ready | MachineStorageObservation::Pool { .. }) => {
