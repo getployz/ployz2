@@ -1,6 +1,6 @@
 use std::io::ErrorKind;
 use std::panic::PanicHookInfo;
-use std::process::{exit, ExitCode};
+use std::process::{ExitCode, exit};
 
 fn main() -> ExitCode {
     exit_quietly_on_broken_pipe();
