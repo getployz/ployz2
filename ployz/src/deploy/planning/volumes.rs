@@ -5,7 +5,6 @@ use ployz_core::{
     MachineObservation, MachineTarget, PreservedVolume, ProjectName, RequestedServiceSpec,
     ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility, ServiceVolume,
     ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
-    service_placement_eligibility,
 };
 
 use crate::deploy::{
@@ -133,12 +132,8 @@ impl VolumePins {
                 let mut machines = candidates
                     .into_iter()
                     .filter(|machine| {
-                        service_placement_eligibility(
-                            &spec.placement,
-                            &spec.volume_graph,
-                            &machine.machine,
-                            machine.storage.as_ref(),
-                        ) == ServicePlacementEligibility::Eligible
+                        spec.placement_eligibility(&machine.machine, machine.storage.as_ref())
+                            == ServicePlacementEligibility::Eligible
                     })
                     .collect::<Vec<_>>();
                 if machines.is_empty() {

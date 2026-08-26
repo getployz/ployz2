@@ -6,7 +6,7 @@ use chrono::{SecondsFormat, Utc};
 use ployz_core::{
     ContainerId, ContainerObservation, GlobalReconcileFailureObservation, Machine,
     MachineStorageObservation, ObservedGlobalSlotSpec, ServicePlacementEligibility,
-    derive_services, service_placement_eligibility,
+    derive_services,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -145,19 +145,14 @@ async fn reconcile_global_slots<R: GlobalSlotReconciler>(
         let Some(slot) = service.observed_global_slot() else {
             continue;
         };
-        let eligibility = service_placement_eligibility(
-            &slot.resolved_spec().placement,
-            &slot.resolved_spec().volume_graph,
-            machine,
-            storage,
-        );
+        let eligibility = slot.resolved_spec().placement_eligibility(machine, storage);
         match eligibility {
             ServicePlacementEligibility::Eligible => {
                 if let Err(error) = reconciler.ensure_global_slot(&slot).await {
                     failures.push(reconcile_failure(&slot, error, observed_at));
                 }
             }
-            ServicePlacementEligibility::Ineligible => {
+            ServicePlacementEligibility::Ineligible(_) => {
                 for container in service
                     .containers
                     .iter()
@@ -171,7 +166,7 @@ async fn reconcile_global_slots<R: GlobalSlotReconciler>(
                     }
                 }
             }
-            ServicePlacementEligibility::Unknown => {}
+            ServicePlacementEligibility::Unknown(_) => {}
         }
     }
     failures
