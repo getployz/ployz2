@@ -8,9 +8,13 @@ use bollard::{
     },
 };
 use ployz_core::{
-    ContainerCreated, ContainerId, ContainerKind, ContainerRuntimeObservation, MachineGateway,
-    MachineId, MachineStorageObservation, ProjectName, ResolvedServiceSpec,
+    ContainerCreated, ContainerId, ContainerKind, ContainerRuntimeObservation, Machine, MachineId,
+    MachineStorageObservation, ProjectName, ResolvedServiceSpec, ServicePlacementEligibility,
+    ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
 };
+
+#[cfg(test)]
+use ployz_core::MachineGateway;
 
 use crate::docker_image::prepare_image;
 
@@ -35,6 +39,48 @@ pub(crate) struct ContainerRequest<'spec, Storage> {
     pub(crate) storage: Storage,
 }
 
+/// Result of one fresh target-Machine Global convergence decision.
+#[derive(Debug)]
+pub(crate) enum GlobalSlotConvergence {
+    /// The fresh target evidence was eligible and this is the accepted running Container.
+    Ensured(ContainerCreated),
+    /// The fresh target evidence was ineligible and any existing local slots were retired.
+    Ineligible(ServicePlacementIneligibleReason),
+    /// The fresh target evidence was unknown and no Container mutation was made.
+    Unknown(ServicePlacementUnknownReason),
+}
+
+impl GlobalSlotConvergence {
+    /// Convert an eligible convergence outcome to the RPC's required Container result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the matching admission error when fresh target evidence was ineligible or unknown.
+    pub(crate) fn into_container(self) -> Result<ContainerCreated, Error> {
+        match self {
+            Self::Ensured(created) => Ok(created),
+            Self::Ineligible(reason) => Err(ineligible_error(reason)),
+            Self::Unknown(reason) => Err(unknown_error(reason)),
+        }
+    }
+}
+
+enum ContainerAdmission {
+    Admitted(ContainerCreated),
+    Ineligible(ServicePlacementIneligibleReason),
+    Unknown(ServicePlacementUnknownReason),
+}
+
+impl ContainerAdmission {
+    fn into_container(self) -> Result<ContainerCreated, Error> {
+        match self {
+            Self::Admitted(created) => Ok(created),
+            Self::Ineligible(reason) => Err(ineligible_error(reason)),
+            Self::Unknown(reason) => Err(unknown_error(reason)),
+        }
+    }
+}
+
 impl ContainerRuntime {
     #[cfg(test)]
     pub(crate) async fn create_for_test(
@@ -45,9 +91,9 @@ impl ContainerRuntime {
         project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
+        let machine = test_machine(machine_id, gateway);
         self.create_with_network(
-            machine_id,
-            gateway,
+            &machine,
             ContainerRequest {
                 kind,
                 project_name,
@@ -66,8 +112,7 @@ impl ContainerRuntime {
     /// Returns when preparation, final admission, Volume Ensure, or Docker creation fails.
     pub(crate) async fn create_with_network(
         &self,
-        machine_id: &MachineId,
-        gateway: MachineGateway,
+        machine: &Machine,
         request: ContainerRequest<
             '_,
             impl Future<Output = Option<MachineStorageObservation>> + Send,
@@ -84,81 +129,92 @@ impl ContainerRuntime {
             },
             "create container"
         );
-        self.prepare_and_create(machine_id, gateway, request, None)
-            .await
+        self.prepare_and_create(machine, request, None)
+            .await?
+            .into_container()
     }
 
-    /// One running Service Container for this Global on this Machine. No loop after return.
+    /// Converge one Global Service against fresh target-Machine eligibility evidence.
     ///
     /// # Errors
     ///
-    /// Returns when listing managed Containers, ensuring mounted Volumes, pulling
-    /// the image, creating the Container, or starting it fails.
-    pub(crate) async fn ensure_global_slot(
+    /// Returns when listing managed Containers, ensuring mounted Volumes, pulling the image,
+    /// or the required create, start, stop, or remove operation fails.
+    pub(crate) async fn converge_global_slot(
         &self,
-        machine_id: &MachineId,
-        gateway: MachineGateway,
+        machine: &Machine,
         request: ContainerRequest<
             '_,
             impl Future<Output = Option<MachineStorageObservation>> + Send,
         >,
-    ) -> Result<ContainerCreated, Error> {
-        if let Some(existing) = self.existing_global_slot(machine_id, request.spec).await? {
-            self.admit_storage_and_ensure_volumes(machine_id, request.spec, request.storage)
-                .await?;
-            if !runtime_is_running(&existing.runtime) {
-                self.start(&existing.container_id).await?;
-            }
-            return Ok(ContainerCreated {
-                container_id: existing.container_id,
-                display_name: existing.display_name,
-            });
+    ) -> Result<GlobalSlotConvergence, Error> {
+        let mut existing =
+            self.list_managed(&machine.id)
+                .await?
+                .into_iter()
+                .filter(|observation| {
+                    observation.kind == ContainerKind::ServiceContainer
+                        && observation.service_id == request.spec.service_id
+                });
+        if let Some(first) = existing.next() {
+            return match self
+                .admit_and_ensure_volumes(machine, request.spec, request.storage)
+                .await?
+            {
+                ServicePlacementEligibility::Eligible => {
+                    let existing = if runtime_is_running(&first.runtime) {
+                        first
+                    } else {
+                        existing
+                            .find(|slot| runtime_is_running(&slot.runtime))
+                            .unwrap_or(first)
+                    };
+                    if !runtime_is_running(&existing.runtime) {
+                        self.start(&existing.container_id).await?;
+                    }
+                    Ok(GlobalSlotConvergence::Ensured(ContainerCreated {
+                        container_id: existing.container_id,
+                        display_name: existing.display_name,
+                    }))
+                }
+                ServicePlacementEligibility::Ineligible(reason) => {
+                    for slot in std::iter::once(first).chain(existing) {
+                        self.stop(&slot.container_id, None, None).await?;
+                        self.remove(&slot.container_id, false, false).await?;
+                    }
+                    Ok(GlobalSlotConvergence::Ineligible(reason))
+                }
+                ServicePlacementEligibility::Unknown(reason) => {
+                    Ok(GlobalSlotConvergence::Unknown(reason))
+                }
+            };
         }
         let name = global_slot_name(request.spec);
-        let created = self
-            .prepare_and_create(machine_id, gateway, request, Some(name))
+        let outcome = self
+            .prepare_and_create(machine, request, Some(name))
             .await?;
-        self.start(&created.container_id).await?;
-        Ok(created)
-    }
-
-    async fn existing_global_slot(
-        &self,
-        machine_id: &MachineId,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<Option<ployz_core::ContainerObservation>, Error> {
-        let mut found = None;
-        for observation in self.list_managed(machine_id).await? {
-            if observation.kind != ContainerKind::ServiceContainer
-                || observation.service_id != spec.service_id
-            {
-                continue;
+        match outcome {
+            ContainerAdmission::Admitted(created) => {
+                self.start(&created.container_id).await?;
+                Ok(GlobalSlotConvergence::Ensured(created))
             }
-            let running = runtime_is_running(&observation.runtime);
-            match found {
-                Some(_) if !running => {}
-                _ => found = Some(observation),
-            }
-            if running {
-                break;
-            }
+            ContainerAdmission::Ineligible(reason) => Ok(GlobalSlotConvergence::Ineligible(reason)),
+            ContainerAdmission::Unknown(reason) => Ok(GlobalSlotConvergence::Unknown(reason)),
         }
-        Ok(found)
     }
 
     async fn prepare_and_create(
         &self,
-        machine_id: &MachineId,
-        gateway: MachineGateway,
+        machine: &Machine,
         request: ContainerRequest<
             '_,
             impl Future<Output = Option<MachineStorageObservation>> + Send,
         >,
         reserved_name: Option<String>,
-    ) -> Result<ContainerCreated, Error> {
+    ) -> Result<ContainerAdmission, Error> {
         let mut body = create::container_create_body(
-            machine_id,
-            gateway,
+            &machine.id,
+            machine.subnet.gateway(),
             request.kind,
             request.project_name,
             request.spec,
@@ -177,13 +233,13 @@ impl ContainerRuntime {
         .await?;
         let mut config_operation = self.specs.config_operation().await;
         mounts.extend(docker_config_mounts(&mut config_operation, request.spec).await?);
-        self.finish_create(machine_id, request, body, config_operation, reserved_name)
+        self.finish_create(machine, request, body, config_operation, reserved_name)
             .await
     }
 
     async fn finish_create(
         &self,
-        machine_id: &MachineId,
+        machine: &Machine,
         request: ContainerRequest<
             '_,
             impl Future<Output = Option<MachineStorageObservation>> + Send,
@@ -191,10 +247,20 @@ impl ContainerRuntime {
         body: bollard::models::ContainerCreateBody,
         mut config_operation: ConfigOperation<'_>,
         reserved_name: Option<String>,
-    ) -> Result<ContainerCreated, Error> {
+    ) -> Result<ContainerAdmission, Error> {
         let result = async {
-            self.admit_storage_and_ensure_volumes(machine_id, request.spec, request.storage)
-                .await?;
+            match self
+                .admit_and_ensure_volumes(machine, request.spec, request.storage)
+                .await?
+            {
+                ServicePlacementEligibility::Eligible => {}
+                ServicePlacementEligibility::Ineligible(reason) => {
+                    return Ok(ContainerAdmission::Ineligible(reason));
+                }
+                ServicePlacementEligibility::Unknown(reason) => {
+                    return Ok(ContainerAdmission::Unknown(reason));
+                }
+            }
             let (created, display_name) = match reserved_name {
                 Some(display_name) => {
                     let options = CreateContainerOptionsBuilder::default()
@@ -211,12 +277,12 @@ impl ContainerRuntime {
                             ..
                         })) => {
                             let existing = self
-                                .inspect_managed_by_name(machine_id, &display_name)
+                                .inspect_managed_by_name(&machine.id, &display_name)
                                 .await?;
-                            return Ok(ContainerCreated {
+                            return Ok(ContainerAdmission::Admitted(ContainerCreated {
                                 container_id: existing.container_id,
                                 display_name: existing.display_name,
-                            });
+                            }));
                         }
                         Err(error) => return Err(error),
                     }
@@ -258,13 +324,13 @@ impl ContainerRuntime {
                 self.force_remove_container(&container_id).await?;
                 return Err(error.into());
             }
-            Ok(ContainerCreated {
+            Ok(ContainerAdmission::Admitted(ContainerCreated {
                 container_id,
                 display_name,
-            })
+            }))
         };
         let result = result.await;
-        if result.is_err()
+        if !matches!(&result, Ok(ContainerAdmission::Admitted(_)))
             && let Err(error) = config_operation.garbage_collect_configs().await
         {
             eprintln!("failed to reclaim materialized configs: {error}");
@@ -272,23 +338,22 @@ impl ContainerRuntime {
         result
     }
 
-    async fn admit_storage_and_ensure_volumes(
+    async fn admit_and_ensure_volumes(
         &self,
-        machine_id: &MachineId,
+        machine: &Machine,
         spec: &ResolvedServiceSpec,
         storage: impl Future<Output = Option<MachineStorageObservation>>,
-    ) -> Result<(), Error> {
-        if spec.volume_graph.has_mounted_provisioned_volume() {
-            match storage.await {
-                Some(MachineStorageObservation::Ready | MachineStorageObservation::Pool { .. }) => {
-                }
-                Some(MachineStorageObservation::Stateless) => {
-                    return Err(Error::ProvisionedStorageUnsupported);
-                }
-                None => return Err(Error::StorageUnobservable),
-            }
+    ) -> Result<ServicePlacementEligibility, Error> {
+        let storage = if spec.volume_graph.has_mounted_provisioned_volume() {
+            storage.await
+        } else {
+            None
+        };
+        let eligibility = spec.placement_eligibility(machine, storage.as_ref());
+        if matches!(eligibility, ServicePlacementEligibility::Eligible) {
+            self.ensure_mounted_volumes(&machine.id, spec).await?;
         }
-        self.ensure_mounted_volumes(machine_id, spec).await
+        Ok(eligibility)
     }
 
     async fn inspect_managed_by_name(
@@ -525,6 +590,43 @@ fn global_slot_name(spec: &ResolvedServiceSpec) -> String {
     let suffix = id.get(..8).unwrap_or(id);
     format!("{}-{suffix}", spec.name)
 }
+
+fn ineligible_error(reason: ServicePlacementIneligibleReason) -> Error {
+    match reason {
+        ServicePlacementIneligibleReason::PlacementMismatch => Error::ServicePlacementMismatch,
+        ServicePlacementIneligibleReason::ProvisionedStorageUnsupported => {
+            Error::ProvisionedStorageUnsupported
+        }
+    }
+}
+
+fn unknown_error(reason: ServicePlacementUnknownReason) -> Error {
+    match reason {
+        ServicePlacementUnknownReason::MissingStorageEvidence => Error::StorageUnobservable,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn test_machine(machine_id: &MachineId, gateway: MachineGateway) -> Machine {
+    use std::net::Ipv6Addr;
+
+    use ployz_core::{MachineName, ManagementAddress, WireGuardPublicKey};
+
+    let [a, b, c, _] = gateway.0.octets();
+    Machine {
+        id: *machine_id,
+        name: MachineName::parse("docker-test").unwrap(),
+        subnet: format!("{a}.{b}.{c}.0/24").parse().unwrap(),
+        management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
+        public_key: WireGuardPublicKey([0; 32]),
+        public_ip: None,
+        advertised_endpoints: Vec::new(),
+        runtime: Default::default(),
+    }
+}
+
+#[cfg(test)]
+mod convergence_tests;
 
 #[cfg(test)]
 mod tests {

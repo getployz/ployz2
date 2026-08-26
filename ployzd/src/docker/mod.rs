@@ -11,6 +11,8 @@ mod volume;
 
 #[cfg(test)]
 mod integration_tests;
+#[cfg(test)]
+mod test_support;
 
 use std::{
     collections::HashMap,
@@ -40,7 +42,7 @@ use tokio::sync::Mutex;
 use observe::ObservationSink;
 
 pub(crate) use create::NetworkAttachment;
-pub(crate) use lifecycle::ContainerRequest;
+pub(crate) use lifecycle::{ContainerRequest, GlobalSlotConvergence};
 pub(crate) use managed_service::ManagedService;
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
@@ -613,6 +615,9 @@ pub enum Error {
     /// The target Machine has no storage capable of hosting a Provisioned Volume.
     #[error("this Machine cannot host a mounted Provisioned Volume")]
     ProvisionedStorageUnsupported,
+    /// The complete Resolved Service Spec does not permit this target Machine.
+    #[error("this Machine does not satisfy the resolved Service placement")]
+    ServicePlacementMismatch,
     #[error("container is not managed by Ployz")]
     NotManaged,
     #[error("resolved spec not found in machine.db for {0}")]
@@ -662,7 +667,9 @@ impl Error {
             Self::VolumeCreatedButUnverified { .. } | Self::StorageUnobservable => {
                 RpcErrorCode::Unavailable
             }
-            Self::ProvisionedStorageUnsupported => RpcErrorCode::Conflict,
+            Self::ProvisionedStorageUnsupported | Self::ServicePlacementMismatch => {
+                RpcErrorCode::Conflict
+            }
             Self::MissingPreDeployHook
             | Self::EndpointCapacity
             | Self::DurationOverflow
