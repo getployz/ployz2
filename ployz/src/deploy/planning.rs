@@ -4,8 +4,9 @@ use ployz_core::{
     ContainerAction, DataLoss, DependencyCondition, HookContainer, IngressHost, MachineId,
     MachineObservation, MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName,
     PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServicePlacementEligibility, VolumeToCreate, explicit_ingress_hosts,
-    hostname_owners, machine_matches_target, same_service_mode_kind, service_placement_eligibility,
+    ServiceObservation, ServicePlacementEligibility, VolumeSource, VolumeToCreate,
+    explicit_ingress_hosts, hostname_owners, machine_matches_target, same_service_mode_kind,
+    service_placement_eligibility,
 };
 
 use super::{
@@ -150,14 +151,32 @@ fn preview_from(
         volumes_to_create: planned
             .volumes_to_create
             .into_iter()
-            .map(|(machine_id, volume)| VolumeToCreate {
-                machine_id,
-                machine_name: snapshot
-                    .machines
-                    .iter()
-                    .find(|machine| machine.machine.id == machine_id)
-                    .map(|machine| machine.machine.name.clone()),
-                volume,
+            .filter_map(|(machine_id, volume)| {
+                let (name, maximum_bytes) = match volume.source {
+                    VolumeSource::Named {
+                        name,
+                        external: false,
+                        ..
+                    } => (name, None),
+                    VolumeSource::Provisioned {
+                        name,
+                        maximum_bytes,
+                        ..
+                    } => (name, Some(maximum_bytes)),
+                    VolumeSource::Named { external: true, .. }
+                    | VolumeSource::Bind { .. }
+                    | VolumeSource::Tmpfs { .. } => return None,
+                };
+                Some(VolumeToCreate {
+                    machine_id,
+                    machine_name: snapshot
+                        .machines
+                        .iter()
+                        .find(|machine| machine.machine.id == machine_id)
+                        .map(|machine| machine.machine.name.clone()),
+                    name,
+                    maximum_bytes,
+                })
             })
             .collect(),
         would_remove: planned.would_remove,

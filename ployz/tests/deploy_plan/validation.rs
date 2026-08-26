@@ -207,10 +207,9 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
         plan.volumes_to_create
             .first()
             .expect("missing managed Volume is previewed")
-            .volume
-            .reference
+            .name
             .as_str(),
-        "data"
+        "app_data"
     );
 }
 

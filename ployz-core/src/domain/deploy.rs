@@ -9,11 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ContainerRuntimeObservation, HealthObservation, RequestedServiceSpec, ResolvedServiceSpec,
-    ServiceVolume,
 };
 use crate::{
-    ContainerId, DockerVolumeId, MachineId, MachineName, ProjectName, QualifiedService, RpcError,
-    ServiceName,
+    ContainerId, DockerVolumeId, DockerVolumeName, MachineId, MachineName, ProjectName,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName,
 };
 use thiserror::Error;
 
@@ -375,8 +374,11 @@ pub struct VolumeToCreate {
     /// Human-facing Machine Name from this observer's snapshot when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_name: Option<MachineName>,
-    /// Mounted managed Service Volume that is currently absent on the Machine.
-    pub volume: ServiceVolume,
+    /// Physical Docker Volume Name that is currently absent on the Machine.
+    pub name: DockerVolumeName,
+    /// Positive Provisioned Volume bound; absent for an ordinary named Volume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_bytes: Option<ProvisionedVolumeMaximumBytes>,
 }
 
 /// A Compose-declared Docker Volume this Deploy keeps because it is omitted
@@ -761,6 +763,20 @@ impl DeployOperation {
             Self::WaitHealthy { .. }
             | Self::RunContainer { .. }
             | Self::RunHook { .. }
+            | Self::RemoveVolume { .. } => None,
+        }
+    }
+
+    /// Resolved Service specification carried by a container-creation operation.
+    #[must_use]
+    pub fn spec(&self) -> Option<&ResolvedServiceSpec> {
+        match self {
+            Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(spec),
+            Self::ReplaceContainer(replacement) => Some(&replacement.spec),
+            Self::WaitHealthy { .. }
+            | Self::StopContainer { .. }
+            | Self::RemoveContainer { .. }
+            | Self::StopHook { .. }
             | Self::RemoveVolume { .. } => None,
         }
     }

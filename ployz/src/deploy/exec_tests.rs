@@ -1,10 +1,9 @@
-use std::{collections::VecDeque, num::NonZeroU64, sync::Mutex};
+use std::{collections::VecDeque, sync::Mutex};
 
 use ployz_core::{
-    ContainerPath, ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId,
-    DockerVolumeName, HealthFailure, HealthObservation, MembershipObservation, ProjectName,
-    ProvisionedVolumeMaximumBytes, RpcErrorCode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, VolumeSource,
+    ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
+    HealthFailure, HealthObservation, MembershipObservation, ProjectName, RpcErrorCode,
+    ServiceName,
 };
 
 use crate::deploy::{DeployOutcome, DeploySnapshot, FailedOperation};
@@ -288,32 +287,6 @@ fn configured_healthcheck() -> ployz_core::ConfiguredHealthcheck {
 
 fn healthcheck() -> ployz_core::HealthcheckSpec {
     ployz_core::HealthcheckSpec::Configured(configured_healthcheck())
-}
-
-fn provisioned_spec() -> ResolvedServiceSpec {
-    let mut spec = spec(None, None, None);
-    let reference = ServiceVolumeReference::parse("data").unwrap();
-    spec.volume_graph = ServiceVolumeGraph::parse(
-        vec![ServiceVolume {
-            reference: reference.clone(),
-            source: VolumeSource::Provisioned {
-                name: DockerVolumeName::parse("data").unwrap(),
-                maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-                    NonZeroU64::new(1_073_741_824).unwrap(),
-                ),
-                labels: Default::default(),
-            },
-        }],
-        vec![ServiceMount {
-            volume: reference,
-            target: ContainerPath::parse("/data").unwrap(),
-            read_only: false,
-            no_copy: false,
-            subpath: None,
-        }],
-    )
-    .unwrap();
-    spec
 }
 
 fn observation(

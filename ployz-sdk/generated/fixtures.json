@@ -386,17 +386,8 @@
       {
         "machine_id": "0123456789abcdef0123456789abcdef",
         "machine_name": "edge",
-        "volume": {
-          "reference": "data",
-          "source": {
-            "kind": "provisioned",
-            "labels": {
-              "backup": "daily"
-            },
-            "maximum_bytes": "1073741824",
-            "name": "data"
-          }
-        }
+        "maximum_bytes": "1073741824",
+        "name": "data"
       }
     ],
     "warnings": [
@@ -456,17 +447,8 @@
       {
         "machine_id": "0123456789abcdef0123456789abcdef",
         "machine_name": "edge",
-        "volume": {
-          "reference": "data",
-          "source": {
-            "kind": "provisioned",
-            "labels": {
-              "backup": "daily"
-            },
-            "maximum_bytes": "1073741824",
-            "name": "data"
-          }
-        }
+        "maximum_bytes": "1073741824",
+        "name": "data"
       }
     ],
     "warnings": [
@@ -1664,16 +1646,7 @@
   "volume_to_create": {
     "machine_id": "0123456789abcdef0123456789abcdef",
     "machine_name": "edge",
-    "volume": {
-      "reference": "data",
-      "source": {
-        "kind": "provisioned",
-        "labels": {
-          "backup": "daily"
-        },
-        "maximum_bytes": "1073741824",
-        "name": "data"
-      }
-    }
+    "maximum_bytes": "1073741824",
+    "name": "data"
   }
 }

@@ -1307,11 +1307,17 @@ secrets: {token: {x-command: "printf resolved"}}
             && db.container.environment.get("TOKEN").map(String::as_str) == Some("resolved")
             && api.name.as_str() == "api"
     ));
-    let volume = &plan
+    let previewed_volume = plan
         .volumes_to_create
         .first()
-        .expect("missing managed Volume is previewed")
-        .volume;
+        .expect("missing managed Volume is previewed");
+    let plan_operations = operations(&plan);
+    let volume = plan_operations
+        .iter()
+        .filter_map(DeployOperation::spec)
+        .flat_map(|spec| spec.volume_graph.volumes())
+        .find(|volume| matches!(&volume.source, VolumeSource::Named { .. }))
+        .expect("run operation carries the managed Volume");
     assert!(matches!(
         &volume.source,
         VolumeSource::Named { name, external: false, labels, .. }
@@ -1320,6 +1326,7 @@ secrets: {token: {x-command: "printf resolved"}}
                 && labels.get(PROJECT_NAME_LABEL) == Some(&"app".to_string())
     ));
     assert_eq!(volume.reference, requested_volume.reference);
+    assert_eq!(previewed_volume.name.as_str(), "app_data");
     assert_eq!(
         service(&project, "db")
             .container
@@ -1383,15 +1390,17 @@ x-volumes: {data: 10G}
     compose_spec.service_id = sdk_spec.service_id;
 
     assert_eq!(compose_preview, sdk_preview);
-    assert!(compose_preview.volumes_to_create.iter().any(|item| {
-        item.volume.reference.as_str() == "data"
-            && matches!(&item.volume.source, VolumeSource::Provisioned { .. })
-    }));
     assert!(
         compose_preview
             .volumes_to_create
             .iter()
-            .any(|item| item.volume.reference.as_str() == "cache")
+            .any(|item| item.maximum_bytes.is_some())
+    );
+    assert!(
+        compose_preview
+            .volumes_to_create
+            .iter()
+            .any(|item| item.name.as_str() == "app_cache")
     );
 }
 
@@ -1510,16 +1519,12 @@ fn compose_x_volume_size_stays_in_resolved_service_spec() {
     assert_eq!(source_bound(&twenty_spec), 20 * 1024_u64.pow(3));
 
     let bound = |preview: &ployz::deploy::DeployPreview| {
-        let volume = &preview
+        preview
             .volumes_to_create
             .iter()
-            .find(|item| matches!(&item.volume.source, VolumeSource::Provisioned { .. }))
+            .find_map(|item| item.maximum_bytes)
             .unwrap()
-            .volume;
-        let VolumeSource::Provisioned { maximum_bytes, .. } = &volume.source else {
-            unreachable!("filtered a Provisioned Volume preview")
-        };
-        maximum_bytes.get()
+            .get()
     };
     assert_eq!(bound(&ten_preview), 10 * 1024_u64.pow(3));
     assert_eq!(bound(&twenty_preview), 20 * 1024_u64.pow(3));
@@ -1672,12 +1677,18 @@ fn created_named_volume(
     plan: &ployz::deploy::DeployPreview,
     project: &str,
 ) -> ployz_core::DockerVolumeName {
-    let volume = plan
+    let previewed = plan
         .volumes_to_create
         .iter()
-        .map(|item| &item.volume)
-        .find(|volume| matches!(&volume.source, VolumeSource::Named { .. }))
+        .find(|item| item.maximum_bytes.is_none())
         .expect("plan creates a Docker Volume");
+    let plan_operations = operations(plan);
+    let volume = plan_operations
+        .iter()
+        .filter_map(DeployOperation::spec)
+        .flat_map(|spec| spec.volume_graph.volumes())
+        .find(|volume| matches!(&volume.source, VolumeSource::Named { name, .. } if name == &previewed.name))
+        .expect("container operation carries the previewed Volume");
     let VolumeSource::Named { name, labels, .. } = &volume.source else {
         panic!("expected a named Docker Volume, got {:?}", volume.source);
     };
@@ -1686,7 +1697,8 @@ fn created_named_volume(
         labels.get(PROJECT_NAME_LABEL).map(String::as_str),
         Some(project)
     );
-    name.clone()
+    assert_eq!(name, &previewed.name);
+    previewed.name.clone()
 }
 
 #[test]
@@ -1830,20 +1842,13 @@ volumes: {data: {name: demo_data}}
         .first()
         .unwrap_or_else(|| panic!("missing Volume preview: {plan:?}"));
     let anchor = previewed.machine_id;
-    let volume = &previewed.volume;
+    let existing_name = &previewed.name;
     assert_eq!(anchor, machine('b', "two").machine.id);
     assert!(ops.iter().all(|operation| matches!(
         operation,
         DeployOperation::RunContainer { machine_id, .. } if *machine_id == anchor
     )));
 
-    let VolumeSource::Named {
-        name: existing_name,
-        ..
-    } = &volume.source
-    else {
-        panic!("unexpected shared Volume: {volume:?}")
-    };
     let mut existing_snapshot = snapshot.clone();
     existing_snapshot.volume_snapshot = VolumeSnapshot::try_from_observations(
         snapshot

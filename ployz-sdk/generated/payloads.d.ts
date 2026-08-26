@@ -424,7 +424,8 @@ export type PreservedVolume = Additive<{
 export type VolumeToCreate = Additive<{
   machine_id: MachineId;
   machine_name?: MachineName;
-  volume: ServiceVolume;
+  name: DockerVolumeName;
+  maximum_bytes?: ProvisionedVolumeMaximumBytes;
 }>;
 
 export type DeployPreview = Additive<{

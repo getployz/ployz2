@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use ployz_core::{
     DeployEvent, DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation,
     HttpProtocol, OperationPhase, OperationRow, OperationStatus, PortPublication,
-    ReplacementOperation, UpdateOrder, VolumeSource,
+    ReplacementOperation, UpdateOrder,
 };
 
 /// How the live task list is titled.
@@ -119,23 +119,16 @@ fn volumes_to_create_lines(preview: &DeployPreview) -> String {
             .machine_name
             .as_ref()
             .map_or_else(|| item.machine_id.to_string(), ToString::to_string);
-        match &item.volume.source {
-            VolumeSource::Provisioned { maximum_bytes, .. } => {
+        match item.maximum_bytes {
+            Some(maximum_bytes) => {
                 let _ = writeln!(
                     out,
                     "  + provisioned volume {} (maximum {maximum_bytes} bytes) on {machine}",
-                    item.volume.reference
+                    item.name
                 );
             }
-            VolumeSource::Named {
-                external: false, ..
-            } => {
-                let _ = writeln!(out, "  + volume {} on {machine}", item.volume.reference);
-            }
-            VolumeSource::Named { external: true, .. }
-            | VolumeSource::Bind { .. }
-            | VolumeSource::Tmpfs { .. } => {
-                unreachable!("only missing managed Docker Volumes are previewed")
+            None => {
+                let _ = writeln!(out, "  + volume {} on {machine}", item.name);
             }
         }
     }
@@ -270,19 +263,7 @@ fn service_marker(rows: &[&OperationRow], pruned: bool) -> &'static str {
 }
 
 fn spec_image(operation: &DeployOperation) -> Option<&str> {
-    match operation {
-        DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
-            Some(spec.container.image.as_str())
-        }
-        DeployOperation::ReplaceContainer(replacement) => {
-            Some(replacement.spec.container.image.as_str())
-        }
-        DeployOperation::WaitHealthy { .. }
-        | DeployOperation::StopContainer { .. }
-        | DeployOperation::RemoveContainer { .. }
-        | DeployOperation::StopHook { .. }
-        | DeployOperation::RemoveVolume { .. } => None,
-    }
+    operation.spec().map(|spec| spec.container.image.as_str())
 }
 
 fn child_line(row: &OperationRow) -> String {
@@ -574,8 +555,7 @@ mod tests {
         ContainerId, DeployOperation, DockerVolumeId, DockerVolumeName, MachineId, MachineName,
         OperationRow, OperationStatus, PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes,
         PruneRefusal, QualifiedService, ReplacementOperation, RequestedServiceSpec,
-        ResolvedServiceSpec, ServiceName, ServiceVolume, ServiceVolumeReference, UpdateOrder,
-        VolumeSource, VolumeToCreate,
+        ResolvedServiceSpec, ServiceName, UpdateOrder, VolumeToCreate,
     };
 
     use super::*;
@@ -650,16 +630,10 @@ mod tests {
         preview.volumes_to_create = vec![VolumeToCreate {
             machine_id,
             machine_name: Some(MachineName::parse("edge").unwrap()),
-            volume: ServiceVolume {
-                reference: ServiceVolumeReference::parse("data").unwrap(),
-                source: VolumeSource::Provisioned {
-                    name: DockerVolumeName::parse("shop_data").unwrap(),
-                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-                        NonZeroU64::new(1_073_741_824).unwrap(),
-                    ),
-                    labels: Default::default(),
-                },
-            },
+            name: DockerVolumeName::parse("data").unwrap(),
+            maximum_bytes: Some(ProvisionedVolumeMaximumBytes::new(
+                NonZeroU64::new(1_073_741_824).unwrap(),
+            )),
         }];
 
         let text = plan_text(&preview, "default", None);

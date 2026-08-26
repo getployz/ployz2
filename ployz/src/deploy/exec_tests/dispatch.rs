@@ -101,7 +101,7 @@ async fn dispatches_the_complete_algebra() {
 #[tokio::test]
 async fn volume_ensure_failure_is_the_container_operation_failure() {
     let machine_id = machine('1');
-    let operation = run(&machine_id, provisioned_spec(), true);
+    let operation = run(&machine_id, spec(None, None, None), true);
     let client = Scripted::new(vec![failed(
         Call::Create(machine_id, ContainerKind::ServiceContainer),
         "Volume Ensure failed after creating data",

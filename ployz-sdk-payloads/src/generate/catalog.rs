@@ -745,7 +745,8 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
             fields: &[
                 ("machine_id", "MachineId"),
                 ("machine_name", "MachineName?"),
-                ("volume", "ServiceVolume"),
+                ("name", "DockerVolumeName"),
+                ("maximum_bytes", "ProvisionedVolumeMaximumBytes?"),
             ],
         },
     ),

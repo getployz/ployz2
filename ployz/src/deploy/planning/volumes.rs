@@ -83,44 +83,16 @@ impl VolumePins {
             .into_iter()
             .filter(|(machine_id, volume)| {
                 operations.iter().any(|operation| {
-                    operation_spec_on(operation, *machine_id).is_some_and(|spec| {
-                        spec.volume_graph.mounts().iter().any(|mount| {
-                            named_volume_name(spec.volume_graph.volume_for(mount))
-                                == named_volume_name(volume)
+                    operation.machine_id() == *machine_id
+                        && operation.spec().is_some_and(|spec| {
+                            spec.volume_graph.mounts().iter().any(|mount| {
+                                named_volume_name(spec.volume_graph.volume_for(mount))
+                                    == named_volume_name(volume)
+                            })
                         })
-                    })
                 })
             })
             .collect()
-    }
-}
-
-fn operation_spec_on(
-    operation: &DeployOperation,
-    machine_id: MachineId,
-) -> Option<&ployz_core::ResolvedServiceSpec> {
-    match operation {
-        DeployOperation::RunContainer {
-            machine_id: target,
-            spec,
-            ..
-        }
-        | DeployOperation::RunHook {
-            machine_id: target,
-            spec,
-            ..
-        } if *target == machine_id => Some(spec),
-        DeployOperation::ReplaceContainer(replacement) if replacement.machine_id == machine_id => {
-            Some(&replacement.spec)
-        }
-        DeployOperation::WaitHealthy { .. }
-        | DeployOperation::RunContainer { .. }
-        | DeployOperation::StopContainer { .. }
-        | DeployOperation::RemoveContainer { .. }
-        | DeployOperation::ReplaceContainer(_)
-        | DeployOperation::StopHook { .. }
-        | DeployOperation::RunHook { .. }
-        | DeployOperation::RemoveVolume { .. } => None,
     }
 }
 

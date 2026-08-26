@@ -10,9 +10,9 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    DataLossConfirmation, DeployOperation, MachineFailure, MachineId, MachineObservation,
-    ObservedDataLoss, PortPublication, ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode,
-    ServiceMode, ServiceSelector, UnconfirmedDataLoss, select_service,
+    DataLossConfirmation, MachineFailure, MachineId, MachineObservation, ObservedDataLoss,
+    PortPublication, ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceMode,
+    ServiceSelector, UnconfirmedDataLoss, select_service,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -459,17 +459,8 @@ fn preview_ports(preview: &DeployPreview) -> impl Iterator<Item = &PortPublicati
     preview
         .operations
         .iter()
-        .flat_map(|row| match &row.operation {
-            DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
-                spec.ports.as_slice()
-            }
-            DeployOperation::ReplaceContainer(replacement) => replacement.spec.ports.as_slice(),
-            DeployOperation::WaitHealthy { .. }
-            | DeployOperation::StopContainer { .. }
-            | DeployOperation::RemoveContainer { .. }
-            | DeployOperation::StopHook { .. }
-            | DeployOperation::RemoveVolume { .. } => &[],
-        })
+        .filter_map(|row| row.operation.spec())
+        .flat_map(|spec| &spec.ports)
 }
 
 fn machine_public_addresses(machines: &[MachineObservation]) -> Vec<IpAddr> {

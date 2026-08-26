@@ -10,8 +10,8 @@ use ployz_core::{
     HealthObservation, HealthcheckSpec, IngressHostname, LocalMachineRemoved,
     MembershipObservation, ObservedDataLoss, PlanOptions, RUNTIME_WATCH_CAPABILITY,
     RequestedServiceSpec, ResolvedServiceSpec, RpcError, RpcErrorCode, RuntimeWatchTransportFrame,
-    ServiceAttempt, ServiceVolume, StorageChoice, UnconfirmedDataLoss, VolumeInventory,
-    VolumeSource, VolumeToCreate,
+    ServiceAttempt, StorageChoice, UnconfirmedDataLoss, VolumeInventory, VolumeSource,
+    VolumeToCreate,
 };
 use ployz_sdk_payloads::{
     PACKAGE_NAME, decode_fixture, drift, fixtures, sdk_package_root, write_generated,
@@ -246,13 +246,8 @@ fn json_fixtures_round_trip_through_rust_types() {
     let volume: VolumeToCreate = decode_fixture(fixture(&fixtures, "volume_to_create"));
     assert!(matches!(
         volume,
-        VolumeToCreate {
-            volume: ServiceVolume {
-                source: VolumeSource::Provisioned { maximum_bytes, .. },
-                ..
-            },
-            ..
-        } if maximum_bytes.get() == 1_073_741_824
+        VolumeToCreate { maximum_bytes: Some(maximum_bytes), .. }
+            if maximum_bytes.get() == 1_073_741_824
     ));
     assert!(intent.options.selected.is_empty());
     assert_eq!(intent.options, PlanOptions::default());
@@ -560,6 +555,8 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("operations: OperationRow[]"));
     assert!(dts.contains("volumes_to_create: VolumeToCreate[]"));
     assert!(dts.contains("export type VolumeToCreate = Additive<{"));
+    assert!(dts.contains("name: DockerVolumeName"));
+    assert!(dts.contains("maximum_bytes?: ProvisionedVolumeMaximumBytes"));
     assert!(dts.contains("export type OperationRow = Additive<{"));
     assert!(dts.contains("export type DeployEvent ="));
     assert!(dts.contains("export type OperationStatus ="));

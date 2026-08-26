@@ -472,13 +472,8 @@ fn missing_mounted_volume_is_previewed_for_replicas_on_one_machine() {
             DeployOperation::RunContainer { machine_id: second, .. },
         ] if first == &machine_id('1')
             && second == first
-            && matches!(
-                &volume.volume.source,
-                VolumeSource::Named { name, external: false, labels, .. }
-                    if name.as_str() == "app_data"
-                        && labels.get(MANAGED_LABEL) == Some(&String::new())
-                        && labels.get(PROJECT_NAME_LABEL) == Some(&"app".to_string())
-            )
+            && volume.name.as_str() == "app_data"
+            && volume.maximum_bytes.is_none()
     ));
 }
 
@@ -805,7 +800,8 @@ fn missing_named_volume_is_created_on_the_machine_that_has_the_other() {
     assert!(matches!(
         &plan.volumes_to_create[..],
         [item] if item.machine_id == machine_id('1')
-            && matches!(&item.volume.source, VolumeSource::Named { name, .. } if name.as_str() == "app_multi_missing")
+            && item.name.as_str() == "app_multi_missing"
+            && item.maximum_bytes.is_none()
     ));
 }
 

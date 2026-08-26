@@ -937,10 +937,10 @@ fn volume_to_create() -> VolumeToCreate {
     VolumeToCreate {
         machine_id: machine_id(MACHINE_ID_HEX),
         machine_name: Some(MachineName::parse("edge").expect("fixture Machine Name is valid")),
-        volume: ServiceVolume {
-            reference: ServiceVolumeReference::parse("data").unwrap(),
-            source: provisioned_volume_source(),
-        },
+        name: DockerVolumeName::parse("data").expect("fixture Volume name is valid"),
+        maximum_bytes: Some(ProvisionedVolumeMaximumBytes::new(
+            NonZeroU64::new(1_073_741_824).unwrap(),
+        )),
     }
 }
 
