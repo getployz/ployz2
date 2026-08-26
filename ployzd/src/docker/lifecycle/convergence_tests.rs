@@ -49,8 +49,7 @@ async fn rejected_admission_does_not_poll_deferred_network() {
     let global = runtime
         .converge_global_slot(
             &machine,
-            ContainerRequest {
-                kind: ContainerKind::ServiceContainer,
+            GlobalSlotRequest {
                 project_name: &project,
                 spec: &unknown,
                 network: async { Err(Error::EndpointCapacity) },
@@ -70,34 +69,6 @@ async fn rejected_admission_does_not_poll_deferred_network() {
             && !(method == Method::POST && path.contains("/containers/"))
             && !path.ends_with("/start")
             && method != Method::DELETE
-    }));
-}
-
-#[tokio::test]
-async fn complete_service_placement_is_admitted_before_container_mutation() {
-    let (runtime, fake) = fake_runtime().await;
-    let mut spec = spec_with_sources(Vec::new());
-    spec.placement = ployz_core::Placement {
-        machines: vec![ployz_core::MachineTarget::parse("other").unwrap()],
-    };
-    let project = ProjectName::parse("app").unwrap();
-
-    let error = runtime
-        .create_with_network(
-            &machine(),
-            container_request(
-                ContainerKind::ServiceContainer,
-                &project,
-                &spec,
-                std::future::ready(None),
-            ),
-        )
-        .await
-        .unwrap_err();
-
-    assert!(matches!(error, Error::ServicePlacementMismatch));
-    assert!(fake.requests.lock().unwrap().iter().all(|(method, path)| {
-        !path.contains("/volumes/") && !(method == Method::POST && path.contains("/containers/"))
     }));
 }
 
@@ -132,12 +103,7 @@ async fn run_replacement_hook_and_missing_global_reach_the_same_volume_ensure() 
         runtime
             .converge_global_slot(
                 &machine,
-                container_request(
-                    ContainerKind::ServiceContainer,
-                    &project,
-                    &spec,
-                    std::future::ready(None),
-                ),
+                global_slot_request(&project, &spec, std::future::ready(None)),
             )
             .await,
         Err(Error::VolumeShapeMismatch { .. })
@@ -173,12 +139,7 @@ async fn existing_global_slot_is_verified_before_early_return_or_restart() {
             runtime
                 .converge_global_slot(
                     &machine,
-                    container_request(
-                        ContainerKind::ServiceContainer,
-                        &project,
-                        &spec,
-                        std::future::ready(None),
-                    ),
+                    global_slot_request(&project, &spec, std::future::ready(None)),
                 )
                 .await,
             Ok(GlobalSlotConvergence::Unknown(
@@ -208,8 +169,7 @@ async fn observer_eligible_target_ineligible_retires_the_existing_global_slot() 
     let outcome = runtime
         .converge_global_slot(
             &machine,
-            container_request(
-                ContainerKind::ServiceContainer,
+            global_slot_request(
                 &project,
                 &spec,
                 std::future::ready(Some(MachineStorageObservation::Stateless)),
@@ -246,8 +206,7 @@ async fn target_ineligible_retires_an_older_global_generation() {
     let outcome = runtime
         .converge_global_slot(
             &machine,
-            container_request(
-                ContainerKind::ServiceContainer,
+            global_slot_request(
                 &project,
                 &spec,
                 std::future::ready(Some(MachineStorageObservation::Stateless)),
@@ -293,8 +252,7 @@ async fn observer_ineligible_target_eligible_ensures_and_starts_the_existing_glo
     let outcome = runtime
         .converge_global_slot(
             &machine,
-            container_request(
-                ContainerKind::ServiceContainer,
+            global_slot_request(
                 &project,
                 &spec,
                 std::future::ready(Some(MachineStorageObservation::Ready)),

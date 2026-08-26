@@ -42,7 +42,7 @@ use tokio::sync::Mutex;
 use observe::ObservationSink;
 
 pub(crate) use create::NetworkAttachment;
-pub(crate) use lifecycle::{ContainerRequest, GlobalSlotConvergence};
+pub(crate) use lifecycle::{ContainerRequest, GlobalSlotConvergence, GlobalSlotRequest};
 pub(crate) use managed_service::ManagedService;
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
