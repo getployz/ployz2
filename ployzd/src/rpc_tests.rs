@@ -216,6 +216,7 @@ async fn envoy_service_is_bootstrapped_before_bridge_network_is_returned() {
     );
     assert!(envoy_dir.join("lds.yaml").exists());
     assert!(envoy_dir.join("cds.yaml").exists());
+    assert!(envoy_dir.join("sds.yaml").exists());
     std::fs::write(&config_file, "authoritative\n").unwrap();
     service
         .local
@@ -247,7 +248,9 @@ async fn ingress_config_rpc_returns_only_the_selected_backend_file() {
         ),
         (
             IngressProxyBackend::Envoy,
-            IngressProxyConfig::Envoy("envoy-lds\n\n---\nenvoy-rds\n\n---\nenvoy-cds\n".into()),
+            IngressProxyConfig::Envoy(
+                "envoy-lds\n\n---\nenvoy-rds\n\n---\nenvoy-cds\n\n---\nenvoy-sds\n".into(),
+            ),
         ),
     ] {
         let data_dir = std::env::temp_dir().join(format!(
@@ -281,6 +284,7 @@ async fn ingress_config_rpc_returns_only_the_selected_backend_file() {
         std::fs::write(envoy.parent().unwrap().join("lds.yaml"), "envoy-lds\n").unwrap();
         std::fs::write(envoy.parent().unwrap().join("rds.yaml"), "envoy-rds\n").unwrap();
         std::fs::write(envoy.parent().unwrap().join("cds.yaml"), "envoy-cds\n").unwrap();
+        std::fs::write(envoy.parent().unwrap().join("sds.yaml"), "envoy-sds\n").unwrap();
         let service = MachineService::with_cluster(
             Arc::new(Mutex::new(local)),
             watch::channel(false).0,

@@ -19,14 +19,19 @@ use crate::{corrosion::ReplicatedStore, docker::LocalDocker, filesystem::atomic_
 mod apply;
 
 use super::{
-    IngressProjection, IngressSite, WatchApply, newest_local_ingress, watch as watch_inputs,
+    IngressEndpoint, IngressProjection, IngressSite, WatchApply, certificate_file_stem,
+    newest_local_ingress, watch as watch_inputs,
 };
 
 pub(crate) const CONFIG_FILE: &str = "bootstrap.yaml";
 const LDS_FILE: &str = "lds.yaml";
 const RDS_FILE: &str = "rds.yaml";
 const CDS_FILE: &str = "cds.yaml";
+const SDS_FILE: &str = "sds.yaml";
 const HTTP_CONTAINER_PORT: u16 = 8080;
+const HTTPS_CONTAINER_PORT: u16 = 8443;
+const CONTAINER_CERTS_DIR: &str = "/config/certs";
+const SDS_PATH: &str = "/config/sds.yaml";
 const ROUTE_TIMEOUT: &str = "60s";
 const ROUTE_IDLE_TIMEOUT: &str = "75s";
 const CONNECT_TIMEOUT: &str = "5s";
@@ -56,6 +61,9 @@ dynamic_resources:
 const LISTENER_TYPE: &str = "type.googleapis.com/envoy.config.listener.v3.Listener";
 const ROUTE_TYPE: &str = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration";
 const CLUSTER_TYPE: &str = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
+const SECRET_TYPE: &str = "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret";
+const DOWNSTREAM_TLS_TYPE: &str =
+    "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext";
 const HCM_TYPE: &str = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager";
 const ROUTER_TYPE: &str = "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router";
 
@@ -162,7 +170,8 @@ pub(crate) fn read_generated_config(data_dir: &Path) -> io::Result<String> {
     let lds = fs::read_to_string(directory.join(LDS_FILE))?;
     let rds = fs::read_to_string(directory.join(RDS_FILE))?;
     let cds = fs::read_to_string(directory.join(CDS_FILE))?;
-    Ok(format!("{lds}\n---\n{rds}\n---\n{cds}"))
+    let sds = fs::read_to_string(directory.join(SDS_FILE))?;
+    Ok(format!("{lds}\n---\n{rds}\n---\n{cds}\n---\n{sds}"))
 }
 
 /// Install the bootstrap and empty xDS required before the first Envoy process starts.
@@ -190,7 +199,8 @@ pub(crate) fn write_initial_config(machine: &Machine, config_file: &Path) -> Res
 fn write_xds(directory: &Path, rendered: &RenderedConfig) -> io::Result<()> {
     atomic_write(&directory.join(LDS_FILE), rendered.lds().as_bytes(), 0o644)?;
     atomic_write(&directory.join(RDS_FILE), rendered.rds().as_bytes(), 0o644)?;
-    atomic_write(&directory.join(CDS_FILE), rendered.cds().as_bytes(), 0o644)
+    atomic_write(&directory.join(CDS_FILE), rendered.cds().as_bytes(), 0o644)?;
+    atomic_write(&directory.join(SDS_FILE), rendered.sds().as_bytes(), 0o644)
 }
 
 /// Rendered Envoy xDS tied to one projection digest.
@@ -199,6 +209,7 @@ pub(crate) struct RenderedConfig {
     lds: String,
     rds: String,
     cds: String,
+    sds: String,
     digest: String,
 }
 
@@ -216,6 +227,11 @@ impl RenderedConfig {
     #[must_use]
     pub(crate) fn cds(&self) -> &str {
         &self.cds
+    }
+
+    #[must_use]
+    pub(crate) fn sds(&self) -> &str {
+        &self.sds
     }
 
     #[must_use]
@@ -247,9 +263,10 @@ pub(crate) fn render(projection: &IngressProjection) -> Result<RenderedConfig, E
     }
     let digest = projection_digest(projection);
     Ok(RenderedConfig {
-        lds: render_lds(&digest),
+        lds: render_lds(projection, &digest),
         rds: render_rds(projection, &digest),
         cds: render_cds(projection, &digest),
+        sds: render_sds(projection, &digest),
         digest,
     })
 }
@@ -260,8 +277,8 @@ fn projection_digest(projection: &IngressProjection) -> String {
     hex::encode(Sha256::digest(canonical))
 }
 
-fn render_lds(digest: &str) -> String {
-    format!(
+fn render_lds(projection: &IngressProjection, digest: &str) -> String {
+    let mut yaml = format!(
         "\
 version_info: \"{digest}\"
 resources:
@@ -277,25 +294,102 @@ resources:
         projection_digest: {digest}
   filter_chains:
   - filters:
-    - name: envoy.filters.network.http_connection_manager
-      typed_config:
-        \"@type\": {HCM_TYPE}
-        stat_prefix: ingress_http
-        codec_type: AUTO
-        rds:
-          route_config_name: http
-          config_source:
-            resource_api_version: V3
-            path_config_source:
-              path: /config/rds.yaml
-              watched_directory:
-                path: /config
-        http_filters:
-        - name: envoy.filters.http.router
-          typed_config:
-            \"@type\": {ROUTER_TYPE}
 "
-    )
+    );
+    write_hcm(&mut yaml, "ingress_http", "http");
+    let mut https = false;
+    for site in &projection.sites {
+        if tls_route(site).is_none() {
+            continue;
+        }
+        if !https {
+            let _ = write!(
+                yaml,
+                concat!(
+                    "- \"@type\": {listener}\n",
+                    "  name: ployz-https\n",
+                    "  address:\n",
+                    "    socket_address:\n",
+                    "      address: 0.0.0.0\n",
+                    "      port_value: {port}\n",
+                    "  metadata:\n",
+                    "    filter_metadata:\n",
+                    "      com.ployz:\n",
+                    "        projection_digest: {digest}\n",
+                    "  filter_chains:\n",
+                ),
+                listener = LISTENER_TYPE,
+                port = HTTPS_CONTAINER_PORT,
+                digest = digest,
+            );
+            https = true;
+        }
+        write_tls_filter_chain(&mut yaml, site);
+    }
+    yaml
+}
+
+fn write_tls_filter_chain(yaml: &mut String, site: &IngressSite) {
+    let secret = secret_id(&site.hostname);
+    let _ = write!(
+        yaml,
+        concat!(
+            "  - filter_chain_match:\n",
+            "      server_names:\n",
+            "      - {hostname}\n",
+            "    transport_socket:\n",
+            "      name: envoy.transport_sockets.tls\n",
+            "      typed_config:\n",
+            "        \"@type\": {tls}\n",
+            "        common_tls_context:\n",
+            "          alpn_protocols:\n",
+            "          - h2\n",
+            "          - http/1.1\n",
+            "          tls_certificate_sds_secret_configs:\n",
+            "          - name: {secret}\n",
+            "            sds_config:\n",
+            "              resource_api_version: V3\n",
+            "              path_config_source:\n",
+            "                path: {sds}\n",
+            "                watched_directory:\n",
+            "                  path: /config\n",
+            "    filters:\n",
+        ),
+        hostname = site.hostname,
+        tls = DOWNSTREAM_TLS_TYPE,
+        secret = secret,
+        sds = SDS_PATH,
+    );
+    write_hcm(yaml, "ingress_https", "https");
+}
+
+fn write_hcm(yaml: &mut String, stat_prefix: &str, route_config_name: &str) {
+    let _ = write!(
+        yaml,
+        concat!(
+            "    - name: envoy.filters.network.http_connection_manager\n",
+            "      typed_config:\n",
+            "        \"@type\": {hcm}\n",
+            "        stat_prefix: {stat}\n",
+            "        codec_type: AUTO\n",
+            "        rds:\n",
+            "          route_config_name: {route}\n",
+            "          config_source:\n",
+            "            resource_api_version: V3\n",
+            "            path_config_source:\n",
+            "              path: /config/rds.yaml\n",
+            "              watched_directory:\n",
+            "                path: /config\n",
+            "        http_filters:\n",
+            "        - name: envoy.filters.http.router\n",
+            "          typed_config:\n",
+            "            \"@type\": {router}\n",
+        ),
+        hcm = HCM_TYPE,
+        stat = stat_prefix,
+        route = route_config_name,
+        router = ROUTER_TYPE,
+    );
 }
 
 fn render_rds(projection: &IngressProjection, digest: &str) -> String {
@@ -312,18 +406,38 @@ resources:
   virtual_hosts:
 "
     );
-    for site in http_sites(projection) {
-        let id = route_id(&site.hostname);
+    for site in &projection.sites {
+        let http = site.route(HttpProtocol::Http);
+        let challenge = site.challenge();
+        if http.is_none() && challenge.is_none() {
+            continue;
+        }
+        let id = route_id(HttpProtocol::Http, &site.hostname);
         let _ = writeln!(yaml, "  - name: {id}");
         let _ = writeln!(yaml, "    domains:");
         let _ = writeln!(yaml, "    - {}", site.hostname);
         let _ = writeln!(yaml, "    routes:");
-        let _ = writeln!(yaml, "    - match:");
-        let _ = writeln!(yaml, "        prefix: /");
-        let _ = writeln!(yaml, "      route:");
-        let _ = writeln!(yaml, "        cluster: {id}");
-        let _ = writeln!(yaml, "        timeout: {ROUTE_TIMEOUT}");
-        let _ = writeln!(yaml, "        idle_timeout: {ROUTE_IDLE_TIMEOUT}");
+        if let Some(challenge) = challenge {
+            let path = format!("/.well-known/acme-challenge/{}", challenge.token());
+            let _ = writeln!(yaml, "    - match:");
+            let _ = writeln!(yaml, "        path: {}", quoted(&path));
+            let _ = writeln!(yaml, "      direct_response:");
+            let _ = writeln!(yaml, "        status: 200");
+            let _ = writeln!(yaml, "        body:");
+            let _ = writeln!(
+                yaml,
+                "          inline_string: {}",
+                quoted(challenge.response())
+            );
+        }
+        if http.is_some() {
+            let _ = writeln!(yaml, "    - match:");
+            let _ = writeln!(yaml, "        prefix: /");
+            let _ = writeln!(yaml, "      route:");
+            let _ = writeln!(yaml, "        cluster: {id}");
+            let _ = writeln!(yaml, "        timeout: {ROUTE_TIMEOUT}");
+            let _ = writeln!(yaml, "        idle_timeout: {ROUTE_IDLE_TIMEOUT}");
+        }
     }
     let _ = writeln!(yaml, "  - name: ployz-verify");
     let _ = writeln!(yaml, "    domains:");
@@ -335,51 +449,137 @@ resources:
     let _ = writeln!(yaml, "        status: 200");
     let _ = writeln!(yaml, "        body:");
     let _ = writeln!(yaml, "          inline_string: {}", projection.machine.id);
-    yaml
-}
-
-fn render_cds(projection: &IngressProjection, digest: &str) -> String {
-    let sites: Vec<_> = http_sites(projection).collect();
-    if sites.is_empty() {
-        return format!("version_info: \"{digest}\"\nresources: []\n");
-    }
-    let mut yaml = format!("version_info: \"{digest}\"\nresources:\n");
-    for site in sites {
-        let id = route_id(&site.hostname);
-        let endpoints = site
-            .route(HttpProtocol::Http)
-            .expect("http_sites only yields HTTP publications");
+    if projection
+        .sites
+        .iter()
+        .any(|site| tls_route(site).is_some())
+    {
         let _ = write!(
             yaml,
             concat!(
-                "- \"@type\": {cluster_type}\n",
-                "  name: {id}\n",
-                "  type: STATIC\n",
-                "  connect_timeout: {connect}\n",
-                "  lb_policy: ROUND_ROBIN\n",
+                "- \"@type\": {route}\n",
+                "  name: https\n",
                 "  metadata:\n",
                 "    filter_metadata:\n",
                 "      com.ployz:\n",
                 "        projection_digest: {digest}\n",
-                "  load_assignment:\n",
-                "    cluster_name: {id}\n",
-                "    endpoints:\n",
-                "    - lb_endpoints:\n",
+                "  virtual_hosts:\n",
             ),
-            cluster_type = CLUSTER_TYPE,
-            id = id,
-            connect = CONNECT_TIMEOUT,
+            route = ROUTE_TYPE,
             digest = digest,
         );
-        if endpoints.is_empty() {
-            yaml.push_str(&socket_endpoint("127.0.0.1", EMPTY_UPSTREAM_PORT));
-        } else {
-            for endpoint in endpoints {
-                yaml.push_str(&socket_endpoint(endpoint.address.0, endpoint.port.get()));
+        for site in &projection.sites {
+            if tls_route(site).is_none() {
+                continue;
             }
+            let id = route_id(HttpProtocol::Https, &site.hostname);
+            let _ = writeln!(yaml, "  - name: {id}");
+            let _ = writeln!(yaml, "    domains:");
+            let _ = writeln!(yaml, "    - {}", site.hostname);
+            let _ = writeln!(yaml, "    routes:");
+            let _ = writeln!(yaml, "    - match:");
+            let _ = writeln!(yaml, "        prefix: /");
+            let _ = writeln!(yaml, "      route:");
+            let _ = writeln!(yaml, "        cluster: {id}");
+            let _ = writeln!(yaml, "        timeout: {ROUTE_TIMEOUT}");
+            let _ = writeln!(yaml, "        idle_timeout: {ROUTE_IDLE_TIMEOUT}");
         }
     }
     yaml
+}
+
+fn render_cds(projection: &IngressProjection, digest: &str) -> String {
+    let mut body = String::new();
+    for site in &projection.sites {
+        if let Some(endpoints) = site.route(HttpProtocol::Http) {
+            write_cluster(
+                &mut body,
+                &route_id(HttpProtocol::Http, &site.hostname),
+                digest,
+                endpoints,
+            );
+        }
+        if let Some(endpoints) = tls_route(site) {
+            write_cluster(
+                &mut body,
+                &route_id(HttpProtocol::Https, &site.hostname),
+                digest,
+                endpoints,
+            );
+        }
+    }
+    if body.is_empty() {
+        format!("version_info: \"{digest}\"\nresources: []\n")
+    } else {
+        format!("version_info: \"{digest}\"\nresources:\n{body}")
+    }
+}
+
+fn render_sds(projection: &IngressProjection, digest: &str) -> String {
+    let mut body = String::new();
+    for site in &projection.sites {
+        let Some(material) = site.material() else {
+            continue;
+        };
+        if site.route(HttpProtocol::Https).is_none() {
+            continue;
+        }
+        let stem = certificate_file_stem(&site.hostname, material);
+        let id = secret_id(&site.hostname);
+        let _ = write!(
+            body,
+            concat!(
+                "- \"@type\": {secret_type}\n",
+                "  name: {id}\n",
+                "  tls_certificate:\n",
+                "    certificate_chain:\n",
+                "      filename: {certs}/{stem}.crt\n",
+                "    private_key:\n",
+                "      filename: {certs}/{stem}.key\n",
+            ),
+            secret_type = SECRET_TYPE,
+            id = id,
+            certs = CONTAINER_CERTS_DIR,
+            stem = stem,
+        );
+    }
+    if body.is_empty() {
+        format!("version_info: \"{digest}\"\nresources: []\n")
+    } else {
+        format!("version_info: \"{digest}\"\nresources:\n{body}")
+    }
+}
+
+fn write_cluster(yaml: &mut String, id: &str, digest: &str, endpoints: &[IngressEndpoint]) {
+    let _ = write!(
+        yaml,
+        concat!(
+            "- \"@type\": {cluster_type}\n",
+            "  name: {id}\n",
+            "  type: STATIC\n",
+            "  connect_timeout: {connect}\n",
+            "  lb_policy: ROUND_ROBIN\n",
+            "  metadata:\n",
+            "    filter_metadata:\n",
+            "      com.ployz:\n",
+            "        projection_digest: {digest}\n",
+            "  load_assignment:\n",
+            "    cluster_name: {id}\n",
+            "    endpoints:\n",
+            "    - lb_endpoints:\n",
+        ),
+        cluster_type = CLUSTER_TYPE,
+        id = id,
+        connect = CONNECT_TIMEOUT,
+        digest = digest,
+    );
+    if endpoints.is_empty() {
+        yaml.push_str(&socket_endpoint("127.0.0.1", EMPTY_UPSTREAM_PORT));
+    } else {
+        for endpoint in endpoints {
+            yaml.push_str(&socket_endpoint(endpoint.address.0, endpoint.port.get()));
+        }
+    }
 }
 
 fn socket_endpoint(address: impl std::fmt::Display, port: u16) -> String {
@@ -396,15 +596,25 @@ fn socket_endpoint(address: impl std::fmt::Display, port: u16) -> String {
     )
 }
 
-fn http_sites(projection: &IngressProjection) -> impl Iterator<Item = &IngressSite> {
-    projection
-        .sites
-        .iter()
-        .filter(|site| site.route(HttpProtocol::Http).is_some())
+fn tls_route(site: &IngressSite) -> Option<&[IngressEndpoint]> {
+    let endpoints = site.route(HttpProtocol::Https)?;
+    site.material()?;
+    Some(endpoints)
 }
 
-fn route_id(hostname: &IngressHost) -> String {
-    format!("ployz-http-{hostname}")
+fn route_id(protocol: HttpProtocol, hostname: &IngressHost) -> String {
+    match protocol {
+        HttpProtocol::Http => format!("ployz-http-{hostname}"),
+        HttpProtocol::Https => format!("ployz-https-{hostname}"),
+    }
+}
+
+fn secret_id(hostname: &IngressHost) -> String {
+    format!("ployz-tls-{hostname}")
+}
+
+fn quoted(value: &str) -> String {
+    serde_json::to_string(value).expect("string serialization cannot fail")
 }
 
 #[cfg(test)]

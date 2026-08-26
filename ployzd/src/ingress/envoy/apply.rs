@@ -16,11 +16,12 @@ use thiserror::Error;
 use crate::{
     docker::{Error as DockerError, LocalDocker},
     filesystem::atomic_write,
-    ingress::IngressProjection,
+    ingress::{IngressProjection, remove_stale_certificate_files, write_certificate_files},
 };
 
 use super::{
-    self as envoy, BOOTSTRAP, CDS_FILE, LDS_FILE, RDS_FILE, projection_digest, render, write_xds,
+    self as envoy, BOOTSTRAP, CDS_FILE, LDS_FILE, RDS_FILE, SDS_FILE, projection_digest, render,
+    write_xds,
 };
 
 /// Failure while applying Envoy configuration.
@@ -110,7 +111,7 @@ pub(crate) async fn apply<I: ApplyIo>(
     let digest = rendered.digest().to_owned();
     record_evidence(&digest, Evidence::Rendered);
 
-    let candidate = match write_candidate(live_config, &rendered) {
+    let candidate = match write_candidate(live_config, projection, &rendered) {
         Ok(candidate) => candidate,
         Err(error) => {
             record_evidence(&digest, Evidence::CandidateWriteFailed);
@@ -133,6 +134,10 @@ pub(crate) async fn apply<I: ApplyIo>(
     }
     record_evidence(&digest, Evidence::ValidationAccepted);
 
+    if let Err(error) = write_envoy_certificates(live_config, projection) {
+        record_evidence(&digest, Evidence::ActivationFailed);
+        return Err(Error::Filesystem(error));
+    }
     match candidate.activate(live_config) {
         Ok(Activation::Durable) => record_evidence(&digest, Evidence::Activated),
         Ok(Activation::Unsynced(error)) => {
@@ -143,6 +148,10 @@ pub(crate) async fn apply<I: ApplyIo>(
             record_evidence(&digest, Evidence::ActivationFailed);
             return Err(Error::Filesystem(error));
         }
+    }
+    if let Err(error) = remove_stale_certificate_files(live_config, &projection.sites) {
+        record_evidence(&digest, Evidence::ActivationFailed);
+        return Err(Error::Filesystem(error));
     }
 
     Ok(ApplyOutcome::Activated { digest })
@@ -267,7 +276,11 @@ fn record_evidence(digest: &str, evidence: Evidence) {
     );
 }
 
-fn write_candidate(live_config: &Path, rendered: &envoy::RenderedConfig) -> io::Result<Candidate> {
+fn write_candidate(
+    live_config: &Path,
+    projection: &IngressProjection,
+    rendered: &envoy::RenderedConfig,
+) -> io::Result<Candidate> {
     let parent = live_config
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "config file has no parent"))?;
@@ -279,7 +292,29 @@ fn write_candidate(live_config: &Path, rendered: &envoy::RenderedConfig) -> io::
     fs::create_dir_all(&path)?;
     atomic_write(&path.join("bootstrap.yaml"), BOOTSTRAP.as_bytes(), 0o644)?;
     write_xds(&path, rendered)?;
+    write_envoy_certificates(&path.join("bootstrap.yaml"), projection)?;
     Ok(Candidate(Some(path)))
+}
+
+/// Envoy runs as uid 101; root-owned 0600 keys would be unreadable in the container.
+const ENVOY_PRIVATE_KEY_MODE: u32 = 0o644;
+
+fn write_envoy_certificates(config_file: &Path, projection: &IngressProjection) -> io::Result<()> {
+    write_certificate_files(
+        config_file,
+        &projection.sites,
+        ENVOY_PRIVATE_KEY_MODE,
+        create_directory,
+        skip_group,
+    )
+}
+
+fn create_directory(path: &Path) -> io::Result<()> {
+    fs::create_dir_all(path)
+}
+
+fn skip_group(_: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 struct Candidate(Option<PathBuf>);
@@ -307,8 +342,9 @@ impl Candidate {
             io::Error::new(io::ErrorKind::InvalidInput, "config file has no parent")
         })?;
         let candidate = self.0.take().expect("candidate is not yet activated");
-        // Clusters, then routes, then listeners so Envoy never routes to a missing cluster.
-        for name in [CDS_FILE, RDS_FILE, LDS_FILE] {
+        // Clusters, secrets, routes, then listeners so Envoy never binds TLS or
+        // routes against missing SDS or CDS resources.
+        for name in [CDS_FILE, SDS_FILE, RDS_FILE, LDS_FILE] {
             fs::rename(candidate.join(name), live_parent.join(name))?;
         }
         let leftover = fs::remove_dir_all(&candidate);
@@ -343,8 +379,9 @@ mod tests {
             ployz_core::MachineId::random()
         ));
         let live = root.join("bootstrap.yaml");
-        let rendered = render(&crate::ingress::tests::renderer_projection()).unwrap();
-        let candidate = write_candidate(&live, &rendered).unwrap();
+        let projection = crate::ingress::tests::renderer_projection();
+        let rendered = render(&projection).unwrap();
+        let candidate = write_candidate(&live, &projection, &rendered).unwrap();
 
         let body = validation_container_body("envoy:test", candidate.path()).unwrap();
         assert_eq!(
@@ -379,8 +416,9 @@ mod tests {
         let live = root.join("bootstrap.yaml");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join(LDS_FILE), "live-lds\n").unwrap();
-        let rendered = render(&crate::ingress::tests::renderer_projection()).unwrap();
-        let candidate = write_candidate(&live, &rendered).unwrap();
+        let projection = crate::ingress::tests::renderer_projection();
+        let rendered = render(&projection).unwrap();
+        let candidate = write_candidate(&live, &projection, &rendered).unwrap();
 
         let outcome = candidate
             .activate_with(&live, |_| Err(io::Error::other("sync failed")))

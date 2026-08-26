@@ -5,7 +5,8 @@ use super::{
     apply::{ApplyIo, ApplyOutcome, Error as ApplyError, ValidationOutcome, apply},
     render, write_initial_config,
 };
-use crate::ingress::tests::renderer_projection;
+use crate::corrosion::CertificateChallenge;
+use crate::ingress::{certificate_file_stem, tests::renderer_projection};
 use ployz_core::{ContainerAddress, IngressProxyFragment, MachineId, QualifiedService};
 use std::{fs, path::Path, sync::Mutex};
 
@@ -42,6 +43,10 @@ fn shared_projection_matches_the_frozen_envoy_contract() {
         include_str!("envoy_tests/renderer_projection.cds.yaml")
     );
     assert_eq!(
+        rendered.sds(),
+        include_str!("envoy_tests/renderer_projection.sds.yaml")
+    );
+    assert_eq!(
         rendered.digest(),
         "7fea0e6032bb92f9cc4f67fd0838b5563fc40835d520ee514720bab4b9f7a052"
     );
@@ -70,28 +75,95 @@ fn changed_projection_fully_regenerates_static_targets() {
 }
 
 #[test]
-fn http_routes_carry_upstream_timeouts_and_skip_https_only_sites() {
+fn http_and_https_routes_carry_timeouts_secrets_and_challenge_direct_responses() {
     let rendered = render(&renderer_projection()).unwrap();
 
     assert!(rendered.rds().contains("cluster: ployz-http-example.com"));
+    assert!(
+        rendered
+            .rds()
+            .contains("cluster: ployz-https-secure.example.com")
+    );
     assert!(rendered.rds().contains("timeout: 60s"));
     assert!(rendered.rds().contains("idle_timeout: 75s"));
     assert!(rendered.cds().contains("connect_timeout: 5s"));
-    assert!(!rendered.rds().contains("secure.example.com"));
-    assert!(!rendered.cds().contains("secure.example.com"));
+    assert!(rendered.cds().contains("ployz-https-secure.example.com"));
+    assert!(rendered.cds().contains("address: 10.210.1.3"));
+    assert!(rendered.cds().contains("port_value: 8443"));
+    assert!(rendered.lds().contains("port_value: 8443"));
+    assert!(rendered.lds().contains("server_names:"));
+    assert!(rendered.lds().contains("secure.example.com"));
+    assert!(rendered.sds().contains(
+        "filename: /config/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.crt"
+    ));
+    assert!(rendered.sds().contains(
+        "filename: /config/certs/secure.example.com-1d660d5cdaeaac5dcae6e864c8ee63cd0a4483556f2e1d3bf8d66b2e8bc74e67.key"
+    ));
+    assert!(rendered.rds().contains("acme-challenge"));
+    assert!(rendered.rds().contains("token.thumbprint"));
     assert!(rendered.cds().contains("address: 127.0.0.1"));
     assert!(rendered.cds().contains("port_value: 1"));
     assert!(!rendered.lds().contains("admin:"));
-    assert!(!rendered.rds().contains("acme-challenge"));
     assert!(
         rendered
             .lds()
             .contains(&format!("version_info: \"{}\"", rendered.digest()))
     );
-    assert_eq!(
-        rendered.rds().matches("timeout: 60s").count(),
-        rendered.rds().matches("cluster: ployz-http-").count()
+    let proxy_routes = rendered.rds().matches("cluster: ployz-http-").count()
+        + rendered.rds().matches("cluster: ployz-https-").count();
+    assert_eq!(rendered.rds().matches("timeout: 60s").count(), proxy_routes);
+}
+
+#[test]
+fn https_without_material_is_not_rendered() {
+    let mut projection = renderer_projection();
+    projection
+        .sites
+        .iter_mut()
+        .find(|site| site.hostname.as_str() == "secure.example.com")
+        .unwrap()
+        .certificate
+        .as_mut()
+        .unwrap()
+        .material = None;
+    let rendered = render(&projection).unwrap();
+
+    assert!(!rendered.lds().contains("port_value: 8443"));
+    assert!(!rendered.lds().contains("ployz-https"));
+    assert!(!rendered.rds().contains("ployz-https-"));
+    assert!(!rendered.cds().contains("ployz-https-"));
+    assert!(!rendered.sds().contains("secure.example.com"));
+    assert!(rendered.sds().contains("resources: []"));
+}
+
+#[test]
+fn http01_challenge_is_served_without_https_material_or_http_publication() {
+    let mut projection = renderer_projection();
+    let site = projection
+        .sites
+        .iter_mut()
+        .find(|site| site.hostname.as_str() == "secure.example.com")
+        .unwrap();
+    site.certificate.as_mut().unwrap().challenge =
+        CertificateChallenge::new("issuance", "issuance.thumbprint");
+    site.certificate.as_mut().unwrap().material = None;
+    let rendered = render(&projection).unwrap();
+
+    assert!(
+        rendered
+            .rds()
+            .contains("/.well-known/acme-challenge/issuance")
     );
+    assert!(rendered.rds().contains("issuance.thumbprint"));
+    assert!(rendered.rds().contains("ployz-http-secure.example.com"));
+    assert!(
+        !rendered
+            .rds()
+            .contains("cluster: ployz-http-secure.example.com")
+    );
+    assert!(!rendered.lds().contains("port_value: 8443"));
+    assert!(!rendered.cds().contains("ployz-https-"));
+    assert!(!rendered.sds().contains("secure.example.com"));
 }
 
 #[test]
@@ -110,6 +182,9 @@ fn write_initial_config_is_idempotent_and_installs_file_watched_xds() {
     let cds = fs::read_to_string(config_file.parent().unwrap().join("cds.yaml")).unwrap();
     assert!(cds.contains("resources: []"));
     assert!(cds.contains("version_info:"));
+    let sds = fs::read_to_string(config_file.parent().unwrap().join("sds.yaml")).unwrap();
+    assert!(sds.contains("resources: []"));
+    assert!(sds.contains("version_info:"));
     fs::write(&config_file, "authoritative\n").unwrap();
     write_initial_config(&machine, &config_file).unwrap();
     assert_eq!(fs::read_to_string(&config_file).unwrap(), "authoritative\n");
@@ -125,6 +200,10 @@ async fn rejected_candidate_leaves_live_configuration_untouched() {
     fs::write(root.join("lds.yaml"), "live-lds\n").unwrap();
     fs::write(root.join("rds.yaml"), "live-rds\n").unwrap();
     fs::write(root.join("cds.yaml"), "live-cds\n").unwrap();
+    fs::write(root.join("sds.yaml"), "live-sds\n").unwrap();
+    fs::create_dir_all(root.join("certs")).unwrap();
+    fs::write(root.join("certs/old.crt"), "OLD").unwrap();
+    fs::write(root.join("certs/old.key"), "OLD").unwrap();
     let io = FakeIo::rejecting("schema rejected");
 
     let error = apply(&renderer_projection(), &live, SELECTED_IMAGE, &io)
@@ -149,12 +228,29 @@ async fn rejected_candidate_leaves_live_configuration_untouched() {
         fs::read_to_string(root.join("cds.yaml")).unwrap(),
         "live-cds\n"
     );
+    assert_eq!(
+        fs::read_to_string(root.join("sds.yaml")).unwrap(),
+        "live-sds\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("certs/old.crt")).unwrap(),
+        "OLD"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("certs/old.key")).unwrap(),
+        "OLD"
+    );
+    assert_eq!(fs::read_dir(root.join("certs")).unwrap().count(), 2);
     assert!(!root.join(".apply-candidate").exists());
     let validations = io.validations.lock().unwrap();
     let (image, candidate) = validations.first().unwrap();
     assert_eq!(image, SELECTED_IMAGE);
     assert!(candidate.contains(&format!("projection_digest: {expected_digest}")));
     assert!(candidate.contains("timeout: 60s"));
+    assert!(candidate.contains("acme-challenge"));
+    assert!(candidate.contains("filename: /config/certs/secure.example.com-"));
+    assert!(candidate.contains(".crt"));
+    assert!(candidate.contains(".key"));
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -185,7 +281,46 @@ async fn accepted_candidate_is_activated_without_admin_mutation() {
         fs::read_to_string(root.join("cds.yaml")).unwrap(),
         rendered.cds()
     );
+    assert_eq!(
+        fs::read_to_string(root.join("sds.yaml")).unwrap(),
+        rendered.sds()
+    );
     assert!(!root.join(".apply-candidate").exists());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn accepted_candidate_writes_certificates_and_removes_stale_files() {
+    let root = test_root("certs");
+    let live = root.join("bootstrap.yaml");
+    let certs = root.join("certs");
+    fs::create_dir_all(&certs).unwrap();
+    fs::write(certs.join("stale.crt"), "OLD").unwrap();
+    fs::write(certs.join("stale.key"), "OLD").unwrap();
+    let projection = renderer_projection();
+    let io = FakeIo::accepting();
+
+    apply(&projection, &live, SELECTED_IMAGE, &io)
+        .await
+        .unwrap();
+
+    let site = projection
+        .sites
+        .iter()
+        .find(|site| site.hostname.as_str() == "secure.example.com")
+        .unwrap();
+    let stem = certificate_file_stem(&site.hostname, site.material().unwrap());
+    assert_eq!(
+        fs::read_to_string(certs.join(format!("{stem}.crt"))).unwrap(),
+        "CERT"
+    );
+    assert_eq!(
+        fs::read_to_string(certs.join(format!("{stem}.key"))).unwrap(),
+        "KEY"
+    );
+    assert!(!certs.join("stale.crt").exists());
+    assert!(!certs.join("stale.key").exists());
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -244,7 +379,12 @@ impl ApplyIo for FakeIo {
     ) -> Result<ValidationOutcome, ApplyError> {
         self.validations.lock().unwrap().push((
             image.to_owned(),
-            fs::read_to_string(candidate.join("rds.yaml")).unwrap(),
+            [
+                fs::read_to_string(candidate.join("rds.yaml")).unwrap(),
+                fs::read_to_string(candidate.join("sds.yaml")).unwrap(),
+                candidate_certificate_names(candidate),
+            ]
+            .join("\n"),
         ));
         if self.validation_error {
             return Err(ApplyError::Validation(
@@ -253,6 +393,19 @@ impl ApplyIo for FakeIo {
         }
         Ok(self.validation.clone())
     }
+}
+
+fn candidate_certificate_names(candidate: &Path) -> String {
+    let certs = candidate.join("certs");
+    if !certs.exists() {
+        return String::new();
+    }
+    let mut names: Vec<_> = fs::read_dir(certs)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names.join("\n")
 }
 
 fn test_root(label: &str) -> std::path::PathBuf {

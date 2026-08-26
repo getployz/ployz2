@@ -617,7 +617,7 @@ async fn wait_before_retry(shutdown: &CancellationToken) -> bool {
     }
 }
 
-fn write_certificate_files(
+pub(crate) fn write_certificate_files(
     config_file: &Path,
     sites: &[IngressSite],
     key_mode: u32,
@@ -644,7 +644,10 @@ fn write_certificate_files(
     Ok(())
 }
 
-fn remove_stale_certificate_files(config_file: &Path, sites: &[IngressSite]) -> io::Result<()> {
+pub(crate) fn remove_stale_certificate_files(
+    config_file: &Path,
+    sites: &[IngressSite],
+) -> io::Result<()> {
     let directory = certificate_directory(config_file)?;
     if !directory.exists() {
         return Ok(());
