@@ -22,6 +22,58 @@ fn non_ensured_global_convergence_converts_to_admission_errors() {
 }
 
 #[tokio::test]
+async fn rejected_admission_does_not_poll_deferred_network() {
+    let (runtime, fake) = fake_runtime().await;
+    let machine = machine();
+    let project = ProjectName::parse("app").unwrap();
+    let mut ineligible = spec_with_sources(Vec::new());
+    ineligible.placement = ployz_core::Placement {
+        machines: vec![ployz_core::MachineTarget::parse("other").unwrap()],
+    };
+
+    let ordinary = runtime
+        .create_with_network(
+            &machine,
+            ContainerRequest {
+                kind: ContainerKind::ServiceContainer,
+                project_name: &project,
+                spec: &ineligible,
+                network: async { Err(Error::EndpointCapacity) },
+                storage: std::future::ready(None),
+            },
+        )
+        .await;
+    assert!(matches!(ordinary, Err(Error::ServicePlacementMismatch)));
+
+    let unknown = spec_with_sources(vec![provisioned_source("bounded", 1_073_741_824)]);
+    let global = runtime
+        .converge_global_slot(
+            &machine,
+            ContainerRequest {
+                kind: ContainerKind::ServiceContainer,
+                project_name: &project,
+                spec: &unknown,
+                network: async { Err(Error::EndpointCapacity) },
+                storage: std::future::ready(None),
+            },
+        )
+        .await;
+    assert!(matches!(
+        global,
+        Ok(GlobalSlotConvergence::Unknown(
+            ServicePlacementUnknownReason::MissingStorageEvidence
+        ))
+    ));
+    assert!(fake.requests.lock().unwrap().iter().all(|(method, path)| {
+        !path.contains("/images/")
+            && !path.contains("/volumes/")
+            && !(method == Method::POST && path.contains("/containers/"))
+            && !path.ends_with("/start")
+            && method != Method::DELETE
+    }));
+}
+
+#[tokio::test]
 async fn complete_service_placement_is_admitted_before_container_mutation() {
     let (runtime, fake) = fake_runtime().await;
     let mut spec = spec_with_sources(Vec::new());

@@ -16,7 +16,7 @@ impl LocalMachine {
         local_storage(Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
     }
 
-    /// Create a container after Machine-local runtime preparation and storage admission.
+    /// Create a container after storage admission and deferred Machine-local runtime preparation.
     ///
     /// # Errors
     ///
@@ -28,22 +28,21 @@ impl LocalMachine {
         project: &ProjectName,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
-        let network = self.prepare_service_runtime(kind, project, spec).await?;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let record = self.record()?;
         let machine = record.machine().ok_or(Error::NotParticipating)?;
-        Ok(containers
+        containers
             .create_with_network(
                 machine,
                 ContainerRequest {
                     kind,
                     project_name: project,
                     spec,
-                    network,
+                    network: self.prepare_service_runtime(kind, project, spec),
                     storage: self.observe_storage(),
                 },
             )
-            .await?)
+            .await
     }
 
     /// Converge this Machine's Global slot from one fresh target-side eligibility decision.
@@ -58,24 +57,25 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
     ) -> Result<GlobalSlotConvergence, Error> {
         let _guard = self.global_slot_lock.lock().await;
-        let network = self
-            .prepare_service_runtime(ContainerKind::ServiceContainer, project, spec)
-            .await?;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let record = self.record()?;
         let machine = record.machine().ok_or(Error::NotParticipating)?;
-        Ok(containers
+        containers
             .converge_global_slot(
                 machine,
                 ContainerRequest {
                     kind: ContainerKind::ServiceContainer,
                     project_name: project,
                     spec,
-                    network,
+                    network: self.prepare_service_runtime(
+                        ContainerKind::ServiceContainer,
+                        project,
+                        spec,
+                    ),
                     storage: self.observe_storage(),
                 },
             )
-            .await?)
+            .await
     }
 }
 

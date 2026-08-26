@@ -24,7 +24,7 @@ use placement::{
     plan_global, plan_replicated,
 };
 use volumes::{
-    VolumePins, constrain_volume_candidates, named_volume_uses, plan_volume_operations,
+    VolumePins, constrain_volume_candidates, managed_volume_uses, plan_volume_operations,
     prepare_shared_replicated_volumes, preserved_owned_volumes, reject_mixed_volume_modes,
     scope_requested,
 };
@@ -242,7 +242,7 @@ fn assemble_plan(
     let BoundIntent { target, requested } = bound;
     warnings.extend(storage_eligibility_warnings(&requested, snapshot));
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
-    let volume_uses = named_volume_uses(&requested);
+    let volume_uses = managed_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::new();
     pins.validate_provisioned_volume_definitions(&target, snapshot)?;
