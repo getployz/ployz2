@@ -214,14 +214,6 @@ pub fn exec_options(command: Vec<String>, mode: ExecMode) -> ExecOptions {
     }
 }
 
-/// Terminal stdin plus `-T` must not attach stdin. Docker keeps the exec hijack
-/// open while stdin is attached, and a lagged daemon only sends Exit after that
-/// hijack closes. Piped stdin still attaches.
-#[must_use]
-pub fn attach_exec_stdin(tty: bool, stdin_terminal: bool) -> bool {
-    tty || !stdin_terminal
-}
-
 pub fn select_exec_container<'a>(
     service: &'a ServiceObservation,
     selector: Option<&ContainerSelector>,

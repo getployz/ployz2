@@ -140,9 +140,6 @@ fn exec_mode_resolves_cli_flags_without_detach_plus_tty() {
     assert!(!attached.tty);
     assert!(attached.attach_stdin && attached.attach_stdout && attached.attach_stderr);
     assert!(!attached.detach);
-    assert!(!attach_exec_stdin(false, true));
-    assert!(attach_exec_stdin(false, false));
-    assert!(attach_exec_stdin(true, true));
 
     let tty = exec_options(Vec::new(), ExecMode::Attached { tty: true });
     assert_eq!(

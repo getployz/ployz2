@@ -14,6 +14,8 @@ Issue #662 is a narrow greenfield contract exception: the pre-release combined n
 
 Runtime Watch's pre-release normalized transport is a narrow greenfield exception: ployz and ployzd switch in lockstep to direct `RuntimeWatchFrame` JSON with negotiated gzip. Pre-change daemon/client pairs are unsupported, and clients derive Services from the transmitted Containers. This exception does not relax lagged-daemon compatibility for later Runtime Watch changes.
 
+Issue #666 is a narrow greenfield contract exception: ployzd closes an exec session when Docker reports the remote process has exited, rather than waiting for the hijack to close. Pre-change daemons that only send Exit after hijack close are unsupported. Latest ployz may keep stdin attached on `exec -T`. This exception does not relax lagged-daemon compatibility for later changes.
+
 ## Names
 
 Accessors omit `get_`: `name()`, `as_str()`. Wire RPC method names that already exist on the contract (`get_ingress_proxy_config`) stay as they are.
