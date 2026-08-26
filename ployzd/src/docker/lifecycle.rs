@@ -91,7 +91,7 @@ impl ContainerRuntime {
         project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
-        let machine = test_machine(machine_id, gateway);
+        let machine = test_machine(*machine_id, gateway);
         self.create_with_network(
             &machine,
             ContainerRequest {
@@ -619,14 +619,14 @@ fn unknown_error(reason: ServicePlacementUnknownReason) -> Error {
 }
 
 #[cfg(test)]
-pub(super) fn test_machine(machine_id: &MachineId, gateway: MachineGateway) -> Machine {
+pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Machine {
     use std::net::Ipv6Addr;
 
     use ployz_core::{MachineName, ManagementAddress, WireGuardPublicKey};
 
     let [a, b, c, _] = gateway.0.octets();
     Machine {
-        id: *machine_id,
+        id: machine_id,
         name: MachineName::parse("docker-test").unwrap(),
         subnet: format!("{a}.{b}.{c}.0/24").parse().unwrap(),
         management_address: ManagementAddress(Ipv6Addr::LOCALHOST),

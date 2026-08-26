@@ -247,7 +247,7 @@ pub(super) async fn fake_runtime() -> (ContainerRuntime, FakeDocker) {
 
 pub(super) fn machine() -> Machine {
     crate::docker::lifecycle::test_machine(
-        &MachineId::random(),
+        MachineId::random(),
         MachineGateway("10.210.0.1".parse().unwrap()),
     )
 }
