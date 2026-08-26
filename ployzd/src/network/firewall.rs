@@ -11,6 +11,13 @@ use super::{
 
 const INPUT_CHAIN: &str = "PLOYZ-INPUT";
 
+/// Apply the Machine's ingress and forwarding policy, including the private
+/// Direct Image Transfer endpoint on `management_address`.
+///
+/// # Errors
+///
+/// Returns an error when an iptables command cannot be executed or rejects a
+/// required rule.
 pub fn apply_firewall_rules(
     subnet: MachineSubnet,
     management_address: ManagementAddress,

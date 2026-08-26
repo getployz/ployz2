@@ -5,10 +5,33 @@ use std::{
 };
 
 use ployz_core::ManagementAddress;
-use ployzd::network::apply_firewall_rules;
+use ployzd::network::{NetworkError, apply_firewall_rules};
 
 const TEST_NAME: &str =
     "mesh_routing_preserves_source_nat_and_restricts_direct_image_transfer_to_machines";
+const ERROR_TEST_NAME: &str = "firewall_surfaces_command_start_errors";
+const ERROR_TEST_CHILD: &str = "PLOYZ_FIREWALL_ERROR_TEST_CHILD";
+
+#[test]
+fn firewall_surfaces_command_start_errors() {
+    if env::var_os(ERROR_TEST_CHILD).is_some() {
+        let error = apply_firewall_rules(
+            "10.210.2.0/24".parse().unwrap(),
+            ManagementAddress("fdcc::2".parse().unwrap()),
+        )
+        .unwrap_err();
+        assert!(matches!(error, NetworkError::Io(_)));
+        return;
+    }
+
+    let status = Command::new(env::current_exe().unwrap())
+        .env(ERROR_TEST_CHILD, "1")
+        .env("PATH", "/path/that/does/not/exist")
+        .args(["--exact", ERROR_TEST_NAME])
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
 
 #[test]
 #[ignore = "requires passwordless sudo and Linux network namespaces"]

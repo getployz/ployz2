@@ -104,7 +104,7 @@ impl ImageIngest {
             .map_err(|error| ImageIngestReason::StartFailed.rpc_error(error.to_string()))?;
         wait_for_unregistry(SocketAddr::from((management_address.0, UNREGISTRY_PORT)))
             .await
-            .map_err(|error| ImageIngestReason::StartFailed.rpc_error(error))?;
+            .map_err(|error| ImageIngestReason::StartFailed.rpc_error(error.to_string()))?;
         Ok(opened)
     }
 
@@ -125,26 +125,20 @@ impl ImageIngest {
     }
 }
 
-async fn wait_for_unregistry(address: SocketAddr) -> Result<(), String> {
-    let mut last_error = None;
-    let ready = tokio::time::timeout(READY_TIMEOUT, async {
+async fn wait_for_unregistry(address: SocketAddr) -> Result<(), Error> {
+    tokio::time::timeout(READY_TIMEOUT, async {
         loop {
-            match TcpStream::connect(address).await {
-                Ok(_) => return,
-                Err(error) => last_error = Some(error),
+            if TcpStream::connect(address).await.is_ok() {
+                return;
             }
             tokio::time::sleep(READY_RETRY).await;
         }
     })
-    .await;
-    match ready {
-        Ok(()) => Ok(()),
-        Err(_) => Err(format!(
-            "Unregistry did not accept TCP at {address} within {} seconds; last connection error: {}",
-            READY_TIMEOUT.as_secs(),
-            last_error.map_or_else(|| "timeout".into(), |error| error.to_string())
-        )),
-    }
+    .await
+    .map_err(|_| Error::UnregistryNotReady {
+        address,
+        timeout: READY_TIMEOUT,
+    })
 }
 
 impl LocalDocker {
@@ -239,8 +233,8 @@ pub fn unregistry_matches(
     socket: &Path,
     management_address: Ipv6Addr,
 ) -> bool {
-    let socket_name = socket.to_string_lossy();
-    let management_name = management_address.to_string();
+    let socket_path = socket.to_string_lossy();
+    let management_address = management_address.to_string();
     let Some(config) = container.config.as_ref() else {
         return false;
     };
@@ -284,11 +278,11 @@ pub fn unregistry_matches(
             .filter(|value| value.starts_with("UNREGISTRY_"))
             .count()
             == expected_env.len()
-        && labels.get("ployz.unregistry.socket").map(String::as_str) == Some(socket_name.as_ref())
+        && labels.get("ployz.unregistry.socket").map(String::as_str) == Some(socket_path.as_ref())
         && labels
             .get("ployz.unregistry.management-address")
             .map(String::as_str)
-            == Some(management_name.as_str())
+            == Some(management_address.as_str())
         && labels
             .get("ployz.unregistry.config-version")
             .map(String::as_str)
@@ -500,7 +494,7 @@ mod tests {
 
         let _listener = tokio::net::TcpListener::bind(address).await.unwrap();
         tokio::time::advance(std::time::Duration::from_millis(10)).await;
-        assert_eq!(waiting.await.unwrap(), Ok(()));
+        assert!(waiting.await.unwrap().is_ok());
     }
 
     fn temp_root(name: &str) -> PathBuf {
