@@ -148,27 +148,33 @@ impl ContainerRuntime {
             impl Future<Output = Option<MachineStorageObservation>> + Send,
         >,
     ) -> Result<GlobalSlotConvergence, Error> {
-        let mut existing =
-            self.list_managed(&machine.id)
-                .await?
-                .into_iter()
-                .filter(|observation| {
-                    observation.kind == ContainerKind::ServiceContainer
-                        && observation.service_id == request.spec.service_id
-                });
-        if let Some(first) = existing.next() {
+        let mut existing = self
+            .list_managed(&machine.id)
+            .await?
+            .into_iter()
+            .filter(|observation| {
+                observation.kind == ContainerKind::ServiceContainer
+                    && &observation.project_name == request.project_name
+                    && observation.service_name == request.spec.name
+            })
+            .collect::<Vec<_>>();
+        if let Some(current_index) = existing
+            .iter()
+            .position(|slot| slot.service_id == request.spec.service_id)
+        {
             return match self
                 .admit_and_ensure_volumes(machine, request.spec, request.storage)
                 .await?
             {
                 ServicePlacementEligibility::Eligible => {
-                    let existing = if runtime_is_running(&first.runtime) {
-                        first
-                    } else {
-                        existing
-                            .find(|slot| runtime_is_running(&slot.runtime))
-                            .unwrap_or(first)
-                    };
+                    let current_index = existing
+                        .iter()
+                        .position(|slot| {
+                            slot.service_id == request.spec.service_id
+                                && runtime_is_running(&slot.runtime)
+                        })
+                        .unwrap_or(current_index);
+                    let existing = existing.swap_remove(current_index);
                     if !runtime_is_running(&existing.runtime) {
                         self.start(&existing.container_id).await?;
                     }
@@ -178,7 +184,7 @@ impl ContainerRuntime {
                     }))
                 }
                 ServicePlacementEligibility::Ineligible(reason) => {
-                    for slot in std::iter::once(first).chain(existing) {
+                    for slot in existing {
                         self.stop(&slot.container_id, None, None).await?;
                         self.remove(&slot.container_id, false, false).await?;
                     }
@@ -198,7 +204,13 @@ impl ContainerRuntime {
                 self.start(&created.container_id).await?;
                 Ok(GlobalSlotConvergence::Ensured(created))
             }
-            ContainerAdmission::Ineligible(reason) => Ok(GlobalSlotConvergence::Ineligible(reason)),
+            ContainerAdmission::Ineligible(reason) => {
+                for slot in existing {
+                    self.stop(&slot.container_id, None, None).await?;
+                    self.remove(&slot.container_id, false, false).await?;
+                }
+                Ok(GlobalSlotConvergence::Ineligible(reason))
+            }
             ContainerAdmission::Unknown(reason) => Ok(GlobalSlotConvergence::Unknown(reason)),
         }
     }

@@ -5,6 +5,22 @@ use axum::http::Method;
 use super::*;
 use crate::docker::test_support::*;
 
+#[test]
+fn non_ensured_global_convergence_converts_to_admission_errors() {
+    assert!(matches!(
+        GlobalSlotConvergence::Ineligible(
+            ServicePlacementIneligibleReason::ProvisionedStorageUnsupported
+        )
+        .into_container(),
+        Err(Error::ProvisionedStorageUnsupported)
+    ));
+    assert!(matches!(
+        GlobalSlotConvergence::Unknown(ServicePlacementUnknownReason::MissingStorageEvidence)
+            .into_container(),
+        Err(Error::StorageUnobservable)
+    ));
+}
+
 #[tokio::test]
 async fn complete_service_placement_is_admitted_before_container_mutation() {
     let (runtime, fake) = fake_runtime().await;
@@ -136,6 +152,44 @@ async fn observer_eligible_target_ineligible_retires_the_existing_global_slot() 
         spec.placement_eligibility(&machine, Some(&MachineStorageObservation::Ready)),
         ServicePlacementEligibility::Eligible
     ));
+
+    let outcome = runtime
+        .converge_global_slot(
+            &machine,
+            container_request(
+                ContainerKind::ServiceContainer,
+                &project,
+                &spec,
+                std::future::ready(Some(MachineStorageObservation::Stateless)),
+            ),
+        )
+        .await;
+
+    assert!(matches!(
+        outcome,
+        Ok(GlobalSlotConvergence::Ineligible(
+            ServicePlacementIneligibleReason::ProvisionedStorageUnsupported
+        ))
+    ));
+    assert!(
+        fake.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(method, path)| method == Method::DELETE && path.contains("/containers/"))
+    );
+}
+
+#[tokio::test]
+async fn target_ineligible_retires_an_older_global_generation() {
+    let (runtime, fake) = fake_runtime().await;
+    let spec = spec_with_sources(vec![provisioned_source("bounded", 1_073_741_824)]);
+    let mut older_spec = spec.clone();
+    older_spec.service_id = ployz_core::ServiceId::random();
+    assert_ne!(older_spec.service_id, spec.service_id);
+    let machine = machine();
+    let project = ProjectName::parse("app").unwrap();
+    install_existing_global_slot(&runtime, &fake, &older_spec, "running").await;
 
     let outcome = runtime
         .converge_global_slot(

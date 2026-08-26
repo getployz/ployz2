@@ -354,7 +354,7 @@ async fn existing_managed_volume_refuses_every_unsafe_shape_mismatch() {
         ),
     ];
     for (source, observed) in cases {
-        let name = volume_name(&source).unwrap().to_string();
+        let name = source.docker_volume_name().unwrap().to_string();
         fake.volumes.lock().unwrap().insert(name, observed);
         assert!(matches!(
             runtime

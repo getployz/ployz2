@@ -96,6 +96,11 @@ impl VolumePins {
 }
 
 /// Bind non-external named volumes to `project`: physical Docker name and ownership labels.
+///
+/// # Errors
+///
+/// Returns [`PlanError::ConflictingDockerVolumeDefinitions`] when Project scoping makes two
+/// Service Volume aliases describe incompatible sources for one Docker Volume.
 pub(super) fn scope_requested(
     mut spec: RequestedServiceSpec,
     project: &ProjectName,
@@ -784,12 +789,12 @@ fn named_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {
 }
 
 fn mounted_named_volumes(graph: &ServiceVolumeGraph) -> Vec<&ServiceVolume> {
-    let mut by_docker_name = BTreeMap::<DockerVolumeName, &ServiceVolume>::new();
+    let mut by_docker_name = BTreeMap::<&DockerVolumeName, &ServiceVolume>::new();
     for volume in graph.mounted_volumes() {
         let Some(name) = named_volume_name(volume) else {
             continue;
         };
-        by_docker_name.entry(name.clone()).or_insert(volume);
+        by_docker_name.entry(name).or_insert(volume);
     }
     by_docker_name.into_values().collect()
 }
