@@ -4,9 +4,9 @@ use ployz_core::{
     ContainerAction, DataLoss, DependencyCondition, HookContainer, IngressHost, MachineId,
     MachineObservation, MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName,
     PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServicePlacementEligibility, VolumeSource, VolumeToCreate,
-    explicit_ingress_hosts, hostname_owners, machine_matches_target, same_service_mode_kind,
-    service_placement_eligibility,
+    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    VolumeSource, VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_target,
+    same_service_mode_kind,
 };
 
 use super::{
@@ -624,15 +624,12 @@ fn eligible_machines<'snapshot>(
     let mut unknown = Vec::new();
     let mut machines = Vec::new();
     for machine in &candidates {
-        match service_placement_eligibility(
-            &requested.placement,
-            &requested.volume_graph,
-            &machine.machine,
-            machine.storage.as_ref(),
-        ) {
+        match requested.placement_eligibility(&machine.machine, machine.storage.as_ref()) {
             ServicePlacementEligibility::Eligible => machines.push(*machine),
-            ServicePlacementEligibility::Unknown => unknown.push(machine.machine.name.clone()),
-            ServicePlacementEligibility::Ineligible => {}
+            ServicePlacementEligibility::Unknown(_) => {
+                unknown.push(machine.machine.name.clone());
+            }
+            ServicePlacementEligibility::Ineligible(_) => {}
         }
     }
     if machines.is_empty() {
@@ -667,7 +664,12 @@ fn placement_candidates<'snapshot>(
         .iter()
         .filter(|machine| machine.membership != MembershipObservation::Down)
         .filter(|machine| {
-            ployz_core::machine_matches_placement(&machine.machine, &requested.placement)
+            !matches!(
+                requested.placement_eligibility(&machine.machine, machine.storage.as_ref()),
+                ServicePlacementEligibility::Ineligible(
+                    ServicePlacementIneligibleReason::PlacementMismatch
+                )
+            )
         })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
@@ -689,12 +691,10 @@ fn storage_eligibility_warnings(
                 .iter()
                 .filter(|machine| machine.membership != MembershipObservation::Down)
                 .filter(move |machine| {
-                    service_placement_eligibility(
-                        &spec.placement,
-                        &spec.volume_graph,
-                        &machine.machine,
-                        machine.storage.as_ref(),
-                    ) == ServicePlacementEligibility::Unknown
+                    matches!(
+                        spec.placement_eligibility(&machine.machine, machine.storage.as_ref()),
+                        ServicePlacementEligibility::Unknown(_)
+                    )
                 })
         })
         .filter(|machine| warned.insert(machine.machine.id))

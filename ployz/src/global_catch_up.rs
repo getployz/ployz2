@@ -7,7 +7,6 @@ use ployz_core::{
     InspectRequest, ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget,
     ObservedGlobalSlotSpec, QualifiedService, RpcError, ServiceObservation,
     ServicePlacementEligibility, ingress_proxy_backend, op, service_containers,
-    service_placement_eligibility,
 };
 
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
@@ -130,12 +129,8 @@ fn eligible_catch_up_slot(
     machine: &Machine,
 ) -> Option<ObservedGlobalSlotSpec> {
     let slot = service.observed_global_slot()?;
-    (service_placement_eligibility(
-        &slot.resolved_spec().placement,
-        &slot.resolved_spec().volume_graph,
-        machine,
-        None,
-    ) == ServicePlacementEligibility::Eligible)
+    (slot.resolved_spec().placement_eligibility(machine, None)
+        == ServicePlacementEligibility::Eligible)
         .then_some(slot)
 }
 
