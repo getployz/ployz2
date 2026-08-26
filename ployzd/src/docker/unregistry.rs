@@ -1,9 +1,10 @@
 use std::{
     collections::HashMap,
-    net::Ipv6Addr,
+    net::{Ipv6Addr, SocketAddr},
     os::unix::fs::FileTypeExt,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use bollard::models::{
@@ -12,7 +13,7 @@ use bollard::models::{
 use ployz_core::{
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ManagementAddress, RpcError,
 };
-use tokio::sync::Mutex;
+use tokio::{net::TcpStream, sync::Mutex};
 
 use crate::network::UNREGISTRY_PORT;
 
@@ -22,6 +23,8 @@ pub const IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 const NAME: &str = "ployz-unregistry";
 const CONTAINER_SOCKET_PARENT: &str = "/run/ployz-containerd";
 const CONFIG_VERSION: &str = "2";
+const READY_RETRY: Duration = Duration::from_millis(10);
+const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const SOCKETS: &[&str] = &[
     "/run/containerd/containerd.sock",
     "/run/docker/containerd/containerd.sock",
@@ -99,6 +102,9 @@ impl ImageIngest {
             .reconcile_unregistry(management_address.0, &socket)
             .await
             .map_err(|error| ImageIngestReason::StartFailed.rpc_error(error.to_string()))?;
+        wait_for_unregistry(SocketAddr::from((management_address.0, UNREGISTRY_PORT)))
+            .await
+            .map_err(|error| ImageIngestReason::StartFailed.rpc_error(error))?;
         Ok(opened)
     }
 
@@ -116,6 +122,28 @@ impl ImageIngest {
             .remove()
             .await
             .map_err(Into::into)
+    }
+}
+
+async fn wait_for_unregistry(address: SocketAddr) -> Result<(), String> {
+    let mut last_error = None;
+    let ready = tokio::time::timeout(READY_TIMEOUT, async {
+        loop {
+            match TcpStream::connect(address).await {
+                Ok(_) => return,
+                Err(error) => last_error = Some(error),
+            }
+            tokio::time::sleep(READY_RETRY).await;
+        }
+    })
+    .await;
+    match ready {
+        Ok(()) => Ok(()),
+        Err(_) => Err(format!(
+            "Unregistry did not accept TCP at {address} within {} seconds; last connection error: {}",
+            READY_TIMEOUT.as_secs(),
+            last_error.map_or_else(|| "timeout".into(), |error| error.to_string())
+        )),
     }
 }
 
@@ -458,6 +486,21 @@ mod tests {
         let _recreated = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         assert!(unregistry_matches(&bound, &socket, management_address));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn readiness_waits_until_the_endpoint_accepts_tcp() {
+        let reservation = std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+
+        let waiting = tokio::spawn(wait_for_unregistry(address));
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        let _listener = tokio::net::TcpListener::bind(address).await.unwrap();
+        tokio::time::advance(std::time::Duration::from_millis(10)).await;
+        assert_eq!(waiting.await.unwrap(), Ok(()));
     }
 
     fn temp_root(name: &str) -> PathBuf {
