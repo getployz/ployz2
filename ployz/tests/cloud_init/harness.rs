@@ -37,6 +37,14 @@ pub const TOKEN: &str = "pmet_test";
 pub const PAIRING: &str = "pairing-secret";
 pub const CLUSTER_DOMAIN: &str = "abcd12.ployz.dev";
 
+fn consume_transient_failure(remaining: &AtomicUsize) -> bool {
+    remaining
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_ok()
+}
+
 #[derive(Clone)]
 pub struct JoinDaemon {
     inner: Arc<JoinInner>,
@@ -290,14 +298,7 @@ impl MachineRpc for JoinDaemon {
             self.inner
                 .target_inspect_attempts
                 .fetch_add(1, Ordering::SeqCst);
-            if self
-                .inner
-                .transient_target_inspect_failures
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                    remaining.checked_sub(1)
-                })
-                .is_ok()
-            {
+            if consume_transient_failure(&self.inner.transient_target_inspect_failures) {
                 return Err(Status::unavailable("target Machine is not ready"));
             }
         }
@@ -393,14 +394,7 @@ impl MachineRpc for JoinDaemon {
         self.inner
             .cloud_pairing_attempts
             .fetch_add(1, Ordering::SeqCst);
-        if self
-            .inner
-            .transient_cloud_pairing_failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if consume_transient_failure(&self.inner.transient_cloud_pairing_failures) {
             return Err(Status::unavailable("transient Cloud Pairing failure"));
         }
         let decoded = request
@@ -565,14 +559,7 @@ impl MachineRpc for JoinDaemon {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inner.create_attempts.fetch_add(1, Ordering::SeqCst);
-        if self
-            .inner
-            .transient_create_failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if consume_transient_failure(&self.inner.transient_create_failures) {
             return Err(Status::unavailable("transient Ingress deployment failure"));
         }
         let decoded = request
@@ -621,14 +608,7 @@ impl MachineRpc for JoinDaemon {
             return Err(Status::invalid_argument("expected EnsureGlobalSlot"));
         };
         self.inner.ensure_attempts.fetch_add(1, Ordering::SeqCst);
-        if self
-            .inner
-            .transient_ensure_failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if consume_transient_failure(&self.inner.transient_ensure_failures) {
             return Err(Status::unavailable("transient ensure failure"));
         }
         if self.inner.fail_ensure.load(Ordering::SeqCst) {
@@ -748,14 +728,7 @@ impl MachineRpc for JoinDaemon {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inner.reserve_attempts.fetch_add(1, Ordering::SeqCst);
-        if self
-            .inner
-            .transient_reserve_failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if consume_transient_failure(&self.inner.transient_reserve_failures) {
             return Err(Status::unavailable("transient domain reservation failure"));
         }
         let decoded = request
@@ -808,14 +781,7 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::CreateDomainRecords(create) = decoded.body else {
             return Err(Status::invalid_argument("expected CreateDomainRecords"));
         };
-        if self
-            .inner
-            .transient_domain_record_failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if consume_transient_failure(&self.inner.transient_domain_record_failures) {
             return Err(Status::unavailable("transient DNS publication failure"));
         }
         self.inner

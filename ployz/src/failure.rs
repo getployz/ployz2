@@ -25,7 +25,6 @@ use crate::{
 #[derive(Debug)]
 pub struct Failure {
     inner: Inner,
-    retryable_transport: bool,
 }
 
 #[derive(Debug)]
@@ -50,26 +49,13 @@ impl Failure {
     fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
             inner: Inner::Command(Box::new(error)),
-            retryable_transport: false,
         }
-    }
-
-    pub(crate) fn retryable_usage(message: impl Into<Cow<'static, str>>) -> Self {
-        Self {
-            inner: Inner::Command(Box::new(Usage(message.into()))),
-            retryable_transport: true,
-        }
-    }
-
-    pub(crate) fn is_retryable_transport(&self) -> bool {
-        self.retryable_transport
     }
 
     #[must_use]
     pub fn exit(code: u8) -> Self {
         Self {
             inner: Inner::Exit(code),
-            retryable_transport: false,
         }
     }
 
@@ -142,7 +128,6 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(Failure {
             inner: Inner::Exit(code),
-            ..
         }) => ExitCode::from(code),
         Err(error) => {
             eprintln!("{error}");
@@ -198,14 +183,9 @@ impl From<ConnectError> for Failure {
         reason = "opaque Failure peels Display-changing wrappers; the rest keep the original error"
     )]
     fn from(error: ConnectError) -> Self {
-        let retryable = error.is_retryable();
         match error {
             ConnectError::Context(error) => error.into(),
             ConnectError::Value(error) => error.into(),
-            error if retryable => Self {
-                inner: Inner::Command(Box::new(error)),
-                retryable_transport: true,
-            },
             error => Self::command(error),
         }
     }

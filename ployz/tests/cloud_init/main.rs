@@ -676,7 +676,8 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
     .await;
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("rerun with --reset"),
+        String::from_utf8_lossy(&output.stderr)
+            .contains("new founding claim requires an uninitialized Machine"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );

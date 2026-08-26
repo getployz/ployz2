@@ -1,6 +1,6 @@
 //! `ployz cloud enroll`: enroll `initialize` or `join` on this Machine.
 
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{ops::AsyncFnMut, time::Duration};
 
 use clap::ArgMatches;
 use ployz_core::{
@@ -191,8 +191,14 @@ async fn enroll_founder(
                 Error::usage("matching founding Machine has no Ingress Proxy Backend".to_owned())
             })?,
         ),
-        (InitializeMode::Resume, LocalMachinePhase::Uninitialized) | (InitializeMode::New, _) => {
+        (InitializeMode::Resume, LocalMachinePhase::Uninitialized)
+        | (InitializeMode::New, LocalMachinePhase::Uninitialized) => {
             (FounderLocalState::Initialize, selected_backend)
+        }
+        (InitializeMode::New, phase) => {
+            return Err(Error::usage(format!(
+                "new founding claim requires an uninitialized Machine, but the local phase is {phase:?}"
+            )));
         }
         (InitializeMode::Resume, phase) => {
             return Err(Error::usage(format!(
@@ -256,13 +262,15 @@ async fn enroll_founder(
                     &mut ready,
                     "domain reservation",
                     ConnectError::is_retryable,
-                    |client| {
-                        Box::pin(client.call::<op::ReserveDomain>(
-                            ReserveDomainRequest {
-                                endpoint: crate::dns::HOSTED_DNS_ENDPOINT.to_owned(),
-                            },
-                            None,
-                        ))
+                    async |client| {
+                        client
+                            .call::<op::ReserveDomain>(
+                                ReserveDomainRequest {
+                                    endpoint: crate::dns::HOSTED_DNS_ENDPOINT.to_owned(),
+                                },
+                                None,
+                            )
+                            .await
                     },
                 )
                 .await?;
@@ -274,11 +282,8 @@ async fn enroll_founder(
         retry_founder_operation(
             &mut ready,
             "Ingress deployment",
-            Error::is_retryable_transport,
-            |client| {
-                let requested = requested.clone();
-                Box::pin(async move { crate::deploy::apply_requested(client, &requested).await })
-            },
+            crate::deploy::ApplyError::is_retryable_transport,
+            async |client| crate::deploy::apply_requested(client, &requested).await,
         )
         .await?;
         if !no_dns {
@@ -286,43 +291,42 @@ async fn enroll_founder(
                 &mut ready,
                 "DNS publication",
                 crate::dns::Error::is_retryable_transport,
-                |client| Box::pin(crate::dns::update_records_for_ingress(client)),
+                async |client| crate::dns::update_records_for_ingress(client).await,
             )
             .await?;
         }
     }
-    let pairing_credential = pairing.secret().clone();
     retry_founder_operation(
         &mut ready,
         "Cloud Pairing publication",
         ConnectError::is_retryable,
-        |client| {
-            Box::pin(client.call::<op::SetCloudPairing>(
-                SetCloudPairingRequest {
-                    cloud_pairing: Some(pairing.clone()),
-                },
-                None,
-            ))
+        async |client| {
+            client
+                .call::<op::SetCloudPairing>(
+                    SetCloudPairingRequest {
+                        cloud_pairing: Some(pairing.clone()),
+                    },
+                    None,
+                )
+                .await
         },
     )
     .await?;
     cloud_enroll::callback(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,
-        &pairing_credential,
+        pairing.secret(),
     )
     .await?;
     println!("Initialised Machine {} ({})", machine.name, machine.id);
     Ok(())
 }
 
-type RetryFuture<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + 'a>>;
-
 async fn retry_founder_operation<C, T, E>(
     context: &mut C,
     operation: &'static str,
     retryable: impl Fn(&E) -> bool,
-    mut run: impl for<'a> FnMut(&'a mut C) -> RetryFuture<'a, T, E>,
+    mut run: impl AsyncFnMut(&mut C) -> Result<T, E>,
 ) -> Result<T, Error>
 where
     E: std::fmt::Display + Into<Error>,

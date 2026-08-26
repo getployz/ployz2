@@ -73,6 +73,63 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
 }
 
 #[tokio::test]
+async fn new_founding_claim_never_resets_a_participating_machine() {
+    let founder = founder_machine();
+    let relay = RelayListen::start().await;
+    let pairing =
+        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let enroll = EnrollListen::start(json!({
+        "kind": "initialize",
+        "resumed": false,
+        "storage": "none",
+        "pairing": pairing,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder.clone(),
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let machine_addr = serve_machine(daemon.clone()).await;
+    connect_daemon(machine_addr)
+        .await
+        .call::<op::Initialize>(
+            InitializeRequest {
+                name: founder.name,
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                ingress_proxy_backend: IngressProxyBackend::Caddy,
+                public_ip: None,
+                advertised_endpoints: founder.advertised_endpoints,
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let output = init_cloud(
+        &format!("tcp://{machine_addr}"),
+        &enroll.url,
+        "founder",
+        true,
+        true,
+    )
+    .await;
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("new founding claim requires an uninitialized Machine"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(daemon.reset_count(), 0);
+    assert_eq!(daemon.initialize_requests().len(), 1);
+    assert!(enroll.callbacks().is_empty());
+}
+
+#[tokio::test]
 async fn resumed_founder_uses_the_matching_participating_machine() {
     let founder = founder_machine();
     let machine_id = founder.id;
