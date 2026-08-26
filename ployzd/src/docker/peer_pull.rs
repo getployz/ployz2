@@ -86,7 +86,7 @@ mod tests {
     fn localhost_pull_reference_keeps_the_image_path() {
         assert_eq!(
             localhost_registry_reference(UNREGISTRY_PORT, "busybox:1.37.0"),
-            "127.0.0.1:7572/busybox:1.37.0"
+            format!("127.0.0.1:{UNREGISTRY_PORT}/busybox:1.37.0")
         );
         assert_eq!(
             localhost_registry_reference(9, "registry.test/team/api:v1"),

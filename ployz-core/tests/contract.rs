@@ -814,7 +814,7 @@ fn image_ingest_contract_returns_the_management_address_destination() {
     let opened = ImageIngestOpened {
         destination: ImageIngestDestination {
             management_address: ManagementAddress("fdcc::7".parse().unwrap()),
-            port: 7572,
+            port: ployz_core::UNREGISTRY_PORT,
         },
     };
     let response = RpcResponse::from(opened);
@@ -872,7 +872,7 @@ fn image_ingest_contract_returns_the_management_address_destination() {
 fn peer_image_pull_contract_names_the_source_management_destination() {
     let source = ImageIngestDestination {
         management_address: ManagementAddress("fdcc::7".parse().unwrap()),
-        port: 7572,
+        port: ployz_core::UNREGISTRY_PORT,
     };
     let request = op::PullImageFromMachine::into_request(PullImageFromMachineRequest {
         image: "busybox:1.37.0".into(),
