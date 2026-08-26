@@ -364,6 +364,11 @@
         }
       },
       {
+        "StorageObservationUnknown": {
+          "machine_id": "fedcba9876543210fedcba9876543210"
+        }
+      },
+      {
         "IngressHostname": "Ingress Hostname app.example.com does not resolve; it should resolve to 192.0.2.1."
       },
       "ObserverRelativeHostnameConflict",
@@ -408,6 +413,11 @@
       {
         "ObservationOmitted": {
           "kind": "volume",
+          "machine_id": "fedcba9876543210fedcba9876543210"
+        }
+      },
+      {
+        "StorageObservationUnknown": {
           "machine_id": "fedcba9876543210fedcba9876543210"
         }
       },

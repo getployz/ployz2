@@ -521,6 +521,15 @@ pub enum PlanError {
         "no observed eligible Machine is storage-ready or has a Machine Pool; enroll one with --storage zfs before deploying a Provisioned Volume"
     )]
     ProvisionedVolumeStorageUnavailable,
+    /// Storage capability was unavailable for every otherwise eligible Machine.
+    #[error(
+        "storage could not be checked on {}; retry after those Machines can report storage capability",
+        MachineNames(.names)
+    )]
+    ProvisionedVolumeStorageUnknown {
+        /// Placement-matching Machines without storage evidence.
+        names: Vec<MachineName>,
+    },
     /// An ordinary Docker Volume already owns the requested machine-local name.
     #[error(
         "Plain Docker Volume {name} already exists on Machine '{machine}'; conversion to a Provisioned Volume is outside the Provisioned Volume MVP"
@@ -594,6 +603,14 @@ fn quoted_names(names: &[DockerVolumeName]) -> String {
         quoted.push('\'');
     }
     quoted
+}
+
+struct MachineNames<'names>(&'names [MachineName]);
+
+impl fmt::Display for MachineNames<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_machine_names(f, self.0)
+    }
 }
 
 fn compose_deploy_intent(

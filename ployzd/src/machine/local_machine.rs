@@ -19,10 +19,8 @@ use ployz_core::{
 use thiserror::Error;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
-use super::{
-    FoundingCluster, LocalMachineRecord, LocalMachineStore, STORAGE_OBSERVATION_TIMEOUT,
-    StoreError, local_runtime, local_storage,
-};
+use super::{FoundingCluster, LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
+
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
     docker::ContainerRuntime,
@@ -46,6 +44,7 @@ pub struct LocalMachine {
 }
 
 mod container;
+mod global_reconcile;
 
 #[derive(Clone)]
 struct ClusterContext {
@@ -254,7 +253,7 @@ impl LocalMachine {
             }
         };
         let storage = if request.include_storage {
-            local_storage(std::path::Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
+            self.observe_storage().await
         } else {
             None
         };

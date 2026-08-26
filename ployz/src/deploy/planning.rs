@@ -4,8 +4,8 @@ use ployz_core::{
     ContainerAction, DataLoss, DependencyCondition, HookContainer, IngressHost, MachineId,
     MachineObservation, MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName,
     PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
-    machine_matches_target, same_service_mode_kind,
+    ServiceObservation, ServicePlacementEligibility, explicit_ingress_hosts, hostname_owners,
+    machine_matches_target, same_service_mode_kind, service_placement_eligibility,
 };
 
 use super::{
@@ -211,11 +211,12 @@ fn assemble_plan(
     mut warnings: Vec<DeployWarning>,
 ) -> Result<Planned, PlanError> {
     let BoundIntent { target, requested } = bound;
+    warnings.extend(storage_eligibility_warnings(&requested, snapshot));
     // TODO(UT-009): preserve the missing within-spec port-conflict validation.
     let volume_uses = named_volume_uses(&requested);
     reject_mixed_volume_modes(&volume_uses)?;
     let mut pins = VolumePins::new();
-    pins.validate_provisioned_volume_definitions(&target, snapshot, &intent.options)?;
+    pins.validate_provisioned_volume_definitions(&target, snapshot)?;
     let name_errors_with_service = requested.len() > 1;
     let services = snapshot.services_in(&intent.project_name);
     let mut capacity = CapacityBudget::from_snapshot(snapshot);
@@ -591,20 +592,88 @@ fn eligible_machines<'a>(
     snapshot: &'a DeploySnapshot,
     options: &PlanOptions,
 ) -> Result<Vec<&'a MachineObservation>, PlanError> {
-    let mut machines = snapshot
-        .machines
-        .iter()
-        .filter(|machine| machine.membership != MembershipObservation::Down)
-        .filter(|machine| machine_matches_placement(&machine.machine, &requested.placement))
-        .collect::<Vec<_>>();
+    let candidates = placement_candidates(requested, snapshot)?;
+    let mut unknown = Vec::new();
+    let mut machines = Vec::new();
+    for machine in &candidates {
+        match service_placement_eligibility(
+            &requested.placement,
+            &requested.volume_graph,
+            &machine.machine,
+            machine.storage.as_ref(),
+        ) {
+            ServicePlacementEligibility::Eligible => machines.push(*machine),
+            ServicePlacementEligibility::Unknown => unknown.push(machine.machine.name.clone()),
+            ServicePlacementEligibility::Ineligible => {}
+        }
+    }
     if machines.is_empty() {
-        return Err(placement_error(requested, snapshot));
+        if !unknown.is_empty() {
+            return Err(PlanError::ProvisionedVolumeStorageUnknown { names: unknown });
+        }
+        if requested.placement.machines.len() == 1 && candidates.len() == 1 {
+            return Err(PlanError::ProvisionedVolumeStorageRequired {
+                machine: candidates
+                    .first()
+                    .expect("explicit placement resolved exactly one Machine")
+                    .machine
+                    .name
+                    .clone(),
+            });
+        }
+        return Err(PlanError::ProvisionedVolumeStorageUnavailable);
     }
     shuffle(
         &mut machines,
         placement_state(options.placement_seed, &requested.name),
     );
     Ok(machines)
+}
+
+fn placement_candidates<'a>(
+    requested: &RequestedServiceSpec,
+    snapshot: &'a DeploySnapshot,
+) -> Result<Vec<&'a MachineObservation>, PlanError> {
+    let candidates = snapshot
+        .machines
+        .iter()
+        .filter(|machine| machine.membership != MembershipObservation::Down)
+        .filter(|machine| {
+            ployz_core::machine_matches_placement(&machine.machine, &requested.placement)
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Err(placement_error(requested, snapshot));
+    }
+    Ok(candidates)
+}
+
+fn storage_eligibility_warnings(
+    requested: &[RequestedServiceSpec],
+    snapshot: &DeploySnapshot,
+) -> Vec<DeployWarning> {
+    let mut warned = BTreeSet::new();
+    requested
+        .iter()
+        .flat_map(|spec| {
+            snapshot
+                .machines
+                .iter()
+                .filter(|machine| machine.membership != MembershipObservation::Down)
+                .filter(move |machine| {
+                    service_placement_eligibility(
+                        &spec.placement,
+                        &spec.volume_graph,
+                        &machine.machine,
+                        machine.storage.as_ref(),
+                    ) == ServicePlacementEligibility::Unknown
+                })
+        })
+        .filter(|machine| warned.insert(machine.machine.id))
+        .map(|machine| DeployWarning::StorageObservationUnknown {
+            machine_id: machine.machine.id,
+        })
+        .collect()
 }
 
 fn placement_error(spec: &RequestedServiceSpec, snapshot: &DeploySnapshot) -> PlanError {

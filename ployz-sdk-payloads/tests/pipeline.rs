@@ -268,7 +268,7 @@ fn json_fixtures_round_trip_through_rust_types() {
 
     let preview: DeployPreview = decode_fixture(fixture(&fixtures, "deploy_preview"));
     assert_eq!(preview.operations.len(), 1);
-    assert_eq!(preview.warnings.len(), 5);
+    assert_eq!(preview.warnings.len(), 6);
     assert!(matches!(
         preview.operations.first().map(|row| &row.status),
         Some(ployz_core::OperationStatus::Pending)
@@ -554,6 +554,7 @@ fn generated_typescript_encodes_additive_evolution_rules() {
     assert!(dts.contains("readonly __brand: \"ServiceName\""));
     assert!(dts.contains("export type ObservationKind ="));
     assert!(dts.contains("export type DeployWarning ="));
+    assert!(dts.contains("StorageObservationUnknown:"));
     assert!(dts.contains("SkippedDependencyHealth:"));
     assert!(dts.contains("export type DeployPreview = Additive<{"));
     assert!(dts.contains("operations: OperationRow[]"));
