@@ -773,7 +773,7 @@ fn corrosion_exec(cluster: &Cluster, index: usize, path: &str, payload: &str) ->
         .machine_shell(
             index,
             &format!(
-                r#"token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary {quoted} http://127.0.0.1:51002/{path}"#
+                r#"token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary {quoted} http://127.0.0.1:7571/{path}"#
             ),
         )
         .unwrap()

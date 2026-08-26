@@ -522,7 +522,7 @@ fn machine(name: &str, seed: u8) -> Machine {
         public_key: WireGuardPublicKey([seed; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint(
-            format!("192.0.2.{seed}:51000").parse().unwrap(),
+            format!("192.0.2.{seed}:7569").parse().unwrap(),
         )],
         runtime: Default::default(),
     }

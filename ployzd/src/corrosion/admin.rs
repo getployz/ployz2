@@ -183,17 +183,17 @@ mod tests {
     #[test]
     fn membership_state_is_decoded_at_the_admin_boundary() {
         let state = decode_membership_state(json!({
-            "id": {"addr": "[fdcc::1]:51001"},
+            "id": {"addr": "[fdcc::1]:7570"},
             "state": "Alive"
         }))
         .unwrap();
-        assert_eq!(state.address, "[fdcc::1]:51001".parse().unwrap());
+        assert_eq!(state.address, "[fdcc::1]:7570".parse().unwrap());
         assert_eq!(state.membership, ployz_core::MembershipObservation::Up);
     }
 
     #[test]
     fn rtt_samples_are_decoded_without_inventing_missing_measurements() {
-        let address = "[fdcc::1]:51001";
+        let address = "[fdcc::1]:7570";
         let decoded = decode_member_rtt(json!({
             "id": "peer-1",
             "state": {"addr": address},

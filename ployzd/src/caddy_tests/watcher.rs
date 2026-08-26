@@ -468,7 +468,7 @@ async fn watcher_fixture() -> WatcherFixture {
         management_address: ManagementAddress("fdcc::1".parse().unwrap()),
         public_key: WireGuardPublicKey([1; 32]),
         public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51000".parse().unwrap())],
+        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:7569".parse().unwrap())],
         runtime: Default::default(),
     };
     let state = WatchState {

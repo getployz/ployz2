@@ -403,7 +403,7 @@ mod tests {
                 machine_id: source,
                 value: vec![RttObservation {
                     peer_id: "peer-live".into(),
-                    address: "[fdcc::2]:51001".parse().unwrap(),
+                    address: "[fdcc::2]:7570".parse().unwrap(),
                     machine: Some(MachineIdentity {
                         id: target,
                         name: MachineName::parse("node-b").unwrap(),
@@ -429,7 +429,7 @@ mod tests {
     fn rtt_observation(peer_id: &str, median_ns: u64, population_stddev_ns: u64) -> RttObservation {
         RttObservation {
             peer_id: peer_id.into(),
-            address: "[fdcc::2]:51001".parse().unwrap(),
+            address: "[fdcc::2]:7570".parse().unwrap(),
             machine: None,
             statistics: RttStatistics {
                 median_ns,

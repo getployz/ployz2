@@ -68,7 +68,7 @@ async fn unix_proxy_dialing_is_direct_and_tcp_is_explicitly_unsupported() {
 
     let tcp = Connection::tcp("127.0.0.1:1".parse().unwrap());
     assert!(matches!(
-        connector.dial_proxy(&tcp, "tcp", "10.210.0.1:51500").await,
+        connector.dial_proxy(&tcp, "tcp", "10.210.0.1:7572").await,
         Err(ConnectError::ProxyUnsupported(_))
     ));
     assert!(matches!(
@@ -224,7 +224,7 @@ async fn failed_connection_attempts_do_not_reorder_the_context() {
     });
     let selected = SelectedConnections {
         source: ConnectionSource::Context("prod".into()),
-        connections: [51000, 51001]
+        connections: [7569, 7570]
             .map(|port| Connection::tcp(format!("127.0.0.1:{port}").parse().unwrap()))
             .into(),
     };
@@ -242,7 +242,7 @@ async fn failed_connection_attempts_do_not_reorder_the_context() {
     );
     assert_eq!(
         original.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        ["tcp://127.0.0.1:51000", "tcp://127.0.0.1:51001"]
+        ["tcp://127.0.0.1:7569", "tcp://127.0.0.1:7570"]
     );
 }
 

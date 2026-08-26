@@ -368,7 +368,7 @@ fn machine(name: &str, id: &str, seed: u8) -> Machine {
 fn rtt_on(machine: &Machine, statistics: RttStatistics) -> RttObservation {
     RttObservation {
         peer_id: machine.name.as_str().into(),
-        address: format!("[{}]:51001", machine.management_address.0)
+        address: format!("[{}]:7570", machine.management_address.0)
             .parse()
             .unwrap(),
         machine: None,

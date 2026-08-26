@@ -63,7 +63,7 @@ fn direct_connections_accept_only_the_reduced_transport_set() {
         ("root@example.com", "ssh://root@example.com"),
         ("ssh://root@example.com:2222", "ssh://root@example.com:2222"),
         ("ssh://root@[::1]:2222", "ssh://root@[::1]:2222"),
-        ("tcp://127.0.0.1:51000", "tcp://127.0.0.1:51000"),
+        ("tcp://127.0.0.1:7569", "tcp://127.0.0.1:7569"),
         (
             "unix:///run/ployz/ployz.sock",
             "unix:///run/ployz/ployz.sock",
@@ -91,8 +91,8 @@ fn direct_connections_accept_only_the_reduced_transport_set() {
 
 #[test]
 fn connection_sources_follow_direct_context_and_local_precedence() {
-    let prod = Connection::tcp("127.0.0.1:51000".parse().unwrap());
-    let dev = Connection::tcp("127.0.0.1:51001".parse().unwrap());
+    let prod = Connection::tcp("127.0.0.1:7569".parse().unwrap());
+    let dev = Connection::tcp("127.0.0.1:7570".parse().unwrap());
     let config = Config::new(
         "/tmp/config.yaml",
         Some("prod".into()),
@@ -181,10 +181,10 @@ fn relay_connections_are_not_persisted() {
 fn stored_connections_reject_missing_multiple_malformed_and_removed_transports() {
     for yaml in [
         "{}",
-        "ssh: root@example.com\ntcp: 127.0.0.1:51000",
+        "ssh: root@example.com\ntcp: 127.0.0.1:7569",
         "tcp: localhost",
         "unix: relative.sock",
-        "tcp: 127.0.0.1:51000\nssh_key_file: /tmp/key",
+        "tcp: 127.0.0.1:7569\nssh_key_file: /tmp/key",
         "ssh_go: root@example.com",
         "ssh_cli: root@example.com",
     ] {
@@ -194,7 +194,7 @@ fn stored_connections_reject_missing_multiple_malformed_and_removed_transports()
         );
     }
     assert!(
-        Connection::tcp("127.0.0.1:51000".parse().unwrap())
+        Connection::tcp("127.0.0.1:7569".parse().unwrap())
             .with_ssh_key_file("/tmp/key")
             .is_err()
     );
@@ -203,7 +203,7 @@ fn stored_connections_reject_missing_multiple_malformed_and_removed_transports()
 #[test]
 fn selecting_a_connection_moves_only_that_entry_to_the_front() {
     let mut context = Context {
-        connections: [51000, 51001, 51002, 51003]
+        connections: [7569, 7570, 7571, 51003]
             .map(|port| Connection::tcp(format!("127.0.0.1:{port}").parse().unwrap()))
             .into(),
     };
@@ -217,9 +217,9 @@ fn selecting_a_connection_moves_only_that_entry_to_the_front() {
             .map(ToString::to_string)
             .collect::<Vec<_>>(),
         [
-            "tcp://127.0.0.1:51002",
-            "tcp://127.0.0.1:51000",
-            "tcp://127.0.0.1:51001",
+            "tcp://127.0.0.1:7571",
+            "tcp://127.0.0.1:7569",
+            "tcp://127.0.0.1:7570",
             "tcp://127.0.0.1:51003",
         ]
     );
@@ -300,7 +300,7 @@ fn filesystem_resolution_bypasses_config_and_limits_the_local_fallback() {
 
     let direct = resolve_connections(
         &config,
-        Some("tcp://127.0.0.1:51000"),
+        Some("tcp://127.0.0.1:7569"),
         Some("ignored"),
         &socket,
     )
@@ -316,13 +316,13 @@ fn filesystem_resolution_bypasses_config_and_limits_the_local_fallback() {
             (
                 "dev".into(),
                 Context {
-                    connections: vec![Connection::tcp("127.0.0.1:51001".parse().unwrap())],
+                    connections: vec![Connection::tcp("127.0.0.1:7570".parse().unwrap())],
                 },
             ),
             (
                 "prod".into(),
                 Context {
-                    connections: vec![Connection::tcp("127.0.0.1:51000".parse().unwrap())],
+                    connections: vec![Connection::tcp("127.0.0.1:7569".parse().unwrap())],
                 },
             ),
         ]),
@@ -427,7 +427,7 @@ fn load_or_empty_with_no_file_has_no_current_context() {
 
 #[test]
 fn selecting_connections_with_no_current_context_is_no_current_context() {
-    let prod = Connection::tcp("127.0.0.1:51000".parse().unwrap());
+    let prod = Connection::tcp("127.0.0.1:7569".parse().unwrap());
     let path = PathBuf::from("/tmp/config.yaml");
     let config = Config::new(
         &path,
@@ -448,7 +448,7 @@ fn selecting_connections_with_no_current_context_is_no_current_context() {
 
 #[test]
 fn selecting_connections_with_a_missing_name_is_context_not_found() {
-    let prod = Connection::tcp("127.0.0.1:51000".parse().unwrap());
+    let prod = Connection::tcp("127.0.0.1:7569".parse().unwrap());
     let path = PathBuf::from("/tmp/config.yaml");
     let config = Config::new(
         &path,

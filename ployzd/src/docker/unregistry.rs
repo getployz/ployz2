@@ -351,7 +351,7 @@ mod tests {
             management_address: ManagementAddress("fdcc::2".parse().unwrap()),
             public_key: WireGuardPublicKey([2; 32]),
             public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51000".parse().unwrap())],
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:7569".parse().unwrap())],
             runtime: Default::default(),
         }
     }
@@ -443,7 +443,7 @@ mod tests {
         assert_eq!(
             config.env,
             Some(vec![
-                "UNREGISTRY_ADDR=[fdcc::2]:51500".into(),
+                "UNREGISTRY_ADDR=[fdcc::2]:7572".into(),
                 "UNREGISTRY_CONTAINERD_NAMESPACE=moby".into(),
                 format!("UNREGISTRY_CONTAINERD_SOCK={CONTAINER_SOCKET_PARENT}/containerd.sock"),
             ])

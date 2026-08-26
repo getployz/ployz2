@@ -153,7 +153,7 @@ mod tests {
         let ssh = configure_ssh_key("root@example.com".parse().unwrap(), Some(key)).unwrap();
         assert_eq!(ssh.ssh_key_file(), Some(std::path::Path::new(key)));
 
-        for destination in ["tcp://127.0.0.1:51000", "unix:///tmp/ployz.sock"] {
+        for destination in ["tcp://127.0.0.1:7569", "unix:///tmp/ployz.sock"] {
             let connection = configure_ssh_key(destination.parse().unwrap(), Some(key)).unwrap();
             assert_eq!(connection.ssh_key_file(), None, "destination {destination}");
         }

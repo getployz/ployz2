@@ -842,7 +842,7 @@ mod tests {
             selected_endpoints: BTreeMap::from([(entry.id, endpoint)]),
             rtts: vec![RttObservation {
                 peer_id: "peer".into(),
-                address: format!("[{}]:51001", peer.management_address.0)
+                address: format!("[{}]:7570", peer.management_address.0)
                     .parse()
                     .unwrap(),
                 machine: None,

@@ -385,7 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_backend_survives_disappearance_from_later_snapshots() {
-        let proxy = MachineProxy::new(Routes::default(), MachineId::random(), 51000, None);
+        let proxy = MachineProxy::new(Routes::default(), MachineId::random(), 7569, None);
         proxy
             .remote_backend(ManagementAddress(Ipv6Addr::LOCALHOST))
             .unwrap();
