@@ -18,9 +18,9 @@ use crate::{
     compose::{LoadOptions, load_project},
     context::Transport,
     operator::{
-        ExecMode, ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs,
-        open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
-        select_proxy_container, service_logs_use_compose,
+        ExecMode, ProxyPorts, attach_exec_stdin, exec_options, merge_logs, open_exec,
+        open_machine_logs, open_service_logs, parse_log_time, parse_proxy_ports,
+        parse_service_args, parse_tail, select_proxy_container, service_logs_use_compose,
     },
 };
 
@@ -42,7 +42,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         .get_many::<String>("command")
         .map(|values| values.cloned().collect())
         .unwrap_or_default();
-    let options = exec_options(
+    let mut options = exec_options(
         command,
         ExecMode::resolve(
             leaf.get_flag("detach"),
@@ -51,16 +51,18 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             std::io::stdin().is_terminal(),
         )?,
     );
+    options.attach_stdin = attach_exec_stdin(options.tty, std::io::stdin().is_terminal());
     with_client_context(root, None, |client| {
         Box::pin(async move {
             let tty = options.tty;
             let detach = options.detach;
+            let attach_stdin = options.attach_stdin;
             let session = open_exec(client, &service, container.as_ref(), options).await?;
             let _raw = tty.then(RawTerminal::enable).transpose()?;
             if tty {
                 send_terminal_size(&session.input).await?;
             }
-            let _stdin = (!detach).then(|| spawn_stdin(session.input.clone()));
+            let _stdin = attach_stdin.then(|| spawn_stdin(session.input.clone()));
             let resize_task = tty.then(|| spawn_resize(session.input.clone()));
             drop(session.input);
             let exit = copy_exec_output(session.output).await?;
