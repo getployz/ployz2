@@ -11,8 +11,7 @@ use ployz::deploy::{
 };
 use ployz_core::{
     ContainerId, IngressProxyBackend, MachineStorageObservation, OperationPhase, ProjectName,
-    ProvisionedVolume, ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec,
-    ServiceVolumeReference,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec, VolumeSource,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -154,13 +153,26 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
     let (mut client, server) = connected(service).await;
     let mut requested = spec("web");
     add_named_volume(&mut requested, "data");
-    let mut intent =
-        DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health());
-    intent.provisioned_volumes = vec![ProvisionedVolume {
-        service: ployz_core::ServiceName::parse("web").unwrap(),
-        reference: ServiceVolumeReference::parse("data").unwrap(),
+    let mut volumes = requested.volume_graph.volumes().to_vec();
+    let mounts = requested.volume_graph.mounts().to_vec();
+    let source = &mut volumes
+        .first_mut()
+        .expect("fixture mounts one volume")
+        .source;
+    let (name, labels) = match source {
+        VolumeSource::Named { name, labels, .. } => (name.clone(), labels.clone()),
+        VolumeSource::Bind { .. }
+        | VolumeSource::Provisioned { .. }
+        | VolumeSource::Tmpfs { .. } => unreachable!("fixture starts ordinary"),
+    };
+    *source = VolumeSource::Provisioned {
+        name,
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(157_286_400).unwrap()),
-    }];
+        labels,
+    };
+    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
+    let intent =
+        DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health());
 
     let outcome = client
         .run(intent, &CancellationToken::new(), None)

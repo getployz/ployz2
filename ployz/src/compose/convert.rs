@@ -97,8 +97,15 @@ pub(super) fn convert_raw_project(
         if !service.profiles.is_empty() {
             service_profiles.insert(service_name.clone(), service.profiles.clone());
         }
-        let (spec, build) =
-            convert_service(&name, service_name, service, &raw, &working_dir, &images)?;
+        let (spec, build) = convert_service(
+            &name,
+            service_name,
+            service,
+            &raw,
+            &provisioned_volume_bounds,
+            &working_dir,
+            &images,
+        )?;
         if let Some(build) = build {
             builds.insert(service_name.clone(), build);
         }
@@ -130,7 +137,6 @@ pub(super) fn convert_raw_project(
         dependencies,
         warnings,
         service_profiles,
-        provisioned_volume_bounds,
         volumes: raw.volumes,
         secrets,
         environment,
@@ -202,6 +208,7 @@ fn convert_service(
     name: &str,
     raw: &RawService,
     root: &RawProject,
+    provisioned_volume_bounds: &BTreeMap<ServiceVolumeReference, ProvisionedVolumeMaximumBytes>,
     directory: &Path,
     images: &ImageState,
 ) -> Result<(RequestedServiceSpec, Option<BuildSpec>), ComposeError> {
@@ -239,7 +246,7 @@ fn convert_service(
             "service '{name}': ingress ports and 'x-caddy' cannot be specified simultaneously"
         )));
     }
-    let (volumes, mounts) = volumes(raw, root)?;
+    let (volumes, mounts) = volumes(raw, root, provisioned_volume_bounds)?;
     let volume_graph = ServiceVolumeGraph::parse(volumes, mounts).map_err(invalid)?;
     let (configs, config_mounts) = configs(raw, root, directory)?;
     let config_graph = ServiceConfigGraph::parse(configs, config_mounts).map_err(invalid)?;

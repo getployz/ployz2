@@ -7,7 +7,7 @@ use ployz_core::{
     InspectContainerRequest, MachineAction, MachineId, MachineTarget, MembershipObservation,
     OperationPhase, OperationRow, ProjectName, QualifiedService, RemoveContainerRequest,
     RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode, StartContainerRequest,
-    StopContainerRequest, UpdateOrder, op,
+    StopContainerRequest, UpdateOrder, VolumeSource, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -489,7 +489,7 @@ async fn execute_operation<C: MachineOperations>(
     match operation {
         DeployOperation::CreateVolume { machine_id, volume } => {
             progress.set_running(index, OperationPhase::CreatingVolume);
-            let request = crate::volume::create_volume_request(volume, None)
+            let request = crate::volume::create_volume_request(volume)
                 .map_err(|error| machine_error(MachineAction::CreateVolume, error))?;
             client
                 .create_volume(machine_id, request)
@@ -497,21 +497,27 @@ async fn execute_operation<C: MachineOperations>(
                 .map(|_| ())
                 .map_err(|error| machine_error(MachineAction::CreateVolume, error).into())
         }
-        DeployOperation::CreateProvisionedVolume {
-            machine_id,
-            volume,
-            maximum_bytes,
-            ..
-        } => {
+        DeployOperation::CreateProvisionedVolume { machine_id, volume } => {
             progress.set_running(index, OperationPhase::CreatingVolume);
-            let size = crate::volume::ProvisionedVolumeSize::from_maximum_bytes(*maximum_bytes);
-            let request = crate::volume::create_volume_request(volume, Some(&size))
+            let VolumeSource::Provisioned { maximum_bytes, .. } = &volume.source else {
+                return Err(machine_error(
+                    MachineAction::CreateVolume,
+                    RpcError {
+                        code: RpcErrorCode::InvalidArgument,
+                        message: "Provisioned Volume operation requires a Provisioned source"
+                            .into(),
+                        details: serde_json::Value::Null,
+                    },
+                )
+                .into());
+            };
+            let request = crate::volume::create_volume_request(volume)
                 .map_err(|error| machine_error(MachineAction::CreateVolume, error))?;
             let created = client
                 .create_volume(machine_id, request)
                 .await
                 .map_err(|error| machine_error(MachineAction::CreateVolume, error))?;
-            if size.matches(&created) {
+            if crate::volume::matches_provisioned_maximum(&created, *maximum_bytes) {
                 Ok(())
             } else {
                 Err(machine_error(

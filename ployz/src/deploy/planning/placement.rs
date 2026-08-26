@@ -528,17 +528,19 @@ fn determine_update_order(
     }) {
         return UpdateOrder::StopFirst;
     }
-    if has_mounted_named_volume(&requested.volume_graph) {
+    if has_mounted_docker_volume(&requested.volume_graph) {
         return UpdateOrder::StopFirst;
     }
     UpdateOrder::StartFirst
 }
 
-fn has_mounted_named_volume(graph: &ServiceVolumeGraph) -> bool {
-    graph
-        .mounts()
-        .iter()
-        .any(|mount| matches!(graph.volume_for(mount).source, VolumeSource::Named { .. }))
+fn has_mounted_docker_volume(graph: &ServiceVolumeGraph) -> bool {
+    graph.mounts().iter().any(|mount| {
+        matches!(
+            graph.volume_for(mount).source,
+            VolumeSource::Named { .. } | VolumeSource::Provisioned { .. }
+        )
+    })
 }
 
 fn host_ports_conflict(left: &PortPublication, right: &PortPublication) -> bool {

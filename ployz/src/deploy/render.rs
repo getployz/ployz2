@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use ployz_core::{
     DeployEvent, DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation,
     HttpProtocol, OperationPhase, OperationRow, OperationStatus, PortPublication,
-    ReplacementOperation, UpdateOrder,
+    ReplacementOperation, UpdateOrder, VolumeSource,
 };
 
 /// How the live task list is titled.
@@ -186,14 +186,15 @@ fn volume_line(row: &OperationRow) -> String {
         DeployOperation::CreateVolume { volume, .. } => {
             format!("+ create volume {} on {machine}", volume.reference)
         }
-        DeployOperation::CreateProvisionedVolume {
-            volume,
-            maximum_bytes,
-            ..
-        } => format!(
-            "+ create provisioned volume {} (maximum {maximum_bytes} bytes) on {machine}",
-            volume.reference
-        ),
+        DeployOperation::CreateProvisionedVolume { volume, .. } => {
+            let VolumeSource::Provisioned { maximum_bytes, .. } = &volume.source else {
+                unreachable!("Provisioned Volume operations carry Provisioned sources")
+            };
+            format!(
+                "+ create provisioned volume {} (maximum {maximum_bytes} bytes) on {machine}",
+                volume.reference
+            )
+        }
         DeployOperation::RemoveVolume { id } => {
             format!("- remove volume {} on {machine}", id.name)
         }
@@ -655,16 +656,14 @@ mod tests {
                 machine_id,
                 volume: ServiceVolume {
                     reference: ServiceVolumeReference::parse("data").unwrap(),
-                    source: VolumeSource::Named {
+                    source: VolumeSource::Provisioned {
                         name: DockerVolumeName::parse("shop_data").unwrap(),
-                        external: false,
-                        driver: None,
+                        maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                            NonZeroU64::new(1_073_741_824).unwrap(),
+                        ),
                         labels: Default::default(),
                     },
                 },
-                maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-                    NonZeroU64::new(1_073_741_824).unwrap(),
-                ),
             },
             Some(MachineName::parse("edge").unwrap()),
             None,

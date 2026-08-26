@@ -1,11 +1,12 @@
 use std::{
     collections::BTreeMap,
+    fmt::{self, Display, Formatter},
     net::IpAddr,
     num::{NonZeroU16, NonZeroU32, NonZeroU64},
 };
 
 use ipnet::IpNet;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
 use super::{ServiceConfigGraph, ServiceSpecGraphError, ServiceVolumeGraph};
 use crate::{
@@ -202,6 +203,16 @@ pub enum VolumeSource {
         #[serde(default)]
         labels: BTreeMap<String, String>,
     },
+    /// A bounded Docker Volume backed by a Machine Pool.
+    Provisioned {
+        /// Machine-local Docker Volume name after Project scoping.
+        name: DockerVolumeName,
+        /// Required positive storage maximum.
+        maximum_bytes: ProvisionedVolumeMaximumBytes,
+        /// Labels applied when the Docker Volume is created.
+        #[serde(default)]
+        labels: BTreeMap<String, String>,
+    },
     Tmpfs {
         #[serde(default)]
         size_bytes: Option<u64>,
@@ -215,16 +226,17 @@ pub enum VolumeSource {
 impl VolumeSource {
     /// Bind a non-external named volume to `project`: physical Docker name and ownership labels.
     pub fn scope_to_project(&mut self, project: &ProjectName) {
-        let Self::Named {
-            name,
-            external,
-            labels,
-            ..
-        } = self
-        else {
-            return;
+        let (name, labels) = match self {
+            Self::Named {
+                external: false,
+                name,
+                labels,
+                ..
+            }
+            | Self::Provisioned { name, labels, .. } => (name, labels),
+            Self::Named { external: true, .. } | Self::Bind { .. } | Self::Tmpfs { .. } => return,
         };
-        if *external || labels.contains_key(PROJECT_NAME_LABEL) {
+        if labels.contains_key(PROJECT_NAME_LABEL) {
             // Already bound: scale from a Resolved Service Spec, or a volume that
             // already carries ownership. Do not prefix again or rewrite a foreign owner.
             return;
@@ -232,6 +244,54 @@ impl VolumeSource {
         *name = project.volume_name(name);
         labels.insert(MANAGED_LABEL.into(), String::new());
         labels.insert(PROJECT_NAME_LABEL.into(), project.to_string());
+    }
+}
+
+/// Reserved Docker driver used only by [`VolumeSource::Provisioned`].
+pub const PROVISIONED_VOLUME_DRIVER: &str = "ployz";
+
+/// A positive maximum byte count for one Provisioned Volume.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ProvisionedVolumeMaximumBytes(NonZeroU64);
+
+impl ProvisionedVolumeMaximumBytes {
+    /// Construct a Provisioned Volume bound from a positive byte count.
+    #[must_use]
+    pub const fn new(bytes: NonZeroU64) -> Self {
+        Self(bytes)
+    }
+
+    /// The positive maximum byte count.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl Display for ProvisionedVolumeMaximumBytes {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl Serialize for ProvisionedVolumeMaximumBytes {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProvisionedVolumeMaximumBytes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map(Self)
+            .map_err(D::Error::custom)
     }
 }
 
@@ -280,7 +340,7 @@ impl DockerVolume {
     pub fn driver(&self) -> &str {
         match &self.storage {
             DockerVolumeStorageObservation::Plain { driver } => driver,
-            DockerVolumeStorageObservation::Provisioned { .. } => "ployz",
+            DockerVolumeStorageObservation::Provisioned { .. } => PROVISIONED_VOLUME_DRIVER,
         }
     }
 }

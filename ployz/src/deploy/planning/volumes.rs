@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
-    MachineObservation, MachineStorageObservation, MachineTarget, PreservedVolume, ProjectName,
-    ProvisionedVolume, ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ServiceMode,
-    ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph, VolumeSource,
-    machine_matches_target, owned_volume_project,
+    MachineObservation, MachineStorageObservation, MachineTarget, PROVISIONED_VOLUME_DRIVER,
+    PreservedVolume, ProjectName, RequestedServiceSpec, ServiceMode, ServiceName,
+    ServiceObservation, ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target,
+    owned_volume_project,
 };
 
 use crate::deploy::{
@@ -24,16 +24,14 @@ use super::placement::{ReplicatedCapacityReservation, reserve_replicated_service
 pub(super) struct VolumePins {
     anchors: BTreeMap<DockerVolumeName, MachineId>,
     creates: Vec<(MachineId, ServiceVolume)>,
-    provisioned: ProvisionedVolumeBindings,
-    provisioned_plans: BTreeMap<DockerVolumeId, ProvisionedVolumeMaximumBytes>,
+    provisioned_plans: BTreeMap<DockerVolumeId, VolumeSource>,
 }
 
 impl VolumePins {
-    pub(super) fn new(provisioned: ProvisionedVolumeBindings) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             anchors: BTreeMap::new(),
             creates: Vec::new(),
-            provisioned,
             provisioned_plans: BTreeMap::new(),
         }
     }
@@ -54,10 +52,7 @@ impl VolumePins {
     }
 
     fn anchor_for(&self, volume: &ServiceVolume) -> Option<MachineId> {
-        let VolumeSource::Named { name, .. } = &volume.source else {
-            return None;
-        };
-        self.anchors.get(name).copied()
+        named_volume_name(volume).and_then(|name| self.anchors.get(name).copied())
     }
 
     fn observations<'pins>(
@@ -82,25 +77,15 @@ impl VolumePins {
     }
 
     pub(super) fn into_creates(self) -> Vec<DeployOperation> {
-        let provisioned_plans = self.provisioned_plans;
         self.creates
             .into_iter()
-            .map(|(machine_id, volume)| {
-                let provisioned = named_volume_name(&volume).and_then(|name| {
-                    provisioned_plans
-                        .get(&DockerVolumeId {
-                            machine_id,
-                            name: name.clone(),
-                        })
-                        .copied()
-                });
-                match provisioned {
-                    Some(provisioned) => DeployOperation::CreateProvisionedVolume {
-                        machine_id,
-                        volume,
-                        maximum_bytes: provisioned,
-                    },
-                    None => DeployOperation::CreateVolume { machine_id, volume },
+            .map(|(machine_id, volume)| match &volume.source {
+                VolumeSource::Provisioned { .. } => {
+                    DeployOperation::CreateProvisionedVolume { machine_id, volume }
+                }
+                VolumeSource::Named { .. } => DeployOperation::CreateVolume { machine_id, volume },
+                VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => {
+                    unreachable!("only Docker Volumes are planned for creation")
                 }
             })
             .collect()
@@ -122,82 +107,8 @@ pub(super) fn scope_requested(
     spec
 }
 
-pub(super) struct ProvisionedVolumeBindings {
-    bounds: BTreeMap<ServiceName, BTreeMap<DockerVolumeName, ProvisionedVolumeMaximumBytes>>,
-}
-
-impl ProvisionedVolumeBindings {
-    pub(super) fn parse(
-        target: &[RequestedServiceSpec],
-        declarations: &[ProvisionedVolume],
-    ) -> Result<Self, PlanError> {
-        let mut bounds = BTreeMap::new();
-        for declaration in declarations {
-            let volume = target
-                .iter()
-                .find(|spec| spec.name == declaration.service)
-                .and_then(|spec| {
-                    spec.volume_graph
-                        .volumes()
-                        .iter()
-                        .find(|volume| volume.reference == declaration.reference)
-                })
-                .ok_or_else(|| PlanError::UnknownProvisionedVolumeReference {
-                    service: declaration.service.clone(),
-                    reference: declaration.reference.clone(),
-                })?;
-            let VolumeSource::Named { name, .. } = &volume.source else {
-                return Err(PlanError::ProvisionedVolumeReferenceNotNamed {
-                    service: declaration.service.clone(),
-                    reference: declaration.reference.clone(),
-                });
-            };
-            let service_bounds = bounds
-                .entry(declaration.service.clone())
-                .or_insert_with(BTreeMap::new);
-            if let Some(existing_maximum_bytes) =
-                service_bounds.insert(name.clone(), declaration.maximum_bytes)
-                && existing_maximum_bytes != declaration.maximum_bytes
-            {
-                return Err(PlanError::ConflictingProvisionedVolumeBounds {
-                    name: name.clone(),
-                    existing_maximum_bytes,
-                    conflicting_maximum_bytes: declaration.maximum_bytes,
-                });
-            }
-        }
-        Ok(Self { bounds })
-    }
-
-    fn bound_for(
-        &self,
-        service: &ServiceName,
-        name: &DockerVolumeName,
-    ) -> Option<ProvisionedVolumeMaximumBytes> {
-        self.bounds
-            .get(service)
-            .and_then(|bounds| bounds.get(name))
-            .copied()
-    }
-
-    fn volumes_for<'spec>(
-        &'spec self,
-        spec: &'spec RequestedServiceSpec,
-    ) -> impl Iterator<Item = (&'spec DockerVolumeName, ProvisionedVolumeMaximumBytes)> + 'spec
-    {
-        spec.volume_graph.mounts().iter().filter_map(|mount| {
-            let volume = spec.volume_graph.volume_for(mount);
-            let VolumeSource::Named { name, .. } = &volume.source else {
-                return None;
-            };
-            self.bound_for(&spec.name, name)
-                .map(|maximum_bytes| (name, maximum_bytes))
-        })
-    }
-}
-
 impl VolumePins {
-    pub(super) fn validate_provisioned_volume_bounds(
+    pub(super) fn validate_provisioned_volume_definitions(
         &mut self,
         target: &[RequestedServiceSpec],
         snapshot: &DeploySnapshot,
@@ -205,11 +116,15 @@ impl VolumePins {
     ) -> Result<(), PlanError> {
         let name_errors_with_service = target.len() > 1;
         for spec in target {
-            if !self.provisioned.bounds.contains_key(&spec.name) {
+            if mounted_provisioned_volumes(&spec.volume_graph)
+                .next()
+                .is_none()
+            {
                 continue;
             }
             let result = (|| {
                 let mut machines = super::eligible_machines(spec, snapshot, options)?;
+                self.validate_provisioned_volumes(spec, &machines, snapshot)?;
                 volume_constraints(spec, snapshot, self, &mut machines)?;
                 self.record_provisioned(spec, &machines)
             })();
@@ -225,20 +140,23 @@ impl VolumePins {
         spec: &RequestedServiceSpec,
         machines: &[&MachineObservation],
     ) -> Result<(), PlanError> {
-        for (name, maximum_bytes) in self.provisioned.volumes_for(spec) {
+        for volume in mounted_provisioned_volumes(&spec.volume_graph) {
+            let VolumeSource::Provisioned { name, .. } = &volume.source else {
+                unreachable!("mounted_provisioned_volumes filters source kinds")
+            };
             for machine in machines {
                 let id = DockerVolumeId {
                     machine_id: machine.machine.id,
                     name: name.clone(),
                 };
-                let plan = self.provisioned_plans.entry(id).or_insert(maximum_bytes);
-                if *plan != maximum_bytes {
-                    return Err(PlanError::ConflictingProvisionedVolumeBounds {
+                if let Some(existing) = self.provisioned_plans.get(&id)
+                    && existing != &volume.source
+                {
+                    return Err(PlanError::ConflictingDockerVolumeDefinitions {
                         name: name.clone(),
-                        existing_maximum_bytes: *plan,
-                        conflicting_maximum_bytes: maximum_bytes,
                     });
                 }
+                self.provisioned_plans.insert(id, volume.source.clone());
             }
         }
         Ok(())
@@ -250,10 +168,15 @@ impl VolumePins {
         machines: &[&MachineObservation],
         snapshot: &DeploySnapshot,
     ) -> Result<(), PlanError> {
-        if !self.provisioned.bounds.contains_key(&spec.name) {
-            return Ok(());
-        }
-        for (name, maximum_bytes) in self.provisioned.volumes_for(spec) {
+        for volume in mounted_provisioned_volumes(&spec.volume_graph) {
+            let VolumeSource::Provisioned {
+                name,
+                maximum_bytes,
+                ..
+            } = &volume.source
+            else {
+                unreachable!("mounted_provisioned_volumes filters source kinds")
+            };
             for machine in machines {
                 let Some(existing) =
                     snapshot
@@ -276,13 +199,11 @@ impl VolumePins {
                         machine: machine.machine.name.clone(),
                     });
                 }
-                if !crate::volume::ProvisionedVolumeSize::from_maximum_bytes(maximum_bytes)
-                    .matches(existing)
-                {
+                if !crate::volume::matches_provisioned_maximum(existing, *maximum_bytes) {
                     return Err(PlanError::ExistingProvisionedVolumeMismatch {
                         name: name.clone(),
                         machine: machine.machine.name.clone(),
-                        maximum_bytes,
+                        maximum_bytes: *maximum_bytes,
                     });
                 }
             }
@@ -295,7 +216,10 @@ impl VolumePins {
         spec: &RequestedServiceSpec,
         machines: &mut Vec<&MachineObservation>,
     ) -> Result<(), PlanError> {
-        if !self.provisioned.bounds.contains_key(&spec.name) {
+        if mounted_provisioned_volumes(&spec.volume_graph)
+            .next()
+            .is_none()
+        {
             return Ok(());
         }
         let explicit = spec.placement.machines.len() == 1 && machines.len() == 1;
@@ -363,7 +287,8 @@ fn declared_physical_names(target: &[RequestedServiceSpec]) -> BTreeSet<DockerVo
                 name,
                 external: false,
                 ..
-            } => Some(name.clone()),
+            }
+            | VolumeSource::Provisioned { name, .. } => Some(name.clone()),
             VolumeSource::Named { external: true, .. }
             | VolumeSource::Bind { .. }
             | VolumeSource::Tmpfs { .. } => None,
@@ -382,30 +307,46 @@ struct VolumePresence<'a> {
 }
 
 fn planned_presence(machine_id: MachineId, volume: &ServiceVolume) -> Option<VolumePresence<'_>> {
-    let VolumeSource::Named { name, driver, .. } = &volume.source else {
-        return None;
+    let (name, driver, options) = match &volume.source {
+        VolumeSource::Named { name, driver, .. } => (
+            name,
+            driver
+                .as_ref()
+                .map_or("local", |driver| driver.name.as_str()),
+            driver
+                .as_ref()
+                .map_or(&EMPTY_VOLUME_OPTIONS, |driver| &driver.options),
+        ),
+        VolumeSource::Provisioned { name, .. } => {
+            (name, PROVISIONED_VOLUME_DRIVER, &EMPTY_VOLUME_OPTIONS)
+        }
+        VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => return None,
     };
     Some(VolumePresence {
         machine_id,
         name,
-        driver: driver
-            .as_ref()
-            .map_or("local", |driver| driver.name.as_str()),
-        options: driver
-            .as_ref()
-            .map_or(&EMPTY_VOLUME_OPTIONS, |driver| &driver.options),
+        driver,
+        options,
     })
 }
 
 impl VolumePresence<'_> {
     fn matches(self, volume: &ServiceVolume) -> bool {
-        let VolumeSource::Named { name, driver, .. } = &volume.source else {
-            return false;
-        };
-        self.name == name
-            && driver.as_ref().is_none_or(|required| {
-                required.name == self.driver && required.options == *self.options
-            })
+        match &volume.source {
+            VolumeSource::Named { name, driver, .. } => {
+                self.name == name
+                    && driver.as_ref().map_or_else(
+                        || self.driver != PROVISIONED_VOLUME_DRIVER,
+                        |required| {
+                            required.name == self.driver && required.options == *self.options
+                        },
+                    )
+            }
+            VolumeSource::Provisioned { name, .. } => {
+                self.name == name && self.driver == PROVISIONED_VOLUME_DRIVER
+            }
+            VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => false,
+        }
     }
 }
 
@@ -425,7 +366,7 @@ pub(super) fn named_volume_uses(
         let service_name = spec.name.as_str();
         for mount in spec.volume_graph.mounts() {
             let volume = spec.volume_graph.volume_for(mount);
-            let VolumeSource::Named { name, .. } = &volume.source else {
+            let Some(name) = named_volume_name(volume) else {
                 continue;
             };
             let uses = uses.entry(name.clone()).or_default();
@@ -654,7 +595,7 @@ pub(super) fn plan_volume_operations(
                 .expect("volume_constraints returns a Machine when it succeeds");
             machines.retain(|machine| machine.machine.id == machine_id);
             for volume in missing_volumes {
-                if let VolumeSource::Named { name, .. } = &volume.source {
+                if let Some(name) = named_volume_name(volume) {
                     pins.constrain(name.clone(), machine_id);
                 }
                 pins.record_create(machine_id, volume);
@@ -869,17 +810,17 @@ fn volume_anchor(
 }
 
 fn named_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {
-    let VolumeSource::Named { name, .. } = &volume.source else {
-        return None;
-    };
-    Some(name)
+    match &volume.source {
+        VolumeSource::Named { name, .. } | VolumeSource::Provisioned { name, .. } => Some(name),
+        VolumeSource::Bind { .. } | VolumeSource::Tmpfs { .. } => None,
+    }
 }
 
 fn mounted_named_volumes(graph: &ServiceVolumeGraph) -> Result<Vec<&ServiceVolume>, PlanError> {
     let mut by_docker_name = BTreeMap::<DockerVolumeName, &ServiceVolume>::new();
     for mount in graph.mounts() {
         let volume = graph.volume_for(mount);
-        let VolumeSource::Named { name, .. } = &volume.source else {
+        let Some(name) = named_volume_name(volume) else {
             continue;
         };
         if let Some(existing) = by_docker_name.get(name) {
@@ -891,4 +832,11 @@ fn mounted_named_volumes(graph: &ServiceVolumeGraph) -> Result<Vec<&ServiceVolum
         }
     }
     Ok(by_docker_name.into_values().collect())
+}
+
+fn mounted_provisioned_volumes(graph: &ServiceVolumeGraph) -> impl Iterator<Item = &ServiceVolume> {
+    graph.mounts().iter().filter_map(|mount| {
+        let volume = graph.volume_for(mount);
+        matches!(volume.source, VolumeSource::Provisioned { .. }).then_some(volume)
+    })
 }

@@ -1,6 +1,7 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, num::NonZeroU64};
 
 use super::support::*;
+use ployz_core::{MachineStorageObservation, ProvisionedVolumeMaximumBytes};
 #[test]
 fn new_replicated_service_runs_the_requested_count_across_available_machines() {
     let requested = requested(ServiceMode::Replicated {
@@ -511,17 +512,53 @@ fn missing_named_volume_is_created_before_three_replicas() {
 #[test]
 fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
     let cases = [
-        ("stateless", false, false, UpdateOrder::StartFirst),
-        ("single named volume", true, false, UpdateOrder::StopFirst),
-        ("conflicting host port", false, true, UpdateOrder::StopFirst),
+        ("stateless", false, false, false, UpdateOrder::StartFirst),
+        (
+            "single named volume",
+            true,
+            false,
+            false,
+            UpdateOrder::StopFirst,
+        ),
+        (
+            "single provisioned volume",
+            true,
+            true,
+            false,
+            UpdateOrder::StopFirst,
+        ),
+        (
+            "conflicting host port",
+            false,
+            false,
+            true,
+            UpdateOrder::StopFirst,
+        ),
     ];
 
-    for (name, with_volume, with_port, expected) in cases {
+    for (name, with_volume, provisioned, with_port, expected) in cases {
         let mut requested = requested(ServiceMode::Replicated {
             replicas: NonZeroU32::new(1).unwrap(),
         });
         if with_volume {
             add_named_volume(&mut requested, "data");
+        }
+        if provisioned {
+            let mut volumes = requested.volume_graph.volumes().to_vec();
+            let mounts = requested.volume_graph.mounts().to_vec();
+            let volume = volumes.first_mut().expect("fixture mounts one volume");
+            let VolumeSource::Named { name, labels, .. } = &volume.source else {
+                unreachable!("fixture starts ordinary")
+            };
+            volume.source = VolumeSource::Provisioned {
+                name: name.clone(),
+                maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                    NonZeroU64::new(1_073_741_824).unwrap(),
+                ),
+                labels: labels.clone(),
+            };
+            requested.volume_graph =
+                ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
         }
         if with_port {
             requested.ports.push(host_port(8080));
@@ -529,17 +566,24 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
         let mut current = requested.clone();
         current.container.image = "ghcr.io/getployz/api:old".into();
         let current_service_id = service_id('a');
+        let mut target_machine = machine('1', "first");
         let mut snapshot = DeploySnapshot {
-            machines: vec![machine('1', "first")],
+            machines: vec![target_machine.clone()],
             containers: vec![container('b', '1', &current, &current_service_id)],
             ..Default::default()
         };
         if with_volume {
-            snapshot.volume_snapshot =
-                VolumeSnapshot::try_from_observations(vec![observed_volume(
-                    machine_id('1'),
-                    "data",
-                )])
+            let mut existing = observed_volume(machine_id('1'), "data");
+            if provisioned {
+                existing.storage = DockerVolumeStorageObservation::Provisioned {
+                    mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+                    bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+                    used_bytes: 0,
+                };
+                target_machine.storage = Some(MachineStorageObservation::Ready);
+                snapshot.machines = vec![target_machine.clone()];
+            }
+            snapshot.volume_snapshot = VolumeSnapshot::try_from_observations(vec![existing])
                 .expect("valid Volume Snapshot fixture");
         }
 

@@ -8,8 +8,8 @@ use bollard::{
     },
 };
 use ployz_core::{
-    ContainerCreated, ContainerId, ContainerKind, ContainerRuntimeObservation, CreateVolumeRequest,
-    MachineGateway, MachineId, ProjectName, ResolvedServiceSpec, VolumeSource,
+    ContainerCreated, ContainerId, ContainerKind, ContainerRuntimeObservation, MachineGateway,
+    MachineId, ProjectName, ResolvedServiceSpec,
 };
 
 use crate::docker_image::prepare_image;
@@ -106,7 +106,7 @@ impl ContainerRuntime {
                 display_name: existing.display_name,
             });
         }
-        self.ensure_named_volumes(machine_id, spec).await?;
+        self.ensure_mounted_volumes(machine_id, spec).await?;
         let created = self
             .prepare_and_create(
                 machine_id,
@@ -148,41 +148,21 @@ impl ContainerRuntime {
         Ok(found)
     }
 
-    async fn ensure_named_volumes(
+    async fn ensure_mounted_volumes(
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
     ) -> Result<(), Error> {
-        for volume in spec.volume_graph.volumes() {
-            let VolumeSource::Named {
-                name,
-                external,
-                driver,
-                labels,
-                ..
-            } = &volume.source
-            else {
+        let mut created = std::collections::BTreeSet::new();
+        for mount in spec.volume_graph.mounts() {
+            let volume = spec.volume_graph.volume_for(mount);
+            let Some(request) = volume.source.to_create_volume_request() else {
                 continue;
             };
-            if *external {
+            if !created.insert(request.name.clone()) {
                 continue;
             }
-            match self
-                .create_volume(
-                    machine_id,
-                    CreateVolumeRequest {
-                        name: name.clone(),
-                        driver: driver
-                            .as_ref()
-                            .map_or_else(|| "local".into(), |driver| driver.name.clone()),
-                        options: driver
-                            .as_ref()
-                            .map_or_else(Default::default, |driver| driver.options.clone()),
-                        labels: labels.clone(),
-                    },
-                )
-                .await
-            {
+            match self.create_volume(machine_id, request).await {
                 Ok(_) => {}
                 Err(error) if volume_conflict(&error) => {}
                 Err(error) => return Err(error),
@@ -572,6 +552,10 @@ fn volume_conflict(error: &Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, num::NonZeroU64};
+
+    use ployz_core::{PROVISIONED_VOLUME_DRIVER, VolumeSource};
+
     use super::*;
 
     #[test]
@@ -602,5 +586,28 @@ mod tests {
         });
         assert!(volume_conflict(&conflict));
         assert!(!volume_conflict(&missing));
+    }
+
+    #[test]
+    fn global_provisioned_volume_request_never_downgrades_to_local() {
+        let request = VolumeSource::Provisioned {
+            name: ployz_core::DockerVolumeName::parse("app_data").unwrap(),
+            maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
+                NonZeroU64::new(1_073_741_824).unwrap(),
+            ),
+            labels: BTreeMap::from([("backup".into(), "daily".into())]),
+        }
+        .to_create_volume_request()
+        .unwrap();
+
+        assert_eq!(request.driver, PROVISIONED_VOLUME_DRIVER);
+        assert_eq!(
+            request.options,
+            BTreeMap::from([("size".into(), "1073741824b".into())])
+        );
+        assert_eq!(
+            request.labels.get("backup").map(String::as_str),
+            Some("daily")
+        );
     }
 }

@@ -3,10 +3,9 @@
 use std::{
     collections::BTreeMap,
     fmt::{self, Display, Formatter},
-    num::NonZeroU64,
 };
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+use serde::{Deserialize, Serialize};
 
 use super::{
     ContainerRuntimeObservation, HealthObservation, RequestedServiceSpec, ResolvedServiceSpec,
@@ -14,7 +13,7 @@ use super::{
 };
 use crate::{
     ContainerId, DockerVolumeId, MachineId, MachineName, ProjectName, QualifiedService, RpcError,
-    ServiceName, ServiceVolumeReference,
+    ServiceName,
 };
 use thiserror::Error;
 
@@ -43,62 +42,6 @@ pub struct ServiceAttempt {
     pub name: ServiceName,
 }
 
-/// A positive maximum byte count for one Provisioned Volume.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ProvisionedVolumeMaximumBytes(NonZeroU64);
-
-impl ProvisionedVolumeMaximumBytes {
-    /// Construct a Provisioned Volume bound from a positive byte count.
-    #[must_use]
-    pub const fn new(bytes: NonZeroU64) -> Self {
-        Self(bytes)
-    }
-
-    /// The positive maximum byte count.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0.get()
-    }
-}
-
-impl Display for ProvisionedVolumeMaximumBytes {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl Serialize for ProvisionedVolumeMaximumBytes {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for ProvisionedVolumeMaximumBytes {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse()
-            .map(Self)
-            .map_err(D::Error::custom)
-    }
-}
-
-/// One Provisioned Volume declaration in a Deploy Intent.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ProvisionedVolume {
-    /// Service whose local Volume Reference is declared.
-    pub service: ServiceName,
-    /// Service-local reference that resolves to the Docker Volume declaration.
-    pub reference: ServiceVolumeReference,
-    /// Required positive storage bound in bytes.
-    pub maximum_bytes: ProvisionedVolumeMaximumBytes,
-}
-
 /// Complete desired Services plus which of those Services this command applies.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeployIntent {
@@ -106,8 +49,6 @@ pub struct DeployIntent {
     pub project_name: ProjectName,
     /// Complete desired Services for this Cluster.
     pub target: Vec<RequestedServiceSpec>,
-    /// Bounded Provisioned Volumes referenced by Services in `target`.
-    pub provisioned_volumes: Vec<ProvisionedVolume>,
     /// Planner knobs for this Deploy, including the selected Service list.
     pub options: PlanOptions,
     // ponytail: planner graph, not wire. Split if Cloud ever sends depends_on.
@@ -136,7 +77,6 @@ impl DeployIntent {
         Self {
             project_name,
             target,
-            provisioned_volumes: Vec::new(),
             options,
             dependencies: BTreeMap::new(),
             service_profiles: BTreeMap::new(),
@@ -369,7 +309,6 @@ pub enum DeployOperation {
     CreateProvisionedVolume {
         machine_id: MachineId,
         volume: ServiceVolume,
-        maximum_bytes: ProvisionedVolumeMaximumBytes,
     },
     /// Wait for every observed Service Container of `dependency` before starting `dependent`.
     WaitHealthy {

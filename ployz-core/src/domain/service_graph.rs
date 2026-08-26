@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
-use super::{ConfigMount, ConfigSpec, ServiceMount, ServiceVolume};
+use super::{
+    ConfigMount, ConfigSpec, PROVISIONED_VOLUME_DRIVER, ServiceMount, ServiceVolume, VolumeSource,
+};
 use crate::ServiceVolumeReference;
 
 /// Service Volume definitions together with the mounts that refer to them.
@@ -23,6 +25,11 @@ pub enum ServiceVolumeGraphError {
     DuplicateVolumeReference { reference: ServiceVolumeReference },
     #[error("mount references an undeclared Service Volume: {reference}")]
     UnknownVolumeReference { reference: ServiceVolumeReference },
+    #[error(
+        "ordinary Service Volume {reference} cannot use reserved Docker driver '{PROVISIONED_VOLUME_DRIVER}'"
+    )]
+    /// An ordinary named Volume selected the driver reserved for Provisioned Volumes.
+    ReservedProvisionedVolumeDriver { reference: ServiceVolumeReference },
 }
 
 impl ServiceVolumeGraph {
@@ -31,13 +38,23 @@ impl ServiceVolumeGraph {
     /// # Errors
     ///
     /// Returns [`ServiceVolumeGraphError`] when two definitions share a
-    /// reference or a mount names a reference that was not declared.
+    /// reference, a mount names a reference that was not declared, or an
+    /// ordinary named Volume selects the reserved Provisioned Volume driver.
     pub fn parse(
         volumes: Vec<ServiceVolume>,
         mounts: Vec<ServiceMount>,
     ) -> Result<Self, ServiceVolumeGraphError> {
         let mut references = BTreeSet::new();
         for volume in &volumes {
+            if matches!(
+                &volume.source,
+                VolumeSource::Named { driver: Some(driver), .. }
+                    if driver.name == PROVISIONED_VOLUME_DRIVER
+            ) {
+                return Err(ServiceVolumeGraphError::ReservedProvisionedVolumeDriver {
+                    reference: volume.reference.clone(),
+                });
+            }
             if !references.insert(&volume.reference) {
                 return Err(ServiceVolumeGraphError::DuplicateVolumeReference {
                     reference: volume.reference.clone(),

@@ -179,15 +179,15 @@
   },
   "create_provisioned_volume_operation": {
     "machine_id": "0123456789abcdef0123456789abcdef",
-    "maximum_bytes": "1073741824",
     "type": "create_provisioned_volume",
     "volume": {
       "reference": "data",
       "source": {
-        "driver": null,
-        "external": false,
-        "kind": "named",
-        "labels": {},
+        "kind": "provisioned",
+        "labels": {
+          "backup": "daily"
+        },
+        "maximum_bytes": "1073741824",
         "name": "data"
       }
     }
@@ -270,7 +270,6 @@
       "skip_health_monitor": false
     },
     "project_name": "app",
-    "provisioned_volumes": [],
     "target": []
   },
   "deploy_outcome": {
@@ -544,10 +543,13 @@
       }
     ]
   },
-  "provisioned_volume": {
+  "provisioned_volume_source": {
+    "kind": "provisioned",
+    "labels": {
+      "backup": "daily"
+    },
     "maximum_bytes": "1073741824",
-    "reference": "data",
-    "service": "api"
+    "name": "data"
   },
   "register_request": {
     "advertised_endpoints": [

@@ -8,8 +8,7 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, IngressHost, IngressLabelTooLong, MachineFailure, MachineId,
     MachineName, MachineObservation, MachineTarget, PartialResult, ProjectName,
     ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, RpcErrorCode, ServiceName,
-    ServiceObservation, ServiceVolumeReference, VolumeInventory, VolumeObservationFailure,
-    derive_services,
+    ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
@@ -509,34 +508,6 @@ pub enum PlanError {
         /// Service Name repeated in the Deploy Intent target.
         service: ServiceName,
     },
-    /// Two references resolve to one Docker Volume but declare different bounds.
-    #[error(
-        "Provisioned Volume declarations for Docker Volume {name} conflict: {existing_maximum_bytes} and {conflicting_maximum_bytes} byte maximums"
-    )]
-    ConflictingProvisionedVolumeBounds {
-        /// Scoped Docker Volume identity shared by the declarations.
-        name: DockerVolumeName,
-        /// Bound already assigned to `name`.
-        existing_maximum_bytes: ProvisionedVolumeMaximumBytes,
-        /// Later bound that conflicts with the existing declaration.
-        conflicting_maximum_bytes: ProvisionedVolumeMaximumBytes,
-    },
-    /// A Provisioned Volume declaration names no Service Volume in the target.
-    #[error("Provisioned Volume {service}/{reference} does not resolve to a Service Volume")]
-    UnknownProvisionedVolumeReference {
-        /// Service expected to own the local reference.
-        service: ServiceName,
-        /// Service-local Volume Reference that was not found.
-        reference: ServiceVolumeReference,
-    },
-    /// A Provisioned Volume declaration resolves to a Bind or Tmpfs mount source.
-    #[error("Provisioned Volume {service}/{reference} does not resolve to a named Docker Volume")]
-    ProvisionedVolumeReferenceNotNamed {
-        /// Service that owns the local reference.
-        service: ServiceName,
-        /// Service-local Volume Reference with a non-Volume source.
-        reference: ServiceVolumeReference,
-    },
     /// The selected Machine has no usable ZFS storage preparation.
     #[error(
         "Machine '{machine}' requires storage preparation before deploying a Provisioned Volume; enroll it with --storage zfs"
@@ -630,15 +601,13 @@ fn compose_deploy_intent(
     project_name: ProjectName,
     options: PlanOptions,
 ) -> DeployIntent {
-    let mut intent = DeployIntent::from_named_specs(
+    DeployIntent::from_named_specs(
         project_name,
         &project.services,
         &project.dependencies,
         options,
     )
-    .with_service_profiles(project.service_profiles());
-    intent.provisioned_volumes = project.provisioned_volume_declarations();
-    intent
+    .with_service_profiles(project.service_profiles())
 }
 
 /// Plan a Compose project: fail if any `external: true` volume is missing from

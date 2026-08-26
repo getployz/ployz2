@@ -108,8 +108,7 @@ async fn provisioned_volume_executes_before_dependent_operations() {
     let machine_id = machine('1');
     let provisioned = DeployOperation::CreateProvisionedVolume {
         machine_id,
-        volume: volume(),
-        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1_073_741_824).unwrap()),
+        volume: provisioned_volume(),
     };
     let dependent = run(&machine_id, spec(None, None, None), true);
     let created_id = container('a');
@@ -146,8 +145,7 @@ async fn provisioned_volume_race_with_plain_volume_stops_before_container_creati
     let machine_id = machine('1');
     let provisioned = DeployOperation::CreateProvisionedVolume {
         machine_id,
-        volume: volume(),
-        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1_073_741_824).unwrap()),
+        volume: provisioned_volume(),
     };
     let dependent = run(&machine_id, spec(None, None, None), true);
     let client = Scripted::new(vec![Step(
@@ -184,8 +182,7 @@ async fn provisioned_volume_race_with_a_different_current_bound_stops_before_con
     let machine_id = machine('1');
     let provisioned = DeployOperation::CreateProvisionedVolume {
         machine_id,
-        volume: volume(),
-        maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1_073_741_824).unwrap()),
+        volume: provisioned_volume(),
     };
     let dependent = run(&machine_id, spec(None, None, None), true);
     let Reply::Volume(mut observed) = volume_reply(machine_id, "ployz", Some("1073741824b")) else {
