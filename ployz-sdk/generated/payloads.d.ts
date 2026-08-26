@@ -409,6 +409,7 @@ export type ObservationKind = "container" | "volume";
 export type DeployWarning =
   | Additive<{ ObservationFailed: { kind: ObservationKind; machine_id: MachineId; message: string } }>
   | Additive<{ ObservationOmitted: { kind: ObservationKind; machine_id: MachineId } }>
+  | Additive<{ StorageObservationUnknown: { machine_id: MachineId } }>
   | Additive<{ IngressHostname: string }>
   | "ObserverRelativeHostnameConflict"
   | Additive<{ SkippedDependencyHealth: { dependent: QualifiedService; dependency: QualifiedService } }>;

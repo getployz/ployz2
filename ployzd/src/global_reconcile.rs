@@ -1,11 +1,12 @@
-//! Machine-local, add-only convergence for Global Service slots.
+//! Machine-local convergence for Global Service slots.
 
 use std::{fmt::Display, time::Duration};
 
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    ContainerObservation, GlobalReconcileFailureObservation, Machine, ObservedGlobalSlotSpec,
-    derive_services, missing_global_slots,
+    ContainerId, ContainerObservation, GlobalReconcileFailureObservation, Machine,
+    MachineStorageObservation, ObservedGlobalSlotSpec, ServicePlacementEligibility,
+    derive_services, service_placement_eligibility,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -36,6 +37,7 @@ trait GlobalSlotEnsurer {
     type Error: Display;
 
     async fn ensure_global_slot(&self, slot: &ObservedGlobalSlotSpec) -> Result<(), Self::Error>;
+    async fn retire_global_slot(&self, container_id: &ContainerId) -> Result<(), Self::Error>;
 }
 
 impl GlobalSlotEnsurer for LocalMachine {
@@ -45,6 +47,10 @@ impl GlobalSlotEnsurer for LocalMachine {
         LocalMachine::ensure_global_slot(self, &slot.identity().project, slot.resolved_spec())
             .await
             .map(|_| ())
+    }
+
+    async fn retire_global_slot(&self, container_id: &ContainerId) -> Result<(), Self::Error> {
+        LocalMachine::retire_global_slot(self, container_id).await
     }
 }
 
@@ -56,7 +62,7 @@ pub(crate) enum RunError {
     ParticipationSignalClosed(#[source] watch::error::RecvError),
 }
 
-/// Converge this participating Machine's missing eligible Global slots.
+/// Converge this participating Machine's eligible Global slots.
 ///
 /// Runs after participation changes and on a slow periodic tick until shutdown.
 ///
@@ -108,12 +114,14 @@ async fn reconcile_store(
         );
         return;
     };
+    let storage = ensurer.observe_storage().await;
     match store.containers().await {
         Ok(snapshot) => {
             observations.send_replace(
-                ensure_missing_global_slots(
+                reconcile_global_slots(
                     &snapshot.observations,
                     &machine,
+                    storage.as_ref(),
                     ensurer,
                     &Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
                 )
@@ -124,24 +132,61 @@ async fn reconcile_store(
     }
 }
 
-async fn ensure_missing_global_slots<E: GlobalSlotEnsurer>(
+async fn reconcile_global_slots<E: GlobalSlotEnsurer>(
     containers: &[ContainerObservation],
     machine: &Machine,
+    storage: Option<&MachineStorageObservation>,
     ensurer: &E,
     observed_at: &str,
 ) -> Vec<GlobalReconcileFailureObservation> {
     let mut failures = Vec::new();
     let services = derive_services(containers.iter().cloned());
-    for slot in missing_global_slots(&services, machine) {
-        if let Err(last_error) = ensurer.ensure_global_slot(&slot).await {
-            failures.push(GlobalReconcileFailureObservation {
-                service: slot.identity().clone(),
-                last_error: last_error.to_string(),
-                observed_at: observed_at.into(),
-            });
+    for service in &services {
+        let Some(slot) = service.observed_global_slot() else {
+            continue;
+        };
+        let eligibility = service_placement_eligibility(
+            &slot.resolved_spec().placement,
+            &slot.resolved_spec().volume_graph,
+            machine,
+            storage,
+        );
+        match eligibility {
+            ServicePlacementEligibility::Eligible => {
+                if let Err(error) = ensurer.ensure_global_slot(&slot).await {
+                    failures.push(reconcile_failure(&slot, error, observed_at));
+                }
+            }
+            ServicePlacementEligibility::Ineligible => {
+                for container in service
+                    .containers
+                    .iter()
+                    .filter(|container| container.as_observation().machine_id == machine.id)
+                {
+                    if let Err(error) = ensurer
+                        .retire_global_slot(&container.as_observation().container_id)
+                        .await
+                    {
+                        failures.push(reconcile_failure(&slot, error, observed_at));
+                    }
+                }
+            }
+            ServicePlacementEligibility::Unknown => {}
         }
     }
     failures
+}
+
+fn reconcile_failure(
+    slot: &ObservedGlobalSlotSpec,
+    error: impl Display,
+    observed_at: &str,
+) -> GlobalReconcileFailureObservation {
+    GlobalReconcileFailureObservation {
+        service: slot.identity().clone(),
+        last_error: error.to_string(),
+        observed_at: observed_at.into(),
+    }
 }
 
 #[cfg(test)]
@@ -192,39 +237,89 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn effect_ensures_each_selected_slot_and_reports_only_failures() {
+    async fn effect_ensures_eligible_retires_ineligible_and_retries_unknown() {
         let local = machine('1', "local");
-        let peer = machine('2', "peer");
-        let containers = [
-            observation(
-                &peer,
-                'a',
-                "app",
-                "api",
-                ServiceMode::Global,
-                Placement::default(),
-            ),
-            observation(
-                &peer,
-                'c',
-                "ployz-system",
-                "ingress",
-                ServiceMode::Global,
-                Placement::default(),
-            ),
-        ];
+        let mut slot = observation(
+            &local,
+            'a',
+            "app",
+            "api",
+            ServiceMode::Global,
+            Placement::default(),
+        );
+        add_provisioned_mount(&mut slot.resolved_spec);
         let ensurer = FakeEnsurer {
             calls: Mutex::new(Vec::new()),
+            retired: Mutex::new(Vec::new()),
+            failing: Mutex::new(None),
+        };
+
+        let unknown = reconcile_global_slots(
+            std::slice::from_ref(&slot),
+            &local,
+            None,
+            &ensurer,
+            "2026-08-24T20:00:00Z",
+        )
+        .await;
+        assert!(unknown.is_empty());
+        assert!(ensurer.calls.lock().unwrap().is_empty());
+        assert!(ensurer.retired.lock().unwrap().is_empty());
+
+        let ready = reconcile_global_slots(
+            std::slice::from_ref(&slot),
+            &local,
+            Some(&ployz_core::MachineStorageObservation::Ready),
+            &ensurer,
+            "2026-08-24T20:05:00Z",
+        )
+        .await;
+        assert!(ready.is_empty());
+        assert_eq!(ensurer.calls.lock().unwrap().as_slice(), ["app/api"]);
+
+        ensurer.calls.lock().unwrap().clear();
+        let stateless = reconcile_global_slots(
+            std::slice::from_ref(&slot),
+            &local,
+            Some(&ployz_core::MachineStorageObservation::Stateless),
+            &ensurer,
+            "2026-08-24T20:10:00Z",
+        )
+        .await;
+        assert!(stateless.is_empty());
+        assert!(ensurer.calls.lock().unwrap().is_empty());
+        assert_eq!(
+            ensurer.retired.lock().unwrap().as_slice(),
+            [slot.container_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn effect_reports_ensure_failures() {
+        let local = machine('1', "local");
+        let peer = machine('2', "peer");
+        let containers = [observation(
+            &peer,
+            'c',
+            "ployz-system",
+            "ingress",
+            ServiceMode::Global,
+            Placement::default(),
+        )];
+        let ensurer = FakeEnsurer {
+            calls: Mutex::new(Vec::new()),
+            retired: Mutex::new(Vec::new()),
             failing: Mutex::new(Some("ployz-system/ingress")),
         };
 
         let failures =
-            ensure_missing_global_slots(&containers, &local, &ensurer, "2026-08-24T20:00:00Z")
+            reconcile_global_slots(&containers, &local, None, &ensurer, "2026-08-24T20:00:00Z")
                 .await;
 
-        let mut calls = ensurer.calls.lock().unwrap().clone();
-        calls.sort();
-        assert_eq!(calls, ["app/api", "ployz-system/ingress"]);
+        assert_eq!(
+            ensurer.calls.lock().unwrap().as_slice(),
+            ["ployz-system/ingress"]
+        );
         assert_eq!(
             failures,
             [ployz_core::GlobalReconcileFailureObservation {
@@ -237,6 +332,7 @@ mod tests {
 
     struct FakeEnsurer {
         calls: Mutex<Vec<String>>,
+        retired: Mutex<Vec<ContainerId>>,
         failing: Mutex<Option<&'static str>>,
     }
 
@@ -259,6 +355,42 @@ mod tests {
                 Ok(())
             }
         }
+
+        async fn retire_global_slot(&self, container_id: &ContainerId) -> Result<(), Self::Error> {
+            self.retired.lock().unwrap().push(*container_id);
+            Ok(())
+        }
+    }
+
+    fn add_provisioned_mount(spec: &mut ResolvedServiceSpec) {
+        use std::num::NonZeroU64;
+
+        use ployz_core::{
+            ContainerPath, DockerVolumeName, ProvisionedVolumeMaximumBytes, ServiceMount,
+            ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, VolumeSource,
+        };
+
+        let reference = ServiceVolumeReference::parse("data").unwrap();
+        spec.volume_graph = ServiceVolumeGraph::parse(
+            vec![ServiceVolume {
+                reference: reference.clone(),
+                source: VolumeSource::Provisioned {
+                    name: DockerVolumeName::parse("app_data").unwrap(),
+                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                        NonZeroU64::new(100).unwrap(),
+                    ),
+                    labels: Default::default(),
+                },
+            }],
+            vec![ServiceMount {
+                volume: reference,
+                target: ContainerPath::parse("/data").unwrap(),
+                read_only: false,
+                no_copy: false,
+                subpath: None,
+            }],
+        )
+        .unwrap();
     }
 
     fn machine(id: char, name: &str) -> Machine {

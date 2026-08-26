@@ -8,14 +8,14 @@ use std::{
 };
 
 use ployz_core::{
-    CloudPairing, ContainerCreated, ContainerKind, InitializeRequest, Initialized, InspectRequest,
-    JoinAccepted, JoinRequest, LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails,
-    MachineId, MachineIdentity, MachineList, MachineObservation, MachineRemoved, MachineToken,
-    MachineTokenRequest, MachineUpdated, ManagementAddress, MembershipObservation, ProjectName,
-    PublicIpDiscovery, RegisterRequest, Registered, RemoveLocalMachineRequest,
-    RemoveMachineRequest, ResetAccepted, ResolvedServiceSpec, RttObservation, RttStatistics,
-    SelectedEndpoint, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
-    synthesize_membership,
+    CloudPairing, ContainerCreated, ContainerId, ContainerKind, InitializeRequest, Initialized,
+    InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase, LocalMachineRemoved, Machine,
+    MachineDetails, MachineId, MachineIdentity, MachineList, MachineObservation, MachineRemoved,
+    MachineStorageObservation, MachineToken, MachineTokenRequest, MachineUpdated,
+    ManagementAddress, MembershipObservation, ProjectName, PublicIpDiscovery, RegisterRequest,
+    Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted,
+    ResolvedServiceSpec, RttObservation, RttStatistics, SelectedEndpoint, UpdateMachineRequest,
+    WireGuardInspected, associate_wireguard_peers, synthesize_membership,
 };
 use thiserror::Error;
 use tokio::sync::{Mutex as AsyncMutex, watch};
@@ -189,6 +189,19 @@ impl LocalMachine {
             .await?)
     }
 
+    /// Fresh local storage capability for placement and container safety checks.
+    pub(crate) async fn observe_storage(&self) -> Option<MachineStorageObservation> {
+        local_storage(std::path::Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
+    }
+
+    /// Stop and remove one local Global slot without removing its volumes.
+    pub(crate) async fn retire_global_slot(&self, container_id: &ContainerId) -> Result<(), Error> {
+        let _guard = self.global_slot_lock.lock().await;
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        containers.stop(container_id, None, None).await?;
+        Ok(containers.remove(container_id, false, false).await?)
+    }
+
     /// The persisted Local Machine record.
     ///
     /// # Errors
@@ -282,7 +295,7 @@ impl LocalMachine {
             }
         };
         let storage = if request.include_storage {
-            local_storage(std::path::Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
+            self.observe_storage().await
         } else {
             None
         };

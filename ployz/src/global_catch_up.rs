@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, EnsureGlobalSlotRequest, IngressProxyNetworkMode,
     InspectRequest, ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget,
-    ObservedGlobalSlotSpec, QualifiedService, RpcError, ServiceObservation, eligible_global_slot,
-    ingress_proxy_backend, missing_global_slots, op, service_containers,
+    ObservedGlobalSlotSpec, QualifiedService, RpcError, ServiceObservation,
+    ServicePlacementEligibility, ingress_proxy_backend, op, service_containers,
+    service_placement_eligibility,
 };
 
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
@@ -114,10 +115,28 @@ pub fn plan_global_catch_up(
     this_machine: &Machine,
     skip_ingress: bool,
 ) -> Vec<ObservedGlobalSlotSpec> {
-    missing_global_slots(services, this_machine)
-        .into_iter()
+    services
+        .iter()
+        .filter_map(|service| {
+            let slot = eligible_catch_up_slot(service, this_machine)?;
+            (!slot.is_running_on(&service.containers, this_machine)).then_some(slot)
+        })
         .filter(|slot| !skip_ingress || slot.identity() != &QualifiedService::system_ingress())
         .collect()
+}
+
+fn eligible_catch_up_slot(
+    service: &ServiceObservation,
+    machine: &Machine,
+) -> Option<ObservedGlobalSlotSpec> {
+    let slot = service.observed_global_slot()?;
+    (service_placement_eligibility(
+        &slot.resolved_spec().placement,
+        &slot.resolved_spec().volume_graph,
+        machine,
+        None,
+    ) == ServicePlacementEligibility::Eligible)
+        .then_some(slot)
 }
 
 /// Copy every observed eligible Global onto `this_machine` only.
@@ -138,7 +157,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let services = live.services();
     let initially_eligible = services
         .iter()
-        .filter_map(|service| eligible_global_slot(service, this_machine))
+        .filter_map(|service| eligible_catch_up_slot(service, this_machine))
         .filter(|slot| !skip_ingress || slot.identity() != &QualifiedService::system_ingress())
         .map(|slot| (slot.identity().clone(), slot))
         .collect::<BTreeMap<_, _>>();
@@ -231,15 +250,20 @@ fn service_has_slot(
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, net::Ipv6Addr, num::NonZeroU32};
+    use std::{
+        cell::Cell,
+        net::Ipv6Addr,
+        num::{NonZeroU32, NonZeroU64},
+    };
 
     use ployz_core::{
-        ContainerId, ContainerKind, ContainerObservation, ContainerResources,
-        ContainerRuntimeObservation, HealthObservation, Machine, MachineId, MachineName,
-        MachineTarget, ManagementAddress, Placement, ProjectName, PullPolicy, RequestedServiceSpec,
-        ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId,
-        ServiceMode, ServiceName, ServiceObservation, UpdateConfig, WireGuardPublicKey,
-        service_containers,
+        ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerResources,
+        ContainerRuntimeObservation, DockerVolumeName, HealthObservation, Machine, MachineId,
+        MachineName, MachineTarget, ManagementAddress, Placement, ProjectName,
+        ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec, ResolvedServiceSpec,
+        ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
+        ServiceMount, ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
+        ServiceVolumeReference, UpdateConfig, VolumeSource, WireGuardPublicKey, service_containers,
     };
 
     use super::*;
@@ -703,6 +727,41 @@ mod tests {
             running_on(&founder, 'a'),
         )];
         assert!(plan_global_catch_up(&services, &joiner, false).is_empty());
+    }
+
+    #[test]
+    fn provisioned_globals_defer_to_machine_local_reconciliation() {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let mut spec = requested(ServiceMode::Global);
+        let reference = ServiceVolumeReference::parse("data").unwrap();
+        spec.volume_graph = ServiceVolumeGraph::parse(
+            vec![ServiceVolume {
+                reference: reference.clone(),
+                source: VolumeSource::Provisioned {
+                    name: DockerVolumeName::parse("app_data").unwrap(),
+                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                        NonZeroU64::new(100).unwrap(),
+                    ),
+                    labels: Default::default(),
+                },
+            }],
+            vec![ServiceMount {
+                volume: reference,
+                target: ContainerPath::parse("/data").unwrap(),
+                read_only: false,
+                no_copy: false,
+                subpath: None,
+            }],
+        )
+        .unwrap();
+        let service = grouped(
+            qualified("app", "api"),
+            spec.to_resolved(service_id('a'), ResolvedUpdateConfig::default()),
+            running_on(&founder, 'a'),
+        );
+
+        assert!(plan_global_catch_up(&[service], &joiner, false).is_empty());
     }
 
     fn identities(slots: &[ObservedGlobalSlotSpec]) -> Vec<String> {

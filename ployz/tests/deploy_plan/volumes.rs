@@ -236,14 +236,13 @@ fn stateless_explicit_target_requires_storage_preparation() {
 }
 
 #[test]
-fn missing_storage_evidence_requires_storage_preparation() {
-    let error = explicitly_targeted_provisioned_deploy(None, Vec::new())
-        .unwrap_err()
-        .to_string();
-
-    assert!(error.contains("first"), "{error}");
-    assert!(error.contains("storage preparation"), "{error}");
-    assert!(error.contains("--storage zfs"), "{error}");
+fn missing_storage_evidence_reports_that_storage_could_not_be_checked() {
+    assert_eq!(
+        explicitly_targeted_provisioned_deploy(None, Vec::new()),
+        Err(PlanError::ProvisionedVolumeStorageUnknown {
+            names: vec![MachineName::parse("first").unwrap()],
+        })
+    );
 }
 
 #[test]
@@ -379,7 +378,37 @@ fn automatic_provisioned_volume_uses_a_storage_ready_machine() {
 }
 
 #[test]
-fn automatic_provisioned_volume_reports_observer_relative_storage_guidance() {
+fn automatic_provisioned_volume_uses_known_eligible_and_warns_about_unknown() {
+    let intent = automatic_provisioned_intent();
+    let mut ready = machine('1', "ready");
+    ready.storage = Some(MachineStorageObservation::Ready);
+    let unknown = machine('2', "unknown");
+
+    let preview = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![ready, unknown],
+            ..Default::default()
+        },
+        IngressContext::default(),
+    )
+    .unwrap();
+
+    assert!(
+        operations(&preview)
+            .iter()
+            .all(|operation| operation.machine_id() == machine_id('1'))
+    );
+    assert_eq!(
+        preview.warnings,
+        [ployz_core::DeployWarning::StorageObservationUnknown {
+            machine_id: machine_id('2'),
+        }]
+    );
+}
+
+#[test]
+fn automatic_provisioned_volume_reports_unknown_storage_guidance() {
     let intent = automatic_provisioned_intent();
     let mut stateless = machine('1', "stateless");
     stateless.storage = Some(MachineStorageObservation::Stateless);
@@ -394,10 +423,15 @@ fn automatic_provisioned_volume_reports_observer_relative_storage_guidance() {
     )
     .unwrap_err();
 
-    assert_eq!(error, PlanError::ProvisionedVolumeStorageUnavailable);
+    assert_eq!(
+        error,
+        PlanError::ProvisionedVolumeStorageUnknown {
+            names: vec![MachineName::parse("unobserved").unwrap()],
+        }
+    );
     let error = error.to_string();
-    assert!(error.contains("no observed eligible Machine"), "{error}");
-    assert!(error.contains("--storage zfs"), "{error}");
+    assert!(error.contains("storage could not be checked"), "{error}");
+    assert!(error.contains("unobserved"), "{error}");
 }
 
 #[test]
@@ -447,7 +481,7 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
         used_bytes: 0,
     };
 
-    assert_eq!(
+    assert_no_eligible(
         preview_deploy(
             &intent,
             &DeploySnapshot {
@@ -458,7 +492,11 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
             },
             IngressContext::default(),
         ),
-        Err(PlanError::ProvisionedVolumeStorageUnavailable)
+        &[EliminatingConstraint::VolumeAlreadyOn {
+            volume: app_volume("data"),
+            located_on: vec![MachineName::parse("pinned").unwrap()],
+        }],
+        &["app_data", "pinned"],
     );
 }
 

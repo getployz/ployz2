@@ -491,6 +491,11 @@ pub enum DeployWarning {
         kind: ObservationKind,
         machine_id: MachineId,
     },
+    /// A placement-matching Machine could not report required storage capability.
+    StorageObservationUnknown {
+        /// Machine whose storage capability could not be checked.
+        machine_id: MachineId,
+    },
     /// An Ingress Hostname misses this Cluster. The string is the CLI warning body.
     IngressHostname(String),
     /// Conflict detection used this Machine's current view and does not claim uniqueness.
@@ -513,6 +518,10 @@ impl Display for DeployWarning {
             Self::ObservationOmitted { kind, machine_id } => {
                 write!(f, "{kind} observation omitted {machine_id}")
             }
+            Self::StorageObservationUnknown { machine_id } => write!(
+                f,
+                "storage could not be checked on Machine {machine_id}; Provisioned Volume placement ignored that Machine"
+            ),
             Self::IngressHostname(message) => f.write_str(message),
             Self::ObserverRelativeHostnameConflict => f.write_str(
                 "Hostname conflict detection is observer-relative to this Machine's current visible fan-out and does not claim uniqueness.",

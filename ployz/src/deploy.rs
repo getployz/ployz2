@@ -521,6 +521,15 @@ pub enum PlanError {
         "no observed eligible Machine is storage-ready or has a Machine Pool; enroll one with --storage zfs before deploying a Provisioned Volume"
     )]
     ProvisionedVolumeStorageUnavailable,
+    /// Storage capability was unavailable for every otherwise eligible Machine.
+    #[error(
+        "storage could not be checked on {}; retry after those Machines can report storage capability",
+        machine_names(.names)
+    )]
+    ProvisionedVolumeStorageUnknown {
+        /// Placement-matching Machines without storage evidence.
+        names: Vec<MachineName>,
+    },
     /// An ordinary Docker Volume already owns the requested machine-local name.
     #[error(
         "Plain Docker Volume {name} already exists on Machine '{machine}'; conversion to a Provisioned Volume is outside the Provisioned Volume MVP"
@@ -594,6 +603,20 @@ fn quoted_names(names: &[DockerVolumeName]) -> String {
         quoted.push('\'');
     }
     quoted
+}
+
+fn machine_names(names: &[MachineName]) -> String {
+    match names {
+        [name] => format!("Machine '{name}'"),
+        _ => format!(
+            "Machines {}",
+            names
+                .iter()
+                .map(|name| format!("'{name}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 fn compose_deploy_intent(

@@ -864,7 +864,7 @@ fn deploy_event_progress() -> DeployEvent {
     }
 }
 
-fn deploy_warnings() -> [DeployWarning; 5] {
+fn deploy_warnings() -> [DeployWarning; 6] {
     [
         DeployWarning::ObservationFailed {
             kind: ObservationKind::Container,
@@ -873,6 +873,9 @@ fn deploy_warnings() -> [DeployWarning; 5] {
         },
         DeployWarning::ObservationOmitted {
             kind: ObservationKind::Volume,
+            machine_id: machine_id(OTHER_MACHINE_ID_HEX),
+        },
+        DeployWarning::StorageObservationUnknown {
             machine_id: machine_id(OTHER_MACHINE_ID_HEX),
         },
         DeployWarning::IngressHostname(

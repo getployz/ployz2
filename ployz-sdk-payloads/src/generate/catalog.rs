@@ -709,6 +709,10 @@ pub(super) const PAYLOADS: &[(&str, Shape)] = &[
                     "ObservationOmitted",
                     Some("{ kind: ObservationKind; machine_id: MachineId }"),
                 ),
+                (
+                    "StorageObservationUnknown",
+                    Some("{ machine_id: MachineId }"),
+                ),
                 ("IngressHostname", Some("string")),
                 ("ObserverRelativeHostnameConflict", None),
                 (

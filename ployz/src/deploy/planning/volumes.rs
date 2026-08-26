@@ -2,10 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
-    MachineObservation, MachineStorageObservation, MachineTarget, PROVISIONED_VOLUME_DRIVER,
-    PreservedVolume, ProjectName, RequestedServiceSpec, ServiceMode, ServiceName,
-    ServiceObservation, ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target,
-    owned_volume_project,
+    MachineObservation, MachineTarget, PROVISIONED_VOLUME_DRIVER, PreservedVolume, ProjectName,
+    RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation, ServiceVolume,
+    ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
 };
 
 use crate::deploy::{
@@ -112,7 +111,6 @@ impl VolumePins {
         &mut self,
         target: &[RequestedServiceSpec],
         snapshot: &DeploySnapshot,
-        options: &PlanOptions,
     ) -> Result<(), PlanError> {
         let name_errors_with_service = target.len() > 1;
         for spec in target {
@@ -123,7 +121,7 @@ impl VolumePins {
                 continue;
             }
             let result = (|| {
-                let mut machines = super::eligible_machines(spec, snapshot, options)?;
+                let mut machines = super::placement_candidates(spec, snapshot)?;
                 self.validate_provisioned_volumes(spec, &machines, snapshot)?;
                 volume_constraints(spec, snapshot, self, &mut machines)?;
                 self.record_provisioned(spec, &machines)
@@ -209,38 +207,6 @@ impl VolumePins {
             }
         }
         Ok(())
-    }
-
-    fn constrain_provisioned_candidates(
-        &self,
-        spec: &RequestedServiceSpec,
-        machines: &mut Vec<&MachineObservation>,
-    ) -> Result<(), PlanError> {
-        if mounted_provisioned_volumes(&spec.volume_graph)
-            .next()
-            .is_none()
-        {
-            return Ok(());
-        }
-        let explicit = spec.placement.machines.len() == 1 && machines.len() == 1;
-        let explicit_machine = machines.first().map(|machine| machine.machine.name.clone());
-        machines.retain(|machine| {
-            matches!(
-                machine.storage,
-                Some(MachineStorageObservation::Ready | MachineStorageObservation::Pool { .. })
-            )
-        });
-        if !machines.is_empty() {
-            return Ok(());
-        }
-        if explicit {
-            Err(PlanError::ProvisionedVolumeStorageRequired {
-                machine: explicit_machine
-                    .expect("explicit Provisioned Volume placement resolved one Machine"),
-            })
-        } else {
-            Err(PlanError::ProvisionedVolumeStorageUnavailable)
-        }
     }
 }
 
@@ -635,9 +601,7 @@ fn planned_volume_constraints<'spec>(
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
     pins.validate_provisioned_volumes(spec, machines, snapshot)?;
-    let volumes = volume_constraints(spec, snapshot, pins, machines)?;
-    pins.constrain_provisioned_candidates(spec, machines)?;
-    Ok(volumes)
+    volume_constraints(spec, snapshot, pins, machines)
 }
 
 fn volume_constraints<'spec>(
