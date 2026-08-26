@@ -304,9 +304,13 @@ fn write_envoy_certificates(config_file: &Path, projection: &IngressProjection) 
         config_file,
         &projection.sites,
         ENVOY_PRIVATE_KEY_MODE,
-        fs::create_dir_all,
+        create_directory,
         skip_group,
     )
+}
+
+fn create_directory(path: &Path) -> io::Result<()> {
+    fs::create_dir_all(path)
 }
 
 fn skip_group(_: &Path) -> io::Result<()> {
