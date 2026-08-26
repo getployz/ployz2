@@ -123,7 +123,8 @@ impl ContainerRuntime {
                     let _ = async {
                         let exit_wait = wait_for_exec_exit(&docker, &exec_id);
                         tokio::pin!(exit_wait);
-                        let mut closed_stdin = false;
+                        let mut saw_exit = false;
+                        let mut ignore_stdin_abort = false;
                         loop {
                             tokio::select! {
                                 next = output.next() => match next {
@@ -131,18 +132,19 @@ impl ContainerRuntime {
                                         send_exec(&sender, exec_output(chunk, tty)).await?;
                                     }
                                     Some(Err(error)) => {
-                                        if closed_stdin {
+                                        if ignore_stdin_abort {
                                             break;
                                         }
                                         return send_exec_error(&sender, error).await;
                                     }
                                     None => break,
                                 },
-                                () = &mut exit_wait, if !closed_stdin => {
+                                () = &mut exit_wait, if !saw_exit => {
+                                    saw_exit = true;
                                     if let Some(task) = &stdin_task {
                                         task.abort();
+                                        ignore_stdin_abort = true;
                                     }
-                                    closed_stdin = true;
                                 }
                             }
                         }
