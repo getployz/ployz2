@@ -30,7 +30,8 @@ use ployz_core::{
     ServiceAttempt, ServiceConfigGraph, ServiceContainer, ServiceId, ServiceMode, ServiceMount,
     ServiceName, ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
     StorageChoice, TransportProtocol, Ulimit, UnconfirmedDataLoss, UpdateConfig, UpdateOrder,
-    VolumeDriver, VolumeInventory, VolumeObservationFailure, VolumeSource, WireGuardPublicKey,
+    VolumeDriver, VolumeInventory, VolumeObservationFailure, VolumeSource, VolumeToCreate,
+    WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -143,10 +144,7 @@ pub fn fixtures() -> BTreeMap<String, Value> {
         "provisioned_volume_source".into(),
         to_value(&provisioned_volume_source()),
     );
-    fixtures.insert(
-        "create_provisioned_volume_operation".into(),
-        to_value(&create_provisioned_volume_operation()),
-    );
+    fixtures.insert("volume_to_create".into(), to_value(&volume_to_create()));
     fixtures.insert("deploy_intent".into(), to_value(&deploy_intent()));
     fixtures.insert("requested_service_spec".into(), to_value(&requested_spec()));
     // serde emits null for Option::None; these leaves stay null-free so tsc can `satisfies`.
@@ -264,6 +262,7 @@ pub(super) fn additive_examples() -> BTreeMap<&'static str, Value> {
         ("DeployIntent", to_value(&deploy_intent())),
         ("DeployPreview", to_value(&deploy_preview())),
         ("PreservedVolume", to_value(&preserved_volume())),
+        ("VolumeToCreate", to_value(&volume_to_create())),
         ("RequestedServiceSpec", to_value(&requested_spec())),
         ("ResolvedServiceSpec", to_value(&resolved_spec())),
         ("ServiceVolume", to_value(&service_volume())),
@@ -430,7 +429,6 @@ pub(super) fn tagged_examples() -> BTreeMap<&'static str, Vec<Value>> {
         (
             "MachineAction",
             vec![
-                to_value(&MachineAction::CreateVolume),
                 to_value(&MachineAction::CreateContainer),
                 to_value(&MachineAction::StartContainer),
                 to_value(&MachineAction::InspectContainer),
@@ -833,7 +831,7 @@ fn deploy_intent() -> DeployIntent {
 }
 
 fn deploy_preview() -> DeployPreview {
-    DeployPreview::new(
+    let mut preview = DeployPreview::new(
         vec![OperationRow::pending(
             0,
             DeployOperation::StopContainer {
@@ -846,7 +844,9 @@ fn deploy_preview() -> DeployPreview {
         )],
         deploy_warnings().to_vec(),
         ProjectName::parse("app").unwrap(),
-    )
+    );
+    preview.volumes_to_create = vec![volume_to_create()];
+    preview
 }
 
 fn preserved_volume() -> PreservedVolume {
@@ -903,9 +903,10 @@ fn deploy_outcome_failed() -> DeployOutcome<ExecutionError> {
     DeployOutcome::Failed {
         completed: Vec::new(),
         failed: FailedOperation::Operation {
-            operation: DeployOperation::CreateVolume {
+            operation: DeployOperation::RunContainer {
                 machine_id: machine_id(MACHINE_ID_HEX),
-                volume: service_volume(),
+                spec: resolved_spec(),
+                skip_health_monitor: false,
             },
             error: execution_error_machine(),
         },
@@ -918,7 +919,7 @@ fn deploy_outcome_failed() -> DeployOutcome<ExecutionError> {
 
 fn execution_error_machine() -> ExecutionError {
     ExecutionError::Machine {
-        action: MachineAction::CreateVolume,
+        action: MachineAction::CreateContainer,
         error: rpc_error(),
     }
 }
@@ -932,25 +933,21 @@ fn replacement_operation() -> ReplacementOperation {
     }
 }
 
-fn create_provisioned_volume_operation() -> DeployOperation {
-    DeployOperation::CreateProvisionedVolume {
+fn volume_to_create() -> VolumeToCreate {
+    VolumeToCreate {
         machine_id: machine_id(MACHINE_ID_HEX),
-        volume: ServiceVolume {
-            reference: ServiceVolumeReference::parse("data").unwrap(),
-            source: provisioned_volume_source(),
-        },
+        machine_name: Some(MachineName::parse("edge").expect("fixture Machine Name is valid")),
+        name: DockerVolumeName::parse("data").expect("fixture Volume name is valid"),
+        maximum_bytes: Some(ProvisionedVolumeMaximumBytes::new(
+            NonZeroU64::new(1_073_741_824).unwrap(),
+        )),
     }
 }
 
-fn deploy_operations() -> [DeployOperation; 10] {
+fn deploy_operations() -> [DeployOperation; 8] {
     let machine_id = machine_id(MACHINE_ID_HEX);
     let container_id = container_id();
     [
-        DeployOperation::CreateVolume {
-            machine_id,
-            volume: service_volume(),
-        },
-        create_provisioned_volume_operation(),
         DeployOperation::WaitHealthy {
             machine_id,
             dependent: QualifiedService::parse("app/web").unwrap(),
@@ -1308,10 +1305,9 @@ fn operation_statuses() -> [OperationStatus; 5] {
     ]
 }
 
-fn operation_phases() -> [OperationPhase; 10] {
+fn operation_phases() -> [OperationPhase; 9] {
     [
         OperationPhase::Starting,
-        OperationPhase::CreatingVolume,
         OperationPhase::CreatingContainer,
         OperationPhase::StartingContainer,
         OperationPhase::WaitingForHealth {

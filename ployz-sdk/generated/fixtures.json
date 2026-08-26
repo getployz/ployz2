@@ -177,21 +177,6 @@
     "machine_id": "0123456789abcdef0123456789abcdef",
     "protocol_major": 1
   },
-  "create_provisioned_volume_operation": {
-    "machine_id": "0123456789abcdef0123456789abcdef",
-    "type": "create_provisioned_volume",
-    "volume": {
-      "reference": "data",
-      "source": {
-        "kind": "provisioned",
-        "labels": {
-          "backup": "daily"
-        },
-        "maximum_bytes": "1073741824",
-        "name": "data"
-      }
-    }
-  },
   "create_volume_report_unverified": {
     "error": {
       "code": "unsupported",
@@ -286,7 +271,7 @@
     "completed": [],
     "failed": {
       "error": {
-        "action": "CreateVolume",
+        "action": "CreateContainer",
         "error": {
           "code": "unsupported",
           "message": "watch is not advertised"
@@ -295,17 +280,65 @@
       },
       "operation": {
         "machine_id": "0123456789abcdef0123456789abcdef",
-        "type": "create_volume",
-        "volume": {
-          "reference": "data",
-          "source": {
-            "driver": null,
-            "external": false,
-            "kind": "named",
+        "skip_health_monitor": false,
+        "spec": {
+          "configs": [],
+          "container": {
+            "cap_add": [],
+            "cap_drop": [],
+            "command": [],
+            "config_mounts": [],
+            "entrypoint": [],
+            "environment": {},
+            "extra_hosts": [],
+            "healthcheck": null,
+            "hostname": null,
+            "image": "api:1",
+            "init": null,
             "labels": {},
-            "name": "data"
-          }
-        }
+            "log_driver": null,
+            "open_stdin": false,
+            "pid_mode": null,
+            "privileged": false,
+            "pull_policy": "missing",
+            "resources": {
+              "cpu_nanos": null,
+              "device_reservations": [],
+              "devices": [],
+              "memory_bytes": null,
+              "memory_reservation_bytes": null,
+              "shared_memory_bytes": null,
+              "ulimits": {}
+            },
+            "restart": {
+              "name": "unless-stopped"
+            },
+            "stop_timeout_secs": null,
+            "sysctls": {},
+            "tty": false,
+            "user": null,
+            "working_directory": null
+          },
+          "ingress_proxy_fragment": null,
+          "mode": {
+            "mode": "replicated",
+            "replicas": 1
+          },
+          "mounts": [],
+          "name": "api",
+          "placement": {
+            "machines": []
+          },
+          "ports": [],
+          "pre_deploy": null,
+          "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "update": {
+            "monitor_millis": null,
+            "order": "start_first"
+          },
+          "volumes": []
+        },
+        "type": "run_container"
       },
       "type": "operation"
     },
@@ -349,6 +382,14 @@
     ],
     "preserved_volumes": [],
     "project_name": "app",
+    "volumes_to_create": [
+      {
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "machine_name": "edge",
+        "maximum_bytes": "1073741824",
+        "name": "data"
+      }
+    ],
     "warnings": [
       {
         "ObservationFailed": {
@@ -402,6 +443,14 @@
     ],
     "preserved_volumes": [],
     "project_name": "app",
+    "volumes_to_create": [
+      {
+        "machine_id": "0123456789abcdef0123456789abcdef",
+        "machine_name": "edge",
+        "maximum_bytes": "1073741824",
+        "name": "data"
+      }
+    ],
     "warnings": [
       {
         "ObservationFailed": {
@@ -1593,5 +1642,11 @@
         }
       }
     ]
+  },
+  "volume_to_create": {
+    "machine_id": "0123456789abcdef0123456789abcdef",
+    "machine_name": "edge",
+    "maximum_bytes": "1073741824",
+    "name": "data"
   }
 }

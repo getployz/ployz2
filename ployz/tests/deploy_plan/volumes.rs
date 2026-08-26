@@ -119,17 +119,16 @@ fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
 
     assert!(matches!(
         operations(&plan).as_slice(),
-        [
-            DeployOperation::CreateVolume {
-                machine_id: create,
-                ..
-            },
-            DeployOperation::RunContainer {
-                machine_id: run,
-                ..
-            },
-        ] if *create == machine_id('2') && *run == machine_id('2')
+        [DeployOperation::RunContainer { machine_id: run, .. }]
+            if *run == machine_id('2')
     ));
+    assert_eq!(
+        plan.volumes_to_create
+            .first()
+            .expect("missing managed Volume is previewed")
+            .machine_id,
+        machine_id('2')
+    );
 }
 
 #[test]
@@ -202,7 +201,7 @@ fn explicitly_targeted_provisioned_deploy(
 }
 
 #[test]
-fn explicitly_targeted_provisioned_volume_precedes_hook_service_and_plain_volume() {
+fn missing_managed_volumes_are_informational_and_container_order_stays_exact() {
     let preview =
         explicitly_targeted_provisioned_deploy(Some(MachineStorageObservation::Ready), Vec::new())
             .unwrap();
@@ -210,15 +209,28 @@ fn explicitly_targeted_provisioned_volume_precedes_hook_service_and_plain_volume
     assert!(matches!(
         operations(&preview).as_slice(),
         [
-            DeployOperation::CreateVolume { volume: cache, .. },
-            DeployOperation::CreateProvisionedVolume {
-                volume: data,
-                ..
-            },
             DeployOperation::RunHook { .. },
-            DeployOperation::RunContainer { .. },
-        ] if data.reference.as_str() == "data" && cache.reference.as_str() == "cache"
+            DeployOperation::RunContainer { .. }
+        ]
     ));
+    assert_eq!(preview.volumes_to_create.len(), 2);
+    let cache = preview
+        .volumes_to_create
+        .first()
+        .expect("ordinary Volume is previewed first");
+    let data = preview
+        .volumes_to_create
+        .get(1)
+        .expect("Provisioned Volume is previewed second");
+    assert_eq!(cache.machine_id, machine_id('1'));
+    assert_eq!(
+        cache.machine_name.as_ref().map(MachineName::as_str),
+        Some("first")
+    );
+    assert_eq!(cache.name.as_str(), "app_cache");
+    assert!(cache.maximum_bytes.is_none());
+    assert_eq!(data.name.as_str(), "app_data");
+    assert_eq!(data.maximum_bytes, Some(maximum_bytes(1_073_741_824)));
 }
 
 #[test]
@@ -316,10 +328,15 @@ fn existing_matching_provisioned_volume_is_reused_without_creation() {
     )
     .unwrap();
 
-    assert!(
-        operations(&preview)
-            .iter()
-            .all(|operation| !matches!(operation, DeployOperation::CreateProvisionedVolume { .. }))
+    assert_eq!(preview.volumes_to_create.len(), 1);
+    assert_eq!(
+        preview
+            .volumes_to_create
+            .first()
+            .expect("missing ordinary Volume is previewed")
+            .name
+            .as_str(),
+        "app_cache"
     );
 }
 
@@ -370,11 +387,11 @@ fn automatic_provisioned_volume_uses_a_storage_ready_machine() {
             .iter()
             .all(|operation| operation.machine_id() == machine_id('2'))
     );
-    assert!(
-        operations(&preview)
-            .iter()
-            .any(|operation| matches!(operation, DeployOperation::CreateProvisionedVolume { .. }))
-    );
+    assert!(matches!(
+        &preview.volumes_to_create[..],
+        [item] if item.machine_id == machine_id('2')
+            && item.maximum_bytes.is_some()
+    ));
 }
 
 #[test]
@@ -535,10 +552,12 @@ fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
     )
     .unwrap();
 
-    assert!(operations(&preview).iter().all(|operation| {
-        operation.service_name() != Some(&unchanged.name)
-            && !matches!(operation, DeployOperation::CreateProvisionedVolume { .. })
-    }));
+    assert!(
+        operations(&preview)
+            .iter()
+            .all(|operation| operation.service_name() != Some(&unchanged.name))
+    );
+    assert!(preview.volumes_to_create.is_empty());
 }
 
 fn global_service(name: &str, machine_name: &str, bytes: u64) -> RequestedServiceSpec {
@@ -752,22 +771,19 @@ fn preview_distinguishes_provisioned_and_ordinary_volume_creates() {
     )
     .unwrap();
 
-    let operations = operations(&preview);
-    assert!(operations.iter().any(|operation| matches!(
-        operation,
-        DeployOperation::CreateProvisionedVolume {
-            volume: ServiceVolume {
-                reference,
-                source: VolumeSource::Provisioned { maximum_bytes: requested_maximum_bytes, .. },
-            },
-            ..
-        } if reference.as_str() == "data"
-            && *requested_maximum_bytes == maximum_bytes(1_073_741_824)
-    )));
-    assert!(operations.iter().any(|operation| matches!(
-        operation,
-        DeployOperation::CreateVolume { volume, .. } if volume.reference.as_str() == "cache"
-    )));
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    assert!(preview.volumes_to_create.iter().any(|item| {
+        item.name.as_str() == "app_data" && item.maximum_bytes == Some(maximum_bytes(1_073_741_824))
+    }));
+    assert!(
+        preview
+            .volumes_to_create
+            .iter()
+            .any(|item| { item.name.as_str() == "app_cache" && item.maximum_bytes.is_none() })
+    );
 }
 
 #[test]
@@ -813,13 +829,7 @@ fn already_owned_volume_names_are_not_prefixed_again() {
         PlanOptions::default(),
     )
     .unwrap();
-    assert!(
-        plan.operations
-            .iter()
-            .all(|row| !matches!(row.operation, DeployOperation::CreateVolume { .. })),
-        "already-owned physical names must not be prefixed again: {:?}",
-        plan.operations
-    );
+    assert!(plan.volumes_to_create.is_empty());
     assert!(plan.preserved_volumes.is_empty());
 }
 
@@ -895,79 +905,4 @@ fn omitted_owned_volume_is_preserved_in_plan_order() {
             },
         ]
     );
-}
-
-#[test]
-fn external_named_volume_keeps_its_declared_identity() {
-    let mut requested = requested(ServiceMode::Global);
-    add_named_volume(&mut requested, "shared");
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mounts = requested.volume_graph.mounts().to_vec();
-    let volume = volumes.first_mut().expect("named volume was added");
-    let VolumeSource::Named {
-        external, labels, ..
-    } = &mut volume.source
-    else {
-        panic!("named volume");
-    };
-    *external = true;
-    labels.insert("keep".into(), "me".into());
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [DeployOperation::CreateVolume { volume, .. }, DeployOperation::RunContainer { .. }]
-            if matches!(
-                &volume.source,
-                VolumeSource::Named { name, external: true, labels, .. }
-                    if name.as_str() == "shared"
-                        && !labels.contains_key(MANAGED_LABEL)
-                        && !labels.contains_key(PROJECT_NAME_LABEL)
-                        && labels.get("keep").map(String::as_str) == Some("me")
-            )
-    ));
-}
-
-#[test]
-fn foreign_project_volume_label_is_not_rewritten() {
-    let mut requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    add_named_volume(&mut requested, "data");
-    let mut volumes = requested.volume_graph.volumes().to_vec();
-    let mounts = requested.volume_graph.mounts().to_vec();
-    let volume = volumes.first_mut().expect("named volume was added");
-    let VolumeSource::Named { name, labels, .. } = &mut volume.source else {
-        panic!("named volume");
-    };
-    *name = DockerVolumeName::parse("blog_data").unwrap();
-    labels.insert(PROJECT_NAME_LABEL.into(), "blog".into());
-    requested.volume_graph = ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap();
-    let plan = plan_deploy(
-        [&requested],
-        &DeploySnapshot {
-            machines: vec![machine('1', "first")],
-            ..Default::default()
-        },
-        PlanOptions::default(),
-    )
-    .unwrap();
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [DeployOperation::CreateVolume { volume, .. }, DeployOperation::RunContainer { .. }]
-            if matches!(
-                &volume.source,
-                VolumeSource::Named { name, labels, .. }
-                    if name.as_str() == "blog_data"
-                        && labels.get(PROJECT_NAME_LABEL).map(String::as_str) == Some("blog")
-            )
-    ));
 }

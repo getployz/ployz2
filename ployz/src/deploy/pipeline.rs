@@ -10,9 +10,9 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    DataLossConfirmation, DeployOperation, MachineFailure, MachineId, MachineObservation,
-    ObservedDataLoss, PortPublication, ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode,
-    ServiceMode, ServiceSelector, UnconfirmedDataLoss, select_service,
+    DataLossConfirmation, MachineFailure, MachineId, MachineObservation, ObservedDataLoss,
+    PortPublication, ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceMode,
+    ServiceSelector, UnconfirmedDataLoss, select_service,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -285,7 +285,6 @@ pub(super) async fn plan_project(
         .with_requested_profiles(hints.requested_profiles)
         .with_compose_refusal(hints.compose_refusal);
     let (snapshot, warnings) = gather_deploy_snapshot(client, machines, &intent).await?;
-    super::reject_missing_external_volumes(project, &snapshot)?;
     Ok(preview_gathered(client, snapshot, warnings, &intent).await?)
 }
 
@@ -460,19 +459,8 @@ fn preview_ports(preview: &DeployPreview) -> impl Iterator<Item = &PortPublicati
     preview
         .operations
         .iter()
-        .flat_map(|row| match &row.operation {
-            DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
-                spec.ports.as_slice()
-            }
-            DeployOperation::ReplaceContainer(replacement) => replacement.spec.ports.as_slice(),
-            DeployOperation::CreateVolume { .. }
-            | DeployOperation::CreateProvisionedVolume { .. }
-            | DeployOperation::WaitHealthy { .. }
-            | DeployOperation::StopContainer { .. }
-            | DeployOperation::RemoveContainer { .. }
-            | DeployOperation::StopHook { .. }
-            | DeployOperation::RemoveVolume { .. } => &[],
-        })
+        .filter_map(|row| row.operation.spec())
+        .flat_map(|spec| &spec.ports)
 }
 
 fn machine_public_addresses(machines: &[MachineObservation]) -> Vec<IpAddr> {

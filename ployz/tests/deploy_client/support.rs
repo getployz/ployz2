@@ -257,6 +257,17 @@ impl MachineRpc for DeployService {
         else {
             return Err(Status::invalid_argument("expected create_container"));
         };
+        if let Some(error) = &self.create_volume_error {
+            return encoded(RpcResponse::from(error.clone()));
+        }
+        if let Some(error) = &self.create_volume_verification_error {
+            let mut error = error.clone();
+            error.message = format!(
+                "Docker Volume was created but could not be verified: {}",
+                error.message
+            );
+            return encoded(RpcResponse::from(error));
+        }
         self.created_projects
             .lock()
             .unwrap()

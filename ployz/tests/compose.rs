@@ -735,15 +735,11 @@ volumes:
         },
     )
     .unwrap();
-    assert!(
-        plan.operations
-            .iter()
-            .all(|row| !matches!(row.operation, DeployOperation::CreateVolume { .. }))
-    );
+    assert!(plan.volumes_to_create.is_empty());
 }
 
 #[test]
-fn missing_external_volume_fails_compose_plan() {
+fn missing_external_volume_is_deferred_to_the_target_container_operation() {
     let project = parse_normalized(
         r#"
 services:
@@ -754,19 +750,23 @@ volumes:
         ".",
     )
     .unwrap();
-    let error = plan_compose(
+    let preview = plan_compose(
         &project,
         &DeploySnapshot {
             machines: vec![machine('a', "one")],
             ..Default::default()
         },
     )
-    .unwrap_err();
-    assert_eq!(error.to_string(), "external volumes not found: 'ext-vol'");
+    .unwrap();
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    assert!(preview.volumes_to_create.is_empty());
 }
 
 #[test]
-fn unavailable_external_volume_is_not_reported_as_absent() {
+fn unavailable_external_volume_detail_is_deferred_to_container_ensure() {
     let project = parse_normalized(
         r#"
 services:
@@ -778,7 +778,7 @@ volumes:
     )
     .unwrap();
     let machine = machine('a', "one");
-    let error = plan_compose(
+    let preview = plan_compose(
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
@@ -802,21 +802,23 @@ volumes:
             ..Default::default()
         },
     )
-    .unwrap_err();
-
-    assert!(matches!(error, PlanError::DockerVolumeUnavailable { .. }));
-    assert!(error.to_string().contains("inspect failed"), "{error}");
+    .unwrap();
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    assert!(preview.volumes_to_create.is_empty());
 }
 
 #[test]
-fn failed_external_volume_inventory_is_not_reported_as_absent() {
+fn failed_external_volume_inventory_does_not_block_planning() {
     let project = parse_normalized(
         "services: {app: {image: app, volumes: [{type: volume, source: ext-vol, target: /data}]}}\nvolumes: {ext-vol: {external: true}}\n",
         ".",
     )
     .unwrap();
     let machine = machine('a', "one");
-    let error = plan_compose(
+    let preview = plan_compose(
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
@@ -837,21 +839,23 @@ fn failed_external_volume_inventory_is_not_reported_as_absent() {
             ..Default::default()
         },
     )
-    .unwrap_err();
-
-    assert!(matches!(error, PlanError::DockerVolumeUnavailable { .. }));
-    assert!(error.to_string().contains("list failed"), "{error}");
+    .unwrap();
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    assert!(preview.volumes_to_create.is_empty());
 }
 
 #[test]
-fn omitted_external_volume_inventory_is_not_reported_as_absent() {
+fn omitted_external_volume_inventory_does_not_block_planning() {
     let project = parse_normalized(
         "services: {app: {image: app, volumes: [{type: volume, source: ext-vol, target: /data}]}}\nvolumes: {ext-vol: {external: true}}\n",
         ".",
     )
     .unwrap();
     let machine = machine('a', "one");
-    let error = plan_compose(
+    let preview = plan_compose(
         &project,
         &DeploySnapshot {
             machines: vec![machine.clone()],
@@ -865,17 +869,16 @@ fn omitted_external_volume_inventory_is_not_reported_as_absent() {
             ..Default::default()
         },
     )
-    .unwrap_err();
-
-    assert!(matches!(error, PlanError::DockerVolumeUnavailable { .. }));
-    assert!(
-        error.to_string().contains("no terminal response"),
-        "{error}"
-    );
+    .unwrap();
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    assert!(preview.volumes_to_create.is_empty());
 }
 
 #[test]
-fn unused_external_volume_missing_from_cluster_fails_compose_plan() {
+fn unused_external_volume_has_no_runtime_effect() {
     let project = parse_normalized(
         r#"
 services:
@@ -886,15 +889,19 @@ volumes:
         ".",
     )
     .unwrap();
-    let error = plan_compose(
+    let preview = plan_compose(
         &project,
         &DeploySnapshot {
             machines: vec![machine('a', "one")],
             ..Default::default()
         },
     )
-    .unwrap_err();
-    assert_eq!(error.to_string(), "external volumes not found: 'orphan'");
+    .unwrap();
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    assert!(preview.volumes_to_create.is_empty());
 }
 
 #[test]
@@ -925,13 +932,13 @@ volumes:
     .unwrap();
     assert!(matches!(
         operations(&plan).as_slice(),
-        [DeployOperation::RunContainer { machine_id, .. }]
-            if machine_id == &existing.machine.id
+        [DeployOperation::RunContainer { .. }]
     ));
+    assert!(plan.volumes_to_create.is_empty());
 }
 
 #[test]
-fn missing_external_volumes_are_batched_in_plan_error() {
+fn unused_external_volumes_are_inert() {
     let project = parse_normalized(
         r#"
 services:
@@ -943,22 +950,23 @@ volumes:
         ".",
     )
     .unwrap();
-    let error = plan_compose(
+    let preview = plan_compose(
         &project,
         &DeploySnapshot {
             machines: vec![machine('a', "one")],
             ..Default::default()
         },
     )
-    .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "external volumes not found: 'alpha', 'beta'"
-    );
+    .unwrap();
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { .. }]
+    ));
+    assert!(preview.volumes_to_create.is_empty());
 }
 
 #[test]
-fn select_services_keeps_unused_external_volumes() {
+fn select_services_keeps_unused_external_volumes_inert() {
     let project = parse_normalized(
         r#"
 services:
@@ -971,19 +979,23 @@ volumes:
     )
     .unwrap();
     let selected = project.select_services(&["web".into()]).unwrap();
-    let error = plan_compose(
+    let preview = plan_compose(
         &selected,
         &DeploySnapshot {
             machines: vec![machine('a', "one")],
             ..Default::default()
         },
     )
-    .unwrap_err();
-    assert_eq!(error.to_string(), "external volumes not found: 'data'");
+    .unwrap();
+    assert!(matches!(
+        operations(&preview).as_slice(),
+        [DeployOperation::RunContainer { spec, .. }] if spec.name.as_str() == "web"
+    ));
+    assert!(preview.volumes_to_create.is_empty());
 }
 
 #[test]
-fn global_service_still_creates_external_volume_on_machines_that_lack_it() {
+fn global_service_never_previews_external_volume_creation() {
     let project = parse_normalized(
         r#"
 services:
@@ -1015,18 +1027,13 @@ volumes:
     assert!(matches!(
         operations(&plan).as_slice(),
         [
-            DeployOperation::CreateVolume { machine_id: volume_machine, volume },
             DeployOperation::RunContainer { machine_id: run_a, .. },
             DeployOperation::RunContainer { machine_id: run_b, .. },
-        ] if volume_machine == &second.machine.id
-            && run_a != run_b
+        ] if run_a != run_b
             && [*run_a, *run_b].contains(&first.machine.id)
             && [*run_a, *run_b].contains(&second.machine.id)
-            && matches!(&volume.source, VolumeSource::Named { name, external: true, labels, .. }
-                if name.as_str() == "shared"
-                    && !labels.contains_key(MANAGED_LABEL)
-                    && !labels.contains_key(PROJECT_NAME_LABEL))
     ));
+    assert!(plan.volumes_to_create.is_empty());
 }
 
 #[test]
@@ -1266,7 +1273,7 @@ services:
 }
 
 #[test]
-fn compose_plan_puts_volume_creates_before_service_operations() {
+fn compose_plan_separates_volume_preview_from_service_operations() {
     let yaml = r#"
 name: demo
 services:
@@ -1293,22 +1300,33 @@ secrets: {token: {x-command: "printf resolved"}}
     assert!(matches!(
         operations(&plan).as_slice(),
         [
-            DeployOperation::CreateVolume { volume, .. },
             DeployOperation::RunHook { .. },
             DeployOperation::RunContainer { spec: db, .. },
             DeployOperation::RunContainer { spec: api, .. },
-        ] if matches!(
-                &volume.source,
-                VolumeSource::Named { name, external: false, labels, .. }
-                    if name.as_str() == "app_data"
-                        && labels.get(MANAGED_LABEL) == Some(&String::new())
-                        && labels.get(PROJECT_NAME_LABEL) == Some(&"app".to_string())
-            )
-            && volume.reference == requested_volume.reference
-            && db.name.as_str() == "db"
+        ] if db.name.as_str() == "db"
             && db.container.environment.get("TOKEN").map(String::as_str) == Some("resolved")
             && api.name.as_str() == "api"
     ));
+    let previewed_volume = plan
+        .volumes_to_create
+        .first()
+        .expect("missing managed Volume is previewed");
+    let plan_operations = operations(&plan);
+    let volume = plan_operations
+        .iter()
+        .filter_map(DeployOperation::spec)
+        .flat_map(|spec| spec.volume_graph.volumes())
+        .find(|volume| matches!(&volume.source, VolumeSource::Named { .. }))
+        .expect("run operation carries the managed Volume");
+    assert!(matches!(
+        &volume.source,
+        VolumeSource::Named { name, external: false, labels, .. }
+            if name.as_str() == "app_data"
+                && labels.get(MANAGED_LABEL) == Some(&String::new())
+                && labels.get(PROJECT_NAME_LABEL) == Some(&"app".to_string())
+    ));
+    assert_eq!(volume.reference, requested_volume.reference);
+    assert_eq!(previewed_volume.name.as_str(), "app_data");
     assert_eq!(
         service(&project, "db")
             .container
@@ -1373,21 +1391,16 @@ x-volumes: {data: 10G}
 
     assert_eq!(compose_preview, sdk_preview);
     assert!(
-        operations(&compose_preview)
+        compose_preview
+            .volumes_to_create
             .iter()
-            .any(|operation| matches!(
-                operation,
-                DeployOperation::CreateProvisionedVolume { volume, .. }
-                    if volume.reference.as_str() == "data"
-            ))
+            .any(|item| item.maximum_bytes.is_some())
     );
     assert!(
-        operations(&compose_preview)
+        compose_preview
+            .volumes_to_create
             .iter()
-            .any(|operation| matches!(
-                operation,
-                DeployOperation::CreateVolume { volume, .. } if volume.reference.as_str() == "cache"
-            ))
+            .any(|item| item.name.as_str() == "app_cache")
     );
 }
 
@@ -1506,23 +1519,12 @@ fn compose_x_volume_size_stays_in_resolved_service_spec() {
     assert_eq!(source_bound(&twenty_spec), 20 * 1024_u64.pow(3));
 
     let bound = |preview: &ployz::deploy::DeployPreview| {
-        let row = preview
-            .operations
+        preview
+            .volumes_to_create
             .iter()
-            .find(|row| {
-                matches!(
-                    row.operation,
-                    DeployOperation::CreateProvisionedVolume { .. }
-                )
-            })
-            .unwrap();
-        let DeployOperation::CreateProvisionedVolume { volume, .. } = &row.operation else {
-            unreachable!("matched a CreateProvisionedVolume row")
-        };
-        let VolumeSource::Provisioned { maximum_bytes, .. } = &volume.source else {
-            unreachable!("Provisioned Volume operation carries a Provisioned source")
-        };
-        maximum_bytes.get()
+            .find_map(|item| item.maximum_bytes)
+            .unwrap()
+            .get()
     };
     assert_eq!(bound(&ten_preview), 10 * 1024_u64.pow(3));
     assert_eq!(bound(&twenty_preview), 20 * 1024_u64.pow(3));
@@ -1549,11 +1551,7 @@ x-volumes:
 
     let preview = plan_compose(&project, &snapshot).unwrap();
 
-    assert!(
-        !operations(&preview)
-            .iter()
-            .any(|operation| matches!(operation, DeployOperation::CreateProvisionedVolume { .. }))
-    );
+    assert!(preview.volumes_to_create.is_empty());
 }
 
 #[test]
@@ -1679,22 +1677,18 @@ fn created_named_volume(
     plan: &ployz::deploy::DeployPreview,
     project: &str,
 ) -> ployz_core::DockerVolumeName {
-    let volume = plan
-        .operations
+    let previewed = plan
+        .volumes_to_create
         .iter()
-        .find_map(|row| match &row.operation {
-            DeployOperation::CreateVolume { volume, .. } => Some(volume),
-            DeployOperation::RunContainer { .. }
-            | DeployOperation::WaitHealthy { .. }
-            | DeployOperation::StopContainer { .. }
-            | DeployOperation::RemoveContainer { .. }
-            | DeployOperation::ReplaceContainer(_)
-            | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }
-            | DeployOperation::RemoveVolume { .. }
-            | DeployOperation::CreateProvisionedVolume { .. } => None,
-        })
+        .find(|item| item.maximum_bytes.is_none())
         .expect("plan creates a Docker Volume");
+    let plan_operations = operations(plan);
+    let volume = plan_operations
+        .iter()
+        .filter_map(DeployOperation::spec)
+        .flat_map(|spec| spec.volume_graph.volumes())
+        .find(|volume| matches!(&volume.source, VolumeSource::Named { name, .. } if name == &previewed.name))
+        .expect("container operation carries the previewed Volume");
     let VolumeSource::Named { name, labels, .. } = &volume.source else {
         panic!("expected a named Docker Volume, got {:?}", volume.source);
     };
@@ -1703,7 +1697,8 @@ fn created_named_volume(
         labels.get(PROJECT_NAME_LABEL).map(String::as_str),
         Some(project)
     );
-    name.clone()
+    assert_eq!(name, &previewed.name);
+    previewed.name.clone()
 }
 
 #[test]
@@ -1738,11 +1733,7 @@ volumes: {data: {}}
         preserved.machine_name,
         Some(ployz_core::MachineName::parse("one").unwrap())
     );
-    assert!(
-        plan.operations
-            .iter()
-            .all(|row| !matches!(row.operation, DeployOperation::CreateVolume { .. }))
-    );
+    assert!(plan.volumes_to_create.is_empty());
     let still_declared = plan_compose(&with_volume, &snapshot).unwrap();
     assert!(still_declared.preserved_volumes.is_empty());
 }
@@ -1846,26 +1837,18 @@ volumes: {data: {name: demo_data}}
     };
     let plan = plan_compose(&replicated, &snapshot).unwrap();
     let ops = operations(&plan);
-    let Some(DeployOperation::CreateVolume {
-        machine_id: anchor,
-        volume,
-    }) = ops.first()
-    else {
-        panic!("missing Volume creation: {plan:?}")
-    };
-    assert_eq!(anchor, &machine('b', "two").machine.id);
-    assert!(ops.iter().skip(1).all(|operation| matches!(
+    let previewed = plan
+        .volumes_to_create
+        .first()
+        .unwrap_or_else(|| panic!("missing Volume preview: {plan:?}"));
+    let anchor = previewed.machine_id;
+    let existing_name = &previewed.name;
+    assert_eq!(anchor, machine('b', "two").machine.id);
+    assert!(ops.iter().all(|operation| matches!(
         operation,
-        DeployOperation::RunContainer { machine_id, .. } if machine_id == anchor
+        DeployOperation::RunContainer { machine_id, .. } if *machine_id == anchor
     )));
 
-    let VolumeSource::Named {
-        name: existing_name,
-        ..
-    } = &volume.source
-    else {
-        panic!("unexpected shared Volume: {volume:?}")
-    };
     let mut existing_snapshot = snapshot.clone();
     existing_snapshot.volume_snapshot = VolumeSnapshot::try_from_observations(
         snapshot
@@ -1880,7 +1863,7 @@ volumes: {data: {name: demo_data}}
             .iter()
             .all(|operation| matches!(
                 operation,
-                DeployOperation::RunContainer { machine_id, .. } if machine_id == anchor
+                DeployOperation::RunContainer { machine_id, .. } if *machine_id == anchor
             ))
     );
 
@@ -1901,21 +1884,18 @@ volumes: {a: {}, b: {}}
     )
     .unwrap();
     let connected_plan = plan_compose(&connected, &snapshot).unwrap();
-    assert_eq!(
+    assert_eq!(connected_plan.volumes_to_create.len(), 2);
+    assert!(
         connected_plan
-            .operations
+            .volumes_to_create
             .iter()
-            .take_while(|row| matches!(row.operation, DeployOperation::CreateVolume { .. }))
-            .count(),
-        2
+            .all(|item| item.machine_id == anchor)
     );
     assert!(
         operations(&connected_plan)
             .iter()
             .all(|operation| match operation {
-                DeployOperation::CreateVolume { machine_id, .. }
-                | DeployOperation::CreateProvisionedVolume { machine_id, .. }
-                | DeployOperation::RunContainer { machine_id, .. } => machine_id == anchor,
+                DeployOperation::RunContainer { machine_id, .. } => *machine_id == anchor,
                 other @ (DeployOperation::WaitHealthy { .. }
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
@@ -1958,10 +1938,22 @@ volumes:
         },
     )
     .unwrap();
-    assert!(matches!(
-        operations(&constrained_plan).as_slice(),
-        [DeployOperation::CreateVolume { machine_id, .. }, ..] if machine_id == &existing_machine
-    ));
+    assert_eq!(
+        constrained_plan
+            .volumes_to_create
+            .first()
+            .expect("missing managed Volume is previewed")
+            .machine_id,
+        existing_machine
+    );
+    assert!(
+        operations(&constrained_plan)
+            .iter()
+            .all(|operation| matches!(
+                operation,
+                DeployOperation::RunContainer { machine_id, .. } if machine_id == &existing_machine
+            ))
+    );
 
     let different_replica_counts = parse_normalized(
         r#"

@@ -9,11 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ContainerRuntimeObservation, HealthObservation, RequestedServiceSpec, ResolvedServiceSpec,
-    ServiceVolume,
 };
 use crate::{
-    ContainerId, DockerVolumeId, MachineId, MachineName, ProjectName, QualifiedService, RpcError,
-    ServiceName,
+    ContainerId, DockerVolumeId, DockerVolumeName, MachineId, MachineName, ProjectName,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName,
 };
 use thiserror::Error;
 
@@ -300,16 +299,6 @@ pub struct ReplacementOperation {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeployOperation {
-    /// Create a Service Volume on `machine_id`.
-    CreateVolume {
-        machine_id: MachineId,
-        volume: ServiceVolume,
-    },
-    /// Create a bounded Provisioned Volume on `machine_id`.
-    CreateProvisionedVolume {
-        machine_id: MachineId,
-        volume: ServiceVolume,
-    },
     /// Wait for every observed Service Container of `dependency` before starting `dependent`.
     WaitHealthy {
         machine_id: MachineId,
@@ -361,6 +350,10 @@ pub struct DeployPreview {
     pub operations: Vec<OperationRow>,
     /// Observer-relative warnings for this snapshot, including ingress DNS misses.
     pub warnings: Vec<DeployWarning>,
+    /// Missing managed Docker Volumes the shown container operations would create on their target
+    /// Machines during Volume Ensure. These are informational, not executable plan rows.
+    #[serde(default)]
+    pub volumes_to_create: Vec<VolumeToCreate>,
     /// Visible Services in the Project that Compose no longer declares.
     #[serde(default)]
     pub would_remove: Vec<QualifiedService>,
@@ -371,6 +364,21 @@ pub struct DeployPreview {
     /// Why pruning will not run. `None` means obsolete Services are removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prune_refusal: Option<PruneRefusal>,
+}
+
+/// One managed Docker Volume current observations indicate a container operation would create.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VolumeToCreate {
+    /// Machine where the container operation will ensure the Volume.
+    pub machine_id: MachineId,
+    /// Human-facing Machine Name from this observer's snapshot when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_name: Option<MachineName>,
+    /// Physical Docker Volume Name that is currently absent on the Machine.
+    pub name: DockerVolumeName,
+    /// Positive Provisioned Volume bound; absent for an ordinary named Volume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_bytes: Option<ProvisionedVolumeMaximumBytes>,
 }
 
 /// A Compose-declared Docker Volume this Deploy keeps because it is omitted
@@ -447,6 +455,7 @@ impl DeployPreview {
             project_name,
             operations,
             warnings,
+            volumes_to_create: Vec::new(),
             would_remove: Vec::new(),
             preserved_volumes: Vec::new(),
             prune_refusal: None,
@@ -540,7 +549,6 @@ impl Display for DeployWarning {
 /// Machine RPC invoked while executing one Deploy Operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MachineAction {
-    CreateVolume,
     CreateContainer,
     StartContainer,
     InspectContainer,
@@ -672,7 +680,6 @@ pub enum OperationStatus {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OperationPhase {
     Starting,
-    CreatingVolume,
     CreatingContainer,
     StartingContainer,
     WaitingForHealth {
@@ -720,9 +727,7 @@ impl DeployOperation {
     #[must_use]
     pub fn machine_id(&self) -> MachineId {
         match self {
-            Self::CreateVolume { machine_id, .. }
-            | Self::CreateProvisionedVolume { machine_id, .. }
-            | Self::WaitHealthy { machine_id, .. }
+            Self::WaitHealthy { machine_id, .. }
             | Self::RunContainer { machine_id, .. }
             | Self::StopContainer { machine_id, .. }
             | Self::RemoveContainer { machine_id, .. }
@@ -740,9 +745,7 @@ impl DeployOperation {
             Self::WaitHealthy { dependent, .. } => Some(&dependent.name),
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(&spec.name),
             Self::ReplaceContainer(replacement) => Some(&replacement.spec.name),
-            Self::CreateVolume { .. }
-            | Self::CreateProvisionedVolume { .. }
-            | Self::StopContainer { .. }
+            Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
             | Self::StopHook { .. }
             | Self::RemoveVolume { .. } => None,
@@ -757,11 +760,23 @@ impl DeployOperation {
             | Self::RemoveContainer { container_id, .. }
             | Self::StopHook { container_id, .. } => Some(*container_id),
             Self::ReplaceContainer(replacement) => Some(replacement.old_container_id),
-            Self::CreateVolume { .. }
-            | Self::CreateProvisionedVolume { .. }
-            | Self::WaitHealthy { .. }
+            Self::WaitHealthy { .. }
             | Self::RunContainer { .. }
             | Self::RunHook { .. }
+            | Self::RemoveVolume { .. } => None,
+        }
+    }
+
+    /// Resolved Service specification carried by a container-creation operation.
+    #[must_use]
+    pub fn spec(&self) -> Option<&ResolvedServiceSpec> {
+        match self {
+            Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(spec),
+            Self::ReplaceContainer(replacement) => Some(&replacement.spec),
+            Self::WaitHealthy { .. }
+            | Self::StopContainer { .. }
+            | Self::RemoveContainer { .. }
+            | Self::StopHook { .. }
             | Self::RemoveVolume { .. } => None,
         }
     }

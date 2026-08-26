@@ -216,46 +216,6 @@ impl VolumeSnapshot {
             .map(|failure| (failure.id.clone(), failure.error.message.clone()))
     }
 
-    fn external_gap(
-        &self,
-        names: &[DockerVolumeName],
-        machine_name: impl Fn(MachineId) -> String,
-    ) -> Option<(DockerVolumeId, String)> {
-        if let Some(failure) = self
-            .named_failures
-            .iter()
-            .find(|failure| names.contains(&failure.id.name))
-        {
-            return Some((failure.id.clone(), failure.error.message.clone()));
-        }
-        let name = names.first()?;
-        if let Some(failure) = self.machine_failures.first() {
-            return Some((
-                DockerVolumeId {
-                    machine_id: failure.machine_id,
-                    name: name.clone(),
-                },
-                format!(
-                    "Machine '{}' Docker Volume inventory failed: {}",
-                    machine_name(failure.machine_id),
-                    failure.error.message
-                ),
-            ));
-        }
-        self.omissions.first().map(|machine_id| {
-            (
-                DockerVolumeId {
-                    machine_id: *machine_id,
-                    name: name.clone(),
-                },
-                format!(
-                    "Machine '{}' Docker Volume inventory produced no terminal response",
-                    machine_name(*machine_id)
-                ),
-            )
-        })
-    }
-
     pub(crate) fn deploy_warnings(&self) -> impl Iterator<Item = DeployWarning> + '_ {
         self.machine_failures
             .iter()
@@ -570,8 +530,6 @@ pub enum PlanError {
     DependencyCycle { service: String },
     #[error("Docker Volume {id:?} is unavailable: {message}")]
     DockerVolumeUnavailable { id: DockerVolumeId, message: String },
-    #[error("external volumes not found: {}", quoted_names(.names))]
-    ExternalVolumesNotFound { names: Vec<DockerVolumeName> },
     #[error("hostname {hostname} is already published by {owner}")]
     HostnameConflict {
         hostname: IngressHost,
@@ -590,19 +548,6 @@ impl From<ExpandIngressError> for PlanError {
             ExpandIngressError::LabelTooLong(error) => Self::GeneratedLabel(error),
         }
     }
-}
-
-fn quoted_names(names: &[DockerVolumeName]) -> String {
-    let mut quoted = String::new();
-    for (index, name) in names.iter().enumerate() {
-        if index > 0 {
-            quoted.push_str(", ");
-        }
-        quoted.push('\'');
-        quoted.push_str(name.as_str());
-        quoted.push('\'');
-    }
-    quoted
 }
 
 struct MachineNames<'names>(&'names [MachineName]);
@@ -627,55 +572,19 @@ fn compose_deploy_intent(
     .with_service_profiles(project.service_profiles())
 }
 
-/// Plan a Compose project: fail if any `external: true` volume is missing from
-/// the snapshot, then plan service operations.
+/// Plan a Compose project.
 ///
 /// # Errors
 ///
-/// Returns when an external volume is absent from every Machine, or when
-/// placement, volumes, service identity, hostname assignment, or the apply-set
-/// dependency graph cannot produce a preview.
+/// Returns when placement, volumes, service identity, hostname assignment, or
+/// the apply-set dependency graph cannot produce a preview.
 pub fn plan_compose(
     project: &ComposeProject,
     snapshot: &DeploySnapshot,
     project_name: ProjectName,
 ) -> Result<DeployPreview, PlanError> {
-    reject_missing_external_volumes(project, snapshot)?;
     let intent = compose_deploy_intent(project, project_name, PlanOptions::default());
     preview_deploy(&intent, snapshot, IngressContext::default())
-}
-
-pub(crate) fn reject_missing_external_volumes(
-    project: &ComposeProject,
-    snapshot: &DeploySnapshot,
-) -> Result<(), PlanError> {
-    let present = snapshot
-        .volume_snapshot
-        .observations()
-        .iter()
-        .map(|volume| &volume.id.name)
-        .collect::<BTreeSet<_>>();
-    let names = project
-        .external_volume_names()
-        .filter(|name| !present.contains(name))
-        .collect::<Vec<_>>();
-    if let Some((id, message)) = snapshot.volume_snapshot.external_gap(&names, |machine_id| {
-        snapshot
-            .machines
-            .iter()
-            .find(|machine| machine.machine.id == machine_id)
-            .map_or_else(
-                || machine_id.to_string(),
-                |machine| machine.machine.name.to_string(),
-            )
-    }) {
-        return Err(PlanError::DockerVolumeUnavailable { id, message });
-    }
-    if names.is_empty() {
-        Ok(())
-    } else {
-        Err(PlanError::ExternalVolumesNotFound { names })
-    }
 }
 
 impl PlanError {

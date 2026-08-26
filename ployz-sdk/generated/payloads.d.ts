@@ -421,11 +421,19 @@ export type PreservedVolume = Additive<{
   machine_name?: MachineName;
 }>;
 
+export type VolumeToCreate = Additive<{
+  machine_id: MachineId;
+  machine_name?: MachineName;
+  name: DockerVolumeName;
+  maximum_bytes?: ProvisionedVolumeMaximumBytes;
+}>;
+
 export type DeployPreview = Additive<{
   project_name: ProjectName;
   operations: OperationRow[];
   warnings: DeployWarning[];
   would_remove: QualifiedService[];
+  volumes_to_create: VolumeToCreate[];
   preserved_volumes: PreservedVolume[];
   prune_refusal?: PruneRefusal;
 }>;
@@ -450,7 +458,6 @@ export type OperationStatus =
 
 export type OperationPhase =
   | Additive<{ type: "starting" }>
-  | Additive<{ type: "creating_volume" }>
   | Additive<{ type: "creating_container" }>
   | Additive<{ type: "starting_container" }>
   | Additive<{ type: "waiting_for_health"; container_id: ContainerId; health?: HealthObservation; elapsed_ms: number; deadline_ms: number }>
@@ -474,8 +481,6 @@ export type ReplacementOperation = Additive<{
 }>;
 
 export type DeployOperation =
-  | Additive<{ type: "create_volume"; machine_id: MachineId; volume: ServiceVolume }>
-  | Additive<{ type: "create_provisioned_volume"; machine_id: MachineId; volume: ServiceVolume }>
   | Additive<{ type: "wait_healthy"; machine_id: MachineId; dependent: QualifiedService; dependency: QualifiedService }>
   | Additive<{ type: "run_container"; machine_id: MachineId; spec: ResolvedServiceSpec; skip_health_monitor: boolean }>
   | Additive<{ type: "stop_container"; machine_id: MachineId; container_id: ContainerId }>
@@ -486,7 +491,7 @@ export type DeployOperation =
   | Additive<{ type: "remove_volume"; id: DockerVolumeId }>
   | Additive<{ type?: string }>;
 
-export type MachineAction = "CreateVolume" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
+export type MachineAction = "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
 export type HealthFailure =
   | Additive<{ type: "cancelled" }>
