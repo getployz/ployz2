@@ -6,7 +6,7 @@ use bollard::{
     query_parameters::LogsOptionsBuilder,
 };
 use chrono::DateTime;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use ployz_core::{
     ContainerLogsRequest, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogsOptions,
     MachineId, MachineName, OpaquePayload, RpcError, RpcErrorCode,
@@ -120,41 +120,15 @@ impl ContainerRuntime {
                 let exec_id = created.id;
                 let tty = config.options.tty;
                 tokio::spawn(async move {
-                    // ponytail: one inspect per 100 ms; use a Docker exec wait API if one appears.
-                    let process_exited = async {
-                        loop {
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                            match docker.inspect_exec(&exec_id).await {
-                                Ok(inspected) if inspected.running == Some(false) => {
-                                    break send_exec_exit(&sender, inspected.exit_code).await;
-                                }
-                                Ok(_) => {}
-                                Err(error) => break send_exec_error(&sender, error).await,
-                            }
-                        }
-                    };
-                    let stream_completed = async {
-                        while let Some(next) = output.next().await {
-                            match next {
-                                Ok(output) => {
-                                    send_exec(&sender, exec_output(output, tty)).await?;
-                                }
-                                Err(error) => return send_exec_error(&sender, error).await,
-                            }
-                        }
-                        match docker.inspect_exec(&exec_id).await {
-                            Ok(inspected) => send_exec_exit(&sender, inspected.exit_code).await,
-                            Err(error) => send_exec_error(&sender, error).await,
-                        }
-                    };
-                    let _ = tokio::select! {
-                        biased;
-                        result = process_exited => result,
-                        result = stream_completed => result,
-                    };
-                    if let Some(task) = stdin_task {
-                        task.abort();
-                    }
+                    let _ = forward_attached_exec(
+                        &docker,
+                        &exec_id,
+                        &mut output,
+                        tty,
+                        &sender,
+                        stdin_task,
+                    )
+                    .await;
                 });
             }
         }
@@ -198,6 +172,70 @@ impl ContainerRuntime {
                     .map_err(|error| JournalError::Docker(error.to_string()))
             });
         Ok(Box::pin(stream))
+    }
+}
+
+async fn forward_attached_exec(
+    docker: &bollard::Docker,
+    exec_id: &str,
+    output: &mut (impl Stream<Item = Result<LogOutput, bollard::errors::Error>> + Unpin),
+    tty: bool,
+    sender: &mpsc::Sender<Result<OpaquePayload, Status>>,
+    stdin_task: Option<tokio::task::JoinHandle<()>>,
+) -> Result<(), Status> {
+    enum Completion {
+        StreamEnded,
+        ProcessExited(Option<i64>),
+        Failed(bollard::errors::Error),
+    }
+
+    let cadence = Duration::from_millis(100);
+    // ponytail: one inspect per cadence; use a Docker exec wait API if one appears.
+    let mut inspections = tokio::time::interval_at(tokio::time::Instant::now() + cadence, cadence);
+    let completion = loop {
+        tokio::select! {
+            biased;
+            _ = inspections.tick() => match docker.inspect_exec(exec_id).await {
+                Ok(inspected) if inspected.running == Some(false) => {
+                    break Ok(Completion::ProcessExited(inspected.exit_code));
+                }
+                Ok(_) => {}
+                Err(error) => break Ok(Completion::Failed(error)),
+            },
+            next = output.next() => match next {
+                Some(Ok(output)) => {
+                    if let Err(error) = send_exec(sender, exec_output(output, tty)).await {
+                        break Err(error);
+                    }
+                }
+                Some(Err(error)) => break Ok(Completion::Failed(error)),
+                None => break Ok(Completion::StreamEnded),
+            },
+        }
+    };
+    if let Some(task) = stdin_task {
+        task.abort();
+    }
+    let completion = completion?;
+
+    match completion {
+        Completion::StreamEnded => match docker.inspect_exec(exec_id).await {
+            Ok(inspected) => send_exec_exit(sender, inspected.exit_code).await,
+            Err(error) => send_exec_error(sender, error).await,
+        },
+        Completion::Failed(error) => send_exec_error(sender, error).await,
+        Completion::ProcessExited(exit_code) => {
+            // ponytail: one bounded drain preserves buffered frames without waiting on a held hijack.
+            let deadline = tokio::time::Instant::now() + cadence;
+            while tokio::time::Instant::now() < deadline {
+                match tokio::time::timeout_at(deadline, output.next()).await {
+                    Ok(Some(Ok(output))) => send_exec(sender, exec_output(output, tty)).await?,
+                    Ok(Some(Err(error))) => return send_exec_error(sender, error).await,
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            send_exec_exit(sender, exit_code).await
+        }
     }
 }
 

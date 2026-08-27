@@ -85,7 +85,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     .unwrap();
     assert!(frames.contains(&ExecResponseFrame::Stdout(b"out".to_vec())));
     assert!(frames.contains(&ExecResponseFrame::Stderr(b"err".to_vec())));
-    assert!(frames.contains(&ExecResponseFrame::Exit(42)));
+    assert!(matches!(frames.last(), Some(ExecResponseFrame::Exit(42))));
 
     let open_config = exec_config(
         &created.container_id,
@@ -109,7 +109,10 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     .await
     .expect("exec output must close while the request stream remains open")
     .unwrap();
-    assert!(open_frames.contains(&ExecResponseFrame::Exit(7)));
+    assert!(matches!(
+        open_frames.last(),
+        Some(ExecResponseFrame::Exit(7))
+    ));
     drop(request_sender);
 
     let detached = exec_frames(
