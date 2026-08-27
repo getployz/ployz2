@@ -132,7 +132,7 @@ fn an_attended_row_is_never_stalled() {
         allocator_stalled_for(Some(&frozen), wanting, now, &policy),
         STEAL_AFTER * 2
     );
-    // A renewal window no clock ever followed stalls from the window.
+    // A renewal window the Allocator never attended stalls from the window.
     let day = Duration::from_secs(86_400);
     let expired = row_with_lifetime(UNIX_EPOCH, UNIX_EPOCH + day * 90);
     let window = renewal_window(
@@ -145,6 +145,19 @@ fn an_attended_row_is_never_stalled() {
     assert_eq!(
         allocator_stalled_for(Some(&expired), Duration::ZERO, later, &policy),
         STEAL_AFTER * 3
+    );
+    // A failed renewal's clock attends a material row: stall follows the clock.
+    let renewing = expired.with_backoff(
+        "authority failed",
+        IssuanceClock::new(
+            1,
+            later + Duration::from_secs(60),
+            IssuanceFailure::Authority,
+        ),
+    );
+    assert_eq!(
+        allocator_stalled_for(Some(&renewing), Duration::ZERO, later, &policy),
+        Duration::ZERO
     );
     // An untouched row falls back to this Machine's own observation age.
     assert_eq!(allocator_stalled_for(None, wanting, now, &policy), wanting);

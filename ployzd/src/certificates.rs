@@ -411,14 +411,12 @@ async fn issue_wanted(
             IssuanceGate::Nothing => continue,
             IssuanceGate::Refuse(clock) => {
                 first_seen.remove(hostname);
-                if row.and_then(CertificateRow::material).is_none() {
-                    let reason = issuance_refusal_reason(hostname, &resolved, &cluster);
-                    if let Err(error) = store
-                        .record_certificate_failure(hostname, reason, clock)
-                        .await
-                    {
-                        eprintln!("failed to record certificate refusal for {hostname}: {error}");
-                    }
+                let reason = issuance_refusal_reason(hostname, &resolved, &cluster);
+                if let Err(error) = store
+                    .record_certificate_failure(hostname, reason, clock)
+                    .await
+                {
+                    eprintln!("failed to record certificate refusal for {hostname}: {error}");
                 }
                 continue;
             }

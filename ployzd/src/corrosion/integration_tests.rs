@@ -4,13 +4,13 @@ use std::{
     net::TcpListener,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId,
-    DockerVolumeName, IngressHost, LocalMachinePhase, Machine, MachineId, MachineName,
-    ManagementAddress, WireGuardPublicKey,
+    DockerVolumeName, IngressHost, IssuanceClock, IssuanceFailure, LocalMachinePhase, Machine,
+    MachineId, MachineName, ManagementAddress, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -306,6 +306,20 @@ async fn certificates_round_trip_and_notify_on_change() {
         store.certificate(&hostname).await.unwrap().as_ref(),
         Some(&updated)
     );
+
+    // A failed renewal advances the clock while keeping the served material.
+    let clock = IssuanceClock::new(
+        1,
+        SystemTime::now() + Duration::from_secs(60),
+        IssuanceFailure::Authority,
+    );
+    store
+        .record_certificate_failure(&hostname, "authority failed", clock)
+        .await
+        .unwrap();
+    let row = store.certificate_row(&hostname).await.unwrap();
+    assert_eq!(row.material(), Some(&updated));
+    assert_eq!(row.clock(), Some(clock));
 
     running.cleanup().await.unwrap();
 }

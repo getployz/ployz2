@@ -619,7 +619,9 @@ impl ReplicatedStore {
             .await
     }
 
-    /// Record why a hostname has no certificate and when the Cluster may try again.
+    /// Record why certificate work for a hostname failed and when the Cluster
+    /// may try again. Served material is kept; the clock is also the Allocator's
+    /// replicated liveness signal, so failed renewals must advance it too.
     ///
     /// # Errors
     ///
@@ -631,9 +633,6 @@ impl ReplicatedStore {
         clock: IssuanceClock,
     ) -> Result<(), Error> {
         let latest = self.certificate_row(hostname).await?;
-        if latest.material().is_some() {
-            return Ok(());
-        }
         self.upsert_certificate(hostname, &latest.with_backoff(last_error, clock))
             .await
     }
