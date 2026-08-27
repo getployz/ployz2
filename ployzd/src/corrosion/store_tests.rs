@@ -374,7 +374,7 @@ async fn allocator_view_is_the_gate_decision() {
     );
     assert_eq!(
         store.allocator_view(&other).await.unwrap(),
-        AllocatorView::Other(me.clone())
+        AllocatorView::Other(me)
     );
     store.steal_allocator(&other).await.unwrap();
     assert_eq!(
