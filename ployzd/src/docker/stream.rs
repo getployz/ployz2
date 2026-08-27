@@ -189,17 +189,13 @@ async fn forward_attached_exec(
         Failed(bollard::errors::Error),
     }
 
-    let cadence = Duration::from_millis(100);
-    // ponytail: one inspect per cadence; use a Docker exec wait API if one appears.
-    let mut inspections = tokio::time::interval_at(tokio::time::Instant::now() + cadence, cadence);
+    let process_exited = wait_for_exec_exit(docker, exec_id);
+    tokio::pin!(process_exited);
     let completion = loop {
         tokio::select! {
             biased;
-            _ = inspections.tick() => match docker.inspect_exec(exec_id).await {
-                Ok(inspected) if inspected.running == Some(false) => {
-                    break Ok(Completion::ProcessExited(inspected.exit_code));
-                }
-                Ok(_) => {}
+            result = &mut process_exited => match result {
+                Ok(exit_code) => break Ok(Completion::ProcessExited(exit_code)),
                 Err(error) => break Ok(Completion::Failed(error)),
             },
             next = output.next() => match next {
@@ -226,7 +222,7 @@ async fn forward_attached_exec(
         Completion::Failed(error) => send_exec_error(sender, error).await,
         Completion::ProcessExited(exit_code) => {
             // ponytail: one bounded drain preserves buffered frames without waiting on a held hijack.
-            let deadline = tokio::time::Instant::now() + cadence;
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(100);
             while tokio::time::Instant::now() < deadline {
                 match tokio::time::timeout_at(deadline, output.next()).await {
                     Ok(Some(Ok(output))) => send_exec(sender, exec_output(output, tty)).await?,
@@ -235,6 +231,20 @@ async fn forward_attached_exec(
                 }
             }
             send_exec_exit(sender, exit_code).await
+        }
+    }
+}
+
+async fn wait_for_exec_exit(
+    docker: &bollard::Docker,
+    exec_id: &str,
+) -> Result<Option<i64>, bollard::errors::Error> {
+    loop {
+        // ponytail: one inspect per 100 ms; use a Docker exec wait API if one appears.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let inspected = docker.inspect_exec(exec_id).await?;
+        if inspected.running == Some(false) {
+            return Ok(inspected.exit_code);
         }
     }
 }
