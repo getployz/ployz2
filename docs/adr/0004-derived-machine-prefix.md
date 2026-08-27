@@ -2,128 +2,135 @@
 
 Ployz keeps Uncloud `misc/design.md`: equal Machines, AP, operate each partition, heal later. It stops copying Uncloud's unique IPv4 `/24` pool and the Allocator Ployz added on top. A Machine's container space is a function of its own key, never a grant.
 
+Containers are IPv4-only. The mesh is IPv6. eBPF on each Machine translates, and is the later monitoring attach point. That does not bring back a cluster IPv4 pool.
+
 Status: proposed.
 
 ## Decision
 
-Every cluster-routable identity is a pure function of identity that is already unique by construction — the Machine's WireGuard public key — plus bits the creating Machine chooses locally. Nothing cluster-routable is taken from a shared pool. Docker IPv4 stays Machine-local and may overlap. Join and Deploy do not consult a coordinator.
+Every cluster-routable identity is a pure function of the Machine's WireGuard public key, plus bits that Machine already has (its Local Container IPv4). Nothing cluster-routable is taken from a shared pool. Join and Deploy do not consult a coordinator.
 
-```mermaid
-flowchart LR
-  subgraph before["Today: address by allocation"]
-    J[joining Machine] -->|Register| E[entry Machine]
-    E -->|forward or steal| R["cluster.allocator"]
-    R --> W["walk 10.210.0.0/16 /24s"]
-    W --> S[Machine Subnet]
-  end
-  subgraph after["After: address by construction"]
-    K[WireGuard public key] --> M[Management Address /128]
-    K --> P[Machine Prefix /80]
-    P --> C[Container Address chosen locally]
-  end
+The Service Container's interface is IPv4 only. Many images never open IPv6. Cross-Machine packets are IPv6 on `ployz-wg`. eBPF at the veth edge does the conversion. Internal DNS returns observer-local IPv4 Reach Addresses, never a remote Machine's Docker IPv4, never a cluster-unique IPv4.
+
+```
+TODAY                              AFTER
+
+Allocator --> unique /24           key --> fdcd:Machine::/80
+container IPv4 is cluster id       container IPv4 is local only
+                                   eBPF: IPv4 in netns <-> IPv6 on mesh
 ```
 
 ## Unrepresentable
 
-`CODING_STANDARDS.md`: a type cannot represent an illegal state. Two Machines holding the same Machine Subnet is a cluster-wide invariant no local type can hold. Delete the resource. Do not add a better check.
+`CODING_STANDARDS.md`: a type cannot represent an illegal state. Two Machines holding the same Machine Subnet is a cluster-wide invariant no local type can hold. Delete the resource.
 
-Deleted types and values:
+Deleted:
 
-1. `MachineSubnet`. The `Machine` value loses `subnet`. Overlap has no encoding.
-2. The Cluster IPv4 pool (`10.210.0.0/16`), founder `--network`, `FoundingCluster.network`, and the `cluster.network` row. No pool means nothing to allocate from.
-3. `ContainerAddress` as IPv4. It becomes IPv6, constructed only from a Machine Prefix plus a Machine-local suffix. No IPv4/IPv6 enum that can smuggle a cluster IPv4 back in.
-4. Stored `Machine.management_address` and `ManagementAddressMismatch`. Management Address is a function of the public key, so storing it beside the key is the desyncable pair the standard forbids.
-5. `AllocatorRow`, `cluster.allocator`, founder claim, steal, quiet bit, Register-forward.
+1. `MachineSubnet` and `Machine.subnet`.
+2. The Cluster IPv4 pool (`10.210.0.0/16`), founder `--network`, `FoundingCluster.network`, `cluster.network`.
+3. Cluster-unique `ContainerAddress` as IPv4. The IPv6 Container Address is derived, not allocated. A remote Local Container IPv4 is not a cluster identity.
+4. Stored `Machine.management_address` and `ManagementAddressMismatch`.
+5. `AllocatorRow`, `cluster.allocator`, quiet, steal, Register-forward.
 6. `NotAllocator`, `AllocatorNotQuiet`, `NoFreeSubnet`, `InvalidClusterNetwork`.
-7. `IsolationLocked` as a Register refusal. It is Uncloud's "do not proceed in a minority partition" TODO made real. Without a scarce assignment, isolation is not a reason to refuse a join.
+7. `IsolationLocked` as a Register refusal.
 8. WireGuard allowed-IPs of a peer IPv4 `/24`. Docker bridge IPAM that *is* the Machine Subnet.
+9. Dual-stack in the container as a requirement. The netns is IPv4. IPv6 exists on the host and the mesh.
+10. Cluster-wide IPv4 A records. An A answer is a Reach Address on this Machine only.
 
-Same public key on Register is the existing Machine (idempotent), not an address grant. Same Machine Name with a different key is Name Ambiguity: admit both, do not repair.
+Same public key on Register is the existing Machine. Same Machine Name with a different key is Name Ambiguity.
 
 ## Addressing
 
-Two disjoint ULA markers. Reusing `fdcc::/16` for containers would let a Container Address land on a Management Address and force a runtime exclusion check. A second marker costs one extra allowed-IPs entry — the same count as today — and deletes the check.
+```
+  16           64                    32                 16
++------+------------------+--------------------+----------------+
+| fdcd | Machine key[0..7]| Local Container IPv4|     zero      |
++------+------------------+--------------------+----------------+
+       |<---- /80 route ---->|
+              Machine Prefix              Container Address /128
+```
 
-| Bytes 0–1 | Rest | Result |
-|---|---|---|
-| `fdcc` | key bytes 0–13 | Management Address `/128` (unchanged derivation; no longer stored) |
-| `fdcd` | key bytes 0–7 | Machine Prefix `/80` |
-| | 48-bit suffix chosen by the creating Machine | Container Address `/128` |
+`fdcc` + key[0..13] stays Management Address `/128`, not stored. `fdcd` is a disjoint marker so a container IPv6 cannot land on a Management Address.
 
-| Address | Family | Who picks it | Uniqueness |
+| Address | Where it lives | Who picks it | Uniqueness |
 |---|---|---|---|
-| Local Container IPv4 | IPv4 | Docker on this Machine | Machine-local. Overlap across Machines is expected. |
-| Machine Prefix | IPv6 `/80` | derived from this Machine's public key | by construction (64 bits of key) |
-| Container Address | IPv6 | creating Machine during Deploy, inside its prefix | by construction |
-| Machine Gateway | IPv6 | first address of the Machine Prefix | by construction |
-| Management Address | IPv6 `/128` | derived from this Machine's public key | by construction |
+| Local Container IPv4 | container netns | Docker on this Machine | this Machine only. Overlap across Machines is expected. |
+| Reach Address | Internal DNS A on this observer | this Machine, from its observations | this observer only. Not replicated. |
+| Machine Prefix | host routes, WG allowed-IPs | derived from public key | by construction |
+| Container Address | IPv6 on the mesh, not in the netns | derived: prefix + Local Container IPv4 | by construction |
+| Management Address | mesh management | derived from public key | by construction |
 
-The prefix exists the moment the keypair exists — before Register. The creating Machine is the only assigner inside its prefix, so suffix uniqueness is local bookkeeping. Suffix mechanism (counter, random, MAC-derived) is not a domain fact.
+Embed the Local Container IPv4 in the IPv6 host bits so the receiving Machine can DNAT without a cluster table. The sender still needs a Reach Address: the app only dials IPv4.
 
-A Machine Prefix is a function, not a record. It is never written to the store, never sent as its own field, never editable. Observers recompute it from the Machine row's public key.
+A Machine Prefix is a function, not a record. Never stored, never a field on the wire.
 
 ## Routing
 
-Same-Machine traffic stays on the `ployz` bridge, either family.
+eBPF sits on the container veth (or cgroup). It is the IPv4/IPv6 edge. It is also the later flow-monitor attach point. It is not an Allocator: maps are rebuilt from this Machine's Local Container IPv4s plus Replicated Observations.
 
-Cross-Machine container traffic is IPv6 only:
-
-```mermaid
-flowchart LR
-  A["container A"] --> BA[ployz bridge A]
-  BA --> HA["host A: fdcd:B::/80 dev ployz-wg"]
-  HA --> WG[ployz-wg cryptokey routing]
-  WG --> HB[host B forwards]
-  HB --> BB[ployz bridge B]
-  BB --> B["container B"]
+```
+IPv4-only container X                 IPv4-only container Y
+172.17.0.4                            172.17.0.5   (may equal X's IPv4; fine)
+     |                                      ^
+     |  dst = Reach Address                 |
+     v  (A record, this Machine only)       |
+  eBPF on A                                 eBPF on B
+     |  src 172.17.0.4 -> fdcd:A:0.4        |  fdcd:B:0.5 -> 172.17.0.5
+     |  dst handle    -> fdcd:B:0.5         |  fdcd:A:0.4 -> Y's Reach Address
+     v                                      |              for A (IPv4 peer)
+  ployz-wg  ---- IPv6 /80 cryptokey ---->  ployz-wg
+              allowed-IPs: mgmt /128
+                           + fdcd:B::/80
 ```
 
-1. WireGuard allowed IPs per peer are exactly two derived entries: Management Address `/128` and Machine Prefix `/80`. Both are a function of the peer's public key.
-2. Host routes follow those two entries onto `ployz-wg`.
-3. A Machine does not transit traffic between two other Machines. Ingress on `ployz-wg` is accepted only for this Machine's own prefix, then delivered onto this Machine's bridge.
-4. Cross-Machine IPv4 does not exist. That is why Local Container IPv4 overlap is not a bug. Outbound internet IPv4 keeps Docker masquerade.
-5. The `ployz` Docker network stays a local bridge and becomes dual-stack: IPv6 subnet is the Machine Prefix in routed gateway mode; IPv4 keeps Docker's own default pool. `trusted_host_interfaces = ployz-wg` stays. `DockerNetworkConflict` still refuses to replace a live network; it compares an IPv6 subnet now.
-6. No eBPF in this datapath. eBPF earns its keep when the address on the wire does not name its Machine. Once the locator is in the prefix, longest-prefix match and WireGuard cryptokey routing are the whole path. eBPF stays where `misc/design.md` filed it: later, for policy and Service virtual IPs.
-7. Duplicate allowed-IPs prefixes silently blackhole in WireGuard. Derived prefixes cannot collide by concurrency, which is the operational reason overlap had to become unrepresentable.
+1. Same-Machine: eBPF hairpins IPv4 to the local veth. No WireGuard. One path, so later monitoring sees local flows too.
+2. Cross-Machine: IPv6 on the wire. Kernel + WireGuard route the `/80`. eBPF does not replace cryptokey routing.
+3. No transit: IPv6 ingress is accepted only for this Machine's prefix, then DNAT to a local veth.
+4. Outbound internet IPv4 keeps Docker masquerade, unchanged.
+5. Docker `ployz` bridge stays IPv4. It does not take a cluster `/24`. Host has IPv6 on `ployz-wg` and the eBPF programs.
+6. Duplicate WG allowed-IPs still silently blackhole. Derived `/80`s cannot collide by concurrency.
 
-This is a `ployzd` change (network plane, Docker network, firewall, DNS family, Ingress upstreams, store schema, RPC errors). `ployz` loses `--network` and learns nothing new.
+`ployzd` owns the programs, maps, and DNS handles. `ployz` loses `--network`.
 
 ## Join and Deploy
 
-Join with one reachable Machine in the partition, or found a network with none:
-
-1. The joining Machine generates its keypair locally. Management Address, Machine Prefix, and Machine Gateway are settled before it has spoken to anyone.
-2. It mints its own Machine ID. Nothing grants identity.
-3. Register is an introduction: name, public key, endpoints. It returns store bootstrap. It does not walk a CIDR, forward, steal, wait for quiet, or refuse a minority.
-4. The Machine publishes its own row. Every observer derives peer addresses from the row's public key and installs two allowed-IPs plus two host routes.
-
-Deploy talks to the target Machine, creates the Service Container, handles errors, returns:
-
-5. Docker assigns Local Container IPv4. The daemon assigns a Container Address inside this Machine's prefix. Both spaces belong to the Machine executing the command.
-6. Nobody is consulted for an address. A failed create has no address to release.
+1. Joining Machine generates its keypair. Prefix and Management Address exist before Register.
+2. It mints its own Machine ID.
+3. Register is an introduction. No CIDR walk, forward, steal, quiet, or minority refusal.
+4. It publishes its own row. Observers derive `/80`s and install WG allowed-IPs when they first send (on-demand peers at large fleets).
+5. Deploy creates the container. Docker assigns Local Container IPv4. Container Address is prefix + that IPv4. Nobody is asked. A failed create has no address to release.
 
 ## Internal DNS and Ingress
 
-1. Internal DNS Answer is a TTL-zero AAAA of observer-visible Container Addresses. No cluster A record: an A for another Machine would be a non-unique, unroutable Local Container IPv4.
-2. Nearest DNS Selector orders addresses inside the observing Machine's Machine Prefix first.
-3. Caller Project matches the query source to exactly one visible Service Container. IPv6 matches Container Address. If a later Machine-local A answer exists, IPv4 matches Local Container IPv4 on this Machine only.
-4. Ingress Proxy upstreams are Container Address plus port over IPv6. Public Ingress on the public side is unchanged.
+1. Internal DNS Answer is a TTL-zero **A** of Reach Addresses for observer-visible Serving Containers. No AAAA in the container path. No A that is some other Machine's Local Container IPv4.
+2. Same-Machine Serving Containers still get a Reach Address (not a special native path in DNS), so eBPF sees every `.internal` flow.
+3. Nearest DNS Selector orders Reach Addresses whose containers sit on this Machine first.
+4. Caller Project matches the query source Local Container IPv4 to exactly one local Service Container.
+5. Ingress Proxy is host-side: it may dial Container Address over IPv6, or a local Reach Address. Public Ingress on the public side is unchanged.
 
 ## Partition
 
-A admits C; B admits D; both sides Deploy; then heal.
+A admits C; B admits D; both sides Deploy; heal.
 
-During the partition each joiner already has a key, so each already has a prefix. DNS and Ingress follow what that partition can see.
+Prefixes exist from keys. Reach Addresses on each side are that partition's observer-local handles. They are allowed to differ for the same remote container; they are not Cluster truth.
 
-On heal, Machine and container observations union. Every observer derives the new prefixes and installs peers. Addresses minted during the partition stay valid.
+Heal unions Machine and container observations. `/80`s stay. Local Container IPv4s stay. Reach Address tables rebuild. No renumber.
 
-Ugly and accepted: Name Ambiguity, Hostname Owner flipping until observations match, DNS answer sets growing.
+Ugly: Name Ambiguity, Hostname Owner, DNS sets growing, Reach Addresses changing after heal (TTL 0).
 
-Cannot happen: overlapping prefixes from concurrent allocation, renumber, rewind, Allocator election, unique-`/24` repair.
+Cannot happen: unique-`/24` repair, Allocator election.
 
-If one physical machine Registers through both partitions with the same key, two rows can exist until gossip settles. They carry the same derived addresses. That is a listing wart, not an addressing conflict.
+Pre-release Machine Subnet Clusters reset and re-join. Greenfield lockstep `ployz`/`ployzd`.
 
-Pre-release Clusters that already published Machine Subnets reset and re-join. Renumbering live containers is the repair this decision deletes. Implementation needs a narrow greenfield contract exception in `CODING_STANDARDS.md`: lockstep `ployz`/`ployzd`, no compatibility aliases.
+## Monitoring
+
+eBPF monitoring does not change the address model. It rides the same programs.
+
+1. Attach point is already there: veth egress/ingress.
+2. Maps already have Local Container IPv4, Reach Address, Machine Prefix, Container Address. Flow logs can name Project, Machine, Container ID from this Machine's observations.
+3. Events stay Machine-local, like Ingress Access Event. They are not Cluster truth and not a control plane.
+4. Do not wait for Hubble. Ship translate. Emit later.
+5. A cluster-wide IPv4 identity for nicer logs is an Allocator. Correlate with derived IPv6 / Container ID instead.
 
 ## Glossary
 
@@ -132,71 +139,76 @@ Pre-release Clusters that already published Machine Subnets reset and re-join. R
 **Rewrite:**
 
 **Container Address**:
-The IPv6 address one Machine gives a container inside that Machine's Machine Prefix. Unique by construction, never granted. Only the container's own Machine chooses one.
-_Avoid_: Management Address, Local Container IPv4, allocated container address
+The IPv6 identity of one Service Container on the mesh: Machine Prefix plus that container's Local Container IPv4. The container netns does not hold it. Unique by construction.
+_Avoid_: Local Container IPv4, Reach Address, allocated address
 
 **Machine Gateway**:
-The Machine-local IPv6 gateway, derived as the first address of the Machine Prefix. Never granted.
+The IPv4 gateway of this Machine's Docker bridge. Machine-local. Not cluster-routable.
 _Avoid_: Management Address, allocated gateway
 
 **Management Address**:
-The IPv6 used to reach a Machine's management plane over the mesh, derived from that Machine's public key. Not stored beside the key. Distinct from container, gateway, and endpoint addresses.
-_Avoid_: Container Address, public endpoint, allocated address
+IPv6 management-plane address derived from the public key. Not stored beside the key.
+_Avoid_: Container Address, Reach Address
 
 **Machine ID**:
-The durable opaque identity of one Machine, minted by the Machine it identifies and never granted by another Machine. Distinct from Machine Name. Uniqueness is within one Cluster and one Pairing Credential's slots.
-_Avoid_: Machine Name, granted identity, admitted identity
+Minted by the Machine it identifies. Never granted.
+_Avoid_: granted identity, admitted identity
 
 **Internal DNS Answer**:
-An observer-local, TTL-zero AAAA answer derived from replicated healthy Service Container observations and optionally filtered by this Machine's Membership Observations. Not Cluster truth.
-_Avoid_: Service registry record, A answer as cluster identity
+Observer-local, TTL-zero A of Reach Addresses from replicated healthy Service Container observations, optionally filtered by Membership Observations. Not Cluster truth.
+_Avoid_: Cluster-wide IPv4, remote Local Container IPv4 as an A record
 
 **Nearest DNS Selector**:
-Orders addresses inside the observing Machine's Machine Prefix before other addresses. Prefix locality, not measured reachability.
-_Avoid_: closest Machine, subnet locality
+Orders Reach Addresses for Serving Containers on this Machine first.
+_Avoid_: subnet locality
 
 **New:**
 
 **Machine Prefix**:
-The IPv6 `/80` within which one Machine addresses its containers. Derived from that Machine's public key (`fdcd:` + 8 key bytes), never granted, never stored.
-_Avoid_: Machine Subnet, allocated prefix, cluster pool, namespace
+IPv6 `/80` derived from the public key (`fdcd:` + 8 key bytes). Route key for one Machine. Never stored, never granted.
+_Avoid_: Machine Subnet, allocated prefix, namespace
 
 **Local Container IPv4**:
-The IPv4 Docker assigns on this Machine. Meaningful only with its Machine. Expected to match addresses on other Machines.
-_Avoid_: Container Address, overlap as a defect
+IPv4 Docker assigns in this Machine's netns. Overlap across Machines is expected. The image's only address.
+_Avoid_: Container Address, cluster-unique IPv4, overlap as a defect
+
+**Reach Address**:
+IPv4 Internal DNS returns on this Machine for one Serving Container. Observer-local. eBPF maps it to a Container Address. Not replicated.
+_Avoid_: Local Container IPv4 of a remote Machine, cluster IPv4, VIP, allocated endpoint
 
 ## Extension
 
-Any future field or KV row whose value answers "which Machine may assign?" fails the deletion test. Prefix derivation may depend only on the address format and `WireGuardPublicKey`, never on observations, a free-list, or a KV value.
+Any field or KV row that answers "which Machine may assign?" fails the deletion test. Prefix derivation depends only on the address format and `WireGuardPublicKey`.
+
+Reach Address assignment inspects only this Machine's observations. It is not a Cluster free-list.
 
 When tempted:
 
-1. Need a new cluster-routable identity? Derive it from a key or an id the creating Machine already has.
-2. Need locality? Machine Prefix match, or same Machine ID. Not a shared IPv4 subnet.
-3. Need to heal a split? Merge observations. Do not renumber.
-4. Need uniqueness? Construction. Not a pool.
+1. Need a new cluster-routable identity? Derive it from a key or a Local Container IPv4 this Machine already has.
+2. Need locality? This Machine vs not. Not a shared IPv4 subnet.
+3. Need to heal? Rebuild Reach Address tables. Do not renumber Local Container IPv4s.
+4. Need uniqueness? Construction on the wire. Handles stay local.
 5. Need a coordinator? Stop.
-
-Capacity growth changes the derivation constants (take more key bytes, or a longer suffix) in an explicit protocol version. It does not add a second prefix selected from observed free space.
+6. Need nicer IPv4 logs across Machines? Use Container ID / derived IPv6. Do not allocate cluster IPv4.
 
 ## Out of scope
 
-1. ACLs and per-Project isolation.
-2. Service virtual IPs (still later, per `misc/design.md`).
-3. Replacing WireGuard, NAT traversal, or Management Address derivation (the function stays; the stored field goes).
-4. Kubernetes namespaces, CNI, cluster IPAM APIs.
-5. Cluster-wide IPv4 `.internal` A answers.
-6. Same-Machine A answers (Machine-local, addable later, no coordination).
-7. A Container Address that survives recreate (Machine-local if ever wanted).
+1. ACLs and per-Project isolation (later policy on the same eBPF maps).
+2. Service virtual IPs.
+3. Replacing WireGuard.
+4. Kubernetes CNI / cluster IPAM.
+5. IPv6 in the container netns.
+6. Cluster-wide IPv4 A records.
+7. A monitoring control plane or shipped Hubble.
 
 ## Considered options
 
-Rejected: random or hashed IPv4 `/24`s (keeps the type); CRDT claims on `/24`s (AP plus scarcity equals renumber on heal); a "proper" allocator lease (fencing is CP); flat per-container `/128`s (mesh churns per container); stored-random ULA prefix (desyncable field); eBPF over overlapping IPv4 (the map key is the deleted resource); NAT to Management Address (ports become the pool); `/48` from 32 bits of key (birthday risk reintroduces overlap-as-bug); `/112` with a 16-bit suffix (manufactures a capacity ceiling and a mandatory eBPF surface).
+Rejected: unique IPv4 `/24`s (dead at 256 Machines; 10k is unrepresentable); dual-stack in the image (IPv4-only images are the requirement); AAAA to the container (those images never ask); Jool/nftables NAT64 plus a later second eBPF monitor (two datapaths; monitoring then has to infer translations); eBPF as a cluster IPAM (maps are local or they are an Allocator); hashing all containers into `100.64.0.0/10` as if unique (birthday collisions at fleet scale); embedding a globally unique IPv4 in DNS (the deleted class).
 
 ## Arena record
 
-Base: candidate D (derived `/64`, no eBPF, pool deleted at every site, isolation lock and stored Management Address removed).
+Base: candidate D (derived prefix, pool deleted, isolation lock and stored Management Address removed).
 
-Grafted: candidate A's `/80` (64 bits of key) and duplicate-key heal case; candidate B's extension guardrails and no-transit rule; candidate C's maintainer checklist and dual-family Caller Project.
+Grafted: candidate A's 64-bit `/80` and duplicate-key heal; candidate B's guardrails, no-transit, and eBPF as a local map not an ownership table; candidate C's maintainer checklist.
 
-Dropped: eBPF as the reachability path; keeping isolation lock "for later"; 32-bit `/48` prefixes.
+Changed after the arena: IPv4-only netns is required; eBPF is the veth translator and the future monitoring attach point; Internal DNS stays A, of Reach Addresses. Dropped: dual-stack in the container; "no eBPF for reachability."
