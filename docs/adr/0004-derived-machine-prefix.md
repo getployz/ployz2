@@ -89,8 +89,11 @@ IPv4-only container X                 IPv4-only container Y
 4. Outbound internet IPv4 keeps Docker masquerade, unchanged.
 5. Docker `ployz` bridge stays IPv4. It does not take a cluster `/24`. Host has IPv6 on `ployz-wg` and the eBPF programs.
 6. Duplicate WG allowed-IPs still silently blackhole. Derived `/80`s cannot collide by concurrency.
+7. Translate programs use stable UAPI (`__sk_buff`, `bpf_skb_change_proto`, tc clsact). They do not relocate kernel types, so they do not need vmlinux BTF. The join probe loads and attaches the real object. Failure refuses the Machine. There is no silent fallback to a splice or to Jool.
+8. WireGuard MTU is 1420 today (`NETWORK_MTU`). IPv4 to IPv6 grows the header 20 bytes. The programs clamp TCP MSS. `BPF_F_IPV6_FRAGMENT` is late-2021; older kernels drop IPv4 fragments or use `bpf_skb_adjust_room`.
+9. DNS, WireGuard allowed-IPs, and Reach Address tables sit above a translator seam. They never learn whether the edge is eBPF. One implementation ships.
 
-`ployzd` owns the programs, maps, and DNS handles. `ployz` loses `--network`.
+`ployzd` owns the programs, maps, and DNS handles. `ployz` loses `--network`. Reach Addresses are minted from this Machine's observations and must not overlap the `ployz` bridge or a host route (Tailscale's `100.64.0.0/10` is the known collision).
 
 ## Join and Deploy
 
@@ -203,12 +206,24 @@ When tempted:
 
 ## Considered options
 
-Rejected: unique IPv4 `/24`s (dead at 256 Machines; 10k is unrepresentable); dual-stack in the image (IPv4-only images are the requirement); AAAA to the container (those images never ask); Jool/nftables NAT64 plus a later second eBPF monitor (two datapaths; monitoring then has to infer translations); eBPF as a cluster IPAM (maps are local or they are an Allocator); hashing all containers into `100.64.0.0/10` as if unique (birthday collisions at fleet scale); embedding a globally unique IPv4 in DNS (the deleted class).
+Rejected:
+
+1. Unique IPv4 `/24`s. Dead at 256 Machines. 10k is unrepresentable. The Allocator is the coordinator this ADR deletes.
+2. No translate. Derived `/80`s scale, but IPv4-only images cannot reach remotes. Same-Machine only is not a Cluster.
+3. Userspace splice or TUN netstack. Portable (OrbStack, Pi, no BTF). It puts a TCP/UDP data plane in `ployzd`. A lagged daemon keeps that process for years. Monitoring then is a second `ployzd` rewrite. `ployz/src/image/proxy.rs` is a transient image-push helper, not this path.
+4. Stock nft/iptables DNAT onto `fdcd:`. Netfilter NAT is same-family. Native NAT64 is not in tree and is not planned (netfilter maintainers, June 2025). `ipxlat` is an unmerged RFC.
+5. Jool. Honest SIIT for the named netfilter rung. DKMS per kernel, Secure Boot signing, no OrbStack/LinuxKit headers. Worse host matrix than tc-BPF. A later eBPF monitor would infer translations.
+6. ipip6 (`ip6_tunnel`) plus IPv4 NAT. In-tree family cross, different bytes on `ployz-wg` (IPv4-in-IPv6, not native Container Address). A lagged ipip6 `ployzd` does not interoperate with eBPF. firewalld reload (UT-113) becomes datapath-fatal. OrbStack's `inet orbstack` table owns the same hooks.
+7. Dual-stack in the image, or AAAA to the container. IPv4-only images never ask.
+8. eBPF as cluster IPAM. Maps are local or they are an Allocator.
+9. Silent fallback when the BPF probe fails. That is two datapaths in one fleet.
+10. Hashing all containers into `100.64.0.0/10` as if unique. Birthday collisions at fleet scale.
+11. Embedding a globally unique IPv4 in DNS. The deleted class.
 
 ## Arena record
 
-Base: candidate D (derived prefix, pool deleted, isolation lock and stored Management Address removed).
+Addressing arena: base candidate D (derived prefix, pool deleted, isolation lock and stored Management Address removed). Grafted A's 64-bit `/80` and duplicate-key heal; B's guardrails, no-transit, and eBPF as a local map not an ownership table; C's maintainer checklist.
 
-Grafted: candidate A's 64-bit `/80` and duplicate-key heal; candidate B's guardrails, no-transit, and eBPF as a local map not an ownership table; candidate C's maintainer checklist.
+Then IPv4-only netns became required, so eBPF moved from "not for reachability" to the veth translator.
 
-Changed after the arena: IPv4-only netns is required; eBPF is the veth translator and the future monitoring attach point; Internal DNS stays A, of Reach Addresses. Dropped: dual-stack in the container; "no eBPF for reachability."
+Datapath arena (nothing → eBPF): base A. Cross-judge and parent both picked A. Pick eBPF now, join probe, no fallback. Grafted B's load-and-attach probe, image-proxy-is-not-datapath, and the June 2025 netfilter-maintainer cite; C's Userspace→eBPF rewrite cost (listed, not taken) and OrbStack nft fight; D's Reach Address collision with Tailscale, `NETWORK_MTU` 1420, CO-RE-free BTF dodge, `BPF_F_IPV6_FRAGMENT` cliff, and translator seam. Rejected C's Userspace-now pick (BTF floor was wrong) and D's netfilter-now pick (ipip6 is not the same L3 as eBPF; Jool is worse than tc-BPF).
