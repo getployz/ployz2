@@ -24,7 +24,7 @@ pub use service::{
     CorrosionConfig, DEFAULT_API_ADDRESS, DEFAULT_CONTAINER_NAME, DEFAULT_GOSSIP_ADDRESS,
     RunningCorrosion,
 };
-pub(crate) use store::{LocalContainerSnapshot, LocalVolumeSnapshot};
+pub(crate) use store::{AllocatorView, LocalContainerSnapshot, LocalVolumeSnapshot};
 pub use store::{ReplicatedObservations, ReplicatedStore};
 
 use thiserror::Error;

@@ -22,7 +22,9 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 use super::{FoundingCluster, LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
 
 use crate::{
-    corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
+    corrosion::{
+        AdminClient, AllocatorView, MembershipState, ReplicatedStore, membership_states_by_address,
+    },
     docker::ContainerRuntime,
     host_capacity,
     network::{
@@ -384,20 +386,13 @@ impl LocalMachine {
         if request.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints.into());
         }
-        let me = {
-            let record = self.record()?;
-            if record.phase() != LocalMachinePhase::Participating {
-                return Err(Error::NotParticipating);
-            }
-            record.id()
-        };
+        if self.record()?.phase() != LocalMachinePhase::Participating {
+            return Err(Error::NotParticipating);
+        }
         if self.isolation_locked().await? {
             return Err(Error::IsolationLocked);
         }
-        match self.replicated()?.allocator().await? {
-            Some(row) if row.machine_id == me => self.admit_local_register(request).await,
-            _ => Err(Error::NotAllocator),
-        }
+        self.admit_local_register(request).await
     }
 
     /// Isolation lock: replica larger than three and every other Machine
@@ -430,12 +425,10 @@ impl LocalMachine {
         let assigned_machine = {
             let publication = replicated.machine_publication().await;
             let me = self.record()?.id();
-            match replicated.allocator().await? {
-                Some(row) if row.machine_id == me && row.quiet => {}
-                Some(row) if row.machine_id == me => {
-                    return Err(Error::AllocatorNotQuiet);
-                }
-                Some(_) | None => return Err(Error::NotAllocator),
+            match replicated.allocator_view(&me).await? {
+                AllocatorView::Held => {}
+                AllocatorView::HeldNotQuiet => return Err(Error::AllocatorNotQuiet),
+                AllocatorView::Other(_) | AllocatorView::Vacant => return Err(Error::NotAllocator),
             }
             let snapshot = replicated.machines().await?;
             match snapshot

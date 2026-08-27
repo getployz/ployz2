@@ -47,6 +47,19 @@ pub(crate) struct AllocatorRow {
     pub quiet: bool,
 }
 
+/// This Machine's Replicated Observation of the Allocator row, as a decision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AllocatorView {
+    /// The row names this Machine and is quiet: it may allocate.
+    Held,
+    /// The row names this Machine but is younger than 5s: wait, do not act.
+    HeldNotQuiet,
+    /// The row names another Machine: forward to it or leave the work to it.
+    Other(MachineId),
+    /// No row: a steal candidate.
+    Vacant,
+}
+
 pub(crate) struct MachinePublicationGuard<'a> {
     store: &'a ReplicatedStore,
     _guard: tokio::sync::MutexGuard<'a, ()>,
@@ -271,6 +284,20 @@ impl ReplicatedStore {
             })),
             _ => Err(Error::Protocol("invalid Allocator row".into())),
         }
+    }
+
+    /// This Machine's Allocator gate decision, from the local replica.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the Cluster store cannot be read or the row is malformed.
+    pub(crate) async fn allocator_view(&self, me: &MachineId) -> Result<AllocatorView, Error> {
+        Ok(match self.allocator().await? {
+            Some(row) if row.machine_id == *me && row.quiet => AllocatorView::Held,
+            Some(row) if row.machine_id == *me => AllocatorView::HeldNotQuiet,
+            Some(row) => AllocatorView::Other(row.machine_id),
+            None => AllocatorView::Vacant,
+        })
     }
 
     pub async fn cluster_network(&self) -> Result<Ipv4Net, Error> {

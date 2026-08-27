@@ -15,7 +15,7 @@ use super::{ReplicatedStore, fake_cluster, run_machine_publisher};
 use crate::corrosion::ApiClient;
 use crate::corrosion::publisher::founder_allocator_id;
 use crate::corrosion::store::{
-    AGE_ALLOCATOR, ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, STEAL_ALLOCATOR,
+    AGE_ALLOCATOR, ALLOCATOR_ROW, AllocatorView, CLAIM_FOUNDER_ALLOCATOR, STEAL_ALLOCATOR,
 };
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
@@ -162,6 +162,7 @@ async fn volume_store_is_an_error_when_the_store_is_unreachable() {
             .is_err()
     );
     assert!(store.allocator().await.is_err());
+    assert!(store.allocator_view(&id.machine_id).await.is_err());
     assert!(store.ingress_proxy_backend().await.is_err());
     assert!(
         store
@@ -354,6 +355,37 @@ async fn missing_allocator_row_is_none() {
 async fn invalid_allocator_value_is_an_error() {
     let (store, server) = fake_cluster::store_with_allocator_value("not-a-machine-id").await;
     assert!(store.allocator().await.is_err());
+    server.abort();
+}
+
+#[tokio::test]
+async fn allocator_view_is_the_gate_decision() {
+    let me = MachineId::parse("a".repeat(32)).unwrap();
+    let other = MachineId::parse("f".repeat(32)).unwrap();
+    let (store, server) = fake_cluster::store().await;
+    assert_eq!(
+        store.allocator_view(&me).await.unwrap(),
+        AllocatorView::Vacant
+    );
+    store.publish_founder_allocator(&me).await.unwrap();
+    assert_eq!(
+        store.allocator_view(&me).await.unwrap(),
+        AllocatorView::Held
+    );
+    assert_eq!(
+        store.allocator_view(&other).await.unwrap(),
+        AllocatorView::Other(me.clone())
+    );
+    store.steal_allocator(&other).await.unwrap();
+    assert_eq!(
+        store.allocator_view(&other).await.unwrap(),
+        AllocatorView::HeldNotQuiet
+    );
+    fake_cluster::age_allocator(&store).await;
+    assert_eq!(
+        store.allocator_view(&other).await.unwrap(),
+        AllocatorView::Held
+    );
     server.abort();
 }
 

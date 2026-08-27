@@ -56,7 +56,7 @@ impl IssuanceClock {
 
 /// Whether DNS and the shared clock allow contacting the certificate authority.
 ///
-/// Distinct from the daemon's rank / due-time `IssuanceAction` (`Order` / `Renew`).
+/// Distinct from the daemon's due-time `IssuanceAction` (`Order` / `Renew`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IssuanceGate {
     Nothing,

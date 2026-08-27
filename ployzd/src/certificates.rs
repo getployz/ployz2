@@ -29,7 +29,9 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore},
+    corrosion::{
+        AllocatorView, CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore,
+    },
     filesystem::{atomic_write, set_ployz_group},
 };
 
@@ -38,8 +40,10 @@ const ACCOUNT_FILE: &str = "account.json";
 const CHALLENGE_WAIT: Duration = Duration::from_secs(30);
 const CHALLENGE_POLL: Duration = Duration::from_millis(200);
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
-/// Must cover `CHALLENGE_WAIT` so rank 1 cannot write a competing token while rank 0 is still probing.
-pub(crate) const RANK_STEP: Duration = CHALLENGE_WAIT;
+/// How long the certificate row may sit past the Allocator's next scheduled
+/// attention before a non-Allocator steals the row.
+// ponytail: fixed grace; make it a Certificate Policy knob if failover feels slow.
+pub(crate) const STEAL_AFTER: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IssuanceAction {
@@ -48,71 +52,65 @@ pub(crate) enum IssuanceAction {
     Renew,
 }
 
-/// Rank among Machine identifiers. Lowest id is 0 and may order immediately.
-#[must_use]
-pub(crate) fn machine_rank<'id>(
-    this: &MachineId,
-    machines: impl IntoIterator<Item = &'id MachineId>,
-) -> usize {
-    machines.into_iter().filter(|id| *id < this).count()
-}
-
-/// Whether this Machine should order or renew now.
-///
-/// Rank delay uses `RANK_STEP.max(policy.probe_timeout())` so a later rank
-/// cannot start a competing order while an earlier rank is still presenting.
+/// Whether the Allocator should order or renew now.
 #[must_use]
 pub(crate) fn issuance_action(
     row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
     now: SystemTime,
-    machine_id: &MachineId,
     policy: &CertificatePolicy,
 ) -> IssuanceAction {
-    action_due(row, rank, elapsed, now, machine_id, policy).0
+    action_due(row, now, policy).0
 }
 
-fn rank_delay(rank: usize, step: Duration) -> Duration {
-    step.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX))
+/// Whether a Machine that is not the Allocator should steal the row:
+/// the work is due and the Allocator has left the row unattended past
+/// [`STEAL_AFTER`].
+#[must_use]
+pub(crate) fn steal_due(view: &AllocatorView, action: IssuanceAction, stalled: Duration) -> bool {
+    matches!(view, AllocatorView::Other(_) | AllocatorView::Vacant)
+        && matches!(action, IssuanceAction::Order | IssuanceAction::Renew)
+        && stalled > STEAL_AFTER
 }
 
-fn issuance_step(policy: &CertificatePolicy) -> Duration {
-    RANK_STEP.max(policy.probe_timeout())
+/// How long the row has sat past the Allocator's next scheduled attention.
+///
+/// A live Allocator keeps advancing the row: it publishes material or records
+/// a refusal or authority failure, which moves the clock's `next_attempt_at`
+/// forward. A frozen clock — or a renewal window no clock ever followed — is
+/// replicated evidence of Allocator inaction. `wanting` is this Machine's own
+/// observation age, consulted only when the row is completely untouched.
+fn allocator_stalled_for(
+    row: Option<&CertificateRow>,
+    wanting: Duration,
+    now: SystemTime,
+    policy: &CertificatePolicy,
+) -> Duration {
+    let clock = row.and_then(CertificateRow::clock);
+    let material = row.and_then(CertificateRow::material);
+    match (clock, material) {
+        (Some(clock), _) => now
+            .duration_since(clock.next_attempt_at())
+            .unwrap_or(Duration::ZERO),
+        (None, Some(material)) => renew_at(material, policy.renew_at_lifetime_fraction())
+            .and_then(|at| now.duration_since(at).ok())
+            .unwrap_or(Duration::ZERO),
+        (None, None) => wanting,
+    }
 }
 
+/// The action and how long until it is due.
 fn action_due(
     row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
     now: SystemTime,
-    machine_id: &MachineId,
     policy: &CertificatePolicy,
 ) -> (IssuanceAction, Duration) {
-    let delay = rank_delay(rank, issuance_step(policy));
     match row.and_then(CertificateRow::material) {
-        None => {
-            let wait = delay.saturating_sub(elapsed);
-            let action = if wait.is_zero() {
-                IssuanceAction::Order
-            } else {
-                IssuanceAction::Nothing
-            };
-            (action, wait)
-        }
-        Some(material) => match renew_at(material, machine_id, policy.renew_at_lifetime_fraction())
-        {
-            Some(renew_at) => {
-                let wait = saturating_add(renew_at, delay)
-                    .duration_since(now)
-                    .unwrap_or(Duration::ZERO);
-                let action = if wait.is_zero() {
-                    IssuanceAction::Renew
-                } else {
-                    IssuanceAction::Nothing
-                };
-                (action, wait)
-            }
+        None => (IssuanceAction::Order, Duration::ZERO),
+        Some(material) => match renew_at(material, policy.renew_at_lifetime_fraction()) {
+            Some(renew_at) => match renew_at.duration_since(now) {
+                Ok(wait) if !wait.is_zero() => (IssuanceAction::Nothing, wait),
+                _ => (IssuanceAction::Renew, Duration::ZERO),
+            },
             None => (IssuanceAction::Nothing, RETRY_INTERVAL),
         },
     }
@@ -132,35 +130,9 @@ pub(crate) fn renewal_window(
     Some(saturating_add(not_before, lifetime.mul_f64(fraction)))
 }
 
-fn renew_at(
-    material: &CertificateMaterial,
-    machine_id: &MachineId,
-    fraction: f64,
-) -> Option<SystemTime> {
+fn renew_at(material: &CertificateMaterial, fraction: f64) -> Option<SystemTime> {
     let (not_before, not_after) = material_validity(material.certificate())?;
-    let window_start = renewal_window(not_before, not_after, fraction)?;
-    let remaining = not_after.duration_since(window_start).ok()?;
-    Some(saturating_add(
-        window_start,
-        machine_jitter(machine_id, remaining),
-    ))
-}
-
-/// Jitter in `[0, remaining)` from the Machine identity.
-#[must_use]
-pub(crate) fn machine_jitter(machine_id: &MachineId, remaining: Duration) -> Duration {
-    if remaining.is_zero() {
-        return Duration::ZERO;
-    }
-    let seed = machine_id
-        .as_str()
-        .as_bytes()
-        .iter()
-        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
-        });
-    let nanos = remaining.as_nanos().saturating_mul(u128::from(seed)) / (u128::from(u64::MAX) + 1);
-    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+    renewal_window(not_before, not_after, fraction)
 }
 
 fn material_validity(pem: &str) -> Option<(SystemTime, SystemTime)> {
@@ -188,14 +160,11 @@ fn saturating_add(time: SystemTime, duration: Duration) -> SystemTime {
 
 fn poll_wait(
     row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
     now: SystemTime,
-    machine_id: &MachineId,
     policy: &CertificatePolicy,
 ) -> Duration {
-    match action_due(row, rank, elapsed, now, machine_id, policy) {
-        (IssuanceAction::Order | IssuanceAction::Renew, _) => RANK_STEP,
+    match action_due(row, now, policy) {
+        (IssuanceAction::Order | IssuanceAction::Renew, _) => CHALLENGE_WAIT,
         (IssuanceAction::Nothing, due_in) => due_in.min(RETRY_INTERVAL),
     }
 }
@@ -391,13 +360,12 @@ async fn issue_wanted(
     let mut rows = store.certificate_state().await?;
     let machines = store.machines().await?;
     let cluster = cluster_addresses(&machines.observations);
-    let rank = machine_rank(
-        machine_id,
-        machines.observations.iter().map(|machine| &machine.id),
-    );
+    let view = store.allocator_view(machine_id).await?;
+    let held = view == AllocatorView::Held;
     let now = Instant::now();
     let wall = SystemTime::now();
     let mut to_order = Vec::new();
+    let mut steal = false;
     for hostname in &wanted {
         let row = rows.get(hostname);
         let elapsed = match row.and_then(CertificateRow::material) {
@@ -415,7 +383,16 @@ async fn issue_wanted(
                 now.saturating_duration_since(seen)
             }
         };
-        let due = issuance_action(row, rank, elapsed, wall, machine_id, &policy);
+        let due = issuance_action(row, wall, &policy);
+        steal = steal
+            || steal_due(
+                &view,
+                due,
+                allocator_stalled_for(row, elapsed, wall, &policy),
+            );
+        if !held {
+            continue;
+        }
         if row.and_then(CertificateRow::material).is_some()
             && !matches!(due, IssuanceAction::Order | IssuanceAction::Renew)
         {
@@ -434,7 +411,7 @@ async fn issue_wanted(
             IssuanceGate::Nothing => continue,
             IssuanceGate::Refuse(clock) => {
                 first_seen.remove(hostname);
-                if rank == 0 && row.and_then(CertificateRow::material).is_none() {
+                if row.and_then(CertificateRow::material).is_none() {
                     let reason = issuance_refusal_reason(hostname, &resolved, &cluster);
                     if let Err(error) = store
                         .record_certificate_failure(hostname, reason, clock)
@@ -451,12 +428,15 @@ async fn issue_wanted(
             to_order.push(hostname);
         }
     }
+    if steal && let Err(error) = store.steal_allocator(machine_id).await {
+        eprintln!("failed to steal Allocator for certificate issuance: {error}");
+    }
     if !to_order.is_empty() {
         account(directory, &policy, account_dir).await?;
         let results = join_all(
             to_order
                 .iter()
-                .map(|hostname| obtain(store, hostname, &policy, account_dir, rank, machine_id)),
+                .map(|hostname| obtain(store, hostname, &policy, account_dir)),
         )
         .await;
         for (hostname, result) in to_order.iter().zip(results) {
@@ -481,17 +461,10 @@ async fn issue_wanted(
         }
         rows = store.certificate_state().await?;
     }
-    let now = Instant::now();
     let wall = SystemTime::now();
     Ok(wanted
         .iter()
-        .map(|hostname| {
-            let elapsed = first_seen
-                .get(hostname)
-                .map(|seen| now.saturating_duration_since(*seen))
-                .unwrap_or(Duration::ZERO);
-            poll_wait(rows.get(hostname), rank, elapsed, wall, machine_id, &policy)
-        })
+        .map(|hostname| poll_wait(rows.get(hostname), wall, &policy))
         .min()
         .unwrap_or(RETRY_INTERVAL))
 }
@@ -517,19 +490,10 @@ async fn obtain(
     hostname: &IngressHost,
     policy: &CertificatePolicy,
     account_dir: &Path,
-    rank: usize,
-    machine_id: &MachineId,
 ) -> Result<(), Error> {
     let row = store.certificate_row(hostname).await?;
     if row.material().is_some()
-        && issuance_action(
-            Some(&row),
-            rank,
-            Duration::ZERO,
-            SystemTime::now(),
-            machine_id,
-            policy,
-        ) == IssuanceAction::Nothing
+        && issuance_action(Some(&row), SystemTime::now(), policy) == IssuanceAction::Nothing
     {
         return Ok(());
     }

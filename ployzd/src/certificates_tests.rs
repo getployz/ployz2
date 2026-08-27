@@ -14,12 +14,12 @@ use ployz_core::{
 use serde_json::json;
 
 use super::{
-    CHALLENGE_WAIT, IssuanceAction, RANK_STEP, challenge_probe_addresses, contacts_authority,
-    directory_from_env, ingress_challenge_ips, issuance_action, machine_jitter, machine_rank,
-    material_validity, order_certificate, poll_wait, renewal_window, wait_for_http01,
+    CHALLENGE_WAIT, IssuanceAction, STEAL_AFTER, allocator_stalled_for, challenge_probe_addresses,
+    contacts_authority, directory_from_env, ingress_challenge_ips, issuance_action,
+    material_validity, order_certificate, poll_wait, renewal_window, steal_due, wait_for_http01,
     wanted_certificate_hosts,
 };
-use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
+use crate::corrosion::{AllocatorView, CertificateChallenge, CertificateMaterial, CertificateRow};
 
 fn policy_for(directory: &str) -> CertificatePolicy {
     CertificatePolicy::built_in(Some(directory.to_owned()))
@@ -97,45 +97,81 @@ fn wanted_hosts_are_https_ingress_only() {
 }
 
 #[test]
-fn lowest_machine_id_is_rank_zero() {
-    let low = MachineId::parse("a".repeat(32)).unwrap();
-    let high = MachineId::parse("f".repeat(32)).unwrap();
-    assert_eq!(machine_rank(&low, &[high, low]), 0);
-    assert_eq!(machine_rank(&high, &[low]), 1);
-    assert_eq!(machine_rank(&low, &[]), 0);
+fn missing_material_orders_immediately() {
+    assert_eq!(decide(None), IssuanceAction::Order);
+    assert_eq!(
+        issuance_action(None, UNIX_EPOCH, &policy_probe(120)),
+        IssuanceAction::Order
+    );
 }
 
 #[test]
-fn only_rank_zero_orders_immediately() {
-    assert_eq!(RANK_STEP, Duration::from_secs(30));
-    assert_eq!(decide(None, 0, Duration::ZERO), IssuanceAction::Order);
-    assert_eq!(
-        decide(None, 1, Duration::from_secs(30) - Duration::from_millis(1)),
-        IssuanceAction::Nothing
-    );
-    assert_eq!(
-        decide(None, 1, Duration::from_secs(30)),
-        IssuanceAction::Order
-    );
-    assert_eq!(
-        decide(None, 2, Duration::from_secs(30)),
-        IssuanceAction::Nothing
-    );
-    assert_eq!(
-        decide(None, 2, Duration::from_secs(60)),
-        IssuanceAction::Order
-    );
-    assert_eq!(
-        issuance_action(
-            None,
-            1,
-            Duration::from_secs(30),
-            UNIX_EPOCH,
-            &machine_id("a"),
-            &policy_probe(120)
+fn an_attended_row_is_never_stalled() {
+    let policy = default_policy();
+    let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let wanting = STEAL_AFTER * 10;
+    // A refusing-but-alive Allocator keeps the clock's next attempt ahead of now.
+    let attended = CertificateRow::from_parts(None, None).with_backoff(
+        "does not resolve",
+        IssuanceClock::new(
+            3,
+            now + Duration::from_secs(60),
+            IssuanceFailure::DoesNotResolve,
         ),
-        IssuanceAction::Nothing
     );
+    assert_eq!(
+        allocator_stalled_for(Some(&attended), wanting, now, &policy),
+        Duration::ZERO
+    );
+    // A dead Allocator leaves the clock frozen.
+    let frozen = CertificateRow::from_parts(None, None).with_backoff(
+        "authority failed",
+        IssuanceClock::new(3, now - STEAL_AFTER * 2, IssuanceFailure::Authority),
+    );
+    assert_eq!(
+        allocator_stalled_for(Some(&frozen), wanting, now, &policy),
+        STEAL_AFTER * 2
+    );
+    // A renewal window no clock ever followed stalls from the window.
+    let day = Duration::from_secs(86_400);
+    let expired = row_with_lifetime(UNIX_EPOCH, UNIX_EPOCH + day * 90);
+    let window = renewal_window(
+        UNIX_EPOCH,
+        UNIX_EPOCH + day * 90,
+        policy.renew_at_lifetime_fraction(),
+    )
+    .unwrap();
+    let later = window + STEAL_AFTER * 3;
+    assert_eq!(
+        allocator_stalled_for(Some(&expired), Duration::ZERO, later, &policy),
+        STEAL_AFTER * 3
+    );
+    // An untouched row falls back to this Machine's own observation age.
+    assert_eq!(allocator_stalled_for(None, wanting, now, &policy), wanting);
+}
+
+#[test]
+fn only_a_stalled_non_allocator_steals() {
+    let other = AllocatorView::Other(machine_id("f"));
+    let stalled = STEAL_AFTER + Duration::from_secs(1);
+    assert!(steal_due(&other, IssuanceAction::Order, stalled));
+    assert!(steal_due(
+        &AllocatorView::Vacant,
+        IssuanceAction::Renew,
+        stalled
+    ));
+    assert!(!steal_due(&other, IssuanceAction::Order, STEAL_AFTER));
+    assert!(!steal_due(&other, IssuanceAction::Nothing, stalled));
+    assert!(!steal_due(
+        &AllocatorView::Held,
+        IssuanceAction::Order,
+        stalled
+    ));
+    assert!(!steal_due(
+        &AllocatorView::HeldNotQuiet,
+        IssuanceAction::Order,
+        stalled
+    ));
 }
 
 #[test]
@@ -171,10 +207,7 @@ fn renew_does_not_contact_the_authority_when_dns_refuses() {
 fn unparseable_material_does_not_renew() {
     let material = CertificateMaterial::new("CERT", "KEY").unwrap();
     let row = CertificateRow::from_parts(Some(material), None);
-    assert_eq!(
-        decide(Some(&row), 0, Duration::from_secs(60)),
-        IssuanceAction::Nothing
-    );
+    assert_eq!(decide(Some(&row)), IssuanceAction::Nothing);
 }
 
 #[test]
@@ -202,20 +235,8 @@ fn renewal_window_uses_the_policy_fraction() {
 }
 
 #[test]
-fn machine_jitter_stays_inside_the_remaining_third() {
-    let remaining = Duration::from_secs(30 * 86_400);
-    let first = machine_jitter(&machine_id("a"), remaining);
-    let second = machine_jitter(&machine_id("f"), remaining);
-    assert!(first < remaining, "{first:?}");
-    assert!(second < remaining, "{second:?}");
-    assert_ne!(first, second);
-    assert_eq!(machine_jitter(&machine_id("a"), remaining), first);
-}
-
-#[test]
 fn same_certificate_renews_at_two_thirds_for_long_and_short_lifetimes() {
     let day = Duration::from_secs(86_400);
-    let machine = machine_id("a");
     let policy = default_policy();
     for lifetime in [day * 90, day * 6] {
         let not_before = UNIX_EPOCH;
@@ -224,19 +245,17 @@ fn same_certificate_renews_at_two_thirds_for_long_and_short_lifetimes() {
         let window =
             renewal_window(not_before, not_after, policy.renew_at_lifetime_fraction()).unwrap();
         assert_eq!(
-            issuance_action(
-                Some(&row),
-                0,
-                Duration::ZERO,
-                window - Duration::from_secs(1),
-                &machine,
-                &policy
-            ),
+            issuance_action(Some(&row), window - Duration::from_secs(1), &policy),
             IssuanceAction::Nothing,
             "lifetime {lifetime:?}"
         );
         assert_eq!(
-            issuance_action(Some(&row), 0, Duration::ZERO, not_after, &machine, &policy),
+            issuance_action(Some(&row), window, &policy),
+            IssuanceAction::Renew,
+            "lifetime {lifetime:?}"
+        );
+        assert_eq!(
+            issuance_action(Some(&row), not_after, &policy),
             IssuanceAction::Renew,
             "lifetime {lifetime:?}"
         );
@@ -244,113 +263,32 @@ fn same_certificate_renews_at_two_thirds_for_long_and_short_lifetimes() {
 }
 
 #[test]
-fn renewal_uses_rank_delay_after_jitter() {
-    let day = Duration::from_secs(86_400);
-    let not_before = UNIX_EPOCH;
-    let not_after = not_before + day * 90;
-    let row = row_with_lifetime(not_before, not_after);
-    let machine = machine_id("a");
-    let policy = default_policy();
-    let due = super::renew_at(
-        row.material().unwrap(),
-        &machine,
-        policy.renew_at_lifetime_fraction(),
-    )
-    .unwrap();
-    assert_eq!(
-        issuance_action(Some(&row), 1, Duration::ZERO, due, &machine, &policy),
-        IssuanceAction::Nothing
-    );
-    assert_eq!(
-        issuance_action(
-            Some(&row),
-            1,
-            Duration::ZERO,
-            due + RANK_STEP - Duration::from_millis(1),
-            &machine,
-            &policy
-        ),
-        IssuanceAction::Nothing
-    );
-    assert_eq!(
-        issuance_action(
-            Some(&row),
-            1,
-            Duration::ZERO,
-            due + RANK_STEP,
-            &machine,
-            &policy
-        ),
-        IssuanceAction::Renew
-    );
-}
-
-#[test]
-fn machines_holding_the_same_certificate_do_not_renew_together() {
-    let day = Duration::from_secs(86_400);
-    let not_before = UNIX_EPOCH;
-    let not_after = not_before + day * 90;
-    let row = row_with_lifetime(not_before, not_after);
-    let first = machine_id("a");
-    let second = machine_id("f");
-    let policy = default_policy();
-    let fraction = policy.renew_at_lifetime_fraction();
-    let first_due = super::renew_at(row.material().unwrap(), &first, fraction).unwrap();
-    let second_due = super::renew_at(row.material().unwrap(), &second, fraction).unwrap();
-    assert_ne!(first_due, second_due);
-    let earlier = first_due.min(second_due);
-    let later_machine = if first_due < second_due {
-        &second
-    } else {
-        &first
-    };
-    assert_eq!(
-        issuance_action(
-            Some(&row),
-            0,
-            Duration::ZERO,
-            earlier,
-            later_machine,
-            &policy
-        ),
-        IssuanceAction::Nothing
-    );
-}
-
-#[test]
 fn poll_wait_follows_each_certificate_lifetime() {
     let day = Duration::from_secs(86_400);
-    let machine = machine_id("a");
     let policy = default_policy();
     let long = row_with_lifetime(UNIX_EPOCH, UNIX_EPOCH + day * 90);
     let short = row_with_lifetime(UNIX_EPOCH, UNIX_EPOCH + day * 6);
     let now = UNIX_EPOCH + Duration::from_secs(60);
     assert_eq!(
-        poll_wait(Some(&long), 0, Duration::ZERO, now, &machine, &policy),
+        poll_wait(Some(&long), now, &policy),
         Duration::from_secs(60)
     );
     assert_eq!(
-        poll_wait(Some(&short), 0, Duration::ZERO, now, &machine, &policy),
+        poll_wait(Some(&short), now, &policy),
         Duration::from_secs(60)
     );
     let near_short = super::renew_at(
         short.material().unwrap(),
-        &machine,
         policy.renew_at_lifetime_fraction(),
     )
     .unwrap()
         - Duration::from_secs(10);
     assert_eq!(
-        poll_wait(
-            Some(&short),
-            0,
-            Duration::ZERO,
-            near_short,
-            &machine,
-            &policy
-        ),
+        poll_wait(Some(&short), near_short, &policy),
         Duration::from_secs(10)
     );
+    let past_short = near_short + Duration::from_secs(11);
+    assert_eq!(poll_wait(Some(&short), past_short, &policy), CHALLENGE_WAIT);
 }
 
 #[test]
@@ -585,15 +523,8 @@ async fn order_fails_when_the_directory_is_unreachable() {
     let _ = std::fs::remove_dir_all(account_dir);
 }
 
-fn decide(row: Option<&CertificateRow>, rank: usize, elapsed: Duration) -> IssuanceAction {
-    issuance_action(
-        row,
-        rank,
-        elapsed,
-        UNIX_EPOCH,
-        &machine_id("a"),
-        &default_policy(),
-    )
+fn decide(row: Option<&CertificateRow>) -> IssuanceAction {
+    issuance_action(row, UNIX_EPOCH, &default_policy())
 }
 
 fn machine_id(seed: &str) -> MachineId {
