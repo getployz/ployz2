@@ -274,7 +274,7 @@ impl RequestHandler for Handler {
                 let edns = request.edns.as_ref();
                 let (answers, truncated) = fit_udp_answers(request, &metadata, edns, &answers);
                 metadata.truncation = truncated;
-                let response = response_builder(request, edns).build(
+                let response = MessageResponseBuilder::new(&request.queries, edns).build(
                     metadata,
                     answers.iter(),
                     [].iter(),
@@ -540,17 +540,6 @@ fn decode_message(bytes: &[u8]) -> io::Result<Message> {
     Message::from_vec(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-fn response_builder<'q>(
-    request: &'q Request,
-    edns: Option<&'q Edns>,
-) -> MessageResponseBuilder<'q> {
-    let mut builder = MessageResponseBuilder::from_message_request(request);
-    if let Some(edns) = edns {
-        builder.edns(edns);
-    }
-    builder
-}
-
 // Hickory encodes UDP with no response EDNS at 4096 bytes, so TC never fires
 // for a classic 512-byte client. Probe at request.max_payload() first.
 fn fit_udp_answers<'a>(
@@ -565,16 +554,14 @@ fn fit_udp_answers<'a>(
     let mut bytes = Vec::new();
     let mut encoder = BinEncoder::new(&mut bytes);
     encoder.set_max_size(request.max_payload());
-    match response_builder(request, edns)
+    let Ok(info) = MessageResponseBuilder::new(&request.queries, edns)
         .build(*metadata, answers.iter(), [].iter(), [].iter(), [].iter())
         .destructive_emit(&mut encoder)
-    {
-        Ok(info) => {
-            let n = usize::from(info.counts().answers).min(answers.len());
-            (answers.get(..n).unwrap_or(&[]), info.truncation)
-        }
-        Err(_) => (&[], true),
-    }
+    else {
+        return (&[], true);
+    };
+    let n = usize::from(info.counts().answers).min(answers.len());
+    (answers.get(..n).unwrap_or(&[]), info.truncation)
 }
 
 async fn send_error<R: ResponseHandler>(

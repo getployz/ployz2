@@ -1,4 +1,4 @@
-//! Internal DNS projection and on-the-wire response tests.
+//! Projection tests for Internal DNS answers.
 
 use std::collections::BTreeMap;
 
