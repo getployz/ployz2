@@ -230,8 +230,6 @@ pub fn requested_ingress_proxy_backend(
 }
 
 /// Environment keys emitted by reserved Ingress Proxy backend profiles.
-///
-/// Published observations keep these keys. Other environment values are secrets.
 #[must_use]
 pub fn ingress_proxy_profile_environment_keys() -> BTreeSet<String> {
     SUPPORTED_INGRESS_PROXY_BACKENDS
