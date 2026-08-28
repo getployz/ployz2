@@ -36,6 +36,7 @@ pub use servers::{serve_ingress_probe, serve_local_machine, serve_machine};
 pub const TOKEN: &str = "pmet_test";
 pub const PAIRING: &str = "pairing-secret";
 pub const CLUSTER_DOMAIN: &str = "abcd12.ployz.dev";
+pub const RESET_PUBLIC_KEY: WireGuardPublicKey = WireGuardPublicKey([0xff; 32]);
 
 fn consume_transient_failure(remaining: &AtomicUsize) -> bool {
     remaining
@@ -379,6 +380,13 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::Join(join) = decoded.body else {
             return Err(Status::invalid_argument("expected Join"));
         };
+        if join.registration.assigned_machine.public_key != self.public_key() {
+            return rpc_ok(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "assigned public key does not match this Machine".into(),
+                details: serde_json::Value::Null,
+            });
+        }
         if let Some(pairing) = join.cloud_pairing.clone() {
             hold_register(
                 pairing.relay_url(),
@@ -812,7 +820,7 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inner.resets.fetch_add(1, Ordering::SeqCst);
         self.inner.joined.store(false, Ordering::SeqCst);
-        *self.inner.public_key.lock().unwrap() = WireGuardPublicKey([0xff; 32]);
+        *self.inner.public_key.lock().unwrap() = RESET_PUBLIC_KEY;
         if let Some(hold) = self.inner._register.lock().unwrap().take() {
             hold.abort();
         }

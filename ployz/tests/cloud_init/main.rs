@@ -6,8 +6,8 @@ mod founder_resumption;
 mod harness;
 
 use harness::{
-    CLUSTER_DOMAIN, EnrollListen, EventLog, JoinDaemon, PAIRING, RelayListen, TOKEN,
-    assert_not_held, envoy_ingress_on, founder_machine, ingress_on, registration,
+    CLUSTER_DOMAIN, EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, RelayListen,
+    TOKEN, assert_not_held, envoy_ingress_on, founder_machine, ingress_on, registration,
     serve_ingress_probe, serve_machine, wait_for_held,
 };
 use ployz_core::{
@@ -697,13 +697,24 @@ async fn reset_enroll_posts_the_rotated_public_key() {
     let relay = RelayListen::start().await;
     let pairing =
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
-    let join_body = json!({
+    let join = json!({
         "kind": "join",
         "storage": "none",
         "pairing": pairing,
         "registration": assigned,
     });
-    let enroll = EnrollListen::script([join_body.clone(), join_body]).await;
+    let mut rotated = assigned.clone();
+    rotated.assigned_machine.public_key = RESET_PUBLIC_KEY;
+    let enroll = EnrollListen::script([
+        join.clone(),
+        json!({
+            "kind": "join",
+            "storage": "none",
+            "pairing": pairing,
+            "registration": rotated,
+        }),
+    ])
+    .await;
     let daemon = JoinDaemon::new(local.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
     let mut client = connect_daemon(machine_addr).await;
@@ -743,6 +754,14 @@ async fn reset_enroll_posts_the_rotated_public_key() {
     assert_eq!(
         enroll.posts().last().unwrap()["publicKey"],
         json!(daemon.public_key().to_string())
+    );
+    assert_eq!(
+        daemon
+            .join_request()
+            .registration
+            .assigned_machine
+            .public_key,
+        daemon.public_key()
     );
 }
 
