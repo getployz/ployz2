@@ -275,7 +275,12 @@ impl ContainerRuntime {
 
 fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
     let mut observation = observation.clone();
-    observation.resolved_spec.container.environment.clear();
+    let keep = ployz_core::ingress_proxy_profile_environment_keys();
+    observation
+        .resolved_spec
+        .container
+        .environment
+        .retain(|key, _| keep.contains(key));
     if let Some(hook) = &mut observation.resolved_spec.pre_deploy {
         hook.environment.clear();
     }
@@ -440,12 +445,11 @@ mod tests {
             Some("unix//run/ingress/caddy/admin.sock")
         );
         assert!(
-            redacted
+            !redacted
                 .resolved_spec
                 .container
                 .environment
-                .get("TOKEN")
-                .is_none()
+                .contains_key("TOKEN")
         );
         assert_eq!(
             ployz_core::ingress_proxy_backend(&redacted.resolved_spec).unwrap(),
