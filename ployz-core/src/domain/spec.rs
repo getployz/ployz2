@@ -737,6 +737,137 @@ impl ResolvedServiceSpec {
     }
 }
 
+/// Content identity of the Resolved Service Spec fields whose change requires a new Container.
+///
+/// Equal shapes mean interchangeable Containers for traffic and Global occupancy.
+/// Service ID, replica count, resources, pull policy, pre-deploy hooks, and update
+/// timing are not part of the shape.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ServingShape(u64);
+
+impl ServingShape {
+    /// Shape of one observed Resolved Service Spec.
+    #[must_use]
+    pub fn of_resolved(spec: &ResolvedServiceSpec) -> Self {
+        Self::from_fields(
+            &spec.name,
+            &spec.mode,
+            &spec.container,
+            &spec.placement,
+            &spec.ports,
+            spec.volume_graph.volumes(),
+            spec.volume_graph.mounts(),
+            spec.config_graph.configs(),
+            spec.config_graph.mounts(),
+            spec.ingress_proxy_fragment.as_ref(),
+        )
+    }
+
+    /// Shape of one requested spec. Comparable with [`Self::of_resolved`].
+    #[must_use]
+    pub fn of_requested(spec: &RequestedServiceSpec) -> Self {
+        Self::from_fields(
+            &spec.name,
+            &spec.mode,
+            &spec.container,
+            &spec.placement,
+            &spec.ports,
+            spec.volume_graph.volumes(),
+            spec.volume_graph.mounts(),
+            spec.config_graph.configs(),
+            spec.config_graph.mounts(),
+            spec.ingress_proxy_fragment.as_ref(),
+        )
+    }
+
+    /// Docker-name-safe hex token for this shape.
+    #[must_use]
+    pub fn token(self) -> String {
+        format!("{:016x}", self.0)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one argument per hashed recreate field family"
+    )]
+    fn from_fields(
+        name: &ServiceName,
+        mode: &ServiceMode,
+        container: &ServiceContainerSpec,
+        placement: &Placement,
+        ports: &[PortPublication],
+        volumes: &[ServiceVolume],
+        mounts: &[ServiceMount],
+        configs: &[ConfigSpec],
+        config_mounts: &[ConfigMount],
+        ingress_proxy_fragment: Option<&IngressProxyFragment>,
+    ) -> Self {
+        let payload = serde_json::json!({
+            "name": name,
+            "mode": service_mode_kind(mode),
+            "image": container.image,
+            "command": container.command,
+            "entrypoint": container.entrypoint,
+            "environment": container.environment,
+            "labels": container.labels,
+            "hostname": container.hostname,
+            "extra_hosts": container.extra_hosts,
+            "cap_add": sorted_json(&container.cap_add),
+            "cap_drop": sorted_json(&container.cap_drop),
+            "healthcheck": container.healthcheck,
+            "init": container.init,
+            "user": container.user,
+            "working_directory": container.working_directory,
+            "tty": container.tty,
+            "open_stdin": container.open_stdin,
+            "privileged": container.privileged,
+            "pid_mode": container.pid_mode,
+            "log_driver": container.log_driver,
+            "stop_timeout_secs": container.stop_timeout_secs,
+            "sysctls": container.sysctls,
+            "restart": container.restart,
+            "placement": placement,
+            "ports": sorted_json(ports),
+            "volumes": sorted_json(volumes),
+            "mounts": sorted_json(mounts),
+            "configs": sorted_json(configs),
+            "config_mounts": sorted_json(config_mounts),
+            "ingress_proxy_fragment": ingress_proxy_fragment,
+        });
+        let bytes = serde_json::to_vec(&payload).expect("serving shape JSON is serializable");
+        Self(fnv1a64(&bytes))
+    }
+}
+
+fn service_mode_kind(mode: &ServiceMode) -> &'static str {
+    match mode {
+        ServiceMode::Replicated { .. } => "replicated",
+        ServiceMode::Global => "global",
+    }
+}
+
+fn sorted_json<T: Serialize>(items: &[T]) -> Vec<serde_json::Value> {
+    let mut values = items
+        .iter()
+        .map(|item| serde_json::to_value(item).expect("serving shape JSON is serializable"))
+        .collect::<Vec<_>>();
+    values.sort_by(|left, right| {
+        let left = serde_json::to_vec(left).expect("serving shape JSON is serializable");
+        let right = serde_json::to_vec(right).expect("serving shape JSON is serializable");
+        left.cmp(&right)
+    });
+    values
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
 #[must_use]
 pub fn compare_specs(
     current: &ResolvedServiceSpec,
@@ -747,131 +878,11 @@ pub fn compare_specs(
     // recreate until the Machine API supports the narrower in-place updates retained by the
     // baseline TODOs.
     if requested.container.pull_policy == PullPolicy::Always
-        || immutable_service_fields_changed(current, requested)
+        || ServingShape::of_resolved(current) != ServingShape::of_requested(requested)
     {
         return SpecChange::NeedsRecreate;
     }
     resource_change(&current.container.resources, &requested.container.resources)
-}
-
-fn immutable_service_fields_changed(
-    current: &ResolvedServiceSpec,
-    requested: &RequestedServiceSpec,
-) -> bool {
-    let ResolvedServiceSpec {
-        service_id: _,
-        name: current_name,
-        mode: current_mode,
-        container: current_container,
-        placement: current_placement,
-        ports: current_ports,
-        volume_graph: current_volumes,
-        config_graph: current_configs,
-        pre_deploy: _,
-        ingress_proxy_fragment: current_ingress_proxy_fragment,
-        update: _,
-    } = current;
-    let RequestedServiceSpec {
-        name: requested_name,
-        mode: requested_mode,
-        container: requested_container,
-        placement: requested_placement,
-        ports: requested_ports,
-        volume_graph: requested_volumes,
-        config_graph: requested_configs,
-        pre_deploy: _,
-        ingress_proxy_fragment: requested_ingress_proxy_fragment,
-        update: _,
-    } = requested;
-
-    current_name != requested_name
-        || !same_service_mode_kind(current_mode, requested_mode)
-        || immutable_container_fields_changed(current_container, requested_container)
-        || current_placement != requested_placement
-        || !same_multiset(current_ports, requested_ports)
-        || !same_multiset(current_volumes.volumes(), requested_volumes.volumes())
-        || !same_multiset(current_volumes.mounts(), requested_volumes.mounts())
-        || !same_multiset(current_configs.configs(), requested_configs.configs())
-        || !same_multiset(current_configs.mounts(), requested_configs.mounts())
-        || current_ingress_proxy_fragment != requested_ingress_proxy_fragment
-}
-
-fn immutable_container_fields_changed(
-    current: &ServiceContainerSpec,
-    requested: &ServiceContainerSpec,
-) -> bool {
-    let ServiceContainerSpec {
-        image: current_image,
-        command: current_command,
-        entrypoint: current_entrypoint,
-        environment: current_environment,
-        labels: current_labels,
-        hostname: current_hostname,
-        extra_hosts: current_extra_hosts,
-        cap_add: current_cap_add,
-        cap_drop: current_cap_drop,
-        healthcheck: current_healthcheck,
-        pull_policy: _,
-        init: current_init,
-        user: current_user,
-        working_directory: current_working_directory,
-        tty: current_tty,
-        open_stdin: current_open_stdin,
-        privileged: current_privileged,
-        pid_mode: current_pid_mode,
-        log_driver: current_log_driver,
-        resources: _,
-        stop_timeout_secs: current_stop_timeout_secs,
-        sysctls: current_sysctls,
-        restart: current_restart,
-    } = current;
-    let ServiceContainerSpec {
-        image: requested_image,
-        command: requested_command,
-        entrypoint: requested_entrypoint,
-        environment: requested_environment,
-        labels: requested_labels,
-        hostname: requested_hostname,
-        extra_hosts: requested_extra_hosts,
-        cap_add: requested_cap_add,
-        cap_drop: requested_cap_drop,
-        healthcheck: requested_healthcheck,
-        pull_policy: _,
-        init: requested_init,
-        user: requested_user,
-        working_directory: requested_working_directory,
-        tty: requested_tty,
-        open_stdin: requested_open_stdin,
-        privileged: requested_privileged,
-        pid_mode: requested_pid_mode,
-        log_driver: requested_log_driver,
-        resources: _,
-        stop_timeout_secs: requested_stop_timeout_secs,
-        sysctls: requested_sysctls,
-        restart: requested_restart,
-    } = requested;
-
-    current_image != requested_image
-        || current_command != requested_command
-        || current_entrypoint != requested_entrypoint
-        || current_environment != requested_environment
-        || current_labels != requested_labels
-        || current_hostname != requested_hostname
-        || current_extra_hosts != requested_extra_hosts
-        || !same_multiset(current_cap_add, requested_cap_add)
-        || !same_multiset(current_cap_drop, requested_cap_drop)
-        || current_healthcheck != requested_healthcheck
-        || current_init != requested_init
-        || current_user != requested_user
-        || current_working_directory != requested_working_directory
-        || current_tty != requested_tty
-        || current_open_stdin != requested_open_stdin
-        || current_privileged != requested_privileged
-        || current_pid_mode != requested_pid_mode
-        || current_log_driver != requested_log_driver
-        || current_stop_timeout_secs != requested_stop_timeout_secs
-        || current_sysctls != requested_sysctls
-        || current_restart != requested_restart
 }
 
 fn resource_change(current: &ContainerResources, requested: &ContainerResources) -> SpecChange {
@@ -907,24 +918,6 @@ fn resource_change(current: &ContainerResources, requested: &ContainerResources)
         return SpecChange::NeedsUpdate;
     }
     SpecChange::UpToDate
-}
-
-fn same_multiset<T: PartialEq>(left: &[T], right: &[T]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    // ponytail: O(n²) avoids requiring Ord or cloning domain values; sort if specs become large.
-    let mut matched = vec![false; right.len()];
-    left.iter().all(|item| {
-        right
-            .iter()
-            .zip(&mut matched)
-            .find(|(candidate, used)| !**used && item == *candidate)
-            .is_some_and(|(_, used)| {
-                *used = true;
-                true
-            })
-    })
 }
 
 #[cfg(test)]
@@ -1009,5 +1002,38 @@ mod tests {
         assert_eq!(left, right);
         assert_eq!(left, HealthcheckSpec::Disabled);
         assert_ne!(left, configured(&["CMD", "true"]));
+    }
+
+    #[test]
+    fn serving_shape_ignores_service_id_resources_replica_count_and_pull_policy() {
+        let spec: ResolvedServiceSpec = serde_json::from_value(json!({
+            "service_id": "a".repeat(32),
+            "name": "api",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "api:1", "pull_policy": "missing" }
+        }))
+        .unwrap();
+        assert_eq!(
+            ServingShape::of_resolved(&spec),
+            ServingShape::of_requested(&spec.to_requested())
+        );
+
+        let mut other = spec.clone();
+        other.service_id = ServiceId::parse("b".repeat(32)).unwrap();
+        other.container.resources.memory_bytes = Some(64);
+        other.container.pull_policy = PullPolicy::Always;
+        other.mode = ServiceMode::Replicated {
+            replicas: NonZeroU32::new(3).unwrap(),
+        };
+        assert_eq!(
+            ServingShape::of_resolved(&spec),
+            ServingShape::of_resolved(&other)
+        );
+
+        other.container.image = "api:2".into();
+        assert_ne!(
+            ServingShape::of_resolved(&spec),
+            ServingShape::of_resolved(&other)
+        );
     }
 }
