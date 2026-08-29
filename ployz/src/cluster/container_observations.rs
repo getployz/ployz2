@@ -2,6 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    future::Future,
     time::Duration,
 };
 
@@ -38,8 +39,12 @@ impl Client {
             return Ok(());
         }
         let deadline = Instant::now() + BARRIER_TIMEOUT;
+        let mut pending = container_ids.iter().copied().collect::<BTreeSet<_>>();
         let mut client = self.clone();
-        let machines = client.machines().await.map_err(RpcError::from)?;
+        let machines = within_deadline(deadline, cancellation, &pending, async {
+            client.machines().await.map_err(RpcError::from)
+        })
+        .await?;
         let probes = machines
             .into_iter()
             .filter(|machine| machine.membership.invites_rpc())
@@ -72,7 +77,6 @@ impl Client {
                     .map(|_| machine_id)
             })
             .collect::<Vec<_>>();
-        let mut pending = container_ids.iter().copied().collect::<BTreeSet<_>>();
         let mut wait = Duration::ZERO;
 
         while !pending.is_empty() && !capable.is_empty() {
@@ -183,6 +187,15 @@ fn apply_round(
     Ok(ok_votes)
 }
 
+async fn within_deadline<T>(
+    _deadline: Instant,
+    _cancellation: &CancellationToken,
+    _pending: &BTreeSet<ContainerId>,
+    work: impl Future<Output = Result<T, RpcError>>,
+) -> Result<T, RpcError> {
+    work.await
+}
+
 fn cancelled() -> RpcError {
     RpcError {
         code: RpcErrorCode::Unavailable,
@@ -233,6 +246,36 @@ mod tests {
             code,
             message: "transient".into(),
             details: Value::Null,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hung_machine_list_returns_timed_out_at_the_barrier_deadline() {
+        let pending = BTreeSet::from([container('a')]);
+        let cancellation = CancellationToken::new();
+        let deadline = Instant::now() + BARRIER_TIMEOUT;
+        let wait = within_deadline(
+            deadline,
+            &cancellation,
+            &pending,
+            std::future::pending::<Result<(), RpcError>>(),
+        );
+        tokio::pin!(wait);
+        tokio::select! {
+            result = &mut wait => {
+                let error = result.expect_err("hung work must time out");
+                assert_eq!(error.code, RpcErrorCode::Unavailable);
+                assert!(
+                    error
+                        .message
+                        .contains("timed out waiting for replicated Container Observations"),
+                    "{}",
+                    error.message
+                );
+            }
+            () = tokio::time::sleep(BARRIER_TIMEOUT + Duration::from_millis(1)) => {
+                panic!("observation barrier outlived its deadline");
+            }
         }
     }
 
