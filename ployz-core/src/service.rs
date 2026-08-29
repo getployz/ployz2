@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::{
     Container, ContainerObservation, ContainerRef, ContainerRuntimeObservation, HookContainer,
     Machine, PartialResult, QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceId,
-    ServiceMode, ServiceSelector, ServingShape,
+    ServiceMode, ServiceSelector,
 };
 
 mod eligibility;
@@ -129,8 +129,7 @@ impl ObservedGlobalSlotSpec {
         containers.iter().any(|container| {
             let observation = container.as_observation();
             observation.machine_id == machine.id
-                && ServingShape::of_resolved(&observation.resolved_spec)
-                    == ServingShape::of_resolved(&self.resolved_spec)
+                && observation.resolved_spec.serving_shape() == self.resolved_spec.serving_shape()
                 && matches!(
                     observation.runtime,
                     ContainerRuntimeObservation::Running { .. }

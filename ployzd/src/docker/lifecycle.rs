@@ -10,7 +10,7 @@ use bollard::{
 use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerRuntimeObservation, Machine, MachineId,
     MachineStorageObservation, ProjectName, ResolvedServiceSpec, ServicePlacementEligibility,
-    ServicePlacementIneligibleReason, ServicePlacementUnknownReason, ServingShape, SlotOccupancy,
+    ServicePlacementIneligibleReason, ServicePlacementUnknownReason, SlotOccupancy,
 };
 
 #[cfg(test)]
@@ -201,7 +201,7 @@ impl ContainerRuntime {
             }
         }
         let network = network.await?;
-        match SlotOccupancy::classify(existing, ServingShape::of_resolved(spec)) {
+        match SlotOccupancy::classify(existing, spec.serving_shape()) {
             SlotOccupancy::Current(slot) => {
                 if !runtime_is_running(&slot.runtime) {
                     self.start(&slot.container_id).await.map_err(E::from)?;
@@ -290,9 +290,7 @@ impl ContainerRuntime {
                             let existing = self
                                 .inspect_managed_by_name(&machine.id, &display_name)
                                 .await?;
-                            if ServingShape::of_resolved(&existing.resolved_spec)
-                                != ServingShape::of_resolved(spec)
-                            {
+                            if existing.resolved_spec.serving_shape() != spec.serving_shape() {
                                 return Err(Error::SlotNameOccupied(display_name));
                             }
                             return Ok(ContainerCreated {
@@ -615,11 +613,7 @@ fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
 fn global_slot_name(spec: &ResolvedServiceSpec) -> String {
     let id = spec.service_id.as_str();
     let suffix = id.get(..8).unwrap_or(id);
-    format!(
-        "{}-{suffix}-{}",
-        spec.name,
-        ServingShape::of_resolved(spec).token()
-    )
+    format!("{}-{suffix}-{}", spec.name, spec.serving_shape().token())
 }
 
 fn ineligible_error(reason: ServicePlacementIneligibleReason) -> Error {

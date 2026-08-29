@@ -6,7 +6,7 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, EnsureGlobalSlotRequest, IngressProxyNetworkMode,
     InspectRequest, ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget,
     ObservedGlobalSlotSpec, QualifiedService, ResolvedServiceSpec, RpcError, ServiceObservation,
-    ServicePlacementEligibility, ServingShape, ingress_proxy_backend, op, service_containers,
+    ServicePlacementEligibility, ingress_proxy_backend, op, service_containers,
 };
 
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
@@ -233,14 +233,14 @@ fn service_has_slot(
     machine: &Machine,
     spec: &ResolvedServiceSpec,
 ) -> bool {
-    let wanted = ServingShape::of_resolved(spec);
+    let wanted = spec.serving_shape();
     services
         .iter()
         .flat_map(|service| &service.containers)
         .any(|container| {
             let observation = container.as_observation();
             observation.machine_id == machine.id
-                && ServingShape::of_resolved(&observation.resolved_spec) == wanted
+                && observation.resolved_spec.serving_shape() == wanted
         })
 }
 

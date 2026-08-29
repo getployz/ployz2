@@ -17,7 +17,7 @@ pub struct ServingContainer<'serving> {
 }
 
 impl<'serving> ServingContainer<'serving> {
-    /// Total. The address was proven when this value was built.
+    /// Container Address proven when this Serving Container was built.
     #[must_use]
     pub fn address(self) -> ContainerAddress {
         self.address
@@ -63,16 +63,12 @@ pub fn serving_containers<'serving>(
         // One shape today. A later blue-green insert adds a second key without
         // changing callers.
         let mut selected = BTreeSet::new();
-        selected.insert(ServingShape::of_resolved(
-            &newest.as_observation().resolved_spec,
-        ));
+        selected.insert(newest.as_observation().resolved_spec.serving_shape());
         for container in members {
             let Some(address) = container.traffic_address() else {
                 continue;
             };
-            if selected.contains(&ServingShape::of_resolved(
-                &container.as_observation().resolved_spec,
-            )) {
+            if selected.contains(&container.as_observation().resolved_spec.serving_shape()) {
                 serving.push(ServingContainer { container, address });
             }
         }
@@ -101,7 +97,7 @@ impl SlotOccupancy {
         let mut current = None;
         let mut saw_other = false;
         for observation in existing {
-            if ServingShape::of_resolved(&observation.resolved_spec) == wanted {
+            if observation.resolved_spec.serving_shape() == wanted {
                 if matches!(
                     observation.runtime,
                     ContainerRuntimeObservation::Running { .. }
@@ -131,7 +127,7 @@ mod tests {
     use crate::{
         ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
         ContainerRuntimeObservation, HealthObservation, MachineId, ProjectName,
-        ResolvedServiceSpec, ServiceId, ServiceName, ServingShape, service_containers,
+        ResolvedServiceSpec, ServiceId, ServiceName, service_containers,
     };
 
     #[test]
@@ -283,11 +279,11 @@ mod tests {
         v3.runtime = ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
         };
-        let wanted = ServingShape::of_resolved(&{
+        let wanted = {
             let mut spec = v3.resolved_spec.clone();
             spec.container.image = "api:4".into();
-            spec
-        });
+            spec.serving_shape()
+        };
         assert!(matches!(
             SlotOccupancy::classify([v3], wanted),
             SlotOccupancy::OtherShape
@@ -307,7 +303,7 @@ mod tests {
         v4.runtime = ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
         };
-        let wanted = ServingShape::of_resolved(&v4.resolved_spec);
+        let wanted = v4.resolved_spec.serving_shape();
         assert!(matches!(
             SlotOccupancy::classify([v4], wanted),
             SlotOccupancy::Current(_)
@@ -323,7 +319,7 @@ mod tests {
             "container": { "image": "api:4", "pull_policy": "missing" }
         }))
         .unwrap();
-        let wanted = ServingShape::of_resolved(&spec);
+        let wanted = spec.serving_shape();
         assert!(matches!(
             SlotOccupancy::classify([], wanted),
             SlotOccupancy::Empty
