@@ -81,15 +81,12 @@ async fn register_assigns_a_free_subnet_publishes_and_rejects_duplicates() {
         .register(request("peer", WireGuardPublicKey([2; 32])))
         .await
         .unwrap_err();
-    assert!(matches!(
-        duplicate_name,
-        LocalMachineError::DuplicateMachine
-    ));
+    assert!(matches!(duplicate_name, LocalMachineError::NameTaken));
     let duplicate_key = local
         .register(request("other", WireGuardPublicKey([1; 32])))
         .await
         .unwrap_err();
-    assert!(matches!(duplicate_key, LocalMachineError::DuplicateMachine));
+    assert!(matches!(duplicate_key, LocalMachineError::KeyAlreadyNamed));
 
     server.abort();
     drop(local);
@@ -152,6 +149,85 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
     drop(target);
     let _ = std::fs::remove_dir_all(data_dir);
     let _ = std::fs::remove_dir_all(target_dir);
+}
+
+#[tokio::test]
+async fn register_returns_the_committed_row_after_join_runtime_and_endpoint_drift() {
+    let (local, replicated, _founder, data_dir, server) = participating().await;
+    let key = WireGuardPublicKey([1; 32]);
+    let registered = local.register(request("peer", key)).await.unwrap();
+    let assigned_id = registered.assigned_machine.id;
+    let mut drifted = registered.assigned_machine.clone();
+    drifted.runtime = MachineRuntime {
+        daemon_version: "joined".into(),
+        ..MachineRuntime::default()
+    };
+    drifted.public_ip = Some("198.51.100.9".parse().unwrap());
+    drifted.advertised_endpoints = vec![AdvertisedEndpoint("198.51.100.9:51820".parse().unwrap())];
+    replicated.publish_local_machine(&drifted).await.unwrap();
+
+    let mut replay = request("peer", key);
+    replay.public_ip = None;
+    replay.runtime = MachineRuntime::default();
+    let replayed = local.register(replay).await.unwrap();
+
+    assert_eq!(replayed.assigned_machine.id, assigned_id);
+    assert_eq!(replayed.assigned_machine.subnet, drifted.subnet);
+    assert_eq!(replayed.assigned_machine.runtime.daemon_version, "joined");
+    assert_eq!(
+        replayed.assigned_machine.advertised_endpoints,
+        drifted.advertised_endpoints
+    );
+    let stored = replicated
+        .machine(assigned_id.as_str())
+        .await
+        .unwrap()
+        .expect("committed Machine remains");
+    assert_eq!(stored, drifted);
+    assert_eq!(replicated.machines().await.unwrap().observations.len(), 2);
+
+    let renamed = local.register(request("other", key)).await.unwrap_err();
+    assert!(matches!(renamed, LocalMachineError::KeyAlreadyNamed));
+
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn register_returns_the_committed_row_when_this_machine_is_not_the_allocator() {
+    let (local, replicated, founder, data_dir, server) = participating_without_allocator().await;
+    replicated
+        .publish_founder_allocator(&MachineId::random())
+        .await
+        .unwrap();
+    let peer = Machine {
+        id: MachineId::random(),
+        name: MachineName::parse("peer").unwrap(),
+        subnet: "10.210.1.0/24".parse().unwrap(),
+        management_address: ManagementAddress("fdcc::9".parse().unwrap()),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],
+        runtime: MachineRuntime {
+            daemon_version: "joined".into(),
+            ..MachineRuntime::default()
+        },
+    };
+    replicated.publish_local_machine(&peer).await.unwrap();
+
+    let replayed = local
+        .register(request("peer", WireGuardPublicKey([1; 32])))
+        .await
+        .unwrap();
+
+    assert_eq!(replayed.assigned_machine, peer);
+    assert_eq!(replayed.visible_peers, vec![founder]);
+    assert_eq!(replicated.machines().await.unwrap().observations.len(), 2);
+
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
 }
 
 #[tokio::test]

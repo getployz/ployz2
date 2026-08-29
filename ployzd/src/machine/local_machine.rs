@@ -97,6 +97,10 @@ pub enum Error {
     DockerUnavailable,
     #[error("Machine name or public key already exists")]
     DuplicateMachine,
+    #[error("public key is already registered under another name")]
+    KeyAlreadyNamed,
+    #[error("Machine name is already used by another public key")]
+    NameTaken,
     #[error("at least one Machine update is required")]
     EmptyUpdate,
     #[error("local Machine record lock poisoned")]
