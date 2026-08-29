@@ -128,7 +128,8 @@ impl ObservedGlobalSlotSpec {
     pub fn is_running_on(&self, containers: &[ServiceContainer], machine: &Machine) -> bool {
         containers.iter().any(|container| {
             let observation = container.as_observation();
-            observation.machine_id == machine.id
+            observation.identity() == self.identity
+                && observation.machine_id == machine.id
                 && observation.resolved_spec.serving_shape() == self.resolved_spec.serving_shape()
                 && matches!(
                     observation.runtime,

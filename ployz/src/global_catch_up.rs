@@ -165,7 +165,13 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 || ingress_proxy_backend(slot.resolved_spec()).map_or(true, |backend| {
                     matches!(backend.network_mode(), IngressProxyNetworkMode::Bridge)
                 });
-            uses_bridge_endpoint && !service_has_slot(&services, this_machine, slot.resolved_spec())
+            uses_bridge_endpoint
+                && !service_has_slot(
+                    &services,
+                    this_machine,
+                    slot.identity(),
+                    slot.resolved_spec(),
+                )
         })
         .count();
     if endpoint_creates > 0 {
@@ -231,6 +237,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
 fn service_has_slot(
     services: &[ServiceObservation],
     machine: &Machine,
+    identity: &QualifiedService,
     spec: &ResolvedServiceSpec,
 ) -> bool {
     let wanted = spec.serving_shape();
@@ -239,7 +246,8 @@ fn service_has_slot(
         .flat_map(|service| &service.containers)
         .any(|container| {
             let observation = container.as_observation();
-            observation.machine_id == machine.id
+            &observation.identity() == identity
+                && observation.machine_id == machine.id
                 && observation.resolved_spec.serving_shape() == wanted
         })
 }
@@ -498,6 +506,37 @@ mod tests {
             .unwrap_err();
         assert_eq!(client.ensure_calls.get(), 1);
         assert_eq!(error.missing, [qualified("app", "api")]);
+    }
+
+    #[tokio::test]
+    async fn another_projects_matching_shape_does_not_satisfy_catch_up() {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let shop = global_service(
+            qualified("shop", "api"),
+            'c',
+            Placement::default(),
+            running_on(&joiner, 'c'),
+        );
+        let prod = global_service(
+            qualified("prod", "api"),
+            'd',
+            Placement::default(),
+            running_on(&founder, 'e'),
+        );
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: vec![shop.clone(), prod],
+            target_services: Some(vec![shop]),
+            capacity: Some(BridgeEndpointCapacity::new(10, 0)),
+            ensure_calls: Cell::new(0),
+        };
+
+        let error = catch_up_globals(&mut client, &joiner, true)
+            .await
+            .unwrap_err();
+        assert_eq!(client.ensure_calls.get(), 1);
+        assert_eq!(error.missing, [qualified("prod", "api")]);
     }
 
     struct FakeCatchUpClient {
