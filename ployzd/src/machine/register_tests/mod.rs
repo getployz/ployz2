@@ -236,6 +236,36 @@ async fn register_returns_the_committed_row_after_join_runtime_and_endpoint_drif
 }
 
 #[tokio::test]
+async fn register_returns_the_committed_row_when_advertised_endpoints_are_empty() {
+    let (local, replicated, _founder, data_dir, server) = participating().await;
+    let key = WireGuardPublicKey([1; 32]);
+    let registered = local.register(request("peer", key)).await.unwrap();
+    let assigned_id = registered.assigned_machine.id;
+    let committed = registered.assigned_machine.clone();
+
+    let mut replay = request("peer", key);
+    replay.advertised_endpoints = Vec::new();
+    let replayed = local.register(replay).await.unwrap();
+
+    assert_eq!(replayed.assigned_machine.id, assigned_id);
+    assert_eq!(
+        replayed.assigned_machine.advertised_endpoints,
+        committed.advertised_endpoints
+    );
+    let stored = replicated
+        .machine(assigned_id.as_str())
+        .await
+        .unwrap()
+        .expect("committed Machine remains");
+    assert_eq!(stored, committed);
+    assert_eq!(replicated.machines().await.unwrap().observations.len(), 2);
+
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
 async fn register_returns_the_committed_row_when_this_machine_is_not_the_allocator() {
     let (local, replicated, founder, data_dir, server) = participating_without_allocator().await;
     replicated
