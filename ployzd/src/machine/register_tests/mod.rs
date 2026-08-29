@@ -26,7 +26,7 @@ mod harness;
 use harness::*;
 
 #[tokio::test]
-async fn register_rejects_empty_endpoints_and_an_uninitialized_machine() {
+async fn register_rejects_an_uninitialized_machine() {
     let data_dir = std::env::temp_dir().join(format!(
         "ployzd-register-errors-{}",
         ployz_core::MachineId::random()
@@ -42,10 +42,7 @@ async fn register_rejects_empty_endpoints_and_an_uninitialized_machine() {
         })
         .await
         .unwrap_err();
-    assert!(matches!(
-        empty,
-        LocalMachineError::Store(StoreError::MissingEndpoints)
-    ));
+    assert!(matches!(empty, LocalMachineError::NotParticipating));
     let uninitialized = local
         .register(request("peer", WireGuardPublicKey([1; 32])))
         .await
@@ -58,6 +55,17 @@ async fn register_rejects_empty_endpoints_and_an_uninitialized_machine() {
 #[tokio::test]
 async fn register_assigns_a_free_subnet_publishes_and_rejects_duplicates() {
     let (local, replicated, founder, data_dir, server) = participating().await;
+    let missing = local
+        .register(RegisterRequest {
+            advertised_endpoints: Vec::new(),
+            ..request("peer", WireGuardPublicKey([1; 32]))
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        missing,
+        LocalMachineError::Store(StoreError::MissingEndpoints)
+    ));
     let registered = local
         .register(request("peer", WireGuardPublicKey([1; 32])))
         .await

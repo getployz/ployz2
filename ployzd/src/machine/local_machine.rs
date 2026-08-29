@@ -376,11 +376,11 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::KeyAlreadyNamed`] when the public key is stored under
-    /// another name, [`Error::NameTaken`] when the name belongs to another
+    /// Returns [`Error::NotParticipating`] when this Machine is not
+    /// participating, [`Error::KeyAlreadyNamed`] when the public key is stored
+    /// under another name, [`Error::NameTaken`] when the name belongs to another
     /// public key, [`Error::Store`] when endpoints are missing on a new
-    /// allocation, [`Error::NotParticipating`] when this Machine is not
-    /// participating, [`Error::ClusterStoreUnavailable`] when the Cluster store
+    /// allocation, [`Error::ClusterStoreUnavailable`] when the Cluster store
     /// is missing, [`Error::IsolationLocked`] when the machines replica is
     /// larger than three and every other Machine is uncontactable,
     /// [`Error::AllocatorNotQuiet`] when this Machine is named Allocator but
@@ -388,9 +388,6 @@ impl LocalMachine {
     /// another Machine or is missing, [`Error::Network`] when subnet allocation
     /// fails, and [`Error::Cluster`] when replicated I/O fails.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
-        if request.advertised_endpoints.is_empty() {
-            return Err(StoreError::MissingEndpoints.into());
-        }
         let me = {
             let record = self.record()?;
             if record.phase() != LocalMachinePhase::Participating {
@@ -400,6 +397,9 @@ impl LocalMachine {
         };
         if let Some(registered) = self.committed_registration(&request).await? {
             return Ok(registered);
+        }
+        if request.advertised_endpoints.is_empty() {
+            return Err(StoreError::MissingEndpoints.into());
         }
         if self.isolation_locked().await? {
             return Err(Error::IsolationLocked);
