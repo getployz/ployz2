@@ -96,9 +96,9 @@ pub enum Error {
     ClusterUnavailable,
     #[error("Docker is not available")]
     DockerUnavailable,
-    #[error("public key is already registered under another name")]
+    #[error("public key is already registered under another Machine Name")]
     KeyAlreadyNamed,
-    #[error("Machine name is already used by another public key")]
+    #[error("Machine Name is already used by another public key")]
     NameTaken,
     #[error("at least one Machine update is required")]
     EmptyUpdate,
@@ -386,7 +386,7 @@ impl LocalMachine {
     /// another Machine or is missing, [`Error::Network`] when subnet allocation
     /// fails, and [`Error::Cluster`] when replicated I/O fails.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
-        if let Some(registered) = self.existing_membership(&request).await? {
+        if let Some(registered) = self.committed_registration(&request).await? {
             return Ok(registered);
         }
         if request.advertised_endpoints.is_empty() {
@@ -408,7 +408,7 @@ impl LocalMachine {
         }
     }
 
-    async fn existing_membership(
+    async fn committed_registration(
         &self,
         request: &RegisterRequest,
     ) -> Result<Option<Registered>, Error> {
@@ -416,18 +416,15 @@ impl LocalMachine {
             return Ok(None);
         };
         let machines = cluster.replicated.machines().await?.observations;
-        let Some(machine) = recognize(request, &machines)? else {
+        let Some(machine) = recognize(request.public_key, &request.name, &machines)? else {
             return Ok(None);
         };
-        Ok(Some(Registered {
-            assigned_machine: machine.clone(),
-            visible_peers: machines
-                .iter()
-                .filter(|peer| peer.id != machine.id)
-                .cloned()
-                .collect(),
-            target_versions: cluster.replicated.version().await?,
-        }))
+        let assigned_machine = machine.clone();
+        Ok(Some(registered(
+            assigned_machine,
+            machines,
+            cluster.replicated.version().await?,
+        )))
     }
 
     /// Isolation lock: replica larger than three and every other Machine
@@ -460,7 +457,9 @@ impl LocalMachine {
         let assigned_machine = {
             let publication = replicated.machine_publication().await;
             let snapshot = replicated.machines().await?;
-            if let Some(machine) = recognize(&request, &snapshot.observations)? {
+            if let Some(machine) =
+                recognize(request.public_key, &request.name, &snapshot.observations)?
+            {
                 machine.clone()
             } else {
                 let me = self.record()?.id();
@@ -490,19 +489,11 @@ impl LocalMachine {
                 assigned_machine
             }
         };
-        let target_versions = replicated.version().await?;
-        let visible_peers = replicated
-            .machines()
-            .await?
-            .observations
-            .into_iter()
-            .filter(|machine| machine.id != assigned_machine.id)
-            .collect();
-        Ok(Registered {
+        Ok(registered(
             assigned_machine,
-            visible_peers,
-            target_versions,
-        })
+            replicated.machines().await?.observations,
+            replicated.version().await?,
+        ))
     }
 
     /// Persist a join assignment and request restart.
@@ -689,38 +680,35 @@ impl LocalMachine {
     }
 }
 
-// ponytail: description stays on the request; recognition uses identity only.
-#[derive(Eq, PartialEq)]
-struct RegisterIdentity<'src> {
+fn recognize<'machines>(
     public_key: WireGuardPublicKey,
-    name: &'src MachineName,
-}
-
-impl<'src> RegisterIdentity<'src> {
-    fn new(public_key: WireGuardPublicKey, name: &'src MachineName) -> Self {
-        Self { public_key, name }
+    name: &MachineName,
+    machines: &'machines [Machine],
+) -> Result<Option<&'machines Machine>, Error> {
+    match machines
+        .iter()
+        .find(|machine| machine.public_key == public_key)
+    {
+        Some(machine) if &machine.name == name => Ok(Some(machine)),
+        Some(_) => Err(Error::KeyAlreadyNamed),
+        None if machines.iter().any(|machine| &machine.name == name) => Err(Error::NameTaken),
+        None => Ok(None),
     }
 }
 
-fn recognize<'a>(
-    request: &RegisterRequest,
-    machines: &'a [Machine],
-) -> Result<Option<&'a Machine>, Error> {
-    let want = RegisterIdentity::new(request.public_key, &request.name);
-    if let Some(machine) = machines
-        .iter()
-        .find(|machine| RegisterIdentity::new(machine.public_key, &machine.name) == want)
-    {
-        Ok(Some(machine))
-    } else if machines
-        .iter()
-        .any(|machine| machine.public_key == want.public_key)
-    {
-        Err(Error::KeyAlreadyNamed)
-    } else if machines.iter().any(|machine| &machine.name == want.name) {
-        Err(Error::NameTaken)
-    } else {
-        Ok(None)
+fn registered(
+    assigned_machine: Machine,
+    machines: Vec<Machine>,
+    target_versions: BTreeMap<String, i64>,
+) -> Registered {
+    let assigned_id = assigned_machine.id;
+    Registered {
+        assigned_machine,
+        visible_peers: machines
+            .into_iter()
+            .filter(|machine| machine.id != assigned_id)
+            .collect(),
+        target_versions,
     }
 }
 
