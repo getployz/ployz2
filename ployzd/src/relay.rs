@@ -3,7 +3,6 @@
 use std::{
     io,
     pin::Pin,
-    sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
 };
@@ -25,7 +24,6 @@ use crate::machine_api::MachineApi;
 #[must_use]
 pub struct RegisterHold {
     task: JoinHandle<()>,
-    attaches: Arc<Mutex<JoinSet<()>>>,
 }
 
 /// Failures holding Cloud Relay Register.
@@ -49,21 +47,25 @@ pub async fn hold_register(
     let client = RelayClient::new(url)?;
     let machine_id = machine_api.machine_id();
     let mut ws = client.register(pairing.as_str(), &machine_id).await?;
-    let attaches = Arc::new(Mutex::new(JoinSet::new()));
-    let spawned = Arc::clone(&attaches);
     let task = tokio::spawn(async move {
-        while let Ok(Some(message)) = ws.recv::<Open>().await {
-            if let Some(nonce) = message.ping_nonce() {
-                let _ = ws.send(&RegisterRequest::pong(nonce)).await;
-                continue;
+        let mut attaches = JoinSet::new();
+        loop {
+            tokio::select! {
+                message = ws.recv::<Open>() => {
+                    let Ok(Some(message)) = message else {
+                        break;
+                    };
+                    if let Some(nonce) = message.ping_nonce() {
+                        let _ = ws.send(&RegisterRequest::pong(nonce)).await;
+                        continue;
+                    }
+                    attaches.spawn(serve_attach(client.clone(), message, machine_api.clone()));
+                }
+                Some(_) = attaches.join_next() => {}
             }
-            spawned
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .spawn(serve_attach(client.clone(), message, machine_api.clone()));
         }
     });
-    Ok(RegisterHold { task, attaches })
+    Ok(RegisterHold { task })
 }
 
 async fn serve_attach(client: RelayClient, open: Open, machine_api: MachineApi) {
@@ -126,10 +128,6 @@ impl AsyncWrite for Incoming {
 impl Drop for RegisterHold {
     fn drop(&mut self) {
         self.task.abort();
-        self.attaches
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .abort_all();
     }
 }
 
