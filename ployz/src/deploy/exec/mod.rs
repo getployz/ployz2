@@ -612,13 +612,22 @@ async fn create_and_start<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<ContainerCreated, ExecutionError> {
     progress.set_running(index, OperationPhase::CreatingContainer);
-    let created = tokio::select! {
-        biased;
-        () = cancellation.cancelled() => return Err(ExecutionError::Cancelled),
-        created = client.create_container(machine_id, kind, project_name, spec) => {
-            created.map_err(|error| machine_error(MachineAction::CreateContainer, error))?
+    let created = match client
+        .create_container(machine_id, kind, project_name, spec)
+        .await
+    {
+        Ok(created) => created,
+        Err(_) if cancellation.is_cancelled() => return Err(ExecutionError::Cancelled),
+        Err(error) => {
+            return Err(machine_error(MachineAction::CreateContainer, error));
         }
     };
+    if cancellation.is_cancelled() {
+        let _ = client
+            .remove_container(machine_id, &created.container_id)
+            .await;
+        return Err(ExecutionError::Cancelled);
+    }
     progress.set_display_name(index, created.display_name.clone());
     progress.set_running(index, OperationPhase::StartingContainer);
     if let Err(error) = client

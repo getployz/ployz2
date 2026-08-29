@@ -165,13 +165,17 @@ async fn start_unavailable_stops_waiting_when_cancelled() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn hung_create_stops_when_cancelled() {
+async fn cancelled_create_waits_for_the_one_shot_then_removes() {
     let machine = machine('1');
+    let created_id = container('a');
     let plan = vec![run(&machine, spec(None, None, None), true)];
-    let client = Scripted::new(vec![Step(
-        Call::Create(machine, ContainerKind::ServiceContainer),
-        Reply::Pending,
-    )]);
+    let client = Scripted::new(vec![
+        created_later(
+            Call::Create(machine, ContainerKind::ServiceContainer),
+            &created_id,
+        ),
+        ok(Call::Remove(machine, created_id)),
+    ]);
     let cancellation = CancellationToken::new();
     let execute = execute_with(&plan, &client, &cancellation);
     tokio::pin!(execute);
@@ -180,9 +184,13 @@ async fn hung_create_stops_when_cancelled() {
         () = tokio::time::sleep(std::time::Duration::from_millis(1)) => {}
     }
     cancellation.cancel();
+    tokio::select! {
+        outcome = &mut execute => panic!("dropped in-flight create on cancel: {outcome:?}"),
+        () = tokio::time::sleep(std::time::Duration::from_millis(1)) => {}
+    }
     let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), execute)
         .await
-        .expect("cancelled create must return");
+        .expect("cancelled create must return after the one-shot completes");
 
     assert!(matches!(
         outcome,
@@ -194,4 +202,5 @@ async fn hung_create_stops_when_cancelled() {
             ..
         }
     ));
+    client.assert_done();
 }
