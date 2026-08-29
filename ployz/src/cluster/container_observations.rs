@@ -62,10 +62,10 @@ impl Client {
                     (machine_id, result)
                 }
             });
-        let probed = tokio::select! {
-            () = cancellation.cancelled() => return Err(cancelled()),
-            probed = join_all(probes) => probed,
-        };
+        let probed = within_deadline(deadline, cancellation, &pending, async {
+            Ok(join_all(probes).await)
+        })
+        .await?;
         let mut capable = probed
             .into_iter()
             .filter_map(|(machine_id, description)| {
@@ -188,12 +188,16 @@ fn apply_round(
 }
 
 async fn within_deadline<T>(
-    _deadline: Instant,
-    _cancellation: &CancellationToken,
-    _pending: &BTreeSet<ContainerId>,
+    deadline: Instant,
+    cancellation: &CancellationToken,
+    pending: &BTreeSet<ContainerId>,
     work: impl Future<Output = Result<T, RpcError>>,
 ) -> Result<T, RpcError> {
-    work.await
+    tokio::select! {
+        () = cancellation.cancelled() => Err(cancelled()),
+        () = tokio::time::sleep_until(deadline) => Err(timed_out(pending)),
+        result = work => result,
+    }
 }
 
 fn cancelled() -> RpcError {
@@ -277,6 +281,23 @@ mod tests {
                 panic!("observation barrier outlived its deadline");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn cancelled_machine_list_returns_before_the_barrier_deadline() {
+        let pending = BTreeSet::from([container('a')]);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let error = within_deadline(
+            Instant::now() + BARRIER_TIMEOUT,
+            &cancellation,
+            &pending,
+            std::future::pending::<Result<(), RpcError>>(),
+        )
+        .await
+        .expect_err("cancelled work must return");
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(error.message, "container observation wait cancelled");
     }
 
     #[test]
