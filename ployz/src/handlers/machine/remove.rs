@@ -41,7 +41,6 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             )?)
         };
         let live = client.live_services_from(&machines).await?;
-        let ingress_ids = crate::dns::ingress_machine_ids(&live);
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
         for line in service_warnings(&selected.name, &services) {
@@ -90,13 +89,8 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             config.save()?;
         }
         if let Err(error) =
-            crate::dns::update_records_after_removal(
-                &mut client,
-                machines,
-                &selected.id,
-                &ingress_ids,
-            )
-            .await
+            crate::dns::update_records_after_removal(&mut client, machines, &selected.id, &live)
+                .await
         {
             eprintln!(
                 "{}",

@@ -83,19 +83,27 @@ pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error
     }
 }
 
-pub(crate) async fn update_records_after_removal(
+/// Publish remaining ingress public IPs after a Machine leaves.
+///
+/// An empty remaining set does not write records.
+///
+/// # Errors
+///
+/// Returns a connection or hosted-DNS error. An unreserved domain is success.
+pub(crate) async fn update_records_after_removal<E>(
     client: &mut Client,
     members: Vec<MachineObservation>,
     removed: &MachineId,
-    ingress: &BTreeSet<MachineId>,
+    live: &LiveServices<E>,
 ) -> Result<(), Error> {
     if client.domain_if_reserved().await?.is_none() {
         return Ok(());
     }
-    let remaining = remaining_members(
+    // Inspect after membership delete is how #248 fails.
+    let remaining = remaining_ingress_members(
         members.into_iter().map(|observation| observation.machine),
         removed,
-        ingress,
+        &ingress_machine_ids(live),
     );
     let reachable = probe_machines(remaining).await?;
     if reachable.is_empty() {
@@ -179,7 +187,7 @@ fn reachability_matches(machine_id: &MachineId, status: u16, body: Option<&[u8]>
     status == 200 && body == Some(machine_id.as_str().as_bytes())
 }
 
-pub(crate) fn ingress_machine_ids<E>(live: &LiveServices<E>) -> BTreeSet<MachineId> {
+fn ingress_machine_ids<E>(live: &LiveServices<E>) -> BTreeSet<MachineId> {
     live.services()
         .iter()
         .flat_map(|service| &service.containers)
@@ -188,7 +196,7 @@ pub(crate) fn ingress_machine_ids<E>(live: &LiveServices<E>) -> BTreeSet<Machine
         .collect()
 }
 
-fn remaining_members(
+fn remaining_ingress_members(
     members: impl IntoIterator<Item = Machine>,
     removed: &MachineId,
     ingress: &BTreeSet<MachineId>,
@@ -480,8 +488,8 @@ mod tests {
 
     use super::{
         DomainRequired, ExpandIngressError, NoReachableMachines, expand_ingress_ports,
-        ingress_dns_warnings, reachability_matches, records_from_machines, remaining_members,
-        resolve_ingress_addresses,
+        ingress_dns_warnings, reachability_matches, records_from_machines,
+        remaining_ingress_members, resolve_ingress_addresses,
     };
 
     #[test]
@@ -525,7 +533,7 @@ mod tests {
 
     #[test]
     fn remaining_members_drop_the_removed_machine_from_a_three_machine_wildcard() {
-        let remaining = remaining_members(
+        let remaining = remaining_ingress_members(
             [
                 machine('1', "192.0.2.1"),
                 machine('2', "198.51.100.1"),
@@ -547,7 +555,7 @@ mod tests {
 
     #[test]
     fn remaining_members_omit_a_public_machine_that_was_not_ingress() {
-        let remaining = remaining_members(
+        let remaining = remaining_ingress_members(
             [
                 machine('1', "192.0.2.1"),
                 machine('2', "198.51.100.1"),
@@ -569,7 +577,7 @@ mod tests {
 
     #[test]
     fn remaining_members_are_empty_when_the_last_ingress_machine_is_removed() {
-        let remaining = remaining_members(
+        let remaining = remaining_ingress_members(
             [machine('1', "192.0.2.1"), machine('3', "203.0.113.1")],
             &MachineId::parse("1".repeat(32)).unwrap(),
             &machine_ids(['1']),
