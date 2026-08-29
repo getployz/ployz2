@@ -77,15 +77,20 @@ impl ApiClient {
         &self,
         statements: impl IntoIterator<Item = Statement>,
     ) -> Result<(), Error> {
-        let response = self
-            .client
-            .post(self.base_url.join("v1/transactions").expect("static path"))
-            .json(&statements.into_iter().collect::<Vec<_>>())
-            .send()
-            .await?;
-        let status = response.status();
+        let statements = statements.into_iter().collect::<Vec<_>>();
         // ponytail: finite query responses are buffered; stream events if store size makes this measurable.
-        let body = response.bytes().await?;
+        let (status, body) = super::within_io_timeout(async {
+            let response = self
+                .client
+                .post(self.base_url.join("v1/transactions").expect("static path"))
+                .json(&statements)
+                .send()
+                .await?;
+            let status = response.status();
+            let body = response.bytes().await?;
+            Ok::<_, Error>((status, body))
+        })
+        .await?;
         let decoded = serde_json::from_slice::<ExecResponse>(&body);
         if !status.is_success() {
             return Err(decoded
@@ -121,14 +126,18 @@ impl ApiClient {
     }
 
     pub(crate) async fn query(&self, statement: Statement) -> Result<QueryResult, Error> {
-        let response = self
-            .client
-            .post(self.base_url.join("v1/queries").expect("static path"))
-            .json(&statement)
-            .send()
-            .await?;
-        let status = response.status();
-        let body = response.bytes().await?;
+        let (status, body) = super::within_io_timeout(async {
+            let response = self
+                .client
+                .post(self.base_url.join("v1/queries").expect("static path"))
+                .json(&statement)
+                .send()
+                .await?;
+            let status = response.status();
+            let body = response.bytes().await?;
+            Ok::<_, Error>((status, body))
+        })
+        .await?;
         if !status.is_success() {
             return Err(Error::Api(format!(
                 "HTTP {status}: {}",

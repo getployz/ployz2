@@ -44,29 +44,32 @@ impl AdminClient {
     }
 
     async fn command(&self, command: &impl Serialize) -> Result<Vec<Value>, Error> {
-        let stream = UnixStream::connect(&self.socket_path).await?;
-        let mut framed = LengthDelimitedCodec::builder()
-            .big_endian()
-            .length_field_length(4)
-            .new_framed(stream);
-        framed
-            .send(Bytes::from(serde_json::to_vec(command)?))
-            .await?;
+        super::within_io_timeout(async {
+            let stream = UnixStream::connect(&self.socket_path).await?;
+            let mut framed = LengthDelimitedCodec::builder()
+                .big_endian()
+                .length_field_length(4)
+                .new_framed(stream);
+            framed
+                .send(Bytes::from(serde_json::to_vec(command)?))
+                .await?;
 
-        let mut values = Vec::new();
-        while let Some(frame) = framed.next().await {
-            let frame = frame.map_err(|error| Error::Protocol(error.to_string()))?;
-            let response = decode_response(&frame)?;
-            match response {
-                AdminResponse::Success => return Ok(values),
-                AdminResponse::Json(value) => values.push(value),
-                AdminResponse::Error { msg } => return Err(Error::Api(msg)),
-                AdminResponse::Log { .. } => {}
+            let mut values = Vec::new();
+            while let Some(frame) = framed.next().await {
+                let frame = frame.map_err(|error| Error::Protocol(error.to_string()))?;
+                let response = decode_response(&frame)?;
+                match response {
+                    AdminResponse::Success => return Ok(values),
+                    AdminResponse::Json(value) => values.push(value),
+                    AdminResponse::Error { msg } => return Err(Error::Api(msg)),
+                    AdminResponse::Log { .. } => {}
+                }
             }
-        }
-        Err(Error::Protocol(
-            "admin response ended before Success".into(),
-        ))
+            Err(Error::Protocol(
+                "admin response ended before Success".into(),
+            ))
+        })
+        .await
     }
 
     pub async fn membership_states(&self) -> Result<Vec<MembershipState>, Error> {
