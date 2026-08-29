@@ -435,11 +435,12 @@ impl Daemon {
         };
         tracing::info!(reason = reason.as_str(), "shutting down");
         self.shutdown.cancel();
-        // TODO(UT-098, UT-099): preserve both API servers' unbounded graceful shutdown
-        // until a timeout is explicitly chosen.
-        let server_result = match completed_servers {
-            Some(result) => result,
-            None => join_servers(servers.await),
+        // Reset must not wait for held Machine API or Relay Attach connections.
+        // CLI wait_phase has 60s to see Uninitialized after systemd restarts us.
+        let server_result = if resetting {
+            abort_servers(completed_servers, &mut servers).await
+        } else {
+            drain_servers(completed_servers, &mut servers).await
         };
         if let Err(error) = server_result {
             errors.push(error.to_string());
@@ -473,6 +474,43 @@ impl Daemon {
         } else {
             Err(io::Error::other(errors.join("; ")).into())
         }
+    }
+}
+
+const SERVER_SHUTDOWN: Duration = Duration::from_secs(5);
+
+async fn abort_servers(
+    completed: Option<io::Result<()>>,
+    servers: &mut JoinHandle<io::Result<()>>,
+) -> io::Result<()> {
+    if let Some(result) = completed {
+        return result;
+    }
+    servers.abort();
+    join_aborted_servers(servers).await
+}
+
+async fn drain_servers(
+    completed: Option<io::Result<()>>,
+    servers: &mut JoinHandle<io::Result<()>>,
+) -> io::Result<()> {
+    if let Some(result) = completed {
+        return result;
+    }
+    match tokio::time::timeout(SERVER_SHUTDOWN, &mut *servers).await {
+        Ok(result) => join_servers(result),
+        Err(_) => {
+            servers.abort();
+            join_aborted_servers(servers).await
+        }
+    }
+}
+
+async fn join_aborted_servers(servers: &mut JoinHandle<io::Result<()>>) -> io::Result<()> {
+    match servers.await {
+        Ok(result) => result,
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => Err(io::Error::other(error)),
     }
 }
 
@@ -873,6 +911,21 @@ mod tests {
         assert_eq!(describe(&socket).await.machine_id, first.machine_id);
         reset(&socket).await;
         daemon.wait().await.unwrap();
+        assert!(!data_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn reset_completes_while_a_client_holds_the_socket() {
+        let root = TestDir::new("ployzd-daemon-reset-held");
+        let (config, socket) = test_config(&root.0, ContainerMode::Absent);
+        let data_dir = config.data_dir.clone();
+        let daemon = Daemon::start(config).await.unwrap();
+        let _held = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        reset(&socket).await;
+        tokio::time::timeout(std::time::Duration::from_secs(10), daemon.wait())
+            .await
+            .expect("reset shutdown must not wait on a held Machine API connection")
+            .unwrap();
         assert!(!data_dir.exists());
     }
 
