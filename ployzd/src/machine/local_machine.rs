@@ -10,11 +10,12 @@ use std::{
 use ployz_core::{
     CloudPairing, InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest,
     LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity,
-    MachineList, MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest,
-    MachineUpdated, ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest,
-    Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation,
-    RttStatistics, SelectedEndpoint, UpdateMachineRequest, WireGuardInspected,
-    associate_wireguard_peers, synthesize_membership,
+    MachineList, MachineName, MachineObservation, MachineRemoved, MachineToken,
+    MachineTokenRequest, MachineUpdated, ManagementAddress, MembershipObservation,
+    PublicIpDiscovery, RegisterRequest, Registered, RemoveLocalMachineRequest,
+    RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics, SelectedEndpoint,
+    UpdateMachineRequest, WireGuardInspected, WireGuardPublicKey, associate_wireguard_peers,
+    synthesize_membership,
 };
 use thiserror::Error;
 use tokio::sync::{Mutex as AsyncMutex, watch};
@@ -95,8 +96,6 @@ pub enum Error {
     ClusterUnavailable,
     #[error("Docker is not available")]
     DockerUnavailable,
-    #[error("Machine name or public key already exists")]
-    DuplicateMachine,
     #[error("public key is already registered under another name")]
     KeyAlreadyNamed,
     #[error("Machine name is already used by another public key")]
@@ -370,21 +369,26 @@ impl LocalMachine {
     }
 
     /// Assign a new Machine into the Cluster from this participating Machine
-    /// when cluster KV names this Machine as Allocator.
+    /// when cluster KV names this Machine as Allocator. A replica row with the
+    /// same public key and name is returned as-is, without publishing.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Store`] when endpoints are missing, [`Error::NotParticipating`]
-    /// when this Machine is not participating, [`Error::ClusterStoreUnavailable`]
-    /// when the Cluster store is missing, [`Error::IsolationLocked`] when the
-    /// machines replica is larger than three and every other Machine is
-    /// uncontactable, [`Error::AllocatorNotQuiet`] when this Machine is named
-    /// Allocator but the row is younger than 5s, [`Error::NotAllocator`] when
-    /// the row names another Machine or is missing, [`Error::DuplicateMachine`]
-    /// when the name is already used by another public key or a public key's
-    /// stored identity differs, [`Error::Network`] when subnet allocation fails,
-    /// and [`Error::Cluster`] when replicated I/O fails.
+    /// Returns [`Error::KeyAlreadyNamed`] when the public key is stored under
+    /// another name, [`Error::NameTaken`] when the name belongs to another
+    /// public key, [`Error::Store`] when endpoints are missing on a new
+    /// allocation, [`Error::NotParticipating`] when this Machine is not
+    /// participating, [`Error::ClusterStoreUnavailable`] when the Cluster store
+    /// is missing, [`Error::IsolationLocked`] when the machines replica is
+    /// larger than three and every other Machine is uncontactable,
+    /// [`Error::AllocatorNotQuiet`] when this Machine is named Allocator but
+    /// the row is younger than 5s, [`Error::NotAllocator`] when the row names
+    /// another Machine or is missing, [`Error::Network`] when subnet allocation
+    /// fails, and [`Error::Cluster`] when replicated I/O fails.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
+        if let Some(registered) = self.existing_membership(&request).await? {
+            return Ok(registered);
+        }
         if request.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints.into());
         }
@@ -402,6 +406,28 @@ impl LocalMachine {
             Some(row) if row.machine_id == me => self.admit_local_register(request).await,
             _ => Err(Error::NotAllocator),
         }
+    }
+
+    async fn existing_membership(
+        &self,
+        request: &RegisterRequest,
+    ) -> Result<Option<Registered>, Error> {
+        let Some(cluster) = &self.cluster else {
+            return Ok(None);
+        };
+        let machines = cluster.replicated.machines().await?.observations;
+        let Some(machine) = recognize(request, &machines)? else {
+            return Ok(None);
+        };
+        Ok(Some(Registered {
+            assigned_machine: machine.clone(),
+            visible_peers: machines
+                .iter()
+                .filter(|peer| peer.id != machine.id)
+                .cloned()
+                .collect(),
+            target_versions: cluster.replicated.version().await?,
+        }))
     }
 
     /// Isolation lock: replica larger than three and every other Machine
@@ -433,55 +459,35 @@ impl LocalMachine {
         let replicated = self.replicated()?;
         let assigned_machine = {
             let publication = replicated.machine_publication().await;
-            let me = self.record()?.id();
-            match replicated.allocator().await? {
-                Some(row) if row.machine_id == me && row.quiet => {}
-                Some(row) if row.machine_id == me => {
-                    return Err(Error::AllocatorNotQuiet);
-                }
-                Some(_) | None => return Err(Error::NotAllocator),
-            }
             let snapshot = replicated.machines().await?;
-            match snapshot
-                .observations
-                .iter()
-                .find(|machine| machine.public_key == request.public_key)
-            {
-                Some(machine)
-                    if machine.name == request.name
-                        && machine.public_ip == request.public_ip
-                        && machine.advertised_endpoints == request.advertised_endpoints
-                        && machine.runtime == request.runtime =>
-                {
-                    machine.clone()
+            if let Some(machine) = recognize(&request, &snapshot.observations)? {
+                machine.clone()
+            } else {
+                let me = self.record()?.id();
+                match replicated.allocator().await? {
+                    Some(row) if row.machine_id == me && row.quiet => {}
+                    Some(row) if row.machine_id == me => {
+                        return Err(Error::AllocatorNotQuiet);
+                    }
+                    Some(_) | None => return Err(Error::NotAllocator),
                 }
-                Some(_) => return Err(Error::DuplicateMachine),
-                None if snapshot
-                    .observations
-                    .iter()
-                    .any(|machine| machine.name == request.name) =>
-                {
-                    return Err(Error::DuplicateMachine);
-                }
-                None => {
-                    let network = replicated.cluster_network().await?;
-                    let assigned_machine = Machine {
-                        id: MachineId::random(),
-                        name: request.name,
-                        subnet: allocate_machine_subnet(
-                            network,
-                            snapshot.observations.iter().map(|machine| machine.subnet),
-                        )?,
-                        management_address: management_address(request.public_key),
-                        public_key: request.public_key,
-                        public_ip: request.public_ip,
-                        advertised_endpoints: request.advertised_endpoints,
-                        runtime: request.runtime,
-                    };
-                    // TODO(UT-140): cross-process registration stays unfenced and has no rollback.
-                    publication.publish(&assigned_machine).await?;
-                    assigned_machine
-                }
+                let network = replicated.cluster_network().await?;
+                let assigned_machine = Machine {
+                    id: MachineId::random(),
+                    name: request.name,
+                    subnet: allocate_machine_subnet(
+                        network,
+                        snapshot.observations.iter().map(|machine| machine.subnet),
+                    )?,
+                    management_address: management_address(request.public_key),
+                    public_key: request.public_key,
+                    public_ip: request.public_ip,
+                    advertised_endpoints: request.advertised_endpoints,
+                    runtime: request.runtime,
+                };
+                // TODO(UT-140): cross-process registration stays unfenced and has no rollback.
+                publication.publish(&assigned_machine).await?;
+                assigned_machine
             }
         };
         let target_versions = replicated.version().await?;
@@ -680,6 +686,41 @@ impl LocalMachine {
         self.lock_store()?.begin_reset()?;
         self.restart.send_replace(true);
         Ok(ResetAccepted {})
+    }
+}
+
+// ponytail: description stays on the request; recognition uses identity only.
+#[derive(Eq, PartialEq)]
+struct RegisterIdentity<'src> {
+    public_key: WireGuardPublicKey,
+    name: &'src MachineName,
+}
+
+impl<'src> RegisterIdentity<'src> {
+    fn new(public_key: WireGuardPublicKey, name: &'src MachineName) -> Self {
+        Self { public_key, name }
+    }
+}
+
+fn recognize<'a>(
+    request: &RegisterRequest,
+    machines: &'a [Machine],
+) -> Result<Option<&'a Machine>, Error> {
+    let want = RegisterIdentity::new(request.public_key, &request.name);
+    if let Some(machine) = machines
+        .iter()
+        .find(|machine| RegisterIdentity::new(machine.public_key, &machine.name) == want)
+    {
+        Ok(Some(machine))
+    } else if machines
+        .iter()
+        .any(|machine| machine.public_key == want.public_key)
+    {
+        Err(Error::KeyAlreadyNamed)
+    } else if machines.iter().any(|machine| &machine.name == want.name) {
+        Err(Error::NameTaken)
+    } else {
+        Ok(None)
     }
 }
 
