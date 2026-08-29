@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, EnsureGlobalSlotRequest, IngressProxyNetworkMode,
     InspectRequest, ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget,
-    ObservedGlobalSlotSpec, QualifiedService, RpcError, ServiceObservation,
-    ServicePlacementEligibility, ingress_proxy_backend, op, service_containers,
+    ObservedGlobalSlotSpec, QualifiedService, ResolvedServiceSpec, RpcError, ServiceObservation,
+    ServicePlacementEligibility, ServingShape, ingress_proxy_backend, op, service_containers,
 };
 
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
@@ -165,8 +165,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 || ingress_proxy_backend(slot.resolved_spec()).map_or(true, |backend| {
                     matches!(backend.network_mode(), IngressProxyNetworkMode::Bridge)
                 });
-            uses_bridge_endpoint
-                && !service_has_slot(&services, this_machine, &slot.resolved_spec().service_id)
+            uses_bridge_endpoint && !service_has_slot(&services, this_machine, slot.resolved_spec())
         })
         .count();
     if endpoint_creates > 0 {
@@ -232,14 +231,16 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
 fn service_has_slot(
     services: &[ServiceObservation],
     machine: &Machine,
-    service_id: &ployz_core::ServiceId,
+    spec: &ResolvedServiceSpec,
 ) -> bool {
+    let wanted = ServingShape::of_resolved(spec);
     services
         .iter()
         .flat_map(|service| &service.containers)
         .any(|container| {
             let observation = container.as_observation();
-            observation.machine_id == machine.id && observation.service_id == *service_id
+            observation.machine_id == machine.id
+                && ServingShape::of_resolved(&observation.resolved_spec) == wanted
         })
 }
 
@@ -274,11 +275,12 @@ mod tests {
             Placement::default(),
             created_on(&joiner, 'a'),
         );
-        let current = global_service(
+        let current = global_service_with_image(
             qualified("app", "api"),
             'b',
             Placement::default(),
             running_on(&founder, 'b'),
+            "ghcr.io/getployz/api:2",
         );
         let mut client = FakeCatchUpClient {
             machine_id: joiner.id,
@@ -476,11 +478,12 @@ mod tests {
             Placement::default(),
             running_on(&joiner, 'a'),
         );
-        let current = global_service(
+        let current = global_service_with_image(
             qualified("app", "api"),
             'b',
             Placement::default(),
             running_on(&founder, 'b'),
+            "ghcr.io/getployz/api:2",
         );
         let mut client = FakeCatchUpClient {
             machine_id: joiner.id,
@@ -999,9 +1002,20 @@ mod tests {
         placement: Placement,
         container: ContainerObservation,
     ) -> ServiceObservation {
+        global_service_with_image(identity, id, placement, container, "ghcr.io/getployz/api:1")
+    }
+
+    fn global_service_with_image(
+        identity: QualifiedService,
+        id: char,
+        placement: Placement,
+        container: ContainerObservation,
+        image: &str,
+    ) -> ServiceObservation {
         let mut spec = requested(ServiceMode::Global);
         spec.name = identity.name.clone();
         spec.placement = placement;
+        spec.container.image = image.into();
         grouped(
             identity,
             spec.to_resolved(service_id(id), ResolvedUpdateConfig::default()),
