@@ -103,10 +103,10 @@ impl Client {
                     (machine_id, response)
                 }
             });
-            let responses = tokio::select! {
-                () = cancellation.cancelled() => return Err(cancelled()),
-                responses = join_all(calls) => responses,
-            };
+            let responses = within_deadline(deadline, cancellation, &pending, async {
+                Ok(join_all(calls).await)
+            })
+            .await?;
             let requested = requested.into_iter().collect::<BTreeSet<_>>();
             let mut round = Vec::new();
             for (machine_id, response) in responses {
