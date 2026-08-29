@@ -519,7 +519,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns a connection or remote RPC error from `ListMachines`.
+    /// Returns a connection or remote RPC error from `ListMachines`. The whole
+    /// call, including unary retries, is capped at 10 seconds and surfaces as
+    /// deadline exceeded when that cap elapses.
     pub async fn machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
         match tokio::time::timeout(
             TARGET_RPC_TIMEOUT,

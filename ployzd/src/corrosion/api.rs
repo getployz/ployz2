@@ -363,6 +363,7 @@ mod tests {
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use super::{ApiClient, Statement};
+    use crate::corrosion::IO_TIMEOUT;
 
     #[tokio::test]
     async fn subscription_accepts_live_change_resnapshot_and_later_change() {
@@ -433,7 +434,7 @@ mod tests {
         });
         let client = ApiClient::http1(address, &"a".repeat(64)).unwrap();
         let error = tokio::time::timeout(
-            Duration::from_secs(11),
+            IO_TIMEOUT + Duration::from_secs(1),
             client.query(Statement::new("SELECT 1", [])),
         )
         .await

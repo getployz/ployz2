@@ -174,7 +174,7 @@ mod tests {
     };
 
     use super::{AdminClient, decode_member_rtt, decode_membership_state, decode_response};
-    use crate::corrosion::Error;
+    use crate::corrosion::{Error, IO_TIMEOUT};
 
     #[test]
     fn malformed_response_is_a_protocol_error() {
@@ -279,7 +279,7 @@ mod tests {
         });
 
         let error = tokio::time::timeout(
-            std::time::Duration::from_secs(11),
+            IO_TIMEOUT + std::time::Duration::from_secs(1),
             AdminClient::new(path).membership_states(),
         )
         .await
