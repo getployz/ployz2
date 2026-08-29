@@ -83,15 +83,6 @@ pub async fn update_records_if_reserved(client: &mut Client) -> Result<(), Error
     }
 }
 
-/// Publish remaining ingress public IPs after a Machine leaves.
-///
-/// Uses the pre-removal membership snapshot and ingress IDs so refresh does
-/// not Inspect over a reconverging mesh. HTTP probe still runs against public
-/// IPs. An empty remaining set skips the write and keeps last-known-good records.
-///
-/// # Errors
-///
-/// Returns a connection or hosted-DNS error. An unreserved domain is success.
 pub(crate) async fn update_records_after_removal(
     client: &mut Client,
     members: Vec<MachineObservation>,
