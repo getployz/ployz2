@@ -547,6 +547,39 @@ mod tests {
     }
 
     #[test]
+    fn remaining_members_omit_a_public_machine_that_was_not_ingress() {
+        let remaining = remaining_members(
+            [
+                machine('1', "192.0.2.1"),
+                machine('2', "198.51.100.1"),
+                machine('3', "203.0.113.1"),
+            ],
+            &MachineId::parse("2".repeat(32)).unwrap(),
+        );
+        let records = records_from_machines(&remaining).unwrap();
+        assert_eq!(
+            records,
+            vec![DnsRecord {
+                name: "*".into(),
+                record_type: DnsRecordType::A,
+                values: vec!["192.0.2.1".into()],
+            }]
+        );
+    }
+
+    #[test]
+    fn remaining_members_are_empty_when_the_last_ingress_machine_is_removed() {
+        let remaining = remaining_members(
+            [
+                machine('1', "192.0.2.1"),
+                machine('3', "203.0.113.1"),
+            ],
+            &MachineId::parse("1".repeat(32)).unwrap(),
+        );
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
     fn reachability_requires_status_200_and_the_exact_machine_id_bytes() {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
         let exact = machine_id.as_str().as_bytes();
