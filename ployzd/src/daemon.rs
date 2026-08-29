@@ -488,10 +488,10 @@ async fn stop_servers(
     if let Some(result) = completed {
         return result;
     }
-    if let Some(drain) = drain {
-        if let Ok(result) = tokio::time::timeout(drain, &mut *servers).await {
-            return join_servers(result);
-        }
+    if let Some(drain) = drain
+        && let Ok(result) = tokio::time::timeout(drain, &mut *servers).await
+    {
+        return join_servers(result);
     }
     servers.abort();
     join_servers(servers.await)
