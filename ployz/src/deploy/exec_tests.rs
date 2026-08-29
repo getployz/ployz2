@@ -132,7 +132,8 @@ impl MachineOperations for Scripted {
                 container_id,
             }),
             Reply::Error(error) => Err(error),
-            Reply::Ok | Reply::Listed(_) | Reply::Observed(_, _) | Reply::Pending => {
+            Reply::Pending => std::future::pending().await,
+            Reply::Ok | Reply::Listed(_) | Reply::Observed(_, _) => {
                 panic!("scripted create requires Created or Error")
             }
         }

@@ -163,3 +163,35 @@ async fn start_unavailable_stops_waiting_when_cancelled() {
     ));
     client.assert_done();
 }
+
+#[tokio::test(start_paused = true)]
+async fn hung_create_stops_when_cancelled() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted::new(vec![Step(
+        Call::Create(machine, ContainerKind::ServiceContainer),
+        Reply::Pending,
+    )]);
+    let cancellation = CancellationToken::new();
+    let execute = execute_with(&plan, &client, &cancellation);
+    tokio::pin!(execute);
+    tokio::select! {
+        outcome = &mut execute => panic!("create returned before cancel: {outcome:?}"),
+        () = tokio::time::sleep(std::time::Duration::from_millis(1)) => {}
+    }
+    cancellation.cancel();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), execute)
+        .await
+        .expect("cancelled create must return");
+
+    assert!(matches!(
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Cancelled,
+                ..
+            },
+            ..
+        }
+    ));
+}

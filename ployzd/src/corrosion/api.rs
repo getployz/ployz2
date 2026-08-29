@@ -406,4 +406,34 @@ mod tests {
         .unwrap();
         server.abort();
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn query_times_out_when_corrosion_never_replies() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/queries",
+                    post(|| async { std::future::pending::<Body>().await }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::http1(address, &"a".repeat(64)).unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(11),
+            client.query(Statement::new("SELECT 1", [])),
+        )
+        .await
+        .expect("hung query must fail")
+        .expect_err("hung query must fail");
+        assert!(
+            matches!(error, super::Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
+            "{error}"
+        );
+        server.abort();
+    }
 }

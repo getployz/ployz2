@@ -261,6 +261,35 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn membership_states_times_out_when_admin_never_replies() {
+        let root = std::env::temp_dir().join(format!(
+            "ployzd-corrosion-admin-hang-{}",
+            ployz_core::MachineId::random()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("admin.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(11),
+            AdminClient::new(path).membership_states(),
+        )
+        .await
+        .expect("hung admin must fail")
+        .expect_err("hung admin must fail");
+        assert!(
+            matches!(error, Error::Io(ref error) if error.kind() == io::ErrorKind::TimedOut),
+            "{error}"
+        );
+        server.abort();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     async fn read_frame(stream: &mut tokio::net::UnixStream) -> io::Result<Vec<u8>> {
         let length = stream.read_u32().await?;
         let mut data = vec![0; length as usize];
