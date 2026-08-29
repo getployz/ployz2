@@ -370,7 +370,9 @@ impl LocalMachine {
 
     /// Assign a new Machine into the Cluster from this participating Machine
     /// when cluster KV names this Machine as Allocator. A replica row with the
-    /// same public key and name is returned as-is, without publishing.
+    /// same public key and name is returned as-is, without publishing. Replay
+    /// requires this Machine to be participating so catch-up cannot hand out a
+    /// partial replica.
     ///
     /// # Errors
     ///
@@ -386,9 +388,6 @@ impl LocalMachine {
     /// another Machine or is missing, [`Error::Network`] when subnet allocation
     /// fails, and [`Error::Cluster`] when replicated I/O fails.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
-        if let Some(registered) = self.committed_registration(&request).await? {
-            return Ok(registered);
-        }
         if request.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints.into());
         }
@@ -399,6 +398,9 @@ impl LocalMachine {
             }
             record.id()
         };
+        if let Some(registered) = self.committed_registration(&request).await? {
+            return Ok(registered);
+        }
         if self.isolation_locked().await? {
             return Err(Error::IsolationLocked);
         }

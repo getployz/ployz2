@@ -151,6 +151,48 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
 }
 
 #[tokio::test]
+async fn register_does_not_reconstruct_membership_while_joining() {
+    let (allocator, replicated, _founder, data_dir, server) = participating().await;
+    let joiner_dir =
+        std::env::temp_dir().join(format!("ployzd-register-joining-{}", MachineId::random()));
+    let joiner_store = Arc::new(Mutex::new(LocalMachineStore::open(&joiner_dir).unwrap()));
+    let public_key = joiner_store
+        .lock()
+        .unwrap()
+        .record()
+        .wireguard_private_key
+        .public_key();
+    let registered = allocator
+        .register(request("peer", public_key))
+        .await
+        .unwrap();
+    let joiner = LocalMachine::new(joiner_store, watch::channel(false).0).with_cluster(Some((
+        replicated.clone(),
+        AdminClient::new("/no/such/ployz-admin.sock"),
+    )));
+    joiner
+        .join(JoinRequest {
+            registration: registered,
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
+        .unwrap();
+    assert_eq!(joiner.record().unwrap().phase(), LocalMachinePhase::Joining);
+
+    let error = joiner
+        .register(request("peer", public_key))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LocalMachineError::NotParticipating));
+
+    server.abort();
+    drop(allocator);
+    drop(joiner);
+    let _ = std::fs::remove_dir_all(data_dir);
+    let _ = std::fs::remove_dir_all(joiner_dir);
+}
+
+#[tokio::test]
 async fn register_returns_the_committed_row_after_join_runtime_and_endpoint_drift() {
     let (local, replicated, _founder, data_dir, server) = participating().await;
     let key = WireGuardPublicKey([1; 32]);
