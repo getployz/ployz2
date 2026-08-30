@@ -284,7 +284,7 @@ impl Client {
     ///
     /// Down, Unknown, and Unrecognized are omitted. Up and Suspect are read
     /// independently with bounded transient retries.
-    /// UT-028: keep each probed target's success or typed failure.
+    /// Keep each probed target's success or typed failure.
     pub async fn list_volumes(
         &mut self,
         machines: &[MachineObservation],
