@@ -637,7 +637,7 @@ async fn confirm_executes_the_previewed_operations_without_re_planning() {
 async fn preview_expands_ingress_and_includes_dns_warnings() {
     let mut machine = machine('a', "one");
     machine.machine.public_ip = Some("192.0.2.1".parse().unwrap());
-    let service = DeployService::new(machine).with_domain("opaque.uncloud.example");
+    let service = DeployService::new(machine).with_domain("opaque.ployz.example");
     let mutating = service.mutating_rpcs();
     let (mut client, server) = connected(service).await;
     let spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
@@ -689,7 +689,7 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
         })
         .collect();
     assert!(
-        hostnames.contains(&"web-app.opaque.uncloud.example"),
+        hostnames.contains(&"web-app.opaque.ployz.example"),
         "ingress expansion must assign the hosted hostname: {hostnames:?}"
     );
     assert!(
@@ -719,7 +719,7 @@ async fn preview_expands_ingress_and_includes_dns_warnings() {
 async fn preview_expands_a_chosen_cluster_domain_label_without_a_project_suffix() {
     let mut machine = machine('a', "one");
     machine.machine.public_ip = Some("192.0.2.1".parse().unwrap());
-    let service = DeployService::new(machine).with_domain("opaque.uncloud.example");
+    let service = DeployService::new(machine).with_domain("opaque.ployz.example");
     let (mut client, server) = connected(service).await;
     let spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
         "name": "web",
@@ -759,7 +759,7 @@ async fn preview_expands_a_chosen_cluster_domain_label_without_a_project_suffix(
             ployz_core::PortPublication::Host { .. } => None,
         })
         .collect();
-    assert_eq!(hostnames, ["api.opaque.uncloud.example"]);
+    assert_eq!(hostnames, ["api.opaque.ployz.example"]);
     server.abort();
 }
 
@@ -767,14 +767,14 @@ async fn preview_expands_a_chosen_cluster_domain_label_without_a_project_suffix(
 async fn preview_rejects_a_visible_owner_of_an_expanded_chosen_label() {
     let mut machine = machine('a', "one");
     machine.machine.public_ip = Some("192.0.2.1".parse().unwrap());
-    let service = DeployService::new(machine.clone()).with_domain("opaque.uncloud.example");
+    let service = DeployService::new(machine.clone()).with_domain("opaque.ployz.example");
     let mut owner_spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
         "name": "web",
         "mode": { "mode": "replicated", "replicas": 1 },
         "container": { "image": "nginx", "pull_policy": "always" },
         "ports": [{
             "mode": "ingress",
-            "hostname": { "kind": "explicit", "hostname": "api.opaque.uncloud.example" },
+            "hostname": { "kind": "explicit", "hostname": "api.opaque.ployz.example" },
             "load_balancer_port": 80,
             "container_port": 8080,
             "http_protocol": "http"
@@ -805,12 +805,12 @@ async fn preview_rejects_a_visible_owner_of_an_expanded_chosen_label() {
     assert!(matches!(
         &error,
         DeployError::Plan(PlanError::HostnameConflict { hostname, owner })
-            if hostname.as_str() == "api.opaque.uncloud.example"
+            if hostname.as_str() == "api.opaque.ployz.example"
                 && *owner == QualifiedService::parse("blog/web").unwrap()
     ));
     assert_eq!(
         error.to_string(),
-        "hostname api.opaque.uncloud.example is already published by blog/web"
+        "hostname api.opaque.ployz.example is already published by blog/web"
     );
     server.abort();
 }
@@ -819,7 +819,7 @@ async fn preview_rejects_a_visible_owner_of_an_expanded_chosen_label() {
 async fn preview_rejects_a_combined_ingress_label_over_63_characters() {
     let mut machine = machine('a', "one");
     machine.machine.public_ip = Some("192.0.2.1".parse().unwrap());
-    let service = DeployService::new(machine).with_domain("opaque.uncloud.example");
+    let service = DeployService::new(machine).with_domain("opaque.ployz.example");
     let (mut client, server) = connected(service).await;
     let spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
         "name": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

@@ -74,14 +74,14 @@ mod tests {
 
     #[test]
     fn under_cluster_domain_requires_a_label_boundary() {
-        let domain = Some("opaque.uncloud.example");
-        assert!(host("web.opaque.uncloud.example").under_cluster_domain(domain));
-        assert!(host("opaque.uncloud.example").under_cluster_domain(domain));
+        let domain = Some("opaque.ployz.example");
+        assert!(host("web.opaque.ployz.example").under_cluster_domain(domain));
+        assert!(host("opaque.ployz.example").under_cluster_domain(domain));
         assert!(!host("app.example.com").under_cluster_domain(domain));
-        assert!(!host("web.opaque.uncloud.example").under_cluster_domain(None));
-        assert!(!host("web.opaque.uncloud.example").under_cluster_domain(Some("")));
+        assert!(!host("web.opaque.ployz.example").under_cluster_domain(None));
+        assert!(!host("web.opaque.ployz.example").under_cluster_domain(Some("")));
         assert!(
-            !host("evilopaque.uncloud.example").under_cluster_domain(domain),
+            !host("evilopaque.ployz.example").under_cluster_domain(domain),
             "a suffix without a label boundary is not under the Cluster Domain"
         );
     }

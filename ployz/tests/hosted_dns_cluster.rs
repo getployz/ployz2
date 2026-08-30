@@ -45,7 +45,7 @@ impl FakeHostedService {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_cluster_boundaries() {
     let plan = ClusterPlan::new(&format!("l3-hosted-dns-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -102,7 +102,7 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
         )
         .unwrap();
     assert!(stored.contains("raw-token"), "stored reservation: {stored}");
-    assert!(stored.contains("opaque.uncloud.example"));
+    assert!(stored.contains("opaque.ployz.example"));
 
     let initial = hosted.requests();
     assert_eq!(domain_requests(&initial), 1);
@@ -128,14 +128,14 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
     let second_direct = cluster.api_address(1).unwrap();
     assert_eq!(
         cli(&second_direct, &["dns", "show"]).trim(),
-        "opaque.uncloud.example"
+        "opaque.ployz.example"
     );
     cluster.restart(1).unwrap();
     assert_eq!(
         wait_cli_success(&second_direct, &["dns", "show"])
             .await
             .trim(),
-        "opaque.uncloud.example"
+        "opaque.ployz.example"
     );
     let duplicate = run_cli(
         &second_direct,
@@ -179,7 +179,7 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
     assert_eq!(hosted.requests().len(), before_empty);
     assert_eq!(
         cli(&direct, &["dns", "show"]).trim(),
-        "opaque.uncloud.example"
+        "opaque.ployz.example"
     );
 
     let mut client = ployz::connect::connect(
@@ -234,7 +234,7 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
     let before_release = after_rejection.len();
     assert_eq!(
         cli(&direct, &["dns", "release"]).trim(),
-        "Released Cluster domain: opaque.uncloud.example"
+        "Released Cluster domain: opaque.ployz.example"
     );
     let missing = run_cli(&direct, &["dns", "show"]);
     assert!(!missing.status.success());
@@ -245,7 +245,7 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
     assert!(
         purge
             .head
-            .starts_with("POST /domains/opaque.uncloud.example/purgerecords HTTP/1.1\r\n")
+            .starts_with("POST /domains/opaque.ployz.example/purgerecords HTTP/1.1\r\n")
     );
     assert!(
         purge
@@ -257,7 +257,7 @@ async fn hosted_dns_reservation_and_reachable_ingress_records_survive_real_clust
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn hosted_dns_wildcard_follows_machine_membership() {
     let plan = ClusterPlan::new(&format!("l3-dns-member-{}", process::id()), 3).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -350,7 +350,7 @@ async fn hosted_dns_wildcard_follows_machine_membership() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Layer 3: requires the privileged Ployz testkit image"]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn hosted_dns_wildcard_omits_non_ingress_members_after_machine_removal() {
     let plan = ClusterPlan::new(&format!("l3-dns-mixed-{}", process::id()), 3).unwrap();
     let cluster = Cluster::create(plan).unwrap();
@@ -564,12 +564,12 @@ async fn fake_hosted_service() -> (u16, FakeHostedService) {
             let (status, response) = if path == "/domains" {
                 (
                     200,
-                    json!({"name":"opaque.uncloud.example","token":"raw-token"}),
+                    json!({"name":"opaque.ployz.example","token":"raw-token"}),
                 )
-            } else if path == "/domains/opaque.uncloud.example/purgerecords" {
-                (202, json!({"name":"opaque.uncloud.example"}))
+            } else if path == "/domains/opaque.ployz.example/purgerecords" {
+                (202, json!({"name":"opaque.ployz.example"}))
             } else {
-                assert_eq!(path, "/domains/opaque.uncloud.example/records");
+                assert_eq!(path, "/domains/opaque.ployz.example/records");
                 let body: Value = serde_json::from_slice(&request.body).unwrap();
                 let reject = {
                     let mut state = server.state.lock().unwrap();
@@ -591,7 +591,7 @@ async fn fake_hosted_service() -> (u16, FakeHostedService) {
                             "name": body.get("name").unwrap(),
                             "type": body.get("type").unwrap(),
                             "values": body.get("values").unwrap(),
-                            "fqdn": "*.opaque.uncloud.example"
+                            "fqdn": "*.opaque.ployz.example"
                         }),
                     )
                 }
@@ -699,11 +699,11 @@ fn authoritative_wildcard_a(requests: &[CapturedRequest]) -> Vec<String> {
 #[test]
 fn fresh_never_cached_label_reads_the_last_published_wildcard_a() {
     let older = CapturedRequest {
-        head: "POST /domains/opaque.uncloud.example/records HTTP/1.1".into(),
+        head: "POST /domains/opaque.ployz.example/records HTTP/1.1".into(),
         body: br#"{"name":"*","type":"A","values":["192.0.2.1","198.51.100.1"]}"#.to_vec(),
     };
     let newer = CapturedRequest {
-        head: "POST /domains/opaque.uncloud.example/records HTTP/1.1".into(),
+        head: "POST /domains/opaque.ployz.example/records HTTP/1.1".into(),
         body: br#"{"name":"*","type":"A","values":["192.0.2.1"]}"#.to_vec(),
     };
     assert_eq!(
