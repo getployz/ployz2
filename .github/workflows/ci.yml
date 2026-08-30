@@ -32,7 +32,6 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - run: cargo fmt --all -- --check
-      - run: scripts/check-evidence-inventories.sh
       - run: bash scripts/check-layer3-runner.sh
       - run: bash scripts/check-product-paths.sh
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings

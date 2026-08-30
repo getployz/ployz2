@@ -674,7 +674,7 @@ fn automatic_sites_keep_unreachable_hosts_and_omit_unassigned_ports() {
             "web",
             Some([10, 210, 1, 9]),
             vec![ingress(
-                "web.opaque.uncloud.example",
+                "web.opaque.ployz.example",
                 8080,
                 HttpProtocol::Http,
             )],
@@ -696,7 +696,7 @@ fn automatic_sites_keep_unreachable_hosts_and_omit_unassigned_ports() {
 \tlog\n\
 }\n"
     ));
-    assert!(caddyfile.contains("http://web.opaque.uncloud.example"));
+    assert!(caddyfile.contains("http://web.opaque.ployz.example"));
     assert!(caddyfile.contains("reverse_proxy 10.210.1.9:8080"));
     assert!(
         serde_json::from_value::<PortPublication>(json!({

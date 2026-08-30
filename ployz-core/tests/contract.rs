@@ -1007,15 +1007,15 @@ fn hosted_dns_contract_keeps_credentials_daemon_side_and_records_exact() {
 
     assert_eq!(
         RpcResponse::from(Domain {
-            name: "opaque.uncloud.example".into()
+            name: "opaque.ployz.example".into()
         })
         .decode::<op::GetDomain>()
         .unwrap()
         .name,
-        "opaque.uncloud.example"
+        "opaque.ployz.example"
     );
     let created = vec![DnsRecord {
-        name: "*.opaque.uncloud.example".into(),
+        name: "*.opaque.ployz.example".into(),
         record_type: DnsRecordType::A,
         values: vec!["192.0.2.1".into()],
     }];

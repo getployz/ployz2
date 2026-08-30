@@ -20,7 +20,7 @@ while IFS= read -r file; do
     rel=${file#"$ROOT"/}
     case "$rel" in
         */src/*)
-            fail "$rel has a Layer 3 ignore in library code; list it in $RUNNER as --lib or drop the label"
+            fail "$rel has an informing ignore in library code; list it in $RUNNER as --lib or drop the label"
             ;;
         */tests/*/*.rs)
             basename "$(dirname "$rel")"
@@ -32,12 +32,12 @@ while IFS= read -r file; do
             fail "cannot map $rel to a cargo test binary"
             ;;
     esac
-done < <(grep -rl --include='*.rs' 'ignore = "Layer 3' "$ROOT/ployz" "$ROOT/ployz-testkit" "$ROOT/ployzd") |
+done < <(grep -rl --include='*.rs' 'ignore = "informing' "$ROOT/ployz" "$ROOT/ployz-testkit" "$ROOT/ployzd") |
     sort -u > "$required_file"
 
 required=$(cat "$required_file")
 missing=$(comm -23 <(printf '%s\n' "$required") <(printf '%s\n' "$listed"))
-[ -z "$missing" ] || fail "Layer 3 binaries missing from run-layer3-tests.sh: $missing"
+[ -z "$missing" ] || fail "informing binaries missing from run-layer3-tests.sh: $missing"
 
 extra=$(comm -13 <(printf '%s\n' "$required") <(printf '%s\n' "$listed"))
-[ -z "$extra" ] || fail "run-layer3-tests.sh lists binaries with no Layer 3 ignore: $extra"
+[ -z "$extra" ] || fail "run-layer3-tests.sh lists binaries with no informing ignore: $extra"

@@ -6,7 +6,7 @@ use ployz_core::{
     QualifiedService, ServiceAttempt,
 };
 
-const DOMAIN: &str = "opaque.uncloud.example";
+const DOMAIN: &str = "opaque.ployz.example";
 
 fn plan_ingress<'a>(
     requested: impl IntoIterator<Item = &'a RequestedServiceSpec>,
@@ -121,7 +121,7 @@ fn two_applied_specs_that_expand_to_the_same_hostname_conflict() {
     assert_eq!(
         error,
         PlanError::HostnameConflict {
-            hostname: IngressHost::parse("shared.opaque.uncloud.example").unwrap(),
+            hostname: IngressHost::parse("shared.opaque.ployz.example").unwrap(),
             owner: QualifiedService::parse("app/api").unwrap(),
         }
     );
@@ -136,7 +136,7 @@ fn visible_owner_of_an_expanded_automatic_hostname_conflicts() {
     assert_eq!(
         error,
         PlanError::HostnameConflict {
-            hostname: IngressHost::parse("web-app.opaque.uncloud.example").unwrap(),
+            hostname: IngressHost::parse("web-app.opaque.ployz.example").unwrap(),
             owner: QualifiedService::parse("blog/web").unwrap(),
         }
     );

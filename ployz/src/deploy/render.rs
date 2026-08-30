@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_plan_matches_uncloud_tree_shape() {
+    fn replace_plan_matches_tree_shape() {
         let machine_id = MachineId::parse("d".repeat(32)).unwrap();
         let old = ContainerId::parse("f".repeat(64)).unwrap();
         let spec = resolved("excalidraw", "excalidraw/excalidraw:latest");
