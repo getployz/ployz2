@@ -5,12 +5,11 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{LocalMachinePhase, MachineId};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, ReplicatedStore};
-use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore};
+use crate::machine::{LocalMachineBody, LocalMachineStore};
 
 pub async fn wait_for_catch_up(
     store: &ReplicatedStore,
@@ -105,22 +104,16 @@ pub async fn run_machine_publisher(
     }
     loop {
         if let Some(replicated) = &replicated {
-            let (cluster_network, founder_id) = {
+            let cluster_network = {
                 let local = local
                     .lock()
                     .map_err(|_| io::Error::other("local Machine record lock poisoned"))?;
-                let record = local.record();
-                (record.cluster_network(), founder_allocator_id(record))
+                local.record().cluster_network()
             };
             if let Some(network) = cluster_network
                 && let Err(error) = replicated.publish_cluster_network(network).await
             {
                 eprintln!("failed to publish Cluster network: {error}");
-            }
-            if let Some(id) = founder_id
-                && let Err(error) = replicated.publish_founder_allocator(&id).await
-            {
-                eprintln!("failed to publish Allocator: {error}");
             }
             let publication = replicated.machine_publication().await;
             let machine = {
@@ -142,10 +135,4 @@ pub async fn run_machine_publisher(
             }
         }
     }
-}
-
-#[must_use]
-pub(super) fn founder_allocator_id(record: &LocalMachineRecord) -> Option<MachineId> {
-    (record.phase() == LocalMachinePhase::Participating && record.cluster_network().is_some())
-        .then_some(record.id())
 }

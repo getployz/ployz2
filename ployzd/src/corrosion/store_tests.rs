@@ -13,10 +13,6 @@ use serde_json::json;
 
 use super::{ReplicatedStore, fake_cluster, run_machine_publisher};
 use crate::corrosion::ApiClient;
-use crate::corrosion::publisher::founder_allocator_id;
-use crate::corrosion::store::{
-    AGE_ALLOCATOR, ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, STEAL_ALLOCATOR,
-};
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
     ParticipationOrigin,
@@ -155,13 +151,6 @@ async fn volume_store_is_an_error_when_the_store_is_unreachable() {
     assert!(store.publish_volume(&volume).await.is_err());
     assert!(store.volume(&id).await.is_err());
     assert!(store.volumes().await.is_err());
-    assert!(
-        store
-            .publish_founder_allocator(&id.machine_id)
-            .await
-            .is_err()
-    );
-    assert!(store.allocator().await.is_err());
     assert!(store.ingress_proxy_backend().await.is_err());
     assert!(
         store
@@ -218,143 +207,6 @@ async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() 
             .await
             .is_err()
     );
-}
-
-#[test]
-fn founder_allocator_sql_is_quiet_and_does_not_overwrite() {
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(include_str!("schema.sql")).unwrap();
-    let id = "a".repeat(32);
-    db.execute(CLAIM_FOUNDER_ALLOCATOR, rusqlite::params![id])
-        .unwrap();
-    let (value, quiet): (String, i64) = db
-        .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap();
-    assert_eq!(value, id);
-    assert_eq!(quiet, 1);
-
-    db.execute(CLAIM_FOUNDER_ALLOCATOR, rusqlite::params!["b".repeat(32)])
-        .unwrap();
-    let value: String = db
-        .query_row(
-            "SELECT value FROM cluster WHERE key = 'allocator'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(value, id);
-}
-
-#[test]
-fn allocator_written_at_now_is_not_quiet() {
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(include_str!("schema.sql")).unwrap();
-    let id = "a".repeat(32);
-    db.execute(STEAL_ALLOCATOR, rusqlite::params![id]).unwrap();
-    let (value, quiet): (String, i64) = db
-        .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap();
-    assert_eq!(value, id);
-    assert_eq!(quiet, 0);
-}
-
-#[test]
-fn second_steal_overwrites_and_age_makes_quiet() {
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(include_str!("schema.sql")).unwrap();
-    db.execute(STEAL_ALLOCATOR, rusqlite::params!["a".repeat(32)])
-        .unwrap();
-    db.execute(STEAL_ALLOCATOR, rusqlite::params!["b".repeat(32)])
-        .unwrap();
-    let (value, quiet): (String, i64) = db
-        .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap();
-    assert_eq!(value, "b".repeat(32));
-    assert_eq!(quiet, 0);
-
-    db.execute(AGE_ALLOCATOR, []).unwrap();
-    let (value, quiet): (String, i64) = db
-        .query_row(ALLOCATOR_ROW, [], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap();
-    assert_eq!(value, "b".repeat(32));
-    assert_eq!(quiet, 1);
-}
-
-#[test]
-fn only_a_participating_founder_claims_allocator() {
-    let (machine, joined) = participating_record();
-    assert_eq!(founder_allocator_id(&joined), None);
-
-    let founder = LocalMachineRecord {
-        body: LocalMachineBody::Participating {
-            machine: machine.clone(),
-            origin: ParticipationOrigin::Founder {
-                cluster: crate::machine::FoundingCluster {
-                    network: "10.210.0.0/16".parse().unwrap(),
-                    ingress_proxy_backend: IngressProxyBackend::Caddy,
-                },
-            },
-        },
-        ..joined.clone()
-    };
-    assert_eq!(founder_allocator_id(&founder), Some(machine.id));
-
-    let resetting = LocalMachineRecord {
-        body: LocalMachineBody::Resetting {
-            prior: Box::new(LocalMachinePrior::Participating {
-                machine: machine.clone(),
-                origin: ParticipationOrigin::Founder {
-                    cluster: crate::machine::FoundingCluster {
-                        network: "10.210.0.0/16".parse().unwrap(),
-                        ingress_proxy_backend: IngressProxyBackend::Caddy,
-                    },
-                },
-            }),
-        },
-        ..joined.clone()
-    };
-    assert_eq!(founder_allocator_id(&resetting), None);
-
-    let uninitialized = LocalMachineRecord {
-        body: LocalMachineBody::Uninitialized { id: machine.id },
-        ..joined.clone()
-    };
-    assert_eq!(founder_allocator_id(&uninitialized), None);
-
-    let joining = LocalMachineRecord {
-        body: LocalMachineBody::Joining {
-            machine,
-            bootstrap: Vec::new(),
-            min_store_version: BTreeMap::new(),
-        },
-        ..joined
-    };
-    assert_eq!(founder_allocator_id(&joining), None);
-}
-
-#[tokio::test]
-async fn allocator_row_names_the_machine() {
-    let id = MachineId::parse("a".repeat(32)).unwrap();
-    let (store, server) = fake_cluster::store().await;
-    store.publish_founder_allocator(&id).await.unwrap();
-    let row = store.allocator().await.unwrap().expect("allocator row");
-    assert_eq!(row.machine_id, id);
-    assert!(row.quiet);
-    server.abort();
-}
-
-#[tokio::test]
-async fn missing_allocator_row_is_none() {
-    let (store, server) = fake_cluster::store().await;
-    assert_eq!(store.allocator().await.unwrap(), None);
-    server.abort();
-}
-
-#[tokio::test]
-async fn invalid_allocator_value_is_an_error() {
-    let (store, server) = fake_cluster::store_with_allocator_value("not-a-machine-id").await;
-    assert!(store.allocator().await.is_err());
-    server.abort();
 }
 
 #[tokio::test]

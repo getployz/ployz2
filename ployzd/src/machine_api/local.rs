@@ -11,9 +11,8 @@ use ployz_core::{
     CapabilityAdvertisement, CloudPairing, CloudPairingSet, ContainerChanged, ContainerDetails,
     ContainerList, ContainerObservationMap, ContractDescription, Domain, DomainRecords,
     ImageIngestReason, ImagePulled, IngressProxyBackend, IngressProxyConfig, LocalMachinePhase,
-    LogMetadata, LogOrigin, MachineId, MachineLogService, MachineRpc, MachineRpcClient,
-    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    VolumeRemoved, op,
+    LogMetadata, LogOrigin, MachineLogService, MachineRpc, MachineRpcClient, OpaquePayload,
+    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeRemoved, op,
 };
 use serde_json::Value;
 use tokio::{sync::watch, time::Instant};
@@ -30,7 +29,7 @@ use crate::{
     runtime_watch::serve_replicated_runtime_watch,
 };
 
-/// Metadata on a forwarded Machine-to-Machine Register. The named Allocator
+/// Metadata on a forwarded Machine-to-Machine Register. The registration target
 /// admits locally and does not forward again.
 pub(crate) const REGISTER_FORWARDED_METADATA: &str = "x-ployz-register-forwarded";
 const MAX_CONTAINER_OBSERVATION_WAIT: Duration = Duration::from_secs(5);
@@ -152,58 +151,22 @@ impl MachineService {
         &self,
         payload: OpaquePayload,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let replicated = match self.local.replicated() {
-            Ok(store) => store,
+        let target = match self.local.registration_target().await {
+            Ok(Some(target)) => target,
+            Ok(None) => return local_error(LocalMachineError::NotRegistrationTarget),
             Err(error) => return local_error(error),
         };
-        let first = match replicated.allocator().await {
-            Ok(Some(row)) => row.machine_id,
-            Ok(None) => return local_error(LocalMachineError::NotAllocator),
-            Err(error) => return local_error(error.into()),
-        };
-        if let Some(response) = self.dial_allocator(first, payload.clone()).await? {
-            return Ok(response);
-        }
-        let named = match replicated.allocator().await {
-            Ok(row) => row.map(|row| row.machine_id),
-            Err(error) => return local_error(error.into()),
-        };
-        if named != Some(first)
-            && let Some(allocator) = named
-            && let Some(response) = self.dial_allocator(allocator, payload).await?
-        {
-            return Ok(response);
-        }
-        let me = match self.local_record() {
-            Ok(record) => record.id(),
-            Err(error) => return Err(error),
-        };
-        match self.local.isolation_locked().await {
-            Ok(true) => return local_error(LocalMachineError::IsolationLocked),
-            Ok(false) => {}
-            Err(error) => return local_error(error),
-        }
-        match replicated.steal_allocator(&me).await {
-            Ok(()) => local_error(LocalMachineError::AllocatorNotQuiet),
-            Err(error) => local_error(error.into()),
+        match self.dial_registration_target(&target, payload).await? {
+            Some(response) => Ok(response),
+            None => respond(unavailable("Registration target is unreachable")),
         }
     }
 
-    async fn dial_allocator(
+    async fn dial_registration_target(
         &self,
-        allocator: MachineId,
+        target: &ployz_core::Machine,
         payload: OpaquePayload,
     ) -> Result<Option<Response<OpaquePayload>>, Status> {
-        let replicated = match self.local.replicated() {
-            Ok(store) => store,
-            Err(error) => return local_error(error).map(Some),
-        };
-        let Some(target) = (match replicated.machine(allocator.as_str()).await {
-            Ok(machine) => machine,
-            Err(error) => return local_error(error.into()).map(Some),
-        }) else {
-            return Ok(None);
-        };
         let endpoint = Endpoint::from_shared(format!(
             "http://[{}]:{}",
             target.management_address.0, self.machine_api_port
@@ -300,7 +263,7 @@ impl MachineRpc for MachineService {
             return finish(self.local.register(decoded).await);
         }
         match self.local.register(decoded).await {
-            Err(LocalMachineError::NotAllocator) => self.forward_register(payload).await,
+            Err(LocalMachineError::NotRegistrationTarget) => self.forward_register(payload).await,
             other => finish(other),
         }
     }
@@ -945,9 +908,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             message,
             details: Value::Null,
         }),
-        LocalMachineError::AllocatorNotQuiet
-        | LocalMachineError::NotAllocator
-        | LocalMachineError::IsolationLocked => respond(unavailable(&error.to_string())),
+        LocalMachineError::NotRegistrationTarget | LocalMachineError::IsolationLocked => {
+            respond(unavailable(&error.to_string()))
+        }
     }
 }
 

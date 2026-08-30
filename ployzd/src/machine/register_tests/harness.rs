@@ -28,22 +28,6 @@ pub(super) async fn participating() -> (
     std::path::PathBuf,
     tokio::task::JoinHandle<()>,
 ) {
-    let setup = participating_without_allocator().await;
-    setup
-        .1
-        .publish_founder_allocator(&setup.2.id)
-        .await
-        .unwrap();
-    setup
-}
-
-pub(super) async fn participating_without_allocator() -> (
-    LocalMachine,
-    ReplicatedStore,
-    Machine,
-    std::path::PathBuf,
-    tokio::task::JoinHandle<()>,
-) {
     let (replicated, server) = fake_cluster::store().await;
     let (data_dir, store, founder) = open_store("ployzd-register");
     replicated.publish_local_machine(&founder).await.unwrap();
@@ -166,10 +150,10 @@ pub(super) async fn write_admin_frame(stream: &mut UnixStream, data: &[u8]) -> i
     stream.write_all(data).await
 }
 
-pub(super) fn unreachable_allocator(id: MachineId) -> Machine {
+pub(super) fn unreachable_machine(id: MachineId) -> Machine {
     Machine {
         id,
-        name: MachineName::parse("allocator").unwrap(),
+        name: MachineName::parse("target").unwrap(),
         subnet: "10.210.0.0/24".parse().unwrap(),
         management_address: ManagementAddress(Ipv6Addr::LOCALHOST),
         public_key: WireGuardPublicKey([3; 32]),

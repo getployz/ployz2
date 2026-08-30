@@ -27,8 +27,8 @@ fn non_participating_update_is_a_typed_conflict() {
 }
 
 #[test]
-fn allocator_not_quiet_is_retryable_unavailable() {
-    let RpcResponseBody::Error(error) = local_error(LocalMachineError::AllocatorNotQuiet)
+fn non_target_does_not_allocate() {
+    let RpcResponseBody::Error(error) = local_error(LocalMachineError::NotRegistrationTarget)
         .unwrap()
         .into_inner()
         .decode_response()
@@ -38,22 +38,7 @@ fn allocator_not_quiet_is_retryable_unavailable() {
         panic!("expected error payload");
     };
     assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, "Allocator is not quiet");
-}
-
-#[test]
-fn not_allocator_does_not_allocate() {
-    let RpcResponseBody::Error(error) = local_error(LocalMachineError::NotAllocator)
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .body
-    else {
-        panic!("expected error payload");
-    };
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, "this Machine is not the Allocator");
+    assert_eq!(error.message, "this Machine is not the registration target");
 }
 
 #[tokio::test]

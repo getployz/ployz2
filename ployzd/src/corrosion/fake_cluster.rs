@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     convert::Infallible,
     sync::{Arc, Mutex},
 };
@@ -16,14 +16,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::broadcast};
 
-use super::store::{
-    AGE_ALLOCATOR, ALLOCATOR_ROW, CLAIM_FOUNDER_ALLOCATOR, PUBLISH_FOUNDING_INGRESS_PROXY_BACKEND,
-    STEAL_ALLOCATOR,
-};
+use super::store::PUBLISH_FOUNDING_INGRESS_PROXY_BACKEND;
 use super::{ApiClient, ReplicatedStore};
-use ployz_core::{INGRESS_PROXY_BACKEND_CLUSTER_KEY, MachineId};
-
-const PUSH_ALLOCATOR_READ: &str = "INSERT INTO allocator_script (value) VALUES (?)";
+use ployz_core::INGRESS_PROXY_BACKEND_CLUSTER_KEY;
 
 #[derive(Clone)]
 struct ClusterKv {
@@ -33,8 +28,6 @@ struct ClusterKv {
     containers: BTreeMap<String, String>,
     container_changes: broadcast::Sender<()>,
     container_subscriptions: bool,
-    allocator: Option<(String, bool)>,
-    allocator_script: VecDeque<(String, bool)>,
 }
 
 #[derive(Deserialize)]
@@ -44,28 +37,21 @@ struct Statement {
 }
 
 pub(crate) async fn store() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(None, None, false).await
+    bind(None, false).await
 }
 
 pub(crate) async fn store_with_container_changes() -> (ReplicatedStore, tokio::task::JoinHandle<()>)
 {
-    bind(None, None, true).await
-}
-
-pub(crate) async fn store_with_allocator_value(
-    value: &str,
-) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(Some((value.to_owned(), true)), None, false).await
+    bind(None, true).await
 }
 
 pub(crate) async fn store_with_ingress_proxy_backend_value(
     value: &str,
 ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(None, Some(value.to_owned()), false).await
+    bind(Some(value.to_owned()), false).await
 }
 
 async fn bind(
-    allocator: Option<(String, bool)>,
     ingress_proxy_backend: Option<String>,
     container_subscriptions: bool,
 ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
@@ -79,8 +65,6 @@ async fn bind(
         containers: BTreeMap::new(),
         container_changes,
         container_subscriptions,
-        allocator,
-        allocator_script: VecDeque::new(),
     }));
     let server = tokio::spawn(async move {
         axum::serve(
@@ -143,7 +127,7 @@ async fn subscriptions(
 }
 
 fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
-    let mut kv = kv.lock().unwrap();
+    let kv = kv.lock().unwrap();
     match statement.query.as_str() {
         "SELECT id, info FROM machines ORDER BY name" => events(
             &["id", "info"],
@@ -177,17 +161,6 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
                     .map(|backend| vec![json!(backend)]),
             )
         }
-        ALLOCATOR_ROW => {
-            if let Some(row) = kv.allocator_script.pop_front() {
-                kv.allocator = Some(row);
-            }
-            events(
-                &["allocator", "quiet"],
-                kv.allocator
-                    .iter()
-                    .map(|(id, quiet)| vec![json!(id), json!(u8::from(*quiet))]),
-            )
-        }
         "SELECT site_id, db_version FROM crsql_db_versions" => {
             events(&["site_id", "db_version"], Vec::new())
         }
@@ -199,22 +172,6 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
     let mut kv = kv.lock().unwrap();
     for statement in &statements {
         match statement.query.as_str() {
-            CLAIM_FOUNDER_ALLOCATOR => {
-                let id = text_param(&statement.params, 0).to_owned();
-                kv.allocator.get_or_insert((id, true));
-            }
-            STEAL_ALLOCATOR => {
-                kv.allocator = Some((text_param(&statement.params, 0).to_owned(), false));
-            }
-            AGE_ALLOCATOR => {
-                if let Some((_, quiet)) = &mut kv.allocator {
-                    *quiet = true;
-                }
-            }
-            PUSH_ALLOCATOR_READ => {
-                kv.allocator_script
-                    .push_back((text_param(&statement.params, 0).to_owned(), true));
-            }
             PUBLISH_FOUNDING_INGRESS_PROXY_BACKEND => {
                 assert_eq!(
                     text_param(&statement.params, 0),
@@ -262,29 +219,4 @@ fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>>) -> Bytes
     }
     body.extend(br#"{"eoq":{"time":0.0}}"#);
     body.into()
-}
-
-pub(crate) async fn age_allocator(store: &ReplicatedStore) {
-    store
-        .api()
-        .execute([super::Statement::new(AGE_ALLOCATOR, [])])
-        .await
-        .unwrap();
-}
-
-/// Next `allocator()` reads: `current`, `current`, then `then` (quiet).
-pub(crate) async fn name_allocator_on_reread(
-    store: &ReplicatedStore,
-    current: &MachineId,
-    then: &MachineId,
-) {
-    store
-        .api()
-        .execute([
-            super::Statement::new(PUSH_ALLOCATOR_READ, [json!(current)]),
-            super::Statement::new(PUSH_ALLOCATOR_READ, [json!(current)]),
-            super::Statement::new(PUSH_ALLOCATOR_READ, [json!(then)]),
-        ])
-        .await
-        .unwrap();
 }
