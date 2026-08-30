@@ -47,9 +47,6 @@ state converges eventually once the partition heals.
 **Boundary.** Cloud-side organization state (enrollment, pairing) may be
 consistency-first, because it lives in one hosted service rather than the mesh.
 That exception stops at the Cloud boundary and never extends into the Cluster.
-New Machine registration is the narrow Cluster-side exception: it pauses on a
-partition that cannot reach its Registration Target rather than introducing an
-alternate subnet writer ([ADR 0004](docs/adr/0004-deterministic-registration-target.md)).
 
 **Red flags:** a Cluster operation that blocks on quorum or consensus, treating a
 partition as an error state rather than a working condition, importing Cloud-style
@@ -89,7 +86,7 @@ per-target detail into one boolean.
 **The bet.** Entities (Machines, Containers) are entity-keyed: their creator mints
 an opaque durable ID unilaterally, and Machine Name or Service Name collisions
 coexist forever — Name Ambiguity is preserved, never repaired. Declared,
-replicated facts (certificates, service groupings) are name-keyed:
+replicated facts (allocator role, certificates, service groupings) are name-keyed:
 concurrent writes converge to one last-writer-wins winner, losing a merge silently
 is expected, and the winner's generated ID endures as the handle that lineage and
 history attach to.
@@ -108,19 +105,17 @@ non-existence.
 
 **The bet.** Volumes, subnets, and addresses belong to one Machine; their names
 are meaningful only together with that Machine. Allocation is optimistic —
-divergent observations may produce overlapping Machine Subnets — and conflicts
-are tolerated and repaired opportunistically. Healthy concurrent registrations
-serialize through a deterministic Registration Target; this is not consensus or
-partition-safe uniqueness ([ADR 0004](docs/adr/0004-deterministic-registration-target.md)).
+concurrent changes may produce overlapping Machine Subnets — and conflicts are
+tolerated and repaired opportunistically, never prevented by a mandatory global
+allocation step.
 
 **Why.** A global allocator that must answer before a Machine can act is a
-consistency dependency in disguise. The Registration Target is derived from
-replicated Machines without a lease, leadership row, or failover protocol, and
-accepts bounded registration unavailability to prevent collisions when those
-observations have converged.
+consistency dependency in disguise; it turns every partition into an outage. The
+Allocator that does exist is itself only a Replicated Observation.
 
 **Red flags:** a resource identity meaningful without its Machine, a required
-allocator lease or leadership protocol, claiming partition-safe uniqueness.
+round trip to an allocator, refusing to operate because an allocator is
+unreachable.
 
 ## 7. Cloud drives, never owns
 
