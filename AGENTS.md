@@ -10,7 +10,7 @@ Prefer simple diagrams. Use `$i-have-adhd` output.
 
 After a behavior change, name the **rung** and the test. Climb only when a lower rung cannot go red for the bug. Look up the path in `evidence/product-paths.tsv`. Fill a `gap` at the lowest empty honest rung.
 
-1. Crate unit
+1. Fastest local check (crate unit, or a Fast CI shell contract such as `scripts/test-cli-installer.sh`)
 2. Layer 1 semantic (`cargo test`, not ignored)
 3. CLI shape (`ployz/tests/cli_shape.rs`, `*_cli.rs`)
 4. Informing cluster (`#[ignore = "Layer 3"]` and listed in `scripts/run-layer3-tests.sh`)

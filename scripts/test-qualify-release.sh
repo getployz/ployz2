@@ -17,6 +17,9 @@ if grep -qi vultr "$ROOT/scripts/qualify-release.sh" "$ROOT/docs/RELEASE.md"; th
 fi
 
 grep -Fq 'PLOYZ_RELEASE_DIR' "$ROOT/scripts/install.sh" || fail "install.sh does not honor PLOYZ_RELEASE_DIR"
+grep -Fq 'action=replace' "$ROOT/scripts/install.sh" || fail "install.sh does not force replace for a local archive"
+grep -Fq 'PLOYZ_QUALIFY_RESET' "$ROOT/scripts/qualify-release.sh" || fail "qualify-release has no reset opt-in"
+grep -Fq -- '--ssh-key' "$ROOT/scripts/qualify-release.sh" || fail "qualify-release does not forward an SSH identity to ployz"
 grep -Fq 'qualify-data' "$ROOT/scripts/qualify-release/compose.yaml" || fail "compose fixture has no named volume"
 grep -Fq -- '--no-fail-fast' "$ROOT/scripts/run-layer3-tests.sh" || fail "layer3 runner still fail-fasts"
 
@@ -41,6 +44,26 @@ output=$(
 )
 printf '%s\n' "$output" | grep -Fq 'qualify dry-run' || fail "dry-run did not print the plan"
 printf '%s\n' "$output" | grep -Fq 'named volume' || fail "dry-run omitted the named-volume step"
+printf '%s\n' "$output" | grep -Fq 'reset: no' || fail "dry-run omitted the default no-reset policy"
+printf '%s\n' "$output" | grep -Fq 'always replace' || fail "dry-run omitted forced daemon replace"
+
+key_output=$(
+    PLOYZ_QUALIFY_HOSTS='root@192.0.2.10' \
+        PLOYZ_ARTIFACT_DIR="$TMP" \
+        PLOYZ_QUALIFY_DRY_RUN=1 \
+        PLOYZ_QUALIFY_SSH_OPTS='-o StrictHostKeyChecking=accept-new -i /tmp/qualify-key' \
+        "$ROOT/scripts/qualify-release.sh"
+)
+printf '%s\n' "$key_output" | grep -Fq 'ssh-key: /tmp/qualify-key' || fail "dry-run did not forward -i to ployz"
+
+reset_output=$(
+    PLOYZ_QUALIFY_HOSTS='root@192.0.2.10' \
+        PLOYZ_ARTIFACT_DIR="$TMP" \
+        PLOYZ_QUALIFY_DRY_RUN=1 \
+        PLOYZ_QUALIFY_RESET=1 \
+        "$ROOT/scripts/qualify-release.sh"
+)
+printf '%s\n' "$reset_output" | grep -Fq 'reset: yes' || fail "dry-run omitted reset when PLOYZ_QUALIFY_RESET=1"
 
 "$ROOT/scripts/check-layer3-runner.sh"
 "$ROOT/scripts/check-product-paths.sh"

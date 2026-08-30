@@ -462,6 +462,9 @@ install_binaries() {
     base_url="$PLOYZ_GITHUB_URL/releases/download/v$target"
 
     action=$(daemon_action "$installed_version" "$target" "$mode")
+    if [ -n "${PLOYZ_RELEASE_DIR:-}" ]; then
+        action=replace
+    fi
     if [ "$action" = keep ]; then
         log "ployzd ${installed_version} retained"
         return

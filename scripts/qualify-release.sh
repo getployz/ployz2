@@ -6,7 +6,10 @@
 #   PLOYZ_ARTIFACT_DIR=/path/to/dist \
 #   scripts/qualify-release.sh
 #
-# Optional: PLOYZ_QUALIFY_DRY_RUN=1, PLOYZ_QUALIFY_SSH_OPTS, PLOYZ_QUALIFY_CONTEXT.
+# Optional: PLOYZ_QUALIFY_DRY_RUN=1, PLOYZ_QUALIFY_SSH_OPTS, PLOYZ_QUALIFY_SSH_KEY,
+# PLOYZ_QUALIFY_CONTEXT, PLOYZ_QUALIFY_RESET=1.
+# Hosts must be uninitialized unless PLOYZ_QUALIFY_RESET=1. Reset destroys
+# managed containers on that Machine.
 
 set -euo pipefail
 
@@ -17,6 +20,7 @@ ARTIFACT_DIR=${PLOYZ_ARTIFACT_DIR:-}
 DRY_RUN=${PLOYZ_QUALIFY_DRY_RUN:-0}
 SSH_OPTS=${PLOYZ_QUALIFY_SSH_OPTS:-"-o StrictHostKeyChecking=accept-new"}
 CONTEXT=${PLOYZ_QUALIFY_CONTEXT:-qualify}
+RESET=${PLOYZ_QUALIFY_RESET:-0}
 CONFIG_DIR=
 
 error() { echo "ERROR: $*" >&2; exit 1; }
@@ -43,6 +47,26 @@ daemon_archive() {
     esac
 }
 
+if [ -n "${PLOYZ_QUALIFY_SSH_KEY:-}" ]; then
+    SSH_OPTS="$SSH_OPTS -i $PLOYZ_QUALIFY_SSH_KEY"
+fi
+
+ssh_identity() {
+    # shellcheck disable=SC2086
+    set -- $SSH_OPTS
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -i | --identity)
+                printf '%s\n' "${2:-}"
+                return
+                ;;
+        esac
+        shift
+    done
+}
+
+SSH_KEY=$(ssh_identity)
+
 ssh_host() {
     # shellcheck disable=SC2086
     ssh $SSH_OPTS "$1" "${@:2}"
@@ -66,7 +90,13 @@ if [ "$DRY_RUN" != 0 ]; then
     echo "hosts: ${HOST_LIST[*]}"
     echo "artifacts: $ARTIFACT_DIR"
     echo "compose: $COMPOSE_DIR/compose.yaml"
-    echo "steps: install daemon from PLOYZ_RELEASE_DIR, machine init --no-install, machine add, deploy named volume qualify-data, volume ls"
+    echo "ssh-key: ${SSH_KEY:-cli-default}"
+    if [ "$RESET" != 0 ]; then
+        echo "reset: yes (--yes on machine init)"
+    else
+        echo "reset: no (initialized hosts fail without PLOYZ_QUALIFY_RESET=1)"
+    fi
+    echo "steps: install daemon from PLOYZ_RELEASE_DIR (always replace), machine init --no-install, machine add, deploy named volume qualify-data, volume ls"
     exit 0
 fi
 
@@ -100,12 +130,23 @@ done
 
 first=${HOST_LIST[0]}
 echo "machine init $first"
-"$PLOYZ" machine init --yes --no-install --context "$CONTEXT" "$first"
+init_cmd=("$PLOYZ" machine init --no-install --context "$CONTEXT")
+if [ "$RESET" != 0 ]; then
+    init_cmd+=(--yes)
+fi
+if [ -n "$SSH_KEY" ]; then
+    init_cmd+=(--ssh-key "$SSH_KEY")
+fi
+"${init_cmd[@]}" "$first"
 
 i=1
 while [ "$i" -lt "${#HOST_LIST[@]}" ]; do
     echo "machine add ${HOST_LIST[$i]}"
-    "$PLOYZ" machine add --yes --no-install --context "$CONTEXT" "${HOST_LIST[$i]}"
+    add_cmd=("$PLOYZ" machine add --yes --no-install --context "$CONTEXT")
+    if [ -n "$SSH_KEY" ]; then
+        add_cmd+=(--ssh-key "$SSH_KEY")
+    fi
+    "${add_cmd[@]}" "${HOST_LIST[$i]}"
     i=$((i + 1))
 done
 
