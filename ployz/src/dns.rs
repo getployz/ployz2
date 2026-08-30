@@ -18,7 +18,8 @@ use crate::connect::{Client, ConnectError};
 
 const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Default hosted DNS API. `dns reserve`, `machine init`, and `cloud enroll` share this.
+/// Default hosted DNS API (`dns.uncloud.run` until Ployz hosts its own).
+/// `dns reserve`, `machine init`, and `cloud enroll` share this.
 pub(crate) const HOSTED_DNS_ENDPOINT: &str = "https://dns.uncloud.run/v1";
 
 #[derive(Debug, Error)]
@@ -626,7 +627,7 @@ mod tests {
         let mut spec = requested(vec![
             ingress(IngressHostname::cluster_domain(), HttpProtocol::Http),
             ingress(explicit("app.example.com"), HttpProtocol::Https),
-            ingress(explicit("api.opaque.uncloud.example"), HttpProtocol::Http),
+            ingress(explicit("api.opaque.ployz.example"), HttpProtocol::Http),
             PortPublication::Host {
                 bind: ployz_core::HostBind::All,
                 published_port: NonZeroU16::new(8080).unwrap(),
@@ -635,16 +636,13 @@ mod tests {
             },
         ]);
 
-        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.uncloud.example")).unwrap();
+        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.ployz.example")).unwrap();
         assert_eq!(
             spec.ports,
             vec![
-                ingress(
-                    explicit("web-app.opaque.uncloud.example"),
-                    HttpProtocol::Http
-                ),
+                ingress(explicit("web-app.opaque.ployz.example"), HttpProtocol::Http),
                 ingress(explicit("app.example.com"), HttpProtocol::Https),
-                ingress(explicit("api.opaque.uncloud.example"), HttpProtocol::Http,),
+                ingress(explicit("api.opaque.ployz.example"), HttpProtocol::Http,),
                 PortPublication::Host {
                     bind: ployz_core::HostBind::All,
                     published_port: NonZeroU16::new(8080).unwrap(),
@@ -652,7 +650,7 @@ mod tests {
                     transport_protocol: ployz_core::TransportProtocol::Tcp,
                 },
                 ingress(
-                    explicit("web-app.opaque.uncloud.example"),
+                    explicit("web-app.opaque.ployz.example"),
                     HttpProtocol::Https
                 ),
             ]
@@ -661,7 +659,7 @@ mod tests {
 
     #[test]
     fn two_projects_get_distinct_generated_ingress_names_for_the_same_service() {
-        let domain = Some("opaque.uncloud.example");
+        let domain = Some("opaque.ployz.example");
         let mut shop = requested(vec![ingress(
             IngressHostname::cluster_domain(),
             HttpProtocol::Http,
@@ -677,14 +675,14 @@ mod tests {
         assert_eq!(
             shop.ports,
             vec![ingress(
-                explicit("web-shop.opaque.uncloud.example"),
+                explicit("web-shop.opaque.ployz.example"),
                 HttpProtocol::Http
             )]
         );
         assert_eq!(
             blog.ports,
             vec![ingress(
-                explicit("web-blog.opaque.uncloud.example"),
+                explicit("web-blog.opaque.ployz.example"),
                 HttpProtocol::Http
             )]
         );
@@ -702,7 +700,7 @@ mod tests {
         let error = expand_ingress_ports(
             &mut spec,
             &project("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            Some("opaque.uncloud.example"),
+            Some("opaque.ployz.example"),
         )
         .unwrap_err();
         assert_eq!(
@@ -714,14 +712,14 @@ mod tests {
 
     #[test]
     fn custom_hostname_under_the_cluster_domain_is_unchanged_when_the_combined_label_is_long() {
-        let hostname = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.opaque.uncloud.example";
+        let hostname = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.opaque.ployz.example";
         let mut spec = requested(vec![ingress(explicit(hostname), HttpProtocol::Https)]);
         spec.name = ployz_core::ServiceName::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
 
         expand_ingress_ports(
             &mut spec,
             &project("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            Some("opaque.uncloud.example"),
+            Some("opaque.ployz.example"),
         )
         .unwrap();
         assert_eq!(
@@ -736,11 +734,11 @@ mod tests {
             IngressHostname::cluster_domain_label("api").unwrap(),
             HttpProtocol::Http,
         )]);
-        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.uncloud.example")).unwrap();
+        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.ployz.example")).unwrap();
         assert_eq!(
             spec.ports,
             vec![ingress(
-                explicit("api.opaque.uncloud.example"),
+                explicit("api.opaque.ployz.example"),
                 HttpProtocol::Http
             )]
         );
@@ -771,13 +769,13 @@ mod tests {
         expand_ingress_ports(
             &mut spec,
             &project("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            Some("opaque.uncloud.example"),
+            Some("opaque.ployz.example"),
         )
         .unwrap();
         assert_eq!(
             spec.ports,
             vec![ingress(
-                explicit("api.opaque.uncloud.example"),
+                explicit("api.opaque.ployz.example"),
                 HttpProtocol::Https
             )]
         );
@@ -789,13 +787,13 @@ mod tests {
             explicit("app.example.com"),
             HttpProtocol::Https,
         )]);
-        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.uncloud.example")).unwrap();
+        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.ployz.example")).unwrap();
         assert_eq!(
             spec.ports,
             vec![
                 ingress(explicit("app.example.com"), HttpProtocol::Https),
                 ingress(
-                    explicit("web-app.opaque.uncloud.example"),
+                    explicit("web-app.opaque.ployz.example"),
                     HttpProtocol::Https
                 ),
             ]
@@ -835,10 +833,10 @@ mod tests {
         let elsewhere = vec!["198.51.100.10".parse().unwrap()];
         let spec = requested(vec![
             ingress(explicit("app.example.com"), HttpProtocol::Https),
-            ingress(explicit("web.opaque.uncloud.example"), HttpProtocol::Https),
+            ingress(explicit("web.opaque.ployz.example"), HttpProtocol::Https),
             ingress(IngressHostname::cluster_domain(), HttpProtocol::Https),
             ingress(explicit("plain.example.com"), HttpProtocol::Http),
-            ingress(explicit("api.opaque.uncloud.example"), HttpProtocol::Http),
+            ingress(explicit("api.opaque.ployz.example"), HttpProtocol::Http),
             PortPublication::Host {
                 bind: ployz_core::HostBind::All,
                 published_port: NonZeroU16::new(8080).unwrap(),
@@ -849,8 +847,8 @@ mod tests {
 
         let warnings =
             ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
-                "app.example.com" | "web.opaque.uncloud.example" => elsewhere.clone(),
-                "plain.example.com" | "api.opaque.uncloud.example" => Vec::new(),
+                "app.example.com" | "web.opaque.ployz.example" => elsewhere.clone(),
+                "plain.example.com" | "api.opaque.ployz.example" => Vec::new(),
                 other => panic!("unexpected {other}"),
             });
 
@@ -858,13 +856,13 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "Ingress Hostname api.opaque.uncloud.example does not resolve; it should resolve to 192.0.2.1, 192.0.2.2.",
+                "Ingress Hostname api.opaque.ployz.example does not resolve; it should resolve to 192.0.2.1, 192.0.2.2.",
                 "Ingress Hostname app.example.com resolves to 198.51.100.10; it should resolve to 192.0.2.1, 192.0.2.2. A certificate cannot be issued until it points at this Cluster.",
                 "Ingress Hostname plain.example.com does not resolve; it should resolve to 192.0.2.1, 192.0.2.2.",
-                "Ingress Hostname web.opaque.uncloud.example resolves to 198.51.100.10; it should resolve to 192.0.2.1, 192.0.2.2. A certificate cannot be issued until it points at this Cluster.",
+                "Ingress Hostname web.opaque.ployz.example resolves to 198.51.100.10; it should resolve to 192.0.2.1, 192.0.2.2. A certificate cannot be issued until it points at this Cluster.",
             ]
         );
-        for hostname in ["plain.example.com", "api.opaque.uncloud.example"] {
+        for hostname in ["plain.example.com", "api.opaque.ployz.example"] {
             let http = lines
                 .iter()
                 .find(|line| line.contains(hostname))
@@ -883,16 +881,16 @@ mod tests {
             IngressHostname::cluster_domain(),
             HttpProtocol::Https,
         )]);
-        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.uncloud.example")).unwrap();
+        expand_ingress_ports(&mut spec, &project("app"), Some("opaque.ployz.example")).unwrap();
 
         let warnings = ingress_dns_warnings([&spec], &cluster, |hostname| {
-            assert_eq!(hostname.as_str(), "web-app.opaque.uncloud.example");
+            assert_eq!(hostname.as_str(), "web-app.opaque.ployz.example");
             Vec::new()
         });
         assert_eq!(
             warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
             [
-                "Ingress Hostname web-app.opaque.uncloud.example does not resolve; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster."
+                "Ingress Hostname web-app.opaque.ployz.example does not resolve; it should resolve to 192.0.2.1. A certificate cannot be issued until it points at this Cluster."
             ]
         );
     }

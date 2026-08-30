@@ -6,13 +6,13 @@ use thiserror::Error;
 
 use crate::corrosion::ReplicatedStore;
 
-// TODO: Replace dns.uncloud.run and Uncloud-branded domains with
-// Ployz-hosted DNS once that infrastructure exists.
+// Hosted DNS still uses Uncloud's API at dns.uncloud.run. Point this at a
+// Ployz endpoint when that service exists.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Reservation {
     pub(crate) endpoint: String,
     pub(crate) name: String,
-    // TODO(UT-141): encrypt the token in the store.
+    // TODO: encrypt the token in the store.
     pub(crate) token: String,
 }
 
@@ -236,22 +236,22 @@ mod tests {
         let responses = [
             (
                 200,
-                r#"{"name":"opaque.uncloud.example","token":"raw-token"}"#,
+                r#"{"name":"opaque.ployz.example","token":"raw-token"}"#,
             ),
             (
                 200,
-                r#"{"name":"*","type":"A","values":["203.0.113.9"],"fqdn":"*.opaque.uncloud.example"}"#,
+                r#"{"name":"*","type":"A","values":["203.0.113.9"],"fqdn":"*.opaque.ployz.example"}"#,
             ),
             (
                 200,
-                r#"{"name":"*","type":"AAAA","values":["2001:db8::99"],"fqdn":"*.opaque.uncloud.example"}"#,
+                r#"{"name":"*","type":"AAAA","values":["2001:db8::99"],"fqdn":"*.opaque.ployz.example"}"#,
             ),
         ];
         let (endpoint, requests) = fake_server(responses).await;
         let client = HostedDns::new();
 
         let reservation = client.request_reservation(&endpoint).await.unwrap();
-        assert_eq!(reservation.name, "opaque.uncloud.example");
+        assert_eq!(reservation.name, "opaque.ployz.example");
         assert_eq!(reservation.token, "raw-token");
         let records = client
             .submit_records(
@@ -275,12 +275,12 @@ mod tests {
             records,
             vec![
                 DnsRecord {
-                    name: "*.opaque.uncloud.example".into(),
+                    name: "*.opaque.ployz.example".into(),
                     record_type: DnsRecordType::A,
                     values: vec!["203.0.113.9".into()],
                 },
                 DnsRecord {
-                    name: "*.opaque.uncloud.example".into(),
+                    name: "*.opaque.ployz.example".into(),
                     record_type: DnsRecordType::Aaaa,
                     values: vec!["2001:db8::99".into()],
                 },
@@ -308,7 +308,7 @@ mod tests {
             assert!(
                 request
                     .head
-                    .starts_with("POST /v1/domains/opaque.uncloud.example/records HTTP/1.1\r\n")
+                    .starts_with("POST /v1/domains/opaque.ployz.example/records HTTP/1.1\r\n")
             );
             assert!(
                 request
@@ -329,11 +329,10 @@ mod tests {
 
     #[tokio::test]
     async fn release_purges_hosted_records_even_when_the_domain_has_none() {
-        let (endpoint, requests) =
-            fake_server([(202, r#"{"name":"opaque.uncloud.example"}"#)]).await;
+        let (endpoint, requests) = fake_server([(202, r#"{"name":"opaque.ployz.example"}"#)]).await;
         let reservation = super::Reservation {
             endpoint,
-            name: "opaque.uncloud.example".into(),
+            name: "opaque.ployz.example".into(),
             token: "raw-token".into(),
         };
 
@@ -350,7 +349,7 @@ mod tests {
         assert!(
             purge
                 .head
-                .starts_with("POST /v1/domains/opaque.uncloud.example/purgerecords HTTP/1.1\r\n")
+                .starts_with("POST /v1/domains/opaque.ployz.example/purgerecords HTTP/1.1\r\n")
         );
         assert!(
             purge
@@ -388,7 +387,7 @@ mod tests {
         let (endpoint, _) = fake_server([(401, r#"{"status":401}"#)]).await;
         let reservation = super::Reservation {
             endpoint,
-            name: "opaque.uncloud.example".into(),
+            name: "opaque.ployz.example".into(),
             token: "wrong".into(),
         };
 
@@ -405,7 +404,7 @@ mod tests {
         let (endpoint, _) = fake_server([(500, r#"{"error":"route53"}"#)]).await;
         let reservation = super::Reservation {
             endpoint,
-            name: "opaque.uncloud.example".into(),
+            name: "opaque.ployz.example".into(),
             token: "raw-token".into(),
         };
 

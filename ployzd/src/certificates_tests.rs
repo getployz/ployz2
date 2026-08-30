@@ -59,7 +59,7 @@ fn wanted_hosts_are_https_ingress_only() {
             vec![
                 ingress("app.example.com", HttpProtocol::Https),
                 ingress("plain.example.com", HttpProtocol::Http),
-                ingress("web.opaque.uncloud.example", HttpProtocol::Https),
+                ingress("web.opaque.ployz.example", HttpProtocol::Https),
             ],
         ),
         observation(2, "www", vec![ingress_assign(HttpProtocol::Https)]),
@@ -77,7 +77,7 @@ fn wanted_hosts_are_https_ingress_only() {
 
     assert_eq!(
         wanted_certificate_hosts(observations.iter()),
-        BTreeSet::from([host("app.example.com"), host("web.opaque.uncloud.example"),])
+        BTreeSet::from([host("app.example.com"), host("web.opaque.ployz.example"),])
     );
     assert_eq!(
         wanted_certificate_hosts(

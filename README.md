@@ -1,6 +1,6 @@
 # ployz2
 
-Rust reconstruction of Uncloud preserving its deliberate architecture and limitations
+CLI and daemon for a cluster of Docker machines
 
 ## Install
 
