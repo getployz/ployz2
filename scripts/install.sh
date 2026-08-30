@@ -471,7 +471,11 @@ install_binaries() {
     # shellcheck disable=SC2064
     trap "rm -rf '$tmp_dir'" EXIT
     # TODO(artifact integrity): verify ployzd checksums or signatures if Ployz publishes them; this boundary intentionally relies on TLS alone.
-    curl -fsSL -o "$tmp_dir/$archive" "$base_url/$archive" || error "Failed to download $archive"
+    if [ -n "${PLOYZ_RELEASE_DIR:-}" ]; then
+        cp "$PLOYZ_RELEASE_DIR/$archive" "$tmp_dir/$archive" || error "PLOYZ_RELEASE_DIR is missing $archive"
+    else
+        curl -fsSL -o "$tmp_dir/$archive" "$base_url/$archive" || error "Failed to download $archive"
+    fi
     tar -xzf "$tmp_dir/$archive" -C "$tmp_dir"
     install -m 0755 "$tmp_dir/ployzd" "$INSTALL_BIN_DIR/ployzd"
     install -m 0755 "$tmp_dir/ployz-uninstall" "$INSTALL_BIN_DIR/ployz-uninstall"
