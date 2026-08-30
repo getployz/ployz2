@@ -1,0 +1,3 @@
+# Registration uses a deterministic target
+
+New Machine registration serializes subnet assignment on the Machine whose `(Machine Subnet, Machine ID)` sorts first. This is a narrow safety-first exception to in-Cluster AP behavior: a partition that cannot reach that Registration Target returns retryable Unavailable instead of admitting through an alternate writer, because healthy concurrent joins at the supported 200-Machine ceiling must not overlap. The target rechecks its current replica under the local publication mutex, but divergent replicas can still select different targets, so Machine Subnet allocation remains optimistic rather than consensus-fenced.

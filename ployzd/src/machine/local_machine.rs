@@ -120,10 +120,8 @@ pub enum Error {
     Docker(#[from] crate::docker::Error),
     #[error("{0}")]
     Cleanup(String),
-    #[error("Allocator is not quiet")]
-    AllocatorNotQuiet,
-    #[error("this Machine is not the Allocator")]
-    NotAllocator,
+    #[error("this Machine is not the registration target")]
+    NotRegistrationTarget,
     #[error("this Machine is isolation-locked")]
     IsolationLocked,
 }
@@ -368,11 +366,11 @@ impl LocalMachine {
         Ok(Initialized { machine })
     }
 
-    /// Assign a new Machine into the Cluster from this participating Machine
-    /// when cluster KV names this Machine as Allocator. A replica row with the
-    /// same public key and name is returned as-is, without publishing. Replay
-    /// requires this Machine to be participating so catch-up cannot hand out a
-    /// partial replica.
+    /// Assign a new Machine into the Cluster from the participating Machine with
+    /// the lowest `(Machine Subnet, Machine ID)`. A replica row with the same
+    /// public key and name is returned as-is, without publishing. Replay requires
+    /// this Machine to be participating so catch-up cannot hand out a partial
+    /// replica.
     ///
     /// # Errors
     ///
@@ -383,18 +381,13 @@ impl LocalMachine {
     /// allocation, [`Error::ClusterStoreUnavailable`] when the Cluster store
     /// is missing, [`Error::IsolationLocked`] when the machines replica is
     /// larger than three and every other Machine is uncontactable,
-    /// [`Error::AllocatorNotQuiet`] when this Machine is named Allocator but
-    /// the row is younger than 5s, [`Error::NotAllocator`] when the row names
-    /// another Machine or is missing, [`Error::Network`] when subnet allocation
-    /// fails, and [`Error::Cluster`] when replicated I/O fails.
+    /// [`Error::NotRegistrationTarget`] when another Machine sorts first,
+    /// [`Error::Network`] when subnet allocation fails, and
+    /// [`Error::Cluster`] when replicated I/O fails.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
-        let me = {
-            let record = self.record()?;
-            if record.phase() != LocalMachinePhase::Participating {
-                return Err(Error::NotParticipating);
-            }
-            record.id()
-        };
+        if self.record()?.phase() != LocalMachinePhase::Participating {
+            return Err(Error::NotParticipating);
+        }
         if let Some(registered) = self.committed_registration(&request).await? {
             return Ok(registered);
         }
@@ -404,10 +397,19 @@ impl LocalMachine {
         if self.isolation_locked().await? {
             return Err(Error::IsolationLocked);
         }
-        match self.replicated()?.allocator().await? {
-            Some(row) if row.machine_id == me => self.admit_local_register(request).await,
-            _ => Err(Error::NotAllocator),
-        }
+        self.admit_local_register(request).await
+    }
+
+    /// The Machine that sorts first by `(Machine Subnet, Machine ID)` in this
+    /// replica.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
+    /// missing and [`Error::Cluster`] when the machines replica cannot be read.
+    pub(crate) async fn registration_target(&self) -> Result<Option<Machine>, Error> {
+        let machines = self.replicated()?.machines().await?.observations;
+        Ok(registration_target(&machines).cloned())
     }
 
     async fn committed_registration(
@@ -464,13 +466,10 @@ impl LocalMachine {
             {
                 machine.clone()
             } else {
-                let me = self.record()?.id();
-                match replicated.allocator().await? {
-                    Some(row) if row.machine_id == me && row.quiet => {}
-                    Some(row) if row.machine_id == me => {
-                        return Err(Error::AllocatorNotQuiet);
-                    }
-                    Some(_) | None => return Err(Error::NotAllocator),
+                if registration_target(&snapshot.observations).map(|machine| machine.id)
+                    != Some(self.record()?.id())
+                {
+                    return Err(Error::NotRegistrationTarget);
                 }
                 let network = replicated.cluster_network().await?;
                 let assigned_machine = Machine {
@@ -680,6 +679,12 @@ impl LocalMachine {
         self.restart.send_replace(true);
         Ok(ResetAccepted {})
     }
+}
+
+fn registration_target(machines: &[Machine]) -> Option<&Machine> {
+    machines
+        .iter()
+        .min_by_key(|machine| (ipnet::Ipv4Net::from(machine.subnet).network(), machine.id))
 }
 
 fn recognize<'machines>(

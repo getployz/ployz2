@@ -203,12 +203,12 @@ An ephemeral memory-backed container mount. It is distinct from a Bind Mount, Do
 _Avoid_: Docker Volume, Provisioned Volume, persistent volume
 
 **Machine Subnet**:
-The IPv4 /24 subnet locally selected for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet after concurrent changes.
+The IPv4 /24 subnet selected during registration for one Machine's containers. It is an optimistic allocation candidate and may overlap another Machine Subnet after concurrent changes.
 _Avoid_: Reserved subnet, globally allocated subnet
 
-**Allocator**:
-The Machine named in cluster KV as the one that may assign Machine Subnets. It is a Replicated Observation, not Cluster truth.
-_Avoid_: leader, master, IPAM, Cloud IPAM
+**Registration Target**:
+The Machine selected to admit new Machines and assign Machine Subnets. It is temporary responsibility, not Cluster leadership.
+_Avoid_: Allocator, leader, master, IPAM, Cloud IPAM
 
 **Cloud Enroll Token**:
 Cloud's Organization-scoped bearer that authorizes copy-paste founding and joining. It does not own enrollment lifecycle and is not a Pairing Credential or Dial Credential.

@@ -145,13 +145,13 @@ async fn register_rejects_bad_dial_pairing_and_unknown_machine_like_connect() {
 }
 
 #[tokio::test]
-async fn register_allocator_not_quiet_is_rpc_error() {
+async fn register_unavailable_is_rpc_error() {
     let description = advertised_description();
     let session = RelaySession::start().await;
     let service = DiscoveryService::new(description.clone());
     service.set_register_error(RpcError {
         code: RpcErrorCode::Unavailable,
-        message: "Allocator is not quiet".into(),
+        message: "Registration target is unreachable".into(),
         details: serde_json::Value::Null,
     });
     let _machine = session.spawn_machine(description.machine_id, service).await;
@@ -168,17 +168,17 @@ async fn register_allocator_not_quiet_is_rpc_error() {
         ),
     )
     .await
-    .expect("Allocator not-quiet must not hang")
-    .expect_err("Allocator not-quiet is RpcError");
+    .expect("unavailable Register must not hang")
+    .expect_err("unavailable Register is RpcError");
 
     assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, "Allocator is not quiet");
+    assert_eq!(error.message, "Registration target is unreachable");
 }
 
 #[tokio::test]
 async fn node_smoke_covers_list_held_then_register() {
     let description = advertised_description();
-    let not_quiet_id = MachineId::parse("ffffffffffffffffffffffffffffffff").unwrap();
+    let unavailable_id = MachineId::parse("ffffffffffffffffffffffffffffffff").unwrap();
     let session = RelaySession::start().await;
     let _quiet = session
         .spawn_machine(
@@ -189,12 +189,12 @@ async fn node_smoke_covers_list_held_then_register() {
     let noisy = DiscoveryService::new(description.clone());
     noisy.set_register_error(RpcError {
         code: RpcErrorCode::Unavailable,
-        message: "Allocator is not quiet".into(),
+        message: "Registration target is unreachable".into(),
         details: serde_json::Value::Null,
     });
-    let _noisy = session.spawn_machine(not_quiet_id, noisy).await;
+    let _noisy = session.spawn_machine(unavailable_id, noisy).await;
     wait_held(&session.url, description.machine_id).await;
-    wait_held(&session.url, not_quiet_id).await;
+    wait_held(&session.url, unavailable_id).await;
 
     let addon = native_addon();
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -203,7 +203,7 @@ async fn node_smoke_covers_list_held_then_register() {
     let script = package.join("tests/node_register.js");
     let url = session.url.clone();
     let machine_id = description.machine_id.as_str().to_owned();
-    let not_quiet = not_quiet_id.as_str().to_owned();
+    let unavailable = unavailable_id.as_str().to_owned();
     let unknown = MachineId::random().as_str().to_owned();
 
     let output = timeout(
@@ -217,7 +217,7 @@ async fn node_smoke_covers_list_held_then_register() {
                 .env("PLOYZ_BEARER", relay::DIAL)
                 .env("PLOYZ_PAIRING", relay::PAIRING)
                 .env("PLOYZ_MACHINE_ID", machine_id)
-                .env("PLOYZ_NOT_QUIET_MACHINE_ID", not_quiet)
+                .env("PLOYZ_UNAVAILABLE_MACHINE_ID", unavailable)
                 .env("PLOYZ_UNKNOWN_MACHINE_ID", unknown)
                 .output()
         }),
