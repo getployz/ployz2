@@ -59,6 +59,8 @@ check log_uninitialized log_shows_uninitialized
 check metrics_loopback metrics_port_is_loopback
 
 mkdir -p "$EVIDENCE_DIR"
+cp "$LOG" "$EVIDENCE_DIR/ployzd.log"
+curl -fsS --max-time 2 "http://$METRICS_ADDRESS/metrics" >"$EVIDENCE_DIR/metrics.txt"
 {
     echo "instance=$INSTANCE pid=$PLOYZD_PID version=$CLI_VERSION"
     echo "socket=$SOCKET"

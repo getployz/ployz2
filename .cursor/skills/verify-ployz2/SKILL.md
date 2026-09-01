@@ -112,7 +112,7 @@ Feature recipes: [features/README.md](features/README.md).
 
 ## Evidence
 
-Write under `/opt/cursor/artifacts/verify-ployz2/<instance>/` (`VERIFY_PLOYZ2_EVIDENCE` overrides the root). `drive.sh` records cmd, stdout, stderr, exit, and config before/after. Doctor writes `doctor.txt`. Cleanup must not delete this directory.
+Write under `/opt/cursor/artifacts/verify-ployz2/<instance>/` (`VERIFY_PLOYZ2_EVIDENCE` overrides the root). `drive.sh` records cmd, stdout, stderr, exit, and config before/after. Doctor writes `doctor.txt`, `ployzd.log`, and `metrics.txt`. Cleanup must not delete this directory.
 
 Proof bar:
 
