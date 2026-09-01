@@ -139,7 +139,7 @@ impl Connector for SystemConnector {
                 args.extend(["-W".into(), address.into(), destination.target().into()]);
                 spawn_ssh(&self.ssh_program, &args)
                     .map(|stream| Box::new(stream) as BoxProxyStream)
-                    .map_err(ConnectError::from)
+                    .map_err(ConnectError::from_ssh_spawn)
             }
             Transport::Relay { .. } => Err(ConnectError::ProxyUnsupported(connection.to_string())),
         }
@@ -169,7 +169,7 @@ async fn connect_ssh(
         .kill_on_drop(true)
         .status()
         .await
-        .map_err(map_missing_ssh)?;
+        .map_err(ConnectError::from_ssh_spawn)?;
     if !status.success() {
         return Err(ConnectError::SshProbe {
             target: destination.target().to_owned(),
@@ -250,17 +250,6 @@ fn control_path() -> Option<PathBuf> {
         .then(|| directory.join("ployz_ssh_%C.sock"))
 }
 
-fn map_missing_ssh(error: io::Error) -> io::Error {
-    if error.kind() == io::ErrorKind::NotFound {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "local ssh client not found; install an ssh client",
-        )
-    } else {
-        error
-    }
-}
-
 fn spawn_ssh(program: &Path, args: &[String]) -> io::Result<SshIo> {
     let mut child = Command::new(program)
         .args(args)
@@ -268,8 +257,7 @@ fn spawn_ssh(program: &Path, args: &[String]) -> io::Result<SshIo> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
-        .spawn()
-        .map_err(map_missing_ssh)?;
+        .spawn()?;
     let reader = child
         .stdout
         .take()
@@ -340,6 +328,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
         | ConnectError::MissingMachineDetails
+        | ConnectError::SshClientMissing(_)
         | ConnectError::SshProbe { .. }
         | ConnectError::Routing(_)
         | ConnectError::Join(_)
@@ -551,6 +540,8 @@ pub enum ConnectError {
     Dial(#[from] tonic::transport::Error),
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
+    #[error("local ssh client not found; install an ssh client")]
+    SshClientMissing(#[source] io::Error),
     #[error("connection attempt failed: SSH probe to {target} exited with {status}")]
     SshProbe {
         target: String,
@@ -598,6 +589,14 @@ impl From<tonic::Status> for ConnectError {
 }
 
 impl ConnectError {
+    fn from_ssh_spawn(error: io::Error) -> Self {
+        if error.kind() == io::ErrorKind::NotFound {
+            Self::SshClientMissing(error)
+        } else {
+            Self::Io(error)
+        }
+    }
+
     pub(crate) fn is_retryable(&self) -> bool {
         match self {
             Self::Attempt(_)
@@ -610,6 +609,7 @@ impl ConnectError {
             | Self::InvalidDialCredential
             | Self::UnknownMachine
             | Self::MissingMachineDetails
+            | Self::SshClientMissing(_)
             | Self::Routing(_)
             | Self::ProxyUnsupported(_)
             | Self::UnsupportedNetwork(_)
@@ -891,10 +891,14 @@ mod tests {
         let message = connector
             .connect(&connection)
             .await
-            .expect_err("missing ssh program must fail")
-            .to_string();
-        assert!(message.contains("local ssh client not found"), "{message}");
-        assert!(!message.contains("os error"), "{message}");
-        assert!(!message.contains("No such file or directory"), "{message}");
+            .expect_err("missing ssh program must fail");
+        assert!(
+            matches!(message, ConnectError::SshClientMissing(_)),
+            "{message:?}"
+        );
+        assert_eq!(
+            message.to_string(),
+            "local ssh client not found; install an ssh client"
+        );
     }
 }
