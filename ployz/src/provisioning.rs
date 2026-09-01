@@ -17,6 +17,8 @@ pub enum ProvisionError {
     EmptyDestination,
     #[error("remote machine destination is required")]
     MissingDestination,
+    #[error("local ssh client not found; install an ssh client")]
+    SshClientMissing(#[source] io::Error),
     #[error("run ssh whoami: {0}")]
     Whoami(#[source] io::Error),
     #[error("ssh whoami failed: {0}")]
@@ -171,13 +173,21 @@ fn ssh_command(matches: &ArgMatches) -> Result<(Command, String), ProvisionError
     Ok((command, destination))
 }
 
+fn ssh_spawn_error(error: io::Error, otherwise: fn(io::Error) -> ProvisionError) -> ProvisionError {
+    if error.kind() == io::ErrorKind::NotFound {
+        ProvisionError::SshClientMissing(error)
+    } else {
+        otherwise(error)
+    }
+}
+
 pub fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(), ProvisionError> {
     let (mut whoami, destination) = ssh_command(matches)?;
     let output = whoami
         .arg(&destination)
         .arg("whoami")
         .output()
-        .map_err(ProvisionError::Whoami)?;
+        .map_err(|error| ssh_spawn_error(error, ProvisionError::Whoami))?;
     if !output.status.success() {
         return Err(ProvisionError::WhoamiFailed(
             String::from_utf8_lossy(&output.stderr).trim().to_owned(),
@@ -195,7 +205,7 @@ pub fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(), Pro
             .arg(destination)
             .arg("sudo true")
             .status()
-            .map_err(ProvisionError::Sudo)?;
+            .map_err(|error| ssh_spawn_error(error, ProvisionError::Sudo))?;
         if !status.success() {
             return Err(ProvisionError::SudoRequired {
                 user: user.to_owned(),
@@ -342,5 +352,16 @@ mod tests {
             provision_local(StorageChoice::None),
             Err(ProvisionError::NotRoot)
         ));
+    }
+
+    #[test]
+    fn missing_ssh_client_names_the_local_binary() {
+        let error = Command::new("ployz-missing-ssh-client")
+            .output()
+            .expect_err("missing program must fail to spawn");
+        let message = ssh_spawn_error(error, ProvisionError::Whoami).to_string();
+        assert_eq!(message, "local ssh client not found; install an ssh client");
+        assert!(!message.contains("os error"), "{message}");
+        assert!(!message.contains("whoami"), "{message}");
     }
 }

@@ -168,7 +168,8 @@ async fn connect_ssh(
         .args(&probe_args)
         .kill_on_drop(true)
         .status()
-        .await?;
+        .await
+        .map_err(map_missing_ssh)?;
     if !status.success() {
         return Err(ConnectError::SshProbe {
             target: destination.target().to_owned(),
@@ -249,6 +250,17 @@ fn control_path() -> Option<PathBuf> {
         .then(|| directory.join("ployz_ssh_%C.sock"))
 }
 
+fn map_missing_ssh(error: io::Error) -> io::Error {
+    if error.kind() == io::ErrorKind::NotFound {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "local ssh client not found; install an ssh client",
+        )
+    } else {
+        error
+    }
+}
+
 fn spawn_ssh(program: &Path, args: &[String]) -> io::Result<SshIo> {
     let mut child = Command::new(program)
         .args(args)
@@ -256,7 +268,8 @@ fn spawn_ssh(program: &Path, args: &[String]) -> io::Result<SshIo> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
-        .spawn()?;
+        .spawn()
+        .map_err(map_missing_ssh)?;
     let reader = child
         .stdout
         .take()
@@ -869,5 +882,19 @@ mod tests {
         }
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_ssh_program_names_the_local_client() {
+        let connector = SystemConnector::new("/ployz-missing-ssh-client");
+        let connection = Connection::ssh(SshDestination::parse("user@example.com").unwrap());
+        let message = connector
+            .connect(&connection)
+            .await
+            .expect_err("missing ssh program must fail")
+            .to_string();
+        assert!(message.contains("local ssh client not found"), "{message}");
+        assert!(!message.contains("os error"), "{message}");
+        assert!(!message.contains("No such file or directory"), "{message}");
     }
 }
