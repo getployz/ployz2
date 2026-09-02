@@ -141,6 +141,12 @@ Run `cleanup.sh` after every failed iteration so sockets and metrics ports are n
 
 ## Proved vs skipped
 
-Fill this from the live pass on this VM. Source of truth for recipes remains the feature files. Copy the table into [features/README.md](features/README.md) when it changes.
+Live pass on this Cloud VM, instance `product`, version `0.1.2-beta.29`. Transcripts: `/opt/cursor/artifacts/verify-ployz2/product/`. Isolation held (`/tmp/verify-ployz2/product/...`, not `/run/ployz`, `/var/lib/ployz`, or `~/.config/ployz`).
 
-Pending the live pass on this rewrite.
+**Proved (user command or TSV contract):** installer, daemon-install, compose-normalize, machine-init-local (stub/gap), machine-init-ssh then cluster-deploy, named-volume, exec-logs. Also TSV `cli-shape`.
+
+**machine-init-ssh caveat.** `ployz machine init ubuntu@127.0.0.1:PORT` against isolated sshd (`--no-install --no-dns --no-ingress`). Initialize accepted (`verify-1`). This VM's unprivileged `ployzd` cannot create `ployz-wg` (Netlink). A root `ployzd` on the same `--data-dir`/`--socket` became participating (`machine ls` membership `up`). Real Machines rely on `ployz.service` to restart after initialize.
+
+**Skipped:** ingress-http, internal-dns (resolver listed as `10.210.0.1` in the container `resolv.conf`, lookup of `data` failed), acme-certs. Missing: HTTP `x-ports` / ACME hostname, and the testkit image for informing rungs.
+
+Details: [features/README.md](features/README.md).

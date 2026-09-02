@@ -47,22 +47,22 @@ Sisters of cluster-deploy (`run`, `scale`, `ingress deploy`) live in [cluster-de
 
 ## Proof on this rewrite
 
-Pending the live pass. Update this table after driving; keep skips precise.
+Live pass 2026-09-02, instance `product`, CLI `0.1.2-beta.29`. Evidence: `/opt/cursor/artifacts/verify-ployz2/product/`.
 
 | Path | Status |
 | --- | --- |
-| installer | pending |
-| daemon-install | pending |
-| machine-init-ssh | pending |
-| machine-init-local | pending |
-| cluster-deploy | pending |
-| named-volume | pending |
-| exec-logs | pending |
-| ingress-http | pending |
-| internal-dns | pending |
-| acme-certs | pending |
-| compose-normalize | pending |
-| cli-shape (TSV only) | pending |
+| installer | **Proved.** `scripts/test-cli-installer.sh` exit 0. |
+| daemon-install | **Proved.** `scripts/test-daemon-lifecycle.sh` exit 0 (passwordless sudo, faked PATH). |
+| machine-init-ssh | **Proved with caveat.** User command `ployz machine init ubuntu@127.0.0.1:PORT` on isolated sshd. Initialize accepted `verify-1`. Unprivileged WireGuard netlink failed; root `ployzd` then participated. `machine ls` membership `up`. |
+| machine-init-local | **Proved as gap.** Stub stderr `local machine initialisation is not implemented; specify a remote machine`. |
+| cluster-deploy | **Proved.** `ployz deploy --yes --skip-health -f fixtures/sleep.yaml` created `verify/web`. `ps` Running, `ls` `1/1`. |
+| named-volume | **Proved.** `volume create verify-data`; `volume ls` header `MACHINE	VOLUME	TYPE	QUOTA	USED	DRIVER`; Compose `verifyvol_verify-data`. |
+| exec-logs | **Proved.** `exec -T web -- echo verify-exec`; `logs web -n 5` exit 0. |
+| ingress-http | **Skipped.** No HTTP `x-ports` service. Informing: `ingress_cluster.rs` (testkit image not pulled). |
+| internal-dns | **Skipped.** `resolv.conf` ExtServers `[10.210.0.1]`; `getent hosts data` failed. Informing: `internal_dns_cluster.rs`. |
+| acme-certs | **Skipped.** No fake CA or public hostname. Informing: `certificates_cluster.rs`. |
+| compose-normalize | **Proved.** `compose_cli.rs` test ok. `deploy --yes -f sleep.yaml` then `no contexts found in Ployz config`. Invalid yaml: Compose diagnostic. |
+| cli-shape (TSV only) | **Proved.** `cli_shape.rs` exact test ok. |
 
 ## Rest of the user CLI
 

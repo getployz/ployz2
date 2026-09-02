@@ -28,7 +28,9 @@ Preconditions:
 
 ## Gotchas
 
-- Isolated `ployzd` on this VM is not an init target. There is no local destination ([machine-init-local.md](machine-init-local.md)). `--connect unix://...` is rejected.
+- Isolated `ployzd` on this VM is not an init target unless you SSH to it. `--connect unix://...` is rejected.
+- After initialize, `ployzd` exits so systemd can restart it (`ployz.service`). A nohup daemon does not come back by itself; the CLI then reports the Machine did not become ready.
+- Creating `ployz-wg` needs CAP_NET_ADMIN. An unprivileged process gets `WireGuard operation failed: Netlink error: Failed to create WireGuard interface`.
 - `--wg-port` only accepts `51820`.
 - Hosted DNS default `--dns-endpoint` is `https://dns.uncloud.run/v1`. `--no-dns` skips that call.
 - `qualify-clean-init.sh` is the authority-rung remote recipe. Capture `ployz machine init` stdout in evidence as well.

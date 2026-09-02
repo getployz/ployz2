@@ -20,7 +20,7 @@ Preconditions:
 
 - `helpers/prepare.sh proof`. `/usr/bin/docker` plus the Compose plugin (this VM has them even when the daemon socket is not writable by `ubuntu`).
 
-- **Valid file, no Cluster.** `helpers/drive.sh proof deploy --yes -f .cursor/skills/verify-ployz2/fixtures/sleep.yaml`. Compose must succeed. Then connect fails (no context / no participating Machine). That is normalize proof, not Deploy proof.
+- **Valid file, no Cluster.** `helpers/drive.sh proof deploy --yes -f .cursor/skills/verify-ployz2/fixtures/sleep.yaml`. Compose must succeed. Then connect fails with `no contexts found in Ployz config <path>` on an empty isolated config. That is normalize proof, not Deploy proof.
 - **Invalid file.** `helpers/drive.sh proof deploy --yes -f .cursor/skills/verify-ployz2/fixtures/invalid.yaml`. Non-zero. Stderr is the Compose diagnostic, not a Machine RPC error.
 - **Rungs.** Layer 1: `ployz/tests/compose.rs::normalized_surface_reaches_requested_specs`. CLI: `ployz/tests/compose_cli.rs::real_compose_normalizes_without_a_daemon_and_project_inputs_stay_relative` (skips if `/usr/bin/docker` is missing). Record: `helpers/record.sh proof --cwd "$PWD" -- cargo test --locked --package ployz --test compose_cli -- real_compose_normalizes_without_a_daemon_and_project_inputs_stay_relative --exact`.
 - **Skip.** No `/usr/bin/docker`. Then drive a missing-plugin error by putting a fake `docker` earlier on PATH only if you must; prefer the skip.
