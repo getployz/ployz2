@@ -1,55 +1,73 @@
 ---
 name: verify-ployz2
-description: Verify Ployz by driving the `ployz` CLI against an isolated Linux `ployzd`. Use when proving user-visible CLI behavior, machine/context/deploy/version flows, or capturing evidence from a disposable local daemon — not the Cloud dashboard repo.
+description: Verify Ployz product paths by driving the `ployz` CLI in isolation. Use when proving installer, daemon install, machine init, deploy, volumes, exec/logs, ingress, DNS, ACME, or Compose normalize against `evidence/product-paths.tsv`. Never drive Nick's live cluster.
 ---
 
 # Verify Ployz
 
-Ployz in this repo is the `ployz` CLI (Linux, macOS, Windows/WSL) talking to a Linux-only `ployzd`. Cloud dashboard is a different repo. There is no web UI or TUI here. Drive the CLI the way a user does.
+The product is install, found a Machine, deploy Compose, observe (`ls` / `ps` / logs / exec), then ingress, volumes, and DNS. The CLI is `ployz`. The daemon is Linux-only `ployzd`. Cloud dashboard is a different repo. There is no web UI here.
 
-This Linux VM can run `ployzd`. Cluster membership, Deploy, volumes, and ingress need a participating Machine (remote `machine init`, or Docker-in-Docker via `ployz-testkit`). An isolated `ployzd` starts **uninitialized**; that is enough for doctor, version, and contexts. It is not a Cluster.
+Coverage contract: `evidence/product-paths.tsv`. Feature files in [features/README.md](features/README.md) follow that list. Do not invent a different top-5. `ployz ctx` and `ployz version` are config/build switches under Launch/Doctor, not product paths.
+
+This skill does not replace the repo's testing rungs in `AGENTS.md`. After a behavior change, name the rung and the test in the TSV. Climb only when a lower rung cannot go red.
+
+1. Fastest local check (`scripts/test-cli-installer.sh`, `scripts/test-daemon-lifecycle.sh`, crate unit)
+2. Layer 1 semantic (`cargo test`, not ignored)
+3. CLI shape (`ployz/tests/cli_shape.rs`, `*_cli.rs`)
+4. Informing cluster (`#[ignore = "informing"]` listed in `scripts/run-layer3-tests.sh`, via `ployz-testkit` DinD)
+5. Authority (`scripts/qualify-release.sh` against musl archives on real Machines)
+
+A live `ployz` drive here is extra evidence. It is not rung 4 or 5.
 
 ## Isolate first
 
-Never touch the user's cluster:
+Never touch the user's cluster.
 
 | Kind | User / system | This run |
 | --- | --- | --- |
 | Config | `~/.config/ployz/config.yaml` (`PLOYZ_CONFIG`, `--ployz-config`) | `$RUN_DIR/config.yaml` |
-| Socket | `/run/ployz/ployz.sock` (`unix:///run/ployz/ployz.sock`) | `$RUN_DIR/run/ployz.sock` |
+| Socket | `/run/ployz/ployz.sock` | `$RUN_DIR/run/ployz.sock` |
 | Data | `/var/lib/ployz` | `$RUN_DIR/data` |
 | Metrics | `127.0.0.1:51090` | `127.0.0.1:<ephemeral>` |
 
-Refuse if a path is the user/system one. Fast CI injects a hostile `PLOYZ_CONFIG`; helpers unset it and pass `--ployz-config`.
+Refuse those user/system paths. Fast CI injects a hostile `PLOYZ_CONFIG`; helpers unset it and pass `--ployz-config`.
 
-Two **uninitialized** daemons can run side by side (`helpers/launch.sh a` and `helpers/launch.sh b`). Two **participating** Machines cannot share one host OS: Corrosion (`7571` TCP / `7570` UDP), WireGuard interface `ployz`, Docker network `ployz`, and Machine RPC `7569` collide. For a Cluster, use another VM/`USER@HOST`, or the informing testkit image — do not initialize Nick's machine.
+Two **uninitialized** daemons can run side by side (`helpers/launch.sh a` and `helpers/launch.sh b`). Two **participating** Machines cannot share one host OS. Founding a Cluster needs a disposable `USER@HOST` (`scripts/qualify-clean-init.sh`) or testkit DinD as that Linux Docker host, then `ployz machine init` / `ployz deploy`. Calling testkit `initialize_first` or creating containers from the testkit API is not Deploy.
 
 ## Launch
 
-From the repo root (helpers are executable):
+From the repo root:
+
+```sh
+.cursor/skills/verify-ployz2/helpers/prepare.sh proof
+```
+
+Completion: isolated empty config, `target/debug/ployz` and `ployzd` at the same version (`cargo build -p ployz -p ployzd --locked` if missing). Enough for installer scripts, CLI shape, Compose preflight, and the local-init stub.
+
+When the recipe talks to a Machine API on this VM (uninitialized daemon):
 
 ```sh
 .cursor/skills/verify-ployz2/helpers/launch.sh proof
 .cursor/skills/verify-ployz2/helpers/doctor.sh proof
 ```
 
-`launch.sh` builds `cargo build -p ployz -p ployzd --locked` when `target/debug/ployz` or `target/debug/ployzd` is missing, then starts:
+`launch.sh` starts:
 
 ```sh
 target/debug/ployzd \
-  --data-dir "$RUN_DIR/data" \
-  --socket "$RUN_DIR/run/ployz.sock" \
-  --metrics-address 127.0.0.1:<free-port> \
-  --log-level info
+    --data-dir "$RUN_DIR/data" \
+    --socket "$RUN_DIR/run/ployz.sock" \
+    --metrics-address 127.0.0.1:<free-port> \
+    --log-level info
 ```
 
-**Ready:** unix socket exists and accepts; `GET http://127.0.0.1:<port>/metrics` contains `ployz_ployzd_build_info{version="<same as ployz --version>"} 1`; log contains `started` and `uninitialized`. Defaults: data `/var/lib/ployz`, socket `/run/ployz/ployz.sock`, metrics `127.0.0.1:51090`. `--machine-api-address` is hidden (testkit/DinD only); do not use it on a user path.
+**Ready:** unix socket accepts; `GET /metrics` contains `ployz_ployzd_build_info{version="<same as ployz --version>"} 1`; log contains `started` and `uninitialized`. Defaults: data `/var/lib/ployz`, socket `/run/ployz/ployz.sock`, metrics `127.0.0.1:51090`. Hidden `--machine-api-address` is testkit/DinD only.
 
-Uninitialized start prints `WARNING: local Docker is unavailable: ...` on stderr when the process cannot talk to Docker. That is expected here if `/var/run/docker.sock` is not usable. Corrosion and WireGuard do not start until the Machine participates.
+Uninitialized start may print `WARNING: local Docker is unavailable` when this process cannot open `/var/run/docker.sock`. Corrosion and WireGuard do not start until the Machine participates.
 
-CLI-only commands (`version`, `completion`, `ctx` against a seeded config) do not need `ployzd` after the binaries exist. Still launch when the feature talks to a Machine.
+`ployz version` / `--version` / `-V` print the package version with no daemon. `ployzd version` is the daemon subcommand (not `--version`). `ployz ctx` reads `--ployz-config` only. Neither founds a Cluster.
 
-**Teardown:** `.cursor/skills/verify-ployz2/helpers/cleanup.sh proof` (SIGTERM the recorded pid only). Evidence stays under `/opt/cursor/artifacts/verify-ployz2/<instance>/`.
+**Teardown:** `.cursor/skills/verify-ployz2/helpers/cleanup.sh proof` (SIGTERM the recorded pid only, if any). Evidence stays under `/opt/cursor/artifacts/verify-ployz2/<instance>/`.
 
 ## Doctor
 
@@ -57,73 +75,44 @@ CLI-only commands (`version`, `completion`, `ctx` against a seeded config) do no
 .cursor/skills/verify-ployz2/helpers/doctor.sh proof
 ```
 
-Read-only. Passes when the recorded pid is alive, `/proc/<pid>/cmdline` contains this run's `--socket` and `--data-dir`, those paths are not the system defaults, `--ployz-config` is under the run dir, `ployz --version` equals `ployzd version` equals the metrics gauge, and the log shows an uninitialized start. Writes `doctor.txt` into the evidence dir.
+Read-only, launched daemon only. Passes when the recorded pid is alive, `/proc/<pid>/cmdline` contains this run's `--socket` and `--data-dir`, those paths are not the system defaults, `--ployz-config` is under the run dir, `ployz --version` equals `ployzd version` equals the metrics gauge, and the log shows an uninitialized start. Writes `doctor.txt`, `ployzd.log`, and `metrics.txt`.
+
+CLI-only recipes skip doctor and still refuse user/system paths via `prepare.sh`.
 
 ## Drive
 
 Harness order:
 
-1. Repo helpers (`launch.sh` / `doctor.sh` / `drive.sh` / `seed-contexts.sh`).
-2. Existing CLI tests that spawn `CARGO_BIN_EXE_ployz` (`ployz/tests/context_cli.rs`, `version_cli.rs`, `cli_shape.rs`, `compose_cli.rs`).
-3. Informing cluster tests (`#[ignore = "informing"]` in `scripts/run-layer3-tests.sh`) — they use `ployz-testkit` DinD, not a user session.
-4. Generic PTY/tmux only for prompts that require a terminal.
+1. Repo helpers (`prepare.sh` / `launch.sh` / `doctor.sh` / `drive.sh` / `record.sh`).
+2. The rung named in `evidence/product-paths.tsv` for that path (`scripts/test-cli-installer.sh`, `cargo test` of the listed test, `scripts/run-layer3-tests.sh`, `scripts/qualify-release.sh`).
+3. Generic PTY/tmux only for prompts that need a terminal.
 
 ```sh
-.cursor/skills/verify-ployz2/helpers/drive.sh proof version
-.cursor/skills/verify-ployz2/helpers/drive.sh proof --connect-unix machine ls
-.cursor/skills/verify-ployz2/helpers/drive.sh proof ctx ls
+helpers/prepare.sh proof
+helpers/drive.sh proof version
+helpers/drive.sh proof machine init
+helpers/record.sh proof --cwd "$PWD" -- scripts/test-cli-installer.sh
+helpers/drive.sh proof deploy --yes -f .cursor/skills/verify-ployz2/fixtures/sleep.yaml
 ```
 
-`drive.sh` always passes `--ployz-config` for this instance. `--connect-unix` adds `--connect unix://$SOCKET` (direct, skips config). Connect spellings the CLI accepts: `unix://<absolute-path>`, `tcp://<host>:<port>`, `[ssh://]user@host[:port]`. It rejects `ssh+go://` and `ssh+cli://`.
+`drive.sh` always passes `--ployz-config` for this instance. `--connect-unix` adds `--connect unix://$SOCKET`. Connect spellings: `unix://<absolute-path>`, `tcp://<host>:<port>`, `[ssh://]user@host[:port]`. Rejects `ssh+go://` and `ssh+cli://`.
 
-Stable handles (clap names, not coordinates):
+Confirm: `Proceed with deployment to <context>? [y/N] ` on Deploy; generic `Continue? [y/N] `. No TTY: `confirmation requires a terminal; pass --yes to continue`. `--yes` / `PLOYZ_AUTO_CONFIRM` skip ordinary confirmation only. They cannot confirm Data Loss names (`machine rm`, `project rm --volumes`).
 
-| User action | Handle | Observable |
-| --- | --- | --- |
-| Version | `ployz --version`, `ployz -V`, `ployz version` | stdout package version; `-o '{{.Version}}'` same; `-o '{{.Nope}}'` stderr `unusable output template` |
-| Empty config | `ployz ctx ls` | stdout `No contexts found`, exit 0 |
-| List contexts | `ployz ctx ls` | header `NAME	CURRENT	CONNECTIONS`; current marked `*` |
-| Select context | `ployz ctx use <name>` | `Current context is now "<name>".`; config `current_context` |
-| Show context | `ployz ctx show` | stdout is the current name |
-| Default connection | `ployz ctx connection` | stdout `unix://...` (no TTY required) |
-| Select connection | `ployz ctx connection unix://...` | `Default connection for context "<name>" is now "unix://...".` |
-| Interactive select | `ployz ctx use` with no name | prompt `Select a context:`; without a TTY: `cannot Select a context interactively without a terminal` |
-| Local init stub | `ployz machine init` (no destination) | stderr `local machine initialisation is not implemented; specify a remote machine` |
-| Found a Cluster | `ployz machine init USER@HOST` | `Switched context to '<name>'` then `Initialised Machine <name> (<id>)` |
-| List Machines | `ployz machine ls` | header `ID	NAME	MEMBERSHIP	STORAGE	SUBNET	GATEWAY	PUBLIC IP	ENDPOINTS	HOSTNAME	DAEMON	DOCKER	OS	KERNEL	ARCH` |
-| Uninitialized list | `machine ls` via `--connect unix://...` | stderr `Machine RPC returned: Machine is not participating` |
-| Deploy confirm | after a plan | `Proceed with deployment to <context>? [y/N] ` |
-| Generic confirm | several commands | `Continue? [y/N] `; no TTY: `confirmation requires a terminal; pass --yes to continue` |
+`--skip-health` skips post-start health monitoring on Deploy commands. `--no-install` on `machine init`/`add` skips installing Docker and `ployzd` on the destination. `--check` on `ployz build` does not build images. `--no-dns` skips hosted-domain reserve; `--no-ingress` skips founding Ingress Proxy Deploy.
 
-Interactive `ctx use` in tmux:
-
-```sh
-SESSION=verify-ctx-$$
-tmux new-session -d -s "$SESSION" -- \
-  env -u PLOYZ_CONFIG -u PLOYZ_CONNECT \
-  "$PLOYZ_BIN" --ployz-config "$CONFIG" ctx use
-# wait until capture contains "Select a context:"
-tmux capture-pane -pt "$SESSION"
-tmux send-keys -t "$SESSION" "1" Enter
-tmux kill-session -t "$SESSION"
-```
-
-Feature recipes: [features/README.md](features/README.md).
+Recipes: [features/README.md](features/README.md).
 
 ## Evidence
 
-Write under `/opt/cursor/artifacts/verify-ployz2/<instance>/` (`VERIFY_PLOYZ2_EVIDENCE` overrides the root). `drive.sh` records cmd, stdout, stderr, exit, and config before/after. Doctor writes `doctor.txt`, `ployzd.log`, and `metrics.txt`. Cleanup must not delete this directory.
+Write under `/opt/cursor/artifacts/verify-ployz2/<instance>/` (`VERIFY_PLOYZ2_EVIDENCE` overrides the root). `drive.sh` / `record.sh` record cmd, stdout, stderr, exit. Doctor adds `doctor.txt`, `ployzd.log`, `metrics.txt`. Cleanup must not delete this directory.
 
 Proof bar:
 
-- Drive the user command (`ployz ...`), not an internal RPC client, testkit `initialize_first`, or hidden `--machine-api-address`.
-- Capture the action and the resulting state (stdout **and** config.yaml / docker / `machine ls`).
-- Mocks only at a production boundary (hosted DNS `https://dns.uncloud.run/v1`, Cloud `ployz.dev`). Do not stub `ployzd`.
-- `--yes` / `PLOYZ_AUTO_CONFIRM` skip ordinary confirmation only. They cannot confirm Data Loss names (`machine rm`, `project rm --volumes`).
-- `--skip-health` skips the post-start health monitoring period on Deploy commands.
-- `--no-install` on `machine init`/`add` skips installing Docker and `ployzd` (assumes they already run on the destination).
-- `--check` on `ployz build` does not build images.
-- `--no-dns` skips hosted-domain reserve; `--no-ingress` skips founding Ingress Proxy Deploy.
+- Drive the user command (`ployz ...`, `curl` of `install.sh` as the CLI installer contract, or the TSV script/test). Do not call testkit `initialize_first`, hidden `--machine-api-address`, or an internal RPC client and label that Deploy / init.
+- Capture the action and the resulting state.
+- Mocks only at a production boundary (hosted DNS `https://dns.uncloud.run/v1`, Cloud `ployz.dev`, ACME). Do not stub `ployzd`.
+- If a path cannot run, write the skip with the missing precondition (SSH host, nested Docker / testkit image, public hostname for ACME, Docker group on this process). Do not invent Cluster tables.
 
 ## Cleanup
 
@@ -131,18 +120,27 @@ Proof bar:
 .cursor/skills/verify-ployz2/helpers/cleanup.sh proof
 ```
 
-Sends SIGTERM to the pid in `run.env`, waits, SIGKILL if needed, removes `/tmp/verify-ployz2/<instance>/`. Never `pkill` by name. After cleanup, confirm evidence still exists at `/opt/cursor/artifacts/verify-ployz2/<instance>/`.
+SIGTERM the pid in `run.env` if present, then remove `/tmp/verify-ployz2/<instance>/`. Never `pkill` by name. Confirm evidence still exists.
 
 ## Helpers
 
 All under `.cursor/skills/verify-ployz2/helpers/`:
 
 ```sh
+helpers/prepare.sh <instance>
 helpers/launch.sh <instance>
 helpers/doctor.sh <instance>
-helpers/seed-contexts.sh <instance>
 helpers/drive.sh <instance> [--connect-unix] <ployz-args...>
+helpers/record.sh <instance> [--cwd DIR] -- <command...>
 helpers/cleanup.sh <instance>
 ```
 
+`seed-contexts.sh` writes a fake `ctx` yaml for isolation checks. It is not a Cluster.
+
 Run `cleanup.sh` after every failed iteration so sockets and metrics ports are not stranded.
+
+## Proved vs skipped
+
+Fill this from the live pass on this VM. Source of truth for recipes remains the feature files. Copy the table into [features/README.md](features/README.md) when it changes.
+
+Pending the live pass on this rewrite.

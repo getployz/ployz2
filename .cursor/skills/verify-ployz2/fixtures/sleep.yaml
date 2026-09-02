@@ -1,0 +1,5 @@
+name: verify
+services:
+  web:
+    image: alpine:3.23.3
+    command: ["sleep", "infinity"]

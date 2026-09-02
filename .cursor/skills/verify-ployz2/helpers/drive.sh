@@ -12,6 +12,7 @@ verify_require_instance "$INSTANCE"
 shift
 verify_load_run "$INSTANCE"
 verify_refuse_shared "$SOCKET" "$DATA_DIR" "$CONFIG"
+# CLI-only instances use helpers/prepare.sh (no PLOYZD_PID). Daemon-backed drives use launch.sh.
 
 CONNECT_UNIX=0
 if [[ "${1:-}" == --connect-unix ]]; then

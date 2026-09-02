@@ -11,6 +11,7 @@ INSTANCE=${1:-}
 verify_require_instance "$INSTANCE"
 verify_load_run "$INSTANCE"
 verify_refuse_shared "$SOCKET" "$DATA_DIR" "$CONFIG"
+[[ -n "${PLOYZD_PID:-}" ]] || verify_die "doctor needs a launched daemon; run helpers/launch.sh $INSTANCE"
 
 report=$(mktemp)
 trap 'rm -f "$report"' EXIT

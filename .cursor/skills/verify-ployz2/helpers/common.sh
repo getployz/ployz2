@@ -45,7 +45,7 @@ verify_load_run() {
     set -a
     source "$env_file"
     set +a
-    [[ -n "${INSTANCE:-}" && -n "${SOCKET:-}" && -n "${DATA_DIR:-}" && -n "${CONFIG:-}" ]] ||
+    [[ -n "${INSTANCE:-}" && -n "${SOCKET:-}" && -n "${DATA_DIR:-}" && -n "${CONFIG:-}" && -n "${EVIDENCE_DIR:-}" ]] ||
         verify_die "run.env for $1 is incomplete"
 }
 
