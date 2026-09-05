@@ -1,0 +1,9 @@
+name: verifyvol
+services:
+  data:
+    image: alpine:3.23.3
+    command: ["sleep", "infinity"]
+    volumes:
+      - verify-data:/data
+volumes:
+  verify-data:
