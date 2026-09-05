@@ -19,9 +19,9 @@ CREATE TABLE containers
     id                 TEXT      NOT NULL PRIMARY KEY,
     container          TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(container)),
     machine_id         TEXT      NOT NULL DEFAULT '',
-    service_id         TEXT AS (json_extract(container, '$.service_id')),
+    service_id         TEXT AS (json_extract(container, '$.resolved_spec.service_id')),
     project_name       TEXT AS (json_extract(container, '$.project_name')),
-    service_name       TEXT AS (json_extract(container, '$.service_name')),
+    service_name       TEXT AS (json_extract(container, '$.resolved_spec.name')),
     updated_at         TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
 );
 
