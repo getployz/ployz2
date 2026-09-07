@@ -11,7 +11,6 @@ use thiserror::Error;
 
 const DEFAULT_RETRY_AFTER: u64 = 2;
 const PROTOCOL_VERSION: u8 = 2;
-const MAX_TRANSPORT_ATTEMPTS: u8 = 3;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // Healthy production enroll measured 8.15s for Relay List + registerHeld.
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
@@ -31,9 +30,7 @@ pub(crate) enum Error {
     Status { status: u16, body: String },
     #[error("Cloud response must not carry a Dial Credential")]
     DialOffered,
-    #[error(
-        "Cloud {operation} failed after brief retries: {detail}; rerun the same ployz cloud enroll command"
-    )]
+    #[error("Cloud {operation} failed: {detail}; rerun the same ployz cloud enroll command")]
     RetrySameCommand {
         operation: &'static str,
         detail: String,
@@ -42,7 +39,8 @@ pub(crate) enum Error {
 
 impl Error {
     fn is_transport(&self) -> bool {
-        matches!(self, Self::Timeout(_) | Self::Connect(_) | Self::Http(_))
+        matches!(self, Self::Timeout(_) | Self::Connect(_))
+            || matches!(self, Self::Http(error) if error.is_request() || error.is_body())
     }
 }
 
@@ -200,43 +198,37 @@ struct EnrollCallback<'a> {
 /// HTTP status, unexpected JSON, or a non-transport HTTP failure.
 pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outcome, Error> {
     let http = http_client()?;
-    let mut transport_attempts = 0;
     let mut announced_wait = false;
     loop {
-        match post_json(&http, url, identity).await {
-            Ok(bytes) => match parse_enroll(&bytes)? {
-                Response::Join(join) => return Ok(Outcome::Join(join)),
-                Response::Initialize {
+        let response = crate::setup_retry::run(
+            &mut (),
+            "Cloud enrollment",
+            crate::setup_retry::WAIT,
+            Error::is_transport,
+            async |_| post_json(&http, url, identity).await,
+        )
+        .await
+        .map_err(|error| retry_error("enrollment", error))?;
+        match parse_enroll(&response)? {
+            Response::Join(join) => return Ok(Outcome::Join(join)),
+            Response::Initialize {
+                mode,
+                pairing,
+                storage,
+            } => {
+                return Ok(Outcome::Initialize {
                     mode,
                     pairing,
                     storage,
-                } => {
-                    return Ok(Outcome::Initialize {
-                        mode,
-                        pairing,
-                        storage,
-                    });
-                }
-                Response::NotYet { retry_after } => {
-                    transport_attempts = 0;
-                    if !announced_wait {
-                        eprintln!("Another Machine is founding this Organization; waiting...");
-                        announced_wait = true;
-                    }
-                    tokio::time::sleep(retry_after).await;
-                }
-            },
-            Err(error) if error.is_transport() => {
-                transport_attempts += 1;
-                if transport_attempts == MAX_TRANSPORT_ATTEMPTS {
-                    return Err(Error::RetrySameCommand {
-                        operation: "enrollment",
-                        detail: error.to_string(),
-                    });
-                }
-                tokio::time::sleep(Duration::from_secs(DEFAULT_RETRY_AFTER)).await;
+                });
             }
-            Err(error) => return Err(error),
+            Response::NotYet { retry_after } => {
+                if !announced_wait {
+                    eprintln!("Another Machine is founding this Organization; waiting...");
+                    announced_wait = true;
+                }
+                tokio::time::sleep(retry_after).await;
+            }
         }
     }
 }
@@ -256,21 +248,27 @@ pub(crate) async fn callback(
         machine_id,
         pairing_credential,
     };
-    for attempt in 0..MAX_TRANSPORT_ATTEMPTS {
-        match post_json(&http, url, &body).await {
-            Ok(_) => return Ok(()),
-            Err(_) if attempt + 1 < MAX_TRANSPORT_ATTEMPTS => {
-                tokio::time::sleep(Duration::from_secs(DEFAULT_RETRY_AFTER)).await;
-            }
-            Err(error) => {
-                return Err(Error::RetrySameCommand {
-                    operation: "founder completion",
-                    detail: error.to_string(),
-                });
-            }
+    crate::setup_retry::run(
+        &mut (),
+        "Cloud founder completion",
+        crate::setup_retry::WAIT,
+        Error::is_transport,
+        async |_| post_json(&http, url, &body).await.map(|_| ()),
+    )
+    .await
+    .map_err(|error| Error::RetrySameCommand {
+        operation: "founder completion",
+        detail: error.to_string(),
+    })
+}
+
+fn retry_error(operation: &'static str, error: crate::setup_retry::Error<Error>) -> Error {
+    match error {
+        crate::setup_retry::Error::Permanent(error) => error,
+        crate::setup_retry::Error::Exhausted(detail) => {
+            Error::RetrySameCommand { operation, detail }
         }
     }
-    unreachable!("completion attempts are non-zero")
 }
 
 fn http_client() -> Result<reqwest::Client, Error> {
@@ -288,7 +286,7 @@ fn classify_http(error: reqwest::Error) -> Error {
     } else if error.is_timeout() {
         Error::Timeout(error)
     } else {
-        Error::Http(error)
+        Error::Http(error.without_url())
     }
 }
 

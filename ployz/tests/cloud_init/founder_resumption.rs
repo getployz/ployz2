@@ -49,7 +49,7 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
     );
     assert_eq!(
         enroll.callbacks(),
-        vec![json!({ "machineId": machine_id.as_str(), "pairingCredential": PAIRING }); 3]
+        vec![json!({ "machineId": machine_id.as_str(), "pairingCredential": PAIRING }); 1]
     );
     wait_for_held(&relay.url, PAIRING, machine_id).await;
 
@@ -69,7 +69,7 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
     );
     assert_eq!(daemon.initialize_requests().len(), 1);
     assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(enroll.callbacks().len(), 3);
+    assert_eq!(enroll.callbacks().len(), 1);
 }
 
 #[tokio::test]
@@ -295,7 +295,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
 }
 
 #[tokio::test]
-async fn founder_tail_retries_transport_and_converges_in_order() {
+async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let mut founder = founder_machine();
     founder.public_ip = Some("127.0.0.1".parse().unwrap());
     let machine_id = founder.id;
@@ -304,12 +304,14 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
     let pairing =
         CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
     let enroll = EnrollListen::script_recording(
-        [json!({
-            "kind": "initialize",
-            "resumed": false,
-            "storage": "none",
-            "pairing": pairing,
-        })],
+        [
+            json!({
+                "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
+            }),
+            json!({
+                "kind": "initialize", "resumed": true, "storage": "none", "pairing": pairing,
+            }),
+        ],
         events.clone(),
     )
     .await;
@@ -321,12 +323,14 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
     .with_events(events.clone())
     .transient_founder_tail_failures(1);
     let machine_addr = serve_machine(daemon.clone()).await;
-    let (probe, probe_port) = serve_ingress_probe(machine_id).await;
+    let (probe, probe_port) =
+        serve_ingress_probe(machine_id, std::time::Duration::from_secs(6)).await;
 
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command
         .args([
             "--connect",
             &format!("tcp://{machine_addr}"),
@@ -345,10 +349,21 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
         .env("HTTPS_PROXY", &proxy)
         .env("https_proxy", &proxy)
         .env("NO_PROXY", "127.0.0.1,localhost")
-        .env("no_proxy", "127.0.0.1,localhost")
-        .output()
-        .await
-        .unwrap();
+        .env("no_proxy", "127.0.0.1,localhost");
+    let first = command.output().await.unwrap();
+    assert!(!first.status.success());
+    assert!(
+        String::from_utf8_lossy(&first.stderr)
+            .contains("rerun the same ployz cloud enroll command")
+    );
+    assert_eq!(daemon.founder_tail_attempts(), [1, 1, 0, 0]);
+    assert_eq!(
+        daemon.containers().len(),
+        1,
+        "lost create reply must not cause an automatic second Create"
+    );
+
+    let output = command.output().await.unwrap();
     probe.abort();
 
     assert!(
@@ -357,7 +372,7 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    assert_eq!(daemon.founder_tail_attempts(), [2, 2, 2, 2]);
+    assert_eq!(daemon.founder_tail_attempts(), [1, 2, 2, 2]);
     let containers = daemon.containers();
     assert_eq!(containers.len(), 1);
     assert_eq!(
@@ -382,7 +397,7 @@ async fn founder_tail_retries_transport_and_converges_in_order() {
         ]
     );
     assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(enroll.posts().len(), 1);
+    assert_eq!(enroll.posts().len(), 2);
     assert_eq!(enroll.callbacks().len(), 1);
     wait_for_held(&relay.url, PAIRING, machine_id).await;
 }

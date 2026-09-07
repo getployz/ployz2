@@ -126,6 +126,49 @@ impl Client {
         self.call_retried::<T>(payload, target, None).await
     }
 
+    /// Read setup state with short attempts, retaining the last transport cause.
+    pub(crate) async fn setup_read<T: Rpc>(
+        &mut self,
+        request: T::Request,
+        target: Option<&MachineTarget>,
+    ) -> Result<T::Response, ConnectError> {
+        let payload = T::into_request(request).encode()?;
+        let mut redial = false;
+        crate::setup_retry::run(
+            self,
+            "Reading Machine setup state",
+            crate::setup_retry::WAIT,
+            ConnectError::is_setup_retryable,
+            async |client| {
+                let reconnect = redial;
+                redial = true;
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    client.unary_attempt::<T>(payload.clone(), target, reconnect),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(tonic::Status::deadline_exceeded("Machine setup read timed out").into())
+                })
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            crate::setup_retry::Error::Permanent(error) => error,
+            crate::setup_retry::Error::Exhausted(message) => ConnectError::Attempt(message.into()),
+        })
+    }
+
+    /// Setup mutations must not be replayed after a lost response.
+    pub(crate) async fn call_unretried<T: Rpc>(
+        &self,
+        request: T::Request,
+        target: Option<&MachineTarget>,
+    ) -> Result<T::Response, ConnectError> {
+        self.call_once::<T>(T::into_request(request).encode()?, target)
+            .await
+    }
+
     /// Issue a retryable read-only targeted RPC with a deadline per attempt.
     ///
     /// # Errors

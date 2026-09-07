@@ -208,15 +208,36 @@ impl MachineOperations for Client {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<ContainerObservation, RpcError> {
-        self.invoke::<op::InspectContainer>(
-            InspectContainerRequest {
-                container_id: *container_id,
-            },
-            &MachineTarget::from(machine_id),
-            Some(TARGET_RPC_TIMEOUT),
+        async fn read(
+            context: &mut (Client, MachineTarget, ContainerId),
+        ) -> Result<ContainerObservation, RpcError> {
+            context
+                .0
+                .read::<op::InspectContainer>(
+                    InspectContainerRequest {
+                        container_id: context.2,
+                    },
+                    &context.1,
+                )
+                .await
+                .map(|details| details.container)
+        }
+        crate::setup_retry::run(
+            &mut (self.clone(), MachineTarget::from(machine_id), *container_id),
+            &format!("Monitoring container {container_id} on Machine {machine_id}"),
+            crate::setup_retry::WAIT,
+            |error: &RpcError| error.code == RpcErrorCode::Unavailable,
+            read,
         )
         .await
-        .map(|details| details.container)
+        .map_err(|error| match error {
+            crate::setup_retry::Error::Permanent(error) => error,
+            crate::setup_retry::Error::Exhausted(message) => RpcError {
+                code: RpcErrorCode::Unavailable,
+                message,
+                details: serde_json::Value::Null,
+            },
+        })
     }
 
     async fn stop_container(

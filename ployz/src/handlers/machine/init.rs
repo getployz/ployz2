@@ -1,7 +1,6 @@
 use clap::ArgMatches;
 use ployz_core::{
-    InitializeRequest, InspectRequest, LocalMachinePhase, MachineName, ReserveDomainRequest,
-    ResetRequest, op,
+    InitializeRequest, InspectRequest, LocalMachinePhase, MachineName, ResetRequest, op,
 };
 
 use super::super::runtime;
@@ -62,26 +61,30 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     }
 
     let (machine, connection) = runtime()?.block_on(async {
-        let mut target = if local && !no_install {
+        let mut target = if !no_install {
             helpers::reconnect_direct(&connection).await?
         } else {
             helpers::connect_direct(&connection).await?
         };
         let mut token = target
-            .call::<op::MachineToken>(token_request.clone(), None)
+            .setup_read::<op::MachineToken>(token_request.clone(), None)
             .await?;
         let details = target
-            .call::<op::Inspect>(InspectRequest::default(), None)
+            .setup_read::<op::Inspect>(InspectRequest::default(), None)
             .await?;
         if details.phase != LocalMachinePhase::Uninitialized {
             helpers::confirm(yes, "Reset the Machine before initialising a new Cluster?")?;
-            target.call::<op::Reset>(ResetRequest {}, None).await?;
+            target
+                .call_unretried::<op::Reset>(ResetRequest {}, None)
+                .await?;
             target = helpers::reconnect_direct(&connection).await?;
-            token = target.call::<op::MachineToken>(token_request, None).await?;
+            token = target
+                .setup_read::<op::MachineToken>(token_request, None)
+                .await?;
         }
         let name = helpers::machine_name(requested_name, &token)?;
         let machine = target
-            .call::<op::Initialize>(
+            .call_unretried::<op::Initialize>(
                 InitializeRequest {
                     name,
                     cluster_network,
@@ -104,37 +107,49 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             connections: vec![connection.clone()],
         },
     );
-    config.set_current_context(Some(context_name))?;
+    config.set_current_context(Some(context_name.clone()))?;
     config.save()?;
     if let Some(current_context) = config.current_context() {
         println!("Switched context to '{current_context}'");
     }
+    println!("Initialised Machine {} ({})", machine.name, machine.id);
     let want_ingress = !matches.get_flag("no-ingress");
     let want_dns = !matches.get_flag("no-dns");
+    let ingress_recovery =
+        super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
+    let inspect_recovery = super::super::recovery_command(
+        matches,
+        &context_name,
+        &["machine", "inspect", machine.name.as_str()],
+    );
     runtime()?.block_on(async {
         let mut ready =
             helpers::wait_direct_participating(&connection, "initial Machine did not become ready")
-                .await?;
+                .await.map_err(|error| Error::usage(format!("Machine initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
         if want_dns {
             let endpoint = matches
                 .get_one::<String>("dns-endpoint")
                 .cloned()
                 .ok_or_else(|| Error::usage("dns-endpoint is required"))?;
-            let domain = ready
-                .call::<op::ReserveDomain>(ReserveDomainRequest { endpoint }, None)
-                .await?;
-            println!("Reserved Cluster domain: {}", domain.name);
+            let show = super::super::recovery_command(matches, &context_name, &["dns", "show"]);
+            let reserve = super::super::recovery_command(matches, &context_name, &["dns", "reserve", "--endpoint", &endpoint]);
+            let domain = crate::dns::reserve_if_missing(&mut ready, endpoint).await.map_err(|error| {
+                Error::usage(format!("Machine initialized; domain reservation incomplete: {error}\nCheck: {show}\nIf no domain is reserved: {reserve}\nContinue ingress setup with: {ingress_recovery}"))
+            })?;
+            println!("Reserved Cluster domain: {domain}");
         }
         if want_ingress {
-            let requested = crate::ingress::service_spec(None, Vec::new(), None).await?;
-            crate::deploy::apply_requested(&mut ready, &requested).await?;
+            let requested = crate::ingress::service_spec(None, Vec::new(), None).await.map_err(|error| Error::usage(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}")))?;
+            crate::deploy::apply_requested(&mut ready, &requested).await.map_err(|error| {
+                let error: Error = error.into();
+                Error::usage(format!("Machine initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))
+            })?;
             if want_dns {
-                crate::dns::update_records_for_ingress(&mut ready).await?;
+                crate::dns::update_records_for_ingress(&mut ready).await.map_err(|error| Error::usage(format!("Machine initialized; ingress healthy; DNS publication pending: {error}\nAllow outbound access if blocked, then run: {ingress_recovery}")))?;
             }
         }
         Ok::<_, Error>(())
     })?;
-    println!("Initialised Machine {} ({})", machine.name, machine.id);
     Ok(())
 }
 

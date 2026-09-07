@@ -571,9 +571,6 @@ impl MachineRpc for JoinDaemon {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inner.create_attempts.fetch_add(1, Ordering::SeqCst);
-        if consume_transient_failure(&self.inner.transient_create_failures) {
-            return Err(Status::unavailable("transient Ingress deployment failure"));
-        }
         let decoded = request
             .into_inner()
             .decode_request()
@@ -600,6 +597,9 @@ impl MachineRpc for JoinDaemon {
             })
             .unwrap(),
         );
+        if consume_transient_failure(&self.inner.transient_create_failures) {
+            return Err(Status::unavailable("lost Ingress container creation reply"));
+        }
         rpc_ok(ContainerCreated {
             container_id,
             display_name,
@@ -696,15 +696,32 @@ impl MachineRpc for JoinDaemon {
     }
     async fn stop_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let decoded = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::StopContainer(stop) = decoded.body else {
+            return unused();
+        };
+        rpc_ok(ContainerChanged {
+            container_id: stop.container_id,
+        })
     }
     async fn remove_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let decoded = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::RemoveContainer(remove) = decoded.body else {
+            return unused();
+        };
+        self.inner
+            .containers
+            .lock()
+            .unwrap()
+            .retain(|container| container.container_id != remove.container_id);
+        rpc_ok(ContainerChanged {
+            container_id: remove.container_id,
+        })
     }
     async fn list_images(
         &self,
@@ -738,9 +755,6 @@ impl MachineRpc for JoinDaemon {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inner.reserve_attempts.fetch_add(1, Ordering::SeqCst);
-        if consume_transient_failure(&self.inner.transient_reserve_failures) {
-            return Err(Status::unavailable("transient domain reservation failure"));
-        }
         let decoded = request
             .into_inner()
             .decode_request()
@@ -751,6 +765,9 @@ impl MachineRpc for JoinDaemon {
         *self.inner.reserve_request.lock().unwrap() = Some(reserve);
         self.inner.domain_reserved.store(true, Ordering::SeqCst);
         self.record("reserve_domain");
+        if consume_transient_failure(&self.inner.transient_reserve_failures) {
+            return Err(Status::unavailable("lost domain reservation reply"));
+        }
         rpc_ok(Domain {
             name: CLUSTER_DOMAIN.into(),
         })

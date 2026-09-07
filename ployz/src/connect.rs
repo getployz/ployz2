@@ -165,16 +165,18 @@ async fn connect_ssh(
     probe_args.extend([destination.target().into(), "true".into()]);
     // TODO: cancelling drops this probe promptly, but a ControlMaster
     // created during OpenSSH establishment may outlive it until ControlPersist expires.
-    let status = Command::new(program)
+    let output = Command::new(program)
         .args(&probe_args)
+        .stdin(Stdio::inherit())
         .kill_on_drop(true)
-        .status()
+        .output()
         .await
         .map_err(ConnectError::from_ssh_spawn)?;
-    if !status.success() {
+    if !output.status.success() {
         return Err(ConnectError::SshProbe {
             target: destination.target().to_owned(),
-            status,
+            status: output.status,
+            detail: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
     let args = ssh_args(destination, key_file, control_path.as_deref());
@@ -527,10 +529,11 @@ pub enum ConnectError {
     MissingMachineDetails,
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing(#[source] io::Error),
-    #[error("connection attempt failed: SSH probe to {target} exited with {status}")]
+    #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}")]
     SshProbe {
         target: String,
         status: std::process::ExitStatus,
+        detail: String,
     },
     #[error("connection attempt failed: {0}")]
     Routing(#[from] RoutingMetadataError),
@@ -548,7 +551,7 @@ pub enum ConnectError {
     Context(#[from] ContextError),
     #[error("could not inspect {path}: {source}")]
     Path { path: PathBuf, source: io::Error },
-    #[error("all {attempts} connections from {source:?} failed")]
+    #[error("all {attempts} connections from {source:?} failed: {}", last.as_ref().map_or_else(|| "no connection available".to_owned(), ToString::to_string))]
     AllFailed {
         source: ConnectionSource,
         attempts: usize,
@@ -606,6 +609,44 @@ impl ConnectError {
             | Self::Codec(_)
             | Self::Framing(_)
             | Self::Value(_) => false,
+        }
+    }
+
+    /// Setup retries must not spend a minute retrying missing credentials or keys.
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "setup overrides SSH, IO and aggregate errors; other variants use the exhaustive transport classifier"
+    )]
+    pub(crate) fn is_setup_retryable(&self) -> bool {
+        match self {
+            Self::AllFailed {
+                last: Some(last), ..
+            } => last.is_setup_retryable(),
+            Self::AllFailed { last: None, .. } => false,
+            Self::SshProbe { detail, .. } => [
+                "Connection timed out",
+                "Operation timed out",
+                "Connection refused",
+                "No route to host",
+                "Network is unreachable",
+                "Connection reset",
+                "Connection closed",
+                "Temporary failure in name resolution",
+            ]
+            .iter()
+            .any(|message| detail.contains(message)),
+            Self::Io(error) => matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::NotConnected
+                    | io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::NetworkUnreachable
+                    | io::ErrorKind::HostUnreachable
+            ),
+            _ => self.is_retryable(),
         }
     }
 
@@ -713,6 +754,29 @@ mod tests {
     use super::*;
     use crate::context::SshDestination;
     use ployz_core::{ONE_TARGET_BINARY_HEADER, ONE_TARGET_HEADER};
+
+    #[test]
+    fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
+        use std::os::unix::process::ExitStatusExt;
+        for (detail, retry) in [
+            ("Connection timed out", true),
+            ("Connection refused", true),
+            ("Permission denied (publickey)", false),
+            ("Host key verification failed", false),
+        ] {
+            let error = ConnectError::AllFailed {
+                source: ConnectionSource::Direct,
+                attempts: 1,
+                last: Some(Box::new(ConnectError::SshProbe {
+                    target: "host".to_owned(),
+                    status: std::process::ExitStatus::from_raw(255 << 8),
+                    detail: detail.to_owned(),
+                })),
+            };
+            assert_eq!(error.is_setup_retryable(), retry);
+            assert!(error.to_string().contains(detail));
+        }
+    }
 
     #[tokio::test]
     async fn target_timeout_becomes_a_typed_partial_failure() {
