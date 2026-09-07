@@ -74,7 +74,7 @@ pub(crate) fn transient_http(error: &reqwest::Error) -> bool {
     }
     let mut source = error.source();
     while let Some(cause) = source {
-        if cause.downcast_ref::<std::io::Error>().is_some_and(|error| matches!(error.kind(),
+        if cause.downcast_ref::<std::io::Error>().is_some_and(|error| temporary_dns(error) || matches!(error.kind(),
             ErrorKind::ConnectionRefused | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
             | ErrorKind::NotConnected | ErrorKind::BrokenPipe | ErrorKind::UnexpectedEof
             | ErrorKind::TimedOut | ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable))
@@ -86,6 +86,16 @@ pub(crate) fn transient_http(error: &reqwest::Error) -> bool {
         source = cause.source();
     }
     false
+}
+
+/// Std discards EAI_AGAIN's code when wrapping getaddrinfo failures.
+pub(crate) fn temporary_dns(error: &std::io::Error) -> bool {
+    // ponytail: recognize glibc/BSD and musl English messages; use a typed resolver if localized errors need support.
+    matches!(
+        error.to_string().as_str(),
+        "failed to lookup address information: Temporary failure in name resolution"
+            | "failed to lookup address information: Try again"
+    )
 }
 
 /// Include the transport cause, which reqwest's top-level Display omits.
@@ -102,6 +112,44 @@ pub(crate) fn detail(error: &dyn std::error::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn http_retry_recognizes_temporary_but_not_permanent_dns_failures() {
+        struct Resolver(&'static str);
+        impl reqwest::dns::Resolve for Resolver {
+            fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
+                let message = self.0;
+                Box::pin(async move { Err(std::io::Error::other(message).into()) })
+            }
+        }
+        for (message, retry) in [
+            (
+                "failed to lookup address information: Temporary failure in name resolution",
+                true,
+            ),
+            ("failed to lookup address information: Try again", true),
+            (
+                "failed to lookup address information: Name or service not known",
+                false,
+            ),
+            (
+                "failed to lookup address information: Non-recoverable failure in name resolution",
+                false,
+            ),
+        ] {
+            let http = reqwest::Client::builder()
+                .no_proxy()
+                .dns_resolver(std::sync::Arc::new(Resolver(message)))
+                .build()
+                .unwrap();
+            let error = http
+                .get("http://resolver.invalid")
+                .send()
+                .await
+                .unwrap_err();
+            assert_eq!(transient_http(&error), retry, "{}", detail(&error));
+        }
+    }
 
     #[tokio::test]
     async fn http_retry_accepts_dropped_transfers_but_rejects_malformed_protocol() {

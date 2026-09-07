@@ -443,6 +443,7 @@ mod tests {
         assert!(!retry_local_connect(&ConnectError::AllFailed {
             source: ConnectionSource::LocalSocket,
             attempts: 1,
+            setup_retryable: false,
             last: None,
         }));
         assert!(!retry_local_connect(&ConnectError::Context(
