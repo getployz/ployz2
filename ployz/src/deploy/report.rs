@@ -29,6 +29,7 @@ impl Ink {
 
     /// No ANSI.
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn plain() -> Self {
         Self { color: false }
     }

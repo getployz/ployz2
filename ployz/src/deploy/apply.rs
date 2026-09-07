@@ -91,6 +91,8 @@ async fn apply_spec(
             Ink::detect(io::stdout()),
         )
         .await,
+        &format!("Deployed to {context}"),
+        preview.cluster_domain.as_deref(),
     )
 }
 
@@ -236,6 +238,8 @@ async fn confirm_and_execute(
             Ink::detect(io::stdout()),
         )
         .await,
+        &format!("Deployed to {}", gate.context),
+        preview.cluster_domain.as_deref(),
     )
     .map_err(Into::into)
 }
@@ -264,6 +268,8 @@ pub(crate) async fn remove_project(
             Ink::detect(io::stdout()),
         )
         .await,
+        &format!("Removed Project {name} from {context}"),
+        preview.cluster_domain.as_deref(),
     )
     .map_err(Into::into)
 }
@@ -393,13 +399,16 @@ fn confirm(prompt: &str) -> Result<bool, Failure> {
 
 fn finish(
     (outcome, printer): (DeployOutcome<ExecutionError>, ProgressPrinter),
+    success_title: &str,
+    cluster_domain: Option<&str>,
 ) -> Result<(), ApplyError> {
     match outcome {
-        success @ DeployOutcome::Success { .. } => {
-            let text = render::outcome_text(&success);
-            if !text.is_empty() {
-                print!("{text}");
+        DeployOutcome::Success { completed } => {
+            let text = render::success_text(&completed, success_title, cluster_domain);
+            if io::stdout().is_terminal() && printer.last_lines > 0 {
+                print!("\x1b[{}F\x1b[J", printer.last_lines);
             }
+            print!("{text}");
             Ok(())
         }
         failed @ DeployOutcome::Failed { .. } => Err(ApplyError::Execute {
