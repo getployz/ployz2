@@ -58,7 +58,8 @@ fn connection_args(include_context: bool) -> Vec<Arg> {
         value("connect", None).env(env::CONNECT).global(true),
         value("ssh-timeout", None)
             .value_name("SECONDS")
-            .help("SSH connection setup timeout in seconds")
+            .help("SSH setup timeout in seconds (provisioning: network connection only)")
+            .long_help("SSH setup timeout in seconds. Management commands use noninteractive authentication. During provisioning, only the network connection is timed; SSH/sudo authentication and installer execution have no deadline.")
             .value_parser(clap::value_parser!(u32).range(1..))
             .default_value("5")
             .global(true),

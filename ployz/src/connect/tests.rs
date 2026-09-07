@@ -55,6 +55,12 @@ async fn setup_retry_preserves_transient_failures_in_either_connection_order() {
                 Ok(_) => panic!("script must reject every connection"),
             };
         assert_eq!(error.is_setup_retryable(), retryable, "{error}");
+        if !retryable {
+            assert!(
+                error.to_string().contains("unlock your key with ssh-add"),
+                "{error}"
+            );
+        }
     }
     fs::remove_dir_all(root).unwrap();
 }
@@ -90,7 +96,7 @@ fn non_ascii_machine_targets_use_binary_metadata() {
 }
 
 #[test]
-fn system_ssh_command_delegates_identity_and_passphrase_handling() {
+fn system_ssh_command_uses_noninteractive_authentication() {
     let destination = SshDestination::parse("deploy@example.com:2222").unwrap();
 
     let args = ssh_args(
@@ -106,6 +112,8 @@ fn system_ssh_command_delegates_identity_and_passphrase_handling() {
             "-o",
             "ConnectTimeout=5",
             "-o",
+            "BatchMode=yes",
+            "-o",
             "StrictHostKeyChecking=accept-new",
             "-T",
             "-p",
@@ -118,7 +126,7 @@ fn system_ssh_command_delegates_identity_and_passphrase_handling() {
         ]
     );
     assert!(!args.iter().any(|arg| arg.contains("id_*")));
-    assert!(!args.iter().any(|arg| arg.contains("BatchMode")));
+    assert!(args.contains(&"BatchMode=yes".to_owned()));
 }
 
 #[test]

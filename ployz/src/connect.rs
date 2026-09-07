@@ -200,16 +200,20 @@ async fn connect_ssh(
     // created during OpenSSH establishment may outlive it until ControlPersist expires.
     let output = Command::new(program)
         .args(&probe_args)
-        .stdin(Stdio::inherit())
+        .stdin(Stdio::null())
         .kill_on_drop(true)
         .output()
         .await
         .map_err(ConnectError::from_ssh_spawn)?;
     if !output.status.success() {
+        let mut detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if detail.contains("Permission denied") {
+            detail.push_str("; SSH authentication is noninteractive: unlock your key with ssh-add or configure credentials that do not require a prompt");
+        }
         return Err(ConnectError::SshProbe {
             target: destination.target().to_owned(),
             status: output.status,
-            detail: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            detail,
         });
     }
     let args = ssh_args(destination, key_file, control_path.as_deref(), timeout);
@@ -246,6 +250,27 @@ fn ssh_base_args(
     control_path: Option<&Path>,
     timeout: Duration,
 ) -> Vec<String> {
+    let mut args = ssh_control_args(control_path);
+    args.extend([
+        "-o".into(),
+        format!("ConnectTimeout={}", timeout.as_secs().max(1)),
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-T".into(),
+    ]);
+    if let Some(port) = destination.port() {
+        args.extend(["-p".into(), port.to_string()]);
+    }
+    if let Some(path) = key_file {
+        args.extend(["-i".into(), expand_home(path).display().to_string()]);
+    }
+    args
+}
+
+/// OpenSSH multiplexing options shared by provisioning and management connections.
+pub(crate) fn ssh_control_args(control_path: Option<&Path>) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(path) = control_path {
         args.extend([
@@ -261,23 +286,11 @@ fn ssh_base_args(
             ),
         ]);
     }
-    args.extend([
-        "-o".into(),
-        format!("ConnectTimeout={}", timeout.as_secs().max(1)),
-        "-o".into(),
-        "StrictHostKeyChecking=accept-new".into(),
-        "-T".into(),
-    ]);
-    if let Some(port) = destination.port() {
-        args.extend(["-p".into(), port.to_string()]);
-    }
-    if let Some(path) = key_file {
-        args.extend(["-i".into(), expand_home(path).display().to_string()]);
-    }
     args
 }
 
-fn control_path() -> Option<PathBuf> {
+/// Select the existing runtime or SSH directory for shared control sockets.
+pub(crate) fn control_path() -> Option<PathBuf> {
     if let Some(directory) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
         && directory.is_dir()
     {

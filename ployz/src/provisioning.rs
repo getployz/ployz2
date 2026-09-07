@@ -1,7 +1,7 @@
 use std::{
     io::{self, IsTerminal, Write},
     path::PathBuf,
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -29,7 +29,7 @@ pub enum ProvisionError {
     EmptyUser,
     #[error("check remote sudo: {0}")]
     Sudo(#[source] io::Error),
-    #[error("remote user {user} needs passwordless sudo to install Ployz")]
+    #[error("remote user {user} could not authenticate or obtain sudo privileges to install Ployz")]
     SudoRequired { user: String },
     #[error("run Ployz installer: {0}")]
     Install(#[source] io::Error),
@@ -170,6 +170,12 @@ fn ssh_command(matches: &ArgMatches) -> Result<(Command, String), ProvisionError
         "ConnectTimeout={}",
         crate::cli::ssh_timeout(matches).as_secs()
     ));
+    // Provisioning may wait for human authentication; only network setup is timed.
+    command.args(["-o", "BatchMode=no", "-tt"]);
+    command.args(crate::connect::ssh_control_args(
+        crate::connect::control_path().as_deref(),
+    ));
+    command.stdin(Stdio::inherit());
     command.arg("-i").arg(ssh_key(matches));
     if let Some(port) = port {
         command.arg("-p").arg(port);
@@ -277,7 +283,7 @@ mod tests {
     use ployz_core::StorageChoice;
 
     #[test]
-    fn provisioning_ssh_uses_global_timeout() {
+    fn provisioning_ssh_allows_interactive_authentication_with_a_network_timeout() {
         for (extra, seconds) in [(vec![], "5"), (vec!["--ssh-timeout", "17"], "17")] {
             let mut args = vec!["ployz", "machine", "add", "root@host"];
             args.extend(extra);
@@ -288,6 +294,12 @@ mod tests {
                 .subcommand_matches("add")
                 .unwrap();
             let (command, _) = ssh_command(matches).unwrap();
+            let args: Vec<_> = command.get_args().collect();
+            assert!(args.contains(&std::ffi::OsStr::new("BatchMode=no")));
+            assert!(args.contains(&std::ffi::OsStr::new("-tt")));
+            for arg in crate::connect::ssh_control_args(crate::connect::control_path().as_deref()) {
+                assert!(args.contains(&std::ffi::OsStr::new(&arg)));
+            }
             assert!(
                 command
                     .get_args()
