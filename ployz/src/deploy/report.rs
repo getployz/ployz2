@@ -5,39 +5,42 @@ use std::io::IsTerminal;
 
 use crossterm::style::Stylize as _;
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployEvent,
-    DeployOperation, DeployOutcome, ExecutionError, FailedOperation, HealthFailure,
-    HealthObservation, HookFailure, MachineAction, MachineName, OperationPhase, OperationRow,
-    OperationStatus, ReplacementCompensation, RestartAttempt, ServiceName, StopAttempt,
+    ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
+    DeployOutcome, ExecutionError, FailedOperation, HealthFailure, HealthObservation, HookFailure,
+    MachineAction, MachineName, OperationPhase, OperationRow, OperationStatus,
+    ReplacementCompensation, RestartAttempt, ServiceName, StopAttempt,
 };
 
+/// ANSI roles for a TTY stream. Pipes and `NO_COLOR` stay plain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Ink {
+pub(crate) struct Ink {
     color: bool,
 }
 
 impl Ink {
+    /// Color when `stream` is a TTY and `NO_COLOR` is unset.
     #[must_use]
-    pub fn detect(stream: impl IsTerminal) -> Self {
+    pub(crate) fn detect(stream: impl IsTerminal) -> Self {
         let no_color = std::env::var_os("NO_COLOR").is_some();
         Self {
             color: stream.is_terminal() && !no_color,
         }
     }
 
+    /// No ANSI.
     #[must_use]
-    pub const fn plain() -> Self {
+    pub(crate) const fn plain() -> Self {
         Self { color: false }
     }
 
     #[must_use]
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub const fn color() -> Self {
+    #[cfg(test)]
+    pub(crate) const fn color() -> Self {
         Self { color: true }
     }
 
     #[must_use]
-    pub fn paint(self, role: Role, text: &str) -> String {
+    pub(crate) fn paint(self, role: Role, text: &str) -> String {
         if !self.color {
             return text.to_owned();
         }
@@ -53,7 +56,7 @@ impl Ink {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Role {
+pub(crate) enum Role {
     Title,
     Done,
     Run,
@@ -63,17 +66,7 @@ pub enum Role {
 }
 
 #[derive(Clone, Debug)]
-pub struct DeployReport {
-    title: String,
-    completed: u32,
-    total: u32,
-    rows: Vec<TaskView>,
-    live_shown: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskView {
-    index: u32,
+struct TaskView {
     subject: Subject,
     verb: Verb,
     place: Option<MachineName>,
@@ -82,7 +75,7 @@ pub struct TaskView {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Subject {
+enum Subject {
     Container { name: String },
     Volume { name: String },
     Dependency { name: String },
@@ -90,7 +83,7 @@ pub enum Subject {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Verb {
+enum Verb {
     Create,
     Replace,
     Remove,
@@ -101,7 +94,7 @@ pub enum Verb {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TaskState {
+enum TaskState {
     Pending,
     Running { pulse: Pulse },
     Done { word: DoneWord },
@@ -110,7 +103,7 @@ pub enum TaskState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Pulse {
+enum Pulse {
     Starting,
     WaitingHealth { elapsed_ms: u64 },
     WaitingHook { elapsed_ms: u64 },
@@ -119,13 +112,13 @@ pub enum Pulse {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DoneWord {
+enum DoneWord {
     Healthy,
     Removed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Cause {
+enum Cause {
     Machine {
         action: ActionWord,
         message: String,
@@ -160,7 +153,7 @@ pub enum Cause {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ActionWord {
+enum ActionWord {
     Create,
     Start,
     Inspect,
@@ -170,7 +163,7 @@ pub enum ActionWord {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RuntimeSummary {
+enum RuntimeSummary {
     NeverStarted,
     Unhealthy,
     StillStarting,
@@ -185,7 +178,7 @@ pub enum RuntimeSummary {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CompensationFact {
+enum CompensationFact {
     StoppedNew,
     StopNewFailed { cause: Cause },
     RestartedOld,
@@ -193,207 +186,140 @@ pub enum CompensationFact {
     RestartNotAttempted,
 }
 
-impl DeployReport {
-    #[must_use]
-    pub fn new(title: String) -> Self {
-        Self {
-            title,
-            completed: 0,
-            total: 0,
-            rows: Vec::new(),
-            live_shown: false,
+/// Live progress title plus one row per operation.
+#[must_use]
+pub(crate) fn paint_live(
+    title: &str,
+    completed: u32,
+    total: u32,
+    rows: &[OperationRow],
+    ink: &Ink,
+) -> String {
+    let tasks: Vec<_> = rows.iter().map(TaskView::from_row).collect();
+    paint_tasks(title, completed, total, &tasks, ink)
+}
+
+/// Halt footer. Synthesizes the live list when Progress never printed.
+#[must_use]
+pub(crate) fn paint_closing(
+    outcome: &DeployOutcome<ExecutionError>,
+    rows: &[OperationRow],
+    live_shown: bool,
+    ink: &Ink,
+) -> String {
+    let DeployOutcome::Failed {
+        completed,
+        failed,
+        unexecuted,
+    } = outcome
+    else {
+        return String::new();
+    };
+    let tasks = if rows.is_empty() {
+        tasks_from_failed_outcome(completed, failed, unexecuted)
+    } else {
+        let mut tasks: Vec<_> = rows.iter().map(TaskView::from_row).collect();
+        overlay_failed(&mut tasks, failed);
+        tasks
+    };
+    let mut out = String::new();
+    if !live_shown {
+        let total = (completed.len() + 1 + unexecuted.len()) as u32;
+        out.push_str(&paint_tasks("", completed.len() as u32, total, &tasks, ink));
+    }
+    let failed_row = tasks
+        .iter()
+        .find(|row| matches!(row.state, TaskState::Failed { .. }))
+        .cloned()
+        .unwrap_or_else(|| task_from_failed(failed));
+    let TaskState::Failed { cause } = &failed_row.state else {
+        return out;
+    };
+    let place = failed_row
+        .place
+        .as_ref()
+        .map(|machine| format!(" on {machine}"))
+        .unwrap_or_default();
+    let prefix = ink.paint(Role::Fail, "Failed:");
+    let _ = writeln!(
+        out,
+        "{prefix} {} {}{place}",
+        failed_row.verb.word(),
+        failed_row.subject.name()
+    );
+    let _ = writeln!(out, "  {}", ink.paint(Role::Fail, &cause.english()));
+    if let FailedOperation::ReplacementHealth { compensation, .. } = failed {
+        for fact in compensation_facts(compensation) {
+            let _ = writeln!(out, "  {}", compensation_line(&fact));
         }
     }
-
-    #[must_use]
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn from_progress(event: &DeployEvent, title: &str) -> Self {
-        match event {
-            DeployEvent::Progress {
-                completed,
-                total,
-                rows,
-            } => Self {
-                title: title.to_owned(),
-                completed: *completed,
-                total: *total,
-                rows: rows.iter().map(task_view).collect(),
-                live_shown: true,
-            },
-            DeployEvent::Outcome { outcome } => Self::from_outcome(outcome),
-        }
+    if wants_logs(cause)
+        && let Some(service) = &failed_row.service
+    {
+        let hint = ink.paint(Role::Neutral, &format!("next: ployz logs {service}"));
+        let _ = writeln!(out, "  {hint}");
     }
+    out
+}
 
-    #[must_use]
-    pub fn from_outcome(outcome: &DeployOutcome<ExecutionError>) -> Self {
-        let mut report = Self::new(String::new());
-        report.seal(outcome);
-        report
+fn paint_tasks(title: &str, completed: u32, total: u32, rows: &[TaskView], ink: &Ink) -> String {
+    let mut out = String::new();
+    if !title.is_empty() {
+        let mark = ink.paint(Role::Title, "[+]");
+        let _ = writeln!(out, "{mark} {title} {completed}/{total}");
     }
-
-    #[must_use]
-    pub fn from_rows(rows: &[OperationRow], live_shown: bool) -> Self {
-        Self {
-            title: String::new(),
-            completed: 0,
-            total: rows.len() as u32,
-            rows: rows.iter().map(task_view).collect(),
-            live_shown,
-        }
+    for row in rows {
+        out.push_str(&paint_row(row, ink));
     }
+    out
+}
 
-    #[must_use]
-    pub fn paint_failed(
-        outcome: &DeployOutcome<ExecutionError>,
-        rows: &[OperationRow],
-        live_shown: bool,
-        ink: &Ink,
-    ) -> String {
-        let report = if rows.is_empty() {
-            Self::from_outcome(outcome)
-        } else {
-            let mut report = Self::from_rows(rows, live_shown);
-            report.seal(outcome);
-            report
-        };
-        report.paint_closing(outcome, ink)
-    }
-
-    pub fn ingest_progress(&mut self, event: &DeployEvent) {
-        let DeployEvent::Progress {
-            completed,
-            total,
-            rows,
-        } = event
-        else {
-            return;
-        };
-        self.completed = *completed;
-        self.total = *total;
-        self.rows = rows.iter().map(task_view).collect();
-        self.live_shown = true;
-    }
-
-    pub fn seal(&mut self, outcome: &DeployOutcome<ExecutionError>) {
-        match outcome {
-            DeployOutcome::Success { completed } => {
-                if self.rows.is_empty() {
-                    self.rows = completed
-                        .iter()
-                        .enumerate()
-                        .map(|(index, operation)| {
-                            task_from_operation(
-                                index as u32,
-                                operation,
-                                TaskState::Done {
-                                    word: done_word(operation),
-                                },
-                            )
-                        })
-                        .collect();
-                }
-                self.completed = completed.len() as u32;
-                self.total = completed.len() as u32;
-            }
-            DeployOutcome::Failed {
-                completed,
-                failed,
-                unexecuted,
-            } => {
-                if self.rows.is_empty() {
-                    let mut rows = Vec::new();
-                    for (index, operation) in completed.iter().enumerate() {
-                        rows.push(task_from_operation(
-                            index as u32,
-                            operation,
-                            TaskState::Done {
-                                word: done_word(operation),
-                            },
-                        ));
-                    }
-                    let failed_index = rows.len() as u32;
-                    rows.push(task_from_failed(failed_index, failed));
-                    for (offset, operation) in unexecuted.iter().enumerate() {
-                        rows.push(task_from_operation(
-                            failed_index + 1 + offset as u32,
-                            operation,
-                            TaskState::Unexecuted,
-                        ));
-                    }
-                    self.rows = rows;
-                } else {
-                    overlay_failed(&mut self.rows, failed);
-                }
-                self.completed = completed.len() as u32;
-                self.total = (completed.len() + 1 + unexecuted.len()) as u32;
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn paint_live(&self, ink: &Ink) -> String {
-        let mut out = String::new();
-        if !self.title.is_empty() {
-            let mark = ink.paint(Role::Title, "[+]");
-            let _ = writeln!(
-                out,
-                "{mark} {} {}/{}",
-                self.title, self.completed, self.total
-            );
-        }
-        let mut rows: Vec<&TaskView> = self.rows.iter().collect();
-        rows.sort_by_key(|row| row.index);
-        for row in rows {
-            out.push_str(&paint_row(row, ink));
-        }
-        out
-    }
-
-    #[must_use]
-    pub fn paint_closing(&self, outcome: &DeployOutcome<ExecutionError>, ink: &Ink) -> String {
-        let DeployOutcome::Failed { failed, .. } = outcome else {
-            return String::new();
-        };
-        let mut out = String::new();
-        if !self.live_shown {
-            out.push_str(&self.paint_live(ink));
-        }
-        let failed_row = self
-            .rows
+fn tasks_from_failed_outcome(
+    completed: &[DeployOperation],
+    failed: &FailedOperation<ExecutionError>,
+    unexecuted: &[DeployOperation],
+) -> Vec<TaskView> {
+    let mut rows: Vec<_> = completed
+        .iter()
+        .map(|operation| {
+            TaskView::from_operation(
+                operation,
+                TaskState::Done {
+                    word: done_word(operation),
+                },
+            )
+        })
+        .collect();
+    rows.push(task_from_failed(failed));
+    rows.extend(
+        unexecuted
             .iter()
-            .find(|row| matches!(row.state, TaskState::Failed { .. }))
-            .cloned()
-            .unwrap_or_else(|| task_from_failed(0, failed));
-        let TaskState::Failed { cause } = &failed_row.state else {
-            return out;
-        };
-        let place = failed_row
-            .place
-            .as_ref()
-            .map(|machine| format!(" on {machine}"))
-            .unwrap_or_default();
-        let header = ink.paint(
-            Role::Fail,
-            &format!(
-                "Failed: {} {}{place}",
-                failed_row.verb.word(),
-                failed_row.subject.name()
-            ),
-        );
-        let _ = writeln!(out, "{header}");
-        let _ = writeln!(out, "  {}", ink.paint(Role::Fail, &cause.english()));
-        if let FailedOperation::ReplacementHealth { compensation, .. } = failed {
-            for fact in compensation_facts(compensation) {
-                let _ = writeln!(out, "  {}", compensation_line(&fact));
-            }
+            .map(|operation| TaskView::from_operation(operation, TaskState::Unexecuted)),
+    );
+    rows
+}
+
+impl TaskView {
+    fn from_row(row: &OperationRow) -> Self {
+        let name = visible_row_name(row);
+        Self {
+            subject: subject_of(&row.operation, name),
+            verb: verb_of(&row.operation),
+            place: place_of(row),
+            state: task_state(row),
+            service: logs_service(row),
         }
-        if wants_logs(cause) {
-            if let Some(service) = &failed_row.service {
-                let hint = ink.paint(Role::Neutral, &format!("next: ployz logs {service}"));
-                let _ = writeln!(out, "  {hint}");
-            }
+    }
+
+    fn from_operation(operation: &DeployOperation, state: TaskState) -> Self {
+        let name = visible_name(None, operation, operation.container_id().as_ref());
+        Self {
+            subject: subject_of(operation, name),
+            verb: verb_of(operation),
+            place: None,
+            state,
+            service: operation.service_name().cloned(),
         }
-        out
     }
 }
 
@@ -510,39 +436,14 @@ pub(super) fn visible_row_name(row: &OperationRow) -> String {
     )
 }
 
-fn task_view(row: &OperationRow) -> TaskView {
-    let name = visible_row_name(row);
-    TaskView {
-        index: row.index,
-        subject: subject_of(&row.operation, name),
-        verb: verb_of(&row.operation),
-        place: place_of(row),
-        state: task_state(row),
-        service: logs_service(row),
-    }
-}
-
-fn task_from_operation(index: u32, operation: &DeployOperation, state: TaskState) -> TaskView {
-    let name = visible_name(None, operation, operation.container_id().as_ref());
-    TaskView {
-        index,
-        subject: subject_of(operation, name),
-        verb: verb_of(operation),
-        place: None,
-        state,
-        service: operation.service_name().cloned(),
-    }
-}
-
-fn task_from_failed(index: u32, failed: &FailedOperation<ExecutionError>) -> TaskView {
+fn task_from_failed(failed: &FailedOperation<ExecutionError>) -> TaskView {
     let (operation, error) = match failed {
         FailedOperation::Operation { operation, error } => (operation.clone(), error),
         FailedOperation::ReplacementHealth {
             operation, error, ..
         } => (DeployOperation::ReplaceContainer(operation.clone()), error),
     };
-    task_from_operation(
-        index,
+    TaskView::from_operation(
         &operation,
         TaskState::Failed {
             cause: cause_from_error(error),
@@ -551,7 +452,7 @@ fn task_from_failed(index: u32, failed: &FailedOperation<ExecutionError>) -> Tas
 }
 
 fn overlay_failed(rows: &mut [TaskView], failed: &FailedOperation<ExecutionError>) {
-    let overlay = task_from_failed(0, failed);
+    let overlay = task_from_failed(failed);
     if let Some(row) = rows
         .iter_mut()
         .find(|row| row.verb == overlay.verb && row.subject.name() == overlay.subject.name())
@@ -684,7 +585,11 @@ fn live_container_id(row: &OperationRow) -> Option<ContainerId> {
             error:
                 ExecutionError::Health { container_id, .. } | ExecutionError::Hook { container_id, .. },
         } => Some(*container_id),
-        _ => row.operation.container_id(),
+        OperationStatus::Pending
+        | OperationStatus::Running { .. }
+        | OperationStatus::Completed
+        | OperationStatus::Failed { .. }
+        | OperationStatus::Unexecuted => row.operation.container_id(),
     }
 }
 

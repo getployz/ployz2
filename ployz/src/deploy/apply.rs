@@ -23,7 +23,7 @@ use super::{
         push_project_images,
     },
     render,
-    report::{DeployReport, Ink},
+    report::{self, Ink},
 };
 
 pub(crate) async fn deploy_spec(
@@ -147,12 +147,8 @@ impl From<ApplyError> for Failure {
                 rows,
                 live_shown,
             } => {
-                let text = DeployReport::paint_failed(
-                    &outcome,
-                    &rows,
-                    live_shown,
-                    &Ink::detect(io::stderr()),
-                );
+                let text =
+                    report::paint_closing(&outcome, &rows, live_shown, &Ink::detect(io::stderr()));
                 Failure::usage(text.trim().to_owned())
             }
         }
@@ -324,7 +320,7 @@ async fn stream_confirm(
 }
 
 struct ProgressPrinter {
-    report: DeployReport,
+    title: String,
     last_rows: Vec<OperationRow>,
     live_shown: bool,
     ink: Ink,
@@ -335,7 +331,7 @@ struct ProgressPrinter {
 impl ProgressPrinter {
     fn new(title: String, ink: Ink) -> Self {
         Self {
-            report: DeployReport::new(title),
+            title,
             last_rows: Vec::new(),
             live_shown: false,
             ink,
@@ -345,7 +341,12 @@ impl ProgressPrinter {
     }
 
     fn print(&mut self, event: &DeployEvent) {
-        let DeployEvent::Progress { rows, .. } = event else {
+        let DeployEvent::Progress {
+            rows,
+            completed,
+            total,
+        } = event
+        else {
             return;
         };
         let signature = progress_signature(event);
@@ -354,8 +355,7 @@ impl ProgressPrinter {
             return;
         }
         self.last_rows = rows.clone();
-        self.report.ingest_progress(event);
-        let text = self.report.paint_live(&self.ink);
+        let text = report::paint_live(&self.title, *completed, *total, rows, &self.ink);
         if tty && self.last_lines > 0 {
             print!("\x1b[{}F\x1b[J", self.last_lines);
         }

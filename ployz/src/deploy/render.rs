@@ -6,21 +6,24 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use ployz_core::{
-    DeployEvent, DeployOperation, DeployOutcome, DeployPreview, ExecutionError, HttpProtocol,
-    OperationPhase, OperationRow, OperationStatus, PortPublication, ReplacementOperation,
-    UpdateOrder,
+    DeployOperation, DeployOutcome, DeployPreview, ExecutionError, HttpProtocol, OperationPhase,
+    OperationRow, OperationStatus, PortPublication, ReplacementOperation, UpdateOrder,
 };
 
-use super::report::{self, DeployReport, Ink};
+#[cfg(test)]
+use ployz_core::DeployEvent;
 
-/// How the live task list is titled.
+use super::report::{self, Ink};
+
 #[must_use]
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn progress_text(event: &DeployEvent, title: &str) -> String {
     match event {
-        DeployEvent::Progress { .. } => {
-            DeployReport::from_progress(event, title).paint_live(&Ink::plain())
-        }
+        DeployEvent::Progress {
+            completed,
+            total,
+            rows,
+        } => report::paint_live(title, *completed, *total, rows, &Ink::plain()),
         DeployEvent::Outcome { outcome } => outcome_text(outcome),
     }
 }
@@ -147,20 +150,18 @@ pub fn confirm_removal_prompt(project: &ployz_core::ProjectName, context: &str) 
 pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
     match outcome {
         DeployOutcome::Success { completed } => endpoints_footer(completed).unwrap_or_default(),
-        DeployOutcome::Failed { .. } => {
-            DeployReport::from_outcome(outcome).paint_closing(outcome, &Ink::plain())
-        }
+        DeployOutcome::Failed { .. } => report::paint_closing(outcome, &[], false, &Ink::plain()),
     }
 }
 
 /// Footer using Machine Names already present on live rows.
 #[must_use]
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn outcome_text_after(
     outcome: &DeployOutcome<ExecutionError>,
     rows: &[OperationRow],
 ) -> String {
-    DeployReport::paint_failed(outcome, rows, true, &Ink::plain())
+    report::paint_closing(outcome, rows, true, &Ink::plain())
 }
 
 fn service_trees(preview: &DeployPreview) -> String {

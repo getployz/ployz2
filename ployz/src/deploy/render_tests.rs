@@ -9,7 +9,7 @@ use ployz_core::{
     StopAttempt, UpdateOrder, VolumeToCreate,
 };
 
-use super::super::report::{DeployReport, Ink};
+use super::super::report::{self, Ink, Role};
 
 use super::*;
 
@@ -790,17 +790,52 @@ fn colored_failed_mark_emits_csi_and_plain_does_not() {
             error: timed_out_create(),
         },
     };
-    let event = DeployEvent::Progress {
-        completed: 0,
-        total: 1,
-        rows: vec![row],
-    };
-    let report = DeployReport::from_progress(&event, "Deploying to default");
-    let plain = report.paint_live(&Ink::plain());
-    let color = report.paint_live(&Ink::color());
+    let rows = [row];
+    let plain = report::paint_live("Deploying to default", 0, 1, &rows, &Ink::plain());
+    let color = report::paint_live("Deploying to default", 0, 1, &rows, &Ink::color());
     assert!(!plain.contains('\u{1b}'), "{plain:?}");
     assert!(color.contains('\u{1b}'), "{color:?}");
     assert!(plain.contains("✖"), "{plain}");
+}
+
+#[test]
+fn colored_failed_footer_does_not_color_the_service_name() {
+    let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+    let row = OperationRow {
+        index: 0,
+        machine_id,
+        machine_name: Some(MachineName::parse("machine-2").unwrap()),
+        operation: DeployOperation::ReplaceContainer(ReplacementOperation {
+            machine_id,
+            old_container_id: ContainerId::parse("f".repeat(64)).unwrap(),
+            spec: resolved("cashdash-frontend", "app:latest"),
+            skip_health_monitor: false,
+        }),
+        display_name: None,
+        service_name: None,
+        status: OperationStatus::Failed {
+            error: timed_out_create(),
+        },
+    };
+    let outcome = DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed: FailedOperation::Operation {
+            operation: row.operation.clone(),
+            error: timed_out_create(),
+        },
+        unexecuted: Vec::new(),
+    };
+    let color = report::paint_closing(&outcome, &[row], true, &Ink::color());
+    let ink = Ink::color();
+    assert!(
+        color.contains(&ink.paint(Role::Fail, "Failed:")),
+        "{color:?}"
+    );
+    assert!(
+        !color.contains(&ink.paint(Role::Fail, "Failed: replace cashdash-frontend on machine-2")),
+        "{color:?}"
+    );
+    assert!(color.contains("cashdash-frontend"), "{color:?}");
 }
 
 #[test]
