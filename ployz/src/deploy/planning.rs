@@ -80,6 +80,7 @@ struct Planned {
 pub struct DeployPlan {
     operations: Vec<DeployOperation>,
     preview: DeployPreview,
+    pub(super) cluster_domain: Option<String>,
 }
 
 impl DeployPlan {
@@ -118,6 +119,7 @@ impl DeployPlan {
         Self {
             operations: Vec::new(),
             preview: DeployPreview::new(Vec::new(), warnings, project),
+            cluster_domain: None,
         }
     }
 
@@ -132,6 +134,7 @@ impl DeployPlan {
         Self {
             operations,
             preview: DeployPreview::new(rows, Vec::new(), project),
+            cluster_domain: None,
         }
     }
 }
@@ -261,6 +264,7 @@ pub fn plan_deploy(
         }
     }
     plan.preview.storage = budgets;
+    plan.cluster_domain = ingress.cluster_domain.map(str::to_owned);
     Ok(plan)
 }
 
@@ -308,6 +312,7 @@ fn seal_plan(
     DeployPlan {
         operations: planned.operations,
         preview,
+        cluster_domain: None,
     }
 }
 
