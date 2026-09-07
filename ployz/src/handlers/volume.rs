@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{self, IsTerminal, Write},
 };
 
@@ -432,7 +432,7 @@ fn volume_failure_summary(result: &PartialResult<VolumeInventory, RpcError>) -> 
     format!("one or more Docker Volume observations failed: {failures}")
 }
 
-fn removal_failure_summary(removals: &[VolumeRemoval]) -> String {
+pub(super) fn removal_failure_summary(removals: &[VolumeRemoval]) -> String {
     let failures = removals
         .iter()
         .filter_map(|removal| {
@@ -450,7 +450,45 @@ fn removal_failure_summary(removals: &[VolumeRemoval]) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ");
-    format!("one or more Docker Volume removals failed or were omitted: {failures}")
+    let mut summary =
+        format!("one or more Docker Volume removals failed or were omitted: {failures}");
+    if let Some(hint) = volume_in_use_hint(removals) {
+        summary.push('\n');
+        summary.push_str(&hint);
+    }
+    summary
+}
+
+fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
+    let mut services = BTreeSet::new();
+    for removal in removals {
+        let VolumeRemovalOutcome::Failed { error } = &removal.outcome else {
+            continue;
+        };
+        let Some(names) = error
+            .details
+            .get("in_use_by")
+            .and_then(|value| value.as_array())
+        else {
+            continue;
+        };
+        for name in names {
+            if let Some(service) = name.as_str() {
+                services.insert(service.to_owned());
+            }
+        }
+    }
+    match services.len() {
+        0 => None,
+        1 => Some(format!(
+            "remove the Service first: ployz rm {}",
+            services.iter().next().expect("checked len")
+        )),
+        _ => Some(format!(
+            "remove the Services first: ployz rm {}",
+            services.into_iter().collect::<Vec<_>>().join(" ")
+        )),
+    }
 }
 
 fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
@@ -515,6 +553,59 @@ mod tests {
                 used_bytes: 966_367_642,
             }),
             ("PROVISIONED", "1073741824".into(), "966367642".into())
+        );
+    }
+
+    #[test]
+    fn in_use_volume_removal_names_the_service_to_remove() {
+        let removal = VolumeRemoval {
+            id: ployz_core::DockerVolumeId {
+                machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+                name: ployz_core::DockerVolumeName::parse("busy").unwrap(),
+            },
+            outcome: VolumeRemovalOutcome::Failed {
+                error: RpcError {
+                    code: RpcErrorCode::Conflict,
+                    message: "volume is in use by cashdash/cashdash-singlestore (2 containers)"
+                        .into(),
+                    details: serde_json::json!({
+                        "in_use_by": ["cashdash/cashdash-singlestore"]
+                    }),
+                },
+            },
+        };
+        let summary = removal_failure_summary(&[removal]);
+        assert!(
+            summary.contains("volume is in use by cashdash/cashdash-singlestore"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("remove the Service first: ployz rm cashdash/cashdash-singlestore"),
+            "{summary}"
+        );
+    }
+
+    #[test]
+    fn in_use_volume_removal_names_each_service_to_remove() {
+        let removal = VolumeRemoval {
+            id: ployz_core::DockerVolumeId {
+                machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+                name: ployz_core::DockerVolumeName::parse("busy").unwrap(),
+            },
+            outcome: VolumeRemovalOutcome::Failed {
+                error: RpcError {
+                    code: RpcErrorCode::Conflict,
+                    message: "volume is in use by app/web, app/db (3 containers)".into(),
+                    details: serde_json::json!({
+                        "in_use_by": ["app/db", "app/web"]
+                    }),
+                },
+            },
+        };
+        let summary = removal_failure_summary(&[removal]);
+        assert!(
+            summary.contains("remove the Services first: ployz rm app/db app/web"),
+            "{summary}"
         );
     }
 

@@ -594,6 +594,12 @@ pub enum Error {
         name: DockerVolumeName,
         reason: String,
     },
+    /// Docker refused to remove a Volume that containers still mount.
+    #[error("{message}")]
+    VolumeInUse {
+        message: String,
+        services: Vec<String>,
+    },
     /// Docker created a Volume but its resulting state could not be observed.
     #[error("Docker Volume creation succeeded but verification failed for {id:?}: {error}")]
     VolumeCreatedButUnverified {
@@ -657,6 +663,7 @@ impl Error {
                 ..
             })
             | Self::VolumeShapeMismatch { .. }
+            | Self::VolumeInUse { .. }
             | Self::SlotNameOccupied(_) => RpcErrorCode::Conflict,
             Self::VolumeCreatedButUnverified { .. } | Self::StorageUnobservable => {
                 RpcErrorCode::Unavailable
@@ -694,13 +701,15 @@ impl Error {
 
 impl From<&Error> for RpcError {
     fn from(error: &Error) -> Self {
-        let details = if let Error::VolumeCreatedButUnverified { id, error } = error {
-            serde_json::json!({
+        let details = match error {
+            Error::VolumeCreatedButUnverified { id, error } => serde_json::json!({
                 "created_volume": id,
                 "verification_error": error,
-            })
-        } else {
-            serde_json::Value::Null
+            }),
+            Error::VolumeInUse { services, .. } if !services.is_empty() => {
+                serde_json::json!({ "in_use_by": services })
+            }
+            _ => serde_json::Value::Null,
         };
         Self {
             code: error.rpc_code(),
