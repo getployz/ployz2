@@ -3,9 +3,9 @@ use std::collections::{BTreeSet, HashSet};
 use clap::ArgMatches;
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
-    DataLoss, DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineObservation,
-    MembershipObservation, ObservedDataLoss, RemoveVolumesRequest, RpcError, ServiceObservation,
-    ServicePlacementEligibility, ServiceSelector, VolumeSource, select_service,
+    DataLoss, DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices,
+    MachineObservation, MembershipObservation, ObservedDataLoss, RemoveVolumesRequest, RpcError,
+    ServiceObservation, ServicePlacementEligibility, ServiceSelector, VolumeSource, select_service,
 };
 
 use crate::cluster::ContainerObservationCondition;

@@ -668,7 +668,12 @@ fn tmpfs() -> ployz_core::RawVolumeSource {
 }
 
 fn container_id(service: &ployz_core::ServiceObservation) -> ployz_core::ContainerId {
-    service.containers[0].as_observation().container_id
+    service
+        .members()
+        .next()
+        .expect("fixture services have a member")
+        .as_observation()
+        .container_id
 }
 
 fn machine_id(id: char) -> MachineId {
