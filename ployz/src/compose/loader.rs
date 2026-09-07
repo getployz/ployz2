@@ -58,12 +58,38 @@ pub(super) fn helper<T: serde::de::DeserializeOwned>(
     request: &serde_json::Value,
 ) -> Result<T, ComposeError> {
     use std::io::Write as _;
-    let helper = TemporaryComposeFile::create(
-        include_bytes!(concat!(env!("OUT_DIR"), "/ployz-compose")),
-        0o700,
-    )?;
+    let content = include_bytes!(concat!(env!("OUT_DIR"), "/ployz-compose"));
+    // Linux temporary mounts may be noexec. Keep the executable in anonymous
+    // memory, sealed against modification, until the child has finished.
+    #[cfg(target_os = "linux")]
+    let executable = {
+        use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, memfd_create};
+        let fd = memfd_create(
+            "ployz-compose",
+            MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+        )
+        .map_err(|error| ComposeError::Io(format!("create Compose helper: {error}")))?;
+        let mut file = fs::File::from(fd);
+        file.write_all(content)
+            .map_err(|error| ComposeError::Io(format!("write Compose helper: {error}")))?;
+        fcntl_add_seals(
+            &file,
+            SealFlags::WRITE | SealFlags::GROW | SealFlags::SHRINK | SealFlags::SEAL,
+        )
+        .map_err(|error| ComposeError::Io(format!("seal Compose helper: {error}")))?;
+        file
+    };
+    #[cfg(target_os = "linux")]
+    let path = {
+        use std::os::fd::AsRawFd as _;
+        PathBuf::from(format!("/proc/self/fd/{}", executable.as_raw_fd()))
+    };
+    #[cfg(not(target_os = "linux"))]
+    let executable = TemporaryComposeFile::create(content, 0o700)?;
+    #[cfg(not(target_os = "linux"))]
+    let path = &executable.path;
     let mut child = retry_executable_busy(|| {
-        Command::new(&helper.path)
+        Command::new(&path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -360,6 +386,35 @@ mod tests {
     };
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_helper_does_not_use_tmpdir() {
+        const CHILD: &str = "PLOYZ_TEST_HELPER_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            helper::<ployz_core::PortPublication>(
+                &serde_json::json!({"version": 1, "port": "80/http"}),
+            )
+            .unwrap();
+            return;
+        }
+        // A non-directory makes any attempt to extract into TMPDIR fail without
+        // needing privileged mounts or changing the parent test process's environment.
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "compose::loader::tests::linux_helper_does_not_use_tmpdir",
+            ])
+            .env(CHILD, "1")
+            .env("TMPDIR", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
 
     #[test]
     fn temporary_compose_files_are_private() {

@@ -40,6 +40,7 @@ jobs:
         run: |
           test -z "$(gofmt -l *.go)"
           go vet ./...
+          go test ./...
       - run: cargo fmt --all -- --check
       - run: bash scripts/check-layer3-runner.sh
       - run: bash scripts/check-product-paths.sh

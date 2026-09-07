@@ -188,8 +188,9 @@ func secretSource(name string, raw object) (object, error) {
 	}
 	command, hasCommand := raw["x-command"]
 	driver, hasDriver := raw["driver"]
+	_, hasDriverOptions := raw["driver_opts"]
 	if hasCommand || hasDriver {
-		if hasCommand && hasDriver {
+		if hasCommand && (hasDriver || hasDriverOptions) {
 			return nil, fmt.Errorf("secret '%s': x-command cannot be combined with driver or driver_opts", name)
 		}
 		if raw["file"] != nil || raw["environment"] != nil {
