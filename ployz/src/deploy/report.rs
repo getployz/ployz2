@@ -219,7 +219,7 @@ pub(crate) fn paint_closing(
         tasks_from_failed_outcome(completed, failed, unexecuted)
     } else {
         let mut tasks: Vec<_> = rows.iter().map(TaskView::from_row).collect();
-        overlay_failed(&mut tasks, failed);
+        overlay_failed(&mut tasks, rows, failed);
         tasks
     };
     let mut out = String::new();
@@ -451,21 +451,42 @@ fn task_from_failed(failed: &FailedOperation<ExecutionError>) -> TaskView {
     )
 }
 
-fn overlay_failed(rows: &mut [TaskView], failed: &FailedOperation<ExecutionError>) {
+fn overlay_failed(
+    tasks: &mut [TaskView],
+    rows: &[OperationRow],
+    failed: &FailedOperation<ExecutionError>,
+) {
     let overlay = task_from_failed(failed);
-    if let Some(row) = rows
-        .iter_mut()
-        .find(|row| row.verb == overlay.verb && row.subject.name() == overlay.subject.name())
-    {
-        row.state = overlay.state;
-        if row.service.is_none() {
-            row.service = overlay.service;
+    let Some(row) = failed_row_index(rows, failed).and_then(|index| tasks.get_mut(index)) else {
+        return;
+    };
+    row.state = overlay.state;
+    if row.service.is_none() {
+        row.service = overlay.service;
+    }
+}
+
+fn failed_row_index(
+    rows: &[OperationRow],
+    failed: &FailedOperation<ExecutionError>,
+) -> Option<usize> {
+    rows.iter()
+        .position(|row| row_matches_failed(row, failed))
+        .or_else(|| {
+            rows.iter()
+                .position(|row| matches!(row.status, OperationStatus::Failed { .. }))
+        })
+}
+
+fn row_matches_failed(row: &OperationRow, failed: &FailedOperation<ExecutionError>) -> bool {
+    match failed {
+        FailedOperation::Operation { operation, .. } => row.operation == *operation,
+        FailedOperation::ReplacementHealth { operation, .. } => {
+            matches!(
+                &row.operation,
+                DeployOperation::ReplaceContainer(existing) if existing == operation
+            )
         }
-    } else if let Some(row) = rows
-        .iter_mut()
-        .find(|row| matches!(row.state, TaskState::Failed { .. }))
-    {
-        row.state = overlay.state;
     }
 }
 

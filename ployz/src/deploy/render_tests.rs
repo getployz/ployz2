@@ -3,10 +3,10 @@ use std::num::NonZeroU64;
 use ployz_core::{
     ContainerId, DeployOperation, DockerVolumeId, DockerVolumeName, ExecutionError,
     FailedOperation, HealthFailure, HookFailure, MachineAction, MachineId, MachineName,
-    OperationRow, OperationStatus, PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes,
-    PruneRefusal, QualifiedService, ReplacementCompensation, ReplacementOperation,
-    RequestedServiceSpec, ResolvedServiceSpec, RestartAttempt, RpcError, RpcErrorCode, ServiceName,
-    StopAttempt, UpdateOrder, VolumeToCreate,
+    OperationPhase, OperationRow, OperationStatus, PreservedVolume, ProjectName,
+    ProvisionedVolumeMaximumBytes, PruneRefusal, QualifiedService, ReplacementCompensation,
+    ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, RestartAttempt, RpcError,
+    RpcErrorCode, ServiceName, StopAttempt, UpdateOrder, VolumeToCreate,
 };
 
 use super::super::report::{self, Ink, Role};
@@ -584,6 +584,103 @@ fn failed_footer_names_machine_from_live_rows() {
     assert!(!text.contains("cashdash_data"), "{text}");
     assert!(!text.contains("Completed"), "{text}");
     assert!(!text.contains(&"d".repeat(32)), "{text}");
+}
+
+#[test]
+fn failed_volume_footer_keeps_the_failing_machine_when_names_collide() {
+    let alpha = MachineId::parse("a".repeat(32)).unwrap();
+    let beta = MachineId::parse("b".repeat(32)).unwrap();
+    let name = DockerVolumeName::parse("data").unwrap();
+    let on_alpha = DeployOperation::RemoveVolume {
+        id: DockerVolumeId {
+            machine_id: alpha,
+            name: name.clone(),
+        },
+    };
+    let on_beta = DeployOperation::RemoveVolume {
+        id: DockerVolumeId {
+            machine_id: beta,
+            name,
+        },
+    };
+    let rows = vec![
+        OperationRow {
+            index: 0,
+            machine_id: alpha,
+            machine_name: Some(MachineName::parse("alpha").unwrap()),
+            operation: on_alpha.clone(),
+            display_name: None,
+            service_name: None,
+            status: OperationStatus::Completed,
+        },
+        OperationRow {
+            index: 1,
+            machine_id: beta,
+            machine_name: Some(MachineName::parse("beta").unwrap()),
+            operation: on_beta.clone(),
+            display_name: None,
+            service_name: None,
+            status: OperationStatus::Running {
+                phase: OperationPhase::RemovingVolume,
+            },
+        },
+    ];
+    let outcome = DeployOutcome::Failed {
+        completed: vec![on_alpha],
+        failed: FailedOperation::Operation {
+            operation: on_beta,
+            error: ExecutionError::Machine {
+                action: MachineAction::RemoveVolume,
+                error: RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "target Machine RPC timed out".into(),
+                    details: serde_json::Value::Null,
+                },
+            },
+        },
+        unexecuted: Vec::new(),
+    };
+    let text = outcome_text_after(&outcome, &rows);
+    assert!(text.contains("Failed: remove data on beta"), "{text}");
+    assert!(!text.contains("Failed: remove data on alpha"), "{text}");
+}
+
+#[test]
+fn wait_healthy_footer_omits_the_dependent_machine() {
+    let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+    let operation = DeployOperation::WaitHealthy {
+        machine_id,
+        dependent: QualifiedService::parse("app/web").unwrap(),
+        dependency: QualifiedService::parse("app/db").unwrap(),
+    };
+    let row = OperationRow {
+        index: 0,
+        machine_id,
+        machine_name: Some(MachineName::parse("edge").unwrap()),
+        operation: operation.clone(),
+        display_name: None,
+        service_name: Some(ServiceName::parse("web").unwrap()),
+        status: OperationStatus::Failed {
+            error: ExecutionError::DependencyHealth {
+                dependency: QualifiedService::parse("app/db").unwrap(),
+                failure: ployz_core::DependencyHealthFailure::NoContainers,
+            },
+        },
+    };
+    let outcome = DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed: FailedOperation::Operation {
+            operation,
+            error: ExecutionError::DependencyHealth {
+                dependency: QualifiedService::parse("app/db").unwrap(),
+                failure: ployz_core::DependencyHealthFailure::NoContainers,
+            },
+        },
+        unexecuted: Vec::new(),
+    };
+    let text = outcome_text_after(&outcome, &[row]);
+    assert!(text.contains("Failed: wait app/db\n"), "{text}");
+    assert!(!text.contains(" on edge"), "{text}");
 }
 
 #[test]
