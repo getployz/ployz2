@@ -17,9 +17,9 @@ use ployz::{
 use ployz_core::{
     CORROSION_GOSSIP_PORT, CapabilityName, ContainerKind, ContainerRuntimeObservation,
     ContractDescription, DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-    EnsureImageIngestRequest, HealthObservation, ImageIngestReason, LogsOptions, MACHINE_API_PORT,
-    MachineId, MachineRpcServer, MachineTarget, MembershipObservation, PROJECT_NAME_LABEL,
-    PROTOCOL_MAJOR, PullImageFromMachineRequest, RpcError, RpcErrorCode, UNREGISTRY_PORT, op,
+    HealthObservation, LogsOptions, MACHINE_API_PORT, MachineId, MachineRpcServer,
+    MembershipObservation, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode,
+    UNREGISTRY_PORT, op,
 };
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, UnixListener};
@@ -1117,92 +1117,6 @@ async fn unary_call_gives_up_after_four_unavailable_attempts() {
         "{error:?}"
     );
     assert_eq!(connects.load(Ordering::SeqCst), 4);
-
-    server.abort();
-}
-
-#[tokio::test]
-async fn ensure_image_ingest_retries_unavailable_transport_error() {
-    let service = DiscoveryService::new(test_description());
-    let target = MachineTarget::from(&machine_id('a'));
-    service
-        .ingest_outcomes
-        .lock()
-        .unwrap()
-        .push_back(DescribeOutcome::Status(Status::unavailable(
-            "transport error",
-        )));
-    let (mut client, server, connects) = connected_client(service.clone()).await;
-
-    assert_eq!(
-        client
-            .call::<op::EnsureImageIngest>(EnsureImageIngestRequest {}, Some(&target))
-            .await
-            .unwrap(),
-        test_ingest_opened()
-    );
-    assert_eq!(connects.load(Ordering::SeqCst), 2);
-
-    server.abort();
-}
-
-#[tokio::test]
-async fn pull_image_from_machine_retries_unavailable_transport_error() {
-    let service = DiscoveryService::new(test_description());
-    let target = MachineTarget::from(&machine_id('a'));
-    service
-        .pull_outcomes
-        .lock()
-        .unwrap()
-        .push_back(DescribeOutcome::Status(Status::unavailable(
-            "transport error",
-        )));
-    let (mut client, server, connects) = connected_client(service.clone()).await;
-
-    client
-        .call::<op::PullImageFromMachine>(
-            PullImageFromMachineRequest {
-                image: "example/app:test".into(),
-                source: test_ingest_opened().destination,
-            },
-            Some(&target),
-        )
-        .await
-        .unwrap();
-    assert_eq!(connects.load(Ordering::SeqCst), 2);
-
-    server.abort();
-}
-
-#[tokio::test]
-async fn ensure_image_ingest_does_not_retry_named_ingest_failure() {
-    let service = DiscoveryService::new(test_description());
-    let target = MachineTarget::from(&machine_id('a'));
-    service
-        .ingest_outcomes
-        .lock()
-        .unwrap()
-        .push_back(DescribeOutcome::Remote(
-            ImageIngestReason::DockerUnavailable.rpc_error("Docker is not available"),
-        ));
-    let (mut client, server, connects) = connected_client(service.clone()).await;
-
-    let error = client
-        .call::<op::EnsureImageIngest>(EnsureImageIngestRequest {}, Some(&target))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(
-            &error,
-            ConnectError::Remote(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message,
-                ..
-            }) if message == "Docker is not available"
-        ),
-        "{error:?}"
-    );
-    assert_eq!(connects.load(Ordering::SeqCst), 1);
 
     server.abort();
 }
