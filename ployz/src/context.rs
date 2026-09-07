@@ -48,11 +48,13 @@ impl Config {
         current_context: Option<String>,
         contexts: BTreeMap<String, Context>,
     ) -> Self {
-        Self {
+        let mut config = Self {
             current_context: none_if_empty(current_context),
             contexts,
             path: path.into(),
-        }
+        };
+        config.drop_unknown_current();
+        config
     }
 
     pub fn load(path: impl Into<PathBuf>) -> Result<Self, ConfigError> {
@@ -74,6 +76,7 @@ impl Config {
             return Err(ConfigError::EmptyCurrentContext(path));
         }
         config.path = path;
+        config.drop_unknown_current();
         Ok(config)
     }
 
@@ -82,8 +85,53 @@ impl Config {
         self.current_context.as_deref()
     }
 
-    pub fn set_current_context(&mut self, name: Option<String>) {
-        self.current_context = none_if_empty(name);
+    fn drop_unknown_current(&mut self) {
+        if self
+            .current_context
+            .as_ref()
+            .is_some_and(|name| !self.contexts.contains_key(name))
+        {
+            self.current_context = None;
+        }
+    }
+
+    /// Unset current, or set it to an existing context name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContextError::ContextNotFound`] when the name is missing from `contexts`.
+    pub fn set_current_context(&mut self, name: Option<String>) -> Result<(), ContextError> {
+        match none_if_empty(name) {
+            Some(name) if !self.contexts.contains_key(&name) => {
+                Err(ContextError::ContextNotFound {
+                    name,
+                    path: self.path.clone(),
+                })
+            }
+            name => {
+                self.current_context = name;
+                Ok(())
+            }
+        }
+    }
+
+    /// Remove a context. Returns whether it was current.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContextError::ContextNotFound`] when the name is missing. The map is unchanged.
+    pub fn remove_context(&mut self, name: &str) -> Result<bool, ContextError> {
+        if self.contexts.remove(name).is_none() {
+            return Err(ContextError::ContextNotFound {
+                name: name.to_owned(),
+                path: self.path.clone(),
+            });
+        }
+        let was_current = self.current_context.as_deref() == Some(name);
+        if was_current {
+            self.current_context = None;
+        }
+        Ok(was_current)
     }
 
     #[must_use]
