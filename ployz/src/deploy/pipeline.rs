@@ -240,7 +240,7 @@ impl From<DeployError> for RpcError {
     fn from(error: DeployError) -> Self {
         match error {
             DeployError::Connect(error) => error.into(),
-            DeployError::Plan(error) => invalid_argument(error.to_string()),
+            DeployError::Plan(error) => error.into_rpc_error(),
             DeployError::Project(error) => invalid_argument(error.to_string()),
         }
     }
@@ -333,10 +333,38 @@ pub(super) async fn plan_scale(
 
 async fn preview_gathered(
     client: &mut Client,
-    snapshot: DeploySnapshot,
+    mut snapshot: DeploySnapshot,
     mut warnings: Vec<DeployWarning>,
     intent: &DeployIntent,
 ) -> Result<DeployPlan, DeployError> {
+    if intent
+        .target
+        .iter()
+        .any(|spec| spec.volume_graph().has_mounted_provisioned_volume())
+    {
+        let mut reads = tokio::task::JoinSet::new();
+        for machine in snapshot
+            .machines
+            .iter()
+            .filter(|machine| machine.membership.invites_rpc())
+        {
+            let mut client = client.clone();
+            let id = machine.machine.id;
+            reads.spawn(async move {
+                let result = client
+                    .read::<ployz_core::op::InspectStorage>(
+                        ployz_core::InspectStorageRequest {},
+                        &ployz_core::MachineTarget::from(&id),
+                    )
+                    .await;
+                (id, result)
+            });
+        }
+        while let Some(result) = reads.join_next().await {
+            let (id, capacity) = result.expect("storage observation task does not panic");
+            snapshot.storage_capacity.insert(id, capacity);
+        }
+    }
     let domain = if intent.target.iter().any(needs_ingress_expansion) {
         client.domain_if_reserved().await?
     } else {

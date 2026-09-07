@@ -615,3 +615,63 @@ fn skip_health() -> PlanOptions {
         ..PlanOptions::default()
     }
 }
+
+#[tokio::test]
+async fn sdk_storage_shortage_preserves_numbers_and_actions_without_mutating() {
+    let mut description = advertised_description();
+    description
+        .capabilities
+        .insert(CapabilityName::parse(ployz_core::MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap());
+    let session = RelaySession::start().await;
+    let mut service = DiscoveryService::new(description.clone());
+    service.storage_capacity = Some(ployz_core::StorageCapacity {
+        backing: ployz_core::StorageBacking::Unallocated {
+            host_total_bytes: 100 * ployz_core::STORAGE_GIB,
+            host_available_bytes: 90 * ployz_core::STORAGE_GIB,
+        },
+        unmanaged_used_bytes: 0,
+        volumes: Default::default(),
+    });
+    let created = service.created_volumes.clone();
+    let target_id = service.machines.first().unwrap().machine.id;
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    let client = sdk::connect(
+        &session.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
+    let services = ["data", "server"].map(|name| {
+        let mut value = serde_json::to_value(spec_with_volume(name, name)).unwrap();
+        *value.pointer_mut("/volumes/0/source").unwrap() = serde_json::json!({ "kind":"provisioned", "name":name, "maximum_bytes":30 * ployz_core::STORAGE_GIB });
+        serde_json::from_value::<RequestedServiceSpec>(value).unwrap()
+    });
+    let error = client
+        .preview(DeployIntent::apply_all(
+            ProjectName::parse("app").unwrap(),
+            services.iter(),
+            skip_health(),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(error.details.get("code").unwrap(), "insufficient_storage");
+    assert_eq!(error.details.get("machine_id").unwrap(), target_id.as_str());
+    assert_eq!(
+        error.details.get("shortfall_bytes").unwrap(),
+        2 * ployz_core::STORAGE_GIB
+    );
+    assert!(error.message.contains("2.00 GiB"), "{error}");
+    assert!(
+        error
+            .details
+            .get("suggestions")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|suggestion| suggestion == "Expand the disk")
+    );
+    assert!(created.lock().unwrap().is_empty());
+}

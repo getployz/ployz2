@@ -167,7 +167,7 @@ async fn growth_overflow_is_refused_before_mutation() {
     .await;
     server.abort();
 
-    assert!(error(&response).contains("backing capacity overflowed u64"));
+    assert!(error(&response).contains("Pool growth overflow"));
     assert_eq!(
         fs::read_to_string(test.0.join("allocated")).unwrap(),
         "2147483648\n"
@@ -298,7 +298,7 @@ async fn growth_reserve_refusal_reports_the_shortfall_before_mutation() {
     let message = error(&response);
     assert_eq!(
         message,
-        "Not enough disk space on this machine to create other.\nRequested volume size: 2.0 GiB.\nAbout 1.0 GiB more free space is needed, including storage overhead and OS reserve.\nFree up disk space, expand the disk, or request a smaller volume."
+        "Not enough disk space: about 1.00 GiB more free space is needed, including storage overhead and OS reserve. Free disk space, expand the disk, or reduce requested volume sizes."
     );
     assert_eq!(
         fs::read_to_string(test.0.join("allocated")).unwrap(),
@@ -691,7 +691,7 @@ async fn first_create_refuses_before_mutation_when_root_reserve_would_be_broken(
 
     assert_eq!(
         error(&response),
-        "Not enough disk space on this machine to create data.\nRequested volume size: 1.0 GiB.\nAbout 1.0 GiB more free space is needed, including storage overhead and OS reserve.\nFree up disk space, expand the disk, or request a smaller volume."
+        "Not enough disk space: about 1.00 GiB more free space is needed, including storage overhead and OS reserve. Free disk space, expand the disk, or reduce requested volume sizes."
     );
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
     assert!(!log.contains("fallocate"));
@@ -862,11 +862,11 @@ case "$name" in
     ;;
   zfs)
     case "$*" in
-      'list -Hp -o name,refquota,used,mountpoint,mounted,readonly -r ployz')
-        printf 'ployz\t0\t0\t/ployz\tyes\toff\n'
-        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t0\t/var/lib/ployz-volumes\tno\toff\n'
-        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t%s\t0\t/var/lib/ployz-volumes/data\tno\toff\n' "$(cat '{volume_bound}')"
-        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t0\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
+      'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r ployz')
+        printf 'ployz\t0\t0\t0\t/ployz\tyes\toff\n'
+        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t0\t0\t/var/lib/ployz-volumes\tno\toff\n'
+        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t%s\t0\t0\t/var/lib/ployz-volumes/data\tno\toff\n' "$(cat '{volume_bound}')"
+        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t0\t0\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
       'create -o refquota='*' ployz/ployz/data')
@@ -956,4 +956,52 @@ esac
         zfs: program("zfs"),
         mutation: Arc::new(Mutex::new(())),
     }
+}
+
+#[tokio::test]
+async fn batch_preparation_checks_total_before_allocating_and_reuses_committed_volumes() {
+    let test = TestDir::new();
+    let socket = test.0.join("plugin.sock");
+    let server = tokio::spawn(serve(
+        UnixListener::bind(&socket).unwrap(),
+        fake_first_pool(&test.0, 4096),
+    ));
+    // Each 30 GiB Volume fits individually; the combined estimate (66 GiB plus
+    // one GiB for initial ZFS size loss) exceeds the 65 GiB beyond the reserve.
+    let response = post(
+        &socket,
+        "/Storage.Prepare",
+        json!({"data": 32212254720u64, "other": 32212254720u64}),
+    )
+    .await;
+    assert_eq!(
+        response.pointer("/Err/details/code").unwrap(),
+        "insufficient_storage",
+        "{response}"
+    );
+    assert_eq!(
+        response.pointer("/Err/details/shortfall_bytes").unwrap(),
+        2147483648u64
+    );
+    assert!(!test.0.join(POOL_BACKING_FILE).exists());
+    assert!(!test.0.join("volume").exists());
+
+    let requested = json!({"data": 1073741824u64, "other": 2147483648u64});
+    assert_eq!(
+        post(&socket, "/Storage.Prepare", requested.clone()).await,
+        json!({"Ok":["data","other"]})
+    );
+    let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
+    assert_eq!(
+        capacity.pointer("/Ok/volumes").unwrap(),
+        &requested,
+        "{capacity}"
+    );
+    // Even with low host headroom, already-backed Volumes require no new allocation.
+    fs::write(test.0.join("insufficient"), "").unwrap();
+    assert_eq!(
+        post(&socket, "/Storage.Prepare", requested).await,
+        json!({"Ok":["data","other"]})
+    );
+    server.abort();
 }

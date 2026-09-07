@@ -1318,6 +1318,16 @@ x-volumes: {data: 10G}
     let mut ready = machine('a', "one");
     ready.storage = Some(MachineStorageObservation::Ready);
     let snapshot = DeploySnapshot {
+        storage_capacity: std::collections::BTreeMap::from([(
+            ready.machine.id,
+            Ok(ployz_core::StorageCapacity {
+                backing: ployz_core::StorageBacking::Fixed {
+                    pool_size_bytes: 100 * ployz_core::STORAGE_GIB,
+                },
+                unmanaged_used_bytes: 0,
+                volumes: Default::default(),
+            }),
+        )]),
         machines: vec![ready],
         ..Default::default()
     };
@@ -1349,6 +1359,13 @@ x-volumes: {data: 10G}
         unreachable!("matched a RunContainer row")
     };
     compose_spec.service_id = sdk_spec.service_id;
+    for row in &mut compose_preview.operations {
+        if let DeployOperation::PrepareVolumes { specs, .. } = &mut row.operation {
+            for spec in specs {
+                spec.service_id = sdk_spec.service_id;
+            }
+        }
+    }
 
     assert_eq!(compose_preview, sdk_preview);
     assert!(
@@ -1444,6 +1461,16 @@ fn compose_x_volume_size_stays_in_resolved_service_spec() {
     let mut ready = machine('a', "one");
     ready.storage = Some(MachineStorageObservation::Ready);
     let snapshot = DeploySnapshot {
+        storage_capacity: std::collections::BTreeMap::from([(
+            ready.machine.id,
+            Ok(ployz_core::StorageCapacity {
+                backing: ployz_core::StorageBacking::Fixed {
+                    pool_size_bytes: 100 * ployz_core::STORAGE_GIB,
+                },
+                unmanaged_used_bytes: 0,
+                volumes: Default::default(),
+            }),
+        )]),
         machines: vec![ready],
         ..Default::default()
     };
@@ -1874,6 +1901,7 @@ volumes: {a: {}, b: {}}
                 | DeployOperation::ReplaceContainer(..)
                 | DeployOperation::StopHook { .. }
                 | DeployOperation::RunHook { .. }
+                | DeployOperation::PrepareVolumes { .. }
                 | DeployOperation::RemoveVolume { .. }) => {
                     panic!("unexpected operation: {other:?}")
                 }

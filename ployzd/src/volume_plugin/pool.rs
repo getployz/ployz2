@@ -12,10 +12,10 @@ use ployzd::machine::DEFAULT_DATA_DIR;
 use ployzd::machine_pool::{self, MachinePool};
 
 use super::{
-    DockerVolumeName, PoolOrigin, Result, VolumeError, VolumeStorage, checked_command, parse_size,
+    CapacityAdmission, DockerVolumeName, Result, VolumeError, VolumeStorage, checked_command,
+    parse_size,
 };
 
-const GIBIBYTE: u64 = 1024_u64.pow(3);
 const POOL_BACKING_PATH: &str = "/var/lib/ployz-machine-pool";
 /// Filename of the root-backed Machine Pool vdev.
 #[cfg(test)]
@@ -72,17 +72,17 @@ impl VolumeStorage {
         };
         if let Some(pool) = existing {
             return self
-                .create_volume(&pool, name, requested, PoolOrigin::Existing)
+                .create_volume(&pool, name, requested, CapacityAdmission::Required)
                 .await;
         }
 
-        let pool = self.pool.create(name, requested).await?;
+        let pool = self.pool.create(requested).await?;
         match self
             .create_volume(
                 pool.machine_pool(),
                 name,
                 requested,
-                PoolOrigin::CreatedForRequest,
+                CapacityAdmission::Ensured,
             )
             .await
         {
@@ -135,7 +135,7 @@ impl PoolStorage {
         self
     }
 
-    async fn lock_mutation(&self) -> Result<fs::File> {
+    pub(super) async fn lock_mutation(&self) -> Result<fs::File> {
         let mut lock_path = self.backing.as_os_str().to_owned();
         lock_path.push(".lock");
         let lock_path = PathBuf::from(lock_path);
@@ -259,13 +259,9 @@ impl PoolStorage {
     /// # Errors
     ///
     /// Returns an error when reserve, allocation, Pool creation, or verification fails.
-    pub(super) async fn create(
-        &self,
-        name: &DockerVolumeName,
-        requested: u64,
-    ) -> Result<CreatedPool<'_>> {
-        let capacity = capacity_with_headroom(requested)?;
-        let host = self.check_host_root(capacity, name, requested).await?;
+    pub(super) async fn create(&self, requested: u64) -> Result<CreatedPool<'_>> {
+        let capacity = ployz_core::storage_with_headroom(requested)?;
+        let host = self.check_host_root(capacity).await?;
         let ashift = self.host_root_ashift(&host)?;
         let backing = self.backing_text()?;
         fs::OpenOptions::new()
@@ -309,10 +305,7 @@ impl PoolStorage {
         }
         match self.one_usable().await {
             Ok(Some(pool)) if pool.name() == POOL_NAME => {
-                if let Err(error) = self
-                    .ensure_capacity(&pool, requested, name, requested)
-                    .await
-                {
+                if let Err(error) = self.ensure_capacity(&pool, requested, 0).await {
                     return Err(self.cleanup(error).await);
                 }
                 Ok(CreatedPool {
@@ -347,10 +340,11 @@ impl PoolStorage {
         &self,
         pool: &MachinePool,
         commitment: u64,
-        name: &DockerVolumeName,
-        requested: u64,
+        unmanaged_used_bytes: u64,
     ) -> Result<()> {
-        let minimum = capacity_with_headroom(commitment)?;
+        let minimum = ployz_core::storage_with_headroom(commitment)?
+            .checked_add(unmanaged_used_bytes)
+            .ok_or("Pool occupancy overflows u64")?;
         if pool.size_bytes().get() >= minimum {
             return Ok(());
         }
@@ -367,7 +361,7 @@ impl PoolStorage {
         let mut observed = pool.size_bytes().get();
         let (length, _) = self.backing_allocation(backing).await?;
         if length < minimum {
-            growth_target(length, observed, minimum)?;
+            ployz_core::storage_growth_target(length, observed, minimum)?;
         }
         let mut retry_backing = length > observed;
         loop {
@@ -376,11 +370,10 @@ impl PoolStorage {
             let target = if retry_backing {
                 length
             } else {
-                growth_target(length, observed, minimum)?
+                ployz_core::storage_growth_target(length, observed, minimum)?
             };
             if allocated < target {
-                self.check_host_root(target - allocated, name, requested)
-                    .await?;
+                self.check_host_root(target - allocated).await?;
                 let target_text = target.to_string();
                 checked_command(&self.fallocate, &["-l", &target_text, backing]).await?;
                 self.verify_preallocation(backing, target).await?;
@@ -440,12 +433,63 @@ impl PoolStorage {
         self.cleanup_backing(failure)
     }
 
-    async fn check_host_root(
+    pub(super) async fn capacity_backing(
         &self,
-        allocation: u64,
-        name: &DockerVolumeName,
-        requested: u64,
-    ) -> Result<fs::Metadata> {
+        pool: Option<&MachinePool>,
+    ) -> Result<ployz_core::StorageBacking> {
+        use ployz_core::StorageBacking;
+        if let Some(pool) = pool.filter(|pool| pool.name() != POOL_NAME) {
+            return Ok(StorageBacking::Fixed {
+                pool_size_bytes: pool.size_bytes().get(),
+            });
+        }
+        let output = checked_command(
+            &self.df,
+            &[
+                "-B1",
+                "--output=size,avail",
+                self.host_root.to_str().ok_or("host root is not UTF-8")?,
+            ],
+        )
+        .await?;
+        let (host_total_bytes, host_available_bytes) = parse_host_root_space(&output)?;
+        let host = fs::metadata(&self.host_root).map_err(|error| error.to_string())?;
+        let parent = self
+            .backing
+            .parent()
+            .ok_or("Machine Pool backing has no parent")?;
+        if host.dev()
+            != fs::metadata(parent)
+                .map_err(|error| error.to_string())?
+                .dev()
+        {
+            return Err("Machine Pool backing is not on the host root filesystem".into());
+        }
+        match pool {
+            Some(pool) => {
+                let (backing_length_bytes, backing_allocated_bytes) =
+                    self.backing_allocation(self.backing_text()?).await?;
+                Ok(StorageBacking::RootBacked {
+                    pool_size_bytes: pool.size_bytes().get(),
+                    backing_length_bytes,
+                    backing_allocated_bytes,
+                    host_total_bytes,
+                    host_available_bytes,
+                })
+            }
+            None => {
+                if self.backing.exists() {
+                    return Err("Machine Pool backing exists without an imported Pool; recover it before planning".into());
+                }
+                Ok(StorageBacking::Unallocated {
+                    host_total_bytes,
+                    host_available_bytes,
+                })
+            }
+        }
+    }
+
+    async fn check_host_root(&self, allocation: u64) -> Result<fs::Metadata> {
         let host = fs::metadata(&self.host_root).map_err(|error| {
             format!(
                 "could not inspect host root {}: {error}",
@@ -487,19 +531,16 @@ impl PoolStorage {
         )
         .await?;
         let (capacity, available) = parse_host_root_space(&output)?;
-        let reserve = (capacity / 4).max(10 * GIBIBYTE);
+        let reserve = ployz_core::storage_host_reserve(capacity);
         let required = reserve
             .checked_add(allocation)
             .ok_or_else(|| VolumeError::from("host-root reserve calculation overflowed u64"))?;
         if available < required {
-            let shortfall = readable_size(required - available, true);
-            let requested = readable_size(requested, false);
-            return Err(format!(
-                "Not enough disk space on this machine to create {name}.\n\
-                 Requested volume size: {requested}.\n\
-                 About {shortfall} more free space is needed, including storage overhead and OS reserve.\n\
-                 Free up disk space, expand the disk, or request a smaller volume."
-            )
+            return Err(ployz_core::StorageCapacityError::InsufficientStorage {
+                required_growth_bytes: allocation,
+                available_bytes: available,
+                reserve_bytes: reserve,
+            }
             .into());
         }
 
@@ -609,39 +650,6 @@ impl PoolStorage {
     }
 }
 
-fn readable_size(bytes: u64, round_up: bool) -> String {
-    for (unit, label) in [
-        (1024_u64.pow(4), "TiB"),
-        (GIBIBYTE, "GiB"),
-        (1024_u64.pow(2), "MiB"),
-        (1024, "KiB"),
-    ] {
-        if bytes >= unit {
-            if round_up {
-                let tenths = (u128::from(bytes) * 10).div_ceil(u128::from(unit));
-                return format!("{}.{} {label}", tenths / 10, tenths % 10);
-            }
-            return format!("{:.1} {label}", bytes as f64 / unit as f64);
-        }
-    }
-    format!("{bytes} B")
-}
-
-fn capacity_with_headroom(commitment: u64) -> Result<u64> {
-    commitment
-        .checked_add((commitment / 10).max(GIBIBYTE))
-        .ok_or_else(|| "Machine Pool capacity calculation overflowed u64".into())
-}
-
-fn growth_target(length: u64, observed: u64, minimum: u64) -> Result<u64> {
-    let extension = (minimum - observed)
-        .checked_next_multiple_of(GIBIBYTE)
-        .ok_or_else(|| VolumeError::from("Machine Pool capacity rounding overflowed u64"))?;
-    length
-        .checked_add(extension)
-        .ok_or_else(|| VolumeError::from("Machine Pool backing capacity overflowed u64"))
-}
-
 fn parse_host_root_space(output: &str) -> Result<(u64, u64)> {
     let mut values = output.lines().last().unwrap_or_default().split_whitespace();
     let capacity = values
@@ -678,34 +686,6 @@ fn safe_ashift(physical_block_size: u64) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn disk_error_sizes_are_readable_even_below_one_gibibyte() {
-        for (bytes, expected) in [
-            (1, "1 B"),
-            (1024, "1.0 KiB"),
-            (512 * 1024 * 1024, "512.0 MiB"),
-            (43_744_232_448, "40.7 GiB"),
-            (1_100_000, "1.0 MiB"),
-            (1024_u64.pow(4), "1.0 TiB"),
-        ] {
-            assert_eq!(readable_size(bytes, false), expected);
-        }
-    }
-
-    #[test]
-    fn disk_space_shortfalls_round_up() {
-        for (bytes, expected) in [
-            (1, "1 B"),
-            (1024, "1.0 KiB"),
-            (1_100_000, "1.1 MiB"),
-            (43_744_232_448, "40.8 GiB"),
-            (1024_u64.pow(4) + 1, "1.1 TiB"),
-            (u64::MAX, "16777216.0 TiB"),
-        ] {
-            assert_eq!(readable_size(bytes, true), expected);
-        }
-    }
 
     #[test]
     fn default_backing_file_survives_machine_state_reset() {

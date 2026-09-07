@@ -16,6 +16,7 @@ use super::{
 
 pub(super) mod capacity;
 mod placement;
+pub(crate) mod storage;
 mod volumes;
 
 use placement::{
@@ -125,6 +126,8 @@ impl DeployPlan {
         operations: Vec<DeployOperation>,
         project: ProjectName,
     ) -> Self {
+        let mut operations = operations;
+        storage::prepend_preparations(&mut operations);
         let rows = super::pending_rows(&operations, &DeploySnapshot::default());
         Self {
             operations,
@@ -235,8 +238,30 @@ pub fn plan_deploy(
     snapshot: &DeploySnapshot,
     ingress: IngressContext<'_>,
 ) -> Result<DeployPlan, PlanError> {
-    let planned = plan_operations(intent, snapshot, ingress)?;
-    Ok(seal_plan(planned, snapshot, &intent.project_name))
+    let mut planned = plan_operations(intent, snapshot, ingress)?;
+    let budgets = storage::budgets(&planned.operations, snapshot)?;
+    storage::prepend_preparations(&mut planned.operations);
+    let mut plan = seal_plan(planned, snapshot, &intent.project_name);
+    if !budgets.is_empty() {
+        plan.preview
+            .warnings
+            .push(DeployWarning::UnbudgetedDiskUsage);
+    }
+    for storage in &budgets {
+        let budget = &storage.budget;
+        let remaining_bytes = budget
+            .available_bytes
+            .saturating_sub(budget.reserve_bytes)
+            .saturating_sub(budget.required_growth_bytes);
+        if budget.required_growth_bytes > 0 && remaining_bytes < ployz_core::STORAGE_GIB {
+            plan.preview.warnings.push(DeployWarning::StorageHeadroom {
+                machine_id: storage.machine_id,
+                remaining_bytes,
+            });
+        }
+    }
+    plan.preview.storage = budgets;
+    Ok(plan)
 }
 
 fn seal_plan(
@@ -245,6 +270,7 @@ fn seal_plan(
     project_name: &ProjectName,
 ) -> DeployPlan {
     let preview = DeployPreview {
+        storage: Vec::new(),
         project_name: project_name.clone(),
         operations: super::pending_rows(&planned.operations, snapshot),
         warnings: planned.warnings,
@@ -387,6 +413,7 @@ fn assemble_plan(
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
+            | DeployOperation::PrepareVolumes { .. }
             | DeployOperation::RemoveVolume { .. } => None,
         }) {
             for dependency in intent.dependencies().get(&spec.name).into_iter().flatten() {
@@ -896,6 +923,7 @@ fn pre_deploy_operations(
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
+            | DeployOperation::PrepareVolumes { .. }
             | DeployOperation::RemoveVolume { .. } => None,
         });
     let Some((machine_id, spec)) = target else {

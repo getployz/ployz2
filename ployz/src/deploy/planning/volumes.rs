@@ -34,6 +34,22 @@ impl VolumePins {
         }
     }
 
+    fn storage_fits<'volume>(
+        &'volume self,
+        snapshot: &DeploySnapshot,
+        machine: &MachineObservation,
+        volumes: impl Iterator<Item = &'volume ServiceVolume>,
+    ) -> bool {
+        let requested = super::storage::bounds(
+            self.creates
+                .iter()
+                .filter(|(id, _)| *id == machine.machine.id)
+                .map(|(_, volume)| volume)
+                .chain(volumes),
+        );
+        requested.is_empty() || super::storage::budget(snapshot, machine, &requested).is_ok()
+    }
+
     fn constrain(&mut self, name: DockerVolumeName, machine_id: MachineId) {
         self.anchors.insert(name, machine_id);
     }
@@ -469,6 +485,29 @@ fn shared_component_anchor(
         .iter()
         .filter(|spec| services.contains_key(spec.name.as_str()));
     let mut admission_error = None;
+    let fitting = eligible
+        .iter()
+        .copied()
+        .filter(|id| {
+            let machine = snapshot
+                .machines
+                .iter()
+                .find(|machine| machine.machine.id == *id)
+                .expect("eligible Machine is observed");
+            pins.storage_fits(
+                snapshot,
+                machine,
+                requested
+                    .clone()
+                    .flat_map(|spec| spec.volume_graph().mounted_volumes()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let eligible = if fitting.is_empty() {
+        eligible
+    } else {
+        fitting
+    };
     for machine_id in eligible {
         match placement.reserve_on(machine_id, requested.clone(), observed_services, options) {
             Ok(()) => return Ok(machine_id),
@@ -524,6 +563,15 @@ pub(super) fn plan_volume_operations(
     // TODO: preserve the placement ceiling: do not filter by memory, image platform, or local image presence.
     let (mounted_volumes, missing_volumes) =
         planned_volume_constraints(spec, snapshot, pins, machines)?;
+    if matches!(spec.mode, ServiceMode::Replicated { .. })
+        && machines
+            .iter()
+            .any(|machine| pins.storage_fits(snapshot, machine, mounted_volumes.iter().copied()))
+    {
+        machines.retain(|machine| {
+            pins.storage_fits(snapshot, machine, mounted_volumes.iter().copied())
+        });
+    }
     match spec.mode {
         ServiceMode::Replicated { .. } if !missing_volumes.is_empty() => {
             // TODO: named-volume driver and label options remain part of planned creation;

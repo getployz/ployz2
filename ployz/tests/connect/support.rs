@@ -148,6 +148,7 @@ pub(super) struct DiscoveryService {
     pub(super) volume_list_calls: Arc<AtomicUsize>,
     pub(super) inspect_calls: Arc<AtomicUsize>,
     pub(super) storage: MachineStorageObservation,
+    pub(super) storage_capacity: Option<ployz_core::StorageCapacity>,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
@@ -182,6 +183,7 @@ impl DiscoveryService {
             volume_list_calls: Arc::new(AtomicUsize::new(0)),
             inspect_calls: Arc::new(AtomicUsize::new(0)),
             storage: MachineStorageObservation::Ready,
+            storage_capacity: None,
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
@@ -510,6 +512,26 @@ impl MachineRpc for DiscoveryService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
+    }
+
+    async fn inspect_storage(
+        &self,
+        _request: tonic::Request<ployz_core::OpaquePayload>,
+    ) -> Result<tonic::Response<ployz_core::OpaquePayload>, tonic::Status> {
+        let capacity = self.storage_capacity.as_ref().ok_or_else(|| {
+            Status::unimplemented("storage capacity not supplied by this fixture")
+        })?;
+        Ok(Response::new(
+            RpcResponse::from(capacity.clone()).encode().unwrap(),
+        ))
+    }
+    async fn prepare_volumes(
+        &self,
+        _request: tonic::Request<ployz_core::OpaquePayload>,
+    ) -> Result<tonic::Response<ployz_core::OpaquePayload>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "storage preparation not supplied by this fixture",
+        ))
     }
 
     async fn list_volumes(
