@@ -18,6 +18,8 @@ crate::value::open_string_enum!(RpcErrorCode, Unknown {
     Unauthenticated => "unauthenticated",
 });
 
+/// A failed RPC as every consumer sees it: `code` to branch on, `message` to
+/// read, and `details` holding the objects a consumer acts on as data.
 #[derive(Clone, Debug, Error, PartialEq, Deserialize, TS)]
 #[error("{message}")]
 pub struct RpcError {
@@ -28,6 +30,9 @@ pub struct RpcError {
 }
 
 impl RpcError {
+    /// Key under which an `Internal` error carries [`Self::REPORT_HINT`] in `details`.
+    pub const REPORT_KEY: &'static str = "report";
+
     /// `details.report` of every `Internal` error on the wire: the failure is a
     /// Ployz bug, where to file it, and what to include.
     pub const REPORT_HINT: &'static str = "This is a Ployz bug. Report it at https://github.com/getployz/ployz2/issues and include the output of `ployz version`.";
@@ -35,11 +40,13 @@ impl RpcError {
     /// The bug-report hint an `Internal` error carries in `details.report`.
     #[must_use]
     pub fn report_hint(&self) -> Option<&str> {
-        self.details.get("report")?.as_str()
+        self.details.get(Self::REPORT_KEY)?.as_str()
     }
 }
 
-// The hint is derived from `code`, so it is added once here rather than by every producer.
+// The hint is derived from `code`, so it is added once here rather than by every
+// producer. The wire shape is deliberately richer than the in-memory one: an
+// `Internal` error with `Null` details does not round-trip to an equal value.
 impl Serialize for RpcError {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         #[derive(Serialize)]
@@ -55,7 +62,7 @@ impl Serialize for RpcError {
             && (self.details.is_null() || self.details.is_object());
         let details = if hint_missing {
             let mut fields = self.details.as_object().cloned().unwrap_or_default();
-            fields.insert("report".into(), Self::REPORT_HINT.into());
+            fields.insert(Self::REPORT_KEY.into(), Self::REPORT_HINT.into());
             Cow::Owned(Value::Object(fields))
         } else {
             Cow::Borrowed(&self.details)
