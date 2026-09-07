@@ -718,10 +718,16 @@ impl TransportError {
         self.code == tonic::Code::NotFound
     }
 
+    /// The wire taxonomy kind this transport status maps to.
+    #[must_use]
+    pub fn rpc_code(&self) -> RpcErrorCode {
+        rpc_error_code(self.code)
+    }
+
     #[must_use]
     pub fn to_rpc_error(&self) -> RpcError {
         RpcError {
-            code: rpc_error_code(self.code),
+            code: self.rpc_code(),
             message: self.message.clone(),
             details: self.details.clone(),
         }

@@ -30,12 +30,13 @@ pub struct Failure {
 #[derive(Debug)]
 enum Inner {
     Command(Box<dyn Error + Send + Sync>),
-    /// A Ployz bug: an `Internal` RPC error somewhere in the chain. Printed with the report step.
-    Bug(Box<dyn Error + Send + Sync>),
     Exit(u8),
 }
 
-/// Whether `error` or anything in its source chain is an `Internal` RPC error.
+/// Whether `error` or anything in its source chain is an `Internal` RPC error:
+/// a Ployz bug, printed with the report step. A wrapper that holds an
+/// `RpcError` or `TransportError` must expose it with `#[source]`, or the bug
+/// prints as if the user caused it.
 fn is_internal_rpc(error: &(dyn Error + 'static)) -> bool {
     std::iter::successors(Some(error), |error| Error::source(*error)).any(|error| {
         error
@@ -43,7 +44,7 @@ fn is_internal_rpc(error: &(dyn Error + 'static)) -> bool {
             .is_some_and(|error| error.code == RpcErrorCode::Internal)
             || error
                 .downcast_ref::<TransportError>()
-                .is_some_and(|error| error.to_rpc_error().code == RpcErrorCode::Internal)
+                .is_some_and(|error| error.rpc_code() == RpcErrorCode::Internal)
     })
 }
 
@@ -61,13 +62,9 @@ impl Error for Usage {}
 
 impl Failure {
     fn command(error: impl Error + Send + Sync + 'static) -> Self {
-        let error: Box<dyn Error + Send + Sync> = Box::new(error);
-        let inner = if is_internal_rpc(&*error) {
-            Inner::Bug(error)
-        } else {
-            Inner::Command(error)
-        };
-        Self { inner }
+        Self {
+            inner: Inner::Command(Box::new(error)),
+        }
     }
 
     #[must_use]
@@ -123,8 +120,10 @@ pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
+            Inner::Command(error) if is_internal_rpc(error.as_ref()) => {
+                write!(f, "internal error: {error}\n{}", RpcError::REPORT_HINT)
+            }
             Inner::Command(error) => error.fmt(f),
-            Inner::Bug(error) => write!(f, "internal error: {error}\n{}", RpcError::REPORT_HINT),
             Inner::Exit(code) => write!(f, "exit {code}"),
         }
     }
@@ -133,7 +132,7 @@ impl fmt::Display for Failure {
 impl Error for Failure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.inner {
-            Inner::Command(error) | Inner::Bug(error) => Some(error.as_ref()),
+            Inner::Command(error) => Some(error.as_ref()),
             Inner::Exit(_) => None,
         }
     }
