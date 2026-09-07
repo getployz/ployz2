@@ -298,7 +298,7 @@ func storage(p *types.Project, s types.ServiceConfig, provisioned, spec object) 
 			}
 			if value, ok := provisioned[v.Source]; ok {
 				size := value.(uint64)
-				source = object{"kind": "provisioned", "name": v.Source, "maximum_bytes": strconv.FormatUint(size, 10)}
+				source = object{"kind": "provisioned", "name": v.Source, "maximum_bytes": size}
 			} else if declared.External {
 				name := declared.Name
 				if name == "" {
