@@ -93,7 +93,12 @@ fn non_ascii_machine_targets_use_binary_metadata() {
 fn system_ssh_command_delegates_identity_and_passphrase_handling() {
     let destination = SshDestination::parse("deploy@example.com:2222").unwrap();
 
-    let args = ssh_args(&destination, Some(Path::new("/keys/deploy")), None);
+    let args = ssh_args(
+        &destination,
+        Some(Path::new("/keys/deploy")),
+        None,
+        SystemConnector::default().ssh_timeout,
+    );
 
     assert_eq!(
         args,
@@ -271,4 +276,69 @@ async fn missing_ssh_client_survives_connection_selection() {
         "local ssh client not found; install an ssh client"
     );
     assert!(!failure.to_string().contains("os error"), "{failure}");
+}
+
+#[tokio::test]
+async fn stalled_ssh_probe_obeys_configured_timeout() {
+    let root = std::env::temp_dir().join(format!("ployz-ssh-timeout-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let program = root.join("ssh");
+    fs::write(&program, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    let connector = SystemConnector::new(&program).with_ssh_timeout(Duration::from_millis(100));
+    let connection = Connection::ssh(SshDestination::parse("user@example.com").unwrap());
+    let result = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let result = connector.connect(&connection).await;
+            // Concurrent process creation can briefly inherit the script's write descriptor.
+            if matches!(&result, Err(ConnectError::Io(error)) if error.kind() == io::ErrorKind::ExecutableFileBusy) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            }
+            break result;
+        }
+    })
+    .await
+    .expect("SSH setup must stop at its own deadline");
+    assert!(
+        matches!(result, Err(ConnectError::Io(ref error)) if error.kind() == io::ErrorKind::TimedOut),
+        "{result:?}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ssh_timeout_flag_is_global_and_reaches_transport_arguments() {
+    for (args, seconds) in [
+        (vec!["ployz", "ls"], 5),
+        (vec!["ployz", "--ssh-timeout", "17", "ls"], 17),
+        (vec!["ployz", "ls", "--ssh-timeout", "17"], 17),
+        (vec!["ployz", "machine", "ls", "--ssh-timeout", "17"], 17),
+    ] {
+        let root = crate::cli::command().try_get_matches_from(args).unwrap();
+        let mut matches = &root;
+        loop {
+            let timeout = crate::cli::ssh_timeout(matches);
+            assert_eq!(timeout, Duration::from_secs(seconds));
+            let connector = SystemConnector::default().with_ssh_timeout(timeout);
+            let args = ssh_args(
+                &SshDestination::parse("user@host").unwrap(),
+                None,
+                None,
+                connector.ssh_timeout,
+            );
+            assert!(args.contains(&format!("ConnectTimeout={seconds}")));
+            let Some((_, child)) = matches.subcommand() else {
+                break;
+            };
+            matches = child;
+        }
+    }
+    for value in ["0", "-1", "abc", "1.5", "4294967296"] {
+        assert!(
+            crate::cli::command()
+                .try_get_matches_from(["ployz", "ls", "--ssh-timeout", value])
+                .is_err()
+        );
+    }
 }

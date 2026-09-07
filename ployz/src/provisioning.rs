@@ -166,6 +166,10 @@ fn ssh_command(matches: &ArgMatches) -> Result<(Command, String), ProvisionError
         .ok_or(ProvisionError::MissingDestination)?;
     let (destination, port) = ssh_parts(destination)?;
     let mut command = Command::new("ssh");
+    command.arg("-o").arg(format!(
+        "ConnectTimeout={}",
+        crate::cli::ssh_timeout(matches).as_secs()
+    ));
     command.arg("-i").arg(ssh_key(matches));
     if let Some(port) = port {
         command.arg("-p").arg(port);
@@ -271,6 +275,26 @@ pub(crate) fn process_is_root() -> bool {
 mod tests {
     use super::*;
     use ployz_core::StorageChoice;
+
+    #[test]
+    fn provisioning_ssh_uses_global_timeout() {
+        for (extra, seconds) in [(vec![], "5"), (vec!["--ssh-timeout", "17"], "17")] {
+            let mut args = vec!["ployz", "machine", "add", "root@host"];
+            args.extend(extra);
+            let root = crate::cli::command().try_get_matches_from(args).unwrap();
+            let matches = root
+                .subcommand_matches("machine")
+                .unwrap()
+                .subcommand_matches("add")
+                .unwrap();
+            let (command, _) = ssh_command(matches).unwrap();
+            assert!(
+                command
+                    .get_args()
+                    .any(|arg| arg == format!("ConnectTimeout={seconds}").as_str())
+            );
+        }
+    }
 
     #[test]
     fn embedded_installer_command_preserves_root_sudo_and_local_group() {
