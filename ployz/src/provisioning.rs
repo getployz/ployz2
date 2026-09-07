@@ -17,6 +17,8 @@ pub enum ProvisionError {
     EmptyDestination,
     #[error("remote machine destination is required")]
     MissingDestination,
+    #[error("local ssh client not found; install an ssh client")]
+    SshClientMissing(#[source] io::Error),
     #[error("run ssh whoami: {0}")]
     Whoami(#[source] io::Error),
     #[error("ssh whoami failed: {0}")]
@@ -41,6 +43,16 @@ pub enum ProvisionError {
     StorageChoice(#[from] ployz_core::ValueError),
     #[error("zfs storage preparation requires the installer; remove --no-install")]
     ZfsWithoutInstaller,
+}
+
+impl ProvisionError {
+    fn from_ssh_spawn(error: io::Error, otherwise: fn(io::Error) -> Self) -> Self {
+        if error.kind() == io::ErrorKind::NotFound {
+            Self::SshClientMissing(error)
+        } else {
+            otherwise(error)
+        }
+    }
 }
 
 /// Resolve Machine storage preparation once before provisioning or enrollment.
@@ -158,12 +170,12 @@ fn ssh_key(matches: &ArgMatches) -> PathBuf {
     )
 }
 
-fn ssh_command(matches: &ArgMatches) -> Result<(Command, String), ProvisionError> {
+fn ssh_command(matches: &ArgMatches, program: &str) -> Result<(Command, String), ProvisionError> {
     let destination = matches
         .get_one::<String>("destination")
         .ok_or(ProvisionError::MissingDestination)?;
     let (destination, port) = ssh_parts(destination)?;
-    let mut command = Command::new("ssh");
+    let mut command = Command::new(program);
     command.arg("-i").arg(ssh_key(matches));
     if let Some(port) = port {
         command.arg("-p").arg(port);
@@ -171,13 +183,17 @@ fn ssh_command(matches: &ArgMatches) -> Result<(Command, String), ProvisionError
     Ok((command, destination))
 }
 
-pub fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(), ProvisionError> {
-    let (mut whoami, destination) = ssh_command(matches)?;
+pub fn provision(
+    matches: &ArgMatches,
+    storage: StorageChoice,
+    ssh_program: &str,
+) -> Result<(), ProvisionError> {
+    let (mut whoami, destination) = ssh_command(matches, ssh_program)?;
     let output = whoami
         .arg(&destination)
         .arg("whoami")
         .output()
-        .map_err(ProvisionError::Whoami)?;
+        .map_err(|error| ProvisionError::from_ssh_spawn(error, ProvisionError::Whoami))?;
     if !output.status.success() {
         return Err(ProvisionError::WhoamiFailed(
             String::from_utf8_lossy(&output.stderr).trim().to_owned(),
@@ -190,12 +206,12 @@ pub fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(), Pro
     }
 
     if user != "root" {
-        let (mut sudo, destination) = ssh_command(matches)?;
+        let (mut sudo, destination) = ssh_command(matches, ssh_program)?;
         let status = sudo
             .arg(destination)
             .arg("sudo true")
             .status()
-            .map_err(ProvisionError::Sudo)?;
+            .map_err(|error| ProvisionError::from_ssh_spawn(error, ProvisionError::Sudo))?;
         if !status.success() {
             return Err(ProvisionError::SudoRequired {
                 user: user.to_owned(),
@@ -218,7 +234,7 @@ pub fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(), Pro
             storage,
         )))
     );
-    let (mut install, destination) = ssh_command(matches)?;
+    let (mut install, destination) = ssh_command(matches, ssh_program)?;
     installer_status(install.arg(destination).arg(remote).status())
 }
 
@@ -342,5 +358,27 @@ mod tests {
             provision_local(StorageChoice::None),
             Err(ProvisionError::NotRoot)
         ));
+    }
+
+    #[test]
+    fn missing_ssh_client_names_the_local_binary() {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "machine", "init", "user@host", "--yes"])
+            .unwrap();
+        let matches = root
+            .subcommand_matches("machine")
+            .unwrap()
+            .subcommand_matches("init")
+            .unwrap();
+        let error = provision(matches, StorageChoice::None, "/ployz-missing-ssh-client")
+            .expect_err("missing ssh program must fail");
+        assert!(
+            matches!(error, ProvisionError::SshClientMissing(_)),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert_eq!(message, "local ssh client not found; install an ssh client");
+        assert!(!message.contains("os error"), "{message}");
+        assert!(!message.contains("whoami"), "{message}");
     }
 }

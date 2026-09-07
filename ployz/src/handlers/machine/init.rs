@@ -57,7 +57,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         if local {
             crate::provisioning::provision_local(storage)?;
         } else {
-            crate::provisioning::provision(matches, storage)?;
+            crate::provisioning::provision(matches, storage, "ssh")?;
         }
     }
 
