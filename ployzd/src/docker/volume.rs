@@ -244,14 +244,13 @@ fn holder_service(labels: Option<&HashMap<String, String>>) -> Option<QualifiedS
 }
 
 fn volume_in_use(holders: Vec<Option<QualifiedService>>) -> Error {
+    let count = holders.len();
     let named = holders
-        .iter()
+        .into_iter()
         .flatten()
-        .cloned()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let count = holders.len();
     let containers = if count == 1 {
         "1 container".to_owned()
     } else {

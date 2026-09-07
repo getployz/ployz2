@@ -7,7 +7,7 @@ use clap::ArgMatches;
 use ployz_core::{
     CreateVolumeRequest, DockerVolumeName, DockerVolumeStorageObservation, FanoutSelector,
     ListMachinesRequest, MachineObservation, MachineTarget, NameMatches, PartialResult,
-    RemoveVolumesRequest, RpcError, RpcErrorCode, VolumeInventory, VolumeRemoval,
+    QualifiedService, RemoveVolumesRequest, RpcError, RpcErrorCode, VolumeInventory, VolumeRemoval,
     VolumeRemovalOutcome, op, resolve_machine_selectors,
 };
 
@@ -477,8 +477,10 @@ fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
             continue;
         };
         for name in names {
-            if let Some(service) = name.as_str() {
-                services.insert(service.to_owned());
+            if let Some(name) = name.as_str()
+                && let Ok(service) = QualifiedService::parse(name)
+            {
+                services.insert(service);
             }
         }
     }
@@ -490,7 +492,11 @@ fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
         )),
         _ => Some(format!(
             "remove the Services first: ployz rm {}",
-            services.into_iter().collect::<Vec<_>>().join(" ")
+            services
+                .into_iter()
+                .map(|service| service.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
         )),
     }
 }
