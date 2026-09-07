@@ -172,8 +172,14 @@ impl Client {
         request: T::Request,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        self.call_once::<T>(T::into_request(request).encode()?, target)
-            .await
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            self.call_once::<T>(T::into_request(request).encode()?, target),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(tonic::Status::deadline_exceeded("Machine setup mutation reply timed out").into())
+        })
     }
 
     /// Issue a retryable read-only targeted RPC with a deadline per attempt.

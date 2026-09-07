@@ -421,7 +421,7 @@ impl MachineRpc for JoinDaemon {
             .lose_lifecycle_reply
             .swap(false, Ordering::SeqCst)
         {
-            return Err(Status::unavailable("lost Join reply"));
+            return std::future::pending().await; // Applied, but the response stays open.
         }
         rpc_ok(JoinAccepted {})
     }
@@ -506,7 +506,7 @@ impl MachineRpc for JoinDaemon {
             .swap(false, Ordering::SeqCst)
         {
             self.inner.hold_inspect_once.store(true, Ordering::SeqCst);
-            return Err(Status::unavailable("lost Initialize reply"));
+            return std::future::pending().await; // Applied, but the response stays open.
         }
         rpc_ok(Initialized { machine })
     }
@@ -877,7 +877,7 @@ impl MachineRpc for JoinDaemon {
             .lose_lifecycle_reply
             .swap(false, Ordering::SeqCst)
         {
-            return Err(Status::unavailable("lost Reset reply"));
+            return std::future::pending().await; // Applied, but the response stays open.
         }
         rpc_ok(ResetAccepted {})
     }

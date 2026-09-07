@@ -13,7 +13,7 @@ const DEFAULT_RETRY_AFTER: u64 = 2;
 const PROTOCOL_VERSION: u8 = 2;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // Healthy production enroll measured 8.15s for Relay List + registerHeld.
-const READ_TIMEOUT: Duration = Duration::from_secs(60);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Failures talking to Cloud enroll.
 #[derive(Debug, Error)]
@@ -281,10 +281,10 @@ fn retry_error(operation: &'static str, error: crate::setup_retry::Error<Error>)
 }
 
 fn http_client() -> Result<reqwest::Client, Error> {
-    // No total timeout: `not_yet` polling bounds overall wait.
+    // Bound each request; `not_yet` polling may legitimately outlive one request.
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(classify_http)
 }
@@ -660,6 +660,48 @@ mod tests {
         };
         assert_eq!(join.pairing, pairing());
         assert_eq!(join.registration, registration());
+    }
+
+    #[tokio::test]
+    async fn held_enrollment_and_callback_requests_retry_within_stage_budget() {
+        for completing in [false, true] {
+            let (listener, url) = listen().await;
+            let server = tokio::spawn(async move {
+                let (mut held, _) = listener.accept().await.unwrap();
+                read_http(&mut held).await;
+                // Keep the first response open until the retry has succeeded.
+                let (mut retry, _) = listener.accept().await.unwrap();
+                read_http(&mut retry).await;
+                let body = if completing {
+                    b"{}".to_vec()
+                } else {
+                    join_body()
+                };
+                tokio::io::AsyncWriteExt::write_all(&mut retry, &http_response(200, "OK", &body))
+                    .await
+                    .unwrap();
+                drop(held);
+            });
+            tokio::time::timeout(Duration::from_secs(25), async {
+                if completing {
+                    callback(
+                        &url,
+                        MachineId::random(),
+                        &PairingCredential::parse("pairing-secret").unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                } else {
+                    assert!(matches!(
+                        enroll(&url, &identity()).await.unwrap(),
+                        Outcome::Join(_)
+                    ));
+                }
+                server.await.unwrap();
+            })
+            .await
+            .expect("held request must retry before the stage deadline");
+        }
     }
 
     #[tokio::test]
