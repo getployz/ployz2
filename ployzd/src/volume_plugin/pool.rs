@@ -22,6 +22,12 @@ const POOL_BACKING_PATH: &str = "/var/lib/ployz-machine-pool";
 pub(super) const POOL_BACKING_FILE: &str = "machine-pool";
 const POOL_NAME: &str = "ployz";
 
+/// Whether recovery may reclaim a verified unlabeled backing file.
+pub(super) enum UnlabeledBacking {
+    Preserve,
+    Remove,
+}
+
 /// Observes and creates the host's single Machine Pool.
 #[derive(Clone)]
 pub(super) struct PoolStorage {
@@ -68,7 +74,7 @@ impl VolumeStorage {
         let _pool_guard = self.pool.lock_mutation().await?;
         let existing = match self.pool.one_usable().await? {
             Some(pool) => Some(pool),
-            None => self.pool.recover().await?,
+            None => self.pool.recover(UnlabeledBacking::Remove).await?,
         };
         if let Some(pool) = existing {
             return self
@@ -182,8 +188,11 @@ impl PoolStorage {
         Ok(machine_pool::one_usable(&output).map_err(|error| error.to_string())?)
     }
 
-    /// Imports this host's valid unimported backing Pool, or removes an unlabeled stale file.
-    async fn recover(&self) -> Result<Option<MachinePool>> {
+    /// Imports this host's valid backing Pool and optionally reclaims an unlabeled stale file.
+    ///
+    /// # Errors
+    /// Returns an error for ambiguous or destroyed labels, failed import, or failed cleanup.
+    pub(super) async fn recover(&self, unlabeled: UnlabeledBacking) -> Result<Option<MachinePool>> {
         match self.backing.try_exists() {
             Ok(false) => return Ok(None),
             Ok(true) => {}
@@ -210,12 +219,14 @@ impl PoolStorage {
                 )
                 .into());
             }
-            self.remove_backing().map_err(|error| {
-                format!(
-                    "could not remove unlabeled Machine Pool backing file {}: {error}",
-                    self.backing.display()
-                )
-            })?;
+            if matches!(unlabeled, UnlabeledBacking::Remove) {
+                self.remove_backing().map_err(|error| {
+                    format!(
+                        "could not remove unlabeled Machine Pool backing file {}: {error}",
+                        self.backing.display()
+                    )
+                })?;
+            }
             return Ok(None);
         }
         if pools.as_slice() != [POOL_NAME] {
@@ -443,28 +454,7 @@ impl PoolStorage {
                 pool_size_bytes: pool.size_bytes().get(),
             });
         }
-        let output = checked_command(
-            &self.df,
-            &[
-                "-B1",
-                "--output=size,avail",
-                self.host_root.to_str().ok_or("host root is not UTF-8")?,
-            ],
-        )
-        .await?;
-        let (host_total_bytes, host_available_bytes) = parse_host_root_space(&output)?;
-        let host = fs::metadata(&self.host_root).map_err(|error| error.to_string())?;
-        let parent = self
-            .backing
-            .parent()
-            .ok_or("Machine Pool backing has no parent")?;
-        if host.dev()
-            != fs::metadata(parent)
-                .map_err(|error| error.to_string())?
-                .dev()
-        {
-            return Err("Machine Pool backing is not on the host root filesystem".into());
-        }
+        let (_, host_total_bytes, host_available_bytes) = self.host_root_space().await?;
         match pool {
             Some(pool) => {
                 let (backing_length_bytes, backing_allocated_bytes) =
@@ -489,7 +479,7 @@ impl PoolStorage {
         }
     }
 
-    async fn check_host_root(&self, allocation: u64) -> Result<fs::Metadata> {
+    async fn host_root_space(&self) -> Result<(fs::Metadata, u64, u64)> {
         let host = fs::metadata(&self.host_root).map_err(|error| {
             format!(
                 "could not inspect host root {}: {error}",
@@ -531,6 +521,11 @@ impl PoolStorage {
         )
         .await?;
         let (capacity, available) = parse_host_root_space(&output)?;
+        Ok((host, capacity, available))
+    }
+
+    async fn check_host_root(&self, allocation: u64) -> Result<fs::Metadata> {
+        let (host, capacity, available) = self.host_root_space().await?;
         let reserve = ployz_core::storage_host_reserve(capacity);
         let required = reserve
             .checked_add(allocation)

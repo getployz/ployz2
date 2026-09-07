@@ -28,7 +28,14 @@ fn storage_error(error: super::VolumeError) -> ployz_core::RpcError {
 
 impl VolumeStorage {
     async fn capacity(&self) -> super::Result<StorageCapacity> {
-        let pool = self.pool.one_usable().await?;
+        let pool = match self.pool.one_usable().await? {
+            Some(pool) => Some(pool),
+            None => {
+                self.pool
+                    .recover(super::pool::UnlabeledBacking::Preserve)
+                    .await?
+            }
+        };
         let mut volumes = BTreeMap::new();
         let mut managed_used_bytes = 0u64;
         if let Some(pool) = &pool {
@@ -123,8 +130,16 @@ impl VolumeStorage {
 pub(super) async fn inspect(
     State(storage): State<VolumeStorage>,
 ) -> Json<Result<StorageCapacity, ployz_core::RpcError>> {
-    let _guard = storage.mutation.lock().await;
-    Json(storage.capacity().await.map_err(unknown))
+    // Finish import recovery under the locks even if the observer disconnects.
+    Json(
+        tokio::spawn(async move {
+            let _guard = storage.mutation.lock().await;
+            let _pool_guard = storage.pool.lock_mutation().await.map_err(unknown)?;
+            storage.capacity().await.map_err(unknown)
+        })
+        .await
+        .unwrap_or_else(|error| Err(unknown(error))),
+    )
 }
 
 pub(super) async fn prepare(

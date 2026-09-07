@@ -83,6 +83,21 @@ impl VolumePins {
                 shape: VolumePresenceShape::Observed(observed),
             })
             .chain(
+                snapshot
+                    .storage_capacity
+                    .iter()
+                    .filter_map(|(machine_id, capacity)| {
+                        Some((machine_id, capacity.as_ref().ok()?))
+                    })
+                    .flat_map(|(machine_id, capacity)| {
+                        capacity.volumes.keys().map(move |name| VolumePresence {
+                            machine_id: *machine_id,
+                            name,
+                            shape: VolumePresenceShape::ProvisionedDataset,
+                        })
+                    }),
+            )
+            .chain(
                 self.creates
                     .iter()
                     .filter_map(|(machine_id, volume)| planned_presence(*machine_id, volume)),
@@ -301,6 +316,7 @@ struct VolumePresence<'volume> {
 enum VolumePresenceShape<'volume> {
     Observed(&'volume ployz_core::DockerVolume),
     Planned(&'volume VolumeSource),
+    ProvisionedDataset,
 }
 
 fn planned_presence(machine_id: MachineId, volume: &ServiceVolume) -> Option<VolumePresence<'_>> {
@@ -324,6 +340,11 @@ impl VolumePresence<'_> {
             VolumePresenceShape::Planned(source) => {
                 volume.source.to_create_volume_request() == source.to_create_volume_request()
             }
+            // A bound mismatch must fail admission on the data's owner, not erase locality.
+            VolumePresenceShape::ProvisionedDataset => matches!(
+                volume.source.kind(),
+                ployz_core::RawVolumeSource::Provisioned { .. }
+            ),
         }
     }
 }

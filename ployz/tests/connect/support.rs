@@ -149,6 +149,7 @@ pub(super) struct DiscoveryService {
     pub(super) inspect_calls: Arc<AtomicUsize>,
     pub(super) storage: MachineStorageObservation,
     pub(super) storage_capacity: Option<ployz_core::StorageCapacity>,
+    pub(super) recover_volume_on_storage_inspect: Option<DockerVolume>,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
@@ -184,6 +185,7 @@ impl DiscoveryService {
             inspect_calls: Arc::new(AtomicUsize::new(0)),
             storage: MachineStorageObservation::Ready,
             storage_capacity: None,
+            recover_volume_on_storage_inspect: None,
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
@@ -521,6 +523,16 @@ impl MachineRpc for DiscoveryService {
         let capacity = self.storage_capacity.as_ref().ok_or_else(|| {
             Status::unimplemented("storage capacity not supplied by this fixture")
         })?;
+        if let Some(volume) = &self.recover_volume_on_storage_inspect {
+            self.listed_volumes
+                .lock()
+                .unwrap()
+                .insert(volume.id.machine_id, vec![volume.clone()]);
+            self.volume_observation_failures
+                .lock()
+                .unwrap()
+                .remove(&volume.id.machine_id);
+        }
         Ok(Response::new(
             RpcResponse::from(capacity.clone()).encode().unwrap(),
         ))
@@ -869,7 +881,7 @@ impl MachineRpc for DiscoveryService {
     }
 }
 
-fn created_volume(machine_id: MachineId, create: CreateVolumeRequest) -> DockerVolume {
+pub(super) fn created_volume(machine_id: MachineId, create: CreateVolumeRequest) -> DockerVolume {
     let storage = if create.driver == "ployz" {
         let size = create.options.get("size").unwrap();
         let (amount, suffix) = size.split_at(size.len() - 1);

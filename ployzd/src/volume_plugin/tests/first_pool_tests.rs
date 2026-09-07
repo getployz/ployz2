@@ -758,7 +758,8 @@ async fn create_first_volume(test: &TestDir, physical_block_size: u64, size: &st
     response
 }
 
-fn fake_first_pool(directory: &Path, physical_block_size: u64) -> VolumeStorage {
+/// Fake storage programs for root-backed Pool and capacity route tests.
+pub(super) fn fake_first_pool(directory: &Path, physical_block_size: u64) -> VolumeStorage {
     let script = directory.join("fake-storage");
     let commands = directory.join("commands");
     let pool = directory.join("pool");
@@ -956,52 +957,4 @@ esac
         zfs: program("zfs"),
         mutation: Arc::new(Mutex::new(())),
     }
-}
-
-#[tokio::test]
-async fn batch_preparation_checks_total_before_allocating_and_reuses_committed_volumes() {
-    let test = TestDir::new();
-    let socket = test.0.join("plugin.sock");
-    let server = tokio::spawn(serve(
-        UnixListener::bind(&socket).unwrap(),
-        fake_first_pool(&test.0, 4096),
-    ));
-    // Each 30 GiB Volume fits individually; the combined estimate (66 GiB plus
-    // one GiB for initial ZFS size loss) exceeds the 65 GiB beyond the reserve.
-    let response = post(
-        &socket,
-        "/Storage.Prepare",
-        json!({"data": 32212254720u64, "other": 32212254720u64}),
-    )
-    .await;
-    assert_eq!(
-        response.pointer("/Err/details/code").unwrap(),
-        "insufficient_storage",
-        "{response}"
-    );
-    assert_eq!(
-        response.pointer("/Err/details/shortfall_bytes").unwrap(),
-        2147483648u64
-    );
-    assert!(!test.0.join(POOL_BACKING_FILE).exists());
-    assert!(!test.0.join("volume").exists());
-
-    let requested = json!({"data": 1073741824u64, "other": 2147483648u64});
-    assert_eq!(
-        post(&socket, "/Storage.Prepare", requested.clone()).await,
-        json!({"Ok":["data","other"]})
-    );
-    let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
-    assert_eq!(
-        capacity.pointer("/Ok/volumes").unwrap(),
-        &requested,
-        "{capacity}"
-    );
-    // Even with low host headroom, already-backed Volumes require no new allocation.
-    fs::write(test.0.join("insufficient"), "").unwrap();
-    assert_eq!(
-        post(&socket, "/Storage.Prepare", requested).await,
-        json!({"Ok":["data","other"]})
-    );
-    server.abort();
 }

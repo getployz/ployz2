@@ -612,6 +612,9 @@ mod tests {
     #[path = "first_pool_tests.rs"]
     mod first_pool_tests;
 
+    #[path = "capacity_tests.rs"]
+    mod capacity_tests;
+
     #[path = "fake_zfs.rs"]
     mod fake_zfs;
 

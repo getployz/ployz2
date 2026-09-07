@@ -82,3 +82,89 @@ fn placement_uses_an_alternative_and_unknown_capacity_holds() {
         "storage_capacity_unknown"
     );
 }
+
+#[test]
+fn surviving_datasets_anchor_single_and_shared_services_without_docker_metadata() {
+    for names in [vec!["api"], vec!["api", "worker"]] {
+        let mut empty = machine('1', "empty");
+        let mut owner = machine('2', "owner");
+        empty.storage = Some(ployz_core::MachineStorageObservation::Ready);
+        owner.storage = empty.storage;
+        let mut existing = capacity(80);
+        existing.backing = StorageBacking::Fixed {
+            pool_size_bytes: 100 * STORAGE_GIB,
+        };
+        existing.volumes.insert(
+            app_volume("data"),
+            ProvisionedVolumeMaximumBytes::new(std::num::NonZeroU64::new(STORAGE_GIB).unwrap()),
+        );
+        let snapshot = DeploySnapshot {
+            storage_capacity: BTreeMap::from([
+                (empty.machine.id, Ok(capacity(80))),
+                (owner.machine.id, Ok(existing)),
+            ]),
+            machines: vec![empty, owner],
+            ..Default::default()
+        };
+        let mut services = names
+            .iter()
+            .map(|name| {
+                let mut service = spec(name);
+                add_named_volume(&mut service, "data");
+                make_provisioned(&mut service, "data", STORAGE_GIB);
+                service
+            })
+            .collect::<Vec<_>>();
+        let intent = |services: &[RequestedServiceSpec]| {
+            DeployIntent::apply_all(
+                ProjectName::parse("app").unwrap(),
+                services.iter(),
+                PlanOptions::default(),
+            )
+        };
+        let preview =
+            preview_deploy(&intent(&services), &snapshot, IngressContext::default()).unwrap();
+        assert!(
+            preview
+                .operations
+                .iter()
+                .all(|row| row.machine_name.as_ref().unwrap().as_str() == "owner"),
+            "{preview:?}"
+        );
+        assert_eq!(
+            preview
+                .storage
+                .first()
+                .unwrap()
+                .budget
+                .additional_commitment_bytes,
+            0
+        );
+        let mut conflicting = snapshot.clone();
+        let owner = conflicting.machines.last().unwrap().machine.id;
+        conflicting
+            .storage_capacity
+            .get_mut(&owner)
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .volumes
+            .insert(
+                app_volume("data"),
+                ProvisionedVolumeMaximumBytes::new(
+                    std::num::NonZeroU64::new(2 * STORAGE_GIB).unwrap(),
+                ),
+            );
+        let error = preview_deploy(&intent(&services), &conflicting, IngressContext::default())
+            .unwrap_err()
+            .into_rpc_error();
+        assert_eq!(error.details.get("code").unwrap(), "volume_size_conflict");
+        for service in &mut services {
+            service.placement.machines = vec![MachineTarget::parse("empty").unwrap()];
+        }
+        assert!(
+            preview_deploy(&intent(&services), &snapshot, IngressContext::default()).is_err(),
+            "must not create empty data on a different Machine"
+        );
+    }
+}
