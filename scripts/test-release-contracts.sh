@@ -152,8 +152,9 @@ assert_eq "$(daemon_action 1.2.2 1.2.3 pin)" "replace"
 inherited_apt_config=$(mktemp)
 printf 'Acquire::Retries "7";' > "$inherited_apt_config"
 APT_CONFIG=$inherited_apt_config configure_apt_lock_wait
-assert_eq "$(apt-config shell retries Acquire::Retries)" "retries='7'"
-assert_eq "$(apt-config shell timeout DPkg::Lock::Timeout)" "timeout='300'"
+# Load the generated fixture last so runner-wide APT settings cannot override it.
+assert_eq "$(apt-config -c "$APT_CONFIG" shell retries Acquire::Retries)" "retries='7'"
+assert_eq "$(apt-config -c "$APT_CONFIG" shell timeout DPkg::Lock::Timeout)" "timeout='300'"
 assert_eq "$(run_with_apt_lock_wait sh -c 'printf %s "$LC_ALL"')" C
 rm -f "$inherited_apt_config"
 apt_root=$(mktemp -d)
