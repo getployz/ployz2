@@ -196,7 +196,7 @@ away, and don't promote it to a hard error that hides the success.
 
 ## Known offenders (audit, 2026-09-07)
 
-Full audit: 373 messages, 130 need rework, grouped into nine families so each
+Full audit: 373 messages, 130 need rework, grouped into eleven families so each
 is one PR. Line numbers rot; the family and the file do not.
 
 | family | files | fix shape |
@@ -210,4 +210,5 @@ is one PR. Line numbers rot; the family and the file do not.
 | Daemon Docker + machine | `ployzd/docker/mod.rs`, `machine/*.rs` | name the operation/container/peer; no `ployz` verbs (leaf) |
 | Daemon certs + DNS | `certificates.rs`, `hosted_dns.rs`, `corrosion/certificate.rs` | hostname + plain-English status + condition to fix |
 | Core Machine selectors | core `machine.rs`, `selector.rs` | name both Machines; list selectors comma-separated |
+| CLI input odds and ends | `image.rs`, `compose/model.rs`, `volume.rs`, `project.rs`, `ingress/caddy.rs` | state the correct form or the alternative |
 | Wire code mapping | `ployzd/machine_api/local.rs` (`hosted_dns_error`, `store_error`), `docker/mod.rs::rpc_code` | hosted-DNS input/status errors coded `Internal` → `InvalidArgument`/`Unavailable`; `Internal` never carries a report hint in `details` |
