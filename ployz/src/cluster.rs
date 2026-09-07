@@ -126,17 +126,24 @@ impl Client {
         self.call_retried::<T>(payload, target, None).await
     }
 
-    /// Read setup state with short attempts, retaining the last transport cause.
-    pub(crate) async fn setup_read<T: Rpc>(
+    /// Retry only reads or known-idempotent setup RPCs with short attempts.
+    /// Callers must use `call_unretried` for mutations with uncertain outcomes.
+    pub(crate) async fn call_repeatable<T: Rpc>(
         &mut self,
         request: T::Request,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
         let payload = T::into_request(request).encode()?;
         let mut redial = false;
+        let operation = T::PATH.rsplit('/').next().unwrap_or(T::PATH);
+        let destination = target.map_or_else(
+            || self.connection.to_string(),
+            |target| format!("{target:?} via {}", self.connection),
+        );
+        let progress = format!("{operation} on {destination}");
         crate::setup_retry::run(
             self,
-            "Reading Machine setup state",
+            &progress,
             crate::setup_retry::WAIT,
             ConnectError::is_setup_retryable,
             async |client| {

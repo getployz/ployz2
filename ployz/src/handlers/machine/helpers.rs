@@ -102,7 +102,7 @@ pub(super) async fn wait_direct_participating(
         async |_| {
             let mut client = connect_direct(connection).await?;
             let details = client
-                .setup_read::<op::Inspect>(InspectRequest::default(), None)
+                .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
                 .await?;
             if details.phase != LocalMachinePhase::Participating {
                 return Err(ConnectError::Attempt(
@@ -119,6 +119,89 @@ pub(super) async fn wait_direct_participating(
             readiness_timeout_message(timeout_message)
         ))
     })
+}
+
+/// Recover a lost Initialize reply without initializing or resetting twice.
+pub(in crate::handlers) async fn initialize(
+    client: &mut Client,
+    request: ployz_core::InitializeRequest,
+) -> Result<ployz_core::Initialized, Error> {
+    let name = request.name.clone();
+    match client.call_unretried::<op::Initialize>(request, None).await {
+        Ok(initialized) => Ok(initialized),
+        Err(error) if error.is_setup_retryable() => {
+            let details = observe_mutation(client, "Initialization", &error, |details| {
+                details.phase == LocalMachinePhase::Participating
+                    && details
+                        .machine
+                        .as_ref()
+                        .is_some_and(|machine| machine.name == name)
+            })
+            .await?;
+            Ok(ployz_core::Initialized {
+                machine: details
+                    .machine
+                    .expect("observed predicate verified the initialized Machine"),
+            })
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Check local state after an interrupted reset instead of issuing another reset.
+pub(in crate::handlers) async fn reset(client: &mut Client) -> Result<(), Error> {
+    match client
+        .call_unretried::<op::Reset>(ployz_core::ResetRequest {}, None)
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(error) if error.is_setup_retryable() => {
+            observe_mutation(client, "Reset", &error, |details| {
+                details.phase == LocalMachinePhase::Uninitialized
+            })
+            .await
+            .map(drop)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// A lost Join reply is success only when the assigned identity is observed joining.
+pub(in crate::handlers) async fn join(
+    client: &mut Client,
+    request: ployz_core::JoinRequest,
+) -> Result<(), Error> {
+    let assigned = request.registration.assigned_machine.id;
+    match client.call_unretried::<op::Join>(request, None).await {
+        Ok(_) => Ok(()),
+        Err(error) if error.is_setup_retryable() => {
+            observe_mutation(client, "Join", &error, |details| {
+                details.id == assigned
+                    && matches!(
+                        details.phase,
+                        LocalMachinePhase::Joining | LocalMachinePhase::Participating
+                    )
+            })
+            .await
+            .map(drop)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn observe_mutation(
+    client: &mut Client,
+    operation: &str,
+    original: &ConnectError,
+    observed: impl Fn(&ployz_core::MachineDetails) -> bool,
+) -> Result<ployz_core::MachineDetails, Error> {
+    crate::setup_retry::run(client, &format!("Checking {operation} outcome"), crate::setup_retry::WAIT,
+        ConnectError::is_setup_retryable,
+        async |client| {
+            let details = client.call_repeatable::<op::Inspect>(InspectRequest::default(), None).await?;
+            if observed(&details) { Ok(details) } else { Err(ConnectError::Attempt(format!("Machine phase is {:?}; expected {operation} outcome not yet observed", details.phase).into())) }
+        },
+    ).await.map_err(|error| Error::usage(format!("{operation} may have completed: {original}; could not confirm the resulting Machine state: {error}; inspect the Machine before retrying; do not reset it")))
 }
 
 pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {

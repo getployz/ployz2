@@ -64,6 +64,30 @@ pub(crate) async fn run<C, T, E: Display>(
     )))
 }
 
+/// Reqwest categories also contain protocol and TLS failures. Retry only
+/// timeouts and concrete connection/transfer failures in their source chain.
+pub(crate) fn transient_http(error: &reqwest::Error) -> bool {
+    use std::error::Error as _;
+    use std::io::ErrorKind;
+    if error.is_timeout() {
+        return true;
+    }
+    let mut source = error.source();
+    while let Some(cause) = source {
+        if cause.downcast_ref::<std::io::Error>().is_some_and(|error| matches!(error.kind(),
+            ErrorKind::ConnectionRefused | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected | ErrorKind::BrokenPipe | ErrorKind::UnexpectedEof
+            | ErrorKind::TimedOut | ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable))
+            // ponytail: Hyper hides IncompleteMessage; use its exact text until reqwest exposes an EOF classifier.
+            || cause.to_string() == "connection closed before message completed"
+        {
+            return true;
+        }
+        source = cause.source();
+    }
+    false
+}
+
 /// Include the transport cause, which reqwest's top-level Display omits.
 pub(crate) fn detail(error: &dyn std::error::Error) -> String {
     let mut text = error.to_string();
@@ -78,6 +102,39 @@ pub(crate) fn detail(error: &dyn std::error::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn http_retry_accepts_dropped_transfers_but_rejects_malformed_protocol() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        for (reply, retry) in [
+            ("", true),
+            ("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nshort", true),
+            ("NOT-HTTP\r\n\r\n", false),
+            (
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nNOPE\r\n",
+                false,
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 2048];
+                assert!(socket.read(&mut request).await.unwrap() > 0);
+                socket.write_all(reply.as_bytes()).await.unwrap();
+            });
+            let http = reqwest::Client::builder().no_proxy().build().unwrap();
+            let error = match http.get(format!("http://{address}")).send().await {
+                Ok(response) => response.bytes().await.unwrap_err(),
+                Err(error) => error,
+            };
+            assert_eq!(transient_http(&error), retry, "{}", detail(&error));
+            server.await.unwrap();
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn retries_transient_failures_but_stops_on_permanent_errors_and_at_deadline() {

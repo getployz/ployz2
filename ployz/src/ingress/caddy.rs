@@ -1,5 +1,6 @@
 //! Concrete Caddy deployment wiring for the Ingress Proxy.
 
+use oci_client::errors::OciDistributionError;
 use oci_client::{Client, ParseError, Reference, client::ClientConfig, secrets::RegistryAuth};
 use semver::Version;
 use thiserror::Error;
@@ -43,7 +44,7 @@ async fn discover_image(
         crate::setup_retry::WAIT,
         |error| {
             matches!(error, oci_client::errors::OciDistributionError::RequestError(error)
-            if error.is_connect() || error.is_timeout())
+            if crate::setup_retry::transient_http(error))
         },
         async |client| {
             client
@@ -98,8 +99,15 @@ mod tests {
                 loop {
                     let (mut socket, _) = listener.accept().await.unwrap();
                     let mut request = [0; 4096];
-                    assert!(socket.read(&mut request).await.unwrap() > 0);
-                    if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 && status == 200
+                    let length = socket.read(&mut request).await.unwrap();
+                    assert!(length > 0);
+                    let tags = request
+                        .get(..length)
+                        .unwrap()
+                        .starts_with(b"GET /v2/library/caddy/tags/list");
+                    if tags
+                        && count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                        && status == 200
                     {
                         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                     }

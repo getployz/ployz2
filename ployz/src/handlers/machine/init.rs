@@ -1,7 +1,5 @@
 use clap::ArgMatches;
-use ployz_core::{
-    InitializeRequest, InspectRequest, LocalMachinePhase, MachineName, ResetRequest, op,
-};
+use ployz_core::{InitializeRequest, InspectRequest, LocalMachinePhase, MachineName, op};
 
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
@@ -67,36 +65,33 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             helpers::connect_direct(&connection).await?
         };
         let mut token = target
-            .setup_read::<op::MachineToken>(token_request.clone(), None)
+            .call_repeatable::<op::MachineToken>(token_request.clone(), None)
             .await?;
         let details = target
-            .setup_read::<op::Inspect>(InspectRequest::default(), None)
+            .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
             .await?;
         if details.phase != LocalMachinePhase::Uninitialized {
             helpers::confirm(yes, "Reset the Machine before initialising a new Cluster?")?;
-            target
-                .call_unretried::<op::Reset>(ResetRequest {}, None)
-                .await?;
+            helpers::reset(&mut target).await?;
             target = helpers::reconnect_direct(&connection).await?;
             token = target
-                .setup_read::<op::MachineToken>(token_request, None)
+                .call_repeatable::<op::MachineToken>(token_request, None)
                 .await?;
         }
         let name = helpers::machine_name(requested_name, &token)?;
-        let machine = target
-            .call_unretried::<op::Initialize>(
-                InitializeRequest {
-                    name,
-                    cluster_network,
-                    public_ip: token.public_ip,
-                    advertised_endpoints: token.advertised_endpoints,
-                    wireguard_mtu,
-                    cloud_pairing: None,
-                },
-                None,
-            )
-            .await?
-            .machine;
+        let machine = helpers::initialize(
+            &mut target,
+            InitializeRequest {
+                name,
+                cluster_network,
+                public_ip: token.public_ip,
+                advertised_endpoints: token.advertised_endpoints,
+                wireguard_mtu,
+                cloud_pairing: None,
+            },
+        )
+        .await?
+        .machine;
         let connection = connection.with_machine_id(machine.id);
         Ok::<_, Error>((machine, connection))
     })?;

@@ -57,7 +57,11 @@ struct JoinInner {
     daemon_version: Mutex<String>,
     joined: AtomicBool,
     join_request: Mutex<Option<JoinRequest>>,
+    join_attempts: AtomicUsize,
+    lose_lifecycle_reply: AtomicBool,
     initialize_requests: Mutex<Vec<InitializeRequest>>,
+    lose_initialize_reply: AtomicBool,
+    hold_inspect_once: AtomicBool,
     reserve_request: Mutex<Option<ReserveDomainRequest>>,
     reserve_attempts: AtomicUsize,
     transient_reserve_failures: AtomicUsize,
@@ -93,7 +97,11 @@ impl JoinDaemon {
                 daemon_version: Mutex::new(env!("CARGO_PKG_VERSION").into()),
                 joined: AtomicBool::new(false),
                 join_request: Mutex::new(None),
+                join_attempts: AtomicUsize::new(0),
+                lose_lifecycle_reply: AtomicBool::new(false),
                 initialize_requests: Mutex::new(Vec::new()),
+                lose_initialize_reply: AtomicBool::new(false),
+                hold_inspect_once: AtomicBool::new(false),
                 reserve_request: Mutex::new(None),
                 reserve_attempts: AtomicUsize::new(0),
                 transient_reserve_failures: AtomicUsize::new(0),
@@ -190,7 +198,21 @@ impl JoinDaemon {
         self
     }
 
+    pub fn lose_lifecycle_reply(self) -> Self {
+        self.inner
+            .lose_lifecycle_reply
+            .store(true, Ordering::SeqCst);
+        self
+    }
+
+    pub fn join_attempts(&self) -> usize {
+        self.inner.join_attempts.load(Ordering::SeqCst)
+    }
+
     pub fn transient_founder_tail_failures(self, failures: usize) -> Self {
+        self.inner
+            .lose_initialize_reply
+            .store(failures > 0, Ordering::SeqCst);
         self.inner
             .transient_reserve_failures
             .store(failures, Ordering::SeqCst);
@@ -298,6 +320,9 @@ impl MachineRpc for JoinDaemon {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if self.inner.hold_inspect_once.swap(false, Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+        }
         if request
             .metadata()
             .contains_key(ployz_core::ONE_TARGET_HEADER)
@@ -365,6 +390,7 @@ impl MachineRpc for JoinDaemon {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.inner.join_attempts.fetch_add(1, Ordering::SeqCst);
         let decoded = request
             .into_inner()
             .decode_request()
@@ -390,6 +416,13 @@ impl MachineRpc for JoinDaemon {
         }
         *self.inner.join_request.lock().unwrap() = Some(join);
         self.inner.joined.store(true, Ordering::SeqCst);
+        if self
+            .inner
+            .lose_lifecycle_reply
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(Status::unavailable("lost Join reply"));
+        }
         rpc_ok(JoinAccepted {})
     }
 
@@ -466,6 +499,14 @@ impl MachineRpc for JoinDaemon {
                 });
             }
             return Err(status);
+        }
+        if self
+            .inner
+            .lose_initialize_reply
+            .swap(false, Ordering::SeqCst)
+        {
+            self.inner.hold_inspect_once.store(true, Ordering::SeqCst);
+            return Err(Status::unavailable("lost Initialize reply"));
         }
         rpc_ok(Initialized { machine })
     }
@@ -830,6 +871,13 @@ impl MachineRpc for JoinDaemon {
         *self.inner.public_key.lock().unwrap() = RESET_PUBLIC_KEY;
         if let Some(hold) = self.inner._register.lock().unwrap().take() {
             hold.abort();
+        }
+        if self
+            .inner
+            .lose_lifecycle_reply
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(Status::unavailable("lost Reset reply"));
         }
         rpc_ok(ResetAccepted {})
     }

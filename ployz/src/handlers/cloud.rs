@@ -1,13 +1,13 @@
 //! `ployz cloud enroll`: enroll `initialize` or `join` on this Machine.
 
-use std::{ops::AsyncFnMut, time::Duration};
+use std::time::Duration;
 
 use clap::ArgMatches;
 use ipnet::Ipv4Net;
 use ployz_core::{
     CloudEnrollToken, CloudPairing, DescribeContractRequest, InitializeRequest, InspectRequest,
     JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken,
-    MachineTokenRequest, ResetRequest, SetCloudPairingRequest, StorageChoice, op,
+    MachineTokenRequest, SetCloudPairingRequest, StorageChoice, op,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
@@ -100,10 +100,10 @@ async fn enroll_current_identity(
     url: &str,
 ) -> Result<(MachineDetails, MachineToken, MachineName, Outcome), Error> {
     let details = client
-        .setup_read::<op::Inspect>(InspectRequest::default(), None)
+        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
         .await?;
     let machine_token = client
-        .setup_read::<op::MachineToken>(MachineTokenRequest::default(), None)
+        .call_repeatable::<op::MachineToken>(MachineTokenRequest::default(), None)
         .await?;
     let name = crate::handlers::machine::machine_name(requested_name, &machine_token)?;
     let identity =
@@ -132,16 +132,15 @@ async fn enroll_join(
     )
     .await?;
     provision_storage(&client, join.storage)?;
-    client
-        .call_unretried::<op::Join>(
-            JoinRequest {
-                registration: join.registration,
-                wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
-                cloud_pairing: Some(join.pairing),
-            },
-            None,
-        )
-        .await?;
+    crate::handlers::machine::join(
+        &mut client,
+        JoinRequest {
+            registration: join.registration,
+            wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
+            cloud_pairing: Some(join.pairing),
+        },
+    )
+    .await?;
     let mut ready = wait_phase(
         matches,
         LocalMachinePhase::Participating,
@@ -223,19 +222,18 @@ async fn enroll_founder(
             )
             .await?;
             provision_storage(&client, storage)?;
-            let initialized = client
-                .call_unretried::<op::Initialize>(
-                    InitializeRequest {
-                        name,
-                        cluster_network,
-                        public_ip: machine_token.public_ip,
-                        advertised_endpoints: machine_token.advertised_endpoints,
-                        wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
-                        cloud_pairing: None,
-                    },
-                    None,
-                )
-                .await?;
+            let initialized = crate::handlers::machine::initialize(
+                &mut client,
+                InitializeRequest {
+                    name,
+                    cluster_network,
+                    public_ip: machine_token.public_ip,
+                    advertised_endpoints: machine_token.advertised_endpoints,
+                    wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
+                    cloud_pairing: None,
+                },
+            )
+            .await?;
             let ready = wait_phase(
                 matches,
                 LocalMachinePhase::Participating,
@@ -256,30 +254,17 @@ async fn enroll_founder(
         // An interrupted Apply may have completed mutations. Do not replay it.
         crate::deploy::apply_requested(&mut ready, &requested).await.map_err(|error| {
             let error: Error = error.into();
-            Error::usage(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz cloud enroll command to reconcile the observed state"))
+            Error::usage(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
         })?;
         if !no_dns {
             crate::dns::update_records_for_ingress(&mut ready).await.map_err(|error| {
-                Error::usage(format!("Machine initialized; DNS publication pending: {error}; rerun the same ployz cloud enroll command"))
+                Error::usage(format!("Machine initialized; DNS publication pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)"))
             })?;
         }
     }
-    retry_founder_operation(
-        &mut ready,
-        "Cloud Pairing publication",
-        ConnectError::is_setup_retryable,
-        async |client| {
-            client
-                .call::<op::SetCloudPairing>(
-                    SetCloudPairingRequest {
-                        cloud_pairing: Some(pairing.clone()),
-                    },
-                    None,
-                )
-                .await
-        },
-    )
-    .await?;
+    // Setting the same pairing is idempotent.
+    ready.call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest { cloud_pairing: Some(pairing.clone()) }, None)
+        .await.map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
     cloud_enroll::callback(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,
@@ -288,24 +273,6 @@ async fn enroll_founder(
     .await?;
     println!("Initialised Machine {} ({})", machine.name, machine.id);
     Ok(())
-}
-
-async fn retry_founder_operation<C, T, E>(
-    context: &mut C,
-    operation: &'static str,
-    retryable: impl Fn(&E) -> bool,
-    run: impl AsyncFnMut(&mut C) -> Result<T, E>,
-) -> Result<T, Error>
-where
-    E: Into<Error> + std::fmt::Display,
-{
-    crate::setup_retry::run(context, operation, crate::setup_retry::WAIT, retryable, run)
-        .await
-        .map_err(|error| {
-            Error::usage(format!(
-                "{error}; rerun the same ployz cloud enroll command"
-            ))
-        })
 }
 
 fn provision_storage(client: &Client, storage: StorageChoice) -> Result<(), Error> {
@@ -329,7 +296,7 @@ async fn synchronize_daemon(
     install: &dyn Fn() -> Result<(), Error>,
 ) -> Result<Client, Error> {
     let daemon = client
-        .setup_read::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call_repeatable::<op::DescribeContract>(DescribeContractRequest {}, None)
         .await?;
     if daemon.daemon_version == env!("CARGO_PKG_VERSION") {
         return Ok(client);
@@ -343,7 +310,7 @@ async fn synchronize_daemon(
     install()?;
     let mut client = wait_client(matches).await?;
     let daemon = client
-        .setup_read::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call_repeatable::<op::DescribeContract>(DescribeContractRequest {}, None)
         .await?;
     if daemon.daemon_version != env!("CARGO_PKG_VERSION") {
         return Err(Error::usage(format!(
@@ -393,7 +360,7 @@ async fn ensure_uninitialized(
     mut client: Client,
 ) -> Result<Client, Error> {
     let details = client
-        .setup_read::<op::Inspect>(InspectRequest::default(), None)
+        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
         .await?;
     if details.phase == LocalMachinePhase::Uninitialized {
         return Ok(client);
@@ -405,9 +372,7 @@ async fn ensure_uninitialized(
         ));
     }
     crate::handlers::machine::confirm(yes, "Reset the Machine before joining this Cluster?")?;
-    client
-        .call_unretried::<op::Reset>(ResetRequest {}, None)
-        .await?;
+    crate::handlers::machine::reset(&mut client).await?;
     wait_phase(
         matches,
         LocalMachinePhase::Uninitialized,
@@ -437,7 +402,7 @@ async fn wait_phase(
         async |_| {
             let mut client = crate::connect::connect(&config, connect, None).await?;
             let details = client
-                .setup_read::<op::Inspect>(InspectRequest::default(), None)
+                .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
                 .await?;
             if details.phase != phase {
                 return Err(ConnectError::Attempt(
@@ -466,42 +431,6 @@ mod tests {
     use std::{io, path::PathBuf};
 
     use crate::context::ConnectionSource;
-
-    struct RetryFailure;
-
-    impl std::fmt::Display for RetryFailure {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("safe transport detail")
-        }
-    }
-
-    impl From<RetryFailure> for Error {
-        fn from(_: RetryFailure) -> Self {
-            Self::usage("safe transport detail".to_owned())
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn terminal_retry_formats_the_converted_cli_failure() {
-        let mut attempts = 0;
-        let error = retry_founder_operation(
-            &mut attempts,
-            "operation",
-            |_| true,
-            async |attempts| {
-                *attempts += 1;
-                Err::<(), _>(RetryFailure)
-            },
-        )
-        .await
-        .unwrap_err();
-
-        assert!(attempts > 3);
-        assert_eq!(
-            error.to_string(),
-            "operation did not recover within 60s; last error: safe transport detail; rerun the same ployz cloud enroll command"
-        );
-    }
 
     #[test]
     fn wait_retries_no_config_and_unreachable_connect_errors() {

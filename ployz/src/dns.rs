@@ -93,7 +93,7 @@ pub(crate) async fn reserve_if_missing(
 
 async fn reserved_domain(client: &mut Client) -> Result<Option<String>, Error> {
     match client
-        .setup_read::<op::GetDomain>(ployz_core::GetDomainRequest {}, None)
+        .call_repeatable::<op::GetDomain>(ployz_core::GetDomainRequest {}, None)
         .await
     {
         Ok(domain) => Ok(Some(domain.name)),
@@ -200,25 +200,9 @@ pub async fn update_records_for_ingress(client: &mut Client) -> Result<(), Error
 
 async fn publish_records(client: &mut Client, records: Vec<DnsRecord>) -> Result<(), Error> {
     // Hosted records are upserted. Repeating these same values is safe.
-    crate::setup_retry::run(
-        client,
-        "Publishing Cluster DNS records",
-        crate::setup_retry::WAIT,
-        ConnectError::is_setup_retryable,
-        async |client| {
-            client
-                .call::<op::CreateDomainRecords>(
-                    CreateDomainRecordsRequest {
-                        records: records.clone(),
-                    },
-                    None,
-                )
-                .await
-                .map(drop)
-        },
-    )
-    .await
-    .map_err(retry_error)?;
+    client
+        .call_repeatable::<op::CreateDomainRecords>(CreateDomainRecordsRequest { records }, None)
+        .await?;
     Ok(())
 }
 

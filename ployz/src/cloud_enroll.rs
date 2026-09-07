@@ -30,7 +30,9 @@ pub(crate) enum Error {
     Status { status: u16, body: String },
     #[error("Cloud response must not carry a Dial Credential")]
     DialOffered,
-    #[error("Cloud {operation} failed: {detail}; rerun the same ployz cloud enroll command")]
+    #[error(
+        "Cloud {operation} failed: {detail}; rerun the same ployz cloud enroll command without --reset (keep all other options)"
+    )]
     RetrySameCommand {
         operation: &'static str,
         detail: String,
@@ -39,8 +41,15 @@ pub(crate) enum Error {
 
 impl Error {
     fn is_transport(&self) -> bool {
-        matches!(self, Self::Timeout(_) | Self::Connect(_))
-            || matches!(self, Self::Http(error) if error.is_request() || error.is_body())
+        match self {
+            Self::Timeout(error) | Self::Connect(error) | Self::Http(error) => {
+                crate::setup_retry::transient_http(error)
+            }
+            Self::Json(_)
+            | Self::Status { .. }
+            | Self::DialOffered
+            | Self::RetrySameCommand { .. } => false,
+        }
     }
 }
 

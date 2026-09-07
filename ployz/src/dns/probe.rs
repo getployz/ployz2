@@ -4,7 +4,6 @@ use super::Error;
 use ployz_core::{INGRESS_VERIFY_PATH, Machine, MachineId};
 use reqwest::{Client as HttpClient, redirect::Policy};
 use std::{net::SocketAddr, time::Duration};
-use thiserror::Error;
 
 const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -69,7 +68,7 @@ async fn verify_machine(
         &mut (),
         &format!("Checking public ingress at {address} from this computer"),
         crate::setup_retry::WAIT,
-        |error| matches!(error, ProbeError::Transport(error) if error.is_connect() || error.is_timeout()),
+        |error| matches!(error, ProbeError::Transport(error) if crate::setup_retry::transient_http(error)),
         async |_| probe_machine(http, machine_id, address).await,
     ).await
 }

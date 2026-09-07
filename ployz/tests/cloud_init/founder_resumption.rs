@@ -90,7 +90,8 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
         assigned_machine: founder.clone(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
-    });
+    })
+    .lose_lifecycle_reply();
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
         .await
@@ -329,41 +330,50 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
-    command
-        .args([
-            "--connect",
-            &format!("tcp://{machine_addr}"),
-            "cloud",
-            "enroll",
-            TOKEN,
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "founder",
-            "--ingress-image",
-            "caddy:2.10.0",
-            "--yes",
-        ])
-        .env("PLOYZ_INGRESS_VERIFY_PORT", probe_port.to_string())
-        .env("HTTPS_PROXY", &proxy)
-        .env("https_proxy", &proxy)
-        .env("NO_PROXY", "127.0.0.1,localhost")
-        .env("no_proxy", "127.0.0.1,localhost");
-    let first = command.output().await.unwrap();
+    let command = || {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command
+            .args([
+                "--connect",
+                &format!("tcp://{machine_addr}"),
+                "cloud",
+                "enroll",
+                TOKEN,
+                "--cloud-url",
+                &enroll.url,
+                "--name",
+                "founder",
+                "--ingress-image",
+                "caddy:2.10.0",
+                "--yes",
+            ])
+            .env("PLOYZ_INGRESS_VERIFY_PORT", probe_port.to_string())
+            .env("HTTPS_PROXY", &proxy)
+            .env("https_proxy", &proxy)
+            .env("NO_PROXY", "127.0.0.1,localhost")
+            .env("no_proxy", "127.0.0.1,localhost");
+        command
+    };
+    let first = command().arg("--reset").output().await.unwrap();
     assert!(!first.status.success());
-    assert!(
-        String::from_utf8_lossy(&first.stderr)
-            .contains("rerun the same ployz cloud enroll command")
-    );
+    assert!(String::from_utf8_lossy(&first.stderr).contains(
+        "rerun the same ployz cloud enroll command without --reset (keep all other options)"
+    ));
+    assert!(String::from_utf8_lossy(&first.stderr).contains("Machine setup read timed out"));
     assert_eq!(daemon.founder_tail_attempts(), [1, 1, 0, 0]);
+    assert_eq!(
+        daemon.initialize_requests().len(),
+        1,
+        "lost Initialize reply must be recovered by Inspect"
+    );
+    assert_eq!(daemon.reset_count(), 0);
     assert_eq!(
         daemon.containers().len(),
         1,
         "lost create reply must not cause an automatic second Create"
     );
 
-    let output = command.output().await.unwrap();
+    let output = command().output().await.unwrap();
     probe.abort();
 
     assert!(
@@ -372,6 +382,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
+    assert_eq!(daemon.reset_count(), 0, "resume must omit --reset");
     assert_eq!(daemon.founder_tail_attempts(), [1, 2, 2, 2]);
     let containers = daemon.containers();
     assert_eq!(containers.len(), 1);

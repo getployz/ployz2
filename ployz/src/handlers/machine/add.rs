@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
     InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, MachineObservation,
-    RegisterRequest, ResetRequest, WireGuardPublicKey, op,
+    RegisterRequest, WireGuardPublicKey, op,
 };
 
 use super::super::{connect_client, runtime};
@@ -32,7 +32,11 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     }
 
     let assigned = runtime()?.block_on(async {
-        let mut entry = connect_client(matches, options.context()).await?;
+        let mut entry = if matches.get_flag("no-install") {
+            connect_client(matches, options.context()).await?
+        } else {
+            super::super::reconnect_client(matches, options.context()).await?
+        };
         let visible = entry.machines().await?;
         let mut target_client = if matches.get_flag("no-install") {
             helpers::connect_direct(&connection).await?
@@ -40,10 +44,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             helpers::reconnect_direct(&connection).await?
         };
         let mut token = target_client
-            .setup_read::<op::MachineToken>(token_request.clone(), None)
+            .call_repeatable::<op::MachineToken>(token_request.clone(), None)
             .await?;
         let details = target_client
-            .setup_read::<op::Inspect>(
+            .call_repeatable::<op::Inspect>(
                 InspectRequest {
                     advertised_endpoints: token.advertised_endpoints.clone(),
                     ..Default::default()
@@ -54,19 +58,17 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         if details.phase != LocalMachinePhase::Uninitialized {
             cluster_membership_conflict(&details.phase, &visible, &token.public_key)?;
             helpers::confirm(yes, "Reset the Machine before adding it to this Cluster?")?;
-            target_client
-                .call_unretried::<op::Reset>(ResetRequest {}, None)
-                .await?;
+            helpers::reset(&mut target_client).await?;
             target_client = helpers::reconnect_direct(&connection).await?;
             token = target_client
-                .setup_read::<op::MachineToken>(token_request, None)
+                .call_repeatable::<op::MachineToken>(token_request, None)
                 .await?;
         }
         let name = helpers::machine_name(requested_name, &token)?;
 
-        // TODO: registration is intentionally unfenced and may succeed on a minority.
+        // Register recognizes the same public key and name and returns its committed assignment.
         let registration = entry
-            .call_unretried::<op::Register>(
+            .call_repeatable::<op::Register>(
                 RegisterRequest {
                     name,
                     storage,
@@ -79,16 +81,15 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             )
             .await?;
         let assigned = registration.assigned_machine.clone();
-        target_client
-            .call_unretried::<op::Join>(
-                JoinRequest {
-                    registration,
-                    wireguard_mtu,
-                    cloud_pairing: None,
-                },
-                None,
-            )
-            .await?;
+        helpers::join(
+            &mut target_client,
+            JoinRequest {
+                registration,
+                wireguard_mtu,
+                cloud_pairing: None,
+            },
+        )
+        .await?;
 
         Ok::<_, Error>(assigned)
     })?;
