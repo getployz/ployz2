@@ -247,7 +247,7 @@ async fn enroll_founder(
     if !no_dns {
         let domain =
             crate::dns::reserve_if_missing(&mut ready, crate::dns::HOSTED_DNS_ENDPOINT.to_owned())
-                .await?;
+                .await.map_err(|error| Error::usage(format!("Machine initialized; DNS reservation pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
         println!("Reserved Cluster domain: {domain}");
     }
     if let Some(requested) = ingress {

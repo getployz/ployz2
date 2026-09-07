@@ -126,18 +126,32 @@ pub(in crate::handlers) async fn initialize(
     client: &mut Client,
     request: ployz_core::InitializeRequest,
 ) -> Result<ployz_core::Initialized, Error> {
+    let identity = client
+        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .await?;
     let name = request.name.clone();
     match client.call_unretried::<op::Initialize>(request, None).await {
         Ok(initialized) => Ok(initialized),
         Err(error) if error.is_setup_retryable() => {
-            let details = observe_mutation(client, "Initialization", &error, |details| {
-                details.phase == LocalMachinePhase::Participating
-                    && details
-                        .machine
-                        .as_ref()
-                        .is_some_and(|machine| machine.name == name)
-            })
+            let details = observe_mutation(
+                client,
+                "Initialization",
+                &error,
+                MACHINE_START_WAIT,
+                |details| {
+                    details.phase == LocalMachinePhase::Participating
+                        && details
+                            .machine
+                            .as_ref()
+                            .is_some_and(|machine| machine.name == name)
+                },
+            )
             .await?;
+            if details.id != identity.id || details.public_key != identity.public_key {
+                return Err(Error::usage(
+                    "Initialization outcome belongs to a different Machine identity; inspect the Machine before retrying; do not reset it",
+                ));
+            }
             Ok(ployz_core::Initialized {
                 machine: details
                     .machine
@@ -155,13 +169,15 @@ pub(in crate::handlers) async fn reset(client: &mut Client) -> Result<(), Error>
         .await
     {
         Ok(_) => Ok(()),
-        Err(error) if error.is_setup_retryable() => {
-            observe_mutation(client, "Reset", &error, |details| {
-                details.phase == LocalMachinePhase::Uninitialized
-            })
-            .await
-            .map(drop)
-        }
+        Err(error) if error.is_setup_retryable() => observe_mutation(
+            client,
+            "Reset",
+            &error,
+            crate::setup_retry::WAIT,
+            |details| details.phase == LocalMachinePhase::Uninitialized,
+        )
+        .await
+        .map(drop),
         Err(error) => Err(error.into()),
     }
 }
@@ -175,7 +191,7 @@ pub(in crate::handlers) async fn join(
     match client.call_unretried::<op::Join>(request, None).await {
         Ok(_) => Ok(()),
         Err(error) if error.is_setup_retryable() => {
-            observe_mutation(client, "Join", &error, |details| {
+            observe_mutation(client, "Join", &error, MACHINE_START_WAIT, |details| {
                 details.id == assigned
                     && matches!(
                         details.phase,
@@ -193,9 +209,10 @@ async fn observe_mutation(
     client: &mut Client,
     operation: &str,
     original: &ConnectError,
+    wait: std::time::Duration,
     observed: impl Fn(&ployz_core::MachineDetails) -> bool,
 ) -> Result<ployz_core::MachineDetails, Error> {
-    crate::setup_retry::run(client, &format!("Checking {operation} outcome"), crate::setup_retry::WAIT,
+    crate::setup_retry::run(client, &format!("Checking {operation} outcome"), wait,
         ConnectError::is_setup_retryable,
         async |client| {
             let details = client.call_repeatable::<op::Inspect>(InspectRequest::default(), None).await?;

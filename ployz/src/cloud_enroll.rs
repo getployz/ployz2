@@ -18,12 +18,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// Failures talking to Cloud enroll.
 #[derive(Debug, Error)]
 pub(crate) enum Error {
-    #[error("enroll timed out waiting for Cloud")]
+    #[error("enroll timed out waiting for Cloud: {}", crate::setup_retry::detail(.0))]
     Timeout(#[source] reqwest::Error),
-    #[error("could not connect to Cloud")]
+    #[error("could not connect to Cloud: {}", crate::setup_retry::detail(.0))]
     Connect(#[source] reqwest::Error),
-    #[error(transparent)]
-    Http(reqwest::Error),
+    #[error("{}", crate::setup_retry::detail(.0))]
+    Http(#[source] reqwest::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error("enroll HTTP {status}: {body}")]
@@ -211,7 +211,7 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
     loop {
         let response = crate::setup_retry::run(
             &mut (),
-            "Cloud enrollment",
+            &format!("Cloud enrollment at {}", diagnostic_origin(url)),
             crate::setup_retry::WAIT,
             Error::is_transport,
             async |_| post_json(&http, url, identity).await,
@@ -259,7 +259,7 @@ pub(crate) async fn callback(
     };
     crate::setup_retry::run(
         &mut (),
-        "Cloud founder completion",
+        &format!("Cloud founder completion at {}", diagnostic_origin(url)),
         crate::setup_retry::WAIT,
         Error::is_transport,
         async |_| post_json(&http, url, &body).await.map(|_| ()),
@@ -289,13 +289,21 @@ fn http_client() -> Result<reqwest::Client, Error> {
         .map_err(classify_http)
 }
 
+fn diagnostic_origin(url: &str) -> String {
+    reqwest::Url::parse(url).map_or_else(
+        |_| "invalid Cloud URL".to_owned(),
+        |url| url.origin().ascii_serialization(),
+    )
+}
+
 fn classify_http(error: reqwest::Error) -> Error {
+    let error = error.without_url();
     if error.is_connect() {
         Error::Connect(error)
     } else if error.is_timeout() {
         Error::Timeout(error)
     } else {
-        Error::Http(error.without_url())
+        Error::Http(error)
     }
 }
 
@@ -613,6 +621,16 @@ mod tests {
         let _ = tokio::io::AsyncReadExt::read(stream, &mut buf).await;
     }
 
+    #[test]
+    fn cloud_destination_omits_credentials_and_token_path() {
+        assert_eq!(
+            diagnostic_origin(
+                "https://user:secret@cloud.example:8443/api/enroll/private-token?secret=yes"
+            ),
+            "https://cloud.example:8443"
+        );
+    }
+
     #[tokio::test]
     async fn timeout_is_distinct_from_connection_failure() {
         let (listener, hang) = listen().await;
@@ -626,18 +644,28 @@ mod tests {
             .build()
             .unwrap();
         let timeout = post_json(&http, &hang, &identity()).await.unwrap_err();
-        assert_eq!(timeout.to_string(), "enroll timed out waiting for Cloud");
         assert!(
-            !timeout.to_string().contains("error sending request"),
-            "{timeout}"
+            timeout
+                .to_string()
+                .starts_with("enroll timed out waiting for Cloud:")
         );
+        assert!(!timeout.to_string().contains(&hang));
 
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let refused = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
         let connect = post_json(&http, &refused, &identity()).await.unwrap_err();
-        assert_eq!(connect.to_string(), "could not connect to Cloud");
+        assert!(
+            connect
+                .to_string()
+                .starts_with("could not connect to Cloud:")
+        );
         assert_ne!(timeout.to_string(), connect.to_string());
+        assert!(
+            connect.to_string().contains("Connection refused"),
+            "{connect}"
+        );
+        assert!(!connect.to_string().contains(&refused));
     }
 
     #[tokio::test]

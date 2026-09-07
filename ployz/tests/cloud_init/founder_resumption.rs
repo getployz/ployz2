@@ -412,3 +412,59 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     assert_eq!(enroll.callbacks().len(), 1);
     wait_for_held(&relay.url, PAIRING, machine_id).await;
 }
+
+#[tokio::test]
+async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservation() {
+    for replaced in [true, false] {
+        let relay = RelayListen::start().await;
+        let pairing =
+            CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+        let enroll = EnrollListen::start(json!({
+            "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
+        }))
+        .await;
+        let daemon = JoinDaemon::new(Registered {
+            assigned_machine: founder_machine(),
+            visible_peers: Vec::new(),
+            target_versions: Default::default(),
+        });
+        let daemon = if replaced {
+            daemon.replace_identity_on_initialize()
+        } else {
+            daemon.fail_reservation()
+        };
+        let address = serve_machine(daemon.clone()).await;
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args([
+                "--connect",
+                &format!("tcp://{address}"),
+                "cloud",
+                "enroll",
+                TOKEN,
+                "--cloud-url",
+                &enroll.url,
+                "--name",
+                "founder",
+                "--no-ingress",
+                "--reset",
+                "--yes",
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        if replaced {
+            assert!(error.contains("different Machine identity"), "{error}");
+        } else {
+            assert!(error.contains("DNS reservation pending"), "{error}");
+            assert!(
+                error.contains("without --reset (keep all other options)"),
+                "{error}"
+            );
+        }
+        assert_eq!(daemon.initialize_requests().len(), 1);
+        assert_eq!(daemon.reset_count(), 0);
+        assert!(enroll.callbacks().is_empty());
+    }
+}
