@@ -451,7 +451,7 @@ fn service_rm(name: &'static str) -> Command {
                 .long("data-loss")
                 .help("Data Loss names to confirm when --volumes is set")
                 .action(ArgAction::Append)
-                .num_args(1..)
+                .num_args(1)
                 .value_delimiter(',')
                 .requires("volumes"),
         )
@@ -862,6 +862,56 @@ mod tests {
             super::command()
                 .try_get_matches_from(["ployz", "rm", "db", "--volumes", "-v"])
                 .is_err()
+        );
+
+        let repeated = super::command()
+            .try_get_matches_from([
+                "ployz",
+                "rm",
+                "db",
+                "--volumes",
+                "--data-loss",
+                "app_data",
+                "--data-loss",
+                "app_logs",
+                "--yes",
+            ])
+            .unwrap();
+        let rm = repeated.subcommand_matches("rm").unwrap();
+        assert_eq!(
+            rm.get_many::<String>("data-loss")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["app_data", "app_logs"]
+        );
+
+        let trailing = super::command()
+            .try_get_matches_from([
+                "ployz",
+                "rm",
+                "db",
+                "--volumes",
+                "--data-loss",
+                "app_data",
+                "api",
+                "--yes",
+            ])
+            .unwrap();
+        let rm = trailing.subcommand_matches("rm").unwrap();
+        assert_eq!(
+            rm.get_many::<String>("service")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["db", "api"]
+        );
+        assert_eq!(
+            rm.get_many::<String>("data-loss")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["app_data"]
         );
     }
 
