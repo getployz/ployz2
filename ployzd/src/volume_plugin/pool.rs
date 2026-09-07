@@ -492,8 +492,8 @@ impl PoolStorage {
             .checked_add(allocation)
             .ok_or_else(|| VolumeError::from("host-root reserve calculation overflowed u64"))?;
         if available < required {
-            let shortfall = readable_size(required - available);
-            let requested = readable_size(requested);
+            let shortfall = readable_size(required - available, true);
+            let requested = readable_size(requested, false);
             return Err(format!(
                 "Not enough disk space on this machine to create {name}.\n\
                  Requested volume size: {requested}.\n\
@@ -609,7 +609,7 @@ impl PoolStorage {
     }
 }
 
-fn readable_size(bytes: u64) -> String {
+fn readable_size(bytes: u64, round_up: bool) -> String {
     for (unit, label) in [
         (1024_u64.pow(4), "TiB"),
         (GIBIBYTE, "GiB"),
@@ -617,6 +617,10 @@ fn readable_size(bytes: u64) -> String {
         (1024, "KiB"),
     ] {
         if bytes >= unit {
+            if round_up {
+                let tenths = (u128::from(bytes) * 10).div_ceil(u128::from(unit));
+                return format!("{}.{} {label}", tenths / 10, tenths % 10);
+            }
             return format!("{:.1} {label}", bytes as f64 / unit as f64);
         }
     }
@@ -682,9 +686,24 @@ mod tests {
             (1024, "1.0 KiB"),
             (512 * 1024 * 1024, "512.0 MiB"),
             (43_744_232_448, "40.7 GiB"),
+            (1_100_000, "1.0 MiB"),
             (1024_u64.pow(4), "1.0 TiB"),
         ] {
-            assert_eq!(readable_size(bytes), expected);
+            assert_eq!(readable_size(bytes, false), expected);
+        }
+    }
+
+    #[test]
+    fn disk_space_shortfalls_round_up() {
+        for (bytes, expected) in [
+            (1, "1 B"),
+            (1024, "1.0 KiB"),
+            (1_100_000, "1.1 MiB"),
+            (43_744_232_448, "40.8 GiB"),
+            (1024_u64.pow(4) + 1, "1.1 TiB"),
+            (u64::MAX, "16777216.0 TiB"),
+        ] {
+            assert_eq!(readable_size(bytes, true), expected);
         }
     }
 
