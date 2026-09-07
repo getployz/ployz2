@@ -119,7 +119,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
                 && managed_volume_name(volume) == managed_volume_name(assigned)
                 && assigned.source.to_create_volume_request()
                     != volume.source.to_create_volume_request()
-        }) || self.observations().any(|located| {
+        }) || self.observed_locations().any(|located| {
             located.machine_id == machine_id
                 && managed_volume_name(volume) == Some(located.name)
                 && !located.matches(volume)
@@ -133,7 +133,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
             .map(|(id, _)| id)
             .collect::<BTreeSet<_>>();
         let mut locations = if assigned.is_empty() {
-            self.observations()
+            self.observed_locations()
                 .filter(|located| located.matches(volume))
                 .map(|located| located.machine_id)
                 .collect::<BTreeSet<_>>()
@@ -157,7 +157,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
         Ok(VolumeLocality::Absent)
     }
 
-    fn observations(&self) -> impl Iterator<Item = VolumePresence<'_>> {
+    fn observed_locations(&self) -> impl Iterator<Item = VolumePresence<'_>> {
         self.snapshot
             .volume_snapshot
             .observations()
@@ -165,7 +165,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
             .map(|observed| VolumePresence {
                 machine_id: observed.id.machine_id,
                 name: &observed.id.name,
-                shape: VolumePresenceShape::Observed(observed),
+                shape: VolumePresenceShape::DockerVolume(observed),
             })
             .chain(
                 self.snapshot
@@ -192,40 +192,6 @@ impl<'snapshot> VolumePlan<'snapshot> {
         mut self,
         operations: &mut Vec<DeployOperation>,
     ) -> Result<PlannedVolumes, PlanError> {
-        let used = self
-            .assigned_volumes()
-            .filter_map(|(machine_id, volume)| {
-                let name = managed_volume_name(volume)?;
-                operations
-                    .iter()
-                    .any(|operation| {
-                        operation.machine_id() == machine_id
-                            && operation.spec().is_some_and(|spec| {
-                                spec.volume_graph()
-                                    .mounted_volumes()
-                                    .any(|mounted| managed_volume_name(mounted) == Some(name))
-                            })
-                    })
-                    .then(|| {
-                        (
-                            DockerVolumeId {
-                                machine_id,
-                                name: name.clone(),
-                            },
-                            volume,
-                        )
-                    })
-            })
-            .collect::<BTreeMap<_, _>>();
-        let creates = used
-            .into_iter()
-            .filter(|(id, volume)| {
-                !self
-                    .observations()
-                    .any(|located| located.machine_id == id.machine_id && located.matches(volume))
-            })
-            .map(|(id, volume)| (id.machine_id, volume.clone()))
-            .collect();
         let active_machines = operations
             .iter()
             .filter(|operation| {
@@ -235,6 +201,49 @@ impl<'snapshot> VolumePlan<'snapshot> {
             })
             .map(DeployOperation::machine_id)
             .collect::<BTreeSet<_>>();
+        // Preparation can recreate Docker metadata for unchanged assigned Services too.
+        let used = self
+            .assigned_volumes()
+            .filter_map(|(machine_id, volume)| {
+                let name = managed_volume_name(volume)?;
+                (active_machines.contains(&machine_id)
+                    && matches!(
+                        volume.source.kind(),
+                        ployz_core::RawVolumeSource::Provisioned { .. }
+                    )
+                    || operations.iter().any(|operation| {
+                        operation.machine_id() == machine_id
+                            && operation.spec().is_some_and(|spec| {
+                                spec.volume_graph()
+                                    .mounted_volumes()
+                                    .any(|mounted| managed_volume_name(mounted) == Some(name))
+                            })
+                    }))
+                .then(|| {
+                    (
+                        DockerVolumeId {
+                            machine_id,
+                            name: name.clone(),
+                        },
+                        volume,
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        let creates = used
+            .into_iter()
+            .filter(|(id, volume)| {
+                !self
+                    .snapshot
+                    .volume_snapshot
+                    .observations()
+                    .iter()
+                    .any(|observed| {
+                        observed.id == *id && volume.source.matches_managed_volume(observed)
+                    })
+            })
+            .map(|(id, volume)| (id.machine_id, volume.clone()))
+            .collect();
         let mut budgets = Vec::new();
         let mut preparations = Vec::new();
         for id in active_machines {
@@ -469,7 +478,7 @@ struct VolumePresence<'volume> {
 
 #[derive(Clone, Copy)]
 enum VolumePresenceShape<'volume> {
-    Observed(&'volume ployz_core::DockerVolume),
+    DockerVolume(&'volume ployz_core::DockerVolume),
     ProvisionedDataset,
 }
 
@@ -479,7 +488,7 @@ impl VolumePresence<'_> {
             return false;
         }
         match self.shape {
-            VolumePresenceShape::Observed(observed) => {
+            VolumePresenceShape::DockerVolume(observed) => {
                 volume.source.matches_managed_volume(observed)
             }
             // A bound mismatch must fail admission on the data's owner, not erase locality.
@@ -893,7 +902,10 @@ fn volume_anchor(
     requested: &[MachineTarget],
 ) -> Option<EliminatingConstraint> {
     let mut located_on = Vec::new();
-    for located in plan.observations().filter(|located| located.name == name) {
+    for located in plan
+        .observed_locations()
+        .filter(|located| located.name == name)
+    {
         let Some(machine_name) = snapshot
             .machines
             .iter()

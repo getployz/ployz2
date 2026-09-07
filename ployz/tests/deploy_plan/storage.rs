@@ -1,6 +1,7 @@
 //! Provisioned storage admission through the public planner and SDK error contract.
 use super::support::*;
 use ployz_core::{RpcError, RpcErrorCode, STORAGE_GIB, StorageBacking, StorageCapacity};
+use std::collections::BTreeSet;
 
 fn capacity(free_gib: u64) -> StorageCapacity {
     StorageCapacity {
@@ -139,6 +140,11 @@ fn surviving_datasets_anchor_single_and_shared_services_without_docker_metadata(
                 .budget
                 .additional_commitment_bytes,
             0
+        );
+        assert_eq!(preview.volumes_to_create.len(), 1);
+        assert_eq!(
+            preview.volumes_to_create.first().unwrap().name,
+            app_volume("data")
         );
         let mut conflicting = snapshot.clone();
         let owner = conflicting.machines.last().unwrap().machine.id;
@@ -429,5 +435,47 @@ fn preparation_and_preview_include_unchanged_assigned_storage() {
     assert_eq!(
         preview.storage.first().unwrap().budget.requested_bytes,
         prepared.values().sum::<u64>()
+    );
+    assert_eq!(
+        preview
+            .volumes_to_create
+            .iter()
+            .map(|volume| volume.name.clone())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([app_volume("new")])
+    );
+    let mut recovered = snapshot;
+    recovered.volume_snapshot = VolumeSnapshot::default();
+    let capacity = recovered
+        .storage_capacity
+        .values_mut()
+        .next()
+        .unwrap()
+        .as_mut()
+        .unwrap();
+    capacity.backing = StorageBacking::Fixed {
+        pool_size_bytes: 100 * STORAGE_GIB,
+    };
+    capacity.volumes.insert(
+        app_volume("data"),
+        ProvisionedVolumeMaximumBytes::new(std::num::NonZeroU64::new(30 * STORAGE_GIB).unwrap()),
+    );
+    let preview = preview_deploy(&intent, &recovered, IngressContext::default()).unwrap();
+    assert_eq!(
+        preview
+            .volumes_to_create
+            .iter()
+            .map(|volume| volume.name.clone())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([app_volume("data"), app_volume("new")])
+    );
+    assert_eq!(
+        preview
+            .storage
+            .first()
+            .unwrap()
+            .budget
+            .additional_commitment_bytes,
+        STORAGE_GIB
     );
 }

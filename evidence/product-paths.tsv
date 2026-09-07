@@ -49,3 +49,4 @@ provisioned-storage-preparation	ployz/src/deploy/exec_tests.rs::application_fail
 provisioned-dataset-locality-unknown	-	ployz/tests/deploy_plan/storage.rs::unknown_dataset_locality_holds_placement_instead_of_creating_elsewhere	-	-	-
 provisioned-storage-assignment	-	ployz/tests/deploy_plan/storage.rs::placement_budgets_include_observed_pinned_commitments	-	-	-
 provisioned-storage-projection	ployz-core/src/service/eligibility.rs::whole_specs_assess_placement_and_only_mounted_provisioned_storage	ployz/tests/deploy_plan/storage.rs::preparation_and_preview_include_unchanged_assigned_storage	-	-	-
+provisioned-metadata-recovery-preview	-	ployz/tests/deploy_plan/storage.rs::surviving_datasets_anchor_single_and_shared_services_without_docker_metadata	-	-	-
