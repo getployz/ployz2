@@ -1,10 +1,9 @@
 //! Plan-wide provisioning budgets and capacity-aware volume placement.
 
-use crate::deploy::{DeployOperation, DeploySnapshot, PlanError};
+use crate::deploy::{DeploySnapshot, PlanError};
 use ployz_core::{
-    DockerVolumeName, MachineId, MachineObservation, ProvisionedVolumeMaximumBytes,
-    RawVolumeSource, ResolvedServiceSpec, ServiceVolume, StorageBudget, StorageCapacity,
-    StorageCapacityError,
+    DockerVolumeName, MachineObservation, ProvisionedVolumeMaximumBytes, RawVolumeSource,
+    ServiceVolume, StorageBudget, StorageCapacity, StorageCapacityError,
 };
 use std::collections::BTreeMap;
 
@@ -61,64 +60,4 @@ pub(super) fn budget(
             machine: machine.machine.name.clone(),
             source,
         })
-}
-
-pub(super) fn budgets(
-    operations: &[DeployOperation],
-    snapshot: &DeploySnapshot,
-) -> Result<Vec<ployz_core::MachineStorageBudget>, PlanError> {
-    let mut by_machine = BTreeMap::<MachineId, Volumes>::new();
-    for operation in operations {
-        if let Some(spec) = operation.spec() {
-            let volumes = bounds(spec.volume_graph().mounted_volumes());
-            if !volumes.is_empty() {
-                by_machine
-                    .entry(operation.machine_id())
-                    .or_default()
-                    .extend(volumes);
-            }
-        }
-    }
-    by_machine
-        .into_iter()
-        .map(|(id, volumes)| {
-            let machine = snapshot
-                .machines
-                .iter()
-                .find(|machine| machine.machine.id == id)
-                .expect("planned Machine belongs to snapshot");
-            Ok(ployz_core::MachineStorageBudget {
-                machine_id: id,
-                machine_name: machine.machine.name.clone(),
-                budget: budget(snapshot, machine, &volumes)?,
-            })
-        })
-        .collect()
-}
-
-/// Full resolved placements, deduplicated across hooks and replacement operations.
-pub(crate) fn preparations(
-    operations: &[DeployOperation],
-) -> BTreeMap<MachineId, Vec<ResolvedServiceSpec>> {
-    let mut by_machine = BTreeMap::<MachineId, Vec<ResolvedServiceSpec>>::new();
-    for operation in operations {
-        if let Some(spec) = operation
-            .spec()
-            .filter(|spec| spec.volume_graph().has_mounted_provisioned_volume())
-        {
-            let specs = by_machine.entry(operation.machine_id()).or_default();
-            if !specs.contains(spec) {
-                specs.push(spec.clone());
-            }
-        }
-    }
-    by_machine
-}
-
-/// Put storage preparation before hooks, stops, and application creation.
-pub(crate) fn prepend_preparations(operations: &mut Vec<DeployOperation>) {
-    let preparations = preparations(operations)
-        .into_iter()
-        .map(|(machine_id, specs)| DeployOperation::PrepareVolumes { machine_id, specs });
-    operations.splice(..0, preparations);
 }

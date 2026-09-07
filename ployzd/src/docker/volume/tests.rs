@@ -786,7 +786,10 @@ async fn preparation_rejects_conflicting_definitions_without_creating_a_volume()
     let specs = [
         spec_with_sources(vec![provisioned_source("data", 1073741824)]),
         spec_with_sources(vec![provisioned_source("data", 2147483648)]),
-    ];
+    ]
+    .iter()
+    .map(ployz_core::ServiceStorageSpec::from)
+    .collect::<Vec<_>>();
     assert!(matches!(
         runtime
             .validate_provisioned_volumes(&MachineId::random(), &specs)

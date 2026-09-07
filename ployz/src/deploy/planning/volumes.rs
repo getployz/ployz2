@@ -1,10 +1,16 @@
+//! Volume planning owns observer-relative evidence and assigned commitments.
+//!
+//! Choosing a location records its complete Volume definition. Locality and
+//! capacity read those assignments; preview rows are derived only at finish.
+//! Failed inventory reads remain errors when absence would authorize creation.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
     MachineObservation, MachineTarget, PreservedVolume, ProjectName, RequestedServiceSpec,
-    ServiceMode, ServiceObservation, ServicePlacementEligibility, ServiceVolume,
-    ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
+    ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility, ServiceStorageSpec,
+    ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
 };
 
 use crate::deploy::{
@@ -13,67 +19,146 @@ use crate::deploy::{
 
 use super::placement::PlacementReservations;
 
-/// Planner-internal assignment of Docker Volumes to Machines.
+/// Owns volume evidence and assignments for one observer-relative Deploy.
 ///
-/// Anchors override Deploy Snapshot observations for a shared replicated
-/// Docker Volume (the chosen Machine is the only legal location). `creates`
-/// records missing managed Volumes for the informational preview and lets
-/// later specs plan against the chosen location; it is not an executable list.
-pub(super) struct VolumePins {
-    anchors: BTreeMap<DockerVolumeName, MachineId>,
-    creates: Vec<(MachineId, ServiceVolume)>,
-    provisioned_plans: BTreeMap<DockerVolumeId, VolumeSource>,
+/// Every selected location carries its full Volume definition. Locality, budget
+/// checks, and creation previews derive from those assignments; there is no
+/// independently mutable list of pins or missing Volume commitments.
+pub(super) struct VolumePlan<'snapshot> {
+    snapshot: &'snapshot DeploySnapshot,
+    assignments: BTreeMap<MachineId, BTreeMap<ServiceName, ServiceStorageSpec>>,
 }
 
-impl VolumePins {
-    pub(super) fn new() -> Self {
-        Self {
-            anchors: BTreeMap::new(),
-            creates: Vec::new(),
-            provisioned_plans: BTreeMap::new(),
-        }
+/// Informational projections derived from one completed assignment ledger.
+pub(super) struct PlannedVolumes {
+    /// Managed Volumes absent from the observed inventory and used by pending operations.
+    pub(super) creates: Vec<(MachineId, ServiceVolume)>,
+    /// Complete commitments on Machines preparing Provisioned Volumes.
+    pub(super) budgets: Vec<ployz_core::MachineStorageBudget>,
+}
+
+/// A Service specification coupled to locations whose Volume commitments are recorded.
+/// Only `VolumePlan::place` constructs this; container planning consumes it.
+pub(super) struct VolumePlacement<'placement> {
+    requested: &'placement RequestedServiceSpec,
+    machines: Vec<&'placement MachineObservation>,
+}
+
+impl<'placement> VolumePlacement<'placement> {
+    /// Consume the assigned specification and its eligible locations together.
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        &'placement RequestedServiceSpec,
+        Vec<&'placement MachineObservation>,
+    ) {
+        (self.requested, self.machines)
+    }
+}
+
+impl<'snapshot> VolumePlan<'snapshot> {
+    /// Validate all declared definitions before choosing any locations.
+    ///
+    /// # Errors
+    /// Returns conflicting definitions, incompatible modes, or unresolved locality.
+    pub(super) fn new(
+        snapshot: &'snapshot DeploySnapshot,
+        target: &[RequestedServiceSpec],
+        requested: &[RequestedServiceSpec],
+    ) -> Result<Self, PlanError> {
+        reject_mixed_volume_modes(&managed_volume_uses(requested))?;
+        let plan = Self {
+            snapshot,
+            assignments: BTreeMap::new(),
+        };
+        plan.validate_provisioned_volume_definitions(target)?;
+        Ok(plan)
     }
 
-    fn storage_fits<'volume>(
+    fn storage_budget<'volume>(
         &'volume self,
-        snapshot: &DeploySnapshot,
         machine: &MachineObservation,
         volumes: impl Iterator<Item = &'volume ServiceVolume>,
-    ) -> bool {
+    ) -> Result<Option<ployz_core::StorageBudget>, PlanError> {
         let requested = super::storage::bounds(
-            self.creates
-                .iter()
+            self.assigned_volumes()
                 .filter(|(id, _)| *id == machine.machine.id)
                 .map(|(_, volume)| volume)
                 .chain(volumes),
         );
-        requested.is_empty() || super::storage::budget(snapshot, machine, &requested).is_ok()
-    }
-
-    fn constrain(&mut self, name: DockerVolumeName, machine_id: MachineId) {
-        self.anchors.insert(name, machine_id);
-    }
-
-    fn record_create(&mut self, machine_id: MachineId, volume: &ServiceVolume) {
-        // Docker Volume identity on a Machine is the name; driver mismatch is a
-        // conflict, not a second create.
-        if self.creates.iter().any(|(id, existing)| {
-            *id == machine_id && managed_volume_name(existing) == managed_volume_name(volume)
-        }) {
-            return;
+        if requested.is_empty() {
+            Ok(None)
+        } else {
+            super::storage::budget(self.snapshot, machine, &requested).map(Some)
         }
-        self.creates.push((machine_id, volume.clone()));
     }
 
-    fn anchor_for(&self, volume: &ServiceVolume) -> Option<MachineId> {
-        managed_volume_name(volume).and_then(|name| self.anchors.get(name).copied())
+    fn assigned_volumes(&self) -> impl Iterator<Item = (MachineId, &ServiceVolume)> {
+        self.assignments.iter().flat_map(|(id, specs)| {
+            specs.values().flat_map(move |spec| {
+                spec.volume_graph()
+                    .mounted_volumes()
+                    .map(move |volume| (*id, volume))
+            })
+        })
     }
 
-    fn observations<'pins>(
-        &'pins self,
-        snapshot: &'pins DeploySnapshot,
-    ) -> impl Iterator<Item = VolumePresence<'pins>> + 'pins {
-        snapshot
+    fn assign(&mut self, machine_id: MachineId, spec: &RequestedServiceSpec) {
+        self.assignments
+            .entry(machine_id)
+            .or_default()
+            .entry(spec.name.clone())
+            .or_insert_with(|| {
+                ServiceStorageSpec::try_from(spec).expect("assigned Volume graph is Project-scoped")
+            });
+    }
+
+    fn incompatible_on(&self, machine_id: MachineId, volume: &ServiceVolume) -> bool {
+        self.assigned_volumes().any(|(id, assigned)| {
+            id == machine_id
+                && managed_volume_name(volume) == managed_volume_name(assigned)
+                && assigned.source.to_create_volume_request()
+                    != volume.source.to_create_volume_request()
+        }) || self.observations().any(|located| {
+            located.machine_id == machine_id
+                && managed_volume_name(volume) == Some(located.name)
+                && !located.matches(volume)
+        })
+    }
+
+    fn locality(&self, volume: &ServiceVolume) -> Result<VolumeLocality, PlanError> {
+        let assigned = self
+            .assigned_volumes()
+            .filter(|(_, assigned)| managed_volume_name(volume) == managed_volume_name(assigned))
+            .map(|(id, _)| id)
+            .collect::<BTreeSet<_>>();
+        let mut locations = if assigned.is_empty() {
+            self.observations()
+                .filter(|located| located.matches(volume))
+                .map(|located| located.machine_id)
+                .collect::<BTreeSet<_>>()
+        } else {
+            assigned
+        };
+        if let Some(first) = locations.pop_first() {
+            return Ok(VolumeLocality::Located {
+                first,
+                others: locations,
+            });
+        }
+        if matches!(
+            volume.source.kind(),
+            ployz_core::RawVolumeSource::Provisioned { .. }
+        ) {
+            for machine in &self.snapshot.machines {
+                super::storage::capacity(self.snapshot, machine)?;
+            }
+        }
+        Ok(VolumeLocality::Absent)
+    }
+
+    fn observations(&self) -> impl Iterator<Item = VolumePresence<'_>> {
+        self.snapshot
             .volume_snapshot
             .observations()
             .iter()
@@ -83,7 +168,7 @@ impl VolumePins {
                 shape: VolumePresenceShape::Observed(observed),
             })
             .chain(
-                snapshot
+                self.snapshot
                     .storage_capacity
                     .iter()
                     .filter_map(|(machine_id, capacity)| {
@@ -97,31 +182,92 @@ impl VolumePins {
                         })
                     }),
             )
-            .chain(
-                self.creates
-                    .iter()
-                    .filter_map(|(machine_id, volume)| planned_presence(*machine_id, volume)),
-            )
     }
 
-    pub(super) fn into_creates_for(
-        self,
-        operations: &[DeployOperation],
-    ) -> Vec<(MachineId, ServiceVolume)> {
-        self.creates
-            .into_iter()
-            .filter(|(machine_id, volume)| {
-                operations.iter().any(|operation| {
-                    operation.machine_id() == *machine_id
-                        && operation.spec().is_some_and(|spec| {
-                            spec.volume_graph().mounts().iter().any(|mount| {
-                                managed_volume_name(spec.volume_graph().volume_for(mount))
-                                    == managed_volume_name(volume)
+    /// Derive creation rows and complete budgets from the same assigned Volumes.
+    ///
+    /// # Errors
+    /// Returns a typed storage admission error for any target Machine.
+    pub(super) fn finish(
+        mut self,
+        operations: &mut Vec<DeployOperation>,
+    ) -> Result<PlannedVolumes, PlanError> {
+        let used = self
+            .assigned_volumes()
+            .filter_map(|(machine_id, volume)| {
+                let name = managed_volume_name(volume)?;
+                operations
+                    .iter()
+                    .any(|operation| {
+                        operation.machine_id() == machine_id
+                            && operation.spec().is_some_and(|spec| {
+                                spec.volume_graph()
+                                    .mounted_volumes()
+                                    .any(|mounted| managed_volume_name(mounted) == Some(name))
                             })
-                        })
-                })
+                    })
+                    .then(|| {
+                        (
+                            DockerVolumeId {
+                                machine_id,
+                                name: name.clone(),
+                            },
+                            volume,
+                        )
+                    })
             })
-            .collect()
+            .collect::<BTreeMap<_, _>>();
+        let creates = used
+            .into_iter()
+            .filter(|(id, volume)| {
+                !self
+                    .observations()
+                    .any(|located| located.machine_id == id.machine_id && located.matches(volume))
+            })
+            .map(|(id, volume)| (id.machine_id, volume.clone()))
+            .collect();
+        let active_machines = operations
+            .iter()
+            .filter(|operation| {
+                operation
+                    .spec()
+                    .is_some_and(|spec| spec.volume_graph().has_mounted_provisioned_volume())
+            })
+            .map(DeployOperation::machine_id)
+            .collect::<BTreeSet<_>>();
+        let mut budgets = Vec::new();
+        let mut preparations = Vec::new();
+        for id in active_machines {
+            let specs = self
+                .assignments
+                .remove(&id)
+                .expect("container planning requires recorded VolumePlacement")
+                .into_values()
+                .filter(|spec| spec.volume_graph().has_mounted_provisioned_volume())
+                .collect::<Vec<_>>();
+            let requested = super::storage::bounds(
+                specs
+                    .iter()
+                    .flat_map(|spec| spec.volume_graph().mounted_volumes()),
+            );
+            let machine = self
+                .snapshot
+                .machines
+                .iter()
+                .find(|machine| machine.machine.id == id)
+                .expect("assigned Machine belongs to the snapshot");
+            budgets.push(ployz_core::MachineStorageBudget {
+                machine_id: id,
+                machine_name: machine.machine.name.clone(),
+                budget: super::storage::budget(self.snapshot, machine, &requested)?,
+            });
+            preparations.push(DeployOperation::PrepareVolumes {
+                machine_id: id,
+                specs,
+            });
+        }
+        operations.splice(..0, preparations);
+        Ok(PlannedVolumes { creates, budgets })
     }
 }
 
@@ -145,12 +291,13 @@ pub(super) fn scope_requested(
     Ok(spec)
 }
 
-impl VolumePins {
-    pub(super) fn validate_provisioned_volume_definitions(
-        &mut self,
+impl VolumePlan<'_> {
+    fn validate_provisioned_volume_definitions(
+        &self,
         target: &[RequestedServiceSpec],
-        snapshot: &DeploySnapshot,
     ) -> Result<(), PlanError> {
+        let snapshot = self.snapshot;
+        let mut definitions = BTreeMap::new();
         let name_errors_with_service = target.len() > 1;
         for spec in target {
             if !spec.volume_graph().has_mounted_provisioned_volume() {
@@ -158,7 +305,7 @@ impl VolumePins {
             }
             let result = (|| {
                 let candidates = super::placement_candidates(spec, snapshot)?;
-                self.record_provisioned(spec, &candidates)?;
+                Self::record_provisioned(&mut definitions, spec, &candidates)?;
                 let mut machines = candidates
                     .into_iter()
                     .filter(|machine| {
@@ -181,7 +328,7 @@ impl VolumePins {
     }
 
     fn record_provisioned(
-        &mut self,
+        definitions: &mut BTreeMap<DockerVolumeId, VolumeSource>,
         spec: &RequestedServiceSpec,
         machines: &[&MachineObservation],
     ) -> Result<(), PlanError> {
@@ -194,14 +341,14 @@ impl VolumePins {
                     machine_id: machine.machine.id,
                     name: name.clone(),
                 };
-                if let Some(existing) = self.provisioned_plans.get(&id)
+                if let Some(existing) = definitions.get(&id)
                     && existing != &volume.source
                 {
                     return Err(PlanError::ConflictingDockerVolumeDefinitions {
                         name: name.clone(),
                     });
                 }
-                self.provisioned_plans.insert(id, volume.source.clone());
+                definitions.insert(id, volume.source.clone());
             }
         }
         Ok(())
@@ -305,6 +452,14 @@ fn declared_physical_names(target: &[RequestedServiceSpec]) -> BTreeSet<DockerVo
         .collect()
 }
 
+enum VolumeLocality {
+    Absent,
+    Located {
+        first: MachineId,
+        others: BTreeSet<MachineId>,
+    },
+}
+
 #[derive(Clone, Copy)]
 struct VolumePresence<'volume> {
     machine_id: MachineId,
@@ -315,17 +470,7 @@ struct VolumePresence<'volume> {
 #[derive(Clone, Copy)]
 enum VolumePresenceShape<'volume> {
     Observed(&'volume ployz_core::DockerVolume),
-    Planned(&'volume VolumeSource),
     ProvisionedDataset,
-}
-
-fn planned_presence(machine_id: MachineId, volume: &ServiceVolume) -> Option<VolumePresence<'_>> {
-    let name = managed_volume_name(volume)?;
-    Some(VolumePresence {
-        machine_id,
-        name,
-        shape: VolumePresenceShape::Planned(&volume.source),
-    })
 }
 
 impl VolumePresence<'_> {
@@ -337,9 +482,6 @@ impl VolumePresence<'_> {
             VolumePresenceShape::Observed(observed) => {
                 volume.source.matches_managed_volume(observed)
             }
-            VolumePresenceShape::Planned(source) => {
-                volume.source.to_create_volume_request() == source.to_create_volume_request()
-            }
             // A bound mismatch must fail admission on the data's owner, not erase locality.
             VolumePresenceShape::ProvisionedDataset => matches!(
                 volume.source.kind(),
@@ -350,14 +492,13 @@ impl VolumePresence<'_> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ManagedVolumeUse<'service> {
+struct ManagedVolumeUse<'service> {
     service_name: &'service str,
     service: &'service RequestedServiceSpec,
-    volume: &'service ServiceVolume,
     global: bool,
 }
 
-pub(super) fn managed_volume_uses(
+fn managed_volume_uses(
     requested: &[RequestedServiceSpec],
 ) -> BTreeMap<DockerVolumeName, Vec<ManagedVolumeUse<'_>>> {
     let mut uses = BTreeMap::<DockerVolumeName, Vec<ManagedVolumeUse<'_>>>::new();
@@ -376,7 +517,6 @@ pub(super) fn managed_volume_uses(
                 uses.push(ManagedVolumeUse {
                     service_name,
                     service: spec,
-                    volume,
                     global: matches!(spec.mode, ServiceMode::Global),
                 });
             }
@@ -385,7 +525,7 @@ pub(super) fn managed_volume_uses(
     uses
 }
 
-pub(super) fn reject_mixed_volume_modes(
+fn reject_mixed_volume_modes(
     volume_uses: &BTreeMap<DockerVolumeName, Vec<ManagedVolumeUse<'_>>>,
 ) -> Result<(), PlanError> {
     for (name, uses) in volume_uses {
@@ -445,28 +585,34 @@ fn shares_a_service(
     })
 }
 
-pub(super) fn prepare_shared_replicated_volumes(
-    volume_uses: &BTreeMap<DockerVolumeName, Vec<ManagedVolumeUse<'_>>>,
-    snapshot: &DeploySnapshot,
-    requested: &[RequestedServiceSpec],
-    observed_services: &[ServiceObservation],
-    pins: &mut VolumePins,
-    placement: &mut PlacementReservations,
-    options: &PlanOptions,
-) -> Result<(), PlanError> {
-    for component in shared_volume_components(volume_uses) {
-        let anchor = shared_component_anchor(
-            &component,
-            snapshot,
-            requested,
-            observed_services,
-            pins,
-            placement,
-            options,
-        )?;
-        pin_shared_component(&component, anchor, snapshot, pins);
+impl VolumePlan<'_> {
+    /// Reserve shared placement and its full mounted commitments together.
+    ///
+    /// # Errors
+    /// Returns no common legal Machine, conflicting definitions, or endpoint admission failure.
+    pub(super) fn reserve_shared(
+        &mut self,
+        requested: &[RequestedServiceSpec],
+        observed_services: &[ServiceObservation],
+        placement: &mut PlacementReservations,
+        options: &PlanOptions,
+    ) -> Result<(), PlanError> {
+        let snapshot = self.snapshot;
+        let volume_uses = managed_volume_uses(requested);
+        for component in shared_volume_components(&volume_uses) {
+            let anchor = shared_component_anchor(
+                &component,
+                snapshot,
+                requested,
+                observed_services,
+                self,
+                placement,
+                options,
+            )?;
+            assign_shared_component(&component, anchor, self);
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn shared_component_anchor(
@@ -474,7 +620,7 @@ fn shared_component_anchor(
     snapshot: &DeploySnapshot,
     requested: &[RequestedServiceSpec],
     observed_services: &[ServiceObservation],
-    pins: &VolumePins,
+    plan: &VolumePlan<'_>,
     placement: &mut PlacementReservations,
     options: &PlanOptions,
 ) -> Result<MachineId, PlanError> {
@@ -488,10 +634,10 @@ fn shared_component_anchor(
     let (&first_service_name, &first_service) = service_iter
         .next()
         .expect("shared Volume component has at least two services");
-    let mut eligible = volume_eligible_machine_ids(first_service, snapshot, pins, options)
+    let mut eligible = volume_eligible_machine_ids(first_service, snapshot, plan, options)
         .map_err(|source| super::service_error(true, first_service_name, source))?;
     for (&service_name, &service) in service_iter {
-        let other_eligible = volume_eligible_machine_ids(service, snapshot, pins, options)
+        let other_eligible = volume_eligible_machine_ids(service, snapshot, plan, options)
             .map_err(|source| super::service_error(true, service_name, source))?;
         eligible.retain(|machine_id| other_eligible.contains(machine_id));
     }
@@ -499,7 +645,7 @@ fn shared_component_anchor(
         return Err(super::service_error(
             true,
             first_service_name,
-            no_eligible_shared(component, snapshot, pins),
+            no_eligible_shared(component, snapshot, plan),
         ));
     }
     let requested = requested
@@ -515,13 +661,13 @@ fn shared_component_anchor(
                 .iter()
                 .find(|machine| machine.machine.id == *id)
                 .expect("eligible Machine is observed");
-            pins.storage_fits(
-                snapshot,
+            plan.storage_budget(
                 machine,
                 requested
                     .clone()
                     .flat_map(|spec| spec.volume_graph().mounted_volumes()),
             )
+            .is_ok()
         })
         .collect::<Vec<_>>();
     let eligible = if fitting.is_empty() {
@@ -542,114 +688,103 @@ fn shared_component_anchor(
     ))
 }
 
-fn pin_shared_component(
+fn assign_shared_component(
     component: &SharedVolumeComponent<'_>,
     machine_id: MachineId,
-    snapshot: &DeploySnapshot,
-    pins: &mut VolumePins,
+    plan: &mut VolumePlan<'_>,
 ) {
-    for (name, uses) in &component.volumes {
-        pins.constrain((*name).clone(), machine_id);
-        if pins
-            .observations(snapshot)
-            .any(|located| located.machine_id == machine_id && located.name == *name)
-        {
-            continue;
+    for (_, uses) in &component.volumes {
+        for volume_use in uses.iter() {
+            plan.assign(machine_id, volume_use.service);
         }
-        let first_use = uses.first().expect("shared Volume has at least two uses");
-        pins.record_create(machine_id, first_use.volume);
     }
 }
 
 fn volume_eligible_machine_ids(
     spec: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
-    pins: &VolumePins,
+    plan: &VolumePlan<'_>,
     options: &PlanOptions,
 ) -> Result<Vec<MachineId>, PlanError> {
     let mut machines = super::eligible_machines(spec, snapshot, options)?;
-    planned_volume_constraints(spec, snapshot, pins, &mut machines)?;
+    planned_volume_constraints(spec, snapshot, plan, &mut machines)?;
     Ok(machines
         .into_iter()
         .map(|machine| machine.machine.id)
         .collect())
 }
 
-pub(super) fn plan_volume_operations(
-    spec: &RequestedServiceSpec,
-    snapshot: &DeploySnapshot,
-    pins: &mut VolumePins,
-    machines: &mut Vec<&MachineObservation>,
-) -> Result<(), PlanError> {
-    // TODO: preserve the placement ceiling: do not filter by memory, image platform, or local image presence.
-    let (mounted_volumes, missing_volumes) =
-        planned_volume_constraints(spec, snapshot, pins, machines)?;
-    if matches!(spec.mode, ServiceMode::Replicated { .. })
-        && machines
-            .iter()
-            .any(|machine| pins.storage_fits(snapshot, machine, mounted_volumes.iter().copied()))
-    {
-        machines.retain(|machine| {
-            pins.storage_fits(snapshot, machine, mounted_volumes.iter().copied())
-        });
-    }
-    match spec.mode {
-        ServiceMode::Replicated { .. } if !missing_volumes.is_empty() => {
-            // TODO: named-volume driver and label options remain part of planned creation;
-            // revisit only if Ployz changes to externally managed volumes exclusively.
+impl<'snapshot> VolumePlan<'snapshot> {
+    /// Select legal Volume locations and reserve every mounted commitment together.
+    ///
+    /// # Errors
+    /// Returns incompatible definitions, unresolved locality, or no eligible Machine.
+    pub(super) fn place<'placement>(
+        &mut self,
+        spec: &'placement RequestedServiceSpec,
+        mut machines: Vec<&'placement MachineObservation>,
+    ) -> Result<VolumePlacement<'placement>, PlanError> {
+        let snapshot = self.snapshot;
+        // TODO: preserve the placement ceiling: do not filter by memory, image platform, or local image presence.
+        let (mounted_volumes, missing_volumes) =
+            planned_volume_constraints(spec, snapshot, self, &mut machines)?;
+        if matches!(spec.mode, ServiceMode::Replicated { .. })
+            && machines.iter().any(|machine| {
+                self.storage_budget(machine, mounted_volumes.iter().copied())
+                    .is_ok()
+            })
+        {
+            machines.retain(|machine| {
+                self.storage_budget(machine, mounted_volumes.iter().copied())
+                    .is_ok()
+            });
+        }
+        if matches!(spec.mode, ServiceMode::Replicated { .. }) && !missing_volumes.is_empty() {
             let machine_id = machines
                 .first()
-                .map(|machine| machine.machine.id)
-                .expect("volume_constraints returns a Machine when it succeeds");
+                .expect("volume_constraints returns a Machine when it succeeds")
+                .machine
+                .id;
             machines.retain(|machine| machine.machine.id == machine_id);
-            for volume in missing_volumes {
-                if let Some(name) = managed_volume_name(volume) {
-                    pins.constrain(name.clone(), machine_id);
-                }
-                pins.record_create(machine_id, volume);
-            }
         }
-        ServiceMode::Global => {
-            for machine in machines.iter() {
-                for volume in mounted_volumes.iter().copied() {
-                    if pins.observations(snapshot).any(|located| {
-                        located.machine_id == machine.machine.id && located.matches(volume)
-                    }) {
-                        continue;
-                    }
-                    pins.record_create(machine.machine.id, volume);
-                }
-            }
+        for machine in &machines {
+            self.assign(machine.machine.id, spec);
         }
-        ServiceMode::Replicated { .. } => {}
+        Ok(VolumePlacement {
+            requested: spec,
+            machines,
+        })
     }
-    pins.record_provisioned(spec, machines)?;
-    Ok(())
 }
 
-pub(super) fn constrain_volume_candidates(
-    spec: &RequestedServiceSpec,
-    snapshot: &DeploySnapshot,
-    pins: &VolumePins,
-    machines: &mut Vec<&MachineObservation>,
-) -> Result<(), PlanError> {
-    planned_volume_constraints(spec, snapshot, pins, machines).map(|_| ())
+impl VolumePlan<'_> {
+    /// Apply existing Volume locality before reserving container endpoints.
+    ///
+    /// # Errors
+    /// Returns conflicting definitions, unresolved locality, or no eligible Machine.
+    pub(super) fn constrain_candidates(
+        &self,
+        spec: &RequestedServiceSpec,
+        machines: &mut Vec<&MachineObservation>,
+    ) -> Result<(), PlanError> {
+        planned_volume_constraints(spec, self.snapshot, self, machines).map(|_| ())
+    }
 }
 
 fn planned_volume_constraints<'spec>(
     spec: &'spec RequestedServiceSpec,
     snapshot: &DeploySnapshot,
-    pins: &VolumePins,
+    plan: &VolumePlan<'_>,
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
-    pins.validate_provisioned_volumes(spec, machines, snapshot)?;
-    volume_constraints(spec, snapshot, pins, machines)
+    plan.validate_provisioned_volumes(spec, machines, snapshot)?;
+    volume_constraints(spec, snapshot, plan, machines)
 }
 
 fn volume_constraints<'spec>(
     spec: &'spec RequestedServiceSpec,
     snapshot: &DeploySnapshot,
-    pins: &VolumePins,
+    plan: &VolumePlan<'_>,
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
     let mounted_volumes = mounted_managed_volumes(spec.volume_graph());
@@ -694,36 +829,15 @@ fn volume_constraints<'spec>(
     }
     let mut missing_volumes = Vec::new();
     for volume in mounted_volumes.iter().copied() {
-        machines.retain(|machine| {
-            !pins.observations(snapshot).any(|located| {
-                located.machine_id == machine.machine.id
-                    && managed_volume_name(volume) == Some(located.name)
-                    && !located.matches(volume)
-            })
-        });
+        machines.retain(|machine| !plan.incompatible_on(machine.machine.id, volume));
         if matches!(spec.mode, ServiceMode::Replicated { .. }) {
-            if let Some(anchor) = pins.anchor_for(volume) {
-                machines.retain(|machine| machine.machine.id == anchor);
-                continue;
-            }
-            let locations = pins
-                .observations(snapshot)
-                .filter(|located| located.matches(volume))
-                .map(|located| located.machine_id)
-                .collect::<BTreeSet<_>>();
-            if !locations.is_empty() {
-                machines.retain(|machine| locations.contains(&machine.machine.id));
-            } else {
-                if matches!(
-                    volume.source.kind(),
-                    ployz_core::RawVolumeSource::Provisioned { .. }
-                ) {
-                    // No known owner is not proof of absence on an unobserved Machine.
-                    for machine in &snapshot.machines {
-                        super::storage::capacity(snapshot, machine)?;
-                    }
+            match plan.locality(volume)? {
+                VolumeLocality::Located { first, others } => {
+                    machines.retain(|machine| {
+                        machine.machine.id == first || others.contains(&machine.machine.id)
+                    });
                 }
-                missing_volumes.push(volume);
+                VolumeLocality::Absent => missing_volumes.push(volume),
             }
         }
     }
@@ -734,7 +848,7 @@ fn volume_constraints<'spec>(
             mounted_volumes
                 .iter()
                 .filter_map(|volume| managed_volume_name(volume))
-                .filter_map(|name| volume_anchor(snapshot, pins, name, requested))
+                .filter_map(|name| volume_anchor(snapshot, plan, name, requested))
                 .collect(),
         ));
     }
@@ -744,7 +858,7 @@ fn volume_constraints<'spec>(
 fn no_eligible_shared(
     component: &SharedVolumeComponent<'_>,
     snapshot: &DeploySnapshot,
-    pins: &VolumePins,
+    plan: &VolumePlan<'_>,
 ) -> PlanError {
     PlanError::no_eligible_machines(
         component
@@ -760,7 +874,7 @@ fn no_eligible_shared(
                     }
                 }
                 if requested.is_empty() {
-                    volume_anchor(snapshot, pins, name, &requested)
+                    volume_anchor(snapshot, plan, name, &requested)
                 } else {
                     Some(EliminatingConstraint::SharedVolumeNoCommonMachine {
                         volume: (*name).clone(),
@@ -774,15 +888,12 @@ fn no_eligible_shared(
 
 fn volume_anchor(
     snapshot: &DeploySnapshot,
-    pins: &VolumePins,
+    plan: &VolumePlan<'_>,
     name: &DockerVolumeName,
     requested: &[MachineTarget],
 ) -> Option<EliminatingConstraint> {
     let mut located_on = Vec::new();
-    for located in pins
-        .observations(snapshot)
-        .filter(|located| located.name == name)
-    {
+    for located in plan.observations().filter(|located| located.name == name) {
         let Some(machine_name) = snapshot
             .machines
             .iter()

@@ -1359,13 +1359,6 @@ x-volumes: {data: 10G}
         unreachable!("matched a RunContainer row")
     };
     compose_spec.service_id = sdk_spec.service_id;
-    for row in &mut compose_preview.operations {
-        if let DeployOperation::PrepareVolumes { specs, .. } = &mut row.operation {
-            for spec in specs {
-                spec.service_id = sdk_spec.service_id;
-            }
-        }
-    }
 
     assert_eq!(compose_preview, sdk_preview);
     assert!(

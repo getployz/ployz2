@@ -155,8 +155,8 @@ pub struct InspectStorageRequest {}
 /// Secure mounted provisioned storage for the complete set of local placements.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PrepareVolumesRequest {
-    /// Service creations whose provisioned Volumes are admitted as one batch.
-    pub specs: Vec<crate::ResolvedServiceSpec>,
+    /// Complete assigned storage requirements, including reused Volumes.
+    pub specs: Vec<crate::ServiceStorageSpec>,
 }
 
 /// Provisioned Volumes whose datasets and Docker metadata are ready for use.

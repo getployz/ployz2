@@ -21,7 +21,7 @@ impl LocalMachine {
     /// Recheck the complete local placement and secure all provisioned Volumes before applications start.
     pub(crate) async fn prepare_volumes(
         &self,
-        specs: Vec<ResolvedServiceSpec>,
+        specs: Vec<ployz_core::ServiceStorageSpec>,
     ) -> Result<ployz_core::PreparedVolumes, Error> {
         use ployz_core::{RawVolumeSource, RpcError};
         let admission = self.lock_store()?.admission_lock.clone();

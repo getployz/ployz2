@@ -239,3 +239,195 @@ fn unknown_dataset_locality_holds_placement_instead_of_creating_elsewhere() {
         0
     );
 }
+
+#[test]
+fn placement_budgets_include_observed_pinned_commitments() {
+    #[derive(Clone, Copy)]
+    enum Usage {
+        Single,
+        Shared,
+        Global,
+    }
+    for (usage, placement_seed) in [Usage::Single, Usage::Shared, Usage::Global]
+        .into_iter()
+        .flat_map(|usage| (0..8).map(move |seed| (usage, seed)))
+    {
+        let mut first = machine('1', "first");
+        let mut second = machine('2', "second");
+        first.storage = Some(ployz_core::MachineStorageObservation::Ready);
+        second.storage = first.storage;
+        let mut existing = observed_volume(first.machine.id, "data");
+        existing.options = BTreeMap::from([("size".into(), format!("{}b", 30 * STORAGE_GIB))]);
+        existing.storage = DockerVolumeStorageObservation::Provisioned {
+            mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+            bound_bytes: std::num::NonZeroU64::new(30 * STORAGE_GIB).unwrap(),
+            used_bytes: 0,
+        };
+        let snapshot = DeploySnapshot {
+            // Capacity was collected before Docker discovered the concurrent creation.
+            storage_capacity: BTreeMap::from([
+                (first.machine.id, Ok(capacity(60))),
+                (second.machine.id, Ok(capacity(60))),
+            ]),
+            machines: vec![first, second],
+            volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing]).unwrap(),
+            ..Default::default()
+        };
+        let mut services = vec![("a-owner", "data"), ("z-new", "new")];
+        if matches!(usage, Usage::Shared) {
+            services.insert(1, ("b-sharer", "data"));
+        }
+        let services = services
+            .into_iter()
+            .map(|(name, volume)| {
+                let mut service = spec(name);
+                add_named_volume(&mut service, volume);
+                make_provisioned(&mut service, volume, 30 * STORAGE_GIB);
+                if matches!(usage, Usage::Global) && volume == "data" {
+                    service.mode = ServiceMode::Global;
+                    service.placement.machines = vec![MachineTarget::parse("first").unwrap()];
+                }
+                service
+            })
+            .collect::<Vec<_>>();
+        let intent = DeployIntent::apply_all(
+            ProjectName::parse("app").unwrap(),
+            services.iter(),
+            PlanOptions {
+                placement_seed,
+                ..Default::default()
+            },
+        );
+        let preview = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
+        assert_eq!(preview.storage.len(), 2);
+        assert_eq!(preview.volumes_to_create.len(), 1);
+        assert_eq!(
+            preview.volumes_to_create.first().unwrap().name,
+            app_volume("new")
+        );
+        assert!(
+            preview
+                .storage
+                .iter()
+                .all(|row| row.budget.requested_bytes == 30 * STORAGE_GIB)
+        );
+    }
+}
+
+#[test]
+fn shared_groups_reserve_private_mounts_before_later_placement() {
+    for placement_seed in 0..8 {
+        let mut first = machine('1', "first");
+        let mut second = machine('2', "second");
+        first.storage = Some(ployz_core::MachineStorageObservation::Ready);
+        second.storage = first.storage;
+        let snapshot = DeploySnapshot {
+            storage_capacity: BTreeMap::from([
+                (first.machine.id, Ok(capacity(60))),
+                (second.machine.id, Ok(capacity(60))),
+            ]),
+            machines: vec![first, second],
+            ..Default::default()
+        };
+        let services = [
+            ("a", "shared_a", "private_a"),
+            ("b", "shared_b", "private_b"),
+        ]
+        .into_iter()
+        .flat_map(|(group, shared, private)| {
+            ["owner", "sharer"].map(|role| {
+                let mut service = spec(&format!("{group}-{role}"));
+                add_named_volume(&mut service, shared);
+                make_provisioned(&mut service, shared, STORAGE_GIB);
+                if role == "owner" {
+                    add_named_volume(&mut service, private);
+                    make_provisioned(&mut service, private, 29 * STORAGE_GIB);
+                }
+                service
+            })
+        })
+        .collect::<Vec<_>>();
+        let intent = DeployIntent::apply_all(
+            ProjectName::parse("app").unwrap(),
+            services.iter(),
+            PlanOptions {
+                placement_seed,
+                ..Default::default()
+            },
+        );
+        let preview = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
+        assert_eq!(preview.storage.len(), 2);
+        assert!(
+            preview
+                .storage
+                .iter()
+                .all(|row| row.budget.requested_bytes == 30 * STORAGE_GIB)
+        );
+    }
+}
+
+#[test]
+fn preparation_and_preview_include_unchanged_assigned_storage() {
+    let mut old = spec("old");
+    add_named_volume(&mut old, "data");
+    make_provisioned(&mut old, "data", 30 * STORAGE_GIB);
+    let mut new = spec("new");
+    add_named_volume(&mut new, "new");
+    make_provisioned(&mut new, "new", STORAGE_GIB);
+    let mut target = machine('1', "first");
+    target.storage = Some(ployz_core::MachineStorageObservation::Ready);
+    let mut existing = observed_volume(target.machine.id, "data");
+    existing.options = BTreeMap::from([("size".into(), format!("{}b", 30 * STORAGE_GIB))]);
+    existing.storage = DockerVolumeStorageObservation::Provisioned {
+        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+        bound_bytes: std::num::NonZeroU64::new(30 * STORAGE_GIB).unwrap(),
+        used_bytes: 0,
+    };
+    let snapshot = DeploySnapshot {
+        storage_capacity: BTreeMap::from([(target.machine.id, Ok(capacity(60)))]),
+        machines: vec![target],
+        containers: vec![container('a', '1', &old, &service_id('a'))],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![existing]).unwrap(),
+        ..Default::default()
+    };
+    let intent = DeployIntent::apply_all(
+        ProjectName::parse("app").unwrap(),
+        [&old, &new],
+        PlanOptions::default(),
+    );
+    let preview = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
+    assert!(!preview.operations.iter().any(|row| {
+        matches!(&row.operation, DeployOperation::RunContainer { spec, .. } if spec.name.as_str() == "old")
+    }));
+    let DeployOperation::PrepareVolumes { specs, .. } =
+        &preview.operations.first().unwrap().operation
+    else {
+        panic!("preparation precedes application operations");
+    };
+    let prepared = specs
+        .iter()
+        .flat_map(|spec| spec.volume_graph().mounted_provisioned_volumes())
+        .map(|volume| {
+            let ployz_core::RawVolumeSource::Provisioned {
+                name,
+                maximum_bytes,
+                ..
+            } = volume.source.kind()
+            else {
+                unreachable!("provisioned iterator");
+            };
+            (name.clone(), maximum_bytes.get())
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        prepared,
+        BTreeMap::from([
+            (app_volume("data"), 30 * STORAGE_GIB),
+            (app_volume("new"), STORAGE_GIB)
+        ])
+    );
+    assert_eq!(
+        preview.storage.first().unwrap().budget.requested_bytes,
+        prepared.values().sum::<u64>()
+    );
+}

@@ -105,7 +105,7 @@ impl MachineOperations for Scripted {
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
-        _specs: &[ResolvedServiceSpec],
+        _specs: &[ployz_core::ServiceStorageSpec],
     ) -> Result<ployz_core::PreparedVolumes, RpcError> {
         unit(self.next(Call::Prepare(*machine_id)))?;
         if let Some(cancel) = &self.cancel_on_prepare {
@@ -470,10 +470,18 @@ async fn storage_preparation_failure_leaves_all_application_operations_unexecute
     let first = machine('1');
     let second = machine('2');
     let service = provisioned_spec();
+    let mut plan = [first, second]
+        .map(|machine_id| DeployOperation::PrepareVolumes {
+            machine_id,
+            specs: vec![ployz_core::ServiceStorageSpec::from(&service)],
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
     let operations = vec![
         run(&first, service.clone(), true),
         run(&second, service, true),
     ];
+    plan.extend(operations.clone());
     let client = Scripted::new(vec![
         ok(Call::Prepare(first)),
         Step(
@@ -481,7 +489,7 @@ async fn storage_preparation_failure_leaves_all_application_operations_unexecute
             Reply::Error(error("insufficient storage")),
         ),
     ]);
-    let outcome = execute_with(&operations, &client, &CancellationToken::new()).await;
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
     let DeployOutcome::Failed {
         completed,
         unexecuted,
@@ -546,7 +554,14 @@ fn provisioned_spec() -> ResolvedServiceSpec {
 #[tokio::test]
 async fn application_failure_and_cancellation_retain_prepared_storage() {
     let target = machine('1');
-    let operations = vec![run(&target, provisioned_spec(), true)];
+    let service = provisioned_spec();
+    let operations = vec![
+        DeployOperation::PrepareVolumes {
+            machine_id: target,
+            specs: vec![ployz_core::ServiceStorageSpec::from(&service)],
+        },
+        run(&target, service, true),
+    ];
     for cancel_after_prepare in [false, true] {
         let cancellation = CancellationToken::new();
         let mut steps = vec![ok(Call::Prepare(target))];

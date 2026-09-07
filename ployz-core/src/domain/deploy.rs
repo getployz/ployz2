@@ -364,8 +364,8 @@ pub enum DeployOperation {
     PrepareVolumes {
         /// Machine that owns the local Volumes.
         machine_id: MachineId,
-        /// Upcoming creations whose provisioned Volumes must be prepared together.
-        specs: Vec<ResolvedServiceSpec>,
+        /// Assigned storage requirements, including reused Volumes, prepared as one batch.
+        specs: Vec<crate::ServiceStorageSpec>,
     },
     /// Wait for every observed Service Container of `dependency` before starting `dependent`.
     WaitHealthy {

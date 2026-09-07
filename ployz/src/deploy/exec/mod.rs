@@ -73,7 +73,7 @@ pub(super) trait MachineOperations {
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
-        specs: &[ResolvedServiceSpec],
+        specs: &[ployz_core::ServiceStorageSpec],
     ) -> Result<ployz_core::PreparedVolumes, RpcError>;
     async fn wait_for_container_observations(
         &self,
@@ -120,7 +120,7 @@ impl MachineOperations for Client {
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
-        specs: &[ResolvedServiceSpec],
+        specs: &[ployz_core::ServiceStorageSpec],
     ) -> Result<ployz_core::PreparedVolumes, RpcError> {
         self.invoke::<op::PrepareVolumes>(
             ployz_core::PrepareVolumesRequest {
@@ -325,7 +325,7 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
-        specs: &[ResolvedServiceSpec],
+        specs: &[ployz_core::ServiceStorageSpec],
     ) -> Result<ployz_core::PreparedVolumes, RpcError> {
         self.inner.prepare_volumes(machine_id, specs).await
     }

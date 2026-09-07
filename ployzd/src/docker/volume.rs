@@ -90,7 +90,7 @@ impl ContainerRuntime {
     pub(crate) async fn validate_provisioned_volumes(
         &self,
         machine_id: &MachineId,
-        specs: &[ResolvedServiceSpec],
+        specs: &[ployz_core::ServiceStorageSpec],
     ) -> Result<(), Error> {
         let mut definitions = BTreeMap::new();
         for spec in specs {
@@ -122,7 +122,7 @@ impl ContainerRuntime {
     pub(crate) async fn ensure_provisioned_volumes(
         &self,
         machine_id: &MachineId,
-        specs: &[ResolvedServiceSpec],
+        specs: &[ployz_core::ServiceStorageSpec],
     ) -> Result<(), Error> {
         for spec in specs {
             for volume in spec.volume_graph().mounted_provisioned_volumes() {
