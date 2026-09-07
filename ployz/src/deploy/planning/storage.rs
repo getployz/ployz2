@@ -3,7 +3,8 @@
 use crate::deploy::{DeployOperation, DeploySnapshot, PlanError};
 use ployz_core::{
     DockerVolumeName, MachineId, MachineObservation, ProvisionedVolumeMaximumBytes,
-    RawVolumeSource, ResolvedServiceSpec, ServiceVolume, StorageBudget, StorageCapacityError,
+    RawVolumeSource, ResolvedServiceSpec, ServiceVolume, StorageBudget, StorageCapacity,
+    StorageCapacityError,
 };
 use std::collections::BTreeMap;
 
@@ -25,25 +26,41 @@ pub(super) fn bounds<'volume>(volumes: impl Iterator<Item = &'volume ServiceVolu
         .collect()
 }
 
+/// Dataset inventory must be known before absence can authorize a new placement.
+///
+/// # Errors
+/// Returns a Machine-specific unknown-capacity error for failed or omitted observations.
+pub(super) fn capacity<'snapshot>(
+    snapshot: &'snapshot DeploySnapshot,
+    machine: &MachineObservation,
+) -> Result<&'snapshot StorageCapacity, PlanError> {
+    match snapshot.storage_capacity.get(&machine.machine.id) {
+        Some(Ok(capacity)) => Ok(capacity),
+        failure => Err(PlanError::Storage {
+            machine_id: machine.machine.id,
+            machine: machine.machine.name.clone(),
+            source: StorageCapacityError::StorageCapacityUnknown {
+                message: match failure {
+                    Some(Err(error)) => error.message.clone(),
+                    _ => "the Machine did not return fresh storage capacity".into(),
+                },
+            },
+        }),
+    }
+}
+
 pub(super) fn budget(
     snapshot: &DeploySnapshot,
     machine: &MachineObservation,
     volumes: &Volumes,
 ) -> Result<StorageBudget, PlanError> {
-    let result = match snapshot.storage_capacity.get(&machine.machine.id) {
-        Some(Ok(capacity)) => capacity.budget(volumes),
-        failure => Err(StorageCapacityError::StorageCapacityUnknown {
-            message: match failure {
-                Some(Err(error)) => error.message.clone(),
-                _ => "the Machine did not return fresh storage capacity".into(),
-            },
-        }),
-    };
-    result.map_err(|source| PlanError::Storage {
-        machine_id: machine.machine.id,
-        machine: machine.machine.name.clone(),
-        source,
-    })
+    capacity(snapshot, machine)?
+        .budget(volumes)
+        .map_err(|source| PlanError::Storage {
+            machine_id: machine.machine.id,
+            machine: machine.machine.name.clone(),
+            source,
+        })
 }
 
 pub(super) fn budgets(

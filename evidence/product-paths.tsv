@@ -46,3 +46,4 @@ provisioned-storage-recovery	ployzd/src/volume_plugin/tests/capacity_tests.rs::s
 provisioned-dataset-locality	-	ployz/tests/deploy_plan/storage.rs::surviving_datasets_anchor_single_and_shared_services_without_docker_metadata	-	-	-
 deploy-progress	ployz/src/deploy/apply.rs::progress_frame_counts_soft_wrapped_terminal_rows	-	-	-	-
 provisioned-storage-preparation	ployz/src/deploy/exec_tests.rs::application_failure_and_cancellation_retain_prepared_storage	-	-	-	-
+provisioned-dataset-locality-unknown	-	ployz/tests/deploy_plan/storage.rs::unknown_dataset_locality_holds_placement_instead_of_creating_elsewhere	-	-	-

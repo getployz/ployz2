@@ -1,6 +1,6 @@
 //! Provisioned storage admission through the public planner and SDK error contract.
 use super::support::*;
-use ployz_core::{STORAGE_GIB, StorageBacking, StorageCapacity};
+use ployz_core::{RpcError, RpcErrorCode, STORAGE_GIB, StorageBacking, StorageCapacity};
 
 fn capacity(free_gib: u64) -> StorageCapacity {
     StorageCapacity {
@@ -167,4 +167,75 @@ fn surviving_datasets_anchor_single_and_shared_services_without_docker_metadata(
             "must not create empty data on a different Machine"
         );
     }
+}
+
+#[test]
+fn unknown_dataset_locality_holds_placement_instead_of_creating_elsewhere() {
+    let mut owner = machine('1', "unobserved-owner");
+    let mut empty = machine('2', "empty");
+    owner.storage = Some(ployz_core::MachineStorageObservation::Ready);
+    empty.storage = owner.storage;
+    let owner_id = owner.machine.id;
+    let mut snapshot = DeploySnapshot {
+        storage_capacity: BTreeMap::from([(empty.machine.id, Ok(capacity(80)))]),
+        machines: vec![owner, empty],
+        ..Default::default()
+    };
+    // Both omitted and failed observations leave possible existing datasets unknown.
+    for failure in [
+        None,
+        Some(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "storage inspection failed".into(),
+            details: serde_json::Value::Null,
+        }),
+    ] {
+        if let Some(error) = failure {
+            snapshot.storage_capacity.insert(owner_id, Err(error));
+        }
+        let error = preview_deploy(&intent(), &snapshot, IngressContext::default())
+            .unwrap_err()
+            .into_rpc_error();
+        assert_eq!(
+            error.details.get("code").unwrap(),
+            "storage_capacity_unknown"
+        );
+        assert_eq!(error.details.get("machine").unwrap(), "unobserved-owner");
+        let mut targeted = intent();
+        for service in &mut targeted.target {
+            service.placement.machines = vec![MachineTarget::parse("empty").unwrap()];
+        }
+        assert!(preview_deploy(&targeted, &snapshot, IngressContext::default()).is_err());
+    }
+    // A known local dataset may still be reused despite an unrelated inspection failure.
+    let known_id = snapshot.machines.last().unwrap().machine.id;
+    let known = snapshot
+        .storage_capacity
+        .get_mut(&known_id)
+        .unwrap()
+        .as_mut()
+        .unwrap();
+    known.backing = StorageBacking::Fixed {
+        pool_size_bytes: 80 * STORAGE_GIB,
+    };
+    known.volumes = [("postgres", 10), ("redis", 4), ("data", 30), ("server", 8)]
+        .map(|(name, gib)| {
+            (
+                app_volume(name),
+                ProvisionedVolumeMaximumBytes::new(
+                    std::num::NonZeroU64::new(gib * STORAGE_GIB).unwrap(),
+                ),
+            )
+        })
+        .into();
+    let preview = preview_deploy(&intent(), &snapshot, IngressContext::default()).unwrap();
+    assert_eq!(
+        preview
+            .storage
+            .first()
+            .unwrap()
+            .budget
+            .additional_commitment_bytes,
+        0
+    );
 }

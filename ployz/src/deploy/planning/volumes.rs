@@ -714,6 +714,15 @@ fn volume_constraints<'spec>(
             if !locations.is_empty() {
                 machines.retain(|machine| locations.contains(&machine.machine.id));
             } else {
+                if matches!(
+                    volume.source.kind(),
+                    ployz_core::RawVolumeSource::Provisioned { .. }
+                ) {
+                    // No known owner is not proof of absence on an unobserved Machine.
+                    for machine in &snapshot.machines {
+                        super::storage::capacity(snapshot, machine)?;
+                    }
+                }
                 missing_volumes.push(volume);
             }
         }
