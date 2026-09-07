@@ -9,7 +9,7 @@ use oci_client::Reference;
 use ployz_core::{
     EnsureImageIngestRequest, FanoutSelector, ImageIngestDestination, ImageIngestReason,
     ListMachinesRequest, Machine, MachineFailure, MachineId, MachineImages, MachineSuccess,
-    MachineTarget, PartialResult, PullImageFromMachineRequest, PullPolicy, Rpc, RpcError, op,
+    MachineTarget, PartialResult, PullImageFromMachineRequest, PullPolicy, RpcError, op,
     resolve_machine_selectors,
 };
 use thiserror::Error;
@@ -131,7 +131,7 @@ pub async fn push(
 }
 
 pub(crate) async fn push_using_machines(
-    client: &Client,
+    client: &mut Client,
     image: &str,
     platform: Option<&str>,
     selectors: &[String],
@@ -256,7 +256,7 @@ pub(crate) fn select_targets(
 }
 
 async fn push_to_machine(
-    client: &Client,
+    client: &mut Client,
     image: &str,
     platform: Option<&str>,
     machine: &Machine,
@@ -265,13 +265,12 @@ async fn push_to_machine(
 ) -> Result<ImageIngestDestination, PushError> {
     // EnsureImageIngest is idempotent; a dropped RPC must not fail the Machine.
     let opened = cancellation
-        .race(retrying_rpc::<op::EnsureImageIngest>(
-            client,
+        .race(client.call::<op::EnsureImageIngest>(
             EnsureImageIngestRequest {},
-            &machine.id,
+            Some(&MachineTarget::from(&machine.id)),
         ))
         .await?
-        .map_err(ingest_error)?;
+        .map_err(|error| ingest_error(rpc_error(error)))?;
     let remote = format!(
         "[{}]:{}",
         opened.destination.management_address.0, opened.destination.port
@@ -285,24 +284,23 @@ async fn push_to_machine(
 }
 
 async fn pull_on_machine(
-    client: &Client,
+    client: &mut Client,
     image: &str,
     machine: &Machine,
     source: ImageIngestDestination,
     cancellation: &mut Cancellation,
 ) -> Result<(), PushError> {
     cancellation
-        .race(retrying_rpc::<op::PullImageFromMachine>(
-            client,
+        .race(client.call::<op::PullImageFromMachine>(
             PullImageFromMachineRequest {
                 image: image.to_owned(),
                 source,
             },
-            &machine.id,
+            Some(&MachineTarget::from(&machine.id)),
         ))
         .await?
         .map(|_| ())
-        .map_err(PushError::PeerPull)
+        .map_err(|error| PushError::PeerPull(rpc_error(error)))
 }
 
 /// Pull a missing image from a cluster peer that already has it.
@@ -341,18 +339,24 @@ pub(crate) async fn ensure_cluster_image(
     let Some(peer) = peer_with_image(dest, &listings.successes, image) else {
         return Ok(());
     };
-    let opened =
-        retrying_rpc::<op::EnsureImageIngest>(client, EnsureImageIngestRequest {}, &peer).await?;
-    retrying_rpc::<op::PullImageFromMachine>(
-        client,
-        PullImageFromMachineRequest {
-            image: image.to_owned(),
-            source: opened.destination,
-        },
-        dest,
-    )
-    .await
-    .map(|_| ())
+    let opened = listing_client
+        .call::<op::EnsureImageIngest>(
+            EnsureImageIngestRequest {},
+            Some(&MachineTarget::from(&peer)),
+        )
+        .await
+        .map_err(rpc_error)?;
+    listing_client
+        .call::<op::PullImageFromMachine>(
+            PullImageFromMachineRequest {
+                image: image.to_owned(),
+                source: opened.destination,
+            },
+            Some(&MachineTarget::from(dest)),
+        )
+        .await
+        .map(|_| ())
+        .map_err(rpc_error)
 }
 
 fn destination_has_image(
@@ -385,21 +389,6 @@ fn image_present(images: &MachineImages, image: &str) -> bool {
                     .is_some_and(|prefix| prefix.ends_with('/'))
         })
     })
-}
-
-/// Retry the same bounded policy as [`Client::call`]. `invoke` is one-shot so a
-/// single `transport error` fails Direct Image Transfer on a reachable Machine.
-async fn retrying_rpc<T: Rpc>(
-    client: &Client,
-    request: T::Request,
-    target: &MachineId,
-) -> Result<T::Response, RpcError> {
-    let target = MachineTarget::from(target);
-    let mut client = client.clone();
-    client
-        .call::<T>(request, Some(&target))
-        .await
-        .map_err(rpc_error)
 }
 
 fn ingest_error(error: RpcError) -> PushError {
@@ -786,13 +775,6 @@ mod tests {
             }),
             PushError::ImageIngest(_)
         ));
-    }
-
-    #[test]
-    fn dropped_ingest_rpc_is_the_retryable_transport_shape() {
-        let transport =
-            crate::connect::ConnectError::from(tonic::Status::unavailable("transport error"));
-        assert!(transport.is_retryable());
         assert_eq!(
             ingest_error(rpc_error(crate::connect::ConnectError::from(
                 tonic::Status::unavailable("transport error")
