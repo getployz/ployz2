@@ -34,7 +34,7 @@ A method that is only legal in some states lives on a type that only exists in t
 
 ## Errors
 
-Library and daemon errors are `thiserror` types. The CLI maps those into `Failure`.
+Library and daemon errors are `thiserror` types. The CLI maps those into `Failure`. What a user reads on stderr — the message content, the next command we hand them — is governed by [ERRORS.md](ERRORS.md).
 
 Recoverable failures use `?`. Early return without the error value is `let Ok(x) = ... else { return ... }`. `expect("why this is a programmer bug")` is for invariants. `unwrap` belongs in tests.
 
