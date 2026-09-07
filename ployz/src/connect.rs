@@ -568,11 +568,11 @@ pub enum ConnectError {
     #[error(transparent)]
     Relay(ployz_relay::ClientError),
     #[error("Machine RPC failed: {0}")]
-    Rpc(TransportError),
+    Rpc(#[source] TransportError),
     #[error("Machine RPC payload failed: {0}")]
     Codec(#[from] CodecError),
     #[error("Machine RPC returned: {}", .0.message)]
-    Remote(RpcError),
+    Remote(#[source] RpcError),
     #[error("Machine RPC framing failed: {0}")]
     Framing(#[from] FramingError),
     #[error("Machine RPC identity failed: {0}")]

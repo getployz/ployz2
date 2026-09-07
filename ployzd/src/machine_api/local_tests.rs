@@ -18,6 +18,25 @@ use tokio::sync::watch;
 use tonic::{Code, Request};
 
 #[test]
+fn poisoned_locks_and_stale_records_are_internal_bugs() {
+    let data_dir = std::path::PathBuf::from("/var/lib/ployz");
+    for error in [
+        StoreError::OwnershipLost(data_dir.clone()),
+        StoreError::ResetPreparationLost(data_dir),
+    ] {
+        assert_eq!(store_error(error).code, RpcErrorCode::Internal);
+    }
+    let Err(status) = local_error(LocalMachineError::LockPoisoned) else {
+        panic!("a poisoned lock must fail the RPC");
+    };
+    assert_eq!(status.code(), Code::Internal);
+    assert_eq!(
+        crate::docker::Error::LocalStorePoisoned.rpc_code(),
+        RpcErrorCode::Internal
+    );
+}
+
+#[test]
 fn non_participating_update_is_a_typed_conflict() {
     assert_eq!(
         store_error(StoreError::NotParticipating).code,

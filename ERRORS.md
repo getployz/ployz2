@@ -117,7 +117,9 @@ Two rules fall out of the table:
   rerun scope.
 - **Internal errors must be distinguishable from user errors.** An
   `RpcError::Internal` that prints a bare message ("boom") reads like the user
-  did something wrong. Frame it: "internal error; this is a bug" + report path.
+  did something wrong. `Failure` frames it once ("internal error: …" + the
+  report step) and `RpcError` serialization adds `details.report` once, so no
+  leaf message carries either.
 
 ## Destructive operations
 
@@ -197,11 +199,10 @@ away, and don't promote it to a hard error that hides the success.
 ## Known offenders (audit, 2026-09-07)
 
 Full audit: 373 messages, 130 need rework, grouped into eleven families so each
-is one PR. Line numbers rot; the family and the file do not.
+is one PR. Internal framing at the seam (family 01) shipped with #772. Line numbers rot; the family and the file do not.
 
 | family | files | fix shape |
 |---|---|---|
-| Internal framing at the seam | `failure.rs`, lock-poisoned / "changed before" errors | one wrapper: "internal error; this is a bug" + `ployz version` report path |
 | Can't reach anything | `context.rs`, `connect.rs`, `dns.rs` | name the Machine/socket; hand them `ployz machine init` / `ployz context use`; say rerun is safe |
 | Debug-format sweep | `context.rs`, `operator.rs`, `machine/mod.rs`, core `deploy.rs`, `rpc.rs` | `{:?}` on paths/enums/ids/vecs → Display |
 | Deploy capacity + planning | `deploy.rs`, core `deploy.rs`, `pipeline.rs`, `global_catch_up.rs` | name Machines/Service; add-a-Machine / wait / relax; scale refusal names mode + alternative |
@@ -211,4 +212,4 @@ is one PR. Line numbers rot; the family and the file do not.
 | Daemon certs + DNS | `certificates.rs`, `hosted_dns.rs`, `corrosion/certificate.rs` | hostname + plain-English status + condition to fix |
 | Core Machine selectors | core `machine.rs`, `selector.rs` | name both Machines; list selectors comma-separated |
 | CLI input odds and ends | `image.rs`, `compose/model.rs`, `volume.rs`, `project.rs`, `ingress/caddy.rs` | state the correct form or the alternative |
-| Wire code mapping | `ployzd/machine_api/local.rs` (`hosted_dns_error`, `store_error`), `docker/mod.rs::rpc_code` | hosted-DNS input/status errors coded `Internal` → `InvalidArgument`/`Unavailable`; `Internal` never carries a report hint in `details` |
+| Wire code mapping | `ployzd/machine_api/local.rs` (`hosted_dns_error`, `store_error`), `docker/mod.rs::rpc_code` | hosted-DNS input/status errors coded `Internal` → `InvalidArgument`/`Unavailable` |

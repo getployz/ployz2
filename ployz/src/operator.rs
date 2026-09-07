@@ -121,7 +121,7 @@ pub enum OperatorError {
     #[error("Service has no regular containers")]
     NoRegularContainer,
     #[error("Machine RPC failed: {0}")]
-    Rpc(TransportError),
+    Rpc(#[source] TransportError),
     #[error("stream protocol failed: {0}")]
     Protocol(#[from] StreamProtocolError),
     #[error(transparent)]

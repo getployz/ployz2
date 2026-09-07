@@ -60,9 +60,9 @@ pub enum PushError {
     #[error("Cluster operation failed: {0}")]
     Cluster(#[from] crate::connect::ConnectError),
     #[error("Cluster operation failed: image ingest: {0}")]
-    ImageIngest(RpcError),
+    ImageIngest(#[source] RpcError),
     #[error("Cluster operation failed: peer image pull: {0}")]
-    PeerPull(RpcError),
+    PeerPull(#[source] RpcError),
     #[error("Cluster operation failed: reach unregistry: {0}")]
     Unregistry(crate::connect::ConnectError),
     #[error("Docker {action}: {diagnostic}")]
