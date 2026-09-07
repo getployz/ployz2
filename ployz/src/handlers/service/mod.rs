@@ -2,9 +2,9 @@ use std::collections::{BTreeSet, HashSet};
 
 use clap::ArgMatches;
 use ployz_core::{
-    ContainerAction, ContainerRef, ContainerRuntimeObservation, DataLoss, DockerVolumeId,
-    DockerVolumeName, HealthObservation, LiveServices, MachineObservation, MembershipObservation,
-    ObservedDataLoss, RemoveVolumesRequest, RpcError, ServiceObservation,
+    ContainerAction, ContainerId, ContainerRef, ContainerRuntimeObservation, DataLoss,
+    DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineObservation,
+    MembershipObservation, ObservedDataLoss, RemoveVolumesRequest, RpcError, ServiceObservation,
     ServicePlacementEligibility, ServiceSelector, VolumeSource, select_service,
 };
 
@@ -265,7 +265,12 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
             print_observation_warning(&live);
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
-            apply_service_action(client, &live, &services, action, signal, timeout).await
+            let outcome =
+                apply_service_action(client, &live, &services, action, signal, timeout).await?;
+            match outcome.error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         })
     })
 }
@@ -311,7 +316,7 @@ fn remove_with_volumes(root: &ArgMatches) -> Result<(), Error> {
                     return Ok(());
                 }
             }
-            apply_service_action(
+            let outcome = apply_service_action(
                 client,
                 &live,
                 &services,
@@ -320,16 +325,22 @@ fn remove_with_volumes(root: &ArgMatches) -> Result<(), Error> {
                 None,
             )
             .await?;
-            if volumes.is_empty() {
-                return Ok(());
-            }
-            let removal = client
-                .remove_volumes(RemoveVolumesRequest {
-                    volumes,
-                    force: false,
-                })
-                .await?;
-            super::volume::refuse_unless_removed(removal)
+            let volumes = volumes_safe_to_remove(volumes, &services, &outcome.removed);
+            let volume_error = if volumes.is_empty() {
+                None
+            } else {
+                match client
+                    .remove_volumes(RemoveVolumesRequest {
+                        volumes,
+                        force: false,
+                    })
+                    .await
+                {
+                    Ok(removal) => super::volume::refuse_unless_removed(removal).err(),
+                    Err(error) => Some(error.into()),
+                }
+            };
+            combined_teardown_result(outcome.error, volume_error)
         })
     })
 }
@@ -363,21 +374,52 @@ fn service_volume_teardown(
     Ok(volumes.into_iter().collect())
 }
 
+fn volumes_safe_to_remove(
+    planned: Vec<DockerVolumeId>,
+    selected: &[&ServiceObservation],
+    removed: &HashSet<ContainerId>,
+) -> Vec<DockerVolumeId> {
+    let still_mounted = selected
+        .iter()
+        .flat_map(|service| volume_ids(service, VolumeSource::docker_volume_name, removed))
+        .collect::<HashSet<_>>();
+    planned
+        .into_iter()
+        .filter(|id| !still_mounted.contains(id))
+        .collect()
+}
+
+fn combined_teardown_result(action: Option<Error>, volumes: Option<Error>) -> Result<(), Error> {
+    match (action, volumes) {
+        (None, None) => Ok(()),
+        (Some(error), None) | (None, Some(error)) => Err(error),
+        (Some(action), Some(volumes)) => Err(Error::usage(format!("{action}; {volumes}"))),
+    }
+}
+
 fn managed_volume_ids(service: &ServiceObservation) -> Vec<DockerVolumeId> {
-    volume_ids(service, VolumeSource::managed_docker_volume_name)
+    volume_ids(
+        service,
+        VolumeSource::managed_docker_volume_name,
+        &HashSet::new(),
+    )
 }
 
 fn docker_volume_ids(service: &ServiceObservation) -> Vec<DockerVolumeId> {
-    volume_ids(service, VolumeSource::docker_volume_name)
+    volume_ids(service, VolumeSource::docker_volume_name, &HashSet::new())
 }
 
 fn volume_ids(
     service: &ServiceObservation,
     name_of: fn(&VolumeSource) -> Option<&DockerVolumeName>,
+    skip: &HashSet<ContainerId>,
 ) -> Vec<DockerVolumeId> {
     let mut ids = Vec::new();
     for member in service.members() {
         let observation = member.as_observation();
+        if skip.contains(&observation.container_id) {
+            continue;
+        }
         ids.extend(
             observation
                 .resolved_spec
@@ -393,6 +435,11 @@ fn volume_ids(
     ids
 }
 
+struct ServiceActionOutcome {
+    removed: HashSet<ContainerId>,
+    error: Option<Error>,
+}
+
 async fn apply_service_action(
     client: &crate::connect::Client,
     live: &LiveServices<RpcError>,
@@ -400,7 +447,7 @@ async fn apply_service_action(
     action: ContainerAction,
     signal: Option<String>,
     timeout: Option<i32>,
-) -> Result<(), Error> {
+) -> Result<ServiceActionOutcome, Error> {
     let service_container_ids = services
         .iter()
         .copied()
@@ -445,11 +492,10 @@ async fn apply_service_action(
         eprintln!("WARNING: the Service selection came from a partial Live Observation");
         partial = true;
     }
-    if partial {
-        Err(Error::usage("Service lifecycle completed partially"))
-    } else {
-        Ok(())
-    }
+    Ok(ServiceActionOutcome {
+        removed: changed.into_iter().collect(),
+        error: partial.then(|| Error::usage("Service lifecycle completed partially")),
+    })
 }
 
 fn change_selectors(matches: &ArgMatches) -> Result<Vec<ServiceSelector>, Error> {

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ployz_core::{
     HookContainer, Machine, MachineFailure, MachineId, MachineName, MachineObservation,
     MachineTarget, MembershipObservation, PartialResult, Placement, RpcError, RpcErrorCode,
@@ -414,6 +416,106 @@ fn service_volume_teardown_allows_the_same_name_on_another_machine() {
     );
 }
 
+#[test]
+fn volumes_safe_to_remove_after_selected_containers_are_gone() {
+    let db = with_mounts(
+        service_named('a', "app", "db"),
+        vec![(ordinary("data"), "data", "/data")],
+    );
+    let planned = service_volume_teardown(&[&db], std::slice::from_ref(&db)).unwrap();
+    let removed = HashSet::from([container_id(&db)]);
+    assert_eq!(
+        volumes_safe_to_remove(planned.clone(), &[&db], &removed),
+        planned
+    );
+    assert!(volumes_safe_to_remove(planned, &[&db], &HashSet::new()).is_empty());
+}
+
+#[test]
+fn volumes_safe_to_remove_a_fully_removed_service_from_a_multi_service_request() {
+    let db = with_mounts(
+        service_named('a', "app", "db"),
+        vec![(ordinary("data"), "data", "/data")],
+    );
+    let replica = with_mounts(
+        service_named('b', "app", "replica"),
+        vec![(ordinary("cache"), "cache", "/cache")],
+    );
+    let planned =
+        service_volume_teardown(&[&db, &replica], &[db.clone(), replica.clone()]).unwrap();
+    let safe = volumes_safe_to_remove(
+        planned,
+        &[&db, &replica],
+        &HashSet::from([container_id(&db)]),
+    );
+    assert_eq!(
+        safe.iter()
+            .map(|id| (id.machine_id, id.name.as_str()))
+            .collect::<Vec<_>>(),
+        [(machine_id('a'), "app_data")]
+    );
+}
+
+#[test]
+fn volumes_safe_to_remove_keeps_a_shared_volume_until_every_holder_is_gone() {
+    let db = with_mounts(
+        service_named('a', "app", "db"),
+        vec![(ordinary("data"), "data", "/data")],
+    );
+    let api = on_machine(
+        with_mounts(
+            service_named('b', "app", "api"),
+            vec![(ordinary("data"), "data", "/data")],
+        ),
+        'a',
+    );
+    let planned = service_volume_teardown(&[&db, &api], &[db.clone(), api.clone()]).unwrap();
+    assert!(
+        volumes_safe_to_remove(
+            planned.clone(),
+            &[&db, &api],
+            &HashSet::from([container_id(&db)])
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        volumes_safe_to_remove(
+            planned,
+            &[&db, &api],
+            &HashSet::from([container_id(&db), container_id(&api)])
+        )
+        .iter()
+        .map(|id| id.name.as_str())
+        .collect::<Vec<_>>(),
+        ["app_data"]
+    );
+}
+
+#[test]
+fn combined_teardown_result_preserves_action_error_and_joins_volume_failures() {
+    assert!(combined_teardown_result(None, None).is_ok());
+    assert_eq!(
+        combined_teardown_result(
+            Some(Error::usage("Service lifecycle completed partially")),
+            None
+        )
+        .unwrap_err()
+        .to_string(),
+        "Service lifecycle completed partially"
+    );
+    assert_eq!(
+        combined_teardown_result(
+            Some(Error::usage("Service lifecycle completed partially")),
+            Some(Error::usage(
+                "one or more Docker Volume removals failed or were omitted: busy"
+            )),
+        )
+        .unwrap_err()
+        .to_string(),
+        "Service lifecycle completed partially; one or more Docker Volume removals failed or were omitted: busy"
+    );
+}
+
 fn service_named(id: char, project: &str, name: &str) -> ployz_core::ServiceObservation {
     let mut container = observation(id, id, name, ContainerRuntimeObservation::Created);
     container
@@ -563,6 +665,10 @@ fn tmpfs() -> ployz_core::RawVolumeSource {
         mode: None,
         options: Vec::new(),
     }
+}
+
+fn container_id(service: &ployz_core::ServiceObservation) -> ployz_core::ContainerId {
+    service.containers[0].as_observation().container_id
 }
 
 fn machine_id(id: char) -> MachineId {
