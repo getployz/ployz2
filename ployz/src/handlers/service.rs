@@ -1,15 +1,19 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use clap::ArgMatches;
 use ployz_core::{
-    ContainerAction, ContainerRef, ContainerRuntimeObservation, HealthObservation, LiveServices,
-    MachineObservation, MembershipObservation, RpcError, ServiceObservation,
-    ServicePlacementEligibility, ServiceSelector, select_service,
+    ContainerAction, ContainerRef, ContainerRuntimeObservation, DataLoss, DockerVolumeId,
+    DockerVolumeName, HealthObservation, LiveServices, MachineObservation, MembershipObservation,
+    ObservedDataLoss, RawVolumeSource, RemoveVolumesRequest, RpcError, ServiceObservation,
+    ServicePlacementEligibility, ServiceSelector, ServiceVolume, VolumeRemovalOutcome,
+    select_service,
 };
 
 use crate::cluster::ContainerObservationCondition;
 
-use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client};
+use super::{
+    Error, cancellation_on_ctrl_c, confirm, data_loss, leaf_matches, string_values, with_client,
+};
 
 /// List the observed Services.
 ///
@@ -262,59 +266,195 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
             print_observation_warning(&live);
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
-            let service_container_ids = services
-                .iter()
-                .flat_map(|service| &service.containers)
-                .map(|container| container.as_observation().container_id)
-                .collect::<HashSet<_>>();
-            let mut changed = Vec::new();
-            let mut partial = false;
-            for service in services {
-                let outcomes = client
-                    .change_observed_service(service, action, signal.clone(), timeout)
-                    .await;
-                for success in outcomes.successes {
-                    println!("{:?}\t{}\t{}", action, success.machine_id, success.value);
-                    if service_container_ids.contains(&success.value) {
-                        changed.push(success.value);
-                    }
+            apply_service_action(client, &live, &services, action, signal, timeout).await
+        })
+    })
+}
+
+pub fn remove(root: &ArgMatches) -> Result<(), Error> {
+    if !leaf_matches(root).get_flag("volumes") {
+        return change(root, ContainerAction::Remove);
+    }
+    remove_with_volumes(root)
+}
+
+fn remove_with_volumes(root: &ArgMatches) -> Result<(), Error> {
+    let leaf = leaf_matches(root);
+    let selectors = change_selectors(leaf)?;
+    let yes = leaf.get_flag("yes");
+    let named = string_values(leaf, "data-loss");
+    with_client(root, |client| {
+        Box::pin(async move {
+            let live = client.live_services().await?;
+            print_observation_warning(&live);
+            let observed = live.services();
+            let services = select_services(&observed, &selectors)?;
+            let volumes = service_volume_teardown(&services, &observed)?;
+            let data_loss_observed = ObservedDataLoss {
+                data_loss: volumes
+                    .iter()
+                    .map(|id| DataLoss::DockerVolume { id: id.clone() })
+                    .collect(),
+            };
+            data_loss::collect_data_loss_confirmation(&data_loss_observed, &named)?;
+            if !volumes.is_empty() {
+                println!("The following Docker Volumes will be removed:");
+                for id in &volumes {
+                    println!("  {}/{}", id.machine_id, id.name);
                 }
-                for failure in outcomes.failures {
-                    eprintln!(
-                        "WARNING: {:?} failed for {} on {}: {}",
-                        action,
-                        failure.error.container_id,
-                        failure.machine_id,
-                        failure.error.error.message
-                    );
-                    partial = true;
+                if !yes && !confirm()? {
+                    println!("Cancelled. No Services or volumes were removed.");
+                    return Ok(());
                 }
             }
-            let cancellation = cancellation_on_ctrl_c();
-            let _parent = cancellation.clone().drop_guard();
-            client
-                .wait_for_container_observations(
-                    &changed,
-                    match action {
-                        ContainerAction::Start => ContainerObservationCondition::Serving,
-                        ContainerAction::Stop | ContainerAction::Remove => {
-                            ContainerObservationCondition::Dropped
-                        }
-                    },
-                    &cancellation,
-                )
+            apply_service_action(
+                client,
+                &live,
+                &services,
+                ContainerAction::Remove,
+                None,
+                None,
+            )
+            .await?;
+            if volumes.is_empty() {
+                return Ok(());
+            }
+            let removal = client
+                .remove_volumes(RemoveVolumesRequest {
+                    volumes,
+                    force: false,
+                })
                 .await?;
-            if !live.containers.all_targets_succeeded() {
-                eprintln!("WARNING: the Service selection came from a partial Live Observation");
-                partial = true;
-            }
-            if partial {
-                Err(Error::usage("Service lifecycle completed partially"))
-            } else {
+            if removal
+                .iter()
+                .all(|item| matches!(item.outcome, VolumeRemovalOutcome::Removed))
+            {
                 Ok(())
+            } else {
+                Err(Error::usage(super::volume::removal_failure_summary(
+                    &removal,
+                )))
             }
         })
     })
+}
+
+fn service_volume_teardown(
+    selected: &[&ServiceObservation],
+    observed: &[ServiceObservation],
+) -> Result<Vec<DockerVolumeId>, Error> {
+    let mut volumes = BTreeSet::new();
+    for service in selected {
+        volumes.extend(managed_volume_ids(service));
+    }
+    let selected_identities = selected
+        .iter()
+        .map(|service| &service.identity)
+        .collect::<HashSet<_>>();
+    for service in observed {
+        if selected_identities.contains(&service.identity) {
+            continue;
+        }
+        if let Some(id) = managed_volume_ids(service)
+            .into_iter()
+            .find(|id| volumes.contains(id))
+        {
+            return Err(Error::usage(format!(
+                "Docker Volume {} on {} is still mounted by {}",
+                id.name, id.machine_id, service.identity
+            )));
+        }
+    }
+    Ok(volumes.into_iter().collect())
+}
+
+fn managed_volume_ids(service: &ServiceObservation) -> Vec<DockerVolumeId> {
+    let mut ids = Vec::new();
+    for member in service.members() {
+        let observation = member.as_observation();
+        ids.extend(
+            observation
+                .resolved_spec
+                .volume_graph()
+                .mounted_volumes()
+                .filter_map(managed_volume_name)
+                .map(|name| DockerVolumeId {
+                    machine_id: observation.machine_id,
+                    name: name.clone(),
+                }),
+        );
+    }
+    ids
+}
+
+fn managed_volume_name(volume: &ServiceVolume) -> Option<&DockerVolumeName> {
+    match volume.source.kind() {
+        RawVolumeSource::Ordinary { name, .. } | RawVolumeSource::Provisioned { name, .. } => {
+            Some(name)
+        }
+        RawVolumeSource::External { .. }
+        | RawVolumeSource::Bind { .. }
+        | RawVolumeSource::Tmpfs { .. } => None,
+    }
+}
+
+async fn apply_service_action(
+    client: &crate::connect::Client,
+    live: &LiveServices<RpcError>,
+    services: &[&ServiceObservation],
+    action: ContainerAction,
+    signal: Option<String>,
+    timeout: Option<i32>,
+) -> Result<(), Error> {
+    let service_container_ids = services
+        .iter()
+        .copied()
+        .flat_map(|service| service.containers_for(action))
+        .map(|container| container.as_observation().container_id)
+        .collect::<HashSet<_>>();
+    let mut changed = Vec::new();
+    let mut partial = false;
+    for service in services {
+        let outcomes = client
+            .change_observed_service(service, action, signal.clone(), timeout)
+            .await;
+        for success in outcomes.successes {
+            println!("{:?}\t{}\t{}", action, success.machine_id, success.value);
+            if service_container_ids.contains(&success.value) {
+                changed.push(success.value);
+            }
+        }
+        for failure in outcomes.failures {
+            eprintln!(
+                "WARNING: {:?} failed for {} on {}: {}",
+                action, failure.error.container_id, failure.machine_id, failure.error.error.message
+            );
+            partial = true;
+        }
+    }
+    let cancellation = cancellation_on_ctrl_c();
+    let _parent = cancellation.clone().drop_guard();
+    client
+        .wait_for_container_observations(
+            &changed,
+            match action {
+                ContainerAction::Start => ContainerObservationCondition::Serving,
+                ContainerAction::Stop | ContainerAction::Remove => {
+                    ContainerObservationCondition::Dropped
+                }
+            },
+            &cancellation,
+        )
+        .await?;
+    if !live.containers.all_targets_succeeded() {
+        eprintln!("WARNING: the Service selection came from a partial Live Observation");
+        partial = true;
+    }
+    if partial {
+        Err(Error::usage("Service lifecycle completed partially"))
+    } else {
+        Ok(())
+    }
 }
 
 fn change_selectors(matches: &ArgMatches) -> Result<Vec<ServiceSelector>, Error> {
@@ -695,6 +835,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn service_volume_teardown_collects_managed_named_volumes() {
+        let db = with_mounts(
+            service_named('a', "app", "db"),
+            vec![
+                (ordinary("data"), "data", "/data"),
+                (provisioned("cache"), "cache", "/cache"),
+                (external("shared"), "shared", "/shared"),
+                (bind(), "host", "/host"),
+                (tmpfs(), "tmp", "/tmp"),
+            ],
+        );
+        let volumes = service_volume_teardown(&[&db], &[db.clone()]).unwrap();
+        assert_eq!(
+            volumes
+                .iter()
+                .map(|id| id.name.as_str())
+                .collect::<Vec<_>>(),
+            ["app_cache", "app_data"]
+        );
+        assert!(volumes.iter().all(|id| id.machine_id == machine_id('a')));
+    }
+
+    #[test]
+    fn service_volume_teardown_refuses_another_service_on_the_same_machine() {
+        let db = with_mounts(
+            service_named('a', "app", "db"),
+            vec![(ordinary("data"), "data", "/data")],
+        );
+        let api = on_machine(
+            with_mounts(
+                service_named('b', "app", "api"),
+                vec![(ordinary("data"), "data", "/data")],
+            ),
+            'a',
+        );
+        let error = service_volume_teardown(&[&db], &[db.clone(), api]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Docker Volume app_data on {} is still mounted by app/api",
+                machine_id('a')
+            )
+        );
+    }
+
+    #[test]
+    fn service_volume_teardown_allows_selected_services_that_share_a_volume() {
+        let db = with_mounts(
+            service_named('a', "app", "db"),
+            vec![(ordinary("data"), "data", "/data")],
+        );
+        let api = on_machine(
+            with_mounts(
+                service_named('b', "app", "api"),
+                vec![(ordinary("data"), "data", "/data")],
+            ),
+            'a',
+        );
+        let volumes = service_volume_teardown(&[&db, &api], &[db.clone(), api.clone()]).unwrap();
+        assert_eq!(
+            volumes
+                .iter()
+                .map(|id| (id.machine_id, id.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(machine_id('a'), "app_data")]
+        );
+    }
+
+    #[test]
+    fn service_volume_teardown_allows_the_same_name_on_another_machine() {
+        let db = with_mounts(
+            service_named('a', "app", "db"),
+            vec![(ordinary("data"), "data", "/data")],
+        );
+        let replica = with_mounts(
+            service_named('b', "app", "replica"),
+            vec![(ordinary("data"), "data", "/data")],
+        );
+        let volumes = service_volume_teardown(&[&db], &[db.clone(), replica]).unwrap();
+        assert_eq!(
+            volumes
+                .iter()
+                .map(|id| (id.machine_id, id.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(machine_id('a'), "app_data")]
+        );
+    }
+
     fn service_named(id: char, project: &str, name: &str) -> ployz_core::ServiceObservation {
         let mut container = observation(id, id, name, ContainerRuntimeObservation::Created);
         container
@@ -745,6 +974,112 @@ mod tests {
             .try_update(|parts| parts.kind = ployz_core::ContainerKind::PreDeployHook)
             .unwrap();
         observation
+    }
+
+    fn with_mounts(
+        mut service: ployz_core::ServiceObservation,
+        mounts: Vec<(ployz_core::RawVolumeSource, &'static str, &'static str)>,
+    ) -> ployz_core::ServiceObservation {
+        use ployz_core::{ContainerPath, ServiceMount, ServiceVolume, ServiceVolumeGraph};
+
+        let mut observation = service.containers.pop().unwrap().into_observation();
+        observation
+            .try_update(|parts| {
+                let project = parts.project_name.clone();
+                let (volumes, mounts) = mounts
+                    .into_iter()
+                    .map(|(source, reference, target)| {
+                        let reference =
+                            ployz_core::ServiceVolumeReference::parse(reference).unwrap();
+                        (
+                            ServiceVolume {
+                                reference: reference.clone(),
+                                source: source.admit().expect("valid volume declaration"),
+                            },
+                            ServiceMount {
+                                volume: reference,
+                                target: ContainerPath::parse(target).unwrap(),
+                                read_only: false,
+                                no_copy: false,
+                                subpath: None,
+                            },
+                        )
+                    })
+                    .unzip();
+                parts
+                    .resolved_spec
+                    .set_volume_graph(
+                        ServiceVolumeGraph::parse(volumes, mounts)
+                            .unwrap()
+                            .scope_to_project(&project)
+                            .unwrap()
+                            .try_into()
+                            .unwrap(),
+                    )
+                    .unwrap();
+            })
+            .unwrap();
+        service.containers = vec![ServiceContainer::try_from(observation).unwrap()];
+        service
+    }
+
+    fn on_machine(
+        mut service: ployz_core::ServiceObservation,
+        machine: char,
+    ) -> ployz_core::ServiceObservation {
+        let mut observation = service.containers.pop().unwrap().into_observation();
+        observation
+            .try_update(|parts| parts.machine_id = machine_id(machine))
+            .unwrap();
+        service.containers = vec![ServiceContainer::try_from(observation).unwrap()];
+        service
+    }
+
+    fn ordinary(name: &str) -> ployz_core::RawVolumeSource {
+        ployz_core::RawVolumeSource::Ordinary {
+            name: ployz_core::DockerVolumeName::parse(name).unwrap(),
+            driver: ployz_core::VolumeDriver::parse("local", Default::default()).unwrap(),
+            labels: Default::default(),
+        }
+    }
+
+    fn provisioned(name: &str) -> ployz_core::RawVolumeSource {
+        use std::num::NonZeroU64;
+
+        ployz_core::RawVolumeSource::Provisioned {
+            name: ployz_core::DockerVolumeName::parse(name).unwrap(),
+            maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
+                NonZeroU64::new(100).unwrap(),
+            ),
+            labels: Default::default(),
+        }
+    }
+
+    fn external(name: &str) -> ployz_core::RawVolumeSource {
+        ployz_core::RawVolumeSource::External {
+            name: ployz_core::DockerVolumeName::parse(name).unwrap(),
+        }
+    }
+
+    fn bind() -> ployz_core::RawVolumeSource {
+        ployz_core::RawVolumeSource::Bind {
+            machine_path: ployz_core::MachinePath::parse("/var/lib/data").unwrap(),
+            create_machine_path: false,
+            propagation: None,
+            recursive: None,
+        }
+    }
+
+    fn tmpfs() -> ployz_core::RawVolumeSource {
+        ployz_core::RawVolumeSource::Tmpfs {
+            size_bytes: None,
+            mode: None,
+            options: Vec::new(),
+        }
+    }
+
+    fn machine_id(id: char) -> MachineId {
+        MachineId::parse(id.to_string().repeat(32)).unwrap()
     }
 
     fn observation(
