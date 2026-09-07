@@ -373,13 +373,15 @@ fn confirm(prompt: &str) -> Result<bool, Failure> {
 }
 
 fn finish(outcome: DeployOutcome<ExecutionError>) -> Result<(), ApplyError> {
-    let text = render::outcome_text(&outcome);
-    if !text.is_empty() {
-        print!("{text}");
-    }
     match outcome {
-        DeployOutcome::Success { .. } => Ok(()),
-        outcome @ DeployOutcome::Failed { .. } => Err(ApplyError::Execute(Box::new(outcome))),
+        success @ DeployOutcome::Success { .. } => {
+            let text = render::outcome_text(&success);
+            if !text.is_empty() {
+                print!("{text}");
+            }
+            Ok(())
+        }
+        failed @ DeployOutcome::Failed { .. } => Err(ApplyError::Execute(Box::new(failed))),
     }
 }
 
@@ -463,5 +465,45 @@ mod tests {
         assert!(project_not_found(&preview));
         preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
         assert!(!project_not_found(&preview));
+    }
+
+    #[test]
+    fn execute_failure_is_one_named_command_error() {
+        let spec: ployz_core::ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+            "service_id": "a".repeat(32),
+            "name": "cashdash-frontend",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "app:latest", "pull_policy": "missing" }
+        }))
+        .unwrap();
+        let machine_id = ployz_core::MachineId::parse("d".repeat(32)).unwrap();
+        let outcome = DeployOutcome::Failed {
+            completed: Vec::new(),
+            failed: ployz_core::FailedOperation::Operation {
+                operation: ployz_core::DeployOperation::ReplaceContainer(
+                    ployz_core::ReplacementOperation {
+                        machine_id,
+                        old_container_id: ployz_core::ContainerId::parse("f".repeat(64)).unwrap(),
+                        spec,
+                        skip_health_monitor: false,
+                    },
+                ),
+                error: ExecutionError::Machine {
+                    action: ployz_core::MachineAction::CreateContainer,
+                    error: ployz_core::RpcError {
+                        code: ployz_core::RpcErrorCode::Unavailable,
+                        message: "target Machine RPC timed out".into(),
+                        details: serde_json::Value::Null,
+                    },
+                },
+            },
+            unexecuted: Vec::new(),
+        };
+        let failure = Failure::from(ApplyError::Execute(Box::new(outcome)));
+        assert_eq!(
+            failure.to_string(),
+            "Failed: replace cashdash-frontend: CreateContainer failed: target Machine RPC timed out"
+        );
+        assert_eq!(failure.to_string().matches("Failed:").count(), 1);
     }
 }

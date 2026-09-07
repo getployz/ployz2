@@ -147,29 +147,19 @@ pub fn confirm_removal_prompt(project: &ployz_core::ProjectName, context: &str) 
     format!("Proceed with removal of Project {project} from {context}? [y/N] ")
 }
 
-/// Completed operations / failed op / unexecuted operations, plus endpoints on success.
+/// Endpoints on success; one named failure line on stderr-bound outcomes.
 #[must_use]
 pub fn outcome_text(outcome: &DeployOutcome<ExecutionError>) -> String {
     match outcome {
         DeployOutcome::Success { completed } => endpoints_footer(completed).unwrap_or_default(),
         DeployOutcome::Failed {
-            completed,
-            failed,
-            unexecuted,
+            completed, failed, ..
         } => {
-            let mut out = format!("Completed {} operation(s).\n", completed.len());
-            let _ = writeln!(out, "Failed: {}", failed_summary(failed));
-            if !unexecuted.is_empty() {
-                let _ = writeln!(
-                    out,
-                    "Unexecuted: {}",
-                    unexecuted
-                        .iter()
-                        .map(operation_label)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+            let mut out = String::new();
+            if !completed.is_empty() {
+                let _ = writeln!(out, "Completed {} operation(s).", completed.len());
             }
+            let _ = writeln!(out, "Failed: {}", failed_summary(failed));
             out
         }
     }
@@ -337,24 +327,34 @@ fn plan_footer(preview: &DeployPreview) -> String {
 
 fn row_line(row: &OperationRow) -> String {
     let (mark, status, elapsed) = status_columns(row);
-    if let DeployOperation::WaitHealthy { dependency, .. } = &row.operation {
-        return format!(" {mark} Dependency {dependency}  {status}{elapsed}\n");
+    let mut line = if let DeployOperation::WaitHealthy { dependency, .. } = &row.operation {
+        format!(" {mark} Dependency {dependency}  {status}{elapsed}\n")
+    } else {
+        format!(
+            " {mark} Container {} on {}  {status}{elapsed}\n",
+            container_label(row),
+            machine_label(row)
+        )
+    };
+    if let OperationStatus::Failed { error } = &row.status {
+        let _ = writeln!(line, "   {error}");
     }
-    let name = container_label(row);
-    let machine = machine_label(row);
-    format!(" {mark} Container {name} on {machine}  {status}{elapsed}\n")
+    line
 }
 
 fn container_label(row: &OperationRow) -> String {
     if let Some(name) = &row.display_name {
         return name.clone();
     }
+    if let Some(name) = &row.service_name {
+        return name.to_string();
+    }
     match &row.operation {
         DeployOperation::WaitHealthy { dependency, .. } => dependency.to_string(),
         DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
             spec.name.to_string()
         }
-        DeployOperation::ReplaceContainer(replacement) => replacement.old_container_id.to_string(),
+        DeployOperation::ReplaceContainer(replacement) => replacement.spec.name.to_string(),
         DeployOperation::StopContainer { container_id, .. }
         | DeployOperation::RemoveContainer { container_id, .. }
         | DeployOperation::StopHook { container_id, .. } => container_id.to_string(),
@@ -485,10 +485,7 @@ fn failed_summary(failed: &FailedOperation<ExecutionError>) -> String {
         }
         FailedOperation::ReplacementHealth {
             operation, error, ..
-        } => format!(
-            "replace {} for {} on {}: {error}",
-            operation.old_container_id, operation.spec.name, operation.machine_id
-        ),
+        } => format!("replace {}: {error}", operation.spec.name),
     }
 }
 
@@ -499,32 +496,17 @@ fn operation_label(operation: &DeployOperation) -> String {
             dependency,
             ..
         } => format!("wait for {dependency} to be healthy before {dependent}"),
-        DeployOperation::RunContainer {
-            machine_id, spec, ..
-        } => format!("run {} on {machine_id}", spec.name),
-        DeployOperation::StopContainer {
-            machine_id,
-            container_id,
-            ..
-        } => format!("stop {container_id} on {machine_id}"),
-        DeployOperation::RemoveContainer {
-            machine_id,
-            container_id,
-        } => format!("remove {container_id} on {machine_id}"),
-        DeployOperation::ReplaceContainer(operation) => format!(
-            "replace {} for {} on {}",
-            operation.old_container_id, operation.spec.name, operation.machine_id
-        ),
-        DeployOperation::StopHook {
-            machine_id,
-            container_id,
-        } => format!("stop hook {container_id} on {machine_id}"),
-        DeployOperation::RunHook {
-            machine_id, spec, ..
-        } => format!("run pre-deploy hook for {} on {machine_id}", spec.name),
-        DeployOperation::RemoveVolume { id } => {
-            format!("remove volume {} on {}", id.name, id.machine_id)
+        DeployOperation::RunContainer { spec, .. } => format!("run {}", spec.name),
+        DeployOperation::StopContainer { .. } => "stop container".into(),
+        DeployOperation::RemoveContainer { .. } => "remove container".into(),
+        DeployOperation::ReplaceContainer(operation) => {
+            format!("replace {}", operation.spec.name)
         }
+        DeployOperation::StopHook { .. } => "stop hook".into(),
+        DeployOperation::RunHook { spec, .. } => {
+            format!("run pre-deploy hook for {}", spec.name)
+        }
+        DeployOperation::RemoveVolume { id } => format!("remove volume {}", id.name),
     }
 }
 
@@ -533,10 +515,11 @@ mod tests {
     use std::num::NonZeroU64;
 
     use ployz_core::{
-        ContainerId, DeployOperation, DockerVolumeId, DockerVolumeName, MachineId, MachineName,
-        OperationRow, OperationStatus, PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes,
-        PruneRefusal, QualifiedService, ReplacementOperation, RequestedServiceSpec,
-        ResolvedServiceSpec, ServiceName, UpdateOrder, VolumeToCreate,
+        ContainerId, DeployOperation, DockerVolumeId, DockerVolumeName, ExecutionError,
+        FailedOperation, MachineAction, MachineId, MachineName, OperationRow, OperationStatus,
+        PreservedVolume, ProjectName, ProvisionedVolumeMaximumBytes, PruneRefusal,
+        QualifiedService, ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec,
+        RpcError, RpcErrorCode, ServiceName, UpdateOrder, VolumeToCreate,
     };
 
     use super::*;
@@ -894,6 +877,110 @@ mod tests {
     }
 
     #[test]
+    fn failed_progress_row_includes_the_error_next_to_the_named_container() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let spec = resolved("cashdash-frontend", "app:latest");
+        let row = OperationRow {
+            index: 0,
+            machine_id,
+            machine_name: Some(MachineName::parse("machine-2").unwrap()),
+            operation: DeployOperation::ReplaceContainer(ReplacementOperation {
+                machine_id,
+                old_container_id: ContainerId::parse("f".repeat(64)).unwrap(),
+                spec,
+                skip_health_monitor: false,
+            }),
+            display_name: Some("cashdash-frontend".into()),
+            service_name: Some(ServiceName::parse("cashdash-frontend").unwrap()),
+            status: OperationStatus::Failed {
+                error: timed_out_create(),
+            },
+        };
+        let event = DeployEvent::Progress {
+            completed: 0,
+            total: 1,
+            rows: vec![row],
+        };
+        let text = progress_text(&event, "Deploying to default");
+        assert!(
+            text.contains("Container cashdash-frontend on machine-2"),
+            "{text}"
+        );
+        assert!(
+            text.contains("CreateContainer failed: target Machine RPC timed out"),
+            "{text}"
+        );
+        assert!(
+            !text.contains(&"f".repeat(64)) && !text.contains(&"d".repeat(32)),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn failed_deploy_footer_names_the_service_and_error_without_a_hash_dump() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let failed = DeployOperation::ReplaceContainer(ReplacementOperation {
+            machine_id,
+            old_container_id: ContainerId::parse("f".repeat(64)).unwrap(),
+            spec: resolved("cashdash-frontend", "app:latest"),
+            skip_health_monitor: false,
+        });
+        let unexecuted = vec![
+            DeployOperation::ReplaceContainer(ReplacementOperation {
+                machine_id,
+                old_container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+                spec: resolved("cashdash-horizon", "app:latest"),
+                skip_health_monitor: false,
+            }),
+            DeployOperation::RunContainer {
+                machine_id,
+                spec: resolved("cashdash-web", "app:latest"),
+                skip_health_monitor: false,
+            },
+        ];
+        let outcome = DeployOutcome::Failed {
+            completed: Vec::new(),
+            failed: FailedOperation::Operation {
+                operation: failed,
+                error: timed_out_create(),
+            },
+            unexecuted,
+        };
+        let text = outcome_text(&outcome);
+        assert_eq!(
+            text,
+            "Failed: replace cashdash-frontend: CreateContainer failed: target Machine RPC timed out\n"
+        );
+    }
+
+    #[test]
+    fn failed_deploy_footer_mentions_completed_ops_only_when_some_landed() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let completed = DeployOperation::RunContainer {
+            machine_id,
+            spec: resolved("cashdash-reverb", "app:latest"),
+            skip_health_monitor: true,
+        };
+        let failed = DeployOperation::RunContainer {
+            machine_id,
+            spec: resolved("cashdash-web", "app:latest"),
+            skip_health_monitor: true,
+        };
+        let outcome = DeployOutcome::Failed {
+            completed: vec![completed],
+            failed: FailedOperation::Operation {
+                operation: failed,
+                error: timed_out_create(),
+            },
+            unexecuted: Vec::new(),
+        };
+        assert_eq!(
+            outcome_text(&outcome),
+            "Completed 1 operation(s).\nFailed: run cashdash-web: CreateContainer failed: target Machine RPC timed out\n"
+        );
+    }
+
+    #[test]
     fn success_with_ingress_prints_endpoints_footer() {
         let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
             "service_id": "a".repeat(32),
@@ -920,6 +1007,17 @@ mod tests {
         let text = outcome_text(&outcome);
         assert!(text.contains("excalidraw endpoints:"));
         assert!(text.contains("https://excalidraw.example.uncld.dev → :80"));
+    }
+
+    fn timed_out_create() -> ExecutionError {
+        ExecutionError::Machine {
+            action: MachineAction::CreateContainer,
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "target Machine RPC timed out".into(),
+                details: serde_json::Value::Null,
+            },
+        }
     }
 
     fn resolved(name: &str, image: &str) -> ResolvedServiceSpec {
