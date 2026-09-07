@@ -424,11 +424,18 @@ fn volumes_safe_to_remove_after_selected_containers_are_gone() {
     );
     let planned = service_volume_teardown(&[&db], std::slice::from_ref(&db)).unwrap();
     let removed = HashSet::from([container_id(&db)]);
+    let (safe, skipped) = volumes_safe_to_remove(planned.clone(), &[&db], &removed);
+    assert_eq!(safe, planned);
+    assert!(skipped.is_empty());
+    let (safe, skipped) = volumes_safe_to_remove(planned, &[&db], &HashSet::new());
+    assert!(safe.is_empty());
     assert_eq!(
-        volumes_safe_to_remove(planned.clone(), &[&db], &removed),
-        planned
+        skipped
+            .iter()
+            .map(|id| id.name.as_str())
+            .collect::<Vec<_>>(),
+        ["app_data"]
     );
-    assert!(volumes_safe_to_remove(planned, &[&db], &HashSet::new()).is_empty());
 }
 
 #[test]
@@ -443,7 +450,7 @@ fn volumes_safe_to_remove_a_fully_removed_service_from_a_multi_service_request()
     );
     let planned =
         service_volume_teardown(&[&db, &replica], &[db.clone(), replica.clone()]).unwrap();
-    let safe = volumes_safe_to_remove(
+    let (safe, skipped) = volumes_safe_to_remove(
         planned,
         &[&db, &replica],
         &HashSet::from([container_id(&db)]),
@@ -453,6 +460,13 @@ fn volumes_safe_to_remove_a_fully_removed_service_from_a_multi_service_request()
             .map(|id| (id.machine_id, id.name.as_str()))
             .collect::<Vec<_>>(),
         [(machine_id('a'), "app_data")]
+    );
+    assert_eq!(
+        skipped
+            .iter()
+            .map(|id| id.name.as_str())
+            .collect::<Vec<_>>(),
+        ["app_cache"]
     );
 }
 
@@ -470,25 +484,29 @@ fn volumes_safe_to_remove_keeps_a_shared_volume_until_every_holder_is_gone() {
         'a',
     );
     let planned = service_volume_teardown(&[&db, &api], &[db.clone(), api.clone()]).unwrap();
-    assert!(
-        volumes_safe_to_remove(
-            planned.clone(),
-            &[&db, &api],
-            &HashSet::from([container_id(&db)])
-        )
-        .is_empty()
+    let (safe, skipped) = volumes_safe_to_remove(
+        planned.clone(),
+        &[&db, &api],
+        &HashSet::from([container_id(&db)]),
     );
+    assert!(safe.is_empty());
     assert_eq!(
-        volumes_safe_to_remove(
-            planned,
-            &[&db, &api],
-            &HashSet::from([container_id(&db), container_id(&api)])
-        )
-        .iter()
-        .map(|id| id.name.as_str())
-        .collect::<Vec<_>>(),
+        skipped
+            .iter()
+            .map(|id| id.name.as_str())
+            .collect::<Vec<_>>(),
         ["app_data"]
     );
+    let (safe, skipped) = volumes_safe_to_remove(
+        planned,
+        &[&db, &api],
+        &HashSet::from([container_id(&db), container_id(&api)]),
+    );
+    assert_eq!(
+        safe.iter().map(|id| id.name.as_str()).collect::<Vec<_>>(),
+        ["app_data"]
+    );
+    assert!(skipped.is_empty());
 }
 
 #[test]
@@ -513,6 +531,26 @@ fn combined_teardown_result_preserves_action_error_and_joins_volume_failures() {
         .unwrap_err()
         .to_string(),
         "Service lifecycle completed partially; one or more Docker Volume removals failed or were omitted: busy"
+    );
+}
+
+#[test]
+fn skipped_volumes_join_the_partial_lifecycle_error() {
+    let db = with_mounts(
+        service_named('a', "app", "db"),
+        vec![(ordinary("data"), "data", "/data")],
+    );
+    let planned = service_volume_teardown(&[&db], std::slice::from_ref(&db)).unwrap();
+    let (_, skipped) = volumes_safe_to_remove(planned, &[&db], &HashSet::new());
+    let skipped_id = skipped.first().expect("still-mounted volume");
+    assert_eq!(
+        combined_teardown_result(service_action_result(true), skipped_volume_result(&skipped),)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "Service lifecycle completed partially; Docker Volume removals not attempted: {}/{}",
+            skipped_id.machine_id, skipped_id.name
+        )
     );
 }
 

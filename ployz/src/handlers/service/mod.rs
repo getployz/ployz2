@@ -327,7 +327,7 @@ fn remove_with_volumes(root: &ArgMatches) -> Result<(), Error> {
                 None,
             )
             .await?;
-            let volumes = volumes_safe_to_remove(volumes, &services, &outcome.affected);
+            let (volumes, skipped) = volumes_safe_to_remove(volumes, &services, &outcome.affected);
             let volume_result = if volumes.is_empty() {
                 Ok(())
             } else {
@@ -342,7 +342,13 @@ fn remove_with_volumes(root: &ArgMatches) -> Result<(), Error> {
                     Err(error) => Err(error.into()),
                 }
             };
-            combined_teardown_result(service_action_result(outcome.partial), volume_result)
+            combined_teardown_result(
+                combined_teardown_result(
+                    service_action_result(outcome.partial),
+                    skipped_volume_result(&skipped),
+                ),
+                volume_result,
+            )
         })
     })
 }
@@ -380,7 +386,7 @@ fn volumes_safe_to_remove(
     planned: Vec<DockerVolumeId>,
     selected: &[&ServiceObservation],
     gone: &HashSet<ContainerId>,
-) -> Vec<DockerVolumeId> {
+) -> (Vec<DockerVolumeId>, Vec<DockerVolumeId>) {
     let still_mounted = selected
         .iter()
         .flat_map(|service| service.members())
@@ -391,8 +397,22 @@ fn volumes_safe_to_remove(
         .collect::<HashSet<_>>();
     planned
         .into_iter()
-        .filter(|id| !still_mounted.contains(id))
-        .collect()
+        .partition(|id| !still_mounted.contains(id))
+}
+
+fn skipped_volume_result(skipped: &[DockerVolumeId]) -> Result<(), Error> {
+    if skipped.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::usage(format!(
+            "Docker Volume removals not attempted: {}",
+            skipped
+                .iter()
+                .map(|id| format!("{}/{}", id.machine_id, id.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
+    }
 }
 
 fn service_action_result(partial: bool) -> Result<(), Error> {
