@@ -28,7 +28,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let yes = matches.get_flag("yes");
     let storage = crate::provisioning::resolve_storage(matches)?;
     if !matches.get_flag("no-install") {
-        crate::provisioning::provision(matches, storage, "ssh")?;
+        crate::provisioning::provision(matches, storage)?;
     }
 
     let assigned = runtime()?.block_on(async {
