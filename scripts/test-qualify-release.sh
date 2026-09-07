@@ -30,9 +30,29 @@ cat > "$TMP/ployz" <<'CLI'
 #!/bin/sh
 case "$1" in
     version) printf '1.2.3\n' ;;
-    volume) printf 'qualify-data\n' ;;
+    deploy|volume)
+        action=$1
+        shift
+        if [ "$action" = volume ]; then
+            [ "${1:-}" = ls ] || exit 1
+            shift
+        fi
+        context= file= yes=no
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --context) context=$2; shift ;;
+                -f) file=$2; shift ;;
+                --yes) yes=yes ;;
+                *) echo "unexpected $action argument: $1" >&2; exit 1 ;;
+            esac
+            shift
+        done
+        printf '%s context=%s file=%s yes=%s\n' "$action" "$context" "$file" "$yes" >> "$LOG"
+        [ "$action" != volume ] || printf 'qualify-data\n'
+        ;;
     machine)
         action=$2
+        case "$action" in init|add) ;; *) exit 1 ;; esac
         shift 2
         reset=no key= target=
         while [ "$#" -gt 0 ]; do
@@ -45,6 +65,7 @@ case "$1" in
         done
         printf '%s target=%s reset=%s key=%s\n' "$action" "$target" "$reset" "$key" >> "$LOG"
         ;;
+    *) echo "unexpected command: $*" >&2; exit 1 ;;
 esac
 CLI
 chmod 0755 "$TMP/ployz"
@@ -86,12 +107,18 @@ for reset in 0 1; do
     [ "$reset" = 0 ] || expected_reset=yes
     grep -Fxq "init target=root@192.0.2.10 reset=$expected_reset key=/tmp/qualify-key" "$LOG" || fail "init lost its target, reset policy, or SSH identity"
     grep -Fxq 'add target=root@192.0.2.11 reset=yes key=/tmp/qualify-key' "$LOG" || fail "add lost its target or SSH identity"
+    grep -Fxq "deploy context=qualify file=$ROOT/scripts/qualify-release/compose.yaml yes=yes" "$LOG" || fail "named-volume fixture was not deployed"
+    grep -Fxq 'volume context=qualify file= yes=no' "$LOG" || fail "volume ls did not query the qualification context"
 done
 
 cat > "$TMP/bin/cargo" <<'CARGO'
 #!/bin/sh
 case " $* " in
-    *' --no-run '*) exit 0 ;;
+    *' --no-run '*' --ignored '*|*' --ignored '*' --no-run '*) echo 'informing tests must execute' >&2; exit 1 ;;
+    *' --no-run '*)
+        [ ! -s "$LOG" ] || exit 1
+        printf 'compile\n' >> "$LOG"
+        exit 0 ;;
     *' --no-fail-fast '*) printf '%s\n' "$*" >> "$LOG" ;;
     *) echo 'test invocation must collect all binary failures' >&2; exit 1 ;;
 esac
@@ -99,7 +126,7 @@ CARGO
 chmod 0755 "$TMP/bin/cargo"
 : > "$LOG"
 PATH="$TMP/bin:$PATH" "$ROOT/scripts/run-layer3-tests.sh"
-[ -s "$LOG" ] || fail "layer3 runner did not execute tests"
+grep -Fq -- '--ignored' "$LOG" || fail "layer3 runner did not execute tests"
 
 output=$(
     PLOYZ_QUALIFY_HOSTS='root@192.0.2.10 root@192.0.2.11' PLOYZ_ARTIFACT_DIR="$TMP" \

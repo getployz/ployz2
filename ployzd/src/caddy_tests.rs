@@ -126,8 +126,9 @@ fn automatic_sites_render_routes_and_health_endpoint() {
     assert!(caddyfile.contains("respond \"Not Found\" 404"));
     assert!(caddyfile.contains("lb_retries 3"));
     assert!(caddyfile.contains("fail_duration 30s"));
-    assert!(caddyfile.contains(INGRESS_VERIFY_PATH));
-    assert!(caddyfile.contains(&format!("respond \"{local}\" 200")));
+    let health = automatic_site_block(&caddyfile, "http://");
+    let handler = automatic_site_block(&health, INGRESS_VERIFY_PATH);
+    assert!(handler.contains(&format!("respond \"{local}\" 200")));
     assert!(caddyfile.contains("http://example.com"));
     assert!(caddyfile.contains("reverse_proxy 10.210.1.2:80 10.210.2.2:80"));
 }
@@ -518,13 +519,13 @@ fn pending_challenge_is_answered_on_the_http_site() {
     );
 
     assert!(caddyfile.contains("auto_https off"));
-    assert!(caddyfile.contains("http://secure.example.com"));
-    assert!(
-        caddyfile
-            .contains("/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0")
+    let site = automatic_site_block(&caddyfile, "http://secure.example.com");
+    let challenge = automatic_site_block(
+        &site,
+        "/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
     );
-    assert!(caddyfile.contains("LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" 200"));
-    assert!(caddyfile.contains("respond \"Bad Gateway\" 502"));
+    assert!(challenge.contains("respond \"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" 200"));
+    assert!(site.contains("respond \"Bad Gateway\" 502"));
     assert!(!caddyfile.contains("https://secure.example.com"));
 }
 
@@ -554,8 +555,18 @@ fn last_error_is_a_skipped_certificate_comment() {
         &certificates,
     );
 
-    assert!(caddyfile.contains("Skipped certificate issuance"));
-    assert!(caddyfile.contains("secure.example.com resolves to 198.51.100.10"));
+    for diagnostic in [
+        "Skipped certificate issuance",
+        "secure.example.com resolves to 198.51.100.10",
+    ] {
+        assert!(caddyfile.contains(diagnostic));
+        assert!(
+            caddyfile
+                .lines()
+                .filter(|line| line.contains(diagnostic))
+                .all(|line| line.trim_start().starts_with('#'))
+        );
+    }
     assert!(!caddyfile.contains("https://secure.example.com"));
 }
 
