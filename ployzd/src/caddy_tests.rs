@@ -394,10 +394,12 @@ fn https_site_with_material_pins_tls_paths() {
             && pin.contains(".key"),
         "{pin}"
     );
-    assert!(caddyfile.contains("https://secure.example.com"));
-    assert!(caddyfile.contains("reverse_proxy 10.210.1.2:8443"));
-    assert!(caddyfile.contains("http://example.com"));
-    assert!(caddyfile.contains("reverse_proxy 10.210.1.2:80"));
+    let https = automatic_site_block(&caddyfile, "https://secure.example.com");
+    assert!(https.contains(&pin.split_whitespace().collect::<Vec<_>>().join(" ")));
+    assert!(https.contains("reverse_proxy 10.210.1.2:8443"));
+    let http = automatic_site_block(&caddyfile, "http://example.com");
+    assert!(http.contains("reverse_proxy 10.210.1.2:80"));
+    assert!(!http.contains("tls "));
     assert!(!caddyfile.contains("tls /config/caddy/certs/example.com"));
 }
 
@@ -747,12 +749,14 @@ fn published_hosts_without_healthy_replicas_return_bad_gateway() {
         &BTreeMap::new(),
     );
 
-    assert!(caddyfile.contains("http://healthy.example"));
-    assert!(caddyfile.contains("reverse_proxy 10.210.1.2:80"));
+    let healthy = automatic_site_block(&caddyfile, "http://healthy.example");
+    assert!(healthy.contains("reverse_proxy 10.210.1.2:80"));
+    assert!(!healthy.contains("502"));
     for hostname in ["stopped.example", "unhealthy.example"] {
-        assert!(caddyfile.contains(&format!("http://{hostname}")));
+        let site = automatic_site_block(&caddyfile, &format!("http://{hostname}"));
+        assert!(site.contains("respond \"Bad Gateway\" 502"), "{site}");
+        assert!(!site.contains("reverse_proxy"), "{site}");
     }
-    assert_eq!(caddyfile.matches("respond \"Bad Gateway\" 502").count(), 2);
     assert!(!caddyfile.contains("unknown Host"));
 }
 
@@ -1168,6 +1172,35 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
             .is_some_and(|config| config.contains(&format!("tls /config/caddy/certs/{cert_name}")))
     );
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+// Only for automatic sites: their tokens contain no quoted braces or placeholders.
+// ponytail: use Caddy adaptation if these fixtures grow arbitrary user directives.
+fn automatic_site_block(caddyfile: &str, address: &str) -> String {
+    let content = caddyfile
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut tokens = content
+        .split_whitespace()
+        .skip_while(|token| *token != address);
+    assert_eq!(tokens.next(), Some(address), "missing site {address}");
+    assert_eq!(tokens.next(), Some("{"));
+    let mut depth = 1;
+    let mut body = Vec::new();
+    for token in tokens {
+        match token {
+            "{" => depth += 1,
+            "}" => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 {
+            return body.join(" ");
+        }
+        body.push(token);
+    }
+    panic!("unclosed site {address}");
 }
 
 fn pinned_tls_line<'a>(caddyfile: &'a str, hostname: &str) -> Option<&'a str> {
