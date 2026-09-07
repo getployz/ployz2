@@ -9,7 +9,7 @@ use oci_client::Reference;
 use ployz_core::{
     EnsureImageIngestRequest, FanoutSelector, ImageIngestDestination, ImageIngestReason,
     ListMachinesRequest, Machine, MachineFailure, MachineId, MachineImages, MachineSuccess,
-    MachineTarget, PartialResult, PullImageFromMachineRequest, PullPolicy, RpcError, op,
+    MachineTarget, PartialResult, PullImageFromMachineRequest, PullPolicy, Rpc, RpcError, op,
     resolve_machine_selectors,
 };
 use thiserror::Error;
@@ -263,11 +263,12 @@ async fn push_to_machine(
     mode: ProxyMode,
     cancellation: &mut Cancellation,
 ) -> Result<ImageIngestDestination, PushError> {
+    // EnsureImageIngest is idempotent; a dropped RPC must not fail the Machine.
     let opened = cancellation
-        .race(client.invoke::<op::EnsureImageIngest>(
+        .race(retrying_rpc::<op::EnsureImageIngest>(
+            client,
             EnsureImageIngestRequest {},
-            &MachineTarget::from(&machine.id),
-            None,
+            &machine.id,
         ))
         .await?
         .map_err(ingest_error)?;
@@ -291,13 +292,13 @@ async fn pull_on_machine(
     cancellation: &mut Cancellation,
 ) -> Result<(), PushError> {
     cancellation
-        .race(client.invoke::<op::PullImageFromMachine>(
+        .race(retrying_rpc::<op::PullImageFromMachine>(
+            client,
             PullImageFromMachineRequest {
                 image: image.to_owned(),
                 source,
             },
-            &MachineTarget::from(&machine.id),
-            None,
+            &machine.id,
         ))
         .await?
         .map(|_| ())
@@ -340,24 +341,18 @@ pub(crate) async fn ensure_cluster_image(
     let Some(peer) = peer_with_image(dest, &listings.successes, image) else {
         return Ok(());
     };
-    let opened = client
-        .invoke::<op::EnsureImageIngest>(
-            EnsureImageIngestRequest {},
-            &MachineTarget::from(&peer),
-            None,
-        )
-        .await?;
-    client
-        .invoke::<op::PullImageFromMachine>(
-            PullImageFromMachineRequest {
-                image: image.to_owned(),
-                source: opened.destination,
-            },
-            &MachineTarget::from(dest),
-            None,
-        )
-        .await
-        .map(|_| ())
+    let opened =
+        retrying_rpc::<op::EnsureImageIngest>(client, EnsureImageIngestRequest {}, &peer).await?;
+    retrying_rpc::<op::PullImageFromMachine>(
+        client,
+        PullImageFromMachineRequest {
+            image: image.to_owned(),
+            source: opened.destination,
+        },
+        dest,
+    )
+    .await
+    .map(|_| ())
 }
 
 fn destination_has_image(
@@ -390,6 +385,21 @@ fn image_present(images: &MachineImages, image: &str) -> bool {
                     .is_some_and(|prefix| prefix.ends_with('/'))
         })
     })
+}
+
+/// Retry the same bounded policy as [`Client::call`]. `invoke` is one-shot so a
+/// single `transport error` fails Direct Image Transfer on a reachable Machine.
+async fn retrying_rpc<T: Rpc>(
+    client: &Client,
+    request: T::Request,
+    target: &MachineId,
+) -> Result<T::Response, RpcError> {
+    let target = MachineTarget::from(target);
+    let mut client = client.clone();
+    client
+        .call::<T>(request, Some(&target))
+        .await
+        .map_err(rpc_error)
 }
 
 fn ingest_error(error: RpcError) -> PushError {
@@ -776,6 +786,20 @@ mod tests {
             }),
             PushError::ImageIngest(_)
         ));
+    }
+
+    #[test]
+    fn dropped_ingest_rpc_is_the_retryable_transport_shape() {
+        let transport =
+            crate::connect::ConnectError::from(tonic::Status::unavailable("transport error"));
+        assert!(transport.is_retryable());
+        assert_eq!(
+            ingest_error(rpc_error(crate::connect::ConnectError::from(
+                tonic::Status::unavailable("transport error")
+            )))
+            .to_string(),
+            "Cluster operation failed: image ingest: transport error"
+        );
     }
 
     #[test]

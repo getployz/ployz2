@@ -17,14 +17,15 @@ use ployz::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
     CreateVolumeReport, CreateVolumeRequest, DataLoss, DataLossConfirmation, DockerVolume,
-    DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
-    LocalMachineRemoved, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
-    MachineName, MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
-    MachineStorageObservation, MembershipObservation, ObservedDataLoss, OpaquePayload,
-    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
-    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
-    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
-    WireGuardPublicKey, encode_runtime_watch_frame, op,
+    DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, ImageIngestDestination,
+    ImageIngestOpened, ImagePulled, LocalMachinePhase, LocalMachineRemoved, MANAGED_LABEL, Machine,
+    MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachinePath,
+    MachineRemoved, MachineRpc, MachineRpcServer, MachineStorageObservation, ManagementAddress,
+    MembershipObservation, ObservedDataLoss, OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RemoveMachineRequest, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, UNREGISTRY_PORT,
+    VolumeInventory, VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey,
+    encode_runtime_watch_frame, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -63,6 +64,28 @@ pub(super) enum DescribeOutcome {
     Status(Status),
     Remote(RpcError),
     Hang,
+}
+
+pub(super) fn test_ingest_opened() -> ImageIngestOpened {
+    ImageIngestOpened {
+        destination: ImageIngestDestination {
+            management_address: ManagementAddress("fdcc::7".parse().unwrap()),
+            port: UNREGISTRY_PORT,
+        },
+    }
+}
+
+async fn take_rpc_outcome(
+    outcomes: &Mutex<VecDeque<DescribeOutcome>>,
+) -> Option<Result<Response<OpaquePayload>, Status>> {
+    let outcome = outcomes.lock().unwrap().pop_front()?;
+    match outcome {
+        DescribeOutcome::Status(status) => Some(Err(status)),
+        DescribeOutcome::Remote(error) => Some(Ok(Response::new(
+            RpcResponse::from(error).encode().unwrap(),
+        ))),
+        DescribeOutcome::Hang => std::future::pending().await,
+    }
 }
 
 #[derive(Clone)]
@@ -142,6 +165,8 @@ fn send_watch_event(sender: &mpsc::Sender<Result<OpaquePayload, Status>>, event:
 pub(super) struct DiscoveryService {
     description: ContractDescription,
     pub(super) describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
+    pub(super) ingest_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
+    pub(super) pull_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
     pub(super) stream_opens: Arc<AtomicUsize>,
     pub(super) watch_opens: Arc<AtomicUsize>,
     pub(super) list_rpc_calls: Arc<AtomicUsize>,
@@ -176,6 +201,8 @@ impl DiscoveryService {
         Self {
             description,
             describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
+            ingest_outcomes: Arc::new(Mutex::new(VecDeque::new())),
+            pull_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             stream_opens: Arc::new(AtomicUsize::new(0)),
             watch_opens: Arc::new(AtomicUsize::new(0)),
             list_rpc_calls: Arc::new(AtomicUsize::new(0)),
@@ -744,14 +771,24 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        match take_rpc_outcome(&self.ingest_outcomes).await {
+            Some(response) => response,
+            None => Ok(Response::new(
+                RpcResponse::from(test_ingest_opened()).encode().unwrap(),
+            )),
+        }
     }
 
     async fn pull_image_from_machine(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        match take_rpc_outcome(&self.pull_outcomes).await {
+            Some(response) => response,
+            None => Ok(Response::new(
+                RpcResponse::from(ImagePulled {}).encode().unwrap(),
+            )),
+        }
     }
 
     async fn get_ingress_proxy_config(
