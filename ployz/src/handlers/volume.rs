@@ -256,14 +256,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     force,
                 })
                 .await?;
-            if removal
-                .iter()
-                .all(|removal| matches!(removal.outcome, VolumeRemovalOutcome::Removed))
-            {
-                Ok(())
-            } else {
-                Err(Error::usage(removal_failure_summary(&removal)))
-            }
+            refuse_unless_removed(removal)
         })
     })
 }
@@ -430,6 +423,17 @@ fn volume_failure_summary(result: &PartialResult<VolumeInventory, RpcError>) -> 
         ));
     }
     format!("one or more Docker Volume observations failed: {failures}")
+}
+
+pub(super) fn refuse_unless_removed(removals: Vec<VolumeRemoval>) -> Result<(), Error> {
+    if removals
+        .iter()
+        .all(|removal| matches!(removal.outcome, VolumeRemovalOutcome::Removed))
+    {
+        Ok(())
+    } else {
+        Err(Error::usage(removal_failure_summary(&removals)))
+    }
 }
 
 pub(super) fn removal_failure_summary(removals: &[VolumeRemoval]) -> String {

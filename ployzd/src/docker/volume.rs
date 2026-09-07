@@ -180,6 +180,16 @@ impl ContainerRuntime {
         docker_volume(machine_id, volume)
     }
 
+    /// Remove a named Docker Volume.
+    ///
+    /// `force` is Docker's force flag: it does not evict holders. An in-use
+    /// volume still fails, and the error names labeled Services when they can
+    /// be observed.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker rejects the deletion, including when containers
+    /// still mount the volume.
     pub async fn remove_volume(&self, name: &DockerVolumeName, force: bool) -> Result<(), Error> {
         match self
             .docker
@@ -204,7 +214,10 @@ impl ContainerRuntime {
         }
     }
 
-    async fn volume_holders(&self, name: &DockerVolumeName) -> Result<Vec<VolumeHolder>, Error> {
+    async fn volume_holders(
+        &self,
+        name: &DockerVolumeName,
+    ) -> Result<Vec<Option<QualifiedService>>, Error> {
         let filters = HashMap::from([("volume", vec![name.as_str()])]);
         let holders = self
             .docker
@@ -217,16 +230,10 @@ impl ContainerRuntime {
             ))
             .await?
             .into_iter()
-            .map(|container| VolumeHolder {
-                service: holder_service(container.labels.as_ref()),
-            })
+            .map(|container| holder_service(container.labels.as_ref()))
             .collect();
         Ok(holders)
     }
-}
-
-struct VolumeHolder {
-    service: Option<QualifiedService>,
 }
 
 fn holder_service(labels: Option<&HashMap<String, String>>) -> Option<QualifiedService> {
@@ -236,10 +243,11 @@ fn holder_service(labels: Option<&HashMap<String, String>>) -> Option<QualifiedS
     Some(QualifiedService::new(project, name))
 }
 
-fn volume_in_use(holders: Vec<VolumeHolder>) -> Error {
+fn volume_in_use(holders: Vec<Option<QualifiedService>>) -> Error {
     let named = holders
         .iter()
-        .filter_map(|holder| holder.service.as_ref().map(ToString::to_string))
+        .flatten()
+        .cloned()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -249,10 +257,15 @@ fn volume_in_use(holders: Vec<VolumeHolder>) -> Error {
     } else {
         format!("{count} containers")
     };
+    let names = named
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     let message = if named.is_empty() {
         format!("volume is in use ({containers})")
     } else {
-        format!("volume is in use by {} ({containers})", named.join(", "))
+        format!("volume is in use by {names} ({containers})")
     };
     Error::VolumeInUse {
         message,

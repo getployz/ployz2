@@ -598,7 +598,7 @@ pub enum Error {
     #[error("{message}")]
     VolumeInUse {
         message: String,
-        services: Vec<String>,
+        services: Vec<QualifiedService>,
     },
     /// Docker created a Volume but its resulting state could not be observed.
     #[error("Docker Volume creation succeeded but verification failed for {id:?}: {error}")]
@@ -701,6 +701,10 @@ impl Error {
 
 impl From<&Error> for RpcError {
     fn from(error: &Error) -> Self {
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "only a few errors carry structured RPC details"
+        )]
         let details = match error {
             Error::VolumeCreatedButUnverified { id, error } => serde_json::json!({
                 "created_volume": id,
