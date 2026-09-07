@@ -6,7 +6,7 @@ use ployz_core::{
 
 use super::super::{connect_client, runtime};
 use super::{ConnectionOptions, target};
-use crate::handlers::{Error, leaf_matches};
+use crate::handlers::{Error, data_loss::VolumeEffect, leaf_matches};
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
@@ -49,7 +49,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         let Some(confirmation) = super::super::data_loss::confirm_removal(
             root, &client, &observed, &format!("Remove Machine ({})", selected.id),
-            &[selected.name.to_string()], !no_reset,
+            &[selected.name.to_string()], if no_reset { VolumeEffect::Preserve } else { VolumeEffect::LoseAccess },
         )? else { return Ok(()); };
         let mut reset_failure = None;
 
@@ -66,10 +66,10 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         println!("Removed Machine {} ({}) membership", selected.name, selected.id);
         if let Some(reason) = &reset_failure {
-            eprintln!("Machine {} cleanup/reset incomplete: {reason}. Volume deletion could not be confirmed.", selected.id);
+            eprintln!("Machine {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
         } else {
             for loss in &observed.data_loss {
-                println!("Deleted volume {loss}");
+                println!("Volume data was not erased by reset: {loss}");
             }
         }
         if !replicated_services.is_empty() {

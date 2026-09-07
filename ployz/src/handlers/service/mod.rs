@@ -314,7 +314,11 @@ pub fn remove(root: &ArgMatches) -> Result<(), Error> {
                 &data_loss_observed,
                 "Remove Services",
                 &targets,
-                destroy_volumes,
+                if destroy_volumes {
+                    data_loss::VolumeEffect::Delete
+                } else {
+                    data_loss::VolumeEffect::Preserve
+                },
             )?
             else {
                 return Ok(());

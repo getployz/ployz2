@@ -331,7 +331,7 @@ fn machine() -> Command {
                 .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
                 .arg(positional("machine", true))
                 .arg(
-                    volume_acceptance().conflicts_with("no-reset"),
+                    volume_acceptance().conflicts_with("no-reset").help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host; --yes cannot bypass this"),
                 ),
         )
         .subcommand(base("rtt", "Show round-trip times"))

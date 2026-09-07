@@ -9,13 +9,20 @@ use std::{
     io::{self, IsTerminal, Write},
 };
 
+#[derive(Clone, Copy)]
+pub(super) enum VolumeEffect {
+    Preserve,
+    Delete,
+    LoseAccess,
+}
+
 pub(super) fn confirm_removal(
     root: &ArgMatches,
     client: &Client,
     observed: &ObservedDataLoss,
     operation: &str,
     targets: &[String],
-    destroy_volumes: bool,
+    volume_effect: VolumeEffect,
 ) -> Result<Option<DataLossConfirmation>, Error> {
     let leaf = leaf_matches(root);
     let context = match client.connection_source() {
@@ -30,7 +37,7 @@ pub(super) fn confirm_removal(
         &string_values(leaf, "accept-volume-loss"),
         targets,
         ConfirmationOptions {
-            destroy_volumes,
+            volume_effect,
             yes: leaf.get_flag("yes"),
             tty: io::stdin().is_terminal() && io::stdout().is_terminal(),
         },
@@ -74,7 +81,7 @@ fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<String> {
 }
 
 struct ConfirmationOptions {
-    destroy_volumes: bool,
+    volume_effect: VolumeEffect,
     yes: bool,
     tty: bool,
 }
@@ -89,7 +96,7 @@ fn confirm_with(
     mut read: impl FnMut(&str) -> io::Result<Option<String>>,
 ) -> Result<Option<DataLossConfirmation>, Error> {
     let ConfirmationOptions {
-        destroy_volumes,
+        volume_effect,
         yes,
         tty,
     } = options;
@@ -97,19 +104,24 @@ fn confirm_with(
         output,
         "Live Observation from one observer; not a globally complete Cluster view."
     )?;
-    if !destroy_volumes {
-        writeln!(output, "Volumes will be kept.")?;
-    } else if observed.data_loss.is_empty() {
-        writeln!(output, "No volumes to delete.")?;
-    } else {
-        writeln!(
+    match volume_effect {
+        VolumeEffect::Preserve => writeln!(output, "Volumes will be kept.")?,
+        VolumeEffect::Delete if observed.data_loss.is_empty() => {
+            writeln!(output, "No volumes to delete.")?
+        }
+        VolumeEffect::Delete => writeln!(
             output,
             "Permanently delete {} volumes:",
             observed.data_loss.len()
-        )?;
-        for loss in &observed.data_loss {
-            writeln!(output, "  {loss}")?;
-        }
+        )?,
+        VolumeEffect::LoseAccess => writeln!(
+            output,
+            "Volumes losing Cluster access: {}. Reset does not erase their data:",
+            observed.data_loss.len()
+        )?,
+    }
+    for loss in &observed.data_loss {
+        writeln!(output, "  {loss}")?;
     }
     let names = observed
         .data_loss
@@ -120,7 +132,7 @@ fn confirm_with(
     let unknown = supplied.difference(&names).copied().collect::<Vec<_>>();
     if !unknown.is_empty() {
         return Err(Error::usage(format!(
-            "Unknown volume acceptance: {}. Actual deletion list: {}. No changes made.",
+            "Unknown volume acceptance: {}. Actual affected volumes: {}. No changes made.",
             unknown.join(", "),
             observed
                 .data_loss
@@ -160,6 +172,7 @@ fn confirm_with(
     }
     if prompt(
         if names.is_empty() { &[] } else { targets },
+        volume_effect,
         output,
         &mut read,
     )? {
@@ -181,11 +194,12 @@ pub(super) fn confirm_ordinary(root: &ArgMatches, client: &Client) -> Result<boo
             shell_words::join(args)
         )));
     }
-    prompt(&[], &mut io::stdout(), read_answer)
+    prompt(&[], VolumeEffect::Preserve, &mut io::stdout(), read_answer)
 }
 
 fn prompt(
     targets: &[String],
+    volume_effect: VolumeEffect,
     output: &mut dyn Write,
     mut read: impl FnMut(&str) -> io::Result<Option<String>>,
 ) -> Result<bool, Error> {
@@ -193,8 +207,15 @@ fn prompt(
         let question = if targets.is_empty() {
             "Remove the listed targets? [y/N] (Enter cancels): ".to_owned()
         } else {
+            let consequence = match volume_effect {
+                VolumeEffect::Delete => "permanently delete the listed volumes",
+                VolumeEffect::LoseAccess => {
+                    "lose Cluster access to the listed volumes; their data will not be erased"
+                }
+                VolumeEffect::Preserve => "keep the listed volumes",
+            };
             format!(
-                "Type {} (space-separated target names) to remove the targets and permanently delete the listed volumes (Enter cancels): ",
+                "Type {} (space-separated target names) to remove the targets and {consequence} (Enter cancels): ",
                 targets.join(" ")
             )
         };
@@ -294,6 +315,41 @@ mod tests {
     }
 
     #[test]
+    fn machine_reset_confirmation_names_access_loss_without_promising_erasure() {
+        let observed = ObservedDataLoss {
+            data_loss: vec![loss('a', "data")],
+        };
+        let mut output = Vec::new();
+        let confirmation = confirm_with(
+            &observed,
+            &[],
+            &["worker".into()],
+            ConfirmationOptions {
+                volume_effect: VolumeEffect::LoseAccess,
+                yes: false,
+                tty: true,
+            },
+            &[],
+            &mut output,
+            |question| {
+                assert!(question.contains("lose Cluster access"), "{question}");
+                assert!(question.contains("data will not be erased"), "{question}");
+                assert!(!question.contains("delete"), "{question}");
+                Ok(Some("worker".into()))
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(observed.require(&confirmation).is_ok());
+        let output = String::from_utf8(output).unwrap();
+        assert!(
+            output.contains("Reset does not erase their data"),
+            "{output}"
+        );
+        assert!(!output.contains("Permanently delete"), "{output}");
+    }
+
+    #[test]
     fn unknown_names_refuse_even_when_no_volumes_exist() {
         for observed in [
             ObservedDataLoss { data_loss: vec![] },
@@ -306,7 +362,7 @@ mod tests {
                 &["gone".into()],
                 &["app".into()],
                 ConfirmationOptions {
-                    destroy_volumes: true,
+                    volume_effect: VolumeEffect::Delete,
                     yes: true,
                     tty: true,
                 },
@@ -335,7 +391,7 @@ mod tests {
                     &named,
                     &["app".into()],
                     ConfirmationOptions {
-                        destroy_volumes: true,
+                        volume_effect: VolumeEffect::Delete,
                         yes,
                         tty: false,
                     },
@@ -371,7 +427,7 @@ mod tests {
                 &["data".into(), "logs".into(), "data".into()],
                 &["app".into()],
                 ConfirmationOptions {
-                    destroy_volumes: true,
+                    volume_effect: VolumeEffect::Delete,
                     yes: false,
                     tty,
                 },
@@ -406,7 +462,7 @@ mod tests {
             &[],
             &targets,
             ConfirmationOptions {
-                destroy_volumes: true,
+                volume_effect: VolumeEffect::Delete,
                 yes: true,
                 tty: true,
             },
@@ -432,7 +488,7 @@ mod tests {
                     &[],
                     &targets,
                     ConfirmationOptions {
-                        destroy_volumes: true,
+                        volume_effect: VolumeEffect::Delete,
                         yes: false,
                         tty: true
                     },
@@ -455,7 +511,7 @@ mod tests {
                 &["wrong".into()],
                 &targets,
                 ConfirmationOptions {
-                    destroy_volumes: true,
+                    volume_effect: VolumeEffect::Delete,
                     yes: false,
                     tty: true
                 },
@@ -478,7 +534,11 @@ mod tests {
                     &[],
                     &["app".into()],
                     ConfirmationOptions {
-                        destroy_volumes: destroy,
+                        volume_effect: if destroy {
+                            VolumeEffect::Delete
+                        } else {
+                            VolumeEffect::Preserve
+                        },
                         yes: false,
                         tty: false
                     },
@@ -499,7 +559,11 @@ mod tests {
                     &[],
                     &["app".into()],
                     ConfirmationOptions {
-                        destroy_volumes: destroy,
+                        volume_effect: if destroy {
+                            VolumeEffect::Delete
+                        } else {
+                            VolumeEffect::Preserve
+                        },
                         yes: true,
                         tty: false
                     },
@@ -516,7 +580,11 @@ mod tests {
                     &[],
                     &["app".into()],
                     ConfirmationOptions {
-                        destroy_volumes: destroy,
+                        volume_effect: if destroy {
+                            VolumeEffect::Delete
+                        } else {
+                            VolumeEffect::Preserve
+                        },
                         yes: false,
                         tty: true
                     },

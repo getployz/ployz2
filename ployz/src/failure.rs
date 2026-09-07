@@ -86,7 +86,7 @@ pub(crate) fn partial_failure_details<T>(result: &PartialResult<T, RpcError>) ->
 
 pub(crate) fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
     format!(
-        "Additional volume loss is not covered by the confirmation: {}. Rerun to review the updated deletion list.",
+        "Additional volume loss is not covered by the confirmation: {}. Rerun to review the updated volume list.",
         missing
             .iter()
             .map(ToString::to_string)

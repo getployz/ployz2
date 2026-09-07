@@ -67,7 +67,11 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 &observed,
                 "Remove Project",
                 &[name.to_string()],
-                volumes == VolumeFate::Destroy,
+                if volumes == VolumeFate::Destroy {
+                    data_loss::VolumeEffect::Delete
+                } else {
+                    data_loss::VolumeEffect::Preserve
+                },
             )?
             else {
                 return Ok(());

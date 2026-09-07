@@ -11,6 +11,7 @@ async fn machine_removal_reports_complete_and_partial_results() {
         let service = DiscoveryService::new(test_description());
         *service.reset_warning.lock().unwrap() = warning.map(str::to_owned);
         let resets = service.reset_machines.clone();
+        let erased = service.removed_volumes.clone();
         let (address, server) = serve_discovery(service).await;
         let config = std::env::temp_dir().join(format!(
             "ployz-removal-invalid-{}.yaml",
@@ -43,9 +44,18 @@ async fn machine_removal_reports_complete_and_partial_results() {
             "{output:?}"
         );
         assert_eq!(*resets.lock().unwrap(), [machine_id('a')]);
+        assert!(erased.lock().unwrap().is_empty());
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stdout.contains("Removed Machine one"), "{stdout}");
+        assert!(
+            stdout.contains("Volumes losing Cluster access: 1"),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("Permanently delete") && !stdout.contains("Deleted volume"),
+            "{stdout}"
+        );
         if invalid_config {
             assert!(
                 stderr.contains("local context cleanup failed after Machine removal"),
@@ -56,7 +66,10 @@ async fn machine_removal_reports_complete_and_partial_results() {
             assert!(stderr.contains(warning), "{stderr}");
             assert!(!stdout.contains("Deleted volume"), "{stdout}");
         } else {
-            assert!(stdout.contains("Deleted volume data on"), "{stdout}");
+            assert!(
+                stdout.contains("Volume data was not erased by reset: data on"),
+                "{stdout}"
+            );
         }
         assert!(!stderr.contains("No changes made"), "{stderr}");
         server.abort();
