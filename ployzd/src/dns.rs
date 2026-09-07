@@ -274,15 +274,10 @@ fn unique_caller_projects(containers: &[ServiceContainer]) -> HashMap<Ipv4Addr, 
     }
     by_address
         .into_iter()
-        .filter_map(|(address, mut projects)| {
-            (projects.len() == 1).then(|| {
-                (
-                    address,
-                    projects
-                        .pop()
-                        .expect("Caller Project uniqueness already checked"),
-                )
-            })
+        .filter_map(|(address, projects)| {
+            <[ProjectName; 1]>::try_from(projects)
+                .ok()
+                .map(|[project]| (address, project))
         })
         .collect()
 }
