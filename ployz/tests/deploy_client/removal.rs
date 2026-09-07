@@ -149,3 +149,48 @@ async fn absent_project_reports_observation_and_leaves_machine_unchanged() {
     assert_eq!(mutations.load(Ordering::SeqCst), 0);
     server.abort();
 }
+
+#[tokio::test]
+async fn service_volume_removal_proceeds_when_an_unrelated_machine_is_omitted() {
+    let owner = machine('a', "owner");
+    let mut unrelated = machine('b', "unrelated");
+    unrelated.membership = ployz_core::MembershipObservation::Down;
+    let service = DeployService::new(owner.clone())
+        .with_machines(vec![owner.clone(), unrelated])
+        .with_dropped_observations();
+    let mut web = spec("web");
+    add_named_volume(&mut web, "data");
+    service
+        .listed_containers()
+        .lock()
+        .unwrap()
+        .push(running_container(&owner, &web));
+    let mutations = service.mutating_rpcs();
+    let (address, server) = listening(service).await;
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "rm",
+            "web",
+            "--volumes",
+            "--accept-volume-loss",
+            "app_data",
+        ])
+        .output()
+        .await
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(mutations.load(Ordering::SeqCst) > 0, "{stdout}\n{stderr}");
+    assert!(stdout.contains("Remove\tapp/web"), "{stdout}");
+    // The fake Machine refuses the volume RPC; this must be an execution failure, not a preflight refusal.
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("app_data") && stderr.contains("unused"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("was omitted"), "{stderr}");
+    assert!(!stderr.contains("No changes made"), "{stderr}");
+    server.abort();
+}

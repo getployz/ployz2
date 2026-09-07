@@ -292,12 +292,8 @@ pub fn remove(root: &ArgMatches) -> Result<(), Error> {
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
             let volumes = if destroy_volumes {
-                if !live.containers.all_targets_succeeded() {
-                    return Err(Error::usage(format!(
-                        "Cannot observe required Machines: {}. No changes made.",
-                        crate::failure::partial_failure_details(&live.containers)
-                    )));
-                }
+                // Selected volumes come from successful Machine-local container observations.
+                // Unrelated failures cannot conceal another mount on these owners.
                 service_volume_teardown(&services, &observed)?
             } else {
                 Vec::new()
