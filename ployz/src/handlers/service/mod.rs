@@ -2,8 +2,8 @@ use std::collections::{BTreeSet, HashSet};
 
 use clap::ArgMatches;
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerRef, ContainerRuntimeObservation, DataLoss,
-    DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineObservation,
+    ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
+    DataLoss, DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineObservation,
     MembershipObservation, ObservedDataLoss, RemoveVolumesRequest, RpcError, ServiceObservation,
     ServicePlacementEligibility, ServiceSelector, VolumeSource, select_service,
 };
@@ -255,6 +255,11 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+/// Start, stop, or remove observed Services.
+///
+/// # Errors
+///
+/// Returns a connection, RPC, usage, or wait error.
 pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let selectors = change_selectors(leaf)?;
@@ -267,10 +272,7 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
             let services = select_services(&observed, &selectors)?;
             let outcome =
                 apply_service_action(client, &live, &services, action, signal, timeout).await?;
-            match outcome.error {
-                Some(error) => Err(error),
-                None => Ok(()),
-            }
+            service_action_result(outcome.partial)
         })
     })
 }
@@ -325,9 +327,9 @@ fn remove_with_volumes(root: &ArgMatches) -> Result<(), Error> {
                 None,
             )
             .await?;
-            let volumes = volumes_safe_to_remove(volumes, &services, &outcome.removed);
-            let volume_error = if volumes.is_empty() {
-                None
+            let volumes = volumes_safe_to_remove(volumes, &services, &outcome.affected);
+            let volume_result = if volumes.is_empty() {
+                Ok(())
             } else {
                 match client
                     .remove_volumes(RemoveVolumesRequest {
@@ -336,11 +338,11 @@ fn remove_with_volumes(root: &ArgMatches) -> Result<(), Error> {
                     })
                     .await
                 {
-                    Ok(removal) => super::volume::refuse_unless_removed(removal).err(),
-                    Err(error) => Some(error.into()),
+                    Ok(removal) => super::volume::refuse_unless_removed(removal),
+                    Err(error) => Err(error.into()),
                 }
             };
-            combined_teardown_result(outcome.error, volume_error)
+            combined_teardown_result(service_action_result(outcome.partial), volume_result)
         })
     })
 }
@@ -377,11 +379,15 @@ fn service_volume_teardown(
 fn volumes_safe_to_remove(
     planned: Vec<DockerVolumeId>,
     selected: &[&ServiceObservation],
-    removed: &HashSet<ContainerId>,
+    gone: &HashSet<ContainerId>,
 ) -> Vec<DockerVolumeId> {
     let still_mounted = selected
         .iter()
-        .flat_map(|service| volume_ids(service, VolumeSource::docker_volume_name, removed))
+        .flat_map(|service| service.members())
+        .filter(|member| !gone.contains(&member.as_observation().container_id))
+        .flat_map(|member| {
+            member_volume_ids(member.as_observation(), VolumeSource::docker_volume_name)
+        })
         .collect::<HashSet<_>>();
     planned
         .into_iter()
@@ -389,55 +395,62 @@ fn volumes_safe_to_remove(
         .collect()
 }
 
-fn combined_teardown_result(action: Option<Error>, volumes: Option<Error>) -> Result<(), Error> {
+fn service_action_result(partial: bool) -> Result<(), Error> {
+    if partial {
+        Err(Error::usage("Service lifecycle completed partially"))
+    } else {
+        Ok(())
+    }
+}
+
+fn combined_teardown_result(
+    action: Result<(), Error>,
+    volumes: Result<(), Error>,
+) -> Result<(), Error> {
     match (action, volumes) {
-        (None, None) => Ok(()),
-        (Some(error), None) | (None, Some(error)) => Err(error),
-        (Some(action), Some(volumes)) => Err(Error::usage(format!("{action}; {volumes}"))),
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(action), Err(volumes)) => Err(Error::usage(format!("{action}; {volumes}"))),
     }
 }
 
 fn managed_volume_ids(service: &ServiceObservation) -> Vec<DockerVolumeId> {
-    volume_ids(
-        service,
-        VolumeSource::managed_docker_volume_name,
-        &HashSet::new(),
-    )
+    volume_ids(service, VolumeSource::managed_docker_volume_name)
 }
 
 fn docker_volume_ids(service: &ServiceObservation) -> Vec<DockerVolumeId> {
-    volume_ids(service, VolumeSource::docker_volume_name, &HashSet::new())
+    volume_ids(service, VolumeSource::docker_volume_name)
 }
 
 fn volume_ids(
     service: &ServiceObservation,
     name_of: fn(&VolumeSource) -> Option<&DockerVolumeName>,
-    skip: &HashSet<ContainerId>,
 ) -> Vec<DockerVolumeId> {
-    let mut ids = Vec::new();
-    for member in service.members() {
-        let observation = member.as_observation();
-        if skip.contains(&observation.container_id) {
-            continue;
-        }
-        ids.extend(
-            observation
-                .resolved_spec
-                .volume_graph()
-                .mounted_volumes()
-                .filter_map(|volume| name_of(&volume.source))
-                .map(|name| DockerVolumeId {
-                    machine_id: observation.machine_id,
-                    name: name.clone(),
-                }),
-        );
-    }
-    ids
+    service
+        .members()
+        .flat_map(|member| member_volume_ids(member.as_observation(), name_of))
+        .collect()
+}
+
+fn member_volume_ids(
+    observation: &ContainerObservation,
+    name_of: fn(&VolumeSource) -> Option<&DockerVolumeName>,
+) -> Vec<DockerVolumeId> {
+    observation
+        .resolved_spec
+        .volume_graph()
+        .mounted_volumes()
+        .filter_map(|volume| name_of(&volume.source))
+        .map(|name| DockerVolumeId {
+            machine_id: observation.machine_id,
+            name: name.clone(),
+        })
+        .collect()
 }
 
 struct ServiceActionOutcome {
-    removed: HashSet<ContainerId>,
-    error: Option<Error>,
+    affected: HashSet<ContainerId>,
+    partial: bool,
 }
 
 async fn apply_service_action(
@@ -493,8 +506,8 @@ async fn apply_service_action(
         partial = true;
     }
     Ok(ServiceActionOutcome {
-        removed: changed.into_iter().collect(),
-        error: partial.then(|| Error::usage("Service lifecycle completed partially")),
+        affected: changed.into_iter().collect(),
+        partial,
     })
 }
 

@@ -493,11 +493,11 @@ fn volumes_safe_to_remove_keeps_a_shared_volume_until_every_holder_is_gone() {
 
 #[test]
 fn combined_teardown_result_preserves_action_error_and_joins_volume_failures() {
-    assert!(combined_teardown_result(None, None).is_ok());
+    assert!(combined_teardown_result(Ok(()), Ok(())).is_ok());
     assert_eq!(
         combined_teardown_result(
-            Some(Error::usage("Service lifecycle completed partially")),
-            None
+            Err(Error::usage("Service lifecycle completed partially")),
+            Ok(())
         )
         .unwrap_err()
         .to_string(),
@@ -505,8 +505,8 @@ fn combined_teardown_result_preserves_action_error_and_joins_volume_failures() {
     );
     assert_eq!(
         combined_teardown_result(
-            Some(Error::usage("Service lifecycle completed partially")),
-            Some(Error::usage(
+            Err(Error::usage("Service lifecycle completed partially")),
+            Err(Error::usage(
                 "one or more Docker Volume removals failed or were omitted: busy"
             )),
         )
