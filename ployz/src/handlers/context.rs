@@ -5,7 +5,7 @@ use std::{
 
 use clap::ArgMatches;
 
-use crate::context::{Config, expand_home};
+use crate::context::{Config, RemovedContext, expand_home};
 
 use super::{Error, leaf_matches, required};
 
@@ -86,10 +86,10 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
 pub(super) fn remove(matches: &ArgMatches) -> Result<(), Error> {
     let mut config = config(matches)?;
     let name = required(leaf_matches(matches), "context-name")?;
-    let was_current = config.remove_context(&name)?;
+    let removed = config.remove_context(&name)?;
     config.save()?;
     println!("Removed context {name:?}.");
-    if was_current {
+    if removed == RemovedContext::Current {
         println!("Current context is now unset.");
     }
     Ok(())
