@@ -203,21 +203,26 @@ fn prompt(
     output: &mut dyn Write,
     mut read: impl FnMut(&str) -> io::Result<Option<String>>,
 ) -> Result<bool, Error> {
+    if !targets.is_empty() {
+        let consequence = match volume_effect {
+            VolumeEffect::Delete => "permanently delete the listed volumes and their data",
+            VolumeEffect::LoseAccess => {
+                "lose Cluster access to the listed volumes; their data will not be erased"
+            }
+            VolumeEffect::Preserve => "keep the listed volumes",
+        };
+        writeln!(
+            output,
+            "\nThis will remove {} and {consequence}.",
+            targets.join(", ")
+        )?;
+        writeln!(output, "Press Enter without typing to cancel.")?;
+    }
     loop {
         let question = if targets.is_empty() {
             "Remove the listed targets? [y/N] (Enter cancels): ".to_owned()
         } else {
-            let consequence = match volume_effect {
-                VolumeEffect::Delete => "permanently delete the listed volumes",
-                VolumeEffect::LoseAccess => {
-                    "lose Cluster access to the listed volumes; their data will not be erased"
-                }
-                VolumeEffect::Preserve => "keep the listed volumes",
-            };
-            format!(
-                "Type {} (space-separated target names) to remove the targets and {consequence} (Enter cancels): ",
-                targets.join(" ")
-            )
+            format!("Type \"{}\" to confirm: ", targets.join(" "))
         };
         output.flush()?;
         let Some(answer) = read(&question)? else {
@@ -332,9 +337,7 @@ mod tests {
             &[],
             &mut output,
             |question| {
-                assert!(question.contains("lose Cluster access"), "{question}");
-                assert!(question.contains("data will not be erased"), "{question}");
-                assert!(!question.contains("delete"), "{question}");
+                assert_eq!(question, "Type \"worker\" to confirm: ");
                 Ok(Some("worker".into()))
             },
         )
@@ -346,6 +349,8 @@ mod tests {
             output.contains("Reset does not erase their data"),
             "{output}"
         );
+        assert!(output.contains("lose Cluster access"), "{output}");
+        assert!(output.contains("data will not be erased"), "{output}");
         assert!(!output.contains("Permanently delete"), "{output}");
     }
 
@@ -469,7 +474,7 @@ mod tests {
             &[],
             &mut output,
             |question| {
-                assert!(question.contains("space-separated"));
+                assert_eq!(question, "Type \"app/db app/api\" to confirm: ");
                 assert!(!question.contains("[y/N]"));
                 Ok(input.next().unwrap())
             },
@@ -478,6 +483,8 @@ mod tests {
         .unwrap();
         assert!(observed.require(&confirmed).is_ok());
         let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("This will remove app/db, app/api and permanently delete the listed volumes and their data."));
+        assert!(output.contains("Press Enter without typing to cancel."));
         assert!(output.contains("Names did not match"));
         assert!(!output.contains("[y/N]"));
         for answer in [None, Some(String::new())] {
