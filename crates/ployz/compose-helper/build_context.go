@@ -76,7 +76,7 @@ func contextFiles(req contextRequest) (contextSelection, error) {
 			}
 			// Only prune when no exception can select a descendant (BuildKit semantics).
 			for _, pattern := range matcher.Patterns() {
-				if pattern.Exclusion() && (strings.ContainsAny(pattern.String(), "*[]?^\\") || strings.HasPrefix(pattern.String(), relative+string(filepath.Separator))) {
+				if pattern.Exclusion() && exceptionCanMatchDescendant(pattern.String(), relative) {
 					return nil
 				}
 			}
@@ -97,4 +97,15 @@ func contextFiles(req contextRequest) (contextSelection, error) {
 		result.Paths = append(result.Paths, base64.StdEncoding.EncodeToString([]byte(name)))
 	}
 	return result, nil
+}
+
+// A wildcard cannot match outside the literal prefix preceding it. Keep the
+// remaining cases conservative so ** and escaped patterns retain descendants.
+func exceptionCanMatchDescendant(pattern, directory string) bool {
+	directory += string(filepath.Separator)
+	if wildcard := strings.IndexAny(pattern, "*[]?^\\"); wildcard >= 0 {
+		prefix := pattern[:wildcard]
+		return strings.HasPrefix(directory, prefix) || strings.HasPrefix(prefix, directory)
+	}
+	return strings.HasPrefix(pattern, directory)
 }

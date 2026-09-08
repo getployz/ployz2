@@ -82,3 +82,4 @@ cloud-authored-setting-restore	cloud/src/modules/environment-design/working-sett
 cloud-node-introduction-history	cloud/src/modules/environment-design/working-document-restore.server.postgres.test.ts	-	-	-	-
 cloud-admitted-runtime-outcome	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-	-
 cloud-current-sdk-outcome	crates/ployz-core/tests/runtime_outcome.rs::current_outcome_confirms_only_services_with_all_operations_completed	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-
+compose-ignored-tree-pruning	crates/ployz/compose-helper/build_context_test.go::TestExceptionCanMatchDescendant	-	-	-	-
