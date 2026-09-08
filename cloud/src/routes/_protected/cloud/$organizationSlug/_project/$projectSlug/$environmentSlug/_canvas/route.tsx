@@ -6,7 +6,6 @@ import {
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import {
   getCanvasPositionsCollection,
-  getDestructiveVolumeAttemptsCollection,
   getEnvironmentNodeIntroductionsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
@@ -16,6 +15,7 @@ import {
   getRawVariablesCollection,
   getResourceLineagesCollection,
   getServiceVolumeAttachmentsCollection,
+  getVolumeRemoveAttemptsCollection,
   getVariableGroupsCollection,
 } from "#/electric/collections";
 import { preloadOrganizationEnvironmentChangeStateProjections } from "#/modules/deployments/use-environment-state-projection";
@@ -54,7 +54,7 @@ export const Route = createFileRoute(
         organizationSlug,
         baseUrl,
       ).preload(),
-      getDestructiveVolumeAttemptsCollection(
+      getVolumeRemoveAttemptsCollection(
         organizationSlug,
         baseUrl,
       ).preload(),

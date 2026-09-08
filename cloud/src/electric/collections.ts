@@ -27,15 +27,13 @@ import {
   serviceVolumeAttachment as schemaServiceVolumeAttachment,
 } from "#/modules/environment-design/tables";
 import {
-  destructiveVolumeAttempt as schemaDestructiveVolumeAttempt,
-} from "#/modules/operations/tables";
-import {
   project as schemaProject,
   environment as schemaEnvironment,
 } from "#/modules/project/tables";
 import {
   environmentNodeConfigSnapshot as schemaEnvironmentNodeConfigSnapshot,
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
+  volumeRemoveAttempt as schemaVolumeRemoveAttempt,
 } from "#/modules/runtime/tables";
 
 type ProjectRow = typeof schemaProject.$inferSelect;
@@ -59,8 +57,7 @@ type EnvironmentNodeConfigSnapshotRow =
   typeof schemaEnvironmentNodeConfigSnapshot.$inferSelect;
 type EnvironmentNodeIntroductionRow =
   typeof schemaEnvironmentNodeIntroduction.$inferSelect;
-type DestructiveVolumeAttemptRow =
-  typeof schemaDestructiveVolumeAttempt.$inferSelect;
+type VolumeRemoveAttemptRow = typeof schemaVolumeRemoveAttempt.$inferSelect;
 
 const dateParser = (value: string) => new Date(value);
 const parser = {
@@ -274,10 +271,10 @@ export const getEnvironmentNodeIntroductionsCollection =
     }),
   );
 
-export const getDestructiveVolumeAttemptsCollection = cachedByOrganization(
+export const getVolumeRemoveAttemptsCollection = cachedByOrganization(
   (organizationSlug, baseUrl) =>
-    makeOrganizationCollection<DestructiveVolumeAttemptRow>({
-      table: "destructive_volume_attempt",
+    makeOrganizationCollection<VolumeRemoveAttemptRow>({
+      table: "volume_remove_attempt",
       organizationSlug,
       baseUrl,
       getKey: (row) => row.id,

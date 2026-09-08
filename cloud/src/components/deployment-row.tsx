@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useParams, useRouter } from "@tanstack/react-router";
+import { useLiveQuery } from "@tanstack/react-db";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -11,10 +12,7 @@ import {
 import { Result } from "effect";
 import { toast } from "sonner";
 import { Badge } from "#/components/ui/badge";
-import {
-  DestructiveVolumeAttemptHistory,
-  useDestructiveVolumeRetryControl,
-} from "#/components/destructive-volume/deployment-destructive-volume";
+import { VolumeRemoveAttemptHistory } from "#/components/volume-remove/deployment-volume-remove-history";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
@@ -37,7 +35,10 @@ import {
 } from "#/components/ui/alert";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import { asString } from "#/lib/json";
-import { getEnvironmentDeploymentsCollection } from "#/electric/collections";
+import {
+  getEnvironmentDeploymentsCollection,
+  getRawEnvironmentResourcesCollection,
+} from "#/electric/collections";
 import { cn } from "#/lib/utils";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
 import {
@@ -247,6 +248,23 @@ export function DeploymentRow({
   const [isConfirming, setIsConfirming] = useState(false);
   const router = useRouter();
   const { organizationSlug } = useParams({ strict: false });
+  const rawResources = getRawEnvironmentResourcesCollection(
+    organizationSlug ?? "",
+  );
+  const { data: resourceRows = [] } = useLiveQuery({
+    query: (q) =>
+      q
+        .from({ resource: rawResources })
+        .select(({ resource }) => ({
+          id: resource.id,
+          implementationType: resource.implementationType,
+        })),
+  });
+  const availableVolumeResourceIds = new Set(
+    resourceRows.flatMap((resource) =>
+      resource.implementationType === "volume" ? [resource.id] : [],
+    ),
+  );
   const outcome = STATUS_OUTCOME[deployment.status];
   const parsedPreview = deployment.deployPreview;
   const deployProgress = parsedPreview
@@ -263,12 +281,6 @@ export function DeploymentRow({
   });
   const evidence = evidenceQuery.events;
   const isLoadingEvidence = evidenceQuery.isFetching;
-  const destructiveVolumeRetry = useDestructiveVolumeRetryControl({
-    attempts: deployment.destructiveVolumeAttempts,
-    organizationSlug: organizationSlug ?? null,
-    environmentSlug: deployment.environmentSlug,
-    deploymentStatus: deployment.status,
-  });
   const queuedForNextTrigger =
     deployment.status === "queued" && !deployment.dispatchRequestedAt;
   const statusLabel =
@@ -435,10 +447,9 @@ export function DeploymentRow({
                     Deploy now
                   </DropdownMenuItem>
                 ) : null}
-              {destructiveVolumeRetry.menuItem}
               {!deployment.canRetry &&
               deployment.status === "failed" &&
-              deployment.destructiveVolumeAttempts.length > 0 ? (
+              deployment.volumeRemoveAttempts.length > 0 ? (
                 <DropdownMenuItem disabled>
                   Review volume deletion from the canvas
                 </DropdownMenuItem>
@@ -492,7 +503,7 @@ export function DeploymentRow({
       ) : null}
 
       {deployment.coreDeployId ||
-      deployment.destructiveVolumeAttempts.length > 0 ? (
+      deployment.volumeRemoveAttempts.length > 0 ? (
         <>
           <Separator />
           <CollapsibleTrigger
@@ -516,9 +527,13 @@ export function DeploymentRow({
           </CollapsibleTrigger>
           <CollapsibleContent>
             <div className="flex flex-col px-3 pb-2">
-              {deployment.destructiveVolumeAttempts.length > 0 ? (
-                <DestructiveVolumeAttemptHistory
-                  attempts={deployment.destructiveVolumeAttempts}
+              {deployment.volumeRemoveAttempts.length > 0 ? (
+                <VolumeRemoveAttemptHistory
+                  attempts={deployment.volumeRemoveAttempts}
+                  organizationSlug={organizationSlug ?? ""}
+                  projectSlug={deployment.projectSlug}
+                  environmentSlug={deployment.environmentSlug}
+                  availableVolumeResourceIds={availableVolumeResourceIds}
                 />
               ) : null}
               {evidence.map((event) => (
@@ -552,7 +567,6 @@ export function DeploymentRow({
         </>
       ) : null}
     </Collapsible>
-    {destructiveVolumeRetry.dialog}
     </>
   );
 }

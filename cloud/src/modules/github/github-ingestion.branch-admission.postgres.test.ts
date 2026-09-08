@@ -542,7 +542,7 @@ describe("GitHub branch deployment admission", () => {
             resourceId: volumeId,
             namespaceId: "production",
             volumeName: `vol-${volumeId}`,
-            machineId: "machine-1",
+            machineId: "a".repeat(32),
           },
           evidence: {
             version: 1,
@@ -551,7 +551,7 @@ describe("GitHub branch deployment admission", () => {
             evidence: {
               namespaceId: "production",
               volumeName: `vol-${volumeId}`,
-              machineId: "machine-1",
+              machineId: "a".repeat(32),
               kind: { kind: "plain" },
               availability: {
                 status: "available",
@@ -600,12 +600,14 @@ describe("GitHub branch deployment admission", () => {
     ).toBe(false);
     const attempts = await harness.db
       .select()
-      .from(schema.destructiveVolumeAttempt);
+      .from(schema.volumeRemoveAttempt);
     expect(attempts).toHaveLength(1);
     expect(attempts[0]).toMatchObject({
       environmentDeploymentId: queued?.id,
       environmentResourceId: volumeId,
-      evidenceFingerprint: "reviewed-volume-removal",
+      status: "awaiting_deployment",
+      requestedByUserId: userId,
+      volumes: [{ machine_id: "a".repeat(32), name: `vol-${volumeId}` }],
     });
   });
 

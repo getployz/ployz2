@@ -2,7 +2,8 @@ import "@tanstack/react-start/server-only";
 
 import type { MachineId } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
+import { describeFailureCause } from "#/lib/error-message";
 import {
   environmentResource as schemaEnvironmentResource,
   environmentCanvasNodePosition as schemaEnvironmentCanvasNodePosition,
@@ -44,10 +45,12 @@ import { parseVolumeRemoveOutcome } from "#/modules/runtime/volume-removal-outco
 import {
   claimVolumeRemoveAttempt,
   completeVolumeRemoveAttempt,
+  beginVolumeRemoveAttempt,
   insertVolumeRemoveAttempt,
   loadLatestVolumeRemoveAttemptForResource,
   loadVolumeRemoveAttempt,
   loadVolumeRemoveAttemptByRun,
+  markVolumeRemoveAttemptUnknown,
   type VolumeRemoveAttempt,
 } from "#/modules/runtime/volume-removal.repository";
 import { Database } from "#/server/database.server";
@@ -238,6 +241,16 @@ export const retryVolumeRemove = Effect.fn("VolumeRemoval.retry")(
       yield* dispatchVolumeRemoveRequested(attempt.id);
       return attempt;
     }
+    if (
+      attempt.environmentDeploymentId !== null &&
+      attempt.inngestRunId === null
+    ) {
+      return yield* new Validation({
+        field: "attemptId",
+        message:
+          "This volume removal was never released by its deployment. Submit a fresh reviewed deployment instead.",
+      });
+    }
     if (retry.volumes.length === 0) {
       return yield* new Validation({
         field: "attemptId",
@@ -302,6 +315,9 @@ export const prepareVolumeRemoveAttemptActivity = Effect.fn(
   if (existing.status === "completed") {
     return { kind: "reconcile" as const, attempt: existing };
   }
+  if (existing.status === "awaiting_deployment") {
+    return { kind: "awaiting" as const, attempt: existing };
+  }
   if (volumeRemoveIsTerminal(existing.status)) {
     return { kind: "terminal" as const, attempt: existing };
   }
@@ -328,6 +344,45 @@ export const removeVolumesActivity = Effect.fn("VolumeRemoval.removeVolumes")(
       );
   },
 );
+
+function unknownVolumeRemoveFailure(cause: unknown) {
+  const detail = `: ${describeFailureCause(cause)}`;
+  return `Volume removal may have reached Ployz, but Cloud did not receive a terminal outcome${detail}`.slice(
+    0,
+    2_000,
+  );
+}
+
+export const executeVolumeRemoveAttemptOnceActivity = Effect.fn(
+  "VolumeRemoval.executeOnce",
+)(function* (input: {
+  readonly attemptId: string;
+  readonly inngestRunId: string;
+  readonly now: Date;
+}) {
+  const begun = yield* beginVolumeRemoveAttempt(input);
+  if (begun.kind === "unknown") return begun;
+  const outcomeExit = yield* Effect.exit(
+    Effect.scoped(removeVolumesActivity(begun.attempt)),
+  );
+  if (Exit.isFailure(outcomeExit)) {
+    const attempt = yield* markVolumeRemoveAttemptUnknown({
+      attemptId: begun.attempt.id,
+      inngestRunId: input.inngestRunId,
+      failureMessage: unknownVolumeRemoveFailure(Cause.squash(outcomeExit.cause)),
+      now: input.now,
+    });
+    return { kind: "unknown" as const, attempt };
+  }
+  const completion = volumeRemoveCompletion(begun.attempt, outcomeExit.value);
+  const attempt = yield* completeVolumeRemoveAttempt({
+    attemptId: begun.attempt.id,
+    inngestRunId: input.inngestRunId,
+    ...completion,
+    now: input.now,
+  });
+  return { kind: "completed" as const, attempt };
+});
 
 export const reconcileVolumeRemoveTombstoneActivity = Effect.fn(
   "VolumeRemoval.reconcileTombstone",
@@ -408,6 +463,15 @@ export const failOwnedVolumeRemoveAttemptActivity = Effect.fn(
   ) {
     return { state: "skipped" as const };
   }
+  if (attempt.startedAt !== null) {
+    yield* markVolumeRemoveAttemptUnknown({
+      attemptId: attempt.id,
+      inngestRunId: input.inngestRunId,
+      failureMessage: unknownVolumeRemoveFailure(input.failureMessage),
+      now: input.now,
+    });
+    return { state: "unknown" as const };
+  }
   yield* completeVolumeRemoveAttemptActivity({
     attemptId: attempt.id,
     inngestRunId: input.inngestRunId,
@@ -424,6 +488,16 @@ export const cancelVolumeRemoveAttemptActivity = Effect.fn(
   const attempt = yield* loadVolumeRemoveAttemptByRun(input.inngestRunId);
   if (attempt === null || attempt.status !== "running") {
     return { state: "skipped" as const };
+  }
+  if (attempt.startedAt !== null) {
+    yield* markVolumeRemoveAttemptUnknown({
+      attemptId: attempt.id,
+      inngestRunId: input.inngestRunId,
+      failureMessage:
+        "Volume removal may have reached Ployz before Cloud received the cancellation.",
+      now: input.now,
+    });
+    return { state: "unknown" as const };
   }
   yield* completeVolumeRemoveAttemptActivity({
     attemptId: attempt.id,

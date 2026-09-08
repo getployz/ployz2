@@ -19,26 +19,24 @@ import {
   type EnvironmentDeploymentApplyResult,
 } from "#/modules/deployments/runtime-contract";
 import {
-  failUnsubmittedDestructiveVolumeAttemptsForDeploymentInTransaction,
-  releaseDestructiveVolumeAttemptsForAppliedDeploymentInTransaction,
-} from "#/modules/operations/destructive-volume-attempt.repository";
-import {
-  dispatchDestructiveVolumeAttempt,
-} from "#/modules/operations/destructive-volume-dispatch.server";
+  failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction,
+  releaseVolumeRemoveAttemptsForAppliedDeploymentInTransaction,
+} from "#/modules/runtime/volume-removal.repository";
+import { dispatchVolumeRemoveRequested } from "#/modules/runtime/volume-removal.server";
 import { Database } from "#/server/database.server";
 import type { SdkDeployPreview } from "./runtime-preview";
 import { DeploymentQueueOccupied } from "./runtime-repository.contract";
 
-function dispatchReleasedDestructiveVolumeAttempts(
+function dispatchReleasedVolumeRemoveAttempts(
   attempts: readonly { id: string }[],
 ) {
   return Effect.forEach(
     attempts,
     (attempt) =>
-      dispatchDestructiveVolumeAttempt(attempt.id).pipe(
+      dispatchVolumeRemoveRequested(attempt.id).pipe(
         Effect.catch((error) =>
           Effect.logError(
-            "Failed to dispatch released destructive volume attempt",
+            "Failed to dispatch released volume removal",
             error,
           ).pipe(Effect.annotateLogs({ attemptId: attempt.id })),
         ),
@@ -52,9 +50,9 @@ function afterAppliedDeployment(
   released: readonly { id: string }[],
 ) {
   return Effect.gen(function* () {
-    yield* dispatchReleasedDestructiveVolumeAttempts(released);
     yield* latchFirstDeployedAtForDeployment(environmentDeploymentId);
     yield* deleteTombstonedServicesForDeployment(environmentDeploymentId);
+    yield* dispatchReleasedVolumeRemoveAttempts(released);
   });
 }
 
@@ -174,13 +172,13 @@ function markEnvironmentDeploymentStatus(input: {
           .returning({ id: schemaEnvironmentDeployment.id });
         if (updated.length === 0) return null;
         if (input.status === "applied") {
-          return yield* releaseDestructiveVolumeAttemptsForAppliedDeploymentInTransaction(
+          return yield* releaseVolumeRemoveAttemptsForAppliedDeploymentInTransaction(
             tx,
             input.environmentDeploymentId,
           );
         }
         if (input.status === "failed" || input.status === "cancelled") {
-          yield* failUnsubmittedDestructiveVolumeAttemptsForDeploymentInTransaction(
+          yield* failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction(
             tx,
             {
               environmentDeploymentId: input.environmentDeploymentId,
@@ -274,7 +272,7 @@ export const markDeploymentFailedIfOwned = Effect.fn(
         )
         .returning({ id: schemaEnvironmentDeployment.id });
       if (!deployment) return false;
-      yield* failUnsubmittedDestructiveVolumeAttemptsForDeploymentInTransaction(
+      yield* failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction(
         tx,
         {
           environmentDeploymentId: input.environmentDeploymentId,
@@ -358,7 +356,7 @@ export const persistDeployApplyResult = Effect.fn(
                   and snapshot.node_id = ${schemaEnvironmentNodeIntroduction.nodeId}
               )`,
         );
-      return yield* releaseDestructiveVolumeAttemptsForAppliedDeploymentInTransaction(
+      return yield* releaseVolumeRemoveAttemptsForAppliedDeploymentInTransaction(
         tx,
         input.environmentDeploymentId,
       );

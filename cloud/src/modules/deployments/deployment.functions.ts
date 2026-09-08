@@ -7,9 +7,7 @@ import {
   discardEnvironmentSavedChangeSchema,
   dispatchQueuedEnvironmentDeploymentSchema,
   organizationEnvironmentChangeStateQuerySchema,
-  prepareDestructiveVolumeRetrySchema,
   prepareEnvironmentDestructiveVolumesSchema,
-  retryDestructiveVolumeAttemptSchema,
   retryEnvironmentDeploymentSchema,
 } from "#/modules/deployments/deployment-contract";
 import {
@@ -19,9 +17,7 @@ import {
   dispatchExistingQueuedEnvironmentDeployment,
   listDeploymentOperationEvidence,
   listLatestOrganizationEnvironmentChangeStates,
-  prepareDestructiveVolumeRetry,
   prepareEnvironmentDestructiveVolumes,
-  retryDestructiveVolumeAttempt,
   retryEnvironmentDeployment,
 } from "#/modules/deployments/deployment-operations.server";
 import {
@@ -79,34 +75,6 @@ export const prepareEnvironmentDestructiveVolumesServerFn = createServerFn({
   .validator(strictValidator(prepareEnvironmentDestructiveVolumesSchema))
   .handler(({ context, data }) =>
     runActor(context, prepareEnvironmentDestructiveVolumes(context.actor, data)),
-  );
-
-export const prepareDestructiveVolumeRetryServerFn = createServerFn({
-  method: "POST",
-})
-  .middleware(deploymentMiddleware)
-  .validator(strictValidator(prepareDestructiveVolumeRetrySchema))
-  .handler(({ context, data }) =>
-    runActor(context, prepareDestructiveVolumeRetry(context.actor, data)),
-  );
-
-export const retryDestructiveVolumeAttemptServerFn = createServerFn({
-  method: "POST",
-})
-  .middleware(deploymentMiddleware)
-  .validator(strictValidator(retryDestructiveVolumeAttemptSchema))
-  .handler(({ context, data }) =>
-    runActor(
-      context,
-      retryDestructiveVolumeAttempt(context.actor, data).pipe(
-        Effect.catchTag("DestructiveVolumeReviewChangedError", (cause) =>
-          Effect.succeed({
-            state: "review_updated_evidence" as const,
-            freshReviews: cause.freshReviews,
-          }),
-        ),
-      ),
-    ),
   );
 
 export const retryEnvironmentDeploymentServerFn = createServerFn({

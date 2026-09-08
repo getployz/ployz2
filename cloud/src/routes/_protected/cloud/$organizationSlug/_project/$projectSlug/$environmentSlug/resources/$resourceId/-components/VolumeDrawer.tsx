@@ -333,6 +333,12 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
 
 function volumeRemoveStatusCopy(attempt: VolumeRemoveAttemptSummary) {
   switch (attempt.status) {
+    case "awaiting_deployment":
+      return {
+        title: "Waiting for deployment",
+        description:
+          "Volume data removal begins after the deployment removes its service references.",
+      };
     case "pending":
     case "running":
       return {
@@ -343,6 +349,13 @@ function volumeRemoveStatusCopy(attempt: VolumeRemoveAttemptSummary) {
       return {
         title: "Some machines failed",
         description: "Retry remaining volumes to finish.",
+      };
+    case "unknown":
+      return {
+        title: "Volume remove outcome unknown",
+        description:
+          attempt.failureMessage ??
+          "Cloud could not determine whether Ployz removed the volume. Review it before retrying.",
       };
     case "cancelled":
       return {

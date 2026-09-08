@@ -448,47 +448,7 @@ export type ServiceDeploymentDiffPath =
   | (typeof fieldDefinitions)[number]["path"]
   | `routes.${string}`
   | `env.${string}`
-  | `mounts.${string}`
-  // Synthetic, runtime-derived: the managed public URL was minted under an older
-  // cluster domain and will regenerate under the current one on redeploy.
-  | "managedHostname.drift";
-
-/**
- * Detects cluster-domain drift for a service's managed auto hostname: the URL is
- * derived (`{prefix}.{autoDomain}`), so a cluster-domain change is not a config
- * diff — it's runtime-derived. Returns a synthetic staged-change row when the
- * service is serving its managed hostname under a domain other than the current
- * one, or null otherwise. Keyed on the current prefix; a prefix change already
- * diffs via the `managedHostname` config field.
- */
-export function getManagedHostnameDriftRow(input: {
-  serviceId: string;
-  managedHostname: ManagedHostnameValue;
-  autoDomain: string | null;
-  boundHostnames: string[];
-}): ServiceDeploymentDiffRow | null {
-  const { managedHostname, autoDomain } = input;
-  if (!managedHostname || !autoDomain) {
-    return null;
-  }
-  const expected = `${managedHostname.prefix}.${autoDomain}`;
-  const stale = input.boundHostnames.find(
-    (hostname) =>
-      hostname.startsWith(`${managedHostname.prefix}.`) && hostname !== expected,
-  );
-  if (!stale) {
-    return null;
-  }
-  return {
-    changeKey: `${input.serviceId}:managedHostname.drift`,
-    label: "Public URL",
-    kind: "update",
-    path: "managedHostname.drift",
-    currentValue: stale,
-    newValue: expected,
-    canDiscard: false,
-  };
-}
+  | `mounts.${string}`;
 
 /** A single staged change. Shared by every canvas node type; `path` is free-form. */
 export type DiffRow = {

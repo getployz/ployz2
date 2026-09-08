@@ -11,10 +11,7 @@ import {
   DeploymentRuntimeInvalid,
   type DeploymentRuntimeOutcome,
 } from "#/modules/deployments/runtime-activities.server";
-import {
-  PloyzProviderError,
-  SdkSurfaceNotShipped,
-} from "#/modules/runtime/ployz.server";
+import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { createProcessEnvironmentDeployment } from "./environment-deployment.inngest";
 
 const activity = {
@@ -35,8 +32,7 @@ function runtimeFailure(
 ) {
   if (
     cause instanceof DeploymentRuntimeInvalid ||
-    cause instanceof PloyzProviderError ||
-    cause instanceof SdkSurfaceNotShipped
+    cause instanceof PloyzProviderError
   ) {
     return cause;
   }
