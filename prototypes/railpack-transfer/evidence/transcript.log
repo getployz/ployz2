@@ -1,0 +1,8 @@
+Evidence: /home/codex/.codex/worktrees/railpack-transfer-prototype/ployz2/.scratch/railpack-transfer-run.Bfk1pa
+/home/codex/.codex/worktrees/railpack-transfer-prototype/ployz2/.scratch/railpack-transfer-run.Bfk1pa/railpack.tar.gz: OK
+/home/codex/.codex/worktrees/railpack-transfer-prototype/ployz2/.scratch/railpack-transfer-run.Bfk1pa/regctl: OK
+PASS: two Railpack outputs assembled into one OCI index
+railpack-proto-1788862121-3266431 removed
+PASS: recreated builder reused retained cache (see per-step log)
+PASS: first hop contains both variants; peer hop selects ARM64; all three runs match
+Evidence retained: /home/codex/.codex/worktrees/railpack-transfer-prototype/ployz2/.scratch/railpack-transfer-run.Bfk1pa

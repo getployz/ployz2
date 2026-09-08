@@ -1,0 +1,3 @@
+Storage: none — this Machine currently supports stateless workloads only.
+Added Machine peer1 (c0ccf422a8b040679617dd72cc9f3cf5)
+Waiting for ssh://root@172.26.0.3 to participate: connection attempt failed: Machine phase is Joining; retrying for up to 299s. Check outbound firewall access if this connection is blocked.

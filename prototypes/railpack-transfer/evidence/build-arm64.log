@@ -1,0 +1,279 @@
+#0 building with "railpack-proto-1788862121-3266431" instance using docker-container driver
+
+#1 resolve image config for docker-image://ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103
+#1 DONE 0.0s
+
+#2 docker-image://ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103
+#2 resolve ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103 done
+#2 CACHED
+
+#3 load build definition from plan.json
+#3 transferring dockerfile: 31B done
+#3 DONE 0.0s
+
+#4 loading .
+#4 DONE 0.0s
+
+#5 docker-image://ghcr.io/railwayapp/railpack-builder:mise-2026.8.16
+#5 resolve ghcr.io/railwayapp/railpack-builder:mise-2026.8.16
+#5 ...
+
+#6 docker-image://ghcr.io/railwayapp/railpack-runtime:mise-2026.8.16
+#6 resolve ghcr.io/railwayapp/railpack-runtime:mise-2026.8.16 0.4s done
+#6 DONE 0.4s
+
+#4 loading .
+#4 transferring context: 61B done
+#4 DONE 0.0s
+
+#5 docker-image://ghcr.io/railwayapp/railpack-builder:mise-2026.8.16
+#5 resolve ghcr.io/railwayapp/railpack-builder:mise-2026.8.16 0.5s done
+#5 sha256:ca13cec400a214c9fefca7f967b15f7b9da5ce14a9350ea909c0143667d61297 118B / 118B 0.2s done
+#5 sha256:0d022049448ff61b3c5cf6d92bb146484208edc905c0a366358a977d83434152 868.40kB / 868.40kB 0.2s done
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 0B / 232.15MB 0.2s
+#5 sha256:0e9be2456f9df4bbbd358a02a915948f34ec68f2a283e9b2113fb5fcb2a2829e 0B / 38.17MB 0.2s
+#5 sha256:0e9be2456f9df4bbbd358a02a915948f34ec68f2a283e9b2113fb5fcb2a2829e 5.24MB / 38.17MB 0.3s
+#5 sha256:0e9be2456f9df4bbbd358a02a915948f34ec68f2a283e9b2113fb5fcb2a2829e 11.53MB / 38.17MB 0.5s
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 13.63MB / 232.15MB 0.6s
+#5 sha256:0e9be2456f9df4bbbd358a02a915948f34ec68f2a283e9b2113fb5fcb2a2829e 17.83MB / 38.17MB 0.6s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 0B / 67.60MB 0.2s
+#5 sha256:0e9be2456f9df4bbbd358a02a915948f34ec68f2a283e9b2113fb5fcb2a2829e 24.12MB / 38.17MB 0.8s
+#5 sha256:0e9be2456f9df4bbbd358a02a915948f34ec68f2a283e9b2113fb5fcb2a2829e 30.41MB / 38.17MB 0.9s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 6.29MB / 67.60MB 0.5s
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 26.21MB / 232.15MB 1.1s
+#5 sha256:0e9be2456f9df4bbbd358a02a915948f34ec68f2a283e9b2113fb5fcb2a2829e 36.70MB / 38.17MB 1.1s
+#5 sha256:0e9be2456f9df4bbbd358a02a915948f34ec68f2a283e9b2113fb5fcb2a2829e 38.17MB / 38.17MB 1.1s done
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 13.63MB / 67.60MB 0.8s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 0B / 49.70MB 0.2s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 4.19MB / 49.70MB 0.3s
+#5 sha256:7fa3c72c6402ef534e043b1dca6fc0ab99e044c333c7679d2508eac3817a8570 0B / 25.03MB 0.2s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 8.39MB / 49.70MB 0.5s
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 39.85MB / 232.15MB 1.5s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 19.92MB / 67.60MB 1.1s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 12.58MB / 49.70MB 0.6s
+#5 sha256:7fa3c72c6402ef534e043b1dca6fc0ab99e044c333c7679d2508eac3817a8570 6.29MB / 25.03MB 0.3s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 24.12MB / 67.60MB 1.2s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 16.78MB / 49.70MB 0.8s
+#5 sha256:7fa3c72c6402ef534e043b1dca6fc0ab99e044c333c7679d2508eac3817a8570 11.53MB / 25.03MB 0.5s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 20.97MB / 49.70MB 0.9s
+#5 sha256:7fa3c72c6402ef534e043b1dca6fc0ab99e044c333c7679d2508eac3817a8570 17.83MB / 25.03MB 0.6s
+#5 ...
+
+#6 docker-image://ghcr.io/railwayapp/railpack-runtime:mise-2026.8.16
+#6 sha256:84787c2acaad736843c90e41c3842b8b5edb0d689612a9719776c188135681b1 10.70MB / 10.70MB 0.6s done
+#6 sha256:bf7af0229701decd1b9f42143504fc8f69e5664c37e57001d198e731e4f86c2e 30.16MB / 30.16MB 1.2s done
+#6 extracting sha256:bf7af0229701decd1b9f42143504fc8f69e5664c37e57001d198e731e4f86c2e 0.7s done
+#6 extracting sha256:84787c2acaad736843c90e41c3842b8b5edb0d689612a9719776c188135681b1 0.2s done
+#6 DONE 2.6s
+
+#5 docker-image://ghcr.io/railwayapp/railpack-builder:mise-2026.8.16
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 52.43MB / 232.15MB 2.0s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 30.41MB / 67.60MB 1.5s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 26.21MB / 49.70MB 1.1s
+#5 sha256:7fa3c72c6402ef534e043b1dca6fc0ab99e044c333c7679d2508eac3817a8570 25.03MB / 25.03MB 0.8s done
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 34.60MB / 67.60MB 1.7s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 31.46MB / 49.70MB 1.2s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 38.80MB / 67.60MB 1.8s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 36.70MB / 49.70MB 1.4s
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 68.16MB / 232.15MB 2.4s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 42.99MB / 67.60MB 2.0s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 40.89MB / 49.70MB 1.5s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 47.19MB / 67.60MB 2.1s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 46.14MB / 49.70MB 1.7s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 51.38MB / 67.60MB 2.3s
+#5 sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 49.70MB / 49.70MB 1.8s done
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 83.89MB / 232.15MB 2.9s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 55.57MB / 67.60MB 2.4s
+#5 extracting sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 61.87MB / 67.60MB 2.7s
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 96.47MB / 232.15MB 3.3s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 67.60MB / 67.60MB 3.0s
+#5 sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 67.60MB / 67.60MB 3.0s done
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 110.10MB / 232.15MB 3.8s
+#5 extracting sha256:7f50a08a25277c02b8dfc99818a21e12083215981e0aa03cb07cb74c9116f205 1.1s done
+#5 extracting sha256:7fa3c72c6402ef534e043b1dca6fc0ab99e044c333c7679d2508eac3817a8570
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 122.68MB / 232.15MB 4.2s
+#5 extracting sha256:7fa3c72c6402ef534e043b1dca6fc0ab99e044c333c7679d2508eac3817a8570 0.5s done
+#5 extracting sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 137.36MB / 232.15MB 4.7s
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 152.04MB / 232.15MB 5.1s
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 167.77MB / 232.15MB 5.6s
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 183.50MB / 232.15MB 6.0s
+#5 extracting sha256:42fd700369b465b3f57ff668eea94fc0b0e67029df25a71600d2c522a452406d 1.6s done
+#5 extracting sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1 done
+#5 extracting sha256:0e9be2456f9df4bbbd358a02a915948f34ec68f2a283e9b2113fb5fcb2a2829e
+#5 extracting sha256:0e9be2456f9df4bbbd358a02a915948f34ec68f2a283e9b2113fb5fcb2a2829e 0.3s done
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 199.23MB / 232.15MB 6.5s
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 222.30MB / 232.15MB 7.1s
+#5 sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 232.15MB / 232.15MB 7.6s done
+#5 extracting sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52
+#5 ...
+
+#7 install apt packages: libatomic1
+#7 0.623 Hit:1 http://deb.debian.org/debian trixie InRelease
+#7 0.625 Hit:2 http://deb.debian.org/debian trixie-updates InRelease
+#7 0.625 Hit:3 http://deb.debian.org/debian-security trixie-security InRelease
+#7 1.026 Get:4 http://deb.debian.org/debian trixie/main arm64 Packages [9607 kB]
+#7 1.307 Get:5 http://deb.debian.org/debian trixie-updates/main arm64 Packages [4424 B]
+#7 1.383 Get:6 http://deb.debian.org/debian-security trixie-security/main arm64 Packages [253 kB]
+#7 4.960 Fetched 9864 kB in 5s (2185 kB/s)
+#7 4.960 Reading package lists...
+#7 ...
+
+#5 docker-image://ghcr.io/railwayapp/railpack-builder:mise-2026.8.16
+#5 extracting sha256:860cc03931822648775c437db7b16d95e2df3dd80409452b8cfac0b26dd46d52 4.7s done
+#5 DONE 13.0s
+
+#5 docker-image://ghcr.io/railwayapp/railpack-builder:mise-2026.8.16
+#5 extracting sha256:0d022049448ff61b3c5cf6d92bb146484208edc905c0a366358a977d83434152 0.0s done
+#5 extracting sha256:ca13cec400a214c9fefca7f967b15f7b9da5ce14a9350ea909c0143667d61297 done
+#5 DONE 13.0s
+
+#7 install apt packages: libatomic1
+#7 4.960 Reading package lists...
+#7 10.72 Reading package lists...
+#7 ...
+
+#8 mkdir /etc/mise
+#8 DONE 1.7s
+
+#9 create mise config
+#9 DONE 0.0s
+
+#10 install mise packages: node
+#10 1.448 mise node@22.16.0    [1/3] install
+#10 1.462 mise node@22.16.0    [1/3] download node-v22.16.0-linux-arm64.tar.gz
+#10 3.365 mise node@22.16.0    [2/3] generate checksum node-v22.16.0-linux-arm64.tar.gz
+#10 3.796 mise node@22.16.0    [3/3] extract node-v22.16.0-linux-arm64.tar.gz
+#10 ...
+
+#7 install apt packages: libatomic1
+#7 10.72 Reading package lists...
+#7 16.16 Building dependency tree...
+#7 17.02 Reading state information...
+#7 17.78 The following NEW packages will be installed:
+#7 17.78   libatomic1
+#7 18.08 0 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.
+#7 18.08 Need to get 10.1 kB of archives.
+#7 18.08 After this operation, 82.9 kB of additional disk space will be used.
+#7 18.08 Get:1 http://deb.debian.org/debian trixie/main arm64 libatomic1 arm64 14.2.0-19 [10.1 kB]
+#7 19.29 debconf: unable to initialize frontend: Dialog
+#7 19.29 debconf: (TERM is not set, so the dialog frontend is not usable.)
+#7 19.29 debconf: falling back to frontend: Readline
+#7 19.30 debconf: unable to initialize frontend: Readline
+#7 19.30 debconf: (Can't locate Term/ReadLine.pm in @INC (you may need to install the Term::ReadLine module) (@INC entries checked: /etc/perl /usr/local/lib/aarch64-linux-gnu/perl/5.40.1 /usr/local/share/perl/5.40.1 /usr/lib/aarch64-linux-gnu/perl5/5.40 /usr/share/perl5 /usr/lib/aarch64-linux-gnu/perl-base /usr/lib/aarch64-linux-gnu/perl/5.40 /usr/share/perl/5.40 /usr/local/lib/site_perl) at /usr/share/perl5/Debconf/FrontEnd/Readline.pm line 8, <STDIN> line 1.)
+#7 19.30 debconf: falling back to frontend: Teletype
+#7 19.46 debconf: unable to initialize frontend: Teletype
+#7 19.46 debconf: (This frontend requires a controlling tty.)
+#7 19.46 debconf: falling back to frontend: Noninteractive
+#7 ...
+
+#10 install mise packages: node
+#10 6.574 mise node@22.16.0    [3/3] node -v
+#10 6.721 mise node@22.16.0    [3/3] v22.16.0
+#10 6.737 mise node@22.16.0    [3/3] npm -v
+#10 8.946 mise node@22.16.0    [3/3] 10.9.2
+#10 9.023 mise node@22.16.0  ✓ installed
+#10 DONE 9.5s
+
+#11 mkdir -p /app/node_modules/.cache
+#11 DONE 0.2s
+
+#7 install apt packages: libatomic1
+#7 ...
+
+#12 copy package.json
+#12 DONE 0.0s
+
+#13 npm install
+#13 ...
+
+#14 copy /mise/shims
+#14 CACHED
+
+#15 copy /mise/installs
+#15 DONE 1.2s
+
+#7 install apt packages: libatomic1
+#7 ...
+
+#16 copy /usr/local/bin/mise
+#16 DONE 0.3s
+
+#13 npm install
+#13 ...
+
+#17 copy /etc/mise/config.toml
+#17 DONE 0.0s
+
+#18 copy /root/.local/state/mise
+#18 DONE 0.0s
+
+#7 install apt packages: libatomic1
+#7 ...
+
+#13 npm install
+#13 2.794 npm warn config production Use `--omit=dev` instead.
+#13 ...
+
+#7 install apt packages: libatomic1
+#7 25.06 Fetched 10.1 kB in 0s (42.3 kB/s)
+#7 25.29 Selecting previously unselected package libatomic1:arm64.
+#7 25.29 (Reading database ...
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 6217 files and directories currently installed.)
+#7 25.31 Preparing to unpack .../libatomic1_14.2.0-19_arm64.deb ...
+#7 25.33 Unpacking libatomic1:arm64 (14.2.0-19) ...
+#7 25.57 Setting up libatomic1:arm64 (14.2.0-19) ...
+#7 25.58 Processing triggers for libc-bin (2.41-12+deb13u3) ...
+#7 DONE 25.9s
+
+#13 npm install
+#13 5.284
+#13 5.284 up to date, audited 1 package in 3s
+#13 5.291
+#13 5.291 found 0 vulnerabilities
+#13 DONE 5.4s
+
+#19 copy / /app
+#19 DONE 0.0s
+
+#20 copy /app/node_modules
+#20 CACHED
+
+#21 copy /root/.cache
+#21 CACHED
+
+#22 copy /app
+#22 CACHED
+
+#23 [railpack] merge $packages:apt:runtime, $packages:mise, $build, $build
+#23 DONE 0.0s
+
+#24 exporting to oci image format
+#24 exporting layers
+#24 exporting layers 4.6s done
+#24 exporting manifest sha256:174b29595964d87850c1c2cd3a4b2013288a8b93c96ece2a43c26c8dd0240c50 done
+#24 exporting config sha256:74b0b5602ee6371d9042ceee95c3eb3b0e9866b9751f9703d0bb33c4266a57a1 done
+#24 sending tarball
+#24 sending tarball 0.8s done
+#24 DONE 5.4s

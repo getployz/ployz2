@@ -1,0 +1,31 @@
+The push refers to repository [127.0.0.1:40935/railpack-prototype.invalid/app]
+901ff7d9be55: Waiting
+bf7af0229701: Waiting
+daa41484fdad: Waiting
+82815fac8e83: Waiting
+80e3d15a919a: Waiting
+d513b52579df: Waiting
+5d16a2a4eecd: Waiting
+ab03dfcad329: Waiting
+625b2f297b0f: Waiting
+daa41484fdad: Pushed
+4a686ee9a17b: Pushed
+80e3d15a919a: Pushed
+5d16a2a4eecd: Pushed
+c6f37122bc7e: Pushed
+625b2f297b0f: Pushed
+314ef7a4b2cc: Pushed
+901ff7d9be55: Pushed
+11695a528d14: Pushed
+7381ab25b9ed: Pushed
+5e9392a246b9: Pushed
+84787c2acaad: Pushed
+6310eb16bf42: Pushed
+bf7af0229701: Pushed
+b3d9930a8bed: Pushed
+82815fac8e83: Pushed
+d513b52579df: Pushed
+ab03dfcad329: Pushed
+multi: digest: sha256:e1d7279c87977133c5f2b5967c555ba9852fad43f453abefcbf863011be38049 size: 493
+Pushed railpack-prototype.invalid/app:multi to c0ccf422a8b040679617dd72cc9f3cf5
+Pushed railpack-prototype.invalid/app:multi to 89f95a8097da407a95aa7d4bd554c560

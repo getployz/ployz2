@@ -1,0 +1,1 @@
+{"name":"railpack-transfer-prototype","private":true,"version":"1.0.0","engines":{"node":"22.16.0"},"scripts":{"start":"node index.js"}}

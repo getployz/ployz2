@@ -1,0 +1,6 @@
+enabled
+interpreter /usr/bin/qemu-aarch64
+flags: POCF
+offset 0
+magic 7f454c460201010000000000000000000200b700
+mask ffffffffffffff00fffffffffffffffffeffffff

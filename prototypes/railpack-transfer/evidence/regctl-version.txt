@@ -1,0 +1,8 @@
+VCSTag:     v0.11.6
+VCSRef:     c2f83e99bd90e92e40d08307acf13138321a4a30
+VCSCommit:  c2f83e99bd90e92e40d08307acf13138321a4a30
+VCSState:   clean
+VCSDate:    2026-09-02T14:54:59Z
+Platform:   linux/amd64
+GoVer:      go1.27.1
+GoCompiler: gc

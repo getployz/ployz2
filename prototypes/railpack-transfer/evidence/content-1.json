@@ -1,0 +1,16 @@
+{
+  "machine": "railpack-proto-1788862121-3266431-1",
+  "index": "sha256:e1d7279c87977133c5f2b5967c555ba9852fad43f453abefcbf863011be38049",
+  "platforms": {
+    "amd64": {
+      "manifest": "sha256:65c53faa6e4ab432afb86420398bcb982470082dcdcd9284ab8d1ce773cb1e5a",
+      "complete": true,
+      "missing_blobs": []
+    },
+    "arm64": {
+      "manifest": "sha256:174b29595964d87850c1c2cd3a4b2013288a8b93c96ece2a43c26c8dd0240c50",
+      "complete": true,
+      "missing_blobs": []
+    }
+  }
+}

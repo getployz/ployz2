@@ -1,0 +1,6 @@
+npm warn config production Use `--omit=dev` instead.
+
+> railpack-transfer-prototype@1.0.0 start
+> node index.js
+
+{"prototype":"railpack-transfer","platform":"linux","arch":"x64"}

@@ -1,0 +1,23 @@
+╭─────────────────╮
+│ Railpack 0.39.0 │
+╰─────────────────╯
+
+  ⚠ No node package manager detected, using npm
+  → Specify the package manager and version explicitly https://railpack.com/config/recommendations#specify-the-node-package-manager-version
+  ↳ Detected Node
+  ↳ Using npm package manager
+  ↳ Custom start command detected, skipping Caddy start
+  → Add a `package-lock.json` for more deterministic installs https://railpack.com/architecture/recommendations
+
+  Packages
+  ──────────
+  node  │  22.16.0  │  package.json > engines > node (22.16.0)
+
+  Steps
+  ──────────
+  ▸ install
+    $ npm install
+
+  Deploy
+  ──────────
+    $ npm run start

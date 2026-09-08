@@ -1,0 +1,87 @@
+#0 building with "railpack-proto-1788862121-3266431" instance using docker-container driver
+
+#1 resolve image config for docker-image://ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103
+#1 DONE 0.4s
+
+#2 docker-image://ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103
+#2 resolve ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103 done
+#2 CACHED
+
+#3 load build definition from plan.json
+#3 transferring dockerfile: 31B done
+#3 DONE 0.0s
+
+#4 loading .
+#4 DONE 0.0s
+
+#5 docker-image://ghcr.io/railwayapp/railpack-builder:mise-2026.8.16
+#5 resolve ghcr.io/railwayapp/railpack-builder:mise-2026.8.16
+#5 resolve ghcr.io/railwayapp/railpack-builder:mise-2026.8.16 0.4s done
+#5 DONE 0.4s
+
+#6 docker-image://ghcr.io/railwayapp/railpack-runtime:mise-2026.8.16
+#6 resolve ghcr.io/railwayapp/railpack-runtime:mise-2026.8.16 0.4s done
+#6 DONE 0.4s
+
+#4 loading .
+#4 transferring context: 61B done
+#4 DONE 0.0s
+
+#7 install apt packages: libatomic1
+#7 CACHED
+
+#8 copy /mise/installs
+#8 CACHED
+
+#9 copy /app
+#9 CACHED
+
+#10 copy /usr/local/bin/mise
+#10 CACHED
+
+#11 copy package.json
+#11 CACHED
+
+#12 npm install
+#12 CACHED
+
+#13 copy /app/node_modules
+#13 CACHED
+
+#14 copy /root/.local/state/mise
+#14 CACHED
+
+#15 copy /etc/mise/config.toml
+#15 CACHED
+
+#16 copy /root/.cache
+#16 CACHED
+
+#17 install mise packages: node
+#17 CACHED
+
+#18 mkdir -p /app/node_modules/.cache
+#18 CACHED
+
+#19 mkdir /etc/mise
+#19 CACHED
+
+#20 copy /mise/shims
+#20 CACHED
+
+#21 copy / /app
+#21 CACHED
+
+#22 create mise config
+#22 CACHED
+
+#23 [railpack] merge $packages:apt:runtime, $packages:mise, $build, $build
+#23 CACHED
+
+#24 exporting to oci image format
+#24 exporting layers done
+#24 exporting manifest sha256:65b62c9f682ca92b8f22fe4c463563f93f7c68fe33cdca183fc2599b79d36aa4 done
+#24 exporting config sha256:63bc7ac2dae0f54a1faa105428c8dd41f6fa610640a04ac4b558f513daac7c38 done
+#24 sending tarball
+#24 sending tarball 0.8s done
+#24 DONE 0.8s

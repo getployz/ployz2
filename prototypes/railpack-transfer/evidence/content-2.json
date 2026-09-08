@@ -1,0 +1,26 @@
+{
+  "machine": "railpack-proto-1788862121-3266431-2",
+  "index": "sha256:e1d7279c87977133c5f2b5967c555ba9852fad43f453abefcbf863011be38049",
+  "platforms": {
+    "amd64": {
+      "manifest": "sha256:65c53faa6e4ab432afb86420398bcb982470082dcdcd9284ab8d1ce773cb1e5a",
+      "complete": false,
+      "missing_blobs": [
+        "sha256:11695a528d145191fc206519e76ddd0b5529b6eb781426427252bc29888fb436",
+        "sha256:2c4cbf2aa4f0200b4d7a3e182a3468bcd1407cd091a97989e0e086451ffd8c3b",
+        "sha256:5e9392a246b92887f21692b19ea37f755f35d3e799186c79de2e3474983279e8",
+        "sha256:6310eb16bf4251731feab01e8f633bf5e2d75a657ccad97f420b1f83cce457be",
+        "sha256:65c53faa6e4ab432afb86420398bcb982470082dcdcd9284ab8d1ce773cb1e5a",
+        "sha256:901ff7d9be55ff93d85fa924ae3cf9edc185d59a3057951cbe1e109f1d9ad9cc",
+        "sha256:ab03dfcad329cbd0c6e0bb6a41cd8e6e269ece11df2aaf3d7a7b84cd7d470cc7",
+        "sha256:b3d9930a8beda02f1a7c6d72a3a99ce28016ea0464cc8344e559decce56fcb0a",
+        "sha256:c6f37122bc7e3c97fa25b0a1a4e0bf62011960db4566e07011dc0b75947230ef"
+      ]
+    },
+    "arm64": {
+      "manifest": "sha256:174b29595964d87850c1c2cd3a4b2013288a8b93c96ece2a43c26c8dd0240c50",
+      "complete": true,
+      "missing_blobs": []
+    }
+  }
+}

@@ -1,0 +1,6 @@
+IMAGE                                  ID             DISK USAGE   CONTENT SIZE   EXTRA
+railpack-prototype.invalid/app:multi   e1d7279c8797        266MB          266MB
+├─ linux/amd64                         65c53faa6e4a        131MB          131MB
+└─ linux/arm64                         174b29595964        135MB          135MB
+
+WARNING: This output is designed for human readability. For machine-readable output, please use --format.

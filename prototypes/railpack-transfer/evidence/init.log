@@ -1,0 +1,4 @@
+Storage: none — this Machine currently supports stateless workloads only.
+Switched context to 'default'
+Initialised Machine builder (abcd6d7fb00348099e76b098d5038e18)
+Waiting for unix:///run/ployz/ployz.sock to participate: all 1 connections from Direct failed: connection attempt failed: transport error; retrying for up to 299s. Check outbound firewall access if this connection is blocked.

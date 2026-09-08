@@ -1,0 +1,7 @@
+#1 [internal] booting buildkit
+#1 pulling image moby/buildkit@sha256:de10faf919fc71ba4eb1dd7bd6449566d012b0c9436b1c61bfee21d621b009aa
+#1 pulling image moby/buildkit@sha256:de10faf919fc71ba4eb1dd7bd6449566d012b0c9436b1c61bfee21d621b009aa 1.0s done
+#1 creating container buildx_buildkit_railpack-proto-1788862121-32664310
+#1 creating container buildx_buildkit_railpack-proto-1788862121-32664310 15.4s done
+#1 DONE 16.5s
+railpack-proto-1788862121-3266431
