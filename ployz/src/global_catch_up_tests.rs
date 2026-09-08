@@ -46,7 +46,7 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
         let error = catch_up_globals(&mut client, &joiner, false)
             .await
             .unwrap_err();
-        let message = joined_catch_up_error(error);
+        let message = joined_catch_up_error(error).to_string();
         assert!(
             message.contains("partial Service observations"),
             "{message}"
@@ -609,7 +609,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
         assert_eq!(result.is_err(), incomplete);
         if let Err(error) = result {
             assert_eq!(error.unresolved, [qualified("app", "api")]);
-            let message = joined_catch_up_error(error);
+            let message = joined_catch_up_error(error).to_string();
             assert!(message.contains("storage eligibility is unknown"));
             if let Err(cause) = storage {
                 assert!(message.contains(cause));

@@ -138,7 +138,14 @@ impl From<ApplyError> for Failure {
             } => {
                 let text =
                     report::paint_closing(&outcome, &rows, live_shown, &Ink::detect(io::stderr()));
-                Failure::usage(text.trim().to_owned())
+                match *outcome {
+                    DeployOutcome::Failed { failed, .. } => {
+                        Failure::context(text.trim().to_owned(), failed.error().clone())
+                    }
+                    DeployOutcome::Success { .. } => {
+                        Failure::usage("deploy reported no failed operation")
+                    }
+                }
             }
         }
     }
@@ -486,6 +493,51 @@ mod tests {
         assert!(project_not_found(&preview));
         preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
         assert!(!project_not_found(&preview));
+    }
+
+    #[test]
+    fn internal_execution_failures_are_framed_as_bugs_in_the_closing_report() {
+        let framed = Failure::from(execution_failure(RpcErrorCode::Internal)).to_string();
+        assert!(framed.contains("create failed"), "{framed}");
+        assert!(framed.contains("bug"), "{framed}");
+        assert!(framed.contains("ployz version"), "{framed}");
+
+        let user = Failure::from(execution_failure(RpcErrorCode::Unavailable)).to_string();
+        assert!(!user.contains("ployz version"), "{user}");
+    }
+
+    fn execution_failure(code: RpcErrorCode) -> ApplyError {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let outcome = DeployOutcome::Failed {
+            completed: Vec::new(),
+            failed: FailedOperation::Operation {
+                operation: DeployOperation::RunContainer {
+                    machine_id,
+                    spec: serde_json::from_value(serde_json::json!({
+                        "service_id": "a".repeat(32),
+                        "name": "web",
+                        "mode": { "mode": "replicated", "replicas": 1 },
+                        "container": { "image": "nginx", "pull_policy": "missing" }
+                    }))
+                    .unwrap(),
+                    skip_health_monitor: true,
+                },
+                error: ExecutionError::Machine {
+                    action: MachineAction::CreateContainer,
+                    error: RpcError {
+                        code,
+                        message: "target Machine RPC timed out".into(),
+                        details: serde_json::Value::Null,
+                    },
+                },
+            },
+            unexecuted: Vec::new(),
+        };
+        ApplyError::Execute {
+            outcome: Box::new(outcome),
+            rows: Vec::new(),
+            live_shown: false,
+        }
     }
 
     #[test]

@@ -202,7 +202,9 @@ pub(crate) fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
 
 pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
     match UnconfirmedDataLoss::from_rpc_error(&error) {
-        Some(unconfirmed) => Failure::usage(pass_data_loss_names_message(&unconfirmed.missing)),
+        Some(unconfirmed) => {
+            Failure::context(pass_data_loss_names_message(&unconfirmed.missing), error)
+        }
         None => error.into(),
     }
 }
@@ -534,7 +536,12 @@ mod tests {
             }
             let source = std::fs::read_to_string(&path).expect("readable source file");
             for (line, argument) in usage_arguments(&source) {
-                if RENDERED.iter().any(|rendered| argument.contains(rendered)) {
+                // Text with no literal in it was rendered somewhere else, which is
+                // where the code was lost; `text.trim()` reads as innocently as
+                // `format!("{error}")` and costs the same framing.
+                if RENDERED.iter().any(|rendered| argument.contains(rendered))
+                    || !argument.contains('"')
+                {
                     offenders.push(format!("{}:{line}", path.display()));
                 }
             }
@@ -550,8 +557,8 @@ mod tests {
         let mut arguments = Vec::new();
         let mut rest = source;
         let mut consumed = 0;
-        while let Some(start) = rest.find("usage(") {
-            let open = consumed + start + "usage".len();
+        while let Some(start) = rest.find("::usage(") {
+            let open = consumed + start + "::usage".len();
             let mut depth = 0_usize;
             let mut end = open;
             for (offset, character) in source[open..].char_indices() {

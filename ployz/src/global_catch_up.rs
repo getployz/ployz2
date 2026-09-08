@@ -107,24 +107,26 @@ impl CatchUpClient for Client {
     }
 }
 
-pub(crate) fn joined_catch_up_error(error: CatchUpError) -> String {
-    let mut message = format!(
-        "Machine joined, but Global catch-up is incomplete; it remains a Cluster member. {}",
-        error.cause
-    );
-    if !error.unresolved.is_empty() {
-        message.push_str("\nGlobals requiring attention:");
-        for identity in error.unresolved {
-            if identity == QualifiedService::system_ingress() {
-                message.push_str("\n- ployz-system/ingress: run `ployz ingress deploy`.");
-            } else {
-                message.push_str(&format!(
-                    "\n- {identity}: redeploy Project Service `{identity}`."
-                ));
+pub(crate) fn joined_catch_up_error(error: CatchUpError) -> Failure {
+    let unresolved = error.unresolved;
+    error.cause.wrap(|cause| {
+        let mut message = format!(
+            "Machine joined, but Global catch-up is incomplete; it remains a Cluster member. {cause}"
+        );
+        if !unresolved.is_empty() {
+            message.push_str("\nGlobals requiring attention:");
+            for identity in unresolved {
+                if identity == QualifiedService::system_ingress() {
+                    message.push_str("\n- ployz-system/ingress: run `ployz ingress deploy`.");
+                } else {
+                    message.push_str(&format!(
+                        "\n- {identity}: redeploy Project Service `{identity}`."
+                    ));
+                }
             }
         }
-    }
-    message
+        message
+    })
 }
 
 /// Globals this Machine is eligible for and does not already run.

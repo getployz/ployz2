@@ -154,9 +154,7 @@ async fn enroll_join(
     )
     .await
     {
-        return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
-            error,
-        )));
+        return Err(crate::global_catch_up::joined_catch_up_error(error));
     }
     println!("Joined Machine {} ({})", assigned.name, assigned.id);
     Ok(())
@@ -461,7 +459,8 @@ mod tests {
                 crate::failure::Failure::usage("not running".to_owned()),
                 vec![ployz_core::QualifiedService::system_ingress()],
             ),
-        );
+        )
+        .to_string();
         assert!(message.contains("Machine joined"));
         assert!(message.contains("ployz ingress deploy"));
     }
@@ -473,7 +472,8 @@ mod tests {
                 crate::failure::Failure::usage("listing failed".to_owned()),
                 Vec::new(),
             ),
-        );
+        )
+        .to_string();
         assert!(message.contains("Machine joined"));
         assert!(message.contains("listing failed"));
     }

@@ -97,7 +97,7 @@ pub(super) fn push_targets(
 fn push_failure(image: &str, error: crate::image::PushError) -> Result<String, Error> {
     let message = format!("{image}: {error}");
     if error.is_cancellation() {
-        Err(Error::usage(message))
+        Err(Error::context(message, error))
     } else {
         Ok(message)
     }

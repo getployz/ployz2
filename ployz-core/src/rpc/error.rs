@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use thiserror::Error;
 use ts_rs::TS;
 
@@ -76,7 +76,22 @@ impl Serialize for RpcError {
                     Some(self.details.clone()).filter(|details| !details.is_null())
                 };
                 if let Some(displaced) = displaced {
-                    fields.entry("details").or_insert(displaced);
+                    // Displaced data collects under `details`. A producer that owns
+                    // that key too keeps its value one level further down, so
+                    // colliding keys cost depth rather than data.
+                    let occupied = fields.remove("details");
+                    fields.insert(
+                        "details".to_owned(),
+                        occupied.map_or_else(
+                            || displaced.clone(),
+                            |occupied| {
+                                Value::Object(Map::from_iter([
+                                    (Self::REPORT_KEY.to_owned(), displaced.clone()),
+                                    ("details".to_owned(), occupied),
+                                ]))
+                            },
+                        ),
+                    );
                 }
                 Cow::Owned(Value::Object(fields))
             }
@@ -156,6 +171,27 @@ mod rpc_error_wire {
             wire.pointer("/details/reason"),
             Some(&json!("start_failed")),
             "typed siblings keep their paths"
+        );
+    }
+
+    #[test]
+    fn a_displaced_report_survives_a_producer_owned_details_key() {
+        let wire = serde_json::to_value(error(
+            RpcErrorCode::Internal,
+            json!({ "report": "producer text", "details": { "typed": 1 } }),
+        ))
+        .unwrap();
+        assert_eq!(
+            wire.pointer("/details/report").and_then(Value::as_str),
+            Some(RpcError::REPORT_HINT)
+        );
+        assert_eq!(
+            wire.pointer("/details/details/report"),
+            Some(&json!("producer text"))
+        );
+        assert_eq!(
+            wire.pointer("/details/details/details"),
+            Some(&json!({ "typed": 1 }))
         );
     }
 
