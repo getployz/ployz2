@@ -88,3 +88,4 @@ cloud-node-introduction-history	cloud/src/modules/environment-design/working-doc
 cloud-admitted-runtime-outcome	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-	-
 cloud-current-sdk-outcome	crates/ployz-core/tests/runtime_outcome.rs::current_outcome_confirms_only_services_with_all_operations_completed	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-
 compose-ignored-tree-pruning	crates/ployz/compose-helper/build_context_test.go::TestExceptionCanMatchDescendant	-	-	-	-
+sdk-test-temp-cleanup	-	crates/ployz/tests/connect/relay.rs::sdk_script_temporary_files_are_removed_after_exit_and_timeout	-	-	-
