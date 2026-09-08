@@ -247,7 +247,7 @@ async fn enroll_founder(
     if !no_dns {
         let domain =
             crate::dns::reserve_if_missing(&mut ready, crate::dns::HOSTED_DNS_ENDPOINT.to_owned())
-                .await.map_err(|error| Error::usage(format!("Machine initialized; DNS reservation pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
+                .await.map_err(|error| Error::context(format!("Machine initialized; DNS reservation pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)"), error))?;
         println!("Reserved Cluster domain: {domain}");
     }
     if let Some(requested) = ingress {
@@ -258,13 +258,13 @@ async fn enroll_founder(
         })?;
         if !no_dns {
             crate::dns::update_records_for_ingress(&mut ready).await.map_err(|error| {
-                Error::usage(format!("Machine initialized; DNS publication pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)"))
+                Error::context(format!("Machine initialized; DNS publication pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)"), error)
             })?;
         }
     }
     // Setting the same pairing is idempotent.
     ready.call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest { cloud_pairing: Some(pairing.clone()) }, None)
-        .await.map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
+        .await.map_err(|error| Error::context(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)"), error))?;
     cloud_enroll::callback(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,

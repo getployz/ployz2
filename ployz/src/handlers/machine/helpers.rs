@@ -218,7 +218,7 @@ async fn observe_mutation(
             let details = client.call_repeatable::<op::Inspect>(InspectRequest::default(), None).await?;
             if observed(&details) { Ok(details) } else { Err(ConnectError::Attempt(format!("Machine phase is {:?}; expected {operation} outcome not yet observed", details.phase).into())) }
         },
-    ).await.map_err(|error| Error::usage(format!("{operation} may have completed: {original}; could not confirm the resulting Machine state: {error}; inspect the Machine before retrying; do not reset it")))
+    ).await.map_err(|error| Error::context(format!("{operation} may have completed: {original}; could not confirm the resulting Machine state: {error}; inspect the Machine before retrying; do not reset it"), error))
 }
 
 pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {

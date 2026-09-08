@@ -50,15 +50,24 @@ fn is_internal_rpc(error: &(dyn Error + 'static)) -> bool {
 
 // Skip marker for later capture_exception; not a library error.
 #[derive(Debug)]
-struct Usage(Cow<'static, str>);
+struct Usage {
+    message: Cow<'static, str>,
+    cause: Option<Box<dyn Error + Send + Sync>>,
+}
 
 impl fmt::Display for Usage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
-impl Error for Usage {}
+impl Error for Usage {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.cause
+            .as_ref()
+            .map(|cause| &**cause as &(dyn Error + 'static))
+    }
+}
 
 impl Failure {
     fn command(error: impl Error + Send + Sync + 'static) -> Self {
@@ -75,7 +84,23 @@ impl Failure {
     }
 
     pub fn usage(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::command(Usage(message.into()))
+        Self::command(Usage {
+            message: message.into(),
+            cause: None,
+        })
+    }
+
+    /// Product text that already names `cause`. `cause` stays as a typed source,
+    /// so an internal error keeps its bug framing after being stringified into
+    /// `message`; `usage` alone would print the bug as if the user caused it.
+    pub fn context(
+        message: impl Into<Cow<'static, str>>,
+        cause: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::command(Usage {
+            message: message.into(),
+            cause: Some(Box::new(cause)),
+        })
     }
 
     /// One product line for a follow-on failure. `terminate` prints it once.
@@ -190,6 +215,7 @@ from_error!(
     RpcError,
     ProjectError,
     cloud_enroll::Error,
+    crate::operator::LogFailure,
 );
 
 impl From<ConnectError> for Failure {

@@ -303,7 +303,15 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         Duration::from_millis(15),
         Duration::from_millis(2),
     );
-    assert!(stalled.recv().await.unwrap().unwrap_err().contains("quiet"));
+    assert!(
+        stalled
+            .recv()
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("quiet")
+    );
     assert_eq!(
         output_bytes(&stalled.recv().await.unwrap().unwrap()),
         b"released"
@@ -331,6 +339,7 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
             .await
             .unwrap()
             .unwrap_err()
+            .to_string()
             .contains("quiet")
     );
     assert_eq!(
@@ -361,6 +370,7 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
             .await
             .unwrap()
             .unwrap_err()
+            .to_string()
             .contains("transport failed")
     );
     assert!(
@@ -369,6 +379,7 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
             .await
             .unwrap()
             .unwrap_err()
+            .to_string()
             .contains("remote failed")
     );
 
@@ -379,7 +390,10 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
         )],
         CancellationToken::new(),
     );
-    assert_eq!(empty_error.recv().await.unwrap().unwrap_err(), "broken: ");
+    assert_eq!(
+        empty_error.recv().await.unwrap().unwrap_err().to_string(),
+        "broken: "
+    );
 
     let mut closing = merge_logs(
         vec![

@@ -56,12 +56,15 @@ impl Serialize for RpcError {
             details: Cow<'a, Value>,
         }
 
-        // Only the two shapes producers emit today get the hint; anything else crosses untouched.
-        let hint_missing = self.code == RpcErrorCode::Internal
-            && self.report_hint().is_none()
-            && (self.details.is_null() || self.details.is_object());
+        let hint_missing = self.code == RpcErrorCode::Internal && self.report_hint().is_none();
         let details = if hint_missing {
             let mut fields = self.details.as_object().cloned().unwrap_or_default();
+            // A keyed hint needs an object. Producers emit null or an object; any other
+            // shape reached us from a foreign encoder, so it moves under `details`
+            // rather than costing the consumer its report path.
+            if !self.details.is_null() && !self.details.is_object() {
+                fields.insert("details".into(), self.details.clone());
+            }
             fields.insert(Self::REPORT_KEY.into(), Self::REPORT_HINT.into());
             Cow::Owned(Value::Object(fields))
         } else {
@@ -120,6 +123,21 @@ mod rpc_error_wire {
         assert!(
             wire.pointer("/details/report")
                 .is_some_and(Value::is_string)
+        );
+    }
+
+    #[test]
+    fn internal_errors_with_unkeyed_details_keep_them_beside_the_hint() {
+        let wire =
+            serde_json::to_value(error(RpcErrorCode::Internal, json!(["start_failed"]))).unwrap();
+        assert!(
+            wire.pointer("/details/report")
+                .is_some_and(Value::is_string),
+            "{wire}"
+        );
+        assert_eq!(
+            wire.pointer("/details/details"),
+            Some(&json!(["start_failed"]))
         );
     }
 

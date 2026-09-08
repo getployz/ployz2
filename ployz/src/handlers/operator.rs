@@ -17,7 +17,7 @@ use crate::{
     compose::{LoadOptions, load_project},
     context::Transport,
     operator::{
-        ExecMode, ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs,
+        ExecMode, LogFailure, ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs,
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
         select_proxy_container,
     },
@@ -288,11 +288,11 @@ fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {
 }
 
 async fn print_logs(
-    mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, String>>,
+    mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, LogFailure>>,
     utc: bool,
 ) -> Result<(), Error> {
     while let Some(entry) = entries.recv().await {
-        let entry = entry.map_err(Error::usage)?;
+        let entry = entry?;
         let timestamp = timestamp(&entry, utc);
         let (service_name, service_id, container, hook) = match &entry.metadata.origin {
             LogOrigin::Service {
