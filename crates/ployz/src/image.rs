@@ -118,21 +118,48 @@ impl Cancellation {
     }
 }
 
+/// What to transfer: the reference to publish, and the exact content it holds.
+///
+/// A Build binds the two separately so a later Build moving the same tag
+/// cannot substitute its own image during delivery.
+#[derive(Clone, Copy, Debug)]
+pub struct ImageContent<'a> {
+    published: &'a str,
+    exact: &'a str,
+}
+
+impl<'a> ImageContent<'a> {
+    /// A reference carrying whatever content its tag resolves to now.
+    #[must_use]
+    pub fn tagged(image: &'a str) -> Self {
+        Self {
+            published: image,
+            exact: image,
+        }
+    }
+
+    /// A published tag bound to exact content, such as a Build's result.
+    #[must_use]
+    pub fn built(published: &'a str, exact: &'a str) -> Self {
+        Self { published, exact }
+    }
+}
+
 pub async fn push(
     client: &mut Client,
-    image: &str,
+    content: ImageContent<'_>,
     platform: Option<&str>,
     selectors: &[String],
 ) -> Result<PartialResult<(), PushError>, PushError> {
     let machines = client
         .call::<op::ListMachines>(ListMachinesRequest {}, None)
         .await?;
-    push_using_machines(client, image, platform, selectors, &machines.machines).await
+    push_using_machines(client, content, platform, selectors, &machines.machines).await
 }
 
 pub(crate) async fn push_using_machines(
     client: &mut Client,
-    image: &str,
+    content: ImageContent<'_>,
     platform: Option<&str>,
     selectors: &[String],
     machines: &[ployz_core::MachineObservation],
@@ -140,13 +167,14 @@ pub(crate) async fn push_using_machines(
     let mut cancellation = Cancellation::new();
     // TODO: without an explicit platform, Docker chooses what to push; target platforms are not inferred.
     let platform = platform.map(validated_platform).transpose()?;
+    let image = content.published;
     validate_push_reference(image)?;
     let inspected = cancellation
-        .race(docker_output(["image", "inspect", image]))
+        .race(docker_output(["image", "inspect", content.exact]))
         .await??;
     if !inspected.status.success() {
         return Err(if not_found(&inspected) {
-            PushError::ImageNotFound(image.into())
+            PushError::ImageNotFound(content.exact.into())
         } else {
             command_error("inspect local image", &inspected)
         });
@@ -161,7 +189,7 @@ pub(crate) async fn push_using_machines(
     let mut source = None;
     for machine in targets {
         let outcome = match source {
-            None => push_to_machine(client, image, platform, &machine, mode, &mut cancellation)
+            None => push_to_machine(client, content, platform, &machine, mode, &mut cancellation)
                 .await
                 .map(|destination| {
                     source = Some(destination);
@@ -257,7 +285,7 @@ pub(crate) fn select_targets(
 
 async fn push_to_machine(
     client: &mut Client,
-    image: &str,
+    content: ImageContent<'_>,
     platform: Option<&str>,
     machine: &Machine,
     mode: ProxyMode,
@@ -279,7 +307,7 @@ async fn push_to_machine(
         .race(proxy::dial_with_retry(client, &remote))
         .await?
         .map_err(PushError::Unregistry)?;
-    PushSession::run(client, remote, mode, image, platform, cancellation).await?;
+    PushSession::run(client, remote, mode, content, platform, cancellation).await?;
     Ok(opened.destination)
 }
 
@@ -415,7 +443,7 @@ impl PushSession {
         client: &Client,
         remote: String,
         mode: ProxyMode,
-        image: &str,
+        content: ImageContent<'_>,
         platform: Option<&str>,
         cancellation: &mut Cancellation,
     ) -> Result<(), PushError> {
@@ -425,7 +453,7 @@ impl PushSession {
             command: None,
         };
         let outcome = cancellation
-            .race(session.push(client, remote, image, platform))
+            .race(session.push(client, remote, content, platform))
             .await
             .flatten();
         let cleanup = session.cleanup().await;
@@ -443,14 +471,14 @@ impl PushSession {
         &mut self,
         client: &Client,
         remote: String,
-        image: &str,
+        content: ImageContent<'_>,
         platform: Option<&str>,
     ) -> Result<(), PushError> {
-        let temporary = temporary_reference(self.proxy.push_port(), image);
+        let temporary = temporary_reference(self.proxy.push_port(), content.published);
         self.temporary = Some(temporary.clone());
         self.command = Some(
             Command::new("docker")
-                .args(["tag", image, &temporary])
+                .args(tag_arguments(content, &temporary))
                 .kill_on_drop(true)
                 .spawn()
                 .map_err(|error| PushError::Docker {
@@ -561,6 +589,11 @@ fn validate_push_reference(image: &str) -> Result<(), PushError> {
         return Err(PushError::DigestReference);
     }
     Ok(())
+}
+
+/// Tag the exact content under the reference the destination will publish.
+fn tag_arguments<'a>(content: ImageContent<'a>, temporary: &'a str) -> [&'a str; 3] {
+    ["tag", content.exact, temporary]
 }
 
 fn temporary_reference(port: u16, image: &str) -> String {
@@ -756,6 +789,29 @@ mod tests {
                 cleanup: Box::new(PushError::Cleanup("test cleanup".into())),
             }
             .is_cancellation()
+        );
+    }
+
+    #[test]
+    fn delivery_tags_the_exact_content_under_the_published_reference() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let exact = format!("example.test/api@{digest}");
+        let temporary = temporary_reference(5000, "example.test/api:v1");
+        assert_eq!(
+            tag_arguments(
+                ImageContent::built("example.test/api:v1", &exact),
+                &temporary
+            ),
+            ["tag", exact.as_str(), "127.0.0.1:5000/example.test/api:v1"]
+        );
+        // Without a Build behind it, a reference delivers whatever it resolves to.
+        assert_eq!(
+            tag_arguments(ImageContent::tagged("example.test/api:v1"), &temporary),
+            [
+                "tag",
+                "example.test/api:v1",
+                "127.0.0.1:5000/example.test/api:v1"
+            ]
         );
     }
 

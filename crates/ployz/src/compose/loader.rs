@@ -1,9 +1,7 @@
 use std::{
     fs, io,
-    os::unix::fs::OpenOptionsExt as _,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::Duration,
 };
@@ -284,16 +282,19 @@ fn retry_executable_busy<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result
     op()
 }
 
+/// Holds the extracted helper on platforms without a sealed anonymous file.
+#[cfg(not(target_os = "linux"))]
 pub(super) struct TemporaryComposeFile {
     pub(super) path: PathBuf,
 }
 
+#[cfg(not(target_os = "linux"))]
 impl TemporaryComposeFile {
-    pub(super) fn new(content: &str) -> Result<Self, ComposeError> {
-        Self::create(content.as_bytes(), 0o600)
-    }
-
     fn create(content: &[u8], mode: u32) -> Result<Self, ComposeError> {
+        use std::{
+            os::unix::fs::OpenOptionsExt as _,
+            sync::atomic::{AtomicU64, Ordering},
+        };
         static NEXT: AtomicU64 = AtomicU64::new(0);
         for _ in 0..100 {
             let path = std::env::temp_dir().join(format!(
@@ -328,6 +329,7 @@ impl TemporaryComposeFile {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 impl Drop for TemporaryComposeFile {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
@@ -338,7 +340,6 @@ impl Drop for TemporaryComposeFile {
 mod tests {
     use std::{
         io,
-        os::unix::fs::PermissionsExt as _,
         sync::atomic::{AtomicU64, Ordering},
     };
 
@@ -371,13 +372,6 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stdout)
         );
-    }
-
-    #[test]
-    fn temporary_compose_files_are_private() {
-        let file = TemporaryComposeFile::new("services: {}\n").unwrap();
-        let mode = fs::metadata(&file.path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
     }
 
     #[test]

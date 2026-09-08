@@ -1,17 +1,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
-    process::Command,
+    path::{Path, PathBuf},
 };
 
+use ployz_build::{BuiltImage, Output};
 use ployz_core::MachineTarget;
 use serde::Serialize;
 use serde_norway::Value;
 
-use super::{
-    BuildSpec, ComposeError, ComposeProject, LoadOptions, build_inputs::BuildInputs,
-    loader::TemporaryComposeFile,
-};
+use super::{BuildSpec, ComposeError, ComposeProject, LoadOptions, build_inputs::BuildInputs};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BuildOptions {
@@ -67,12 +64,42 @@ pub fn plan_build(
 /// A build whose configuration, options, and local sources have already been captured.
 pub struct CapturedBuild {
     plan: Vec<BuildService>,
+    targets: Vec<ployz_build::Target>,
     options: BuildOptions,
-    project_name: String,
     environment: BTreeMap<String, String>,
-    compose: TemporaryComposeFile,
-    _inputs: BuildInputs,
+    compose: PathBuf,
+    inputs: BuildInputs,
 }
+
+/// A Service whose image this command built, bound to the content produced.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BuiltService {
+    pub name: String,
+    /// Reference the Service requested, used when the image is published.
+    pub image: String,
+    pub machines: Vec<MachineTarget>,
+    pub built: BuiltImage,
+}
+
+/// What executing a captured build produced. A validation cannot claim an image.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BuildOutcome {
+    Built(Vec<BuiltService>),
+    /// Published to the registry each tag names; no local image is claimed.
+    Published,
+    /// Validation only; no image was produced.
+    Validated,
+}
+
+/// Compose build settings this runner refuses rather than silently dropping.
+const UNSUPPORTED: [(&str, &str); 6] = [
+    ("cache_from", "filesystem build cache import"),
+    ("cache_to", "filesystem build cache export"),
+    ("network", "host-specific build networking"),
+    ("isolation", "host-specific build isolation"),
+    ("privileged", "privileged builds"),
+    ("x-bake", "custom builder and exporter overrides"),
+];
 
 /// Freeze build sources, options, and provider values before invoking Docker.
 ///
@@ -86,11 +113,48 @@ pub fn capture_build(
     let mut inputs = BuildInputs::new()?;
     let mut plan = plan.to_vec();
     let mut secret_names = BTreeSet::new();
+    let mut targets = Vec::new();
     for service in &mut plan {
+        let image = service.image.clone();
+        let name = service.name.clone();
         let build = service
             .build
             .as_mapping_mut()
             .ok_or_else(|| invalid_build("expected a build mapping"))?;
+        for (setting, meaning) in UNSUPPORTED {
+            if build.contains_key(Value::String(setting.into())) {
+                return Err(invalid_build(&format!(
+                    "service '{name}' sets build.{setting}; {meaning} is not supported"
+                )));
+            }
+        }
+        targets.push(ployz_build::Target {
+            name: name.clone(),
+            platforms: build
+                .get(Value::String("platforms".into()))
+                .and_then(Value::as_sequence)
+                .map(|platforms| {
+                    platforms
+                        .iter()
+                        .map(|platform| {
+                            platform
+                                .as_str()
+                                .map(ToOwned::to_owned)
+                                .ok_or_else(|| invalid_build("invalid build platform"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?
+                .unwrap_or_default(),
+        });
+        // Explicit build tags replace the Service image upstream; keep both.
+        if let Some(tags) = build
+            .get_mut(Value::String("tags".into()))
+            .and_then(Value::as_sequence_mut)
+            && !tags.iter().any(|tag| tag.as_str() == Some(image.as_str()))
+        {
+            tags.push(Value::String(image));
+        }
         if let Some(args) = build
             .get_mut(Value::String("args".into()))
             .and_then(Value::as_mapping_mut)
@@ -247,72 +311,89 @@ pub fn capture_build(
     let yaml = serde_norway::to_string(&BuildOverride { services, secrets })
         .map_err(|error| ComposeError::Io(format!("encode captured build: {error}")))?
         .replace('$', "$$");
+    let compose = inputs.compose(&yaml)?;
     Ok(CapturedBuild {
         plan,
+        targets,
         options,
-        project_name: project.name.clone(),
         environment: project.environment.clone(),
-        compose: TemporaryComposeFile::new(&yaml)?,
-        _inputs: inputs,
+        compose,
+        inputs,
     })
 }
 
 impl CapturedBuild {
-    /// Run Docker Compose against this capture without reading the original sources again.
+    /// Build this capture through the shared runner, without reading the
+    /// original sources again.
     ///
     /// # Errors
-    /// Fails if Docker cannot start or reports a failed build.
-    pub fn execute(&self, docker: Option<&Path>) -> Result<(), ComposeError> {
+    /// Fails if the runner cannot execute the build or the result cannot be
+    /// bound to the content it produced.
+    pub fn execute(&self, docker: Option<&Path>) -> Result<BuildOutcome, ComposeError> {
         if self.plan.is_empty() {
-            return Ok(());
+            return Ok(BuildOutcome::Built(Vec::new()));
         }
-        let mut command = Command::new(docker.unwrap_or_else(|| Path::new("docker")));
-        command
-            .env_clear()
-            .envs(&self.environment)
-            .env("COMPOSE_DISABLE_ENV_FILE", "1")
-            .env_remove("COMPOSE_ENV_FILES");
-        command
-            .args(["compose", "--all-resources", "--project-name"])
-            .arg(&self.project_name)
-            .arg("--file")
-            .arg(&self.compose.path)
-            .arg("build");
-        for argument in &self.options.build_args {
-            command.arg("--build-arg").arg(argument);
+        let outcome = ployz_build::execute(&ployz_build::Request {
+            compose_file: &self.compose,
+            working_dir: self.inputs.root(),
+            environment: &self.environment,
+            docker,
+            targets: &self.targets,
+            build_args: &self.options.build_args,
+            output: if self.options.check {
+                Output::Validate
+            } else if self.options.push_registry {
+                Output::Registry
+            } else {
+                Output::Load
+            },
+            no_cache: self.options.no_cache,
+            pull: self.options.pull,
+        })?;
+        match outcome {
+            ployz_build::Outcome::Validated => Ok(BuildOutcome::Validated),
+            ployz_build::Outcome::Published => Ok(BuildOutcome::Published),
+            ployz_build::Outcome::Built(images) => self.bind(images).map(BuildOutcome::Built),
         }
-        for (enabled, flag) in [
-            (self.options.check, "--check"),
-            (self.options.no_cache, "--no-cache"),
-            (self.options.pull, "--pull"),
-            (self.options.push_registry, "--push"),
-        ] {
-            if enabled {
-                command.arg(flag);
-            }
-        }
-        command.args(self.plan.iter().map(|service| service.name.as_str()));
-        let status = command
-            .status()
-            .map_err(|error| ComposeError::Io(format!("run Docker Compose build: {error}")))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(ComposeError::Compose(format!(
-                "Docker Compose build exited with {status}"
-            )))
-        }
+    }
+
+    /// Bind each planned Service to the image this attempt actually produced.
+    fn bind(&self, images: Vec<BuiltImage>) -> Result<Vec<BuiltService>, ComposeError> {
+        self.plan
+            .iter()
+            .map(|service| {
+                let built = images
+                    .iter()
+                    .find(|image| image.target == service.name)
+                    .ok_or_else(|| {
+                        invalid_build(&format!(
+                            "the build reported no image for service '{}'",
+                            service.name
+                        ))
+                    })?;
+                Ok(BuiltService {
+                    name: service.name.clone(),
+                    image: service.image.clone(),
+                    machines: service.machines.clone(),
+                    built: built.clone(),
+                })
+            })
+            .collect()
     }
 }
 
+/// Capture and build one plan in a single step.
+///
+/// # Errors
+/// Propagates capture refusals and build failures.
 pub fn execute_build(
     plan: &[BuildService],
     options: &BuildOptions,
     load: &LoadOptions,
     project: &mut ComposeProject,
-) -> Result<(), ComposeError> {
+) -> Result<BuildOutcome, ComposeError> {
     if plan.is_empty() {
-        return Ok(());
+        return Ok(BuildOutcome::Built(Vec::new()));
     }
     capture_build(plan, options, project)?.execute(load.docker.as_deref())
 }

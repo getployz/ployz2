@@ -5,9 +5,9 @@ use ployz_core::{ComposePruneRefusal, ServiceSelector};
 
 use crate::{
     compose::{
-        BuildOptions, BuildService, CapturedCompose, ComposeError, ComposeProject, LoadOptions,
-        capture_build, compose_identity, has_explicit_nondefault_compose_file, load_project,
-        plan_build,
+        BuildOptions, BuildOutcome, BuiltService, CapturedCompose, ComposeError, ComposeProject,
+        LoadOptions, capture_build, compose_identity, has_explicit_nondefault_compose_file,
+        load_project, plan_build,
     },
     deploy::{
         ReconciliationHints, ServiceAttempt, deploy_project, deploy_scale, deploy_spec,
@@ -257,7 +257,7 @@ fn prepare_deploy(
     mut project: ComposeProject,
     resolved: &ResolvedProject,
     options: ployz_core::PlanOptions,
-) -> Result<(CapturedCompose, Vec<BuildService>), Error> {
+) -> Result<(CapturedCompose, Vec<BuiltService>), Error> {
     let selected = string_values(matches, "service");
     for warning in &project.warnings {
         eprintln!("WARNING: {warning}");
@@ -275,9 +275,8 @@ fn prepare_deploy(
         services: build_names,
         ..Default::default()
     };
-    let mut builds = plan_build(&project, &build_options)?;
+    let builds = plan_build(&project, &build_options)?;
     let captured_build = if matches.get_flag("no-build") {
-        builds.clear();
         None
     } else {
         Some(capture_build(&builds, &build_options, &mut project)?)
@@ -291,10 +290,25 @@ fn prepare_deploy(
         hints.compose_refusal,
         load.files.clone(),
     );
-    if let Some(build) = captured_build {
-        build.execute(load.docker.as_deref())?;
+    // Every required Build finishes before any application change begins.
+    let built = match captured_build {
+        Some(build) => built_services(build.execute(load.docker.as_deref()).map_err(|error| {
+            Error::usage(format!(
+                "{error}. No Service, hook, or volume change was attempted."
+            ))
+        })?)?,
+        None => Vec::new(),
+    };
+    Ok((candidate, built))
+}
+
+fn built_services(outcome: BuildOutcome) -> Result<Vec<BuiltService>, Error> {
+    match outcome {
+        BuildOutcome::Built(services) => Ok(services),
+        BuildOutcome::Published | BuildOutcome::Validated => Err(Error::usage(
+            "the build produced no deployable image; deployment was not attempted",
+        )),
     }
-    Ok((candidate, builds))
 }
 
 fn selected_attempts(

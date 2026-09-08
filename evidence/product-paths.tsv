@@ -88,3 +88,4 @@ cloud-node-introduction-history	cloud/src/modules/environment-design/working-doc
 cloud-admitted-runtime-outcome	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-	-
 cloud-current-sdk-outcome	crates/ployz-core/tests/runtime_outcome.rs::current_outcome_confirms_only_services_with_all_operations_completed	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-
 compose-ignored-tree-pruning	crates/ployz/compose-helper/build_context_test.go::TestExceptionCanMatchDescendant	-	-	-	-
+local-build-runner	crates/ployz-build/src/lib.rs::one_platform_is_kept_and_several_are_refused_before_execution	crates/ployz/tests/build.rs::built_images_bind_to_exact_content_after_tag_reuse	crates/ployz/tests/build.rs::check_with_direct_push_stops_after_validation	crates/ployz/tests/build_layer3.rs::local_dockerfile_build_loads_a_runnable_image_and_reuses_its_retained_cache	-

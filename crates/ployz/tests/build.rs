@@ -1,6 +1,14 @@
-use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
-use ployz::compose::{BuildOptions, capture_build, parse_normalized, plan_build};
+use ployz::compose::{
+    BuildOptions, BuildOutcome, BuiltService, capture_build, parse_normalized, plan_build,
+};
+
+/// Digests the Docker stand-in reports for one attempt's completed image.
+const FIRST_CONTENT: &str =
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+const SECOND_CONTENT: &str =
+    "sha256:2222222222222222222222222222222222222222222222222222222222222222";
 
 #[test]
 fn build_plan_selects_dependencies_contexts_and_resolved_names() {
@@ -158,15 +166,9 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     let _shared_socket =
         std::os::unix::net::UnixListener::bind(root.join("shared/socket")).unwrap();
     fs::write(root.join("key"), "private-key").unwrap();
-    fs::write(
-        &docker,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > {:?}\nprevious=\nfor arg in \"$@\"; do\n  if [ \"$previous\" = --file ]; then override=$arg; fi\n  previous=$arg\ndone\ncp \"$override\" {:?}\n",
-            calls, captured
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+    write_docker(&docker, &root);
+    fs::write(root.join("digest"), FIRST_CONTENT).unwrap();
+    fs::write(root.join("image"), "example.test/api:version2").unwrap();
     let mut project = parse_normalized(
         "name: demo\nservices:\n  api:\n    image: example.test/api:version2\n    build: {context: ./api, dockerfile: ../Dockerfile, additional_contexts: {shared: ./shared}, ssh: [deploy=./key], args: {VALUE: '$CAPTURED'}}\n  runtime:\n    image: alpine\n",
         &root,
@@ -174,10 +176,8 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     .unwrap();
     let options = BuildOptions {
         build_args: vec!["MODE=release".into()],
-        check: true,
         no_cache: true,
         pull: true,
-        push_registry: true,
         ..Default::default()
     };
     let plan = plan_build(&project, &options).unwrap();
@@ -190,14 +190,47 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     fs::remove_file(root.join("Dockerfile.dockerignore")).unwrap();
     fs::remove_file(root.join("key")).unwrap();
     project.builds.clear();
-    build.execute(Some(&docker)).unwrap();
-    let call = fs::read_to_string(calls).unwrap();
-    assert!(call.starts_with("compose --all-resources --project-name demo --file "));
-    assert_eq!(call.matches("--file").count(), 1);
-    assert!(!call.contains(compose.to_str().unwrap()));
+    let outcome = build.execute(Some(&docker)).unwrap();
+    let calls = fs::read_to_string(calls).unwrap();
+    let bake = calls
+        .lines()
+        .find(|call| call.starts_with("buildx bake "))
+        .expect("the capture was built once");
+    // The build reads the capture, never the edited source Compose file.
+    assert!(!bake.contains(compose.to_str().unwrap()), "{bake}");
+    assert_eq!(bake.matches("--file").count(), 1, "{bake}");
+    assert!(bake.contains("--load"), "{bake}");
+    assert!(!bake.contains("--push"), "{bake}");
+    assert!(bake.contains("--no-cache"), "{bake}");
+    assert!(bake.contains("--pull"), "{bake}");
+    assert!(bake.contains("--set *.args.MODE=release"), "{bake}");
+    assert!(bake.contains("--set api.platform=linux/amd64"), "{bake}");
+    assert!(bake.ends_with(" api"), "{bake}");
+    // The builder is provisioned for the attempt and removed with its cache kept.
     assert!(
-        call.ends_with(" build --build-arg MODE=release --check --no-cache --pull --push api\n")
+        calls.lines().any(|call| call
+            == format!(
+                "buildx create --name {} --driver docker-container --driver-opt image={} --driver-opt network=host",
+                ployz_build::BUILDER,
+                ployz_build::BUILDKIT_IMAGE
+            )),
+        "{calls}"
     );
+    assert!(
+        calls
+            .lines()
+            .any(|call| call == format!("buildx rm --keep-state {}", ployz_build::BUILDER)),
+        "{calls}"
+    );
+    let service = one_built(outcome);
+    assert_eq!(service.name, "api");
+    assert_eq!(service.image, "example.test/api:version2");
+    assert_eq!(
+        service.built.reference,
+        format!("example.test/api@{FIRST_CONTENT}")
+    );
+    assert_eq!(service.built.tags, ["example.test/api:version2"]);
+    assert_eq!(service.built.platforms, ["linux/amd64"]);
     let override_yaml = fs::read_to_string(captured).unwrap();
     assert!(override_yaml.contains("api"));
     assert!(override_yaml.contains("example.test/api:version2"));
@@ -255,15 +288,7 @@ fn check_with_direct_push_stops_after_validation() {
     fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
     let calls = root.join("calls");
     let docker = root.join("docker");
-    fs::write(
-        &docker,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in\n  *'config --environment') exit 0 ;;\n  *' config '*) printf 'name: demo\\nservices:\\n  api:\\n    image: example.test/api\\n    build: {{context: .}}\\n'; exit 0 ;;\n  *' build '*) exit 0 ;;\nesac\nexit 1\n",
-            calls.display()
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+    write_docker(&docker, &root);
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args([
@@ -282,13 +307,152 @@ fn check_with_direct_push_stops_after_validation() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let calls = fs::read_to_string(calls).unwrap();
+    let bake = calls
+        .lines()
+        .find(|call| call.starts_with("buildx bake "))
+        .expect("validation still runs the recipe");
+    assert!(bake.contains("--check"), "{bake}");
+    // Validation produces no image, so it can neither load nor report one.
+    assert!(!bake.contains("--load"), "{bake}");
+    assert!(!bake.contains("--metadata-file"), "{bake}");
     assert!(
-        fs::read_to_string(calls)
-            .unwrap()
-            .lines()
-            .any(|call| call.contains(" build --check api"))
+        !calls.lines().any(|call| call.starts_with("tag ")),
+        "validation transferred an image: {calls}"
     );
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn built_images_bind_to_exact_content_after_tag_reuse() {
+    let root = std::env::temp_dir().join(format!("ployz-build-binding-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
+    let docker = root.join("docker");
+    write_docker(&docker, &root);
+    fs::write(root.join("image"), "example.test/api:latest").unwrap();
+    fs::write(root.join("digest"), FIRST_CONTENT).unwrap();
+    let mut project = parse_normalized(
+        "name: demo\nservices: {api: {image: 'example.test/api:latest', build: ./src}}\n",
+        &root,
+    )
+    .unwrap();
+    let options = BuildOptions::default();
+    let plan = plan_build(&project, &options).unwrap();
+
+    let first = capture_build(&plan, &options, &mut project)
+        .unwrap()
+        .execute(Some(&docker))
+        .unwrap();
+    // A later Build moves the same requested tag onto different content.
+    fs::write(root.join("digest"), SECOND_CONTENT).unwrap();
+    let second = capture_build(&plan, &options, &mut project)
+        .unwrap()
+        .execute(Some(&docker))
+        .unwrap();
+
+    let (first, second) = (one_built(first), one_built(second));
+    assert_eq!(first.built.tags, second.built.tags);
+    assert_eq!(
+        first.built.reference,
+        format!("example.test/api@{FIRST_CONTENT}")
+    );
+    assert_eq!(
+        second.built.reference,
+        format!("example.test/api@{SECOND_CONTENT}")
+    );
+    // Each attempt verified its own content instead of the shared tag.
+    let calls = fs::read_to_string(root.join("calls")).unwrap();
+    for content in [FIRST_CONTENT, SECOND_CONTENT] {
+        assert!(
+            calls.lines().any(|call| call
+                == format!("image inspect example.test/api@{content} --format {{{{json .}}}}")),
+            "{calls}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unsupported_build_settings_are_named_before_execution() {
+    for (setting, value) in [
+        ("cache_from", "[type=local\\,src=/tmp/cache]"),
+        ("network", "host"),
+    ] {
+        let mut project = parse_normalized(
+            &format!(
+                "name: demo\nservices: {{api: {{build: {{context: ., {setting}: {value}}}}}}}\n"
+            ),
+            ".",
+        )
+        .unwrap();
+        let options = BuildOptions::default();
+        let plan = plan_build(&project, &options).unwrap();
+        let error = match capture_build(&plan, &options, &mut project) {
+            Ok(_) => panic!("an unsupported build setting was admitted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains(&format!("build.{setting}")), "{error}");
+        assert!(error.contains("api"), "{error}");
+    }
+}
+
+fn one_built(outcome: BuildOutcome) -> BuiltService {
+    match outcome {
+        BuildOutcome::Built(mut services) if services.len() == 1 => services.remove(0),
+        BuildOutcome::Built(services) => panic!("expected one built Service, got {services:?}"),
+        BuildOutcome::Published | BuildOutcome::Validated => {
+            panic!("the build claimed no image")
+        }
+    }
+}
+
+/// A Docker stand-in answering the evidence the runner reads, recording every
+/// call, and retaining the captured Compose file it was given.
+fn write_docker(path: &Path, root: &Path) {
+    let root = root.display();
+    let script = format!(
+        r#"#!/bin/sh
+root='{root}'
+printf '%s\n' "$*" >> "$root/calls"
+case "$1 $2" in
+  'version --format') echo linux/amd64; exit 0 ;;
+  'buildx create') : > "$root/builder"; exit 0 ;;
+  'buildx inspect') exit 0 ;;
+  'buildx rm') rm -f "$root/builder"; exit 0 ;;
+  'buildx ls')
+    if [ -f "$root/builder" ]; then
+      printf '%s\n' '{{"Name":"{builder}","Nodes":[{{"Platforms":["linux/amd64"],"DriverOpts":{{"image":"{image}"}}}}]}}'
+    fi
+    exit 0 ;;
+  'image inspect')
+    printf '{{"Id":"%s","Os":"linux","Architecture":"amd64","Variant":null}}' "${{3#*@}}"
+    exit 0 ;;
+  'buildx bake')
+    previous=
+    for argument in "$@"; do
+      if [ "$previous" = --file ]; then cp "$argument" "$root/override.yaml"; fi
+      if [ "$previous" = --metadata-file ]; then
+        printf '{{"api": {{"containerimage.digest": "%s", "image.name": "%s"}}}}'           "$(cat "$root/digest")" "$(cat "$root/image")" > "$argument"
+      fi
+      previous=$argument
+    done
+    exit 0 ;;
+  *'config --environment') exit 0 ;;
+esac
+case "$*" in
+  *' config '*)
+    printf 'name: demo\nservices:\n  api:\n    image: example.test/api\n    build: {{context: .}}\n'
+    exit 0 ;;
+esac
+exit 1
+"#,
+        builder = ployz_build::BUILDER,
+        image = ployz_build::BUILDKIT_IMAGE,
+    );
+    fs::write(path, script).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 #[test]
