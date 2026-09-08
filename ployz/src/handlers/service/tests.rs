@@ -544,14 +544,51 @@ fn skipped_volumes_join_the_partial_lifecycle_error() {
     let (_, skipped) = volumes_safe_to_remove(planned, &[&db], &HashSet::new());
     let skipped_id = skipped.first().expect("still-mounted volume");
     assert_eq!(
-        combined_teardown_result(service_action_result(true), skipped_volume_result(&skipped),)
-            .unwrap_err()
-            .to_string(),
+        combined_teardown_result(
+            service_action_result(partial_lifecycle()),
+            skipped_volume_result(&skipped),
+        )
+        .unwrap_err()
+        .to_string(),
         format!(
             "Service lifecycle completed partially; Docker Volume removals not attempted: {}/{}",
             skipped_id.machine_id, skipped_id.name
         )
     );
+}
+
+#[test]
+fn internal_lifecycle_failures_are_framed_as_bugs() {
+    let mut failures = crate::failure::Failures::default();
+    failures.record(
+        "Stop for a Container",
+        &ployz_core::RpcError {
+            code: ployz_core::RpcErrorCode::Internal,
+            message: "boom".into(),
+            details: serde_json::Value::Null,
+        },
+    );
+    let framed = service_action_result(failures).unwrap_err().to_string();
+    assert!(
+        framed.contains("Service lifecycle completed partially"),
+        "{framed}"
+    );
+    assert!(framed.contains("bug"), "{framed}");
+    assert!(framed.contains("ployz version"), "{framed}");
+
+    assert!(service_action_result(partial_lifecycle()).is_err());
+    assert!(
+        !service_action_result(partial_lifecycle())
+            .unwrap_err()
+            .to_string()
+            .contains("ployz version")
+    );
+}
+
+fn partial_lifecycle() -> crate::failure::Failures {
+    let mut failures = crate::failure::Failures::default();
+    failures.note("Service selection", "came from a partial Live Observation");
+    failures
 }
 
 fn service_named(id: char, project: &str, name: &str) -> ployz_core::ServiceObservation {

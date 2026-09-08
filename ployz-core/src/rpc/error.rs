@@ -46,6 +46,46 @@ impl RpcError {
     }
 }
 
+impl RpcError {
+    /// `details` as it crosses the wire. `report` is this encoder's key: the hint
+    /// appears under it on exactly the `Internal` errors, and a producer value
+    /// found there is displaced rather than mistaken for one, whatever the code.
+    ///
+    /// Typed siblings keep their own paths. Displaced content collects under
+    /// `details`, and a producer that owns that key too keeps its value one level
+    /// further down, so colliding keys cost depth rather than data.
+    fn wire_details(&self) -> Cow<'_, Value> {
+        let hint = self.report_hint();
+        if hint.is_none() && self.details.get(Self::REPORT_KEY).is_none() {
+            return Cow::Borrowed(&self.details);
+        }
+        let mut fields = self.details.as_object().cloned().unwrap_or_default();
+        let displaced = if self.details.is_object() {
+            fields
+                .remove(Self::REPORT_KEY)
+                .filter(|prior| prior.as_str() != hint)
+        } else {
+            Some(self.details.clone()).filter(|details| !details.is_null())
+        };
+        if let Some(hint) = hint {
+            fields.insert(Self::REPORT_KEY.to_owned(), hint.into());
+        }
+        if let Some(displaced) = displaced {
+            let occupied = fields.remove("details");
+            fields.insert(
+                "details".to_owned(),
+                occupied.map_or(displaced.clone(), |occupied| {
+                    Value::Object(Map::from_iter([
+                        (Self::REPORT_KEY.to_owned(), displaced),
+                        ("details".to_owned(), occupied),
+                    ]))
+                }),
+            );
+        }
+        Cow::Owned(Value::Object(fields))
+    }
+}
+
 // The hint is derived from `code`, so it is added once here rather than by every
 // producer. The wire shape is deliberately richer than the in-memory one: an
 // `Internal` error with `Null` details does not round-trip to an equal value.
@@ -58,48 +98,10 @@ impl Serialize for RpcError {
             details: Cow<'a, Value>,
         }
 
-        let details = match self.report_hint() {
-            None => Cow::Borrowed(&self.details),
-            Some(hint) => {
-                // `report` belongs to this encoder, so the hint always wins. Typed
-                // siblings keep their paths: only what cannot sit beside the hint —
-                // a scalar or array `details`, or a producer value already under the
-                // reserved key — moves one level down, and never over a field the
-                // producer put there.
-                let mut fields = self.details.as_object().cloned().unwrap_or_default();
-                let displaced = if self.details.is_object() {
-                    fields
-                        .insert(Self::REPORT_KEY.to_owned(), hint.into())
-                        .filter(|prior| prior.as_str() != Some(hint))
-                } else {
-                    fields.insert(Self::REPORT_KEY.to_owned(), hint.into());
-                    Some(self.details.clone()).filter(|details| !details.is_null())
-                };
-                if let Some(displaced) = displaced {
-                    // Displaced data collects under `details`. A producer that owns
-                    // that key too keeps its value one level further down, so
-                    // colliding keys cost depth rather than data.
-                    let occupied = fields.remove("details");
-                    fields.insert(
-                        "details".to_owned(),
-                        occupied.map_or_else(
-                            || displaced.clone(),
-                            |occupied| {
-                                Value::Object(Map::from_iter([
-                                    (Self::REPORT_KEY.to_owned(), displaced.clone()),
-                                    ("details".to_owned(), occupied),
-                                ]))
-                            },
-                        ),
-                    );
-                }
-                Cow::Owned(Value::Object(fields))
-            }
-        };
         Wire {
             code: &self.code,
             message: &self.message,
-            details,
+            details: self.wire_details(),
         }
         .serialize(serializer)
     }
@@ -208,6 +210,25 @@ mod rpc_error_wire {
             wire.pointer("/details/details"),
             Some(&json!(["start_failed"]))
         );
+    }
+
+    #[test]
+    fn user_errors_never_carry_the_reserved_report_key() {
+        let wire = serde_json::to_value(error(
+            RpcErrorCode::NotFound,
+            json!({ "report": "retry later", "reason": "missing" }),
+        ))
+        .unwrap();
+        assert!(wire.pointer("/details/report").is_none(), "{wire}");
+        assert_eq!(wire.pointer("/details/reason"), Some(&json!("missing")));
+        assert_eq!(
+            wire.pointer("/details/details"),
+            Some(&json!("retry later"))
+        );
+
+        let untouched =
+            serde_json::to_value(error(RpcErrorCode::NotFound, json!({ "a": 1 }))).unwrap();
+        assert_eq!(untouched.pointer("/details"), Some(&json!({ "a": 1 })));
     }
 
     #[test]
