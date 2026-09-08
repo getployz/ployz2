@@ -408,7 +408,7 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         (
             &["ps"][..],
             format!(
-                "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tServiceContainer\t{machine_id}\tRunning {{ health: Healthy }}\n{}\tapp/worker\tPreDeployHook\t{machine_id}\tExited {{ code: 0 }}\n{}\tapp/worker\tServiceContainer\t{machine_id}\tRunning {{ health: Unhealthy }}\n{}\tapp/worker\tServiceContainer\t{machine_id}\tRunning {{ health: Starting }}\n{}\tapp/worker\tServiceContainer\t{machine_id}\tExited {{ code: 1 }}\n",
+                "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tServiceContainer\t{machine_id}\trunning (health: healthy)\n{}\tapp/worker\tPreDeployHook\t{machine_id}\texited with code 0\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: unhealthy)\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: starting)\n{}\tapp/worker\tServiceContainer\t{machine_id}\texited with code 1\n",
                 "0".repeat(64),
                 "d".repeat(64),
                 "e".repeat(64),
@@ -485,6 +485,19 @@ async fn volume_list_prints_healthy_and_unavailable_rows_then_fails() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unavailable"), "{stderr}");
     assert!(stderr.contains("inspect payload was malformed"), "{stderr}");
+    assert!(stderr.contains(&machine_id('a').to_string()), "{stderr}");
+    assert!(stderr.contains("inspect the Volume again"), "{stderr}");
+    let removed = run_ployz(address, &["volume", "rm", "unavailable"]).await;
+    assert!(!removed.status.success(), "{removed:?}");
+    let stderr = String::from_utf8_lossy(&removed.stderr);
+    for hint in [
+        "unavailable",
+        "refusing to remove",
+        "inspect payload was malformed",
+        "inspect the Volume again",
+    ] {
+        assert!(stderr.contains(hint), "{stderr}");
+    }
     server.abort();
 }
 
@@ -541,7 +554,9 @@ async fn volume_create_reports_created_but_unverified_as_failure() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("was created"), "{stderr}");
     assert!(stderr.contains("could not be verified"), "{stderr}");
+    assert!(stderr.contains("inspect the Volume again"), "{stderr}");
     assert!(stderr.contains("inspect payload was malformed"), "{stderr}");
+    assert!(stderr.contains(&machine_id('a').to_string()), "{stderr}");
     server.abort();
 }
 

@@ -134,7 +134,7 @@ impl VolumeSnapshot {
         for volume in &self.observations {
             if !ids.insert(&volume.id) {
                 return Err(invalid(format!(
-                    "Docker Volume observation {:?} is repeated",
+                    "Docker Volume observation {} is repeated",
                     volume.id
                 )));
             }
@@ -142,7 +142,7 @@ impl VolumeSnapshot {
         for failure in &self.named_failures {
             if !ids.insert(&failure.id) {
                 return Err(invalid(format!(
-                    "Docker Volume evidence {:?} is repeated or contradictory",
+                    "Docker Volume evidence {} is repeated or contradictory",
                     failure.id
                 )));
             }
@@ -169,7 +169,7 @@ impl VolumeSnapshot {
             .find(|id| machine_gaps.contains(&id.machine_id))
         {
             return Err(invalid(format!(
-                "Docker Volume evidence {id:?} contradicts its Machine inventory gap"
+                "Docker Volume evidence {id} contradicts its Machine inventory gap"
             )));
         }
         Ok(())
@@ -215,7 +215,7 @@ impl VolumeSnapshot {
         self.named_failures
             .iter()
             .find(|failure| relevant(&failure.id))
-            .map(|failure| (failure.id.clone(), failure.error.message.clone()))
+            .map(|failure| (failure.id.clone(), failure.to_string()))
     }
 
     pub(crate) fn deploy_warnings(&self) -> impl Iterator<Item = DeployWarning> + '_ {
@@ -240,10 +240,7 @@ impl VolumeSnapshot {
                     .map(|failure| DeployWarning::ObservationFailed {
                         kind: ObservationKind::Volume,
                         machine_id: failure.id.machine_id,
-                        message: format!(
-                            "Docker Volume {}: {}",
-                            failure.id.name, failure.error.message
-                        ),
+                        message: failure.to_string(),
                     }),
             )
     }
@@ -260,12 +257,11 @@ impl VolumeSnapshot {
             .chain(self.omissions.iter().map(|machine_id| {
                 format!("WARNING: Machine {machine_id} was omitted listing volumes")
             }))
-            .chain(self.named_failures.iter().map(|failure| {
-                format!(
-                    "WARNING: Machine {} Docker Volume {}: {}",
-                    failure.id.machine_id, failure.id.name, failure.error.message
-                )
-            }))
+            .chain(
+                self.named_failures
+                    .iter()
+                    .map(|failure| format!("WARNING: {failure}")),
+            )
     }
 }
 
@@ -549,7 +545,7 @@ pub enum PlanError {
     },
     #[error("dependency cycle at service '{service}'")]
     DependencyCycle { service: String },
-    #[error("Docker Volume {id:?} is unavailable: {message}")]
+    #[error("Docker Volume {id} is unavailable: {message}")]
     DockerVolumeUnavailable { id: DockerVolumeId, message: String },
     #[error("hostname {hostname} is already published by {owner}")]
     HostnameConflict {
