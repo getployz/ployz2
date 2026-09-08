@@ -270,6 +270,27 @@ impl<E> FailedOperation<E> {
             Self::Operation { error, .. } | Self::ReplacementHealth { error, .. } => error,
         }
     }
+
+    /// Every error a report of this failure shows: the operation's own, and any
+    /// compensation that failed after it. A bug in the compensation is still a bug.
+    pub fn errors(&self) -> Vec<&E> {
+        let mut errors = vec![self.error()];
+        if let Self::ReplacementHealth { compensation, .. } = self {
+            match compensation {
+                ReplacementCompensation::StartFirst { stop_new_container } => {
+                    errors.extend(stop_new_container.error());
+                }
+                ReplacementCompensation::StopFirst {
+                    stop_new_container,
+                    restart_old_container,
+                } => {
+                    errors.extend(stop_new_container.error());
+                    errors.extend(restart_old_container.error());
+                }
+            }
+        }
+        errors
+    }
 }
 
 /// Compensation after a replacement health failure.
@@ -296,6 +317,14 @@ pub enum StopAttempt<E> {
 }
 
 impl<E> StopAttempt<E> {
+    /// What the stop failed with, if it failed.
+    pub const fn error(&self) -> Option<&E> {
+        match self {
+            Self::Stopped => None,
+            Self::Failed { error } => Some(error),
+        }
+    }
+
     /// Whether the container is stopped.
     #[must_use]
     pub const fn stopped(&self) -> bool {
@@ -322,6 +351,16 @@ pub enum RestartAttempt<E> {
     Restarted,
     /// The restart returned `error`.
     Failed { error: E },
+}
+
+impl<E> RestartAttempt<E> {
+    /// What the restart failed with, if it was attempted and failed.
+    pub const fn error(&self) -> Option<&E> {
+        match self {
+            Self::NotAttempted | Self::Restarted => None,
+            Self::Failed { error } => Some(error),
+        }
+    }
 }
 
 impl<E> From<Result<(), E>> for RestartAttempt<E> {
@@ -698,6 +737,30 @@ pub enum ExecutionError {
     },
     #[error("deploy cancelled")]
     Cancelled,
+}
+
+impl ExecutionError {
+    /// Every `RpcError` behind this failure, including the secondary evidence a
+    /// report shows: a hook's stop attempt, a dependency's observation.
+    #[must_use]
+    pub fn rpc_errors(&self) -> Vec<&RpcError> {
+        match self {
+            Self::Machine { error, .. } => vec![error],
+            Self::DependencyHealth { failure, .. } => match failure {
+                DependencyHealthFailure::Observation { error } => vec![error],
+                DependencyHealthFailure::Cancelled
+                | DependencyHealthFailure::NoContainers
+                | DependencyHealthFailure::Container { .. } => Vec::new(),
+            },
+            Self::Hook { failure, .. } => match failure {
+                HookFailure::Cancelled { stop_error } | HookFailure::TimedOut { stop_error } => {
+                    stop_error.iter().collect()
+                }
+                HookFailure::Exit { .. } => Vec::new(),
+            },
+            Self::Health { .. } | Self::Cancelled => Vec::new(),
+        }
+    }
 }
 
 /// Live evidence of one in-flight Deploy. Not a Watch frame.

@@ -46,12 +46,12 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     let runtime = runtime()?;
     let failures = runtime.block_on(async {
         let mut client = connect_client(matches, context).await?;
-        let mut failures = Vec::new();
+        let mut failures = crate::failure::Failures::default();
         for service in &plan {
             let targets = push_targets(&explicit, &service.machines);
             match crate::image::push(&mut client, &service.image, None, &targets).await {
-                Ok(result) => failures.extend(report_push(&service.image, result)),
-                Err(error) => failures.push(push_failure(&service.image, error)?),
+                Ok(result) => report_push(&mut failures, &service.image, result),
+                Err(error) => push_failure(&mut failures, &service.image, error)?,
             }
         }
         Ok::<_, Error>(failures)
@@ -59,28 +59,24 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(Error::usage(failures.join("; ")))
+        Err(failures.into_failure(str::to_owned))
     }
 }
 
 pub(super) fn report_push(
+    failures: &mut crate::failure::Failures,
     image: &str,
     result: ployz_core::PartialResult<(), crate::image::PushError>,
-) -> Vec<String> {
+) {
     for success in result.successes {
         println!("Pushed {image} to {}", success.machine_id);
     }
-    result
-        .failures
-        .into_iter()
-        .map(|failure| format!("{image} on {}: {}", failure.machine_id, failure.error))
-        .chain(
-            result
-                .omissions
-                .into_iter()
-                .map(|machine| format!("{image} on {machine}: no terminal response")),
-        )
-        .collect()
+    for failure in result.failures {
+        failures.record(format!("{image} on {}", failure.machine_id), &failure.error);
+    }
+    for machine in result.omissions {
+        failures.note(format!("{image} on {machine}"), "no terminal response");
+    }
 }
 
 pub(super) fn push_targets(
@@ -94,13 +90,16 @@ pub(super) fn push_targets(
     }
 }
 
-fn push_failure(image: &str, error: crate::image::PushError) -> Result<String, Error> {
-    let message = format!("{image}: {error}");
+fn push_failure(
+    failures: &mut crate::failure::Failures,
+    image: &str,
+    error: crate::image::PushError,
+) -> Result<(), Error> {
     if error.is_cancellation() {
-        Err(Error::context(message, error))
-    } else {
-        Ok(message)
+        return Err(Error::context(format!("{image}: {error}"), error));
     }
+    failures.record(image, &error);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -121,15 +120,45 @@ mod tests {
     }
 
     #[test]
+    fn internal_push_failures_stay_bugs_through_the_aggregate() {
+        let mut failures = crate::failure::Failures::default();
+        push_failure(
+            &mut failures,
+            "example.test/api",
+            crate::image::PushError::ImageIngest(ployz_core::RpcError {
+                code: ployz_core::RpcErrorCode::Internal,
+                message: "boom".into(),
+                details: serde_json::Value::Null,
+            }),
+        )
+        .unwrap();
+        let framed = failures.into_failure(str::to_owned).to_string();
+        assert!(framed.contains("boom"), "{framed}");
+        assert!(framed.contains("bug"), "{framed}");
+        assert!(framed.contains("ployz version"), "{framed}");
+    }
+
+    #[test]
     fn cancellation_is_terminal_while_other_push_errors_accumulate() {
-        assert!(push_failure("example.test/api", crate::image::PushError::Cancelled).is_err());
-        assert_eq!(
+        let mut failures = crate::failure::Failures::default();
+        assert!(
             push_failure(
+                &mut failures,
                 "example.test/api",
-                crate::image::PushError::ImageNotFound("example.test/api".into()),
+                crate::image::PushError::Cancelled
             )
-            .unwrap(),
-            "example.test/api: image 'example.test/api' not found locally"
+            .is_err()
+        );
+        push_failure(
+            &mut failures,
+            "example.test/api",
+            crate::image::PushError::ImageNotFound("example.test/api".into()),
+        )
+        .unwrap();
+        let accumulated = failures.into_failure(str::to_owned).to_string();
+        assert!(
+            accumulated.contains("example.test/api: image 'example.test/api' not found locally"),
+            "{accumulated}"
         );
     }
 }

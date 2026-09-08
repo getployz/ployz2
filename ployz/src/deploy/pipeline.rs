@@ -254,10 +254,10 @@ fn invalid_argument(message: String) -> RpcError {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Default)]
 pub(super) struct PushOutcome {
     pub pushed: Vec<PushedImage>,
-    pub failures: Vec<String>,
+    pub failures: crate::failure::Failures,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -280,14 +280,11 @@ pub(super) async fn push_project_images(
     machines: &[MachineObservation],
 ) -> Result<PushOutcome, Failure> {
     let mut pushed = Vec::new();
-    let mut failures = Vec::new();
+    let mut failures = crate::failure::Failures::default();
     for service in builds {
-        match push_image(client, service, machines).await {
-            Ok((images, service_failures)) => {
-                pushed.extend(images);
-                failures.extend(service_failures);
-            }
-            Err(error) => failures.push(format!("{}: {error}", service.image)),
+        match push_image(client, service, machines, &mut failures).await {
+            Ok(images) => pushed.extend(images),
+            Err(error) => failures.record(&service.image, &error),
         }
     }
     Ok(PushOutcome { pushed, failures })
@@ -497,7 +494,8 @@ async fn push_image(
     client: &mut Client,
     service: &BuildService,
     machines: &[MachineObservation],
-) -> Result<(Vec<PushedImage>, Vec<String>), PushError> {
+    failures: &mut crate::failure::Failures,
+) -> Result<Vec<PushedImage>, PushError> {
     let targets = service
         .machines
         .iter()
@@ -513,23 +511,19 @@ async fn push_image(
             machine_id: success.machine_id,
         })
         .collect();
-    let failures = result
-        .failures
-        .into_iter()
-        .map(|failure| {
-            format!(
-                "{} on {}: {}",
-                service.image, failure.machine_id, failure.error
-            )
-        })
-        .chain(
-            result
-                .omissions
-                .into_iter()
-                .map(|machine| format!("{} on {machine}: no terminal response", service.image)),
-        )
-        .collect();
-    Ok((pushed, failures))
+    for failure in result.failures {
+        failures.record(
+            format!("{} on {}", service.image, failure.machine_id),
+            &failure.error,
+        );
+    }
+    for machine in result.omissions {
+        failures.note(
+            format!("{} on {machine}", service.image),
+            "no terminal response",
+        );
+    }
+    Ok(pushed)
 }
 
 #[cfg(test)]
