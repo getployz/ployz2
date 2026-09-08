@@ -45,7 +45,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("network")
         .expect("Cluster network has a default")
         .parse()
-        .map_err(|error| Error::usage(format!("invalid Cluster network: {error}")))?;
+        .map_err(|error| Error::context(format!("invalid Cluster network: {error}"), error))?;
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     let no_install = matches.get_flag("no-install");
@@ -136,8 +136,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         if want_ingress {
             let requested = crate::ingress::service_spec(None, Vec::new(), None).await.map_err(|error| Error::context(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}"), error))?;
             crate::deploy::apply_requested(&mut ready, &requested).await.map_err(|error| {
-                let error: Error = error.into();
-                Error::usage(format!("Machine initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))
+                Error::from(error).wrap(|details| format!("Machine initialized; ingress deployment incomplete: {details}\nContinue with: {ingress_recovery}"))
             })?;
             if want_dns {
                 crate::dns::update_records_for_ingress(&mut ready).await.map_err(|error| Error::context(format!("Machine initialized; ingress healthy; DNS publication pending: {error}\nAllow outbound access if blocked, then run: {ingress_recovery}"), error))?;

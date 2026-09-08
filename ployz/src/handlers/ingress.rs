@@ -42,12 +42,12 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("caddyfile")
         .map(|path| fs::read_to_string(Path::new(path)))
         .transpose()
-        .map_err(|error| Error::usage(format!("read Caddyfile: {error}")))?;
+        .map_err(|error| Error::context(format!("read Caddyfile: {error}"), error))?;
     let fragment = caddy_config
         .filter(|config| !config.trim().is_empty())
         .map(|config| IngressProxyFragment::parse(&config))
         .transpose()
-        .map_err(|error| Error::usage(error.to_string()))?;
+        .map_err(Error::command)?;
     let machines = string_values(matches, "machine")
         .into_iter()
         .map(MachineTarget::parse)

@@ -36,7 +36,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let live = client.live_services_from(&machines).await?;
         if !no_reset {
             if let Some(failure) = live.containers.failures.iter().find(|failure| failure.machine_id == selected.id) {
-                return Err(Error::usage(format!("Cannot observe Services on Machine {}: {}. No changes made.", selected.id, failure.error.message)));
+                return Err(Error::context(format!("Cannot observe Services on Machine {}: {}. No changes made.", selected.id, failure.error.message), failure.error.clone()));
             }
             if live.containers.omissions.contains(&selected.id) {
                 return Err(Error::usage(format!("Cannot observe Services on Machine {}: no terminal response. No changes made.", selected.id)));
@@ -133,9 +133,10 @@ fn select_machine(
 
 fn machine_removal_refusal(error: RpcError) -> Error {
     if error.code == RpcErrorCode::Unavailable {
-        Error::usage(format!(
-            "{error}; use --no-reset to remove it from the Cluster without resetting"
-        ))
+        Error::context(
+            format!("{error}; use --no-reset to remove it from the Cluster without resetting"),
+            error,
+        )
     } else {
         error.into()
     }

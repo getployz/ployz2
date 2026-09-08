@@ -158,7 +158,7 @@ fn confirm_with(
     let confirmation = || {
         observed
             .confirm_names(names.iter().copied())
-            .map_err(|error| Error::usage(error.to_string()))
+            .map_err(Error::command)
     };
     if !named.is_empty() || (names.is_empty() && yes) {
         return confirmation().map(Some);

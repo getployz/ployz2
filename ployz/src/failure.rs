@@ -74,7 +74,9 @@ impl Error for Usage {
 }
 
 impl Failure {
-    fn command(error: impl Error + Send + Sync + 'static) -> Self {
+    /// A typed error, classified on the way in. Preferred over rendering the
+    /// error yourself: `Display` is identical and the code survives.
+    pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
             bug: is_internal_rpc(&error),
             inner: Inner::Command(Box::new(error)),
@@ -117,6 +119,19 @@ impl Failure {
         Self::text(message.into(), Some(Box::new(cause)), bug)
     }
 
+    /// Restate this failure inside wider product text. `sentence` sees the
+    /// unframed message and the classification carries over, so a bug is still
+    /// framed exactly once however many times it is restated.
+    #[must_use]
+    pub fn wrap(self, sentence: impl FnOnce(&str) -> String) -> Self {
+        let message = match &self.inner {
+            Inner::Command(error) => error.to_string(),
+            Inner::Exit(code) => format!("exit {code}"),
+        };
+        let bug = self.bug;
+        Self::text(sentence(&message).into(), Some(Box::new(self)), bug)
+    }
+
     /// One product line for a follow-on failure. `terminate` prints it once.
     pub fn warned(context: impl fmt::Display, cause: impl Error + Send + Sync + 'static) -> Self {
         Self::context(format!("WARNING: {context}: {cause}."), cause)
@@ -136,10 +151,10 @@ pub struct Failures {
 }
 
 impl Failures {
-    /// Record what `scope` — a Machine, a Volume — reported.
-    pub fn record(&mut self, scope: impl fmt::Display, error: &RpcError) {
-        self.bug |= error.code == RpcErrorCode::Internal;
-        self.entries.push(format!("{scope}: {}", error.message));
+    /// Record what `scope` — a Machine, a Volume, a Global — reported.
+    pub fn record(&mut self, scope: impl fmt::Display, error: &(impl Error + 'static)) {
+        self.bug |= is_internal_rpc(error);
+        self.entries.push(format!("{scope}: {error}"));
     }
 
     /// Record a failure with no `RpcError` behind it: a target that never
@@ -467,6 +482,97 @@ mod tests {
         );
         assert_eq!(add.to_string().matches(&cause.message).count(), 1);
         assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
+    }
+
+    fn rpc(code: RpcErrorCode) -> Failure {
+        Failure::from(RpcError {
+            code,
+            message: "boom".into(),
+            details: Value::Null,
+        })
+    }
+
+    #[test]
+    fn internal_failures_are_framed_as_bugs_with_the_report_step() {
+        let framed = rpc(RpcErrorCode::Internal).to_string();
+        assert!(framed.contains("boom"), "{framed}");
+        assert!(framed.contains("bug"), "{framed}");
+        assert!(framed.contains("ployz version"), "{framed}");
+
+        let restated = rpc(RpcErrorCode::Internal)
+            .wrap(|details| format!("startup incomplete: {details}"))
+            .to_string();
+        assert!(restated.contains("startup incomplete"), "{restated}");
+        assert_eq!(restated.matches("ployz version").count(), 1, "{restated}");
+
+        let user = rpc(RpcErrorCode::NotFound).to_string();
+        assert!(!user.contains("bug"), "{user}");
+        assert!(!user.contains("ployz version"), "{user}");
+    }
+
+    /// The framing decision is data, so nothing may render a typed error into
+    /// product text and hand the text to `usage`: `context`, `wrap` and
+    /// `Failures` all keep the code. This scan is the enforcement, so a new
+    /// stringifying site fails here instead of printing a bug as a user error.
+    #[test]
+    fn usage_never_swallows_a_typed_error() {
+        const RENDERED: [&str; 5] = ["{error", "{err}", "{cause", ".to_string()", ".message"];
+
+        let mut offenders = Vec::new();
+        let mut pending = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(path) = pending.pop() {
+            if path.is_dir() {
+                pending.extend(
+                    std::fs::read_dir(&path)
+                        .expect("readable source directory")
+                        .map(|entry| entry.expect("readable entry").path()),
+                );
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("readable source file");
+            for (line, argument) in usage_arguments(&source) {
+                if RENDERED.iter().any(|rendered| argument.contains(rendered)) {
+                    offenders.push(format!("{}:{line}", path.display()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "usage() renders a typed error at {offenders:?}: use context, wrap or Failures so the framing survives"
+        );
+    }
+
+    /// Every `usage(` argument in `source`, with the line it starts on.
+    fn usage_arguments(source: &str) -> Vec<(usize, String)> {
+        let mut arguments = Vec::new();
+        let mut rest = source;
+        let mut consumed = 0;
+        while let Some(start) = rest.find("usage(") {
+            let open = consumed + start + "usage".len();
+            let mut depth = 0_usize;
+            let mut end = open;
+            for (offset, character) in source[open..].char_indices() {
+                match character {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = open + offset;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let line = source[..open].lines().count();
+            arguments.push((line, source[open..end].to_owned()));
+            consumed = open + 1;
+            rest = &source[consumed..];
+        }
+        arguments
     }
 
     #[test]

@@ -114,10 +114,10 @@ pub(super) async fn wait_direct_participating(
     )
     .await
     .map_err(|error| {
-        Error::usage(format!(
-            "{}: {error}",
-            readiness_timeout_message(timeout_message)
-        ))
+        Error::context(
+            format!("{}: {error}", readiness_timeout_message(timeout_message)),
+            error,
+        )
     })
 }
 

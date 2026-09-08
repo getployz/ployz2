@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use thiserror::Error;
 use ts_rs::TS;
 
@@ -61,21 +61,22 @@ impl Serialize for RpcError {
         let details = match self.report_hint() {
             None => Cow::Borrowed(&self.details),
             Some(hint) => {
-                let mut fields = Map::new();
-                fields.insert(Self::REPORT_KEY.to_owned(), hint.into());
-                // `report` belongs to this encoder, so the hint always wins. Details
-                // that cannot sit beside it — a scalar, an array, or an object
-                // claiming the key for something else — are carried one level down
-                // instead of being dropped or left to shadow the report path.
-                let carried = self.details.as_object().filter(|fields| {
+                // `report` belongs to this encoder, so the hint always wins. Typed
+                // siblings keep their paths: only what cannot sit beside the hint —
+                // a scalar or array `details`, or a producer value already under the
+                // reserved key — moves one level down, and never over a field the
+                // producer put there.
+                let mut fields = self.details.as_object().cloned().unwrap_or_default();
+                let displaced = if self.details.is_object() {
                     fields
-                        .get(Self::REPORT_KEY)
-                        .is_none_or(|value| value.as_str() == Some(hint))
-                });
-                if let Some(carried) = carried {
-                    fields.extend(carried.clone());
-                } else if !self.details.is_null() {
-                    fields.insert("details".to_owned(), self.details.clone());
+                        .insert(Self::REPORT_KEY.to_owned(), hint.into())
+                        .filter(|prior| prior.as_str() != Some(hint))
+                } else {
+                    fields.insert(Self::REPORT_KEY.to_owned(), hint.into());
+                    Some(self.details.clone()).filter(|details| !details.is_null())
+                };
+                if let Some(displaced) = displaced {
+                    fields.entry("details").or_insert(displaced);
                 }
                 Cow::Owned(Value::Object(fields))
             }
@@ -148,8 +149,13 @@ mod rpc_error_wire {
             Some(RpcError::REPORT_HINT)
         );
         assert_eq!(
-            wire.pointer("/details/details/report"),
+            wire.pointer("/details/details"),
             Some(&json!("retry later"))
+        );
+        assert_eq!(
+            wire.pointer("/details/reason"),
+            Some(&json!("start_failed")),
+            "typed siblings keep their paths"
         );
     }
 

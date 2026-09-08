@@ -253,8 +253,7 @@ async fn enroll_founder(
     if let Some(requested) = ingress {
         // An interrupted Apply may have completed mutations. Do not replay it.
         crate::deploy::apply_requested(&mut ready, &requested).await.map_err(|error| {
-            let error: Error = error.into();
-            Error::usage(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
+            Error::from(error).wrap(|details| format!("Machine initialized; Ingress deployment incomplete: {details}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
         })?;
         if !no_dns {
             crate::dns::update_records_for_ingress(&mut ready).await.map_err(|error| {
@@ -414,14 +413,17 @@ async fn wait_phase(
     )
     .await
     .map_err(|error| {
-        Error::usage(if participating {
-            format!(
-                "{}: {error}",
-                crate::handlers::machine::readiness_timeout_message(timeout_message)
+        if participating {
+            Error::context(
+                format!(
+                    "{}: {error}",
+                    crate::handlers::machine::readiness_timeout_message(timeout_message)
+                ),
+                error,
             )
         } else {
-            error.to_string()
-        })
+            Error::command(error)
+        }
     })
 }
 

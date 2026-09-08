@@ -11,14 +11,16 @@ pub(crate) const WAIT: Duration = Duration::from_secs(60);
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error<E> {
     #[error("{0}")]
-    Permanent(E),
+    Permanent(#[source] E),
+    /// The retries ran out. Every attempt was retryable by definition, so the
+    /// last one is summarised rather than kept.
     #[error("{0}")]
     Exhausted(String),
 }
 
-impl<E: Display> From<Error<E>> for Failure {
+impl<E: std::error::Error + Send + Sync + 'static> From<Error<E>> for Failure {
     fn from(error: Error<E>) -> Self {
-        Self::usage(error.to_string())
+        Self::command(error)
     }
 }
 
