@@ -93,7 +93,7 @@ export function useCanvasFlowState({
         ({
           node: { type: "volume", id: resource.resource.id },
           config:
-            resource.resource.deletedAt === null
+            resource.isAuthored
               ? namedVolumeConfig(resource.resource.name)
               : null,
         }) satisfies EnvironmentNodeProjection,

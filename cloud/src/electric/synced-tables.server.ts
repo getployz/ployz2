@@ -24,24 +24,11 @@ export const PLOYZ_TABLES = {
   environment: { scope: "organization", whereColumn: "organization_id" },
   service: { scope: "organization", whereColumn: "organization_id" },
   resource_lineage: { scope: "organization", whereColumn: "organization_id" },
-  environment_variable_group: {
-    scope: "organization",
-    whereColumn: "organization_id",
-  },
   environment_resource: {
     scope: "organization",
     whereColumn: "organization_id",
   },
   environment_canvas_node_position: {
-    scope: "organization",
-    whereColumn: "organization_id",
-  },
-  variable: { scope: "organization", whereColumn: "organization_id" },
-  service_variable_group_attachment: {
-    scope: "organization",
-    whereColumn: "organization_id",
-  },
-  service_volume_attachment: {
     scope: "organization",
     whereColumn: "organization_id",
   },

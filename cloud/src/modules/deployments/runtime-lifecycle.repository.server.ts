@@ -1,11 +1,11 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { Effect } from "effect";
-import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
+import { Effect, Redacted, type Schema } from "effect";
 import {
-  service as schemaService,
-  environmentCanvasNodePosition as schemaEnvironmentCanvasNodePosition,
-} from "#/modules/environment-design/tables";
+  environmentDeployment as schemaEnvironmentDeployment,
+  environmentDeploymentSecret,
+} from "#/modules/deployments/tables";
+import { service as schemaService } from "#/modules/environment-design/tables";
 import {
   environmentNodeConfigSnapshot as schemaEnvironmentNodeConfigSnapshot,
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
@@ -24,6 +24,7 @@ import {
 } from "#/modules/runtime/volume-removal.repository";
 import { dispatchVolumeRemoveRequested } from "#/modules/runtime/volume-removal.server";
 import { Database } from "#/server/database.server";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import type { SdkDeployPreview } from "./runtime-preview";
 import { DeploymentQueueOccupied } from "./runtime-repository.contract";
 
@@ -51,7 +52,6 @@ function afterAppliedDeployment(
 ) {
   return Effect.gen(function* () {
     yield* latchFirstDeployedAtForDeployment(environmentDeploymentId);
-    yield* deleteTombstonedServicesForDeployment(environmentDeploymentId);
     yield* dispatchReleasedVolumeRemoveAttempts(released);
   });
 }
@@ -85,42 +85,6 @@ function latchFirstDeployedAtForDeployment(environmentDeploymentId: string) {
   });
 }
 
-function deleteTombstonedServicesForDeployment(
-  environmentDeploymentId: string,
-) {
-  return Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    const [deployment] = yield* drizzle
-      .select({ environmentId: schemaEnvironmentDeployment.environmentId })
-      .from(schemaEnvironmentDeployment)
-      .where(eq(schemaEnvironmentDeployment.id, environmentDeploymentId));
-    if (!deployment) return;
-    const services = yield* drizzle
-      .select({ id: schemaService.id })
-      .from(schemaService)
-      .where(
-        and(
-          eq(schemaService.environmentId, deployment.environmentId),
-          isNotNull(schemaService.deletedAt),
-        ),
-      );
-    const serviceIds = services.map((service) => service.id);
-    if (serviceIds.length === 0) return;
-    yield* drizzle
-      .delete(schemaEnvironmentCanvasNodePosition)
-      .where(
-        and(
-          eq(
-            schemaEnvironmentCanvasNodePosition.environmentId,
-            deployment.environmentId,
-          ),
-          eq(schemaEnvironmentCanvasNodePosition.resourceType, "service"),
-          inArray(schemaEnvironmentCanvasNodePosition.resourceId, serviceIds),
-        ),
-      );
-    yield* drizzle.delete(schemaService).where(inArray(schemaService.id, serviceIds));
-  });
-}
 
 interface EnvironmentDeploymentStatusPatch {
   status: EnvironmentDeploymentStatus;
@@ -283,6 +247,39 @@ export const markDeploymentFailedIfOwned = Effect.fn(
       return true;
     }),
   );
+});
+
+// Operation specs and errors can contain credentials; retain the complete SDK
+// evidence only in the existing server-only encrypted attempt record.
+export const persistSdkDeployOutcome = Effect.fn(
+  "Deployments.persistSdkDeployOutcome",
+)(function* (input: {
+  environmentDeploymentId: string;
+  outcome: Redacted.Redacted<Schema.Json>;
+}) {
+  const { drizzle } = yield* Database;
+  const encryption = yield* SecretEncryption;
+  const rows = yield* drizzle
+    .update(environmentDeploymentSecret)
+    .set({
+      encryptedRuntimeOutcome: encryption.encrypt(
+        JSON.stringify(Redacted.value(input.outcome)),
+      ),
+    })
+    .where(
+      eq(
+        environmentDeploymentSecret.environmentDeploymentId,
+        input.environmentDeploymentId,
+      ),
+    )
+    .returning({ id: environmentDeploymentSecret.environmentDeploymentId });
+  if (rows.length === 0) {
+    return yield* new DeploymentExecutionError({
+      message:
+        "Deployment attempt record was not found; runtime outcome could not be retained.",
+      failureCode: "sdk_deploy_outcome_unknown",
+    });
+  }
 });
 
 export const persistSdkDeployPreview = Effect.fn(

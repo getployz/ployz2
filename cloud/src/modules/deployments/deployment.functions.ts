@@ -1,7 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Effect } from "effect";
 import {
-  confirmEnvironmentDeploymentSchema,
   createEnvironmentDeploymentSnapshotSchema,
   deploymentOperationEvidencePageQuerySchema,
   discardEnvironmentSavedChangeSchema,
@@ -11,7 +10,6 @@ import {
   retryEnvironmentDeploymentSchema,
 } from "#/modules/deployments/deployment-contract";
 import {
-  confirmEnvironmentDeployment,
   createEnvironmentDeploymentSnapshot,
   discardEnvironmentSavedChange,
   dispatchExistingQueuedEnvironmentDeployment,
@@ -84,15 +82,6 @@ export const retryEnvironmentDeploymentServerFn = createServerFn({
   .validator(strictValidator(retryEnvironmentDeploymentSchema))
   .handler(({ context, data }) =>
     runActor(context, retryEnvironmentDeployment(context.actor, data)),
-  );
-
-export const confirmEnvironmentDeploymentServerFn = createServerFn({
-  method: "POST",
-})
-  .middleware(deploymentMiddleware)
-  .validator(strictValidator(confirmEnvironmentDeploymentSchema))
-  .handler(({ context, data }) =>
-    runActor(context, confirmEnvironmentDeployment(context.actor, data)),
   );
 
 export const dispatchQueuedEnvironmentDeploymentServerFn = createServerFn({

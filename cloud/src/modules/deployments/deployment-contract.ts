@@ -115,11 +115,6 @@ export const retryEnvironmentDeploymentSchema = Schema.Struct({
   failedDeploymentId: Uuid,
 });
 
-export const confirmEnvironmentDeploymentSchema = Schema.Struct({
-  ...EnvironmentContext,
-  environmentDeploymentId: Uuid,
-});
-
 export const dispatchQueuedEnvironmentDeploymentSchema = Schema.Struct(
   EnvironmentContext,
 );
@@ -216,8 +211,6 @@ export type DiscardEnvironmentSavedChangeInput =
   typeof discardEnvironmentSavedChangeSchema.Type;
 export type RetryEnvironmentDeploymentInput =
   typeof retryEnvironmentDeploymentSchema.Type;
-export type ConfirmEnvironmentDeploymentInput =
-  typeof confirmEnvironmentDeploymentSchema.Type;
 export type DispatchQueuedEnvironmentDeploymentInput =
   typeof dispatchQueuedEnvironmentDeploymentSchema.Type;
 export type DeploymentOperationEvidencePageQueryInput =

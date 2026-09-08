@@ -73,7 +73,6 @@ export const githubRepositoriesSyncRequestedEvent =
 export const organizationBillingSyncRequestedEvent =
   "billing/organization-sync.requested";
 export const environmentDeployRequestedEvent = "environment/deploy.requested";
-export const environmentDeployConfirmedEvent = "environment/deploy.confirmed";
 export const githubEnvironmentTriggerPersistedEvent =
   "github/environment-trigger.persisted";
 export const githubCheckSuiteTransitionedEvent =
@@ -105,10 +104,6 @@ export type OrganizationBillingSyncRequestedEventData = {
 export type EnvironmentDeployRequestedEventData = {
   environmentDeploymentId: string;
   environmentId: string;
-};
-
-export type EnvironmentDeployConfirmedEventData = {
-  environmentDeploymentId: string;
 };
 
 export type MachineRemoveRequestedEventData = {
@@ -157,10 +152,6 @@ export const organizationBillingSyncRequestedEventType = eventType(
 export const environmentDeployRequestedEventType = eventType(
   environmentDeployRequestedEvent,
   { schema: staticSchema<EnvironmentDeployRequestedEventData>() },
-);
-export const environmentDeployConfirmedEventType = eventType(
-  environmentDeployConfirmedEvent,
-  { schema: staticSchema<EnvironmentDeployConfirmedEventData>() },
 );
 export const githubPushReceivedEventType = eventType(
   githubPushReceivedEvent,
@@ -276,16 +267,6 @@ export function createEnvironmentDeployRequestedEvent(
   return {
     id: `environment-deploy-requested-${data.environmentDeploymentId}`,
     name: environmentDeployRequestedEvent,
-    data,
-  } as const;
-}
-
-export function createEnvironmentDeployConfirmedEvent(
-  data: EnvironmentDeployConfirmedEventData,
-) {
-  return {
-    id: `environment-deploy-confirmed-${data.environmentDeploymentId}`,
-    name: environmentDeployConfirmedEvent,
     data,
   } as const;
 }
@@ -428,7 +409,6 @@ export type InngestSendableEvent =
   | ReturnType<typeof createTeardownRequestedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
   | ReturnType<typeof createEnvironmentDeployRequestedEvent>
-  | ReturnType<typeof createEnvironmentDeployConfirmedEvent>
   | ReturnType<typeof createGithubEnvironmentTriggerPersistedEvent>
   | ReturnType<typeof createGithubCheckSuiteTransitionEvent>
   | ReturnType<typeof createGithubPushReceivedEvent>

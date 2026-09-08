@@ -85,7 +85,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
         {
           id: "production/api",
           identity: "production/api",
-          serviceId: "api",
+          serviceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           containers: [
             {
               id: "ctr-api",

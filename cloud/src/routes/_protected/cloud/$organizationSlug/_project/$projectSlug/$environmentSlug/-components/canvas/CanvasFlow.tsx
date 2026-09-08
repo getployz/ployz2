@@ -144,9 +144,6 @@ export function CanvasFlow({
             environmentChangeState.saved.snapshotId,
         }
       : null,
-    servicesWithBoundEnv,
-    environmentResources,
-    volumeResources,
     destructiveServiceIds,
     deletedDeployedVolumeIds,
     commitMessage,

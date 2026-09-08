@@ -207,16 +207,22 @@ export const recordTeardownRuntimeEvidence = Effect.fn(
 type CompleteTeardownAttemptInput = {
   attemptId: string;
   inngestRunId: string;
-  failureMessage?: string | null;
   now?: Date;
 } & (
   | {
-      status: "completed" | "partial";
+      status: "completed";
       outcome: TeardownOutcome;
+      failureMessage?: never;
+    }
+  | {
+      status: "partial";
+      outcome: TeardownOutcome;
+      failureMessage?: string | null;
     }
   | {
       status: "failed" | "cancelled";
       outcome?: TeardownOutcome;
+      failureMessage: string;
     }
 );
 

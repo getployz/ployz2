@@ -18,6 +18,13 @@ import {
   OrganizationRuntime,
   type OrganizationRuntimeService,
 } from "#/modules/runtime/organization-runtime.server";
+import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
+import {
+  createDefaultServiceHealthcheck,
+  createDefaultServiceRestartPolicy,
+  createEmptyServiceSource,
+  projectServiceDeploymentConfig,
+} from "#/modules/environment-design/services";
 import { InngestClient } from "#/modules/inngest/client";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import {
@@ -34,6 +41,51 @@ const serviceLineageId = "00000000-0000-4000-8000-000000000805";
 const serviceId = "00000000-0000-4000-8000-000000000806";
 const resourceLineageId = "00000000-0000-4000-8000-000000000807";
 const resourceId = "00000000-0000-4000-8000-000000000808";
+
+const serviceConfig = projectServiceDeploymentConfig({
+  name: "API",
+  source: createEmptyServiceSource(),
+  preDeployCommand: null,
+  startCommand: null,
+  healthcheck: createDefaultServiceHealthcheck(),
+  restartPolicy: createDefaultServiceRestartPolicy(),
+  privateDns: "api",
+  build: { builder: "auto", dockerfilePath: null, watchPaths: [] },
+});
+const {
+  env: _serviceEnvironment,
+  mounts: _serviceMounts,
+  variableGroupAttachments: _serviceVariableGroupAttachments,
+  ...authoredServiceConfig
+} = serviceConfig;
+void _serviceEnvironment;
+void _serviceMounts;
+
+const environmentIntent = {
+  version: 1,
+  environmentSlug: "app-production",
+  services: [
+    {
+      id: serviceId,
+      lineageId: serviceLineageId,
+      slug: "api",
+      variables: [],
+      variableGroupAttachments: [],
+      volumeAttachments: [],
+      config: authoredServiceConfig,
+      encryptedRegistryUsername: null,
+      encryptedRegistrySecret: null,
+    },
+  ],
+  variableGroups: [],
+  volumes: [
+    {
+      resourceId,
+      resourceLineageId,
+      name: "Data",
+    },
+  ],
+} satisfies SavedEnvironmentIntent;
 
 const projectVolume = {
   kind: "docker_volume" as const,
@@ -82,31 +134,19 @@ describe("teardown Data Loss observation", () => {
       values (gen_random_uuid(), '${organizationId}', '${userId}', 'owner', now());
       insert into project (id, organization_id, name, slug)
       values ('${projectId}', '${organizationId}', 'App', 'app');
-      insert into environment (id, project_id, organization_id, name, namespace)
-      values ('${environmentId}', '${projectId}', '${organizationId}', 'Production', 'app-production');
-      insert into service_lineage (id, project_id, canonical_name, canonical_slug)
-      values ('${serviceLineageId}', '${projectId}', 'API', 'api');
-      insert into service (
-        id, organization_id, project_id, environment_id, lineage_id, name, slug,
-        source_type, source_config, private_dns
-      ) values (
-        '${serviceId}', '${organizationId}', '${projectId}', '${environmentId}',
-        '${serviceLineageId}', 'API', 'api', 'empty',
-        '{"version":1,"type":"empty","rootDir":"/"}', 'api'
-      );
-      insert into resource_lineage (
-        id, organization_id, project_id, canonical_name, canonical_slug
-      ) values (
-        '${resourceLineageId}', '${organizationId}', '${projectId}', 'Data', 'data'
-      );
-      insert into environment_resource (
-        id, organization_id, project_id, environment_id, lineage_id,
-        implementation_type, name, slug
-      ) values (
-        '${resourceId}', '${organizationId}', '${projectId}', '${environmentId}',
-        '${resourceLineageId}', 'volume', 'Data', 'data'
-      );
     `);
+    await harness.pool.query(
+      `insert into environment (id, project_id, organization_id, name, namespace, intent)
+       values ($1, $2, $3, $4, $5, $6)`,
+      [
+        environmentId,
+        projectId,
+        organizationId,
+        "Production",
+        "app-production",
+        environmentIntent,
+      ],
+    );
   });
 
   it("uses Rust's project observation and retains Cloud rows", async () => {

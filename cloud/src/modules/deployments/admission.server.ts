@@ -6,12 +6,16 @@ import {
   desc,
   eq,
   inArray,
-  isNotNull,
   isNull,
+  not,
   type SQL,
 } from "drizzle-orm";
 import { Effect, Schema } from "effect";
-import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
+import {
+  environmentDeployment as schemaEnvironmentDeployment,
+  environmentDeploymentSecret,
+} from "#/modules/deployments/tables";
+import { volumeIsAuthored } from "#/modules/environment-design/document-identity.server";
 import {
   environmentResource as schemaEnvironmentResource,
 } from "#/modules/environment-design/tables";
@@ -191,7 +195,7 @@ function actionableVolumeDeletionAuthorizations(
           and(
             eq(schemaEnvironmentResource.environmentId, environmentId),
             eq(schemaEnvironmentResource.implementationType, "volume"),
-            isNotNull(schemaEnvironmentResource.deletedAt),
+            not(volumeIsAuthored),
             inArray(schemaEnvironmentResource.id, resourceIds),
           ),
         ),
@@ -353,6 +357,10 @@ function writeQueuedSavedTarget(
     if (deployment === undefined) {
       return yield* Effect.die("Deployment write returned no row.");
     }
+    yield* drizzle
+      .insert(environmentDeploymentSecret)
+      .values({ environmentDeploymentId: deployment.id })
+      .onConflictDoNothing();
     if (queued !== undefined) {
       yield* drizzle
         .delete(schemaVolumeRemoveAttempt)

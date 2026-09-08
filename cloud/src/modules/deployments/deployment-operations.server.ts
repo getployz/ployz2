@@ -1,9 +1,8 @@
 import "@tanstack/react-start/server-only";
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
-import { service as schemaService } from "#/modules/environment-design/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { withMutationReceipt } from "#/server/mutation-receipt.server";
@@ -15,6 +14,7 @@ import {
 } from "#/modules/deployments/retry-repository.server";
 import {
   loadCurrentEnvironmentSnapshotProjection,
+  loadEnvironmentDocument,
 } from "#/modules/environment-design/working-state-repository.server";
 import {
   gatherExactTombstonedVolumeReviews,
@@ -24,8 +24,6 @@ import {
   type EnvironmentSnapshotProjection,
 } from "#/modules/deployments/environment-state.repository.server";
 import { findUnpullableSdkDeployImages } from "#/modules/deployments/image-gate";
-import { sendInngestEvent } from "#/modules/inngest/client";
-import { createEnvironmentDeployConfirmedEvent } from "#/modules/inngest/events";
 import type { Actor } from "#/modules/identity/actor";
 import { serviceDeploymentConfigSchema } from "#/modules/environment-design/services";
 import { decodeEnvironmentResourceNodeConfig } from "#/modules/environment-design/environment-resource-node";
@@ -52,9 +50,7 @@ import {
   createManualEnvironmentDeployment,
 } from "#/modules/deployments/manual-admission.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.server";
-import { requireConfirmableSdkDeployPreview } from "#/modules/deployments/runtime-preview";
 import type {
-  ConfirmEnvironmentDeploymentInput,
   CreateEnvironmentDeploymentSnapshotInput,
   DeploymentOperationEvidencePageQueryInput,
   DiscardEnvironmentSavedChangeInput,
@@ -250,20 +246,12 @@ export const listDeploymentOperationEvidence = Effect.fn(
 const requirePullableManualSdkDeploy = Effect.fn(
   "Deployments.requirePullableManualSdkDeploy",
 )(function* (environmentId: string) {
-  const { drizzle: database } = yield* Database;
-  const services = yield* database
-        .select({
-          id: schemaService.id,
-          name: schemaService.name,
-          source: schemaService.sourceConfig,
-        })
-        .from(schemaService)
-        .where(
-          and(
-            eq(schemaService.environmentId, environmentId),
-            isNull(schemaService.deletedAt),
-          ),
-        );
+  const document = yield* loadEnvironmentDocument(environmentId);
+  const services = document.intent.services.map((node) => ({
+    id: node.id,
+    name: node.config.name,
+    source: node.config.source,
+  }));
   return yield* requirePullableSdkDeployImagesEffect(services);
 });
 
@@ -409,41 +397,4 @@ export const retryEnvironmentDeployment = Effect.fn(
       userId: actor.userId,
       failedDeploymentId: input.failedDeploymentId,
     });
-});
-
-export const confirmEnvironmentDeployment = Effect.fn(
-  "Deployments.confirmEnvironmentDeployment",
-)(function* (actor: Actor, input: ConfirmEnvironmentDeploymentInput) {
-  const { drizzle: database } = yield* Database;
-  const context = yield* requireEnvironment(actor, input);
-  const rows = yield* database
-        .select({
-          id: schemaEnvironmentDeployment.id,
-          status: schemaEnvironmentDeployment.status,
-          deployPreview: schemaEnvironmentDeployment.deployPreview,
-        })
-        .from(schemaEnvironmentDeployment)
-        .where(
-          and(
-            eq(schemaEnvironmentDeployment.id, input.environmentDeploymentId),
-            eq(schemaEnvironmentDeployment.environmentId, context.environment.id),
-          ),
-        )
-        .limit(1);
-  const deployment = rows[0];
-  if (deployment === undefined) {
-    return yield* new Conflict({
-      message: "The deployment is not active or does not exist.",
-    });
-  }
-  yield* requireConfirmableSdkDeployPreview({
-    status: deployment.status,
-    preview: deployment.deployPreview,
-  });
-  yield* sendInngestEvent(
-    createEnvironmentDeployConfirmedEvent({
-        environmentDeploymentId: deployment.id,
-      }),
-  );
-  return { state: "confirmed" as const };
 });

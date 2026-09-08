@@ -38,6 +38,7 @@ function volumeResourceRecord() {
     canvasPosition: null,
     attachments: [],
     consumerCount: 0,
+    isAuthored: true,
     runtimeStatus: null,
     projectSlug: "project",
     environmentSlug: "production",
@@ -92,7 +93,7 @@ function variableGroupResourceRecord() {
         id: "88888888-8888-4888-8888-888888888888",
         serviceId: null,
         variableGroupId: "55555555-5555-4555-8555-555555555555",
-        configKeyId: "99999999-9999-4999-8999-999999999999",
+
         key: "DATABASE_URL",
         description: null,
         exported: true,
@@ -157,6 +158,7 @@ describe("environment resource models", () => {
     expect(parsed.resource.deletedAt).toBeNull();
     expect(parsed.attachments).toEqual([]);
     expect(parsed.consumerCount).toBe(0);
+    expect(parsed.isAuthored).toBe(true);
     expect(parsed.runtimeStatus).toBeNull();
   });
 
