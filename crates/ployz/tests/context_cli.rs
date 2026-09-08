@@ -223,7 +223,7 @@ fn ctx_connection_rejects_an_unknown_connection_without_mutating() {
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stderr).trim(),
-        r#"connection "unix:///tmp/missing.sock" not found"#
+        "connection unix:///tmp/missing.sock not found"
     );
     assert_eq!(Config::load(&path).unwrap(), before);
 
@@ -390,7 +390,7 @@ fn ctx_rm_of_a_non_current_context_persists() {
     );
     assert_eq!(
         String::from_utf8(removed.stdout).unwrap().trim(),
-        r#"Removed context "default"."#
+        "Removed context default."
     );
 
     let config = Config::load(&path).unwrap();
@@ -456,7 +456,7 @@ fn ctx_rm_of_the_current_context_unsets_current() {
         String::from_utf8_lossy(&removed.stderr)
     );
     let stdout = String::from_utf8(removed.stdout).unwrap();
-    assert!(stdout.contains(r#"Removed context "prod"."#), "{stdout}");
+    assert!(stdout.contains("Removed context prod."), "{stdout}");
     assert!(stdout.contains("Current context is now unset."), "{stdout}");
 
     let shown = Command::new(env!("CARGO_BIN_EXE_ployz"))

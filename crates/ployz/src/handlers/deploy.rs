@@ -164,7 +164,7 @@ pub(super) fn changes(root: &ArgMatches) -> Result<(), Error> {
                     }
                 }
                 if let Some(failure) = observed.environment_failure {
-                    println!("    environment observation failed ({failure:?})");
+                    println!("    environment observation failed ({})", failure.as_str());
                 }
                 for row in observed.environment {
                     println!(
@@ -190,8 +190,9 @@ pub(super) fn changes(root: &ArgMatches) -> Result<(), Error> {
         }
         for failure in review.failures {
             println!(
-                "Machine {}: observation failed ({:?})",
-                failure.machine_id, failure.error
+                "Machine {}: observation failed ({})",
+                failure.machine_id,
+                failure.error.as_str()
             );
         }
         for machine in review.omissions {

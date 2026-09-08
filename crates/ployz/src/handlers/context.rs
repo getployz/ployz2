@@ -79,7 +79,7 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
     };
     config.set_current_context(Some(selected.clone()))?;
     config.save()?;
-    println!("Current context is now {selected:?}.");
+    println!("Current context is now {selected}.");
     Ok(())
 }
 
@@ -88,7 +88,7 @@ pub(super) fn remove(matches: &ArgMatches) -> Result<(), Error> {
     let name = required(leaf_matches(matches), "context-name")?;
     let removed = config.remove_context(&name)?;
     config.save()?;
-    println!("Removed context {name:?}.");
+    println!("Removed context {name}.");
     if removed == RemovedContext::Current {
         println!("Current context is now unset.");
     }
@@ -106,10 +106,10 @@ pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Resul
     let context = config
         .contexts
         .get_mut(&name)
-        .ok_or_else(|| Error::usage(format!("current context {name:?} not found")))?;
+        .ok_or_else(|| Error::usage(format!("current context {name} not found")))?;
     if context.connections.is_empty() {
         return Err(Error::usage(format!(
-            "no connections found in context {name:?}"
+            "no connections found in context {name}"
         )));
     }
     let Some(requested) = requested else {
@@ -126,7 +126,7 @@ pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Resul
         .connections
         .iter()
         .position(|connection| connection.to_string() == requested)
-        .ok_or_else(|| Error::usage(format!("connection {requested:?} not found")))?;
+        .ok_or_else(|| Error::usage(format!("connection {requested} not found")))?;
     context.select_connection(index);
     let selected = context
         .connections
@@ -134,7 +134,7 @@ pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Resul
         .expect("a connection was selected")
         .to_string();
     config.save()?;
-    println!("Default connection for context {name:?} is now {selected:?}.");
+    println!("Default connection for context {name} is now {selected}.");
     Ok(())
 }
 

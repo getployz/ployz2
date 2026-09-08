@@ -318,8 +318,8 @@ impl QueryResult {
     ) -> Result<Vec<[Value; N]>, Error> {
         if self.columns != expected {
             return Err(Error::Protocol(format!(
-                "unexpected columns: {:?}",
-                self.columns
+                "unexpected columns: {}",
+                self.columns.join(", ")
             )));
         }
         self.rows

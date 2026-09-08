@@ -138,7 +138,7 @@ impl Client {
         let operation = T::PATH.rsplit('/').next().unwrap_or(T::PATH);
         let destination = target.map_or_else(
             || self.connection.to_string(),
-            |target| format!("{target:?} via {}", self.connection),
+            |target| format!("{target} via {}", self.connection),
         );
         let progress = format!("{operation} on {destination}");
         crate::setup_retry::run(
@@ -847,7 +847,7 @@ fn visible_machine<'list>(
         NameMatches::None => {
             return Err(RpcError {
                 code: RpcErrorCode::NotFound,
-                message: format!("Machine {machine:?} was not found"),
+                message: format!("Machine {machine} was not found"),
                 details: Value::Null,
             });
         }
@@ -855,7 +855,7 @@ fn visible_machine<'list>(
             return Err(RpcError {
                 code: RpcErrorCode::Ambiguous,
                 message: format!(
-                    "Machine name {machine:?} is ambiguous: {}",
+                    "Machine name {machine} is ambiguous: {}",
                     matches
                         .iter()
                         .map(|row| row.id.as_str())

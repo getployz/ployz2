@@ -835,3 +835,19 @@ fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
     ));
     assert_eq!(store.record(), &original);
 }
+
+#[test]
+fn data_directory_errors_render_paths_without_debug_quotes() {
+    let path = std::path::PathBuf::from("/var/lib/ployz data");
+    for error in [
+        StoreError::AlreadyRunning(path.clone()),
+        StoreError::UnsafeDataDirectory(path.clone()),
+        StoreError::UnownedDataDirectory(path.clone()),
+        StoreError::OwnershipLost(path.clone()),
+        StoreError::ResetPreparationLost(path),
+    ] {
+        let message = error.to_string();
+        assert!(message.ends_with("/var/lib/ployz data"), "{message}");
+        assert!(!message.contains('"'), "{message}");
+    }
+}
