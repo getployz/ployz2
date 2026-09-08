@@ -107,24 +107,26 @@ impl CatchUpClient for Client {
     }
 }
 
-pub(crate) fn joined_catch_up_error(error: CatchUpError) -> String {
-    let mut message = format!(
-        "Machine joined, but Global catch-up is incomplete; it remains a Cluster member. {}",
-        error.cause
-    );
-    if !error.unresolved.is_empty() {
-        message.push_str("\nGlobals requiring attention:");
-        for identity in error.unresolved {
-            if identity == QualifiedService::system_ingress() {
-                message.push_str("\n- ployz-system/ingress: run `ployz ingress deploy`.");
-            } else {
-                message.push_str(&format!(
-                    "\n- {identity}: redeploy Project Service `{identity}`."
-                ));
+pub(crate) fn joined_catch_up_error(error: CatchUpError) -> Failure {
+    let unresolved = error.unresolved;
+    error.cause.wrap(|cause| {
+        let mut message = format!(
+            "Machine joined, but Global catch-up is incomplete; it remains a Cluster member. {cause}"
+        );
+        if !unresolved.is_empty() {
+            message.push_str("\nGlobals requiring attention:");
+            for identity in unresolved {
+                if identity == QualifiedService::system_ingress() {
+                    message.push_str("\n- ployz-system/ingress: run `ployz ingress deploy`.");
+                } else {
+                    message.push_str(&format!(
+                        "\n- {identity}: redeploy Project Service `{identity}`."
+                    ));
+                }
             }
         }
-    }
-    message
+        message
+    })
 }
 
 /// Globals this Machine is eligible for and does not already run.
@@ -173,10 +175,11 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         .map_err(|error| CatchUpError::new(error, Vec::new()))?;
     if !live.containers.all_targets_succeeded() {
         return Err(CatchUpError::new(
-            Failure::usage(format!(
-                "Global catch-up cannot plan from partial Service observations: {}; restore peer connectivity and redeploy",
-                crate::failure::partial_failure_details(&live.containers)
-            )),
+            crate::failure::partial_failures(&live.containers).into_failure(|details| {
+                format!(
+                    "Global catch-up cannot plan from partial Service observations: {details}; restore peer connectivity and redeploy"
+                )
+            }),
             Vec::new(),
         ));
     }
@@ -240,7 +243,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             .map_err(|error| CatchUpError::new(error, initially_missing.clone()))?;
         if let Some(error) = endpoint_capacity_error(endpoint_creates, capacity.as_ref()) {
             return Err(CatchUpError::new(
-                Failure::usage(error.to_string()),
+                Failure::command(error),
                 initially_missing,
             ));
         }
@@ -248,21 +251,18 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     if !slots.is_empty() {
         eprintln!("Placing Global Services on this Machine.");
     }
-    let mut failures = unknown
-        .iter()
-        .map(|identity| {
-            (
-                identity.clone(),
-                match &storage_result {
-                    Err(error) => format!("storage eligibility is unknown: {error}"),
-                    Ok(_) => {
-                        "storage eligibility is unknown; restore storage evidence and redeploy"
-                            .to_owned()
-                    }
-                },
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut failures = crate::failure::Failures::default();
+    for identity in &unknown {
+        match &storage_result {
+            Err(error) => {
+                failures.record(format!("{identity}: storage eligibility is unknown"), error);
+            }
+            Ok(_) => failures.note(
+                identity,
+                "storage eligibility is unknown; restore storage evidence and redeploy",
+            ),
+        }
+    }
     for slot in slots {
         let (identity, resolved_spec) = slot.into_parts();
         let failure_identity = identity.clone();
@@ -276,7 +276,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             )
             .await
         {
-            failures.push((failure_identity, error.to_string()));
+            failures.record(failure_identity, &error);
         }
     }
     let missing_if_unverified = initially_eligible
@@ -297,15 +297,10 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         .chain(unknown)
         .collect::<Vec<_>>();
     if !missing.is_empty() {
-        let details = failures
-            .iter()
-            .map(|(identity, error)| format!("{identity}: {error}"))
-            .collect::<Vec<_>>()
-            .join("; ");
-        let cause = if details.is_empty() {
+        let cause = if failures.is_empty() {
             Failure::usage("eligible Globals are not running after catch-up")
         } else {
-            Failure::usage(format!("Global catch-up incomplete: {details}"))
+            failures.into_failure(|details| format!("Global catch-up incomplete: {details}"))
         };
         return Err(CatchUpError::new(cause, missing));
     }

@@ -51,6 +51,17 @@ impl From<tonic::Status> for LogError {
 
 pub type LogSource = Pin<Box<dyn Stream<Item = Result<LogEntry, LogError>> + Send>>;
 
+/// A merged log-stream failure. `message` already names the source stream, and
+/// the typed error rides along so `Failure` still sees an internal code; a plain
+/// `String` here would print a daemon bug as if the user caused it.
+#[derive(Debug, Error)]
+#[error("{message}")]
+pub struct LogFailure {
+    pub message: String,
+    #[source]
+    pub source: Option<LogError>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceArg {
     pub service: ServiceSelector,
@@ -121,7 +132,7 @@ pub enum OperatorError {
     #[error("Service has no regular containers")]
     NoRegularContainer,
     #[error("Machine RPC failed: {0}")]
-    Rpc(TransportError),
+    Rpc(#[source] TransportError),
     #[error("stream protocol failed: {0}")]
     Protocol(#[from] StreamProtocolError),
     #[error(transparent)]
@@ -687,7 +698,7 @@ impl PartialOrd for QueuedLog {
 pub fn merge_logs(
     inputs: Vec<LogInput>,
     cancellation: CancellationToken,
-) -> mpsc::Receiver<Result<LogEntry, String>> {
+) -> mpsc::Receiver<Result<LogEntry, LogFailure>> {
     merge_logs_with_options(inputs, cancellation, LOG_STALL_TIMEOUT, LOG_STALL_CHECK)
 }
 
@@ -696,7 +707,7 @@ fn merge_logs_with_options(
     cancellation: CancellationToken,
     stall_timeout: Duration,
     stall_check: Duration,
-) -> mpsc::Receiver<Result<LogEntry, String>> {
+) -> mpsc::Receiver<Result<LogEntry, LogFailure>> {
     let (output_sender, output) = mpsc::channel(100);
     if inputs.is_empty() {
         return output;
@@ -739,9 +750,9 @@ fn merge_logs_with_options(
                             LogState::Live | LogState::Stalled => source.state = LogState::Live,
                         }
                         match entry {
-                            Err(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
+                            Err(error) => if output_sender.send(Err(LogFailure { message: format!("{}: {error}", source.identity), source: Some(error) })).await.is_err() { return },
                             Ok(entry) => match &entry.body {
-                                LogBody::Error(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
+                                LogBody::Error(error) => if output_sender.send(Err(LogFailure { message: format!("{}: {error}", source.identity), source: None })).await.is_err() { return },
                                 LogBody::Heartbeat => {
                                     source.watermark = source.watermark.max(entry.timestamp_unix_nanos);
                                 }
@@ -779,7 +790,7 @@ fn merge_logs_with_options(
                             && now.duration_since(source.last_activity) > stall_timeout
                         {
                             source.state = LogState::Stalled;
-                            if output_sender.send(Err(format!("log stream {} stalled", source.identity))).await.is_err() { return }
+                            if output_sender.send(Err(LogFailure { message: format!("log stream {} stalled", source.identity), source: None })).await.is_err() { return }
                         }
                     }
                     if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
@@ -793,7 +804,7 @@ fn merge_logs_with_options(
 async fn flush_ready(
     sources: &[LogInputState],
     queue: &mut BinaryHeap<QueuedLog>,
-    output: &mpsc::Sender<Result<LogEntry, String>>,
+    output: &mpsc::Sender<Result<LogEntry, LogFailure>>,
 ) -> Result<(), ()> {
     let watermark = sources
         .iter()

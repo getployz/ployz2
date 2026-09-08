@@ -568,11 +568,11 @@ pub enum ConnectError {
     #[error(transparent)]
     Relay(ployz_relay::ClientError),
     #[error("Machine RPC failed: {0}")]
-    Rpc(TransportError),
+    Rpc(#[source] TransportError),
     #[error("Machine RPC payload failed: {0}")]
     Codec(#[from] CodecError),
     #[error("Machine RPC returned: {}", .0.message)]
-    Remote(RpcError),
+    Remote(#[source] RpcError),
     #[error("Machine RPC framing failed: {0}")]
     Framing(#[from] FramingError),
     #[error("Machine RPC identity failed: {0}")]
@@ -718,10 +718,16 @@ impl TransportError {
         self.code == tonic::Code::NotFound
     }
 
+    /// The wire taxonomy kind this transport status maps to.
+    #[must_use]
+    pub fn rpc_code(&self) -> RpcErrorCode {
+        rpc_error_code(self.code)
+    }
+
     #[must_use]
     pub fn to_rpc_error(&self) -> RpcError {
         RpcError {
-            code: rpc_error_code(self.code),
+            code: self.rpc_code(),
             message: self.message.clone(),
             details: self.details.clone(),
         }

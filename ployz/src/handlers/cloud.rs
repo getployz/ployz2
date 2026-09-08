@@ -154,9 +154,7 @@ async fn enroll_join(
     )
     .await
     {
-        return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
-            error,
-        )));
+        return Err(crate::global_catch_up::joined_catch_up_error(error));
     }
     println!("Joined Machine {} ({})", assigned.name, assigned.id);
     Ok(())
@@ -247,24 +245,23 @@ async fn enroll_founder(
     if !no_dns {
         let domain =
             crate::dns::reserve_if_missing(&mut ready, crate::dns::HOSTED_DNS_ENDPOINT.to_owned())
-                .await.map_err(|error| Error::usage(format!("Machine initialized; DNS reservation pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
+                .await.map_err(|error| Error::context(format!("Machine initialized; DNS reservation pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)"), error))?;
         println!("Reserved Cluster domain: {domain}");
     }
     if let Some(requested) = ingress {
         // An interrupted Apply may have completed mutations. Do not replay it.
         crate::deploy::apply_requested(&mut ready, &requested).await.map_err(|error| {
-            let error: Error = error.into();
-            Error::usage(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
+            Error::from(error).wrap(|details| format!("Machine initialized; Ingress deployment incomplete: {details}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
         })?;
         if !no_dns {
             crate::dns::update_records_for_ingress(&mut ready).await.map_err(|error| {
-                Error::usage(format!("Machine initialized; DNS publication pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)"))
+                Error::context(format!("Machine initialized; DNS publication pending: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)"), error)
             })?;
         }
     }
     // Setting the same pairing is idempotent.
     ready.call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest { cloud_pairing: Some(pairing.clone()) }, None)
-        .await.map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
+        .await.map_err(|error| Error::context(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)"), error))?;
     cloud_enroll::callback(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,
@@ -414,14 +411,17 @@ async fn wait_phase(
     )
     .await
     .map_err(|error| {
-        Error::usage(if participating {
-            format!(
-                "{}: {error}",
-                crate::handlers::machine::readiness_timeout_message(timeout_message)
+        if participating {
+            Error::context(
+                format!(
+                    "{}: {error}",
+                    crate::handlers::machine::readiness_timeout_message(timeout_message)
+                ),
+                error,
             )
         } else {
-            error.to_string()
-        })
+            Error::command(error)
+        }
     })
 }
 
@@ -459,7 +459,8 @@ mod tests {
                 crate::failure::Failure::usage("not running".to_owned()),
                 vec![ployz_core::QualifiedService::system_ingress()],
             ),
-        );
+        )
+        .to_string();
         assert!(message.contains("Machine joined"));
         assert!(message.contains("ployz ingress deploy"));
     }
@@ -471,7 +472,8 @@ mod tests {
                 crate::failure::Failure::usage("listing failed".to_owned()),
                 Vec::new(),
             ),
-        );
+        )
+        .to_string();
         assert!(message.contains("Machine joined"));
         assert!(message.contains("listing failed"));
     }

@@ -270,7 +270,7 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
             let services = select_services(&observed, &selectors)?;
             let outcome =
                 apply_service_action(client, &live, &services, action, signal, timeout).await?;
-            service_action_result(outcome.partial)
+            service_action_result(outcome.failures)
         })
     })
 }
@@ -349,7 +349,7 @@ pub fn remove(root: &ArgMatches) -> Result<(), Error> {
             };
             combined_teardown_result(
                 combined_teardown_result(
-                    service_action_result(outcome.partial),
+                    service_action_result(outcome.failures),
                     skipped_volume_result(&skipped),
                 ),
                 volume_result,
@@ -420,11 +420,12 @@ fn skipped_volume_result(skipped: &[DockerVolumeId]) -> Result<(), Error> {
     }
 }
 
-fn service_action_result(partial: bool) -> Result<(), Error> {
-    if partial {
-        Err(Error::usage("Service lifecycle completed partially"))
-    } else {
+fn service_action_result(failures: crate::failure::Failures) -> Result<(), Error> {
+    if failures.is_empty() {
         Ok(())
+    } else {
+        // The per-Machine lines are already on stderr; the codes ride here.
+        Err(failures.into_failure(|_| "Service lifecycle completed partially".to_owned()))
     }
 }
 
@@ -475,7 +476,7 @@ fn member_volume_ids(
 
 struct ServiceActionOutcome {
     affected: HashSet<ContainerId>,
-    partial: bool,
+    failures: crate::failure::Failures,
 }
 
 async fn apply_service_action(
@@ -493,7 +494,7 @@ async fn apply_service_action(
         .map(|container| container.as_observation().container_id)
         .collect::<HashSet<_>>();
     let mut changed = Vec::new();
-    let mut partial = false;
+    let mut failures = crate::failure::Failures::default();
     for service in services {
         let outcomes = client
             .change_observed_service(service, action, signal.clone(), timeout)
@@ -512,7 +513,13 @@ async fn apply_service_action(
                 "WARNING: {:?} failed for {} on {}: {}",
                 action, failure.error.container_id, failure.machine_id, failure.error.error.message
             );
-            partial = true;
+            failures.record(
+                format!(
+                    "{action:?} for {} on {}",
+                    failure.error.container_id, failure.machine_id
+                ),
+                &failure.error.error,
+            );
         }
     }
     let cancellation = cancellation_on_ctrl_c();
@@ -531,11 +538,11 @@ async fn apply_service_action(
         .await?;
     if !live.containers.all_targets_succeeded() {
         eprintln!("WARNING: the Service selection came from a partial Live Observation");
-        partial = true;
+        failures.note("Service selection", "came from a partial Live Observation");
     }
     Ok(ServiceActionOutcome {
         affected: changed.into_iter().collect(),
-        partial,
+        failures,
     })
 }
 

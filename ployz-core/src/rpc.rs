@@ -18,10 +18,12 @@ use crate::{
 };
 
 mod docker;
+mod error;
 mod inspect;
 
 pub use crate::UNREGISTRY_PORT;
 pub use docker::*;
+pub use error::*;
 pub use inspect::*;
 
 pub const PROTOCOL_MAJOR: u32 = 1;
@@ -920,26 +922,6 @@ impl ContractDescription {
             .iter()
             .any(|advertised| advertised.as_str() == capability)
     }
-}
-
-crate::value::open_string_enum!(RpcErrorCode, Unknown {
-    InvalidArgument => "invalid_argument",
-    NotFound => "not_found",
-    Ambiguous => "ambiguous",
-    Unsupported => "unsupported",
-    Unavailable => "unavailable",
-    Conflict => "conflict",
-    Internal => "internal",
-    Unauthenticated => "unauthenticated",
-});
-
-#[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
-#[error("{message}")]
-pub struct RpcError {
-    pub code: RpcErrorCode,
-    pub message: String,
-    #[serde(default)]
-    pub details: Value,
 }
 
 #[cfg(test)]

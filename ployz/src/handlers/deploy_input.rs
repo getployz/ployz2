@@ -46,7 +46,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         .get_one::<String>("caddyfile")
         .map(fs::read_to_string)
         .transpose()
-        .map_err(|error| Error::usage(format!("read caddyfile: {error}")))?;
+        .map_err(|error| Error::context(format!("read caddyfile: {error}"), error))?;
     if caddy_config.is_some()
         && ports
             .iter()
@@ -57,8 +57,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         ));
     }
     let (volumes, mounts) = parse_volumes(&string_values(matches, "volume"))?;
-    let volume_graph = ServiceVolumeGraph::parse(volumes, mounts)
-        .map_err(|error| Error::usage(error.to_string()))?;
+    let volume_graph = ServiceVolumeGraph::parse(volumes, mounts).map_err(Error::command)?;
     Ok(RequestedServiceSpec {
         name,
         mode,
@@ -119,7 +118,7 @@ pub(super) fn run_spec(matches: &ArgMatches) -> Result<RequestedServiceSpec, Err
         },
         ports,
         mount_graph: ployz_core::ServiceMountGraph::parse(volume_graph, Default::default())
-            .map_err(|error| Error::usage(error.to_string()))?,
+            .map_err(Error::command)?,
         pre_deploy: None,
         ingress_proxy_fragment: caddy_config
             .filter(|config| !config.trim().is_empty())
@@ -262,7 +261,7 @@ fn parse_cpu(value: &str) -> Result<CpuNanos, Error> {
     let cpu = value
         .parse::<f64>()
         .map_err(|_| Error::usage("cpu must be numeric"))?;
-    CpuNanos::from_cpus(cpu).map_err(|error| Error::usage(error.to_string()))
+    CpuNanos::from_cpus(cpu).map_err(Error::command)
 }
 
 fn optional_bytes(matches: &ArgMatches, name: &str) -> Result<Option<ByteQuantity>, Error> {

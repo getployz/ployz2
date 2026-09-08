@@ -114,10 +114,8 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     if let Err(error) = catch_up {
         let recovery =
             super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
-        return Err(Error::usage(format!(
-            "{}\nFor ingress, continue with: {recovery}",
-            crate::global_catch_up::joined_catch_up_error(error)
-        )));
+        return Err(crate::global_catch_up::joined_catch_up_error(error)
+            .wrap(|report| format!("{report}\nFor ingress, continue with: {recovery}")));
     }
     let dns_result = runtime()?.block_on(async {
         let mut entry = super::super::reconnect_client(matches, options.context()).await?;
@@ -190,7 +188,8 @@ mod tests {
                 crate::failure::Failure::usage("deploy timed out".to_owned()),
                 vec![ployz_core::QualifiedService::system_ingress()],
             ),
-        );
+        )
+        .to_string();
         assert!(error.contains("Machine joined"));
         assert!(error.contains("remains a Cluster member"));
         assert!(

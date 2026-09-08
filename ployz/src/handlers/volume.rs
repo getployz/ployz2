@@ -157,7 +157,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 .any(|failure| failure.error.code != RpcErrorCode::NotFound)
                 || !result.omissions.is_empty()
             {
-                return Err(Error::usage(failure_summary(&result)));
+                return Err(failure_summary(&result));
             }
             let names = machines
                 .iter()
@@ -239,7 +239,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
             }
             report_partial_removal_discovery(&result);
             if volumes.is_empty() {
-                return Err(Error::usage(volume_failure_summary(&result)));
+                return Err(volume_failure_summary(&result));
             }
             let context = match client.connection_source() {
                 crate::context::ConnectionSource::Context(name) => name.as_str(),
@@ -420,18 +420,16 @@ fn report_partial_removal_discovery(result: &PartialResult<VolumeInventory, RpcE
     }
 }
 
-fn volume_failure_summary(result: &PartialResult<VolumeInventory, RpcError>) -> String {
-    let mut failures = crate::failure::partial_failure_details(result);
+fn volume_failure_summary(result: &PartialResult<VolumeInventory, RpcError>) -> Error {
+    let mut failures = crate::failure::partial_failures(result);
     for failure in volume_failures(result) {
-        if !failures.is_empty() {
-            failures.push_str("; ");
-        }
-        failures.push_str(&format!(
-            "{}/{}: {}",
-            failure.id.machine_id, failure.id.name, failure.error.message
-        ));
+        failures.record(
+            format!("{}/{}", failure.id.machine_id, failure.id.name),
+            &failure.error,
+        );
     }
-    format!("one or more Docker Volume observations failed: {failures}")
+    failures
+        .into_failure(|details| format!("one or more Docker Volume observations failed: {details}"))
 }
 
 pub(super) fn refuse_unless_removed(removals: Vec<VolumeRemoval>) -> Result<(), Error> {
@@ -449,35 +447,31 @@ pub(super) fn refuse_unless_removed(removals: Vec<VolumeRemoval>) -> Result<(), 
     {
         Ok(())
     } else {
-        Err(Error::usage(removal_failure_summary(&removals)))
+        Err(removal_failure_summary(&removals))
     }
 }
 
-pub(super) fn removal_failure_summary(removals: &[VolumeRemoval]) -> String {
-    let failures = removals
-        .iter()
-        .filter_map(|removal| {
-            let message = match &removal.outcome {
-                VolumeRemovalOutcome::Removed => return None,
-                VolumeRemovalOutcome::Failed { error } => error.message.as_str(),
-                VolumeRemovalOutcome::Omitted => {
-                    "not attempted: Machine absent or not inviting RPC"
-                }
-            };
-            Some(format!(
-                "{}/{}: {message}",
-                removal.id.machine_id, removal.id.name
-            ))
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    let mut summary =
-        format!("one or more Docker Volume removals failed or were omitted: {failures}");
-    if let Some(hint) = volume_in_use_hint(removals) {
-        summary.push('\n');
-        summary.push_str(&hint);
+pub(super) fn removal_failure_summary(removals: &[VolumeRemoval]) -> Error {
+    let mut failures = crate::failure::Failures::default();
+    for removal in removals {
+        let scope = format!("{}/{}", removal.id.machine_id, removal.id.name);
+        match &removal.outcome {
+            VolumeRemovalOutcome::Removed => {}
+            VolumeRemovalOutcome::Failed { error } => failures.record(scope, error),
+            VolumeRemovalOutcome::Omitted => {
+                failures.note(scope, "not attempted: Machine absent or not inviting RPC");
+            }
+        }
     }
-    summary
+    failures.into_failure(|details| {
+        let mut summary =
+            format!("one or more Docker Volume removals failed or were omitted: {details}");
+        if let Some(hint) = volume_in_use_hint(removals) {
+            summary.push('\n');
+            summary.push_str(&hint);
+        }
+        summary
+    })
 }
 
 fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
@@ -518,9 +512,9 @@ fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
     }
 }
 
-fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
-    let failures = crate::failure::partial_failure_details(result);
-    format!("one or more Machines failed: {failures}")
+fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> Error {
+    crate::failure::partial_failures(result)
+        .into_failure(|details| format!("one or more Machines failed: {details}"))
 }
 
 #[cfg(test)]
@@ -601,7 +595,7 @@ mod tests {
                 },
             },
         };
-        let summary = removal_failure_summary(&[removal]);
+        let summary = removal_failure_summary(&[removal]).to_string();
         assert!(
             summary.contains("volume is in use by cashdash/cashdash-singlestore"),
             "{summary}"
@@ -629,7 +623,7 @@ mod tests {
                 },
             },
         };
-        let summary = removal_failure_summary(&[removal]);
+        let summary = removal_failure_summary(&[removal]).to_string();
         assert!(
             summary.contains("remove the Services first: ployz rm app/db app/web"),
             "{summary}"

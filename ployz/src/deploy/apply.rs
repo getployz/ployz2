@@ -17,7 +17,8 @@ use crate::{
 };
 
 use super::{
-    DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError, VolumeFate,
+    DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError, RpcErrorCode,
+    VolumeFate,
     pipeline::{
         PushOutcome, ReconciliationHints, plan_options, plan_project, plan_scale,
         push_project_images,
@@ -138,7 +139,25 @@ impl From<ApplyError> for Failure {
             } => {
                 let text =
                     report::paint_closing(&outcome, &rows, live_shown, &Ink::detect(io::stderr()));
-                Failure::usage(text.trim().to_owned())
+                match *outcome {
+                    DeployOutcome::Failed { failed, .. } => {
+                        let bug = failed
+                            .errors()
+                            .into_iter()
+                            .flat_map(ExecutionError::rpc_errors)
+                            .find(|error| error.code == RpcErrorCode::Internal)
+                            .cloned();
+                        match bug {
+                            Some(bug) => Failure::context(text.trim().to_owned(), bug),
+                            None => {
+                                Failure::context(text.trim().to_owned(), failed.error().clone())
+                            }
+                        }
+                    }
+                    DeployOutcome::Success { .. } => {
+                        Failure::usage("deploy reported no failed operation")
+                    }
+                }
             }
         }
     }
@@ -162,10 +181,9 @@ pub(crate) async fn deploy_project(
     let outcome = push_project_images(client, builds, &machines).await?;
     print_pushed_images(&outcome);
     if !outcome.failures.is_empty() {
-        return Err(Failure::usage(format!(
-            "image push failed: {}",
-            outcome.failures.join("; ")
-        )));
+        return Err(outcome
+            .failures
+            .into_failure(|details| format!("image push failed: {details}")));
     }
     let preview = plan_project(
         client,
@@ -486,6 +504,93 @@ mod tests {
         assert!(project_not_found(&preview));
         preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
         assert!(!project_not_found(&preview));
+    }
+
+    #[test]
+    fn internal_execution_failures_are_framed_as_bugs_in_the_closing_report() {
+        let framed = Failure::from(execution_failure(RpcErrorCode::Internal)).to_string();
+        assert!(framed.contains("create failed"), "{framed}");
+        assert!(framed.contains("bug"), "{framed}");
+        assert!(framed.contains("ployz version"), "{framed}");
+
+        let user = Failure::from(execution_failure(RpcErrorCode::Unavailable)).to_string();
+        assert!(!user.contains("ployz version"), "{user}");
+    }
+
+    #[test]
+    fn internal_compensation_failures_are_framed_beside_a_user_primary() {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let spec = serde_json::from_value(serde_json::json!({
+            "service_id": "a".repeat(32),
+            "name": "web",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "nginx", "pull_policy": "missing" }
+        }))
+        .unwrap();
+        let outcome = DeployOutcome::Failed {
+            completed: Vec::new(),
+            failed: FailedOperation::ReplacementHealth {
+                operation: ployz_core::ReplacementOperation {
+                    machine_id,
+                    old_container_id: ployz_core::ContainerId::parse("b".repeat(64)).unwrap(),
+                    spec,
+                    skip_health_monitor: false,
+                },
+                error: machine_error(RpcErrorCode::Unavailable),
+                compensation: ployz_core::ReplacementCompensation::StartFirst {
+                    stop_new_container: ployz_core::StopAttempt::Failed {
+                        error: machine_error(RpcErrorCode::Internal),
+                    },
+                },
+            },
+            unexecuted: Vec::new(),
+        };
+        let framed = Failure::from(ApplyError::Execute {
+            outcome: Box::new(outcome),
+            rows: Vec::new(),
+            live_shown: false,
+        })
+        .to_string();
+        assert!(framed.contains("bug"), "{framed}");
+        assert!(framed.contains("ployz version"), "{framed}");
+    }
+
+    fn machine_error(code: RpcErrorCode) -> ExecutionError {
+        ExecutionError::Machine {
+            action: MachineAction::CreateContainer,
+            error: RpcError {
+                code,
+                message: "target Machine RPC timed out".into(),
+                details: serde_json::Value::Null,
+            },
+        }
+    }
+
+    fn execution_failure(code: RpcErrorCode) -> ApplyError {
+        let machine_id = MachineId::parse("d".repeat(32)).unwrap();
+        let outcome = DeployOutcome::Failed {
+            completed: Vec::new(),
+            failed: FailedOperation::Operation {
+                operation: DeployOperation::RunContainer {
+                    machine_id,
+                    spec: serde_json::from_value(serde_json::json!({
+                        "service_id": "a".repeat(32),
+                        "name": "web",
+                        "mode": { "mode": "replicated", "replicas": 1 },
+                        "container": { "image": "nginx", "pull_policy": "missing" }
+                    }))
+                    .unwrap(),
+                    skip_health_monitor: true,
+                },
+                error: machine_error(code),
+            },
+            unexecuted: Vec::new(),
+        };
+        ApplyError::Execute {
+            outcome: Box::new(outcome),
+            rows: Vec::new(),
+            live_shown: false,
+        }
     }
 
     #[test]

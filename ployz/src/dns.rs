@@ -36,7 +36,7 @@ pub enum Error {
     #[error(
         "Domain reservation was interrupted: {0}; no saved reservation was observed. Check `ployz dns show` before reserving again."
     )]
-    ReservationInterrupted(ConnectError),
+    ReservationInterrupted(#[source] ConnectError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]

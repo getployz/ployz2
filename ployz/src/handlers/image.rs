@@ -140,16 +140,16 @@ pub(super) fn push(matches: &ArgMatches) -> Result<(), Error> {
     for success in &result.successes {
         println!("Pushed {image} to {}", success.machine_id);
     }
+    let mut failures = crate::failure::Failures::default();
     for failure in &result.failures {
         eprintln!("WARNING: {}: {}", failure.machine_id, failure.error);
+        failures.record(failure.machine_id, &failure.error);
     }
     if result.all_targets_succeeded() {
         Ok(())
     } else {
-        Err(Error::usage(format!(
-            "image push failed on {} target(s)",
-            result.failures.len() + result.omissions.len()
-        )))
+        let targets = result.failures.len() + result.omissions.len();
+        Err(failures.into_failure(|_| format!("image push failed on {targets} target(s)")))
     }
 }
 
