@@ -4,21 +4,19 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::{self, ErrorKind},
+    io::{Seek as _, SeekFrom, Write as _},
     os::unix::fs::OpenOptionsExt as _,
-    path::PathBuf,
-    process::{Child, ExitStatus},
-    time::{Duration, Instant},
+    path::Path,
 };
 
 use serde::Deserialize;
 
-use crate::{BUILDER, BUILDKIT_IMAGE, BuildError, Docker};
+use crate::{BUILDKIT_IMAGE, BuildError, Docker, Streams, builder_name};
 
 /// Exclusive use of the Ployz builder and its retained cache for one attempt.
 pub(crate) struct Builder<'a> {
     docker: &'a Docker<'a>,
-    platforms: Vec<String>,
+    name: String,
     lock: Lock,
 }
 
@@ -26,175 +24,132 @@ impl<'a> Builder<'a> {
     /// Take the builder, provisioning the pinned BuildKit version if needed.
     ///
     /// # Errors
-    /// Fails when Buildx is unavailable, when the builder cannot be created,
-    /// or when an earlier attempt left its state unconfirmed.
+    /// Fails when Buildx is unavailable or the builder cannot be provisioned.
     pub(crate) fn acquire(docker: &'a Docker<'a>) -> Result<Self, BuildError> {
-        let lock = Lock::acquire()?;
-        let mut existing = node(docker)?;
-        if lock.uncertain() {
-            if existing.is_some() {
-                return Err(BuildError::UncertainTermination(format!(
-                    "an earlier Build left builder '{BUILDER}' unconfirmed; release it with `docker buildx rm --keep-state {BUILDER}`"
-                )));
-            }
-            // The builder is gone, so the earlier attempt is over after all.
-            lock.clear();
-        }
-        // A builder surviving an interrupted run is idle: this lock proves no
-        // other local attempt owns it, so it is reused rather than rebuilt.
-        if existing
-            .as_ref()
-            .is_some_and(|node| node.image.as_deref() != Some(BUILDKIT_IMAGE))
-        {
-            remove(docker)?;
-            existing = None;
-        }
-        if existing.is_none() {
-            let image = format!("image={BUILDKIT_IMAGE}");
-            // Host networking keeps builds reaching the same hosts they reached
-            // when Docker built them with its own embedded BuildKit.
-            docker.status(
-                "create the build container",
-                &[
-                    "buildx",
-                    "create",
-                    "--name",
-                    BUILDER,
-                    "--driver",
-                    "docker-container",
-                    "--driver-opt",
-                    &image,
-                    "--driver-opt",
-                    "network=host",
-                ],
-            )?;
-        }
-        // Boot the worker so its platforms are observed rather than assumed.
-        docker.status(
-            "start the build container",
-            &["buildx", "inspect", "--bootstrap", "--builder", BUILDER],
-        )?;
-        let platforms = node(docker)?.map(|node| node.platforms).unwrap_or_default();
-        Ok(Self {
-            docker,
-            platforms,
-            lock,
-        })
+        Self::acquire_in(docker, &std::env::temp_dir())
     }
 
-    /// Check requested platforms against the worker that will build them.
+    fn acquire_in(docker: &'a Docker<'a>, directory: &Path) -> Result<Self, BuildError> {
+        let name = builder_name();
+        let lock = Lock::acquire(directory, &name)?;
+        // An attempt that never recorded its end may have left work running in
+        // the builder. Replace the container instead of assuming it stopped;
+        // either way its cache volume survives.
+        let unfinished = lock.unfinished();
+        let reusable = match existing(docker, &name)? {
+            Some(image) if image == BUILDKIT_IMAGE && !unfinished => true,
+            Some(_) => {
+                remove(&docker.releasing(), &name)?;
+                false
+            }
+            None => false,
+        };
+        if !reusable {
+            create(docker, &name)?;
+        }
+        lock.begin()?;
+        Ok(Self { docker, name, lock })
+    }
+
+    /// Run one build, bounded by the attempt's deadline.
     ///
     /// # Errors
-    /// Returns the platforms the booted worker offers when one is missing.
-    pub(crate) fn supports(&self, platforms: &BTreeMap<String, String>) -> Result<(), BuildError> {
-        if self.platforms.is_empty() {
-            // No observation, so no refusal: let the build report its own.
-            return Ok(());
-        }
-        for platform in platforms.values() {
-            if !self
-                .platforms
-                .iter()
-                .any(|supported| covers(supported, platform))
-            {
-                return Err(BuildError::UnavailablePlatform {
-                    platform: platform.clone(),
-                    available: self.platforms.join(", "),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// Run one bounded build, terminating it when the timeout expires.
-    ///
-    /// # Errors
-    /// Returns the build's own failure, the timeout, or an unconfirmed
-    /// termination when the builder could not be stopped afterwards.
-    pub(crate) fn run(&self, arguments: &[String], timeout: Duration) -> Result<(), BuildError> {
-        let mut child = self.docker.spawn(arguments)?;
-        match wait_bounded(&mut child, timeout) {
-            Ok(Some(status)) if status.success() => Ok(()),
-            Ok(Some(status)) => Err(BuildError::Failed(status.to_string())),
-            Ok(None) => Err(self.terminate(timeout)),
-            Err(error) => Err(BuildError::Docker {
-                action: "wait for the build",
-                diagnostic: error.to_string(),
-            }),
+    /// Returns BuildKit's own diagnosis, a timeout once the builder is
+    /// confirmed stopped, or an uncertain termination when it is not.
+    pub(crate) fn run(&self, arguments: &[String]) -> Result<(), BuildError> {
+        let borrowed = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+        match self.docker.run("the build", &borrowed, Streams::Inherited) {
+            Ok(_) => Ok(()),
+            Err(BuildError::TimedOut(seconds)) => Err(self.terminate(seconds)),
+            Err(error) => Err(error),
         }
     }
 
-    /// The client stopped waiting; report whether the build itself stopped.
-    fn terminate(&self, timeout: Duration) -> BuildError {
-        match remove(self.docker) {
-            Ok(()) => BuildError::TimedOut(timeout.as_secs()),
-            Err(error) => {
-                self.lock.mark_uncertain();
-                BuildError::UncertainTermination(error.to_string())
-            }
+    /// The attempt was terminated; report whether its builder stopped too.
+    fn terminate(&self, seconds: u64) -> BuildError {
+        match remove(&self.docker.releasing(), &self.name) {
+            Ok(()) => BuildError::TimedOut(seconds),
+            Err(error) => BuildError::UncertainTermination(error.to_string()),
         }
     }
 }
 
 impl Drop for Builder<'_> {
-    /// Remove the container, keeping the cache volume it was built with.
+    /// Remove the container, keeping the cache volume it was built with, and
+    /// record the attempt as finished only once that removal is observed.
     fn drop(&mut self) {
-        let _ = remove(self.docker);
+        if remove(&self.docker.releasing(), &self.name).is_ok() {
+            self.lock.finish();
+        }
     }
 }
 
-/// Whether a worker platform covers a request, ignoring an unstated variant.
-fn covers(supported: &str, requested: &str) -> bool {
-    supported == requested
-        || supported
-            .strip_prefix(requested)
-            .or_else(|| requested.strip_prefix(supported))
-            .is_some_and(|rest| rest.starts_with('/'))
+fn create(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
+    let image = format!("image={BUILDKIT_IMAGE}");
+    // Host networking keeps builds reaching the hosts they reached while
+    // Docker built them with its own embedded BuildKit.
+    docker
+        .run(
+            "create the build container",
+            &[
+                "buildx",
+                "create",
+                "--name",
+                name,
+                "--driver",
+                "docker-container",
+                "--driver-opt",
+                &image,
+                "--driver-opt",
+                "network=host",
+            ],
+            Streams::Captured,
+        )
+        .map(|_| ())
 }
 
-fn remove(docker: &Docker<'_>) -> Result<(), BuildError> {
-    docker.status(
+fn remove(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
+    match docker.run(
         "remove the build container",
-        &["buildx", "rm", "--keep-state", BUILDER],
-    )
+        &["buildx", "rm", "--keep-state", name],
+        Streams::Captured,
+    ) {
+        Ok(_) => Ok(()),
+        // Already gone is the state this asks for.
+        Err(BuildError::Docker { diagnostic, .. }) if diagnostic.contains("no builder") => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
-struct Node {
-    platforms: Vec<String>,
-    image: Option<String>,
-}
-
-/// The Ployz builder's first node, when Docker already has one.
-fn node(docker: &Docker<'_>) -> Result<Option<Node>, BuildError> {
+/// The BuildKit image of an existing Ployz builder, when Docker has one.
+fn existing(docker: &Docker<'_>, name: &str) -> Result<Option<String>, BuildError> {
     let listed = docker
-        .output("list builders", &["buildx", "ls", "--format", "{{json .}}"])
+        .run(
+            "list builders",
+            &["buildx", "ls", "--format", "{{json .}}"],
+            Streams::Captured,
+        )
         .map_err(|error| {
             BuildError::Prerequisite(format!(
                 "local Builds require Docker with the Buildx plugin: {error}"
             ))
         })?;
     for line in listed.lines().filter(|line| !line.trim().is_empty()) {
-        let instance: Instance = match serde_json::from_str(line) {
-            Ok(instance) => instance,
-            Err(_) => continue,
+        let Ok(instance) = serde_json::from_str::<Instance>(line) else {
+            continue;
         };
-        if instance.name != BUILDER {
+        if instance.name != name {
             continue;
         }
-        let Some(node) = instance.nodes.unwrap_or_default().into_iter().next() else {
-            return Ok(Some(Node {
-                platforms: Vec::new(),
-                image: None,
-            }));
-        };
-        return Ok(Some(Node {
-            platforms: node.platforms.unwrap_or_default(),
-            image: node
-                .driver_opts
+        return Ok(Some(
+            instance
+                .nodes
                 .unwrap_or_default()
-                .get("image")
-                .map(ToOwned::to_owned),
-        }));
+                .into_iter()
+                .next()
+                .and_then(|node| node.driver_opts.unwrap_or_default().remove("image"))
+                .unwrap_or_default(),
+        ));
     }
     Ok(None)
 }
@@ -209,96 +164,128 @@ struct Instance {
 
 #[derive(Deserialize)]
 struct NodeEntry {
-    #[serde(rename = "Platforms")]
-    platforms: Option<Vec<String>>,
     #[serde(rename = "DriverOpts")]
     driver_opts: Option<BTreeMap<String, String>>,
 }
 
-fn wait_bounded(child: &mut Child, timeout: Duration) -> io::Result<Option<ExitStatus>> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
-        }
-        if Instant::now() >= deadline {
-            child.kill()?;
-            child.wait()?;
-            return Ok(None);
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 /// Serializes local attempts sharing one builder and its retained cache, and
-/// records an attempt whose termination could not be confirmed.
+/// records an attempt in flight so one that never recorded its end cannot be
+/// mistaken for a finished one. One file, one lock, one state.
 struct Lock {
-    _file: fs::File,
-    sentinel: PathBuf,
+    file: fs::File,
 }
 
 impl Lock {
-    fn acquire() -> Result<Self, BuildError> {
-        // ponytail: one lock per user; Machine-local build admission is remote work.
-        let user = rustix::process::getuid().as_raw();
-        let directory = std::env::temp_dir();
-        let path = directory.join(format!("ployz-build-{user}.lock"));
+    fn acquire(directory: &Path, name: &str) -> Result<Self, BuildError> {
+        use rustix::fs::{FlockOperation, flock};
+
+        let path = directory.join(format!("{name}.lock"));
         let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
             .create(true)
             .truncate(false)
-            .write(true)
             .mode(0o600)
             .open(&path)
-            .map_err(|error| lock_error(&error))?;
-        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
-            .map_err(|error| lock_error(&io::Error::from(error)))?;
-        Ok(Self {
-            _file: file,
-            sentinel: directory.join(format!("ployz-build-{user}.unconfirmed")),
-        })
-    }
-
-    fn uncertain(&self) -> bool {
-        match fs::metadata(&self.sentinel) {
-            Ok(_) => true,
-            Err(error) => error.kind() != ErrorKind::NotFound,
+            .map_err(|error| {
+                BuildError::Prerequisite(format!("open the build lock {}: {error}", path.display()))
+            })?;
+        if flock(&file, FlockOperation::NonBlockingLockExclusive).is_err() {
+            eprintln!("Waiting for another local Ployz build to finish.");
+            flock(&file, FlockOperation::LockExclusive).map_err(|error| {
+                BuildError::Prerequisite(format!(
+                    "wait for another local Ployz build: {}",
+                    std::io::Error::from(error)
+                ))
+            })?;
         }
+        Ok(Self { file })
     }
 
-    fn mark_uncertain(&self) {
-        let _ = fs::write(&self.sentinel, BUILDER);
+    /// Whether an earlier attempt never recorded its end.
+    fn unfinished(&self) -> bool {
+        self.file
+            .metadata()
+            .map_or(true, |metadata| metadata.len() > 0)
     }
 
-    fn clear(&self) {
-        let _ = fs::remove_file(&self.sentinel);
+    /// Record that an attempt now owns the builder.
+    ///
+    /// # Errors
+    /// Fails when the record cannot be written, which would leave a later
+    /// attempt unable to tell an interrupted builder from a finished one.
+    fn begin(&self) -> Result<(), BuildError> {
+        (&self.file)
+            .seek(SeekFrom::Start(0))
+            .and_then(|_| (&self.file).write_all(b"running"))
+            .map_err(|error| {
+                BuildError::Prerequisite(format!("record the build in progress: {error}"))
+            })
     }
-}
 
-fn lock_error(error: &io::Error) -> BuildError {
-    BuildError::Prerequisite(format!("wait for another local Ployz build: {error}"))
+    fn finish(&self) {
+        let _ = self.file.set_len(0);
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
     use super::*;
 
-    #[test]
-    fn a_worker_platform_covers_a_request_without_its_variant() {
-        assert!(covers("linux/arm64", "linux/arm64"));
-        assert!(covers("linux/arm64", "linux/arm64/v8"));
-        assert!(covers("linux/arm64/v8", "linux/arm64"));
-        assert!(!covers("linux/amd64", "linux/arm64"));
-        assert!(!covers("linux/arm", "linux/arm64"));
+    /// A Docker stand-in that records calls and reports one existing builder.
+    fn fixture(directory: &Path, listed: &str) -> fs::File {
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/calls'\ncase \"$1 $2\" in\n  'buildx ls') printf '%s\\n' '{listed}' ;;\nesac\nexit 0\n",
+            directory.display()
+        );
+        let path = directory.join("docker");
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::File::open(&path).unwrap()
+    }
+
+    fn calls(directory: &Path) -> String {
+        fs::read_to_string(directory.join("calls")).unwrap_or_default()
     }
 
     #[test]
-    fn an_unconfirmed_attempt_is_recorded_until_it_is_cleared() {
-        let lock = Lock::acquire().unwrap();
-        lock.clear();
-        assert!(!lock.uncertain());
-        lock.mark_uncertain();
-        assert!(lock.uncertain());
-        lock.clear();
-        assert!(!lock.uncertain());
+    fn a_builder_left_by_an_unfinished_attempt_is_replaced_before_reuse() {
+        let directory = std::env::temp_dir().join(format!("ployz-builder-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let name = builder_name();
+        let listed = format!(
+            r#"{{"Name":"{name}","Nodes":[{{"DriverOpts":{{"image":"{BUILDKIT_IMAGE}"}}}}]}}"#
+        );
+        drop(fixture(&directory, &listed));
+        let environment = BTreeMap::new();
+        let program = directory.join("docker");
+        let docker = Docker {
+            program: &program,
+            environment: &environment,
+            working_dir: &directory,
+            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+        };
+
+        // A finished attempt leaves the pinned builder in place for reuse.
+        let builder = Builder::acquire_in(&docker, &directory).unwrap();
+        assert!(!calls(&directory).contains("buildx create"));
+        drop(builder);
+        assert!(calls(&directory).contains("buildx rm --keep-state"));
+
+        // An attempt that never recorded its end leaves the builder replaced.
+        let lock = Lock::acquire(&directory, &name).unwrap();
+        lock.begin().unwrap();
+        drop(lock);
+        fs::write(directory.join("calls"), "").unwrap();
+        let builder = Builder::acquire_in(&docker, &directory).unwrap();
+        let recorded = calls(&directory);
+        assert!(recorded.contains("buildx rm --keep-state"), "{recorded}");
+        assert!(recorded.contains("buildx create --name"), "{recorded}");
+        drop(builder);
+
+        fs::remove_dir_all(&directory).unwrap();
     }
 }

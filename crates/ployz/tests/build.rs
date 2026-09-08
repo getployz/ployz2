@@ -3,6 +3,7 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 use ployz::compose::{
     BuildOptions, BuildOutcome, BuiltService, capture_build, parse_normalized, plan_build,
 };
+use ployz_build::Output;
 
 /// Digests the Docker stand-in reports for one attempt's completed image.
 const FIRST_CONTENT: &str =
@@ -180,6 +181,7 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
         pull: true,
         ..Default::default()
     };
+    assert_eq!(options.output, Output::Load);
     let plan = plan_build(&project, &options).unwrap();
 
     let build = capture_build(&plan, &options, &mut project).unwrap();
@@ -204,22 +206,22 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     assert!(bake.contains("--no-cache"), "{bake}");
     assert!(bake.contains("--pull"), "{bake}");
     assert!(bake.contains("--set *.args.MODE=release"), "{bake}");
-    assert!(bake.contains("--set api.platform=linux/amd64"), "{bake}");
+    // No platform is configured, so the builder uses its own, as Docker did.
+    assert!(!bake.contains(".platform="), "{bake}");
     assert!(bake.ends_with(" api"), "{bake}");
-    // The builder is provisioned for the attempt and removed with its cache kept.
+    // The builder runs the pinned BuildKit release and is removed afterwards
+    // with its cache kept. The version is spelled out so an unpin fails here.
     assert!(
-        calls.lines().any(|call| call
-            == format!(
-                "buildx create --name {} --driver docker-container --driver-opt image={} --driver-opt network=host",
-                ployz_build::BUILDER,
-                ployz_build::BUILDKIT_IMAGE
-            )),
+        calls
+            .lines()
+            .any(|call| call.starts_with("buildx create --name")
+                && call.contains("--driver-opt image=moby/buildkit:v0.26.2")),
         "{calls}"
     );
     assert!(
         calls
             .lines()
-            .any(|call| call == format!("buildx rm --keep-state {}", ployz_build::BUILDER)),
+            .any(|call| call == format!("buildx rm --keep-state {}", ployz_build::builder_name())),
         "{calls}"
     );
     let service = one_built(outcome);
@@ -230,7 +232,7 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
         format!("example.test/api@{FIRST_CONTENT}")
     );
     assert_eq!(service.built.tags, ["example.test/api:version2"]);
-    assert_eq!(service.built.platforms, ["linux/amd64"]);
+    assert_eq!(service.built.platform, "linux/amd64");
     let override_yaml = fs::read_to_string(captured).unwrap();
     assert!(override_yaml.contains("api"));
     assert!(override_yaml.contains("example.test/api:version2"));
@@ -375,11 +377,58 @@ fn built_images_bind_to_exact_content_after_tag_reuse() {
 }
 
 #[test]
-fn unsupported_build_settings_are_named_before_execution() {
-    for (setting, value) in [
-        ("cache_from", "[type=local\\,src=/tmp/cache]"),
-        ("network", "host"),
-    ] {
+fn an_image_the_store_does_not_hold_is_refused_as_a_result() {
+    let root = std::env::temp_dir().join(format!("ployz-build-content-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
+    let docker = root.join("docker");
+    write_docker(&docker, &root);
+    fs::write(root.join("image"), "example.test/api:latest").unwrap();
+    fs::write(root.join("digest"), FIRST_CONTENT).unwrap();
+    // The build claims one image while the store holds different content.
+    fs::write(root.join("store"), SECOND_CONTENT).unwrap();
+    let mut project = parse_normalized(
+        "name: demo\nservices: {api: {image: 'example.test/api:latest', build: ./src}}\n",
+        &root,
+    )
+    .unwrap();
+    let options = BuildOptions::default();
+    let plan = plan_build(&project, &options).unwrap();
+
+    let build = capture_build(&plan, &options, &mut project).unwrap();
+    let error = match build.execute(Some(&docker)) {
+        Ok(outcome) => panic!("substituted content was reported as built: {outcome:?}"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains(SECOND_CONTENT), "{error}");
+    assert!(
+        error.contains("rather than the completed content"),
+        "{error}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn several_requested_build_platforms_are_refused_with_the_service_named() {
+    let mut project = parse_normalized(
+        "name: demo\nservices: {api: {build: {context: ., platforms: [linux/amd64, linux/arm64]}}}\n",
+        ".",
+    )
+    .unwrap();
+    let options = BuildOptions::default();
+    let plan = plan_build(&project, &options).unwrap();
+    let error = match capture_build(&plan, &options, &mut project) {
+        Ok(_) => panic!("a multi-platform Dockerfile Build was admitted"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("api"), "{error}");
+    assert!(error.contains("one platform"), "{error}");
+}
+
+#[test]
+fn settings_upstream_would_drop_are_named_before_execution() {
+    for (setting, value) in [("isolation", "default"), ("entitlements", "[network.host]")] {
         let mut project = parse_normalized(
             &format!(
                 "name: demo\nservices: {{api: {{build: {{context: ., {setting}: {value}}}}}}}\n"
@@ -417,7 +466,6 @@ fn write_docker(path: &Path, root: &Path) {
 root='{root}'
 printf '%s\n' "$*" >> "$root/calls"
 case "$1 $2" in
-  'version --format') echo linux/amd64; exit 0 ;;
   'buildx create') : > "$root/builder"; exit 0 ;;
   'buildx inspect') exit 0 ;;
   'buildx rm') rm -f "$root/builder"; exit 0 ;;
@@ -427,7 +475,8 @@ case "$1 $2" in
     fi
     exit 0 ;;
   'image inspect')
-    printf '{{"Id":"%s","Os":"linux","Architecture":"amd64","Variant":null}}' "${{3#*@}}"
+    identity=$(cat "$root/store" 2>/dev/null || cat "$root/digest")
+    printf '{{"Id":"%s","Os":"linux","Architecture":"amd64","Variant":null}}' "$identity"
     exit 0 ;;
   'buildx bake')
     previous=
@@ -448,7 +497,7 @@ case "$*" in
 esac
 exit 1
 "#,
-        builder = ployz_build::BUILDER,
+        builder = ployz_build::builder_name(),
         image = ployz_build::BUILDKIT_IMAGE,
     );
     fs::write(path, script).unwrap();

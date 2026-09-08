@@ -69,7 +69,7 @@ fn compose_build_basic_pushes_only_buildable_resolved_images() {
     };
     let mut project = load_project(&load).unwrap();
     let options = BuildOptions {
-        push_registry: true,
+        output: ployz_build::Output::Registry,
         ..Default::default()
     };
     let plan = plan_build(&project, &options).unwrap();
@@ -166,7 +166,7 @@ fn local_dockerfile_build_loads_a_runnable_image_and_reuses_its_retained_cache()
     let first = one_built(execute_build(&plan, &options, &load, &mut project).unwrap());
     assert_eq!(first.image, image);
     assert!(first.built.tags.iter().any(|tag| tag.ends_with(&image)));
-    assert_eq!(first.built.platforms, [host_platform()]);
+    assert_eq!(first.built.platform, host_platform());
     assert!(first.built.reference.contains("@sha256:"));
     // The image is in the local store under exactly the content just built.
     command(["image", "inspect", &first.built.reference]);
@@ -176,7 +176,7 @@ fn local_dockerfile_build_loads_a_runnable_image_and_reuses_its_retained_cache()
     // The builder container is gone; its dedicated cache volume is retained.
     assert!(
         !Command::new("docker")
-            .args(["buildx", "inspect", ployz_build::BUILDER])
+            .args(["buildx", "inspect", ployz_build::builder_name().as_str()])
             .status()
             .unwrap()
             .success()
@@ -212,7 +212,7 @@ fn host_platform() -> String {
 }
 
 fn cache_volume() -> String {
-    format!("buildx_buildkit_{}0_state", ployz_build::BUILDER)
+    format!("buildx_buildkit_{}0_state", ployz_build::builder_name())
 }
 
 fn output<const N: usize>(args: [&str; N]) -> String {
@@ -236,7 +236,7 @@ impl Drop for LocalBuild {
             let _ = Command::new("docker").args(["image", "rm", image]).status();
         }
         let _ = Command::new("docker")
-            .args(["buildx", "rm", ployz_build::BUILDER])
+            .args(["buildx", "rm", ployz_build::builder_name().as_str()])
             .status();
         let _ = Command::new("docker")
             .args(["volume", "rm", &cache_volume()])

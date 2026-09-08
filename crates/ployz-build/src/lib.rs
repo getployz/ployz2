@@ -1,18 +1,22 @@
 //! Shared BuildKit execution for one captured Build.
 //!
-//! A caller captures a Build's inputs, then executes that capture here. Builder
-//! setup, subprocess orchestration, image import, output verification, and
-//! cleanup stay private so no caller has to restate image-correctness rules.
-//! Execution knows source, recipe, and platforms; it knows nothing about
-//! Compose selection, Cluster placement, or Deploy.
+//! A caller captures a Build's inputs, then executes that capture here:
+//! execute, verify the image, clean up. Builder lifecycle, subprocess
+//! orchestration, image import, and cleanup stay private so no caller has to
+//! restate them. Execution knows source, recipe, and platform; it knows
+//! nothing about Compose selection, Cluster placement, or Deploy.
+//!
+//! BuildKit owns build options and their validation. This crate adds only the
+//! rules BuildKit cannot enforce: one bounded attempt, and an image bound to
+//! the content that attempt produced.
 
 mod builder;
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
-    process::{Command, Stdio},
-    time::Duration,
+    process::{Child, Command, ExitStatus, Stdio},
+    time::{Duration, Instant},
 };
 
 use serde::Deserialize;
@@ -23,12 +27,21 @@ use builder::Builder;
 /// Pinned BuildKit release. Every Ployz Build runs this version.
 pub const BUILDKIT_IMAGE: &str = "moby/buildkit:v0.26.2";
 
-/// Ployz-owned builder. Its cache volume outlives the container it names.
-pub const BUILDER: &str = "ployz";
-
-/// Longest one Build Attempt may run, covering preparation, compilation,
-/// and image import.
+/// Longest one Build Attempt may run, covering builder setup, compilation,
+/// image import, and verification.
 pub const EXECUTION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Budget for releasing an attempt's resources once it is over.
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The Ployz builder for this user. Its cache volume outlives the container.
+///
+/// One builder per user keeps two people sharing a Docker daemon from
+/// removing each other's build container.
+#[must_use]
+pub fn builder_name() -> String {
+    format!("ployz-{}", rustix::process::getuid().as_raw())
+}
 
 /// One Build's captured inputs, ready to execute.
 ///
@@ -55,16 +68,18 @@ pub struct Request<'a> {
 /// One image to produce, named by the caller.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Target {
+    /// Caller's name for this image. Also names it in the captured Compose file.
     pub name: String,
-    /// Requested platforms. Empty selects the execution host's platform.
-    pub platforms: Vec<String>,
+    /// Platform to build. `None` builds the execution host's own platform.
+    pub platform: Option<String>,
 }
 
 /// What an attempt does with its result. These outcomes are exclusive: an
 /// attempt cannot both validate and produce an image.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Output {
     /// Load completed images into the execution host's Docker image store.
+    #[default]
     Load,
     /// Publish to the registry each tag names, retaining no local image.
     Registry,
@@ -83,7 +98,8 @@ pub enum Outcome {
     Validated,
 }
 
-/// A completed image, identified by the content this attempt observed.
+/// A completed image in the execution host's Docker image store, identified by
+/// the content this attempt observed there.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuiltImage {
     /// Target name the caller supplied.
@@ -93,52 +109,28 @@ pub struct BuiltImage {
     pub reference: String,
     /// Tags this attempt applied, as the execution host recorded them.
     pub tags: Vec<String>,
-    /// Platforms actually present, not the ones requested.
-    pub platforms: Vec<String>,
-    pub location: Location,
-}
-
-/// Where a completed image is available.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Location {
-    // ponytail: selected-Machine locations arrive with remote execution.
-    /// The execution host's local Docker image store.
-    Local,
-}
-
-impl std::fmt::Display for Location {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Local => formatter.write_str("local Docker"),
-        }
-    }
+    /// The platform actually present, not the one requested.
+    pub platform: String,
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum BuildError {
+    /// The execution host cannot run Builds at all.
     #[error("{0}")]
     Prerequisite(String),
-    #[error(
-        "'{target}' requests {count} build platforms; a Dockerfile Build produces one platform"
-    )]
-    MultiplePlatforms { target: String, count: usize },
-    #[error("unsupported build platform '{0}'")]
-    UnsupportedPlatform(String),
-    #[error("the builder cannot build '{platform}'; it supports {available}")]
-    UnavailablePlatform { platform: String, available: String },
-    #[error("build exited with {0}")]
-    Failed(String),
-    #[error("build exceeded the {0}s execution timeout")]
-    TimedOut(u64),
-    #[error(
-        "build termination could not be confirmed: {0}. Retained builder state stays unavailable until it is released"
-    )]
-    UncertainTermination(String),
-    #[error("Docker {action}: {diagnostic}")]
+    /// One Docker command failed. BuildKit's own diagnosis is the diagnostic.
+    #[error("{action} failed: {diagnostic}")]
     Docker {
         action: &'static str,
         diagnostic: String,
     },
+    /// The attempt exceeded its bounded execution time and was terminated.
+    #[error("the build exceeded its {0}s execution timeout and was terminated")]
+    TimedOut(u64),
+    /// The attempt stopped, but its termination could not be observed.
+    #[error("the build was terminated but its builder did not stop: {0}")]
+    UncertainTermination(String),
+    /// The build finished, but its result is not the image it claims.
     #[error("{0}")]
     Result(String),
 }
@@ -146,51 +138,77 @@ pub enum BuildError {
 /// Execute one captured Build against local Docker.
 ///
 /// Requires Docker with Buildx and the containerd image store. It does not
-/// require a Ployz daemon.
+/// require a Ployz daemon. The whole attempt, including builder setup and
+/// cleanup, is bounded by [`EXECUTION_TIMEOUT`].
 ///
 /// # Errors
-/// Returns a refusal for unsupported platform requests, a prerequisite error
-/// when Docker or its builder cannot serve the Build, a failure carrying the
-/// earliest proven stage, or an uncertain outcome when termination could not
-/// be confirmed.
+/// Returns a prerequisite error when Docker cannot serve the Build, the
+/// failing command's own diagnosis, a timeout, an uncertain outcome when
+/// termination could not be observed, or a result error when the completed
+/// image is not the content it claims.
 pub fn execute(request: &Request<'_>) -> Result<Outcome, BuildError> {
-    if request.targets.is_empty() {
-        return Ok(Outcome::Built(Vec::new()));
-    }
-    // Refuse unsupported platform requests before starting any execution.
-    let requested = requested_platforms(request.targets)?;
     let docker = Docker {
         program: request.docker.unwrap_or_else(|| Path::new("docker")),
         environment: request.environment,
         working_dir: request.working_dir,
+        deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
     };
-    let platforms = resolve_platforms(requested, &docker)?;
-    let builder = Builder::acquire(&docker)?;
-    builder.supports(&platforms)?;
+    let planned = plan(request.targets)?;
+    if planned.is_empty() {
+        return Ok(empty(request.output));
+    }
     let metadata = request.working_dir.join("build-metadata.json");
-    builder.run(
-        &bake_arguments(request, &platforms, &metadata),
-        EXECUTION_TIMEOUT,
-    )?;
+    let builder = Builder::acquire(&docker)?;
+    builder.run(&bake_arguments(request, &planned, &metadata))?;
     match request.output {
         Output::Validate => Ok(Outcome::Validated),
         Output::Registry => Ok(Outcome::Published),
-        Output::Load => {
-            built_images(&docker, &metadata, request.targets, &platforms).map(Outcome::Built)
-        }
+        Output::Load => built_images(&docker, &metadata, &planned).map(Outcome::Built),
     }
 }
 
-fn bake_arguments(
-    request: &Request<'_>,
-    platforms: &BTreeMap<String, String>,
-    metadata: &Path,
-) -> Vec<String> {
+/// One target with the Buildx name it will carry, derived once.
+#[derive(Debug)]
+struct Planned<'a> {
+    target: &'a Target,
+    bake: String,
+}
+
+/// Name each target for Buildx, refusing names that would share one result.
+fn plan(targets: &[Target]) -> Result<Vec<Planned<'_>>, BuildError> {
+    let mut names = BTreeSet::new();
+    targets
+        .iter()
+        .map(|target| {
+            // Compose names may contain a dot; Buildx target names may not.
+            let bake = target.name.replace('.', "_");
+            if names.insert(bake.clone()) {
+                Ok(Planned { target, bake })
+            } else {
+                Err(BuildError::Result(format!(
+                    "'{}' and an earlier target share the build name '{bake}', so their results cannot be told apart",
+                    target.name
+                )))
+            }
+        })
+        .collect()
+}
+
+/// A Build with no target still reports what it did, not an image it lacks.
+fn empty(output: Output) -> Outcome {
+    match output {
+        Output::Load => Outcome::Built(Vec::new()),
+        Output::Registry => Outcome::Published,
+        Output::Validate => Outcome::Validated,
+    }
+}
+
+fn bake_arguments(request: &Request<'_>, planned: &[Planned<'_>], metadata: &Path) -> Vec<String> {
     let mut arguments = vec![
         "buildx".to_owned(),
         "bake".to_owned(),
         "--builder".to_owned(),
-        BUILDER.to_owned(),
+        builder_name(),
         "--file".to_owned(),
         request.compose_file.to_string_lossy().into_owned(),
     ];
@@ -212,130 +230,43 @@ fn bake_arguments(
     if request.pull {
         arguments.push("--pull".to_owned());
     }
-    for (target, platform) in platforms {
-        arguments.push("--set".to_owned());
-        arguments.push(format!("{target}.platform={platform}"));
+    for planned in planned {
+        // Without a requested platform the builder uses its own, as Docker did.
+        if let Some(platform) = &planned.target.platform {
+            arguments.push("--set".to_owned());
+            arguments.push(format!("{}.platform={platform}", planned.bake));
+        }
     }
     for argument in request.build_args {
         arguments.push("--set".to_owned());
         arguments.push(format!("*.args.{argument}"));
     }
-    arguments.extend(
-        request
-            .targets
-            .iter()
-            .map(|target| bake_target(&target.name)),
-    );
+    arguments.extend(planned.iter().map(|planned| planned.bake.clone()));
     arguments
-}
-
-/// Compose service names may contain a dot; Buildx target names may not.
-fn bake_target(name: &str) -> String {
-    name.replace('.', "_")
-}
-
-fn requested_platforms(targets: &[Target]) -> Result<BTreeMap<String, Option<String>>, BuildError> {
-    targets
-        .iter()
-        .map(|target| match target.platforms.as_slice() {
-            [] => Ok((bake_target(&target.name), None)),
-            [platform] => Ok((
-                bake_target(&target.name),
-                Some(validated_platform(platform)?),
-            )),
-            platforms => Err(BuildError::MultiplePlatforms {
-                target: target.name.clone(),
-                count: platforms.len(),
-            }),
-        })
-        .collect()
-}
-
-fn resolve_platforms(
-    requested: BTreeMap<String, Option<String>>,
-    docker: &Docker<'_>,
-) -> Result<BTreeMap<String, String>, BuildError> {
-    if requested.values().all(Option::is_some) {
-        return Ok(requested
-            .into_iter()
-            .filter_map(|(target, platform)| Some((target, platform?)))
-            .collect());
-    }
-    let host = host_platform(docker)?;
-    Ok(requested
-        .into_iter()
-        .map(|(target, platform)| (target, platform.unwrap_or_else(|| host.clone())))
-        .collect())
-}
-
-/// The execution host's own Linux platform, used when none is configured.
-fn host_platform(docker: &Docker<'_>) -> Result<String, BuildError> {
-    let reported = docker
-        .output(
-            "read the server platform",
-            &["version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"],
-        )
-        .map_err(|error| {
-            BuildError::Prerequisite(format!(
-                "local Builds require a reachable Docker daemon: {error}"
-            ))
-        })?;
-    let platform = reported.trim().to_owned();
-    if platform.starts_with("linux/") {
-        validated_platform(&platform)
-    } else {
-        Err(BuildError::Prerequisite(format!(
-            "Ployz builds Linux images; this Docker host reports '{platform}'"
-        )))
-    }
-}
-
-fn validated_platform(platform: &str) -> Result<String, BuildError> {
-    let components = platform.split('/').collect::<Vec<_>>();
-    let supported = matches!(components.len(), 2 | 3)
-        && components.first() == Some(&"linux")
-        && components.iter().all(|component| {
-            !component.is_empty()
-                && component.bytes().all(|byte| {
-                    byte.is_ascii_lowercase()
-                        || byte.is_ascii_digit()
-                        || matches!(byte, b'.' | b'_' | b'-')
-                })
-        });
-    if supported {
-        Ok(platform.to_owned())
-    } else {
-        Err(BuildError::UnsupportedPlatform(platform.to_owned()))
-    }
 }
 
 fn built_images(
     docker: &Docker<'_>,
     metadata: &Path,
-    targets: &[Target],
-    platforms: &BTreeMap<String, String>,
+    planned: &[Planned<'_>],
 ) -> Result<Vec<BuiltImage>, BuildError> {
     let content = std::fs::read(metadata)
-        .map_err(|error| BuildError::Result(format!("read the build result metadata: {error}")))?;
+        .map_err(|error| BuildError::Result(format!("read the build result: {error}")))?;
     let results: BTreeMap<String, serde_json::Value> = serde_json::from_slice(&content)
-        .map_err(|error| BuildError::Result(format!("parse the build result metadata: {error}")))?;
-    targets
+        .map_err(|error| BuildError::Result(format!("parse the build result: {error}")))?;
+    planned
         .iter()
-        .map(|target| {
-            let key = bake_target(&target.name);
+        .map(|planned| {
+            let name = &planned.target.name;
             let result = results
-                .get(&key)
+                .get(&planned.bake)
                 .ok_or_else(|| {
-                    BuildError::Result(format!(
-                        "the build reported no result for '{}'",
-                        target.name
-                    ))
+                    BuildError::Result(format!("the build reported no result for '{name}'"))
                 })
                 .and_then(|value| {
-                    serde_json::from_value::<TargetMetadata>(value.clone()).map_err(|error| {
+                    TargetMetadata::deserialize(value).map_err(|error| {
                         BuildError::Result(format!(
-                            "the build result for '{}' is incomplete: {error}",
-                            target.name
+                            "the build result for '{name}' is incomplete: {error}"
                         ))
                     })
                 })?;
@@ -350,38 +281,40 @@ fn built_images(
                 .first()
                 .map(|tag| repository(tag))
                 .ok_or_else(|| {
-                    BuildError::Result(format!("the build tagged no image for '{}'", target.name))
+                    BuildError::Result(format!("the build tagged no image for '{name}'"))
                 })?
                 .to_owned();
             let reference = format!("{repository}@{}", result.digest);
-            let requested = platforms.get(&key).map(String::as_str).unwrap_or_default();
-            let observed = verify(docker, &reference, &result.digest, requested)?;
+            let platform = verify(
+                docker,
+                &reference,
+                &result.digest,
+                planned.target.platform.as_deref(),
+            )?;
             Ok(BuiltImage {
-                target: target.name.clone(),
+                target: name.clone(),
                 reference,
                 tags,
-                platforms: vec![observed],
-                location: Location::Local,
+                platform,
             })
         })
         .collect()
 }
 
-/// Confirm the execution host holds exactly the content this attempt claims.
+/// Confirm the execution host holds exactly the content this attempt claims,
+/// and report the platform it actually holds.
 fn verify(
     docker: &Docker<'_>,
     reference: &str,
     digest: &str,
-    requested: &str,
+    requested: Option<&str>,
 ) -> Result<String, BuildError> {
     let inspected = docker
-        .output("inspect the completed image", &[
-            "image",
-            "inspect",
-            reference,
-            "--format",
-            "{{json .}}",
-        ])
+        .run(
+            "inspect the completed image",
+            &["image", "inspect", reference, "--format", "{{json .}}"],
+            Streams::Captured,
+        )
         .map_err(|error| {
             BuildError::Result(format!(
                 "the completed image {reference} is not in the local image store, which Ployz Builds require Docker's containerd image store to provide: {error}"
@@ -403,20 +336,22 @@ fn verify(
     } else {
         format!("{}/{}/{variant}", image.os, image.architecture)
     };
-    // A request without a variant accepts the platform's own variant.
-    let matches = observed == requested
-        || (requested.split('/').count() == 2
-            && observed.starts_with(requested)
-            && observed
-                .get(requested.len()..)
-                .is_some_and(|rest| rest.starts_with('/')));
-    if matches {
-        Ok(observed)
-    } else {
-        Err(BuildError::Result(format!(
+    match requested {
+        Some(requested) if !covers(&observed, requested) => Err(BuildError::Result(format!(
             "{reference} contains {observed}, not the requested {requested}"
-        )))
+        ))),
+        Some(_) | None => Ok(observed),
     }
+}
+
+/// Whether an observed platform satisfies a request, ignoring an unstated
+/// variant: `linux/arm64` asks for whichever variant the host builds.
+fn covers(observed: &str, requested: &str) -> bool {
+    observed == requested
+        || observed
+            .strip_prefix(requested)
+            .or_else(|| requested.strip_prefix(observed))
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// The repository part of a tag, keeping a registry port intact.
@@ -448,77 +383,154 @@ struct ImageInspection {
     variant: Option<String>,
 }
 
+/// When this attempt must be over, so no Docker command can outlast it.
+#[derive(Clone, Copy)]
+pub(crate) struct Deadline {
+    expires: Instant,
+    budget: Duration,
+}
+
+impl Deadline {
+    fn starting_now(budget: Duration) -> Self {
+        Self {
+            expires: Instant::now() + budget,
+            budget,
+        }
+    }
+
+    fn remaining(self) -> Duration {
+        self.expires.saturating_duration_since(Instant::now())
+    }
+}
+
+/// Whether a command's output belongs to the operator or to this crate.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Streams {
+    /// Build progress the operator watches.
+    Inherited,
+    /// Evidence this crate reads.
+    Captured,
+}
+
 /// The Docker CLI this attempt drives, with the values captured for it.
+///
+/// Every command runs inside the attempt's deadline, so no phase of a bounded
+/// Build can wait forever on Docker.
 pub(crate) struct Docker<'a> {
     program: &'a Path,
     environment: &'a BTreeMap<String, String>,
-    /// The private capture directory. Running there keeps a stray Compose or
-    /// `.env` file in the caller's directory out of the build.
     working_dir: &'a Path,
+    deadline: Deadline,
 }
 
-impl Docker<'_> {
-    fn command(&self, arguments: &[&str]) -> Command {
+impl<'a> Docker<'a> {
+    /// The same Docker with a fresh budget for releasing resources, so
+    /// cleanup still runs, bounded, after the attempt's deadline passes.
+    pub(crate) fn releasing(&self) -> Docker<'a> {
+        Docker {
+            program: self.program,
+            environment: self.environment,
+            working_dir: self.working_dir,
+            deadline: Deadline::starting_now(CLEANUP_TIMEOUT),
+        }
+    }
+
+    /// Run one Docker command to completion within the deadline.
+    ///
+    /// # Errors
+    /// Returns the command's own diagnosis, or a timeout after terminating it.
+    pub(crate) fn run(
+        &self,
+        action: &'static str,
+        arguments: &[&str],
+        streams: Streams,
+    ) -> Result<String, BuildError> {
+        // Captured output goes to a file, so a large result cannot fill a pipe
+        // and deadlock a child this side is no longer reading.
+        let captured = self.working_dir.join("docker-output");
         let mut command = Command::new(self.program);
         command
             .env_clear()
             .envs(self.environment)
             .current_dir(self.working_dir)
-            .args(arguments);
-        command
-    }
-
-    /// Run a command that reports evidence, capturing its output.
-    fn output(&self, action: &'static str, arguments: &[&str]) -> Result<String, BuildError> {
-        let output = self
-            .command(arguments)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| BuildError::Docker {
+            .args(arguments)
+            .stdin(Stdio::null());
+        if streams == Streams::Captured {
+            let file = std::fs::File::create(&captured).map_err(|error| BuildError::Docker {
                 action,
                 diagnostic: error.to_string(),
             })?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-        } else {
-            Err(BuildError::Docker {
+            command.stdout(file).stderr(Stdio::piped());
+        }
+        let mut child = spawn_retrying_busy(&mut command).map_err(|error| BuildError::Docker {
+            action,
+            diagnostic: error.to_string(),
+        })?;
+        let Some(status) =
+            wait_bounded(&mut child, self.deadline.remaining()).map_err(|error| {
+                BuildError::Docker {
+                    action,
+                    diagnostic: error.to_string(),
+                }
+            })?
+        else {
+            return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
+        };
+        if !status.success() {
+            let mut diagnostic = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                use std::io::Read as _;
+                let _ = stderr.read_to_string(&mut diagnostic);
+            }
+            let diagnostic = diagnostic.trim();
+            return Err(BuildError::Docker {
                 action,
-                diagnostic: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            })
+                diagnostic: if diagnostic.is_empty() {
+                    format!("exited with {status}")
+                } else {
+                    diagnostic.to_owned()
+                },
+            });
+        }
+        match streams {
+            Streams::Captured => {
+                std::fs::read_to_string(&captured).map_err(|error| BuildError::Docker {
+                    action,
+                    diagnostic: error.to_string(),
+                })
+            }
+            Streams::Inherited => Ok(String::new()),
         }
     }
+}
 
-    /// Run a command whose progress belongs to the operator's terminal.
-    fn spawn(&self, arguments: &[String]) -> Result<std::process::Child, BuildError> {
-        let borrowed = arguments.iter().map(String::as_str).collect::<Vec<_>>();
-        self.command(&borrowed)
-            .stdin(Stdio::null())
-            .spawn()
-            .map_err(|error| BuildError::Docker {
-                action: "start the build",
-                diagnostic: error.to_string(),
-            })
-    }
-
-    fn status(&self, action: &'static str, arguments: &[&str]) -> Result<(), BuildError> {
-        // Builder lifecycle progress belongs on stderr with the build's own.
-        let status = self
-            .command(arguments)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
-            .map_err(|error| BuildError::Docker {
-                action,
-                diagnostic: error.to_string(),
-            })?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(BuildError::Docker {
-                action,
-                diagnostic: format!("exited with {status}"),
-            })
+/// A program written moments ago can still be held open by a concurrent fork.
+/// Retry briefly rather than fail the Build on that race.
+fn spawn_retrying_busy(command: &mut Command) -> std::io::Result<Child> {
+    for attempt in 0..4 {
+        match command.spawn() {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(Duration::from_millis(10 << attempt));
+            }
+            other => return other,
         }
+    }
+    command.spawn()
+}
+
+/// Wait for a child, terminating it when the budget runs out.
+fn wait_bounded(child: &mut Child, budget: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now() + budget;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -526,43 +538,39 @@ impl Docker<'_> {
 mod tests {
     use super::*;
 
-    fn target(name: &str, platforms: &[&str]) -> Target {
+    fn target(name: &str, platform: Option<&str>) -> Target {
         Target {
             name: name.to_owned(),
-            platforms: platforms
-                .iter()
-                .map(|platform| (*platform).to_owned())
-                .collect(),
+            platform: platform.map(ToOwned::to_owned),
         }
     }
 
     #[test]
-    fn one_platform_is_kept_and_several_are_refused_before_execution() {
-        let resolved =
-            requested_platforms(&[target("api", &["linux/arm64"]), target("web", &[])]).unwrap();
-        assert_eq!(resolved.get("api").unwrap().as_deref(), Some("linux/arm64"));
-        assert_eq!(resolved.get("web").unwrap().as_deref(), None);
+    fn targets_that_would_share_one_build_name_are_refused() {
+        let distinct = [target("api.internal", None), target("web", None)];
+        let planned = plan(&distinct).unwrap();
         assert_eq!(
-            requested_platforms(&[target("api", &["linux/amd64", "linux/arm64"])]).unwrap_err(),
-            BuildError::MultiplePlatforms {
-                target: "api".into(),
-                count: 2,
-            }
+            planned
+                .iter()
+                .map(|planned| planned.bake.as_str())
+                .collect::<Vec<_>>(),
+            ["api_internal", "web"]
         );
-        for refused in ["windows/amd64", "linux", "linux//v8", "LINUX/AMD64"] {
-            assert_eq!(
-                requested_platforms(&[target("api", &[refused])]).unwrap_err(),
-                BuildError::UnsupportedPlatform(refused.into()),
-            );
-        }
-        assert_eq!(validated_platform("linux/arm/v7").unwrap(), "linux/arm/v7");
+        let colliding = [target("api.internal", None), target("api_internal", None)];
+        let collision = match plan(&colliding) {
+            Ok(_) => panic!("two targets shared one build name"),
+            Err(error) => error.to_string(),
+        };
+        assert!(collision.contains("api_internal"), "{collision}");
     }
 
     #[test]
-    fn a_dotted_service_keeps_one_buildx_target_name() {
-        assert_eq!(bake_target("api.internal"), "api_internal");
-        let resolved = requested_platforms(&[target("api.internal", &["linux/amd64"])]).unwrap();
-        assert!(resolved.contains_key("api_internal"));
+    fn an_observed_platform_covers_a_request_without_its_variant() {
+        assert!(covers("linux/arm64", "linux/arm64"));
+        assert!(covers("linux/arm64/v8", "linux/arm64"));
+        assert!(covers("linux/arm64", "linux/arm64/v8"));
+        assert!(!covers("linux/amd64", "linux/arm64"));
+        assert!(!covers("linux/arm", "linux/arm64"));
     }
 
     #[test]
@@ -587,8 +595,8 @@ mod tests {
     #[test]
     fn requested_output_selects_exclusive_bake_behavior() {
         let environment = BTreeMap::new();
-        let targets = [target("api", &[])];
-        let platforms = BTreeMap::from([("api".to_owned(), "linux/amd64".to_owned())]);
+        let targets = [target("api", Some("linux/arm64")), target("web", None)];
+        let planned = plan(&targets).unwrap();
         let metadata = Path::new("/private/build-metadata.json");
         let build_args = ["MODE=release".to_owned()];
         let request = |output| Request {
@@ -602,21 +610,53 @@ mod tests {
             no_cache: true,
             pull: false,
         };
-        let validate = bake_arguments(&request(Output::Validate), &platforms, metadata);
+
+        let validate = bake_arguments(&request(Output::Validate), &planned, metadata);
         assert!(validate.contains(&"--check".to_owned()));
         assert!(!validate.contains(&"--load".to_owned()));
         assert!(!validate.contains(&"--metadata-file".to_owned()));
-        let load = bake_arguments(&request(Output::Load), &platforms, metadata);
+
+        let load = bake_arguments(&request(Output::Load), &planned, metadata);
         assert!(load.contains(&"--load".to_owned()));
         assert!(!load.contains(&"--push".to_owned()));
         assert!(load.contains(&"--no-cache".to_owned()));
         assert!(!load.contains(&"--pull".to_owned()));
-        assert!(load.contains(&"api.platform=linux/amd64".to_owned()));
         assert!(load.contains(&"*.args.MODE=release".to_owned()));
-        assert_eq!(load.last().map(String::as_str), Some("api"));
-        let registry = bake_arguments(&request(Output::Registry), &platforms, metadata);
+        // Only a requested platform is set; the rest build the host's own.
+        assert!(load.contains(&"api.platform=linux/arm64".to_owned()));
+        assert!(
+            !load
+                .iter()
+                .any(|argument| argument.starts_with("web.platform"))
+        );
+        assert_eq!(load.last().map(String::as_str), Some("web"));
+
+        let registry = bake_arguments(&request(Output::Registry), &planned, metadata);
         assert!(registry.contains(&"--push".to_owned()));
         assert!(!registry.contains(&"--load".to_owned()));
         assert!(!registry.contains(&"--metadata-file".to_owned()));
+    }
+
+    #[test]
+    fn a_build_with_no_target_claims_only_what_it_did() {
+        assert_eq!(empty(Output::Load), Outcome::Built(Vec::new()));
+        assert_eq!(empty(Output::Registry), Outcome::Published);
+        assert_eq!(empty(Output::Validate), Outcome::Validated);
+    }
+
+    #[test]
+    fn a_command_that_outlasts_its_budget_is_terminated() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        let waited = Instant::now();
+        assert!(
+            wait_bounded(&mut child, Duration::from_millis(200))
+                .unwrap()
+                .is_none()
+        );
+        assert!(waited.elapsed() < Duration::from_secs(5));
     }
 }

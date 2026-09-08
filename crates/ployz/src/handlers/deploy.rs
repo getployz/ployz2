@@ -271,9 +271,10 @@ fn prepare_deploy(
         build_args: string_values(matches, "build-arg"),
         deps: true,
         no_cache: matches.get_flag("no-cache"),
+        // A Deploy needs the image on this host, so it always loads it.
+        output: ployz_build::Output::Load,
         pull: matches.get_flag("build-pull"),
         services: build_names,
-        ..Default::default()
     };
     let builds = plan_build(&project, &build_options)?;
     let captured_build = if matches.get_flag("no-build") {
@@ -292,23 +293,21 @@ fn prepare_deploy(
     );
     // Every required Build finishes before any application change begins.
     let built = match captured_build {
-        Some(build) => built_services(build.execute(load.docker.as_deref()).map_err(|error| {
+        Some(build) => match build.execute(load.docker.as_deref()).map_err(|error| {
             Error::usage(format!(
                 "{error}. No Service, hook, or volume change was attempted."
             ))
-        })?)?,
+        })? {
+            BuildOutcome::Built(services) => services,
+            BuildOutcome::Published | BuildOutcome::Validated => {
+                return Err(Error::usage(
+                    "the build produced no deployable image; deployment was not attempted",
+                ));
+            }
+        },
         None => Vec::new(),
     };
     Ok((candidate, built))
-}
-
-fn built_services(outcome: BuildOutcome) -> Result<Vec<BuiltService>, Error> {
-    match outcome {
-        BuildOutcome::Built(services) => Ok(services),
-        BuildOutcome::Published | BuildOutcome::Validated => Err(Error::usage(
-            "the build produced no deployable image; deployment was not attempted",
-        )),
-    }
 }
 
 fn selected_attempts(

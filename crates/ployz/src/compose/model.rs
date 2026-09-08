@@ -130,8 +130,12 @@ pub enum ComposeError {
     Compose(String),
     #[error("invalid normalized Compose project: {0}")]
     Invalid(String),
-    #[error(transparent)]
-    Build(#[from] ployz_build::BuildError),
+    #[error("building {services}: {source}")]
+    Build {
+        services: String,
+        #[source]
+        source: ployz_build::BuildError,
+    },
     #[error("{0}")]
     Io(String),
 }

@@ -1,5 +1,7 @@
 use clap::ArgMatches;
 
+use ployz_build::Output;
+
 use crate::compose::{
     BuildOptions, BuildOutcome, LoadOptions, execute_build, load_project, plan_build,
 };
@@ -19,11 +21,10 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     };
     let options = BuildOptions {
         build_args: string_values(leaf, "build-arg"),
-        check: leaf.get_flag("check"),
         deps: leaf.get_flag("deps"),
         no_cache: leaf.get_flag("no-cache"),
+        output: requested_output(leaf),
         pull: leaf.get_flag("pull"),
-        push_registry: leaf.get_flag("push-registry"),
         services: string_values(leaf, "service"),
     };
     let mut project = load_project(&load)?;
@@ -53,11 +54,10 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     };
     for service in &built {
         println!(
-            "Built {} ({}) as {} in {}",
+            "Built {} ({}) as {} in local Docker",
             service.built.tags.join(", "),
-            service.built.platforms.join(", "),
+            service.built.platform,
             service.built.reference,
-            service.built.location,
         );
     }
     if !leaf.get_flag("push") {
@@ -88,6 +88,17 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::usage(failures.join("; ")))
+    }
+}
+
+/// Validation supersedes publication: a checked recipe produces no image.
+fn requested_output(leaf: &ArgMatches) -> Output {
+    if leaf.get_flag("check") {
+        Output::Validate
+    } else if leaf.get_flag("push-registry") {
+        Output::Registry
+    } else {
+        Output::Load
     }
 }
 

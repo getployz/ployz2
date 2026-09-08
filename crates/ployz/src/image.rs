@@ -478,7 +478,8 @@ impl PushSession {
         self.temporary = Some(temporary.clone());
         self.command = Some(
             Command::new("docker")
-                .args(tag_arguments(content, &temporary))
+                // Tag the content this attempt built, under the published reference.
+                .args(["tag", content.exact, &temporary])
                 .kill_on_drop(true)
                 .spawn()
                 .map_err(|error| PushError::Docker {
@@ -589,11 +590,6 @@ fn validate_push_reference(image: &str) -> Result<(), PushError> {
         return Err(PushError::DigestReference);
     }
     Ok(())
-}
-
-/// Tag the exact content under the reference the destination will publish.
-fn tag_arguments<'a>(content: ImageContent<'a>, temporary: &'a str) -> [&'a str; 3] {
-    ["tag", content.exact, temporary]
 }
 
 fn temporary_reference(port: u16, image: &str) -> String {
@@ -789,29 +785,6 @@ mod tests {
                 cleanup: Box::new(PushError::Cleanup("test cleanup".into())),
             }
             .is_cancellation()
-        );
-    }
-
-    #[test]
-    fn delivery_tags_the_exact_content_under_the_published_reference() {
-        let digest = format!("sha256:{}", "a".repeat(64));
-        let exact = format!("example.test/api@{digest}");
-        let temporary = temporary_reference(5000, "example.test/api:v1");
-        assert_eq!(
-            tag_arguments(
-                ImageContent::built("example.test/api:v1", &exact),
-                &temporary
-            ),
-            ["tag", exact.as_str(), "127.0.0.1:5000/example.test/api:v1"]
-        );
-        // Without a Build behind it, a reference delivers whatever it resolves to.
-        assert_eq!(
-            tag_arguments(ImageContent::tagged("example.test/api:v1"), &temporary),
-            [
-                "tag",
-                "example.test/api:v1",
-                "127.0.0.1:5000/example.test/api:v1"
-            ]
         );
     }
 

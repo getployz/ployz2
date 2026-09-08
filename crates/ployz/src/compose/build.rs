@@ -13,11 +13,11 @@ use super::{BuildSpec, ComposeError, ComposeProject, LoadOptions, build_inputs::
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BuildOptions {
     pub build_args: Vec<String>,
-    pub check: bool,
     pub deps: bool,
     pub no_cache: bool,
+    /// What this command does with the images it builds.
+    pub output: Output,
     pub pull: bool,
-    pub push_registry: bool,
     pub services: Vec<String>,
 }
 
@@ -91,15 +91,10 @@ pub enum BuildOutcome {
     Validated,
 }
 
-/// Compose build settings this runner refuses rather than silently dropping.
-const UNSUPPORTED: [(&str, &str); 6] = [
-    ("cache_from", "filesystem build cache import"),
-    ("cache_to", "filesystem build cache export"),
-    ("network", "host-specific build networking"),
-    ("isolation", "host-specific build isolation"),
-    ("privileged", "privileged builds"),
-    ("x-bake", "custom builder and exporter overrides"),
-];
+/// Build settings upstream translation drops on the way to BuildKit. Every
+/// other setting reaches BuildKit, which validates it and reports its own
+/// refusal. Ployz never silently discards a supplied setting.
+const DROPPED_BY_UPSTREAM: &[&str] = &["entitlements", "isolation", "privileged"];
 
 /// Freeze build sources, options, and provider values before invoking Docker.
 ///
@@ -121,40 +116,12 @@ pub fn capture_build(
             .build
             .as_mapping_mut()
             .ok_or_else(|| invalid_build("expected a build mapping"))?;
-        for (setting, meaning) in UNSUPPORTED {
-            if build.contains_key(Value::String(setting.into())) {
-                return Err(invalid_build(&format!(
-                    "service '{name}' sets build.{setting}; {meaning} is not supported"
-                )));
-            }
-        }
+        refuse_dropped_settings(&name, build)?;
         targets.push(ployz_build::Target {
             name: name.clone(),
-            platforms: build
-                .get(Value::String("platforms".into()))
-                .and_then(Value::as_sequence)
-                .map(|platforms| {
-                    platforms
-                        .iter()
-                        .map(|platform| {
-                            platform
-                                .as_str()
-                                .map(ToOwned::to_owned)
-                                .ok_or_else(|| invalid_build("invalid build platform"))
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?
-                .unwrap_or_default(),
+            platform: requested_platform(&name, build)?,
         });
-        // Explicit build tags replace the Service image upstream; keep both.
-        if let Some(tags) = build
-            .get_mut(Value::String("tags".into()))
-            .and_then(Value::as_sequence_mut)
-            && !tags.iter().any(|tag| tag.as_str() == Some(image.as_str()))
-        {
-            tags.push(Value::String(image));
-        }
+        retain_service_image_tag(image, build);
         if let Some(args) = build
             .get_mut(Value::String("args".into()))
             .and_then(Value::as_mapping_mut)
@@ -330,9 +297,6 @@ impl CapturedBuild {
     /// Fails if the runner cannot execute the build or the result cannot be
     /// bound to the content it produced.
     pub fn execute(&self, docker: Option<&Path>) -> Result<BuildOutcome, ComposeError> {
-        if self.plan.is_empty() {
-            return Ok(BuildOutcome::Built(Vec::new()));
-        }
         let outcome = ployz_build::execute(&ployz_build::Request {
             compose_file: &self.compose,
             working_dir: self.inputs.root(),
@@ -340,15 +304,19 @@ impl CapturedBuild {
             docker,
             targets: &self.targets,
             build_args: &self.options.build_args,
-            output: if self.options.check {
-                Output::Validate
-            } else if self.options.push_registry {
-                Output::Registry
-            } else {
-                Output::Load
-            },
+            output: self.options.output,
             no_cache: self.options.no_cache,
             pull: self.options.pull,
+        })
+        // BuildKit diagnoses its own failure; name the Builds it was running.
+        .map_err(|source| ComposeError::Build {
+            services: self
+                .plan
+                .iter()
+                .map(|service| service.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            source,
         })?;
         match outcome {
             ployz_build::Outcome::Validated => Ok(BuildOutcome::Validated),
@@ -396,6 +364,65 @@ pub fn execute_build(
         return Ok(BuildOutcome::Built(Vec::new()));
     }
     capture_build(plan, options, project)?.execute(load.docker.as_deref())
+}
+
+/// Refuse a setting Ployz cannot pass on, naming it rather than dropping it.
+fn refuse_dropped_settings(
+    service: &str,
+    build: &serde_norway::Mapping,
+) -> Result<(), ComposeError> {
+    for setting in DROPPED_BY_UPSTREAM {
+        if build.contains_key(Value::String((*setting).into())) {
+            return Err(invalid_build(&format!(
+                "service '{service}' sets build.{setting}, which Ployz Builds cannot pass to BuildKit"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The single platform this Service asks for, if it asks for one.
+///
+/// A Dockerfile Build produces one image for one platform, so several
+/// requested platforms are refused here, where the Service is named.
+fn requested_platform(
+    service: &str,
+    build: &serde_norway::Mapping,
+) -> Result<Option<String>, ComposeError> {
+    let Some(platforms) = build
+        .get(Value::String("platforms".into()))
+        .and_then(Value::as_sequence)
+    else {
+        return Ok(None);
+    };
+    match platforms.as_slice() {
+        [] => Ok(None),
+        [platform] => platform
+            .as_str()
+            .map(ToOwned::to_owned)
+            .map(Some)
+            .ok_or_else(|| {
+                invalid_build(&format!(
+                    "service '{service}' has an invalid build platform"
+                ))
+            }),
+        several => Err(invalid_build(&format!(
+            "service '{service}' requests {} build platforms; a Dockerfile Build produces one platform",
+            several.len()
+        ))),
+    }
+}
+
+/// Upstream translation uses explicit build tags alone; keep the Service image
+/// tagged too, so a Deploy still finds the image its Service names.
+fn retain_service_image_tag(image: String, build: &mut serde_norway::Mapping) {
+    if let Some(tags) = build
+        .get_mut(Value::String("tags".into()))
+        .and_then(Value::as_sequence_mut)
+        && !tags.iter().any(|tag| tag.as_str() == Some(image.as_str()))
+    {
+        tags.push(Value::String(image));
+    }
 }
 
 fn capture_context(
