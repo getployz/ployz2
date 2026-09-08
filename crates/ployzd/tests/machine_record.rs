@@ -848,9 +848,25 @@ fn data_directory_errors_render_paths_without_debug_quotes() {
     ] {
         let message = error.to_string();
         assert!(
-            message.ends_with(r"/var/lib/ployz data\n\u{1b}[2J"),
+            message.ends_with(r"/var/lib/ployz data\n\x1b[2J"),
             "{message}"
         );
         assert!(!message.contains('"'), "{message}");
+    }
+}
+
+#[test]
+fn data_directory_errors_preserve_non_utf8_bytes() {
+    use std::os::unix::ffi::OsStringExt;
+    for byte in [0xfe, 0xff] {
+        let mut bytes = b"/var/lib/ployz-".to_vec();
+        bytes.push(byte);
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes));
+        let error = StoreError::UnownedDataDirectory(path).to_string();
+        assert!(
+            error.ends_with(&format!(r"/var/lib/ployz-\x{byte:02x}")),
+            "{error}"
+        );
+        assert!(!error.contains('\u{fffd}'), "{error}");
     }
 }

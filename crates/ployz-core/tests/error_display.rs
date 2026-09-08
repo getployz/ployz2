@@ -16,7 +16,7 @@ fn selector_errors_list_plain_targets_and_ids() {
             .to_vec(),
     )
     .to_string();
-    assert!(missing.contains("east, west"), "{missing}");
+    assert!(missing.contains(r#""east", "west""#), "{missing}");
     let ids = [
         MachineId::parse("1".repeat(32)).unwrap(),
         MachineId::parse("2".repeat(32)).unwrap(),
@@ -225,4 +225,15 @@ fn unconstrained_names_and_health_failures_escape_controls() {
         assert!(message.contains(r"future\n\u{1b}[2J"), "{message}");
         assert!(!message.chars().any(char::is_control), "{message}");
     }
+}
+
+#[test]
+fn missing_selectors_preserve_argument_boundaries() {
+    let missing = MachineSelectorError::NotFound(
+        ["east, west", "north"]
+            .map(|name| MachineTarget::parse(name).unwrap())
+            .to_vec(),
+    )
+    .to_string();
+    assert!(missing.contains(r#""east, west", "north""#), "{missing}");
 }
