@@ -158,6 +158,7 @@ export const environmentDeploymentSecret = pgTable(
     encryptedFrozenDeployInput: jsonb("encrypted_frozen_deploy_input")
       .notNull()
       .$type<EncryptedSecretValue>(),
+    encryptedRuntimeOutcome: jsonb("encrypted_runtime_outcome").$type<EncryptedSecretValue>(),
   },
 );
 

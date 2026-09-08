@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
+import type { DeployOutcome, ExecutionError } from "@ployz/sdk";
+import { resolvedServiceSpecFixture, runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { getPloyzTable } from "#/electric/synced-tables.server";
 import { Inngest } from "inngest";
 import * as schema from "#/db/schema";
 import {
@@ -10,6 +13,7 @@ import {
 import {
   persistDeployApplyResult,
   persistSdkDeployPreview,
+  persistSdkDeployOutcome,
 } from "#/modules/deployments/runtime-repository.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { encodeFrozenDeployInput } from "#/modules/deployments/frozen-input.server";
@@ -126,10 +130,10 @@ describe("deployment runtime persistence", () => {
       insert into project (id, organization_id, name, slug)
       values ('${projectId}', '${organizationId}', 'Cloud', 'cloud');
       insert into environment (
-        id, project_id, organization_id, name, namespace
+        id, project_id, organization_id, name, namespace, intent
       ) values (
         '${environmentId}', '${projectId}', '${organizationId}',
-        'Production', 'production'
+        'Production', 'production', '{"version":1,"environmentSlug":"production","services":[],"variableGroups":[],"volumes":[]}'
       );
     `);
     await harness.db.insert(schema.environmentSavedStateSnapshot).values([
@@ -152,6 +156,41 @@ describe("deployment runtime persistence", () => {
         createdAt: new Date("2026-09-04T02:00:00.000Z"),
       },
     ]);
+  });
+
+  it("retains encrypted partial runtime evidence even after a terminal-state race", async () => {
+    await harness.db.insert(schema.environmentDeployment).values(deployment({
+      id: targetDeploymentId, savedStateSnapshotId: targetSavedId,
+      status: "failed", createdAt: new Date("2026-09-04T03:00:00.000Z"),
+    }));
+    const frozenInput = encryption.encrypt("frozen-input");
+    await harness.db.insert(schema.environmentDeploymentSecret).values({
+      environmentDeploymentId: targetDeploymentId, encryptedFrozenDeployInput: frozenInput,
+    });
+    const spec = resolvedServiceSpecFixture();
+    spec.container.environment = { PASSWORD: "never-publish-outcome" };
+    const machineId = runtimeWatchMachineFixture("machine-a", "A").id;
+    const operation = { type: "run_container" as const, machine_id: machineId, spec, skip_health_monitor: false };
+    const outcome: DeployOutcome<ExecutionError> = {
+      type: "failed", completed: [operation],
+      failed: { type: "operation", operation: { ...operation, machine_id: runtimeWatchMachineFixture("machine-b", "B").id },
+        error: { type: "machine", action: "StartContainer", error: { code: "internal", message: "never-publish-outcome", details: null } } },
+      unexecuted: [{ ...operation, machine_id: runtimeWatchMachineFixture("machine-c", "C").id }],
+    };
+    await harness.runEffect(persistSdkDeployOutcome({
+      environmentDeploymentId: targetDeploymentId, outcome: Redacted.make(outcome),
+    }).pipe(Effect.provideService(SecretEncryption, encryption)));
+    const [privateRow] = await harness.db.select().from(schema.environmentDeploymentSecret)
+      .where(eq(schema.environmentDeploymentSecret.environmentDeploymentId, targetDeploymentId));
+    expect(privateRow?.encryptedFrozenDeployInput).toEqual(frozenInput);
+    const encryptedOutcome = privateRow?.encryptedRuntimeOutcome;
+    if (!encryptedOutcome) throw new Error("Runtime evidence was not persisted");
+    expect(JSON.parse(encryption.decrypt(encryptedOutcome))).toEqual(outcome);
+    const [publicRow] = await harness.db.select().from(schema.environmentDeployment)
+      .where(eq(schema.environmentDeployment.id, targetDeploymentId));
+    expect(publicRow?.status).toBe("failed");
+    expect(JSON.stringify([privateRow, publicRow])).not.toContain("never-publish-outcome");
+    expect(getPloyzTable("environment_deployment_secret")).toBeNull();
   });
 
   it("persists preview and promotes a confirmed whole target to Applied", async () => {

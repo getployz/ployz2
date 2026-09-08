@@ -1,8 +1,7 @@
 import "@tanstack/react-start/server-only";
 
 import type { DeployIntent, PreparedDeploy } from "@ployz/sdk";
-import { isDeepStrictEqual } from "node:util";
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Redacted, Schema } from "effect";
 import type { EnvironmentDeploymentPreview } from "#/modules/deployments/tables";
 import { DeployImageNotPullableError } from "#/modules/deployments/deployment-errors";
 import { findUnpullableSdkDeployImages } from "#/modules/deployments/image-gate";
@@ -10,9 +9,9 @@ import {
   loadDeploymentContext,
   loadResolvedDeployEnv,
   persistSdkDeployPreview,
+  persistSdkDeployOutcome,
   type DeploymentContext,
 } from "#/modules/deployments/runtime-repository.server";
-import { UnsupportedDeploymentSourceError } from "#/modules/deployments/runtime-contract";
 import {
   compileSdkDeployIntent,
   projectRuntimeDeployPreview,
@@ -22,7 +21,7 @@ import {
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { strictParseOptions } from "#/modules/environment-design/schema";
 
-export type DeploymentRuntimeOutcome = typeof runtimeDeployOutcomeSchema.Type;
+export type DeploymentRuntimeOutcome = Effect.Success<ReturnType<typeof executeRuntimeIntent>>["outcome"];
 
 type SdkPreparedPreviewInput = {
   readonly project_name: PreparedDeploy["project_name"];
@@ -54,8 +53,7 @@ export class DeploymentRuntimeInvalid extends Data.TaggedError(
   readonly failureCode:
     | "deploy_image_not_pullable"
     | "sdk_preview_invalid"
-    | "sdk_outcome_invalid"
-    | "sdk_preview_changed";
+    | "sdk_outcome_invalid";
   readonly message: string;
   readonly cause?: unknown;
 }> {
@@ -91,7 +89,6 @@ function compileRuntimeIntent(context: DeploymentContext) {
         }),
       catch: (cause) => {
         if (
-          cause instanceof UnsupportedDeploymentSourceError ||
           cause instanceof DeployImageNotPullableError
         ) {
           return new DeploymentRuntimeInvalid({
@@ -102,7 +99,7 @@ function compileRuntimeIntent(context: DeploymentContext) {
         }
         return new DeploymentRuntimeInvalid({
           failureCode: "sdk_preview_invalid",
-          message: "The immutable deployment target could not be compiled.",
+          message: cause instanceof Error ? cause.message : "The immutable deployment target could not be compiled.",
           cause,
         });
       },
@@ -184,69 +181,51 @@ export const previewRuntimeIntent = Effect.fn(
     return { prepared, preview };
 });
 
-export const previewEnvironmentDeployment = Effect.fn(
-  "Deployments.previewEnvironmentDeployment",
-)(function* (context: DeploymentContext) {
-  const intent = yield* compileRuntimeIntent(context);
-  const { preview } = yield* previewRuntimeIntent(
-    context.organization.id,
-    intent,
-  );
-  yield* persistSdkDeployPreview({
-    environmentDeploymentId: context.deployment.id,
-    preview,
-  });
-  return preview satisfies EnvironmentDeploymentPreview;
-});
-
-export const confirmRuntimeIntent = Effect.fn(
-  "Deployments.confirmRuntimeIntent",
+export const executeRuntimeIntent = Effect.fn(
+  "Deployments.executeRuntimeIntent",
 )(function* (
   organizationId: string,
   intent: DeployIntent,
-  persisted: EnvironmentDeploymentPreview,
 ) {
   const { prepared, preview } = yield* previewRuntimeIntent(
     organizationId,
     intent,
   );
-  if (!isDeepStrictEqual(preview, persisted)) {
-    return yield* new DeploymentRuntimeInvalid({
-      failureCode: "sdk_preview_changed",
-      message: "The runtime deploy preview changed. Preview again.",
-    });
-  }
   const outcome = yield* prepared.confirm();
-  return yield* Schema.decodeUnknownEffect(runtimeDeployOutcomeSchema)(outcome, {
-    onExcessProperty: "ignore",
+  const { decoded, evidence } = yield* Effect.all({
+    decoded: Schema.decodeUnknownEffect(runtimeDeployOutcomeSchema)(outcome, {
+      onExcessProperty: "ignore",
+    }),
+    evidence: Schema.decodeUnknownEffect(Schema.Json)(outcome),
   }).pipe(
     Effect.mapError(
       (cause) =>
         new DeploymentRuntimeInvalid({
           failureCode: "sdk_outcome_invalid",
-          message: "SDK deploy outcome is invalid.",
+          message: "Runtime returned an invalid outcome; effects are unknown.",
           cause,
         }),
     ),
   );
+  const summary = decoded.type === "success"
+    ? { type: "success" as const, completed: decoded.completed.length }
+    : { type: "failed" as const, completed: decoded.completed.length,
+        unexecuted: decoded.unexecuted.length, reason: decoded.failed.error.type };
+  return { preview, outcome: summary, evidence: Redacted.make(evidence) };
 });
 
-export const confirmEnvironmentDeployment = Effect.fn(
-  "Deployments.confirmEnvironmentDeployment",
+export const executeEnvironmentDeployment = Effect.fn(
+  "Deployments.executeEnvironmentDeployment",
 )(function* (context: DeploymentContext) {
-  const persisted = yield* decodeSdkDeployPreview(
-    context.deployment.deployPreview ?? null,
-  );
   const intent = yield* compileRuntimeIntent(context);
-  return yield* confirmRuntimeIntent(
-    context.organization.id,
-    intent,
-    persisted,
-  );
+  const { preview, outcome, evidence } = yield* executeRuntimeIntent(context.organization.id, intent);
+  yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, outcome: evidence });
+  yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, preview });
+  return outcome;
 });
 
-export const confirmLatestEnvironmentDeployment = Effect.fn(
-  "Deployments.confirmLatestEnvironmentDeployment",
+export const executeLatestEnvironmentDeployment = Effect.fn(
+  "Deployments.executeLatestEnvironmentDeployment",
 )(function* (environmentDeploymentId: string) {
   const context = yield* loadDeploymentContext(environmentDeploymentId);
   if (!context) {
@@ -255,5 +234,5 @@ export const confirmLatestEnvironmentDeployment = Effect.fn(
       message: "Environment deployment was not found.",
     });
   }
-  return yield* confirmEnvironmentDeployment(context);
+  return yield* executeEnvironmentDeployment(context);
 });

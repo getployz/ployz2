@@ -43,7 +43,6 @@ import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deploym
 import {
   dispatchQueuedEnvironmentDeploymentServerFn,
   retryEnvironmentDeploymentServerFn,
-  confirmEnvironmentDeploymentServerFn,
 } from "#/modules/deployments/deployment.functions";
 import {
   deployEventForDeployment,
@@ -244,12 +243,11 @@ export function DeploymentRow({
   const [isOpen, setIsOpen] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
-  const [isConfirming, setIsConfirming] = useState(false);
   const router = useRouter();
   const { organizationSlug } = useParams({ strict: false });
   const outcome = STATUS_OUTCOME[deployment.status];
   const parsedPreview = deployment.deployPreview;
-  const deployProgress = parsedPreview
+  const deployProgress = parsedPreview && deployment.status === "applied"
     ? deployEventForDeployment(parsedPreview, deployment.status)
     : null;
   const hasDurableEvidence = Boolean(
@@ -321,30 +319,6 @@ export function DeploymentRow({
     }
   }
 
-  async function confirmDeploy() {
-    if (!organizationSlug || deployment.status !== "planning") return;
-    setIsConfirming(true);
-    try {
-      await confirmEnvironmentDeploymentServerFn({
-          data: {
-            organizationSlug,
-            projectSlug: deployment.projectSlug,
-            environmentSlug: deployment.environmentSlug,
-            environmentDeploymentId: deployment.id,
-          },
-        });
-      await router.invalidate();
-      toast.success("Deploy confirmed.");
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Could not confirm this deployment.",
-      );
-    } finally {
-      setIsConfirming(false);
-    }
-  }
 
   return (
     <>
@@ -372,7 +346,7 @@ export function DeploymentRow({
             {deployment.serviceCount}{" "}
             {deployment.serviceCount === 1 ? "service" : "services"}
           </p>
-          {deployment.status === "failed" && deployment.failureMessage ? (
+          {deployment.failureMessage ? (
             <p className="truncate text-sm text-destructive">
               {deployment.failureMessage}
             </p>
@@ -453,11 +427,11 @@ export function DeploymentRow({
           <Separator />
           <div className="flex flex-col gap-3 p-3">
             <Alert>
-            <AlertTitle>Deploy preview</AlertTitle>
+            <AlertTitle>Deployment plan</AlertTitle>
             <AlertDescription className="flex flex-col gap-2">
               <span>
                 {parsedPreview.operations.length === 0
-                  ? "No changes."
+                  ? "No operations were planned."
                   : `${parsedPreview.operations.length} ${
                       parsedPreview.operations.length === 1
                         ? "operation"
@@ -477,15 +451,6 @@ export function DeploymentRow({
           </Alert>
           {deployProgress ? (
             <DeployProgressStepper event={deployProgress} />
-          ) : null}
-          {organizationSlug && deployment.status === "planning" ? (
-            <Button
-              disabled={isConfirming}
-              onClick={() => void confirmDeploy()}
-            >
-              {isConfirming ? <Spinner data-icon="inline-start" /> : null}
-              Confirm deploy
-            </Button>
           ) : null}
         </div>
         </>

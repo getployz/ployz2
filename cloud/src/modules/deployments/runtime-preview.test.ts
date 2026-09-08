@@ -5,12 +5,9 @@ import type {
   MachineId,
   OperationRow,
 } from "@ployz/sdk";
-import { Effect, Exit } from "effect";
-import { UnsupportedDeploymentSourceError } from "#/modules/deployments/runtime-contract";
 import {
   compileSdkDeployIntent,
   parseSdkDeployPreview,
-  requireConfirmableSdkDeployPreview,
 } from "#/modules/deployments/runtime-preview";
 import {
   deployEventForDeployment,
@@ -109,6 +106,10 @@ describe("compileSdkDeployIntent", () => {
 
     expect(intent).toEqual({
       project_name: "production",
+      dependencies: {},
+      service_profiles: {},
+      requested_profiles: [],
+      compose_refusal: null,
       target: [
         {
           name: "api",
@@ -211,7 +212,7 @@ describe("compileSdkDeployIntent", () => {
         ],
         volumes: [],
       }),
-    ).toThrow(UnsupportedDeploymentSourceError);
+    ).toThrow("missing a pullable image");
   });
 });
 
@@ -242,26 +243,7 @@ describe("parseSdkDeployPreview", () => {
     ).toThrow(/excess|operations/);
   });
 
-  it("only confirms a planning row with a rust preview", () => {
-    expect(Exit.isSuccess(Effect.runSyncExit(
-      requireConfirmableSdkDeployPreview({
-        status: "planning",
-        preview: rustPreview,
-      }),
-    ))).toBe(true);
-    expect(Exit.isFailure(Effect.runSyncExit(
-      requireConfirmableSdkDeployPreview({
-        status: "queued",
-        preview: rustPreview,
-      }),
-    ))).toBe(true);
-    expect(Exit.isFailure(Effect.runSyncExit(
-      requireConfirmableSdkDeployPreview({
-        status: "planning",
-        preview: { version: 1, phases: [] },
-      }),
-    ))).toBe(true);
-  });
+
 });
 
 describe("stubPendingDeployProgress", () => {

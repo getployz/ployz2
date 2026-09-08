@@ -86,6 +86,7 @@ function config(input: {
       ]),
     ),
     mounts: [],
+    variableGroupAttachments: [],
   };
 }
 
