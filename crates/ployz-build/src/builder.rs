@@ -9,6 +9,9 @@ use std::{
 
 use crate::{BUILDKIT_IMAGE, BuildError, Docker, Streams, builder_name};
 
+/// Longest a command waits for another local build to release the builder.
+const QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 /// Exclusive use of the Ployz builder and its retained cache for one attempt.
 pub(crate) struct Builder<'a> {
     docker: &'a Docker<'a>,
@@ -62,8 +65,16 @@ impl<'a> Builder<'a> {
 
 impl Drop for Builder<'_> {
     /// Remove the container, keeping the cache volume it was built with.
+    ///
+    /// A removal that fails is reported rather than discarded: the image this
+    /// attempt built stays usable, and the next attempt replaces the container.
     fn drop(&mut self) {
-        let _ = remove(&self.docker.releasing(), &self.name);
+        if let Err(error) = remove(&self.docker.releasing(), &self.name) {
+            eprintln!(
+                "WARNING: build container '{}' was left behind: {error}. The next build replaces it.",
+                self.name
+            );
+        }
     }
 }
 
@@ -134,16 +145,23 @@ impl Lock {
             .map_err(|error| {
                 BuildError::Prerequisite(format!("open the build lock {}: {error}", path.display()))
             })?;
-        if flock(&file, FlockOperation::NonBlockingLockExclusive).is_err() {
-            eprintln!("Waiting for another local Ployz build to finish.");
-            flock(&file, FlockOperation::LockExclusive).map_err(|error| {
-                BuildError::Prerequisite(format!(
-                    "wait for another local Ployz build: {}",
-                    std::io::Error::from(error)
-                ))
-            })?;
+        if flock(&file, FlockOperation::NonBlockingLockExclusive).is_ok() {
+            return Ok(Self { _file: file });
         }
-        Ok(Self { _file: file })
+        // Poll rather than block: a peer that never releases the builder must
+        // not leave this command waiting forever.
+        eprintln!("Waiting for another local Ployz build to finish.");
+        let deadline = std::time::Instant::now() + QUEUE_TIMEOUT;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if flock(&file, FlockOperation::NonBlockingLockExclusive).is_ok() {
+                return Ok(Self { _file: file });
+            }
+        }
+        Err(BuildError::Prerequisite(format!(
+            "another local Ployz build has held the builder for {}s; retry once it finishes",
+            QUEUE_TIMEOUT.as_secs()
+        )))
     }
 }
 

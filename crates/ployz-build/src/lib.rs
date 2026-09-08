@@ -308,20 +308,23 @@ fn verify(
         })?;
     let image: ImageInspection = serde_json::from_str(&inspected)
         .map_err(|error| BuildError::Result(format!("read the completed image: {error}")))?;
-    // The containerd image store identifies an image by the manifest just
-    // built, so a different identity means different content was retained.
-    if image.id != digest {
+    // The descriptor names the content the store holds under this reference.
+    // Docker reports one only with the containerd image store; without it an
+    // image is identified by its configuration and cannot be bound to a build.
+    let Some(descriptor) = image.descriptor else {
         return Err(BuildError::Result(format!(
-            "the local image store holds {} for {reference} rather than the completed content, which Ployz Builds require Docker's containerd image store to retain",
-            image.id
+            "the local image store reports no content descriptor for {reference}; Ployz Builds require Docker's containerd image store"
+        )));
+    };
+    if descriptor.digest != digest {
+        return Err(BuildError::Result(format!(
+            "the local image store holds {} for {reference} rather than the completed content",
+            descriptor.digest
         )));
     }
     // Several platforms arrive as an index whatever asked for them, and one
     // Build produces one image. Refuse the content rather than the request.
-    if image
-        .descriptor
-        .is_some_and(|descriptor| descriptor.media_type.contains("index"))
-    {
+    if descriptor.media_type.contains("index") {
         return Err(BuildError::Result(format!(
             "{reference} contains several platforms; a Dockerfile Build produces one image for one platform"
         )));
@@ -369,8 +372,6 @@ struct TargetMetadata {
 
 #[derive(Deserialize)]
 struct ImageInspection {
-    #[serde(rename = "Id")]
-    id: String,
     #[serde(rename = "Os")]
     os: String,
     #[serde(rename = "Architecture")]
@@ -385,6 +386,7 @@ struct ImageInspection {
 struct Descriptor {
     #[serde(rename = "mediaType")]
     media_type: String,
+    digest: String,
 }
 
 /// When this attempt must be over, so no Docker command can outlast it.

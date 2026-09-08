@@ -525,7 +525,7 @@ case "$1 $2" in
   'image inspect')
     identity=$(cat "$root/store" 2>/dev/null || cat "$root/digest")
     media=$(cat "$root/media" 2>/dev/null || printf 'application/vnd.oci.image.manifest.v1+json')
-    printf '{{"Id":"%s","Os":"linux","Architecture":"amd64","Variant":null,"Descriptor":{{"mediaType":"%s"}}}}' "$identity" "$media"
+    printf '{{"Os":"linux","Architecture":"amd64","Variant":null,"Descriptor":{{"mediaType":"%s","digest":"%s"}}}}' "$media" "$identity"
     exit 0 ;;
   'buildx bake')
     previous=
