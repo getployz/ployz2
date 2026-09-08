@@ -128,9 +128,7 @@ pub enum ComposeError {
     Prerequisite(String),
     #[error("{0}")]
     Compose(String),
-    #[error(
-        "invalid normalized Compose project: {0}; correct the reported value or remove the unsupported setting"
-    )]
+    #[error("invalid normalized Compose project: {0}")]
     Invalid(String),
     #[error("{0}")]
     Io(String),
