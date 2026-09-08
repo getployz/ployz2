@@ -4,11 +4,11 @@
 
 use ployz::{
     connect::ConnectError,
-    failure::Failure,
+    failure::{Failure, partial_failures},
     image::PushError,
     operator::{LogError, LogFailure},
 };
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::{MachineFailure, MachineId, PartialResult, RpcError, RpcErrorCode};
 use serde_json::Value;
 
 fn rpc_error(code: RpcErrorCode) -> RpcError {
@@ -60,6 +60,28 @@ fn internal_errors_stringified_into_context_are_still_framed() {
         message: "web: widget exploded".into(),
         source: Some(LogError::from(tonic::Status::internal("widget exploded"))),
     }));
+}
+
+fn fan_out(code: RpcErrorCode) -> PartialResult<(), RpcError> {
+    PartialResult {
+        successes: Vec::new(),
+        failures: vec![MachineFailure {
+            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+            error: rpc_error(code),
+        }],
+        omissions: Vec::new(),
+    }
+}
+
+fn summary(result: &PartialResult<(), RpcError>) -> Failure {
+    partial_failures(result)
+        .into_failure(|details| format!("one or more Machines failed: {details}"))
+}
+
+#[test]
+fn internal_failures_inside_a_fan_out_are_framed_as_bugs() {
+    assert_framed_as_bug(&summary(&fan_out(RpcErrorCode::Internal)));
+    assert_not_framed_as_bug(&summary(&fan_out(RpcErrorCode::NotFound)));
 }
 
 #[test]

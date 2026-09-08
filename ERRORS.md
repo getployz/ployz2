@@ -111,15 +111,18 @@ Every failure is one of these. The kind dictates parts 2–3.
 
 Two rules fall out of the table:
 
-- **Partial failures must enumerate.** `partial_failure_details` already lists
-  `{machine}: {error}`. A partial that collapses to one line ("Global catch-up
-  incomplete") without naming the machines/globals forces the user to guess the
-  rerun scope.
+- **Partial failures must enumerate.** `partial_failures` collects
+  `{machine}: {error}` and renders only through `Failures::into_failure`, so the
+  codes survive the aggregate. A partial that collapses to one line ("Global
+  catch-up incomplete") without naming the machines/globals forces the user to
+  guess the rerun scope.
 - **Internal errors must be distinguishable from user errors.** An
   `RpcError::Internal` that prints a bare message ("boom") reads like the user
   did something wrong. `Failure` frames it once ("internal error: …" + the
   report step) and `RpcError` serialization adds `details.report` once, so no
-  leaf message carries either.
+  leaf message carries either. Both are decided from the code: `Failure` records
+  the classification where the typed error arrives, and `report` is the wire
+  encoder's key, so neither survives rendering as a guess a producer can spoil.
 
 ## Destructive operations
 

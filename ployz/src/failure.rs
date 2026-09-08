@@ -25,6 +25,10 @@ use crate::{
 #[derive(Debug)]
 pub struct Failure {
     inner: Inner,
+    /// Whether this failure is a Ployz bug, decided while the typed error is
+    /// still in hand. `Display` only prints the decision, so rendering a failure
+    /// into a wider message cannot lose it.
+    bug: bool,
 }
 
 #[derive(Debug)]
@@ -72,7 +76,19 @@ impl Error for Usage {
 impl Failure {
     fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
+            bug: is_internal_rpc(&error),
             inner: Inner::Command(Box::new(error)),
+        }
+    }
+
+    fn text(
+        message: Cow<'static, str>,
+        cause: Option<Box<dyn Error + Send + Sync>>,
+        bug: bool,
+    ) -> Self {
+        Self {
+            inner: Inner::Command(Box::new(Usage { message, cause })),
+            bug,
         }
     }
 
@@ -80,48 +96,82 @@ impl Failure {
     pub fn exit(code: u8) -> Self {
         Self {
             inner: Inner::Exit(code),
+            bug: false,
         }
     }
 
+    /// Product text the CLI wrote itself. Text that renders a typed error
+    /// belongs in `context` or `Failures`, which keep the code.
     pub fn usage(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::command(Usage {
-            message: message.into(),
-            cause: None,
-        })
+        Self::text(message.into(), None, false)
     }
 
-    /// Product text that already names `cause`. `cause` stays as a typed source,
-    /// so an internal error keeps its bug framing after being stringified into
-    /// `message`; `usage` alone would print the bug as if the user caused it.
+    /// Product text that already names `cause`. The classification comes from
+    /// `cause`, so stringifying it into `message` cannot turn a bug into what
+    /// looks like a user error.
     pub fn context(
         message: impl Into<Cow<'static, str>>,
         cause: impl Error + Send + Sync + 'static,
     ) -> Self {
-        Self::command(Usage {
-            message: message.into(),
-            cause: Some(Box::new(cause)),
-        })
+        let bug = is_internal_rpc(&cause);
+        Self::text(message.into(), Some(Box::new(cause)), bug)
     }
 
     /// One product line for a follow-on failure. `terminate` prints it once.
-    pub fn warned(context: impl fmt::Display, cause: impl fmt::Display) -> Self {
-        Self::usage(format!("WARNING: {context}: {cause}."))
+    pub fn warned(context: impl fmt::Display, cause: impl Error + Send + Sync + 'static) -> Self {
+        Self::context(format!("WARNING: {context}: {cause}."), cause)
     }
 }
 
-pub(crate) fn partial_failure_details<T>(result: &PartialResult<T, RpcError>) -> String {
-    result
-        .failures
-        .iter()
-        .map(|failure| format!("{}: {}", failure.machine_id, failure.error.message))
-        .chain(
-            result
-                .omissions
-                .iter()
-                .map(|machine_id| format!("{machine_id}: no terminal response")),
-        )
-        .collect::<Vec<_>>()
-        .join("; ")
+/// The failures behind a fan-out that did not finish everywhere.
+///
+/// Enumerating and framing happen together: entries turn into text only inside
+/// [`Failures::into_failure`], which still holds every `RpcError` code, so an
+/// aggregate cannot reach the user having forgotten that one of its parts was a
+/// bug. There is deliberately no `Display`.
+#[derive(Debug, Default)]
+pub struct Failures {
+    entries: Vec<String>,
+    bug: bool,
+}
+
+impl Failures {
+    /// Record what `scope` — a Machine, a Volume — reported.
+    pub fn record(&mut self, scope: impl fmt::Display, error: &RpcError) {
+        self.bug |= error.code == RpcErrorCode::Internal;
+        self.entries.push(format!("{scope}: {}", error.message));
+    }
+
+    /// Record a failure with no `RpcError` behind it: a target that never
+    /// answered, a reason the CLI knows locally.
+    pub fn note(&mut self, scope: impl fmt::Display, reason: impl fmt::Display) {
+        self.entries.push(format!("{scope}: {reason}"));
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Product text: `sentence` wraps the enumerated failures, framed as a bug
+    /// when any of them was one.
+    #[must_use]
+    pub fn into_failure(self, sentence: impl FnOnce(&str) -> String) -> Failure {
+        Failure::text(sentence(&self.entries.join("; ")).into(), None, self.bug)
+    }
+}
+
+/// Every failure and unanswered target in a fan-out result.
+#[must_use]
+pub fn partial_failures<T>(result: &PartialResult<T, RpcError>) -> Failures {
+    let mut failures = Failures::default();
+    for failure in &result.failures {
+        failures.record(failure.machine_id, &failure.error);
+    }
+    for machine_id in &result.omissions {
+        failures.note(machine_id, "no terminal response");
+    }
+    failures
 }
 
 pub(crate) fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
@@ -145,7 +195,7 @@ pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            Inner::Command(error) if is_internal_rpc(error.as_ref()) => {
+            Inner::Command(error) if self.bug => {
                 write!(f, "internal error: {error}\n{}", RpcError::REPORT_HINT)
             }
             Inner::Command(error) => error.fmt(f),
@@ -169,6 +219,7 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(Failure {
             inner: Inner::Exit(code),
+            ..
         }) => ExitCode::from(code),
         Err(error) => {
             eprintln!("{error}");
@@ -393,11 +444,18 @@ mod tests {
 
     #[test]
     fn warned_follow_on_is_one_line_and_fails() {
-        let cause = "inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out";
-        let add = Failure::warned("hosted DNS refresh failed after adding the Machine", cause);
+        let cause = RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out".into(),
+            details: Value::Null,
+        };
+        let add = Failure::warned(
+            "hosted DNS refresh failed after adding the Machine",
+            cause.clone(),
+        );
         let remove = Failure::warned(
             "hosted DNS refresh failed after removing the Machine",
-            cause,
+            cause.clone(),
         );
         assert_eq!(
             add.to_string(),
@@ -407,7 +465,7 @@ mod tests {
             remove.to_string(),
             "WARNING: hosted DNS refresh failed after removing the Machine: inspect Ingress Proxy Machine 905c7d04: Machine RPC returned: target Machine RPC timed out."
         );
-        assert_eq!(add.to_string().matches(cause).count(), 1);
+        assert_eq!(add.to_string().matches(&cause.message).count(), 1);
         assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
     }
 

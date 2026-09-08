@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use thiserror::Error;
 use ts_rs::TS;
 
@@ -38,9 +38,11 @@ impl RpcError {
     pub const REPORT_HINT: &'static str = "This is a Ployz bug. Report it at https://github.com/getployz/ployz2/issues and include the output of `ployz version`.";
 
     /// The bug-report hint an `Internal` error carries in `details.report`.
+    /// Derived from `code`, never read back from `details`: a value decoded
+    /// under the reserved key cannot pass itself off as the report path.
     #[must_use]
-    pub fn report_hint(&self) -> Option<&str> {
-        self.details.get(Self::REPORT_KEY)?.as_str()
+    pub fn report_hint(&self) -> Option<&'static str> {
+        (self.code == RpcErrorCode::Internal).then_some(Self::REPORT_HINT)
     }
 }
 
@@ -56,19 +58,27 @@ impl Serialize for RpcError {
             details: Cow<'a, Value>,
         }
 
-        let hint_missing = self.code == RpcErrorCode::Internal && self.report_hint().is_none();
-        let details = if hint_missing {
-            let mut fields = self.details.as_object().cloned().unwrap_or_default();
-            // A keyed hint needs an object. Producers emit null or an object; any other
-            // shape reached us from a foreign encoder, so it moves under `details`
-            // rather than costing the consumer its report path.
-            if !self.details.is_null() && !self.details.is_object() {
-                fields.insert("details".into(), self.details.clone());
+        let details = match self.report_hint() {
+            None => Cow::Borrowed(&self.details),
+            Some(hint) => {
+                let mut fields = Map::new();
+                fields.insert(Self::REPORT_KEY.to_owned(), hint.into());
+                // `report` belongs to this encoder, so the hint always wins. Details
+                // that cannot sit beside it — a scalar, an array, or an object
+                // claiming the key for something else — are carried one level down
+                // instead of being dropped or left to shadow the report path.
+                let carried = self.details.as_object().filter(|fields| {
+                    fields
+                        .get(Self::REPORT_KEY)
+                        .is_none_or(|value| value.as_str() == Some(hint))
+                });
+                if let Some(carried) = carried {
+                    fields.extend(carried.clone());
+                } else if !self.details.is_null() {
+                    fields.insert("details".to_owned(), self.details.clone());
+                }
+                Cow::Owned(Value::Object(fields))
             }
-            fields.insert(Self::REPORT_KEY.into(), Self::REPORT_HINT.into());
-            Cow::Owned(Value::Object(fields))
-        } else {
-            Cow::Borrowed(&self.details)
         };
         Wire {
             code: &self.code,
@@ -123,6 +133,23 @@ mod rpc_error_wire {
         assert!(
             wire.pointer("/details/report")
                 .is_some_and(Value::is_string)
+        );
+    }
+
+    #[test]
+    fn a_conflicting_report_value_never_shadows_the_hint() {
+        let wire = serde_json::to_value(error(
+            RpcErrorCode::Internal,
+            json!({ "report": "retry later", "reason": "start_failed" }),
+        ))
+        .unwrap();
+        assert_eq!(
+            wire.pointer("/details/report").and_then(Value::as_str),
+            Some(RpcError::REPORT_HINT)
+        );
+        assert_eq!(
+            wire.pointer("/details/details/report"),
+            Some(&json!("retry later"))
         );
     }
 
