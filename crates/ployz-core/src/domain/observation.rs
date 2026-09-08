@@ -48,13 +48,19 @@ impl fmt::Display for ContainerRuntimeObservation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Created => f.write_str("created"),
-            Self::Running { health } => write!(f, "running (health: {})", health.as_str()),
+            Self::Running { health } => {
+                write!(f, "running (health: {})", health.as_str().escape_debug())
+            }
             Self::Paused => f.write_str("paused"),
             Self::Restarting => f.write_str("restarting"),
             Self::Exited { code } => write!(f, "exited with code {code}"),
             Self::Removing => f.write_str("removing"),
             Self::Dead => f.write_str("dead"),
-            Self::Unknown { raw } => write!(f, "unrecognized runtime state: {raw}"),
+            Self::Unknown { raw } => write!(
+                f,
+                "unrecognized runtime state: {}",
+                raw.to_string().escape_debug()
+            ),
         }
     }
 }

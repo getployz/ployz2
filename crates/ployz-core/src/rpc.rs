@@ -1,6 +1,7 @@
 use crate::StorageCapacity;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt,
     net::IpAddr,
 };
 use ts_rs::TS;
@@ -939,6 +940,12 @@ crate::value::open_string_enum!(RpcErrorCode, Unknown {
     Internal => "internal",
     Unauthenticated => "unauthenticated",
 });
+
+impl fmt::Display for RpcErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_str().escape_debug().fmt(f)
+    }
+}
 
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
 #[error("{message}")]

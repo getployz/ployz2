@@ -838,7 +838,7 @@ fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
 
 #[test]
 fn data_directory_errors_render_paths_without_debug_quotes() {
-    let path = std::path::PathBuf::from("/var/lib/ployz data");
+    let path = std::path::PathBuf::from("/var/lib/ployz data\n\u{1b}[2J");
     for error in [
         StoreError::AlreadyRunning(path.clone()),
         StoreError::UnsafeDataDirectory(path.clone()),
@@ -847,7 +847,10 @@ fn data_directory_errors_render_paths_without_debug_quotes() {
         StoreError::ResetPreparationLost(path),
     ] {
         let message = error.to_string();
-        assert!(message.ends_with("/var/lib/ployz data"), "{message}");
+        assert!(
+            message.ends_with(r"/var/lib/ployz data\n\u{1b}[2J"),
+            "{message}"
+        );
         assert!(!message.contains('"'), "{message}");
     }
 }

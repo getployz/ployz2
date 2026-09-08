@@ -389,9 +389,9 @@ pub enum MachineSelectorError {
     NoTargets,
     #[error("no Machines are visible to this entry Machine")]
     NoVisibleMachines,
-    #[error("Machine selectors were not found: {}", .0.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]
+    #[error("Machine selectors were not found: {}", .0.iter().map(|target| target.as_str().escape_debug().to_string()).collect::<Vec<_>>().join(", "))]
     NotFound(Vec<MachineTarget>),
-    #[error("Machine selector {selector} is ambiguous across IDs {}", .matches.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]
+    #[error("Machine selector {} is ambiguous across IDs {}", .selector.as_str().escape_debug(), .matches.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]
     Ambiguous {
         selector: MachineTarget,
         matches: Vec<MachineId>,

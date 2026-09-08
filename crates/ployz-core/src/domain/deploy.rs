@@ -761,7 +761,7 @@ impl Display for HookFailure {
             Self::Exit { code } => return write!(f, "exited with code {code}"),
         };
         if let Some(error) = stop_error {
-            write!(f, "; stop also failed: {error}")?;
+            write!(f, "; stop also failed: {}", error.message.escape_debug())?;
         }
         Ok(())
     }

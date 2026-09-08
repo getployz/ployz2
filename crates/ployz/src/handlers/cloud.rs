@@ -195,13 +195,13 @@ async fn enroll_founder(
         (InitializeMode::New, phase) => {
             return Err(Error::usage(format!(
                 "new founding claim requires an uninitialized Machine, but the local phase is {}",
-                phase.as_str()
+                phase.as_str().escape_debug()
             )));
         }
         (InitializeMode::Resume, phase) => {
             return Err(Error::usage(format!(
                 "matching founding Machine cannot resume from local phase {}",
-                phase.as_str()
+                phase.as_str().escape_debug()
             )));
         }
     };
@@ -429,7 +429,7 @@ async fn wait_phase(
                 .await?;
             if details.phase != phase {
                 return Err(ConnectError::Attempt(
-                    format!("Machine phase is {}", details.phase.as_str()).into(),
+                    format!("Machine phase is {}", details.phase.as_str().escape_debug()).into(),
                 ));
             }
             Ok(client)

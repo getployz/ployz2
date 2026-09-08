@@ -152,7 +152,7 @@ fn wire_kind_errors_use_plain_names() {
 fn unknown_runtime_failure_retains_observed_evidence() {
     let failure = HealthFailure::Runtime {
         observation: ContainerRuntimeObservation::Unknown {
-            raw: json!({"state": "future-state", "reason": "waiting"}),
+            raw: json!({"state": "future-state\u{009b}[2J", "reason": "waiting\u{007f}"}),
         },
     }
     .to_string();
@@ -160,6 +160,7 @@ fn unknown_runtime_failure_retains_observed_evidence() {
         failure.contains("future-state") && failure.contains("waiting"),
         "{failure}"
     );
+    assert!(!failure.chars().any(char::is_control), "{failure}");
     assert!(
         !failure.contains("Unknown {") && !failure.contains("Object {"),
         "{failure}"
@@ -180,4 +181,48 @@ fn unknown_wire_kinds_escape_terminal_controls() {
         .to_string();
     assert!(error.contains(r"future\n\u{1b}[2J"), "{error}");
     assert!(!error.chars().any(char::is_control), "{error}");
+}
+
+#[test]
+fn rpc_error_codes_escape_unknown_wire_values() {
+    let code: RpcErrorCode = serde_json::from_value(json!("future\n\u{1b}[2J")).unwrap();
+    assert_eq!(code.to_string(), r"future\n\u{1b}[2J");
+    assert_eq!(RpcErrorCode::Unavailable.to_string(), "unavailable");
+}
+
+#[test]
+fn unconstrained_names_and_health_failures_escape_controls() {
+    let raw = "future\n\u{1b}[2J";
+    let target = MachineTarget::parse(raw).unwrap();
+    let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+    for message in [
+        MachineSelectorError::NotFound(vec![target.clone()]).to_string(),
+        MachineSelectorError::Ambiguous {
+            selector: target,
+            matches: vec![machine_id],
+        }
+        .to_string(),
+        DockerVolumeId {
+            machine_id,
+            name: DockerVolumeName::parse(raw).unwrap(),
+        }
+        .to_string(),
+        HealthFailure::Runtime {
+            observation: ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unrecognized(raw.into()),
+            },
+        }
+        .to_string(),
+        HookFailure::TimedOut {
+            stop_error: Some(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: raw.into(),
+                details: json!(null),
+            }),
+        }
+        .to_string(),
+    ] {
+        assert!(message.contains(r"future\n\u{1b}[2J"), "{message}");
+        assert!(!message.chars().any(char::is_control), "{message}");
+    }
 }

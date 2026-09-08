@@ -417,7 +417,12 @@ pub struct DockerVolumeId {
 
 impl fmt::Display for DockerVolumeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} on Machine {}", self.name, self.machine_id)
+        write!(
+            f,
+            "{} on Machine {}",
+            self.name.as_str().escape_debug(),
+            self.machine_id
+        )
     }
 }
 

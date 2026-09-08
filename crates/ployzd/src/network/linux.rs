@@ -486,7 +486,7 @@ fn docker_network_conflict(
     let options = |values: &HashMap<String, String>| {
         let mut pairs = values
             .iter()
-            .map(|(key, value)| format!("{key}={value}"))
+            .map(|(key, value)| format!("{}={}", key.escape_debug(), value.escape_debug()))
             .collect::<Vec<_>>();
         pairs.sort();
         pairs.join(", ")
@@ -501,15 +501,22 @@ fn docker_network_conflict(
                 .map(|config| {
                     format!(
                         "subnet={}, gateway={}",
-                        config.subnet.as_deref().unwrap_or("unknown"),
-                        config.gateway.as_deref().unwrap_or("unknown")
+                        config.subnet.as_deref().unwrap_or("unknown").escape_debug(),
+                        config
+                            .gateway
+                            .as_deref()
+                            .unwrap_or("unknown")
+                            .escape_debug()
                     )
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
         });
     let containers = network.containers.as_ref().map(|containers| {
-        let mut ids = containers.keys().map(String::as_str).collect::<Vec<_>>();
+        let mut ids = containers
+            .keys()
+            .map(|id| id.escape_debug().to_string())
+            .collect::<Vec<_>>();
         ids.sort_unstable();
         ids.join(", ")
     });
@@ -521,10 +528,14 @@ fn docker_network_conflict(
         ),
         observed: format!(
             "id={}, name={}, driver={}, scope={}, labels={}, IPAM={}, options={}, containers={}",
-            network.id.as_deref().unwrap_or("unknown"),
-            network.name.as_deref().unwrap_or("unknown"),
-            network.driver.as_deref().unwrap_or("unknown"),
-            network.scope.as_deref().unwrap_or("unknown"),
+            network.id.as_deref().unwrap_or("unknown").escape_debug(),
+            network.name.as_deref().unwrap_or("unknown").escape_debug(),
+            network
+                .driver
+                .as_deref()
+                .unwrap_or("unknown")
+                .escape_debug(),
+            network.scope.as_deref().unwrap_or("unknown").escape_debug(),
             network
                 .labels
                 .as_ref()
@@ -615,6 +626,18 @@ mod tests {
     fn network_conflict_names_observed_values_without_debug_wrappers() {
         let mut network = stale_network("ployz", Some(""), true);
         network.options = Some(required_docker_network_options(1400));
+        network
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert("key\n".into(), "value\u{1b}[2J".into());
+        network
+            .options
+            .as_mut()
+            .unwrap()
+            .insert("option\n".into(), "setting\u{1b}[2J".into());
+        network.driver = Some("bridge\u{1b}[2J".into());
+
         let message = docker_network_conflict(
             &network,
             "10.0.0.0/24",
@@ -623,12 +646,16 @@ mod tests {
             "containers are attached",
         )
         .to_string();
+        assert!(!message.chars().any(char::is_control), "{message}");
         for detail in [
             "name=ployz",
             "id=unknown",
             "7074faa8a368",
             "mtu=1400",
             "mtu=1420",
+            r"key\n=value\u{1b}[2J",
+            r"option\n=setting\u{1b}[2J",
+            r"driver=bridge\u{1b}[2J",
         ] {
             assert!(message.contains(detail), "{message}");
         }

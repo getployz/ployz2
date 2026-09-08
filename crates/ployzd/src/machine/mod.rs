@@ -851,15 +851,15 @@ pub enum StoreError {
     InvalidNetwork(String),
     #[error(transparent)]
     MachineUpdate(#[from] MachineUpdateError),
-    #[error("another daemon already owns data directory {}", .0.display())]
+    #[error("another daemon already owns data directory {}", .0.as_os_str().to_string_lossy().escape_debug())]
     AlreadyRunning(PathBuf),
-    #[error("refusing to clear broad data directory {}", .0.display())]
+    #[error("refusing to clear broad data directory {}", .0.as_os_str().to_string_lossy().escape_debug())]
     UnsafeDataDirectory(PathBuf),
-    #[error("refusing to claim nonempty data directory {}", .0.display())]
+    #[error("refusing to claim nonempty data directory {}", .0.as_os_str().to_string_lossy().escape_debug())]
     UnownedDataDirectory(PathBuf),
-    #[error("local Machine record changed before clearing data directory {}", .0.display())]
+    #[error("local Machine record changed before clearing data directory {}", .0.as_os_str().to_string_lossy().escape_debug())]
     OwnershipLost(PathBuf),
-    #[error("local Machine record changed before prepared reset was committed in {}", .0.display())]
+    #[error("local Machine record changed before prepared reset was committed in {}", .0.as_os_str().to_string_lossy().escape_debug())]
     ResetPreparationLost(PathBuf),
 }
 
