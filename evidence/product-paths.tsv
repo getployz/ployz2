@@ -80,3 +80,5 @@ credential-setting-restore	crates/ployz-core/tests/environment_intent.rs::creden
 variable-group-attachment-review	crates/ployz-core/tests/environment_changes.rs::variable_group_attachment_changes_have_one_restorable_authored_owner	-	-	-	-
 cloud-authored-setting-restore	cloud/src/modules/environment-design/working-setting-restore-action.test.ts	-	-	-	-
 cloud-node-introduction-history	cloud/src/modules/environment-design/working-document-restore.server.postgres.test.ts	-	-	-	-
+cloud-admitted-runtime-outcome	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-	-
+cloud-current-sdk-outcome	crates/ployz-core/tests/runtime_outcome.rs::current_outcome_confirms_only_services_with_all_operations_completed	cloud/src/modules/deployments/runtime-persistence.server.postgres.test.ts	-	-	-

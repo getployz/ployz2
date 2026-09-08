@@ -29,3 +29,6 @@ export function reusePublication(input: { policy: 'always_create' | 'reuse_lates
 export function lowerDeployment(value: { projectName: string; snapshots: readonly { config: ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string>; healthcheckPort?: number }[]; volumes?: readonly { volumeResourceId: string }[] }): import('./generated/payloads').DeployIntent;
 
 export function redactEnvironmentIntent(value: import('./generated/payloads').SavedEnvironmentIntent): import('./generated/payloads').SavedEnvironmentIntent;
+
+export function parseRuntimePreview(value: unknown): import('./generated/payloads').DeployPreview;
+export function projectRuntimeOutcome(preview: unknown, value: unknown): import('./generated/payloads').RuntimeOutcomeProjection;

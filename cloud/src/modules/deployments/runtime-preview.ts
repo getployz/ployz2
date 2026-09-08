@@ -1,10 +1,7 @@
 import type { DeployIntent } from "@ployz/sdk";
-import { lowerDeployment } from "@ployz/sdk/config";
+import { lowerDeployment, parseRuntimePreview } from "@ployz/sdk/config";
 import { Schema } from "effect";
-import type { JsonValue } from "#/db/tables";
 import type { EnvironmentDeploymentPreview } from "#/modules/deployments/tables";
-import { projectJsonValue } from "#/lib/json";
-import { strictParseOptions } from "#/modules/environment-design/schema";
 import {
   type EnvironmentDeploySnapshot,
   type EnvironmentDeployVolume,
@@ -25,71 +22,7 @@ export const runtimeDeployPreviewSchema = Schema.Struct({
   preserved_volumes: Schema.mutable(Schema.Array(Schema.Json)),
 });
 
-export const runtimeDeployOutcomeSchema = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("success"), completed: Schema.Array(Schema.Unknown) }),
-  Schema.Struct({
-    type: Schema.Literal("failed"),
-    completed: Schema.Array(Schema.Unknown),
-    failed: Schema.Struct({ error: Schema.Struct({ type: Schema.Literals([
-      "machine", "health", "dependency_health", "hook", "cancelled",
-    ]) }) }),
-    unexecuted: Schema.Array(Schema.Unknown),
-  }),
-]);
-
 export type SdkDeployPreview = EnvironmentDeploymentPreview;
-
-function mutableJsonArray(values: readonly Schema.Json[]): JsonValue[] | null {
-  const projected = values.map(projectJsonValue);
-  if (projected.some((value) => value === undefined)) {
-    return null;
-  }
-  // SAFETY: the guard above proves every projected item is a JsonValue.
-  return projected as JsonValue[];
-}
-
-export function projectRuntimeDeployPreview(
-  decoded: typeof runtimeDeployPreviewSchema.Type,
-): SdkDeployPreview | null {
-  const storage = decoded.storage === undefined
-    ? undefined
-    : mutableJsonArray(decoded.storage);
-  const operations = mutableJsonArray(decoded.operations);
-  const warnings = mutableJsonArray(decoded.warnings);
-  const wouldRemove = mutableJsonArray(decoded.would_remove);
-  const volumesToCreate =
-    decoded.volumes_to_create === undefined
-      ? undefined
-      : mutableJsonArray(decoded.volumes_to_create);
-  const preservedVolumes = mutableJsonArray(decoded.preserved_volumes);
-  if (
-    storage === null ||
-    operations === null ||
-    warnings === null ||
-    wouldRemove === null ||
-    volumesToCreate === null ||
-    preservedVolumes === null
-  ) {
-    return null;
-  }
-  const preview: SdkDeployPreview = {
-    project_name: decoded.project_name,
-    operations,
-    warnings,
-    would_remove: wouldRemove,
-    preserved_volumes: preservedVolumes,
-  };
-  if (storage !== undefined) {
-    preview.storage = storage;
-  }
-  if (decoded.prune_refusal !== undefined) {
-    preview.prune_refusal = decoded.prune_refusal;
-  }
-  if (volumesToCreate !== undefined) {
-    preview.volumes_to_create = volumesToCreate;
-  }
-  return preview;
-}
 
 export function compileSdkDeployIntent(input: {
   projectName: string;
@@ -100,14 +33,5 @@ export function compileSdkDeployIntent(input: {
 }
 
 export function parseSdkDeployPreview<T>(value: T): SdkDeployPreview {
-  const preview = projectRuntimeDeployPreview(
-    Schema.decodeUnknownSync(runtimeDeployPreviewSchema)(
-      value,
-      strictParseOptions,
-    ),
-  );
-  if (preview === null) {
-    throw new Error("SDK deploy preview contains non-JSON data.");
-  }
-  return preview;
+  return parseRuntimePreview(value);
 }

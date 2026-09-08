@@ -538,6 +538,36 @@ export type RpcErrorCode = "invalid_argument" | "not_found" | "ambiguous" | "uns
 
 export type RttStatistics = { median_ns: number, population_stddev_ns: number, };
 
+export type RuntimeFailureKind = "machine" | "health" | "dependency_health" | "hook" | "cancelled";
+
+export type RuntimeOutcomeProjection = {
+/**
+ * Sanitized whole-attempt counts and disposition.
+ */
+summary: RuntimeOutcomeSummary,
+/**
+ * Services whose every planned operation completed, ordered by name.
+ */
+confirmedServices: Array<ServiceName>, };
+
+export type RuntimeOutcomeSummary = { "type": "success",
+/**
+ * Number of completed operations.
+ */
+completed: number, } | { "type": "failed",
+/**
+ * Number of completed operations.
+ */
+completed: number,
+/**
+ * Number of operations never attempted, excluding the failed operation.
+ */
+unexecuted: number,
+/**
+ * The failed operation's sanitized failure kind.
+ */
+reason: RuntimeFailureKind, };
+
 export type RuntimeWatchIncompleteIds = { machines: Array<MachineId>, containers: Array<ContainerId>, volumes: Array<DockerVolumeId>, certificates: Array<IngressHost>, };
 
 export type RuntimeWatchView = { services: Array<ServiceObservation>, machines: Array<MachineObservation>, containers: Array<ContainerObservation>, volumes: Array<DockerVolume>, certificates: Array<CertificateObservation>,

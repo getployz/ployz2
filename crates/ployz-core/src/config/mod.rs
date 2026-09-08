@@ -8,6 +8,7 @@ mod environment_restore;
 mod lowering;
 mod publication;
 mod resource_changes;
+mod runtime_outcome;
 mod service;
 mod service_changes;
 mod validation;
@@ -21,6 +22,7 @@ pub use environment_restore::*;
 pub use lowering::*;
 pub use publication::*;
 pub use resource_changes::*;
+pub use runtime_outcome::*;
 pub use service::*;
 pub use service_changes::*;
 pub use validation::*;
@@ -29,6 +31,13 @@ pub use variables::*;
 #[derive(serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum ConfigRequest {
+    ParseRuntimePreview {
+        value: serde_json::Value,
+    },
+    ProjectRuntimeOutcome {
+        preview: serde_json::Value,
+        value: serde_json::Value,
+    },
     RedactEnvironment {
         value: serde_json::Value,
     },
@@ -130,6 +139,12 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value, Con
     let input = serde_json::from_value(input)
         .map_err(|_| ConfigError::at("request", "Invalid configuration request"))?;
     Ok(match input {
+        ConfigRequest::ParseRuntimePreview { value } => {
+            serde_json::json!(parse_runtime_preview(value)?)
+        }
+        ConfigRequest::ProjectRuntimeOutcome { preview, value } => {
+            serde_json::json!(project_runtime_outcome(preview, value)?)
+        }
         ConfigRequest::RedactEnvironment { value } => {
             serde_json::json!(redact_environment_intent(parse_environment_intent(value)?))
         }

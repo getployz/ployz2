@@ -258,7 +258,6 @@ CREATE TABLE "environment_deployment" (
 --> statement-breakpoint
 CREATE TABLE "environment_deployment_secret" (
 	"environment_deployment_id" uuid PRIMARY KEY,
-	"encrypted_frozen_deploy_input" jsonb NOT NULL,
 	"encrypted_runtime_outcome" jsonb
 );
 --> statement-breakpoint

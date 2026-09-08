@@ -217,32 +217,12 @@ describe("compileSdkDeployIntent", () => {
 });
 
 describe("parseSdkDeployPreview", () => {
-  it("accepts older saved previews and rejects malformed volume creation details", () => {
-    expect(parseSdkDeployPreview({ ...rustPreview, storage: undefined }))
-      .not.toHaveProperty("storage");
-    expect(() => parseSdkDeployPreview({ ...rustPreview, storage: {} }))
-      .toThrow(/storage/);
-    expect(
-      parseSdkDeployPreview({ ...rustPreview, volumes_to_create: undefined }),
-    ).not.toHaveProperty("volumes_to_create");
-    expect(() =>
-      parseSdkDeployPreview({ ...rustPreview, volumes_to_create: {} }),
-    ).toThrow(/volumes_to_create/);
+  it("accepts current SDK previews and rejects malformed operation or volume details", () => {
+    expect(parseSdkDeployPreview(rustPreview)).toEqual(rustPreview);
+    expect(() => parseSdkDeployPreview({ ...rustPreview, storage: {} })).toThrow();
+    expect(() => parseSdkDeployPreview({ ...rustPreview, volumes_to_create: {} })).toThrow();
+    expect(() => parseSdkDeployPreview({ ...rustPreview, operations: [{ type: "unknown" }] })).toThrow();
   });
-
-  it("accepts rust operations and warnings and rejects leftover NATS plans", () => {
-    const preview = parseSdkDeployPreview(rustPreview);
-    expect(preview).toEqual(rustPreview);
-
-    expect(() =>
-      parseSdkDeployPreview({
-        version: 1,
-        coreDeployId: "local-preview:deployment-1",
-        phases: [],
-      }),
-    ).toThrow(/excess|operations/);
-  });
-
 
 });
 

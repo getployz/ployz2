@@ -2392,19 +2392,6 @@
     {
       "type": "jsonb",
       "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "encrypted_frozen_deploy_input",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_deployment_secret"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
       "notNull": false,
       "dimensions": 0,
       "default": null,

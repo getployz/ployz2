@@ -92,6 +92,7 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::config::PublicationBasis>();
     declarations.add::<ployz_core::config::SavedDiscardCommand>();
     declarations.add::<ployz_core::config::ReviewChangeSet>();
+    declarations.add::<ployz_core::config::RuntimeOutcomeProjection>();
     declarations.add::<ployz_core::config::CompiledEnvironmentIntent>();
     declarations.add::<ployz_core::config::ResolveVariablesInput>();
     declarations.add::<ployz_core::config::ResolveVariablesResult>();

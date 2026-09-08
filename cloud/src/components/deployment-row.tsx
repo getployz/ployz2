@@ -138,15 +138,6 @@ function evidenceLabel(event: ParsedOperationEvidenceRow) {
       return "Health check started";
     case "deploy_phase_started":
       return `Phase ${parsed.success.payload.phase} started`;
-    case "deploy_phase_finished":
-      if (parsed.success.payload.outcome === "failed") {
-        const networkingFailure = parsed.success.payload.services
-          .filter((service) => service.result === "failed")
-          .map((service) => managedNetworkingFailureLabel(service.failure))
-          .find((label) => label != null);
-        return networkingFailure ?? "Deployment phase failed";
-      }
-      return "Deployment phase promoted";
     case "deploy_cleanup_finished":
       return parsed.success.payload.failedCount > 0
         ? "Cleanup completed with warnings"

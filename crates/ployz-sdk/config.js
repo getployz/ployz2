@@ -27,3 +27,6 @@ exports.reusePublication = input => request({ operation: 'reuse_publication', ..
 exports.lowerDeployment = value => request({ operation: 'lower_deployment', value });
 
 exports.redactEnvironmentIntent = value => request({ operation: 'redact_environment', value });
+
+exports.parseRuntimePreview = value => request({ operation: 'parse_runtime_preview', value });
+exports.projectRuntimeOutcome = (preview, value) => request({ operation: 'project_runtime_outcome', preview, value });

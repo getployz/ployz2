@@ -28,3 +28,6 @@ export const reusePublication = input => request({ operation: 'reuse_publication
 export const lowerDeployment = value => request({ operation: 'lower_deployment', value });
 
 export const redactEnvironmentIntent = value => request({ operation: 'redact_environment', value });
+
+export const parseRuntimePreview = value => request({ operation: 'parse_runtime_preview', value });
+export const projectRuntimeOutcome = (preview, value) => request({ operation: 'project_runtime_outcome', preview, value });

@@ -23,6 +23,8 @@ import {
 import { compileSdkDeployIntent } from "./runtime-preview";
 
 const preview = {
+  storage: [],
+  prune_refusal: null,
   project_name: "production",
   operations: [],
   warnings: [],
@@ -225,21 +227,27 @@ it.effect("retains complete partial evidence privately without exposing operatio
     let executions = 0;
     const spec = resolvedServiceSpecFixture();
     spec.container.environment = { PASSWORD: "never-publish" };
-    const machineId = (id: string) => runtimeWatchMachineFixture(id, id).id;
-    const operation = { type: "run_container" as const, machine_id: machineId("machine-a"), spec, skip_health_monitor: false };
+    const machineId = (id: string) => runtimeWatchMachineFixture(id.repeat(32), id).id;
+    const operation = { type: "run_container" as const, machine_id: machineId("a"), spec, skip_health_monitor: false };
     const outcome: DeployOutcome<ExecutionError> = {
       type: "failed" as const,
       completed: [operation],
       failed: {
         type: "replacement_health",
-        operation: { machine_id: machineId("machine-b"), old_container_id: "old-worker" as ContainerId, spec, skip_health_monitor: false },
+        operation: { machine_id: machineId("b"), old_container_id: "b".repeat(64) as ContainerId, spec, skip_health_monitor: false },
         error: { type: "cancelled" },
         compensation: { type: "stop_first", stop_new_container: { type: "stopped" }, restart_old_container: { type: "restarted" } },
       },
-      unexecuted: [{ ...operation, machine_id: machineId("machine-c") }, { ...operation, machine_id: machineId("machine-d") }],
+      unexecuted: [{ ...operation, machine_id: machineId("c") }, { ...operation, machine_id: machineId("d") }],
     };
+    const failedOperation = { type: "replace_container" as const, ...outcome.failed.operation };
+    const operations = [operation, failedOperation, ...outcome.unexecuted];
     const prepared = asTestDouble<PreparedDeploy>()({
       ...preview,
+      operations: operations.map((operation, index) => ({
+        index, operation, machine_id: operation.type === "remove_volume" ? operation.id.machine_id : operation.machine_id, service_name: spec.name, machine_name: null, display_name: null,
+        status: { type: "pending" as const },
+      })),
       confirm: () => {
         executions += 1;
         return {
@@ -256,7 +264,7 @@ it.effect("retains complete partial evidence privately without exposing operatio
     const result = yield* Effect.scoped(executeRuntimeIntent("organization-1", intent()))
       .pipe(Effect.provide(runtimeLayer(client, () => undefined)));
     assert.deepStrictEqual(result.outcome, { type: "failed", completed: 1, unexecuted: 2, reason: "cancelled" });
-    assert.deepStrictEqual(Redacted.value(result.evidence), outcome);
+    assert.deepStrictEqual(Redacted.value(result.evidence), { version: 1, outcome });
     assert.strictEqual(preparations, 1);
     assert.strictEqual(executions, 1);
     assert.isFalse(JSON.stringify(result).includes("never-publish"));
