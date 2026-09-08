@@ -126,7 +126,7 @@ pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Resul
         .connections
         .iter()
         .position(|connection| connection.to_string() == requested)
-        .ok_or_else(|| Error::usage(format!("connection {requested} not found")))?;
+        .ok_or_else(|| Error::usage(format!("connection {requested:?} not found")))?;
     context.select_connection(index);
     let selected = context
         .connections

@@ -167,7 +167,7 @@ pub enum CodecError {
     UnsupportedCommand(String),
     #[error("unsupported protocol major {requested}; this endpoint supports {supported}")]
     UnsupportedProtocolMajor { requested: u32, supported: u32 },
-    #[error("expected response kind {expected}, received {actual}")]
+    #[error("expected response kind {expected}, received {}", .actual.escape_debug())]
     UnexpectedResponse {
         expected: &'static str,
         actual: String,

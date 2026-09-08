@@ -165,3 +165,19 @@ fn unknown_runtime_failure_retains_observed_evidence() {
         "{failure}"
     );
 }
+
+#[test]
+fn unknown_wire_kinds_escape_terminal_controls() {
+    let response: ployz_core::RpcResponse = serde_json::from_value(json!({
+        "protocol_major": ployz_core::PROTOCOL_MAJOR,
+        "kind": "future\n\u{1b}[2J",
+        "payload": null,
+    }))
+    .unwrap();
+    let error = response
+        .decode::<ployz_core::op::DescribeContract>()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(r"future\n\u{1b}[2J"), "{error}");
+    assert!(!error.chars().any(char::is_control), "{error}");
+}

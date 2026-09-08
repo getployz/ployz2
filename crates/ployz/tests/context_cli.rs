@@ -210,22 +210,30 @@ fn ctx_connection_rejects_an_unknown_connection_without_mutating() {
     );
     before.save().unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "ctx",
-            "connection",
+    for (requested, expected) in [
+        (
             "unix:///tmp/missing.sock",
-            "--ployz-config",
-            path.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr).trim(),
-        "connection unix:///tmp/missing.sock not found"
-    );
-    assert_eq!(Config::load(&path).unwrap(), before);
+            r#"connection "unix:///tmp/missing.sock" not found"#,
+        ),
+        (
+            "unix:///tmp/missing socket\n\u{1b}[2J",
+            r#"connection "unix:///tmp/missing socket\n\u{1b}[2J" not found"#,
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args([
+                "ctx",
+                "connection",
+                requested,
+                "--ployz-config",
+                path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), expected);
+        assert_eq!(Config::load(&path).unwrap(), before);
+    }
 
     fs::remove_dir_all(root).unwrap();
 }
