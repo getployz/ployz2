@@ -25,10 +25,22 @@ use crate::{
 #[derive(Debug)]
 pub struct Failure {
     inner: Inner,
-    /// Whether this failure is a Ployz bug, decided while the typed error is
-    /// still in hand. `Display` only prints the decision, so rendering a failure
-    /// into a wider message cannot lose it.
-    bug: bool,
+    /// Whether this failure is a Ployz bug and how it says so, decided while
+    /// the typed error is still in hand. `Display` only prints the decision, so
+    /// rendering a failure into a wider message cannot lose it.
+    bug: Bug,
+}
+
+/// How a failure tells the user it is a Ployz bug.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Bug {
+    /// Not one: the failure prints as written.
+    No,
+    /// A failed command: the label leads and the report step follows it.
+    Yes,
+    /// A warning: the report step joins the one-line envelope `ERRORS.md`
+    /// requires, since the command itself carried on.
+    InWarning,
 }
 
 #[derive(Debug)]
@@ -78,7 +90,11 @@ impl Failure {
     /// error yourself: `Display` is identical and the code survives.
     pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
-            bug: is_internal_rpc(&error),
+            bug: if is_internal_rpc(&error) {
+                Bug::Yes
+            } else {
+                Bug::No
+            },
             inner: Inner::Command(Box::new(error)),
         }
     }
@@ -86,7 +102,7 @@ impl Failure {
     fn text(
         message: Cow<'static, str>,
         cause: Option<Box<dyn Error + Send + Sync>>,
-        bug: bool,
+        bug: Bug,
     ) -> Self {
         Self {
             inner: Inner::Command(Box::new(Usage { message, cause })),
@@ -98,14 +114,14 @@ impl Failure {
     pub fn exit(code: u8) -> Self {
         Self {
             inner: Inner::Exit(code),
-            bug: false,
+            bug: Bug::No,
         }
     }
 
     /// Product text the CLI wrote itself. Text that renders a typed error
     /// belongs in `context` or `Failures`, which keep the code.
     pub fn usage(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::text(message.into(), None, false)
+        Self::text(message.into(), None, Bug::No)
     }
 
     /// Product text that already names `cause`. The classification comes from
@@ -115,7 +131,11 @@ impl Failure {
         message: impl Into<Cow<'static, str>>,
         cause: impl Error + Send + Sync + 'static,
     ) -> Self {
-        let bug = is_internal_rpc(&cause);
+        let bug = if is_internal_rpc(&cause) {
+            Bug::Yes
+        } else {
+            Bug::No
+        };
         Self::text(message.into(), Some(Box::new(cause)), bug)
     }
 
@@ -133,8 +153,19 @@ impl Failure {
     }
 
     /// One product line for a follow-on failure. `terminate` prints it once.
+    /// A bug keeps that one line: the report step joins it rather than wrapping
+    /// the warning in the failure envelope it never had.
     pub fn warned(context: impl fmt::Display, cause: impl Error + Send + Sync + 'static) -> Self {
-        Self::context(format!("WARNING: {context}: {cause}."), cause)
+        let bug = if is_internal_rpc(&cause) {
+            Bug::InWarning
+        } else {
+            Bug::No
+        };
+        Self::text(
+            format!("WARNING: {context}: {cause}.").into(),
+            Some(Box::new(cause)),
+            bug,
+        )
     }
 }
 
@@ -172,7 +203,11 @@ impl Failures {
     /// when any of them was one.
     #[must_use]
     pub fn into_failure(self, sentence: impl FnOnce(&str) -> String) -> Failure {
-        Failure::text(sentence(&self.entries.join("; ")).into(), None, self.bug)
+        Failure::text(
+            sentence(&self.entries.join("; ")).into(),
+            None,
+            if self.bug { Bug::Yes } else { Bug::No },
+        )
     }
 }
 
@@ -212,10 +247,11 @@ pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            Inner::Command(error) if self.bug => {
-                write!(f, "internal error: {error}\n{}", RpcError::REPORT_HINT)
-            }
-            Inner::Command(error) => error.fmt(f),
+            Inner::Command(error) => match self.bug {
+                Bug::No => error.fmt(f),
+                Bug::Yes => write!(f, "internal error: {error}\n{}", RpcError::REPORT_HINT),
+                Bug::InWarning => write!(f, "{error} {}", RpcError::REPORT_HINT),
+            },
             Inner::Exit(code) => write!(f, "exit {code}"),
         }
     }
@@ -523,10 +559,11 @@ mod tests {
             },
         )
         .to_string();
-        assert!(framed.contains("WARNING"), "{framed}");
+        assert!(framed.starts_with("WARNING: "), "{framed}");
         assert!(framed.contains("boom"), "{framed}");
         assert!(framed.contains("bug"), "{framed}");
         assert!(framed.contains("ployz version"), "{framed}");
+        assert_eq!(framed.lines().count(), 1, "{framed}");
     }
 
     /// The framing decision is data, so nothing may render a typed error into
