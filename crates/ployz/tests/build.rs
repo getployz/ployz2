@@ -1,8 +1,6 @@
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
-use ployz::compose::{
-    BuildOptions, BuildOutcome, BuiltService, capture_build, parse_normalized, plan_build,
-};
+use ployz::compose::{BuildOptions, BuiltService, capture_build, parse_normalized, plan_build};
 use ployz_build::Output;
 
 /// Digests the Docker stand-in reports for one attempt's completed image.
@@ -225,7 +223,6 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
         "{calls}"
     );
     let service = one_built(outcome);
-    assert_eq!(service.name, "api");
     assert_eq!(service.image, "example.test/api:version2");
     assert_eq!(
         service.built.reference,
@@ -427,8 +424,64 @@ fn several_requested_build_platforms_are_refused_with_the_service_named() {
 }
 
 #[test]
+fn content_holding_several_platforms_is_refused_however_it_was_requested() {
+    let root = std::env::temp_dir().join(format!("ployz-build-index-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
+    let docker = root.join("docker");
+    write_docker(&docker, &root);
+    fs::write(root.join("image"), "example.test/api:latest").unwrap();
+    fs::write(root.join("digest"), FIRST_CONTENT).unwrap();
+    // The store holds an index, whatever the Compose file asked for.
+    fs::write(
+        root.join("media"),
+        "application/vnd.oci.image.index.v1+json",
+    )
+    .unwrap();
+    let mut project = parse_normalized(
+        "name: demo\nservices: {api: {image: 'example.test/api:latest', build: ./src}}\n",
+        &root,
+    )
+    .unwrap();
+    let options = BuildOptions::default();
+    let plan = plan_build(&project, &options).unwrap();
+
+    let build = capture_build(&plan, &options, &mut project).unwrap();
+    let error = match build.execute(Some(&docker)) {
+        Ok(built) => panic!("a multi-platform image was reported as built: {built:?}"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("several platforms"), "{error}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_registry_cache_still_reaches_buildkit() {
+    let root = std::env::temp_dir().join(format!("ployz-build-cache-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
+    let mut project = parse_normalized(
+        "name: demo\nservices: {api: {build: {context: ./src, cache_from: ['type=registry\\,ref=example.test/cache']}}}\n",
+        &root,
+    )
+    .unwrap();
+    let options = BuildOptions::default();
+    let plan = plan_build(&project, &options).unwrap();
+    // BuildKit owns registry caching; only a local path cannot be relocated.
+    capture_build(&plan, &options, &mut project).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn settings_upstream_would_drop_are_named_before_execution() {
-    for (setting, value) in [("isolation", "default"), ("entitlements", "[network.host]")] {
+    for (setting, value) in [
+        ("isolation", "default"),
+        ("entitlements", "[network.host]"),
+        ("cache_from", "['type=local\\,src=./cache']"),
+        ("cache_to", "['type=local\\,dest=./cache']"),
+    ] {
         let mut project = parse_normalized(
             &format!(
                 "name: demo\nservices: {{api: {{build: {{context: ., {setting}: {value}}}}}}}\n"
@@ -447,14 +500,9 @@ fn settings_upstream_would_drop_are_named_before_execution() {
     }
 }
 
-fn one_built(outcome: BuildOutcome) -> BuiltService {
-    match outcome {
-        BuildOutcome::Built(mut services) if services.len() == 1 => services.remove(0),
-        BuildOutcome::Built(services) => panic!("expected one built Service, got {services:?}"),
-        BuildOutcome::Published | BuildOutcome::Validated => {
-            panic!("the build claimed no image")
-        }
-    }
+fn one_built(mut built: Vec<BuiltService>) -> BuiltService {
+    assert_eq!(built.len(), 1, "expected one built Service, got {built:?}");
+    built.remove(0)
 }
 
 /// A Docker stand-in answering the evidence the runner reads, recording every
@@ -476,7 +524,8 @@ case "$1 $2" in
     exit 0 ;;
   'image inspect')
     identity=$(cat "$root/store" 2>/dev/null || cat "$root/digest")
-    printf '{{"Id":"%s","Os":"linux","Architecture":"amd64","Variant":null}}' "$identity"
+    media=$(cat "$root/media" 2>/dev/null || printf 'application/vnd.oci.image.manifest.v1+json')
+    printf '{{"Id":"%s","Os":"linux","Architecture":"amd64","Variant":null,"Descriptor":{{"mediaType":"%s"}}}}' "$identity" "$media"
     exit 0 ;;
   'buildx bake')
     previous=

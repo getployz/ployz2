@@ -74,27 +74,32 @@ pub struct CapturedBuild {
 /// A Service whose image this command built, bound to the content produced.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BuiltService {
-    pub name: String,
     /// Reference the Service requested, used when the image is published.
     pub image: String,
+    /// Machines this Service is placed on.
     pub machines: Vec<MachineTarget>,
+    /// The image this command built for it.
     pub built: BuiltImage,
 }
 
-/// What executing a captured build produced. A validation cannot claim an image.
-#[derive(Clone, Debug, PartialEq)]
-pub enum BuildOutcome {
-    Built(Vec<BuiltService>),
-    /// Published to the registry each tag names; no local image is claimed.
-    Published,
-    /// Validation only; no image was produced.
-    Validated,
+impl BuiltService {
+    /// Deliver this command's content under the reference the Service asked
+    /// for, so a later Build moving that tag cannot substitute its image.
+    #[must_use]
+    pub fn content(&self) -> crate::image::ImageContent<'_> {
+        crate::image::ImageContent::built(&self.image, &self.built.reference)
+    }
 }
 
 /// Build settings upstream translation drops on the way to BuildKit. Every
 /// other setting reaches BuildKit, which validates it and reports its own
 /// refusal. Ployz never silently discards a supplied setting.
 const DROPPED_BY_UPSTREAM: &[&str] = &["entitlements", "isolation", "privileged"];
+
+/// Cache settings naming a path rather than a registry. Capture relocates the
+/// build into a private directory, so a local path would no longer mean what
+/// it did, and the cache would be removed with the capture.
+const LOCAL_CACHE: &[&str] = &["cache_from", "cache_to"];
 
 /// Freeze build sources, options, and provider values before invoking Docker.
 ///
@@ -116,12 +121,10 @@ pub fn capture_build(
             .build
             .as_mapping_mut()
             .ok_or_else(|| invalid_build("expected a build mapping"))?;
-        refuse_dropped_settings(&name, build)?;
-        targets.push(ployz_build::Target {
-            name: name.clone(),
-            platform: requested_platform(&name, build)?,
-        });
-        retain_service_image_tag(image, build);
+        refuse_unpassable_settings(&name, build)?;
+        let platform = requested_platform(&name, build)?;
+        targets.push(ployz_build::Target { name, platform });
+        retain_service_image_tag(&service.name, image, build)?;
         if let Some(args) = build
             .get_mut(Value::String("args".into()))
             .and_then(Value::as_mapping_mut)
@@ -296,8 +299,8 @@ impl CapturedBuild {
     /// # Errors
     /// Fails if the runner cannot execute the build or the result cannot be
     /// bound to the content it produced.
-    pub fn execute(&self, docker: Option<&Path>) -> Result<BuildOutcome, ComposeError> {
-        let outcome = ployz_build::execute(&ployz_build::Request {
+    pub fn execute(&self, docker: Option<&Path>) -> Result<Vec<BuiltService>, ComposeError> {
+        let images = ployz_build::execute(&ployz_build::Request {
             compose_file: &self.compose,
             working_dir: self.inputs.root(),
             environment: &self.environment,
@@ -318,35 +321,17 @@ impl CapturedBuild {
                 .join(", "),
             source,
         })?;
-        match outcome {
-            ployz_build::Outcome::Validated => Ok(BuildOutcome::Validated),
-            ployz_build::Outcome::Published => Ok(BuildOutcome::Published),
-            ployz_build::Outcome::Built(images) => self.bind(images).map(BuildOutcome::Built),
-        }
-    }
-
-    /// Bind each planned Service to the image this attempt actually produced.
-    fn bind(&self, images: Vec<BuiltImage>) -> Result<Vec<BuiltService>, ComposeError> {
-        self.plan
+        // The runner returns one image per planned Service, in order.
+        Ok(self
+            .plan
             .iter()
-            .map(|service| {
-                let built = images
-                    .iter()
-                    .find(|image| image.target == service.name)
-                    .ok_or_else(|| {
-                        invalid_build(&format!(
-                            "the build reported no image for service '{}'",
-                            service.name
-                        ))
-                    })?;
-                Ok(BuiltService {
-                    name: service.name.clone(),
-                    image: service.image.clone(),
-                    machines: service.machines.clone(),
-                    built: built.clone(),
-                })
+            .zip(images)
+            .map(|(service, built)| BuiltService {
+                image: service.image.clone(),
+                machines: service.machines.clone(),
+                built,
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -359,15 +344,12 @@ pub fn execute_build(
     options: &BuildOptions,
     load: &LoadOptions,
     project: &mut ComposeProject,
-) -> Result<BuildOutcome, ComposeError> {
-    if plan.is_empty() {
-        return Ok(BuildOutcome::Built(Vec::new()));
-    }
+) -> Result<Vec<BuiltService>, ComposeError> {
     capture_build(plan, options, project)?.execute(load.docker.as_deref())
 }
 
 /// Refuse a setting Ployz cannot pass on, naming it rather than dropping it.
-fn refuse_dropped_settings(
+fn refuse_unpassable_settings(
     service: &str,
     build: &serde_norway::Mapping,
 ) -> Result<(), ComposeError> {
@@ -376,6 +358,21 @@ fn refuse_dropped_settings(
             return Err(invalid_build(&format!(
                 "service '{service}' sets build.{setting}, which Ployz Builds cannot pass to BuildKit"
             )));
+        }
+    }
+    for setting in LOCAL_CACHE {
+        let entries = build
+            .get(Value::String((*setting).into()))
+            .and_then(Value::as_sequence);
+        for entry in entries.into_iter().flatten() {
+            if entry
+                .as_str()
+                .is_some_and(|entry| entry.contains("type=local"))
+            {
+                return Err(invalid_build(&format!(
+                    "service '{service}' sets a local path in build.{setting}, which a captured Build cannot preserve; use a registry cache"
+                )));
+            }
         }
     }
     Ok(())
@@ -415,14 +412,21 @@ fn requested_platform(
 
 /// Upstream translation uses explicit build tags alone; keep the Service image
 /// tagged too, so a Deploy still finds the image its Service names.
-fn retain_service_image_tag(image: String, build: &mut serde_norway::Mapping) {
-    if let Some(tags) = build
-        .get_mut(Value::String("tags".into()))
-        .and_then(Value::as_sequence_mut)
-        && !tags.iter().any(|tag| tag.as_str() == Some(image.as_str()))
-    {
+fn retain_service_image_tag(
+    service: &str,
+    image: String,
+    build: &mut serde_norway::Mapping,
+) -> Result<(), ComposeError> {
+    let Some(declared) = build.get_mut(Value::String("tags".into())) else {
+        return Ok(());
+    };
+    let tags = declared
+        .as_sequence_mut()
+        .ok_or_else(|| invalid_build(&format!("service '{service}' has invalid build tags")))?;
+    if !tags.iter().any(|tag| tag.as_str() == Some(image.as_str())) {
         tags.push(Value::String(image));
     }
+    Ok(())
 }
 
 fn capture_context(

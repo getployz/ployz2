@@ -7,7 +7,7 @@ use std::{
 };
 
 use ployz::compose::{
-    BuildOptions, BuildOutcome, LoadOptions, execute_build, load_project, plan_build,
+    BuildOptions, BuiltService, LoadOptions, execute_build, load_project, plan_build,
 };
 
 #[test]
@@ -195,14 +195,9 @@ fn local_dockerfile_build_loads_a_runnable_image_and_reuses_its_retained_cache()
     drop(cleanup);
 }
 
-fn one_built(outcome: BuildOutcome) -> ployz::compose::BuiltService {
-    match outcome {
-        BuildOutcome::Built(mut services) if services.len() == 1 => services.remove(0),
-        BuildOutcome::Built(services) => panic!("expected one built Service, got {services:?}"),
-        BuildOutcome::Published | BuildOutcome::Validated => {
-            panic!("the build claimed no image")
-        }
-    }
+fn one_built(mut built: Vec<BuiltService>) -> BuiltService {
+    assert_eq!(built.len(), 1, "expected one built Service, got {built:?}");
+    built.remove(0)
 }
 
 fn host_platform() -> String {

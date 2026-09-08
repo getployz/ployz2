@@ -42,6 +42,8 @@ pub(crate) struct ReconciliationHints {
 /// Execution failure is a [`DeployOutcome::Failed`], not this error.
 #[derive(Debug, Error)]
 pub enum DeployError {
+    #[error("{0}. No Service, hook, or volume change was attempted.")]
+    Build(#[from] crate::compose::ComposeError),
     #[error(transparent)]
     Connect(#[from] ConnectError),
     #[error(transparent)]
@@ -242,6 +244,7 @@ impl From<DeployError> for RpcError {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into_rpc_error(),
             DeployError::Project(error) => invalid_argument(error.to_string()),
+            DeployError::Build(error) => invalid_argument(error.to_string()),
         }
     }
 }
@@ -532,14 +535,9 @@ async fn push_image(
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     // Deliver the content this command built, not whatever the tag now holds.
-    let result = crate::image::push_using_machines(
-        client,
-        crate::image::ImageContent::built(&service.image, &service.built.reference),
-        None,
-        &targets,
-        machines,
-    )
-    .await?;
+    let result =
+        crate::image::push_using_machines(client, service.content(), None, &targets, machines)
+            .await?;
     let pushed = result
         .successes
         .iter()

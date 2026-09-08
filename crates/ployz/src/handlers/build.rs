@@ -2,9 +2,7 @@ use clap::ArgMatches;
 
 use ployz_build::Output;
 
-use crate::compose::{
-    BuildOptions, BuildOutcome, LoadOptions, execute_build, load_project, plan_build,
-};
+use crate::compose::{BuildOptions, LoadOptions, execute_build, load_project, plan_build};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
 
@@ -36,29 +34,26 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         println!("No buildable services selected.");
         return Ok(());
     }
-    let outcome = execute_build(&plan, &options, &load, &mut project)
-        .map_err(|error| Error::usage(format!("{error}. Remaining builds were not attempted.")))?;
-    let built = match outcome {
-        BuildOutcome::Validated => {
-            println!("Validated {} build(s). No image was produced.", plan.len());
+    let built = execute_build(&plan, &options, &load, &mut project)?;
+    match options.output {
+        Output::Validate => {
+            println!("Validated the selected builds. No image was produced.");
             return Ok(());
         }
-        BuildOutcome::Published => {
-            println!(
-                "Published {} built image(s) to their registries.",
-                plan.len()
-            );
+        Output::Registry => {
+            println!("Published the built images to their registries.");
             return Ok(());
         }
-        BuildOutcome::Built(built) => built,
-    };
-    for service in &built {
-        println!(
-            "Built {} ({}) as {} in local Docker",
-            service.built.tags.join(", "),
-            service.built.platform,
-            service.built.reference,
-        );
+        Output::Load => {
+            for service in &built {
+                println!(
+                    "Built {} ({}) as {} in local Docker",
+                    service.built.tags.join(", "),
+                    service.built.platform,
+                    service.built.reference,
+                );
+            }
+        }
     }
     if !leaf.get_flag("push") {
         return Ok(());
@@ -75,9 +70,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         let mut failures = Vec::new();
         for service in &built {
             let targets = push_targets(&explicit, &service.machines);
-            let content =
-                crate::image::ImageContent::built(&service.image, &service.built.reference);
-            match crate::image::push(&mut client, content, None, &targets).await {
+            match crate::image::push(&mut client, service.content(), None, &targets).await {
                 Ok(result) => failures.extend(report_push(&service.image, result)),
                 Err(error) => failures.push(push_failure(&service.image, error)?),
             }

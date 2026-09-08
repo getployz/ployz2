@@ -5,9 +5,9 @@ use ployz_core::{ComposePruneRefusal, ServiceSelector};
 
 use crate::{
     compose::{
-        BuildOptions, BuildOutcome, BuiltService, CapturedCompose, ComposeError, ComposeProject,
-        LoadOptions, capture_build, compose_identity, has_explicit_nondefault_compose_file,
-        load_project, plan_build,
+        BuildOptions, BuiltService, CapturedCompose, ComposeError, ComposeProject, LoadOptions,
+        capture_build, compose_identity, has_explicit_nondefault_compose_file, load_project,
+        plan_build,
     },
     deploy::{
         ReconciliationHints, ServiceAttempt, deploy_project, deploy_scale, deploy_spec,
@@ -293,18 +293,9 @@ fn prepare_deploy(
     );
     // Every required Build finishes before any application change begins.
     let built = match captured_build {
-        Some(build) => match build.execute(load.docker.as_deref()).map_err(|error| {
-            Error::usage(format!(
-                "{error}. No Service, hook, or volume change was attempted."
-            ))
-        })? {
-            BuildOutcome::Built(services) => services,
-            BuildOutcome::Published | BuildOutcome::Validated => {
-                return Err(Error::usage(
-                    "the build produced no deployable image; deployment was not attempted",
-                ));
-            }
-        },
+        Some(build) => build
+            .execute(load.docker.as_deref())
+            .map_err(crate::deploy::DeployError::from)?,
         None => Vec::new(),
     };
     Ok((candidate, built))

@@ -1,20 +1,20 @@
 //! Shared BuildKit execution for one captured Build.
 //!
-//! A caller captures a Build's inputs, then executes that capture here:
-//! execute, verify the image, clean up. Builder lifecycle, subprocess
+//! A caller captures a Build's inputs into a private directory holding a
+//! Compose file and the sources it points at, then executes that capture
+//! here: execute, verify the image, clean up. Builder lifecycle, subprocess
 //! orchestration, image import, and cleanup stay private so no caller has to
-//! restate them. Execution knows source, recipe, and platform; it knows
-//! nothing about Compose selection, Cluster placement, or Deploy.
+//! restate them.
 //!
-//! BuildKit owns build options and their validation. This crate adds only the
-//! rules BuildKit cannot enforce: one bounded attempt, and an image bound to
-//! the content that attempt produced.
+//! BuildKit owns build options and their validation; this crate hands it the
+//! captured Compose file and adds only the rules BuildKit cannot enforce: one
+//! bounded attempt, and one image bound to the content that attempt produced.
 
 mod builder;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
@@ -22,13 +22,13 @@ use std::{
 use serde::Deserialize;
 use thiserror::Error;
 
-use builder::Builder;
+use builder::{Builder, Lock};
 
 /// Pinned BuildKit release. Every Ployz Build runs this version.
 pub const BUILDKIT_IMAGE: &str = "moby/buildkit:v0.26.2";
 
-/// Longest one Build Attempt may run, covering builder setup, compilation,
-/// image import, and verification.
+/// Longest one Build Attempt may run, from owning the builder through image
+/// verification. Waiting for another local build is queueing, not attempt time.
 pub const EXECUTION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Budget for releasing an attempt's resources once it is over.
@@ -57,20 +57,25 @@ pub struct Request<'a> {
     pub environment: &'a BTreeMap<String, String>,
     /// Docker CLI to execute, defaulting to `docker` on the search path.
     pub docker: Option<&'a Path>,
+    /// Images to build, named as the captured Compose file names them.
     pub targets: &'a [Target],
     /// Effective `KEY=VALUE` build-argument overrides for every target.
     pub build_args: &'a [String],
+    /// What this attempt does with what it builds.
     pub output: Output,
+    /// Build without reusing retained cache.
     pub no_cache: bool,
+    /// Always attempt to pull a newer version of a referenced image.
     pub pull: bool,
 }
 
 /// One image to produce, named by the caller.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Target {
-    /// Caller's name for this image. Also names it in the captured Compose file.
+    /// Caller's name for this image, as the captured Compose file names it.
     pub name: String,
-    /// Platform to build. `None` builds the execution host's own platform.
+    /// Platform the capture asks for, which the completed image must carry.
+    /// `None` accepts whichever platform the builder produces.
     pub platform: Option<String>,
 }
 
@@ -87,23 +92,10 @@ pub enum Output {
     Validate,
 }
 
-/// A terminal Build Attempt result.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Outcome {
-    /// Images retained on the execution host, bound to observed content.
-    Built(Vec<BuiltImage>),
-    /// Published to a registry. No local image is claimed.
-    Published,
-    /// Validation only. No image was produced and none may be claimed.
-    Validated,
-}
-
 /// A completed image in the execution host's Docker image store, identified by
 /// the content this attempt observed there.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuiltImage {
-    /// Target name the caller supplied.
-    pub target: String,
     /// Digest-pinned reference. Binds later use to this attempt's content, so
     /// a later Build moving a shared tag cannot substitute its image.
     pub reference: String,
@@ -113,11 +105,15 @@ pub struct BuiltImage {
     pub platform: String,
 }
 
+/// Why a Build Attempt did not produce the image it was asked for.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum BuildError {
     /// The execution host cannot run Builds at all.
     #[error("{0}")]
     Prerequisite(String),
+    /// The request itself cannot be executed as given.
+    #[error("{0}")]
+    Request(String),
     /// One Docker command failed. BuildKit's own diagnosis is the diagnostic.
     #[error("{action} failed: {diagnostic}")]
     Docker {
@@ -138,32 +134,38 @@ pub enum BuildError {
 /// Execute one captured Build against local Docker.
 ///
 /// Requires Docker with Buildx and the containerd image store. It does not
-/// require a Ployz daemon. The whole attempt, including builder setup and
-/// cleanup, is bounded by [`EXECUTION_TIMEOUT`].
+/// require a Ployz daemon. Every Docker phase of the attempt runs inside
+/// [`EXECUTION_TIMEOUT`], with a separate bounded budget for cleanup.
+///
+/// Returns the completed images in the order of `targets`. Validation and
+/// registry publication retain no local image, so they return none.
 ///
 /// # Errors
-/// Returns a prerequisite error when Docker cannot serve the Build, the
-/// failing command's own diagnosis, a timeout, an uncertain outcome when
-/// termination could not be observed, or a result error when the completed
-/// image is not the content it claims.
-pub fn execute(request: &Request<'_>) -> Result<Outcome, BuildError> {
+/// Returns a prerequisite error when Docker cannot serve the Build, a request
+/// error when the targets cannot be told apart, the failing command's own
+/// diagnosis, a timeout, an uncertain outcome when termination could not be
+/// observed, or a result error when the completed image is not the content it
+/// claims.
+pub fn execute(request: &Request<'_>) -> Result<Vec<BuiltImage>, BuildError> {
+    let planned = plan(request.targets)?;
+    if planned.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Waiting for another local build is queueing, not attempt time, so the
+    // attempt's clock starts once this process owns the builder.
+    let lock = Lock::acquire()?;
     let docker = Docker {
         program: request.docker.unwrap_or_else(|| Path::new("docker")),
         environment: request.environment,
         working_dir: request.working_dir,
         deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
     };
-    let planned = plan(request.targets)?;
-    if planned.is_empty() {
-        return Ok(empty(request.output));
-    }
     let metadata = request.working_dir.join("build-metadata.json");
-    let builder = Builder::acquire(&docker)?;
+    let builder = Builder::acquire(&docker, lock)?;
     builder.run(&bake_arguments(request, &planned, &metadata))?;
     match request.output {
-        Output::Validate => Ok(Outcome::Validated),
-        Output::Registry => Ok(Outcome::Published),
-        Output::Load => built_images(&docker, &metadata, &planned).map(Outcome::Built),
+        Output::Load => built_images(&docker, &metadata, &planned),
+        Output::Registry | Output::Validate => Ok(Vec::new()),
     }
 }
 
@@ -185,22 +187,13 @@ fn plan(targets: &[Target]) -> Result<Vec<Planned<'_>>, BuildError> {
             if names.insert(bake.clone()) {
                 Ok(Planned { target, bake })
             } else {
-                Err(BuildError::Result(format!(
+                Err(BuildError::Request(format!(
                     "'{}' and an earlier target share the build name '{bake}', so their results cannot be told apart",
                     target.name
                 )))
             }
         })
         .collect()
-}
-
-/// A Build with no target still reports what it did, not an image it lacks.
-fn empty(output: Output) -> Outcome {
-    match output {
-        Output::Load => Outcome::Built(Vec::new()),
-        Output::Registry => Outcome::Published,
-        Output::Validate => Outcome::Validated,
-    }
 }
 
 fn bake_arguments(request: &Request<'_>, planned: &[Planned<'_>], metadata: &Path) -> Vec<String> {
@@ -230,13 +223,7 @@ fn bake_arguments(request: &Request<'_>, planned: &[Planned<'_>], metadata: &Pat
     if request.pull {
         arguments.push("--pull".to_owned());
     }
-    for planned in planned {
-        // Without a requested platform the builder uses its own, as Docker did.
-        if let Some(platform) = &planned.target.platform {
-            arguments.push("--set".to_owned());
-            arguments.push(format!("{}.platform={platform}", planned.bake));
-        }
-    }
+    // Platforms travel in the captured Compose file, which upstream reads.
     for argument in request.build_args {
         arguments.push("--set".to_owned());
         arguments.push(format!("*.args.{argument}"));
@@ -292,7 +279,6 @@ fn built_images(
                 planned.target.platform.as_deref(),
             )?;
             Ok(BuiltImage {
-                target: name.clone(),
                 reference,
                 tags,
                 platform,
@@ -328,6 +314,16 @@ fn verify(
         return Err(BuildError::Result(format!(
             "the local image store holds {} for {reference} rather than the completed content, which Ployz Builds require Docker's containerd image store to retain",
             image.id
+        )));
+    }
+    // Several platforms arrive as an index whatever asked for them, and one
+    // Build produces one image. Refuse the content rather than the request.
+    if image
+        .descriptor
+        .is_some_and(|descriptor| descriptor.media_type.contains("index"))
+    {
+        return Err(BuildError::Result(format!(
+            "{reference} contains several platforms; a Dockerfile Build produces one image for one platform"
         )));
     }
     let variant = image.variant.unwrap_or_default();
@@ -381,6 +377,14 @@ struct ImageInspection {
     architecture: String,
     #[serde(rename = "Variant")]
     variant: Option<String>,
+    #[serde(rename = "Descriptor")]
+    descriptor: Option<Descriptor>,
+}
+
+#[derive(Deserialize)]
+struct Descriptor {
+    #[serde(rename = "mediaType")]
+    media_type: String,
 }
 
 /// When this attempt must be over, so no Docker command can outlast it.
@@ -445,9 +449,6 @@ impl<'a> Docker<'a> {
         arguments: &[&str],
         streams: Streams,
     ) -> Result<String, BuildError> {
-        // Captured output goes to a file, so a large result cannot fill a pipe
-        // and deadlock a child this side is no longer reading.
-        let captured = self.working_dir.join("docker-output");
         let mut command = Command::new(self.program);
         command
             .env_clear()
@@ -455,14 +456,17 @@ impl<'a> Docker<'a> {
             .current_dir(self.working_dir)
             .args(arguments)
             .stdin(Stdio::null());
+        // Captured output goes to files rather than pipes: nothing reads a
+        // pipe until the child exits, so a chatty command would fill one and
+        // block until its deadline.
+        let output = self.working_dir.join("docker-output");
+        let diagnosis = self.working_dir.join("docker-diagnosis");
         if streams == Streams::Captured {
-            let file = std::fs::File::create(&captured).map_err(|error| BuildError::Docker {
-                action,
-                diagnostic: error.to_string(),
-            })?;
-            command.stdout(file).stderr(Stdio::piped());
+            command
+                .stdout(self.create(action, &output)?)
+                .stderr(self.create(action, &diagnosis)?);
         }
-        let mut child = spawn_retrying_busy(&mut command).map_err(|error| BuildError::Docker {
+        let mut child = command.spawn().map_err(|error| BuildError::Docker {
             action,
             diagnostic: error.to_string(),
         })?;
@@ -477,11 +481,7 @@ impl<'a> Docker<'a> {
             return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
         };
         if !status.success() {
-            let mut diagnostic = String::new();
-            if let Some(mut stderr) = child.stderr.take() {
-                use std::io::Read as _;
-                let _ = stderr.read_to_string(&mut diagnostic);
-            }
+            let diagnostic = std::fs::read_to_string(&diagnosis).unwrap_or_default();
             let diagnostic = diagnostic.trim();
             return Err(BuildError::Docker {
                 action,
@@ -494,7 +494,7 @@ impl<'a> Docker<'a> {
         }
         match streams {
             Streams::Captured => {
-                std::fs::read_to_string(&captured).map_err(|error| BuildError::Docker {
+                std::fs::read_to_string(&output).map_err(|error| BuildError::Docker {
                     action,
                     diagnostic: error.to_string(),
                 })
@@ -502,20 +502,13 @@ impl<'a> Docker<'a> {
             Streams::Inherited => Ok(String::new()),
         }
     }
-}
 
-/// A program written moments ago can still be held open by a concurrent fork.
-/// Retry briefly rather than fail the Build on that race.
-fn spawn_retrying_busy(command: &mut Command) -> std::io::Result<Child> {
-    for attempt in 0..4 {
-        match command.spawn() {
-            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                std::thread::sleep(Duration::from_millis(10 << attempt));
-            }
-            other => return other,
-        }
+    fn create(&self, action: &'static str, path: &PathBuf) -> Result<std::fs::File, BuildError> {
+        std::fs::File::create(path).map_err(|error| BuildError::Docker {
+            action,
+            diagnostic: error.to_string(),
+        })
     }
-    command.spawn()
 }
 
 /// Wait for a child, terminating it when the budget runs out.
@@ -622,26 +615,14 @@ mod tests {
         assert!(load.contains(&"--no-cache".to_owned()));
         assert!(!load.contains(&"--pull".to_owned()));
         assert!(load.contains(&"*.args.MODE=release".to_owned()));
-        // Only a requested platform is set; the rest build the host's own.
-        assert!(load.contains(&"api.platform=linux/arm64".to_owned()));
-        assert!(
-            !load
-                .iter()
-                .any(|argument| argument.starts_with("web.platform"))
-        );
+        // The captured Compose file carries platforms; bake reads them there.
+        assert!(!load.iter().any(|argument| argument.contains(".platform")));
         assert_eq!(load.last().map(String::as_str), Some("web"));
 
         let registry = bake_arguments(&request(Output::Registry), &planned, metadata);
         assert!(registry.contains(&"--push".to_owned()));
         assert!(!registry.contains(&"--load".to_owned()));
         assert!(!registry.contains(&"--metadata-file".to_owned()));
-    }
-
-    #[test]
-    fn a_build_with_no_target_claims_only_what_it_did() {
-        assert_eq!(empty(Output::Load), Outcome::Built(Vec::new()));
-        assert_eq!(empty(Output::Registry), Outcome::Published);
-        assert_eq!(empty(Output::Validate), Outcome::Validated);
     }
 
     #[test]
