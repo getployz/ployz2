@@ -32,7 +32,10 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
         );
     }
     for failure in result.failures {
-        eprintln!("WARNING: {}: {}", failure.machine_id, failure.error.message);
+        eprintln!(
+            "{}",
+            Error::warned(failure.machine_id, failure.error.clone())
+        );
     }
     for omission in result.omissions {
         eprintln!("WARNING: {omission}: no terminal image-list response");

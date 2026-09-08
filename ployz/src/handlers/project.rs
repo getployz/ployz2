@@ -90,10 +90,11 @@ fn observer_listing_warnings(snapshot: &DeploySnapshot) -> Vec<String> {
     let mut lines =
         vec!["WARNING: Live Observation is observer-relative and not globally complete".into()];
     lines.extend(snapshot.container_failures.iter().map(|failure| {
-        format!(
-            "WARNING: Machine {} failed: {}",
-            failure.machine_id, failure.error.message
+        crate::failure::Failure::warned(
+            format!("Machine {} failed", failure.machine_id),
+            failure.error.clone(),
         )
+        .to_string()
     }));
     lines.extend(
         snapshot
@@ -150,9 +151,9 @@ mod tests {
             observer_listing_warnings(&snapshot),
             [
                 "WARNING: Live Observation is observer-relative and not globally complete".into(),
-                format!("WARNING: Machine {machine} failed: down"),
+                format!("WARNING: Machine {machine} failed: down."),
                 format!("WARNING: Machine {omitted} was omitted listing volumes"),
-                format!("WARNING: Machine {machine} Docker Volume data: inspect failed"),
+                format!("WARNING: Machine {machine} Docker Volume data: inspect failed."),
             ]
         );
     }

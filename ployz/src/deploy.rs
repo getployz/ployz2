@@ -252,19 +252,24 @@ impl VolumeSnapshot {
         self.machine_failures
             .iter()
             .map(|failure| {
-                format!(
-                    "WARNING: Machine {} failed listing volumes: {}",
-                    failure.machine_id, failure.error.message
+                crate::failure::Failure::warned(
+                    format!("Machine {} failed listing volumes", failure.machine_id),
+                    failure.error.clone(),
                 )
+                .to_string()
             })
             .chain(self.omissions.iter().map(|machine_id| {
                 format!("WARNING: Machine {machine_id} was omitted listing volumes")
             }))
             .chain(self.named_failures.iter().map(|failure| {
-                format!(
-                    "WARNING: Machine {} Docker Volume {}: {}",
-                    failure.id.machine_id, failure.id.name, failure.error.message
+                crate::failure::Failure::warned(
+                    format!(
+                        "Machine {} Docker Volume {}",
+                        failure.id.machine_id, failure.id.name
+                    ),
+                    failure.error.clone(),
                 )
+                .to_string()
             }))
     }
 }

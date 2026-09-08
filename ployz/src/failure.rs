@@ -512,6 +512,23 @@ mod tests {
         assert!(!user.contains("ployz version"), "{user}");
     }
 
+    #[test]
+    fn internal_warnings_name_the_bug_while_the_command_continues() {
+        let framed = Failure::warned(
+            "image listing failed for a Machine",
+            RpcError {
+                code: RpcErrorCode::Internal,
+                message: "boom".into(),
+                details: Value::Null,
+            },
+        )
+        .to_string();
+        assert!(framed.contains("WARNING"), "{framed}");
+        assert!(framed.contains("boom"), "{framed}");
+        assert!(framed.contains("bug"), "{framed}");
+        assert!(framed.contains("ployz version"), "{framed}");
+    }
+
     /// The framing decision is data, so nothing may render a typed error into
     /// product text and hand the text to `usage`: `context`, `wrap` and
     /// `Failures` all keep the code. This scan is the enforcement, so a new
