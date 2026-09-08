@@ -63,7 +63,7 @@ impl RpcError {
         let displaced = if self.details.is_object() {
             fields
                 .remove(Self::REPORT_KEY)
-                .filter(|prior| prior.as_str() != hint)
+                .filter(|prior| !hint.is_some_and(|hint| prior.as_str() == Some(hint)))
         } else {
             Some(self.details.clone()).filter(|details| !details.is_null())
         };
@@ -224,6 +224,17 @@ mod rpc_error_wire {
         assert_eq!(
             wire.pointer("/details/details"),
             Some(&json!("retry later"))
+        );
+
+        let structured = serde_json::to_value(error(
+            RpcErrorCode::NotFound,
+            json!({ "report": { "ticket": 1 } }),
+        ))
+        .unwrap();
+        assert_eq!(
+            structured.pointer("/details/details"),
+            Some(&json!({ "ticket": 1 })),
+            "a non-string collision is displaced, not dropped"
         );
 
         let untouched =

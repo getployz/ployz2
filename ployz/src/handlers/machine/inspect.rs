@@ -221,8 +221,11 @@ fn print_rtts(result: &PartialResult<Vec<RttObservation>, RpcError>) {
     print!("{}", format_rtt_table(result));
     for failure in &result.failures {
         eprintln!(
-            "WARNING: RTT inspection failed for {}: {}",
-            failure.machine_id, failure.error
+            "{}",
+            Error::warned(
+                format!("RTT inspection failed for {}", failure.machine_id),
+                failure.error.clone()
+            )
         );
     }
     for machine_id in &result.omissions {
