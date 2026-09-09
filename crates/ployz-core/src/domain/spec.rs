@@ -248,7 +248,7 @@ impl PlacementConstraint {
                 value.to_ascii_lowercase()
             )))
         };
-        parse().ok_or_else(|| PlacementConstraintError(expression))
+        parse().ok_or(PlacementConstraintError(expression))
     }
 
     /// Borrow the canonical expression.
@@ -310,12 +310,47 @@ impl std::fmt::Display for PlacementConstraint {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Default, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Placement {
     /// AND predicates retained for future Machines. Empty adds no restriction.
-    #[serde(default)]
+    #[serde(
+        default,
+        serialize_with = "serialize_constraints",
+        deserialize_with = "deserialize_constraints"
+    )]
     pub constraints: Vec<PlacementConstraint>,
+}
+
+impl PartialEq for Placement {
+    fn eq(&self, other: &Self) -> bool {
+        self.constraints
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            == other
+                .constraints
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+    }
+}
+
+fn serialize_constraints<S: serde::Serializer>(
+    constraints: &[PlacementConstraint],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    constraints
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .serialize(serializer)
+}
+
+fn deserialize_constraints<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<PlacementConstraint>, D::Error> {
+    let mut constraints = Vec::<PlacementConstraint>::deserialize(deserializer)?;
+    constraints.sort();
+    constraints.dedup();
+    Ok(constraints)
 }
 
 /// Docker's healthcheck disable token. Configured commands cannot begin with it.

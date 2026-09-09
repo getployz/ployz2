@@ -107,8 +107,27 @@ fn placement_constraints_are_validated_and_canonical_on_the_wire() {
     assert_eq!(
         serde_json::to_value(&placement).unwrap(),
         json!({
-            "constraints": ["node.labels.Region==eu-west", "node.id!=abc"]
+            "constraints": ["node.id!=abc", "node.labels.Region==eu-west"]
         })
+    );
+    let equivalent: Placement = serde_json::from_value(json!({
+        "constraints": ["node.id != ABC", "node.labels.Region==eu-west", "node.id!=abc"]
+    }))
+    .unwrap();
+    let mut programmatic = equivalent.clone();
+    programmatic.constraints.reverse();
+    programmatic
+        .constraints
+        .push(programmatic.constraints[0].clone());
+    assert_eq!(placement, programmatic);
+    assert_eq!(
+        serde_json::to_value(&placement).unwrap(),
+        serde_json::to_value(&programmatic).unwrap()
+    );
+    assert_eq!(placement, equivalent);
+    assert_eq!(
+        serde_json::to_value(&placement).unwrap(),
+        serde_json::to_value(&equivalent).unwrap()
     );
     for expression in [
         "",
