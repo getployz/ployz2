@@ -185,10 +185,12 @@ change must reach every Machine in every Cluster, while a client update ships
 instantly. This is an economic preference, not a rule that all coordination
 belongs in the client.
 
-**Machine-local admission.** Before any Service Container or hook mutation, the
-daemon reassesses the complete Resolved Service placement against fresh local
+**Machine-local admission.** Before creating a Service Container or hook, or
+preparing Service storage, the daemon reassesses placement against fresh local
 evidence and ensures mounted Volume readiness, including Provisioned Volumes.
-Ordinary mutations are refused when eligibility is ineligible or unknown.
+New work is refused when eligibility is ineligible or unknown. Placement and
+Machine Role changes do not prevent starting, restarting, stopping, or removing
+existing Containers.
 Observer-side eligibility remains advisory, including an Unknown safe hold. A
 dispatched Global catch-up operation makes exactly one fresh target-local
 eligibility decision: ensure eligible slots, retire definitely ineligible slots,
