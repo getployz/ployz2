@@ -250,7 +250,7 @@ export type LocalMachineRemoved = { reset_warning: string | null, };
 
 export type LogDriver = { name: string, options: { [key in string]: string }, };
 
-export type Machine = { id: MachineId, name: MachineName, subnet: MachineSubnet, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
+export type Machine = { labels: { [key in string]: string }, accepts_builds: boolean, accepts_services: boolean, accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubnet, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
 
 export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 

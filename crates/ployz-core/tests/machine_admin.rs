@@ -257,10 +257,11 @@ fn label_and_role_patch_preserves_unrelated_metadata_and_rejects_conflicts() {
     original.labels = BTreeMap::from([
         ("zone".into(), "west".into()),
         ("keep".into(), "yes".into()),
+        ("remove".into(), "old".into()),
     ]);
     let patch = MachineUpdate {
         label_add: BTreeMap::from([("zone".into(), "east".into())]),
-        label_rm: vec!["missing".into()],
+        label_rm: vec!["remove".into(), "missing".into()],
         accepts_services: Some(false),
         ..Default::default()
     };
