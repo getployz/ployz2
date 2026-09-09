@@ -201,7 +201,7 @@ describe("machine enrollment routes", () => {
     };
     for (const initialPolicy of [
       undefined,
-      { ...complete, accepts_builds: undefined },
+      { labels: complete.labels, accepts_services: false, accepts_ingress: false },
       { ...complete, labels: { "rack/zone": "west" } },
       { ...complete, labels: { "région": "west" } },
       { ...complete, labels: { pool: "" } },
