@@ -338,6 +338,23 @@ impl Remote {
             Err(ProvisionError::CleanupFailed { status })
         }
     }
+
+    async fn close_control_master(&self) {
+        let Some(control_path) = self.control_path.as_deref() else {
+            return;
+        };
+        let mut command = Command::new("ssh");
+        command.args(crate::connect::ssh_control_args(Some(control_path)));
+        if let Some(port) = self.destination.port() {
+            command.arg("-p").arg(port.to_string());
+        }
+        command.args(["-O", "exit", self.destination.target()]);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _ = tokio::process::Command::from(command).status().await;
+    }
 }
 
 fn ssh_key(matches: &ArgMatches) -> PathBuf {
@@ -477,7 +494,11 @@ pub async fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(
         remote.install(&remote_daemon, &arguments, via_sudo).await
     }
     .await;
-    finish_remote(primary, remote.cleanup(&remote_directory).await)
+    let cleanup = remote.cleanup(&remote_directory).await;
+    // Host preparation may add the SSH user to the ployz group. A multiplexed
+    // session authenticated before installation retains its old group list.
+    remote.close_control_master().await;
+    finish_remote(primary, cleanup)
 }
 
 /// Install and start local `ployzd` through a verified temporary daemon.
