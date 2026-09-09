@@ -29,13 +29,9 @@ impl PlacementConstraint {
                     .map(|(key, value)| (key.trim(), operator, value.trim()))
             })?;
             // Match Swarm's ASCII key/value grammar; punctuation is literal, never regex.
-            if !key
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || b"_-.".contains(&c))
+            if !key.bytes().all(crate::value::is_swarm_key_byte)
                 || value.is_empty()
-                || !value.bytes().all(|c| {
-                    c.is_ascii_alphanumeric() || b":-_ \t\r\n\x0c.*()?+[]\\^$|/".contains(&c)
-                })
+                || !value.bytes().all(crate::value::is_swarm_value_byte)
             {
                 return None;
             }
@@ -85,17 +81,7 @@ impl PlacementConstraint {
                     .map_or("", crate::MachineLabelValue::as_str)
             },
         );
-        // Swarm uses Unicode simple folding. The expression grammar is ASCII;
-        // Kelvin sign and long s are its only additional Unicode fold matches.
-        actual
-            .chars()
-            .map(|c| match c {
-                '\u{212a}' => 'k',
-                '\u{17f}' => 's',
-                other => other.to_ascii_lowercase(),
-            })
-            .eq(value.chars())
-            == equal
+        actual.eq_ignore_ascii_case(value) == equal
     }
 }
 

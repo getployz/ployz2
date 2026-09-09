@@ -383,6 +383,7 @@ fn machine() -> Command {
         .subcommand(machine_upgrade())
         .subcommand(
             machine_policy_flags(base("update", "Update machine configuration"))
+                .arg(many("label-rm", None).value_name("KEY"))
                 .arg(value("name", None))
                 .arg(value("public-ip", None))
                 .arg(many("wg-endpoint", None))
@@ -420,7 +421,6 @@ fn machine_upgrade() -> Command {
 fn machine_policy_flags(command: Command) -> Command {
     command
         .arg(many("label-add", None).value_name("KEY=VALUE"))
-        .arg(many("label-rm", None).value_name("KEY"))
         .args(
             ["accepts-builds", "accepts-services", "accepts-ingress"]
                 .map(|name| value(name, None).value_parser(clap::value_parser!(bool))),

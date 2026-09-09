@@ -245,8 +245,6 @@ fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rej
             "region=west",
             "--label-add",
             "disk=ssd",
-            "--label-rm",
-            "retired",
         ]);
         let matches = ployz::cli::command().try_get_matches_from(valid).unwrap();
         let mut leaf = &matches;
@@ -257,6 +255,12 @@ fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rej
         assert_eq!(leaf.get_one::<bool>("accepts-services"), Some(&false));
         assert_eq!(leaf.get_one::<bool>("accepts-ingress"), Some(&true));
         assert_eq!(leaf.get_many::<String>("label-add").unwrap().count(), 2);
+        let mut removal = args.clone();
+        removal.extend(["--label-rm", "retired"]);
+        assert_eq!(
+            ployz::cli::command().try_get_matches_from(removal).is_ok(),
+            args.get(2) == Some(&"update")
+        );
         for invalid in [
             "--no-ingress",
             "--accepts-services",

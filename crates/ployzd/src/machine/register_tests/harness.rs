@@ -58,16 +58,15 @@ pub(super) fn open_store(
     let data_dir = std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random()));
     let mut store = LocalMachineStore::open(&data_dir).unwrap();
     let founder = store
-        .initialize(
-            MachineName::parse("edge").unwrap(),
-            crate::machine::FoundingCluster {
-                network: "10.210.0.0/16".parse().unwrap(),
-            },
-            None,
-            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            None,
-            None,
-        )
+        .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("edge").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
         .unwrap();
     (data_dir, Arc::new(Mutex::new(store)), founder)
 }
@@ -187,6 +186,7 @@ pub(super) fn unreachable_allocator(id: MachineId) -> Machine {
 
 pub(super) fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterRequest {
     RegisterRequest {
+        initial_policy: Default::default(),
         name: MachineName::parse(name).unwrap(),
         storage: ployz_core::StorageChoice::None,
         public_key,

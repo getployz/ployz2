@@ -287,25 +287,41 @@ fn label_and_role_patch_preserves_unrelated_metadata_and_rejects_conflicts() {
 
 #[test]
 fn malformed_machine_labels_are_rejected_at_the_wire_boundary() {
-    let valid: MachineUpdate =
-        serde_json::from_value(serde_json::json!({"label_add": {"Region": "", "region": "west"}}))
-            .unwrap();
+    let valid: MachineUpdate = serde_json::from_value(
+        serde_json::json!({"label_add": {"Region": "East", "region": "west"}}),
+    )
+    .unwrap();
     let updated = apply_machine_update(&machine('1', "first", 1), &[], valid).unwrap();
     assert_eq!(
         serde_json::to_value(&updated)
             .unwrap()
             .get("labels")
             .unwrap(),
-        &serde_json::json!({"Region": "", "region": "west"})
+        &serde_json::json!({"Region": "East", "region": "west"})
     );
     let wire = serde_json::to_value(machine('1', "first", 1)).unwrap();
     for labels in [
         serde_json::json!({"bad key": "value"}),
+        serde_json::json!({"rack/zone": "west"}),
+        serde_json::json!({"région": "west"}),
+        serde_json::json!({"key": ""}),
+        serde_json::json!({"key": " west"}),
+        serde_json::json!({"key": "west "}),
+        serde_json::json!({"key": "é"}),
+        serde_json::json!({"key": "🦀"}),
+        serde_json::json!({"key": "K"}),
+        serde_json::json!({"key": "ſ"}),
+        serde_json::json!({"key": "a=b"}),
+        serde_json::json!({"key": "a,b"}),
+        serde_json::json!({"key": "a\tb"}),
         serde_json::json!({"key": "bad\nvalue"}),
     ] {
         let mut wire = wire.clone();
         *wire.get_mut("labels").unwrap() = labels.clone();
-        assert!(serde_json::from_value::<Machine>(wire).is_err());
+        assert!(serde_json::from_value::<Machine>(wire).is_err(), "{labels}");
+        assert!(serde_json::from_value::<ployz_core::InitialMachinePolicy>(serde_json::json!({
+            "labels": labels.clone(), "accepts_builds": true, "accepts_services": true, "accepts_ingress": true
+        })).is_err(), "{labels}");
         assert!(
             serde_json::from_value::<MachineUpdate>(serde_json::json!({"label_add": labels}))
                 .is_err()
@@ -314,4 +330,29 @@ fn malformed_machine_labels_are_rejected_at_the_wire_boundary() {
     assert!(
         serde_json::from_value::<MachineUpdate>(serde_json::json!({"label_rm": [" "]})).is_err()
     );
+}
+
+#[test]
+fn admitted_machine_labels_are_selectable_by_literal_swarm_constraints() {
+    for (key, value) in [
+        ("rack.zone-1_A", "West"),
+        ("Region", r"EU west:/alpha.*()?+[]\^$|_-"),
+    ] {
+        let patch: MachineUpdate =
+            serde_json::from_value(serde_json::json!({"label_add": {key: value}})).unwrap();
+        let selected = apply_machine_update(&machine('1', "first", 1), &[], patch).unwrap();
+        let constraint =
+            ployz_core::PlacementConstraint::parse(format!("node.labels.{key}=={value}")).unwrap();
+        assert!(constraint.matches(&selected));
+        let insensitive = ployz_core::PlacementConstraint::parse(format!(
+            "node.labels.{key}=={}",
+            value.to_ascii_uppercase()
+        ))
+        .unwrap();
+        assert!(insensitive.matches(&selected));
+        let missing =
+            ployz_core::PlacementConstraint::parse(format!("node.labels.missing!={value}"))
+                .unwrap();
+        assert!(missing.matches(&selected));
+    }
 }

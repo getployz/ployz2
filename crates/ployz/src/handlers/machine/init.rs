@@ -12,7 +12,6 @@ use crate::{
 pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let policy = super::enrollment_policy(matches)?;
-    let want_ingress = policy.accepts_ingress == Some(true);
     if matches.get_one::<String>("connect").is_some() {
         return Err(Error::usage(
             "machine init creates a new context; do not use --connect",
@@ -87,6 +86,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         let machine = helpers::initialize(
             &mut target,
             InitializeRequest {
+                initial_policy: policy,
                 name,
                 cluster_network,
                 public_ip: token.public_ip,
@@ -125,7 +125,6 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         let mut ready =
             helpers::wait_direct_participating(matches, &connection, "initial Machine did not become ready")
                 .await.map_err(|error| Error::usage(format!("Machine initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
-        super::apply_enrollment_policy(&mut ready, policy).await?;
         if want_dns {
             let endpoint = matches
                 .get_one::<String>("dns-endpoint")
@@ -138,7 +137,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             })?;
             println!("Reserved Cluster domain: {domain}");
         }
-        if want_ingress {
+        if machine.accepts_ingress {
             let requested = crate::ingress::service_spec(None, Default::default(), None).await.map_err(|error| Error::usage(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}")))?;
             crate::deploy::apply_requested(&mut ready, &requested).await.map_err(|error| {
                 let error: Error = error.into();

@@ -166,7 +166,8 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
 }
 
 pub(super) fn parse_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
-    let mut update = MachineUpdate {
+    let update = MachineUpdate {
+        label_add: parse_label_add(matches)?,
         label_rm: string_values(matches, "label-rm")
             .into_iter()
             .map(ployz_core::MachineLabelKey::parse)
@@ -176,38 +177,46 @@ pub(super) fn parse_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error>
         accepts_ingress: matches.get_one::<bool>("accepts-ingress").copied(),
         ..Default::default()
     };
-    for label in string_values(matches, "label-add") {
-        let (key, value) = label
-            .split_once('=')
-            .ok_or_else(|| Error::usage(format!("invalid label {label:?}: expected KEY=VALUE")))?;
-        if update
-            .label_add
-            .insert(key.parse()?, value.parse()?)
-            .is_some()
-        {
-            return Err(Error::usage(format!("duplicate label key {key:?}")));
-        }
-    }
     update.validate()?;
     Ok(update)
 }
 
-pub(super) fn enrollment_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
-    let mut policy = parse_policy(matches)?;
-    policy.accepts_builds.get_or_insert(true);
-    policy.accepts_services.get_or_insert(true);
-    policy.accepts_ingress.get_or_insert(true);
-    Ok(policy)
+fn parse_label_add(
+    matches: &ArgMatches,
+) -> Result<
+    std::collections::BTreeMap<ployz_core::MachineLabelKey, ployz_core::MachineLabelValue>,
+    Error,
+> {
+    let mut labels = std::collections::BTreeMap::new();
+    for label in string_values(matches, "label-add") {
+        let (key, value) = label
+            .split_once('=')
+            .ok_or_else(|| Error::usage(format!("invalid label {label:?}: expected KEY=VALUE")))?;
+        if labels.insert(key.parse()?, value.parse()?).is_some() {
+            return Err(Error::usage(format!("duplicate label key {key:?}")));
+        }
+    }
+    Ok(labels)
 }
 
-pub(super) async fn apply_enrollment_policy(
-    client: &mut crate::connect::Client,
-    update: MachineUpdate,
-) -> Result<ployz_core::Machine, Error> {
-    Ok(client
-        .call_repeatable::<op::UpdateMachine>(UpdateMachineRequest { update }, None)
-        .await?
-        .machine)
+pub(super) fn enrollment_policy(
+    matches: &ArgMatches,
+) -> Result<ployz_core::InitialMachinePolicy, Error> {
+    Ok(ployz_core::InitialMachinePolicy {
+        labels: parse_label_add(matches)?,
+        accepts_builds: matches
+            .get_one::<bool>("accepts-builds")
+            .copied()
+            .unwrap_or(true),
+        accepts_services: matches
+            .get_one::<bool>("accepts-services")
+            .copied()
+            .unwrap_or(true),
+        accepts_ingress: matches
+            .get_one::<bool>("accepts-ingress")
+            .copied()
+            .unwrap_or(true),
+    })
 }
 
 pub(super) fn parse_endpoints(
@@ -319,6 +328,12 @@ mod tests {
         for flags in [
             vec!["--label-add", "region"],
             vec!["--label-add", "=west"],
+            vec!["--label-add", "rack/zone=west"],
+            vec!["--label-add", "region="],
+            vec!["--label-add", "region=é"],
+            vec!["--label-add", "region=🦀"],
+            vec!["--label-add", "region= west"],
+            vec!["--label-add", "region=west "],
             vec!["--label-add", "region=west", "--label-add", "region=east"],
             vec!["--label-add", "region=west", "--label-rm", "region"],
         ] {

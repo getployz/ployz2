@@ -4,7 +4,8 @@ use super::*;
 
 #[tokio::test]
 async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
-    let founder = founder_machine();
+    let mut founder = founder_machine();
+    founder.accepts_ingress = false;
     let machine_id = founder.id;
     let relay = RelayListen::start().await;
     let pairing =
@@ -97,6 +98,7 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
         .await
         .call::<op::Initialize>(
             InitializeRequest {
+                initial_policy: Default::default(),
                 name: founder.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
@@ -160,6 +162,10 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
         .await
         .call::<op::Initialize>(
             InitializeRequest {
+                initial_policy: ployz_core::InitialMachinePolicy {
+                    accepts_ingress: false,
+                    ..Default::default()
+                },
                 name: founder.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: None,
@@ -229,6 +235,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         .await
         .call::<op::Initialize>(
             InitializeRequest {
+                initial_policy: Default::default(),
                 name: founder.name,
                 cluster_network: "10.210.0.0/16".parse().unwrap(),
                 public_ip: founder.public_ip,

@@ -20,7 +20,7 @@ use ployz_core::{
 use thiserror::Error;
 use tokio::sync::{OwnedMutexGuard, watch};
 
-use super::{FoundingCluster, LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
+use super::{LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
 
 use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
@@ -99,6 +99,10 @@ pub enum Error {
     KeyAlreadyNamed,
     #[error("Machine Name is already used by another public key")]
     NameTaken,
+    #[error(
+        "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine"
+    )]
+    InitialPolicyMismatch,
     #[error("at least one Machine update is required")]
     EmptyUpdate,
     #[error("local Machine record lock poisoned")]
@@ -409,16 +413,7 @@ impl LocalMachine {
     /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned
     /// and [`Error::Store`] when initialize is not legal in the current phase.
     fn initialize_admitted(&self, request: InitializeRequest) -> Result<Initialized, Error> {
-        let machine = self.lock_store()?.initialize(
-            request.name,
-            FoundingCluster {
-                network: request.cluster_network,
-            },
-            request.public_ip,
-            request.advertised_endpoints,
-            request.wireguard_mtu,
-            request.cloud_pairing,
-        )?;
+        let machine = self.lock_store()?.initialize(request)?;
         tracing::info!(
             name = machine.name.as_str(),
             id = machine.id.as_str(),
@@ -499,6 +494,9 @@ impl LocalMachine {
         let Some(machine) = recognize(request.public_key, &request.name, &machines)? else {
             return Ok(None);
         };
+        if !request.initial_policy.matches(machine) {
+            return Err(Error::InitialPolicyMismatch);
+        }
         let assigned_machine = machine.clone();
         Ok(Some(registered(
             assigned_machine,
@@ -540,6 +538,9 @@ impl LocalMachine {
             if let Some(machine) =
                 recognize(request.public_key, &request.name, &snapshot.observations)?
             {
+                if !request.initial_policy.matches(machine) {
+                    return Err(Error::InitialPolicyMismatch);
+                }
                 machine.clone()
             } else {
                 let me = self.record()?.id();
@@ -552,10 +553,10 @@ impl LocalMachine {
                 }
                 let network = replicated.cluster_network().await?;
                 let assigned_machine = Machine {
-                    labels: Default::default(),
-                    accepts_builds: true,
-                    accepts_services: true,
-                    accepts_ingress: true,
+                    labels: request.initial_policy.labels,
+                    accepts_builds: request.initial_policy.accepts_builds,
+                    accepts_services: request.initial_policy.accepts_services,
+                    accepts_ingress: request.initial_policy.accepts_ingress,
                     id: MachineId::random(),
                     name: request.name,
                     subnet: allocate_machine_subnet(

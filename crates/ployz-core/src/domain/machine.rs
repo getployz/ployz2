@@ -34,6 +34,38 @@ pub(super) fn resolve_machine_text<'a>(
     exact_id.map_or_else(|| NameMatches::from_matches(names), NameMatches::One)
 }
 
+/// Complete admission policy committed with a Machine's initial assignment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct InitialMachinePolicy {
+    pub labels: BTreeMap<MachineLabelKey, MachineLabelValue>,
+    pub accepts_builds: bool,
+    pub accepts_services: bool,
+    pub accepts_ingress: bool,
+}
+
+impl InitialMachinePolicy {
+    /// Whether this complete policy matches the currently observed Machine.
+    #[must_use]
+    pub fn matches(&self, machine: &Machine) -> bool {
+        self.labels == machine.labels
+            && self.accepts_builds == machine.accepts_builds
+            && self.accepts_services == machine.accepts_services
+            && self.accepts_ingress == machine.accepts_ingress
+    }
+}
+
+impl Default for InitialMachinePolicy {
+    fn default() -> Self {
+        Self {
+            labels: BTreeMap::new(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
+        }
+    }
+}
+
 /// One Machine's durable advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Machine {

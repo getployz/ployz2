@@ -61,6 +61,7 @@ struct JoinInner {
     join_attempts: AtomicUsize,
     lose_lifecycle_reply: AtomicBool,
     initialize_requests: Mutex<Vec<InitializeRequest>>,
+    register_request: Mutex<Option<ployz_core::RegisterRequest>>,
     lose_initialize_reply: AtomicBool,
     startup_inspect_failures: AtomicUsize,
     replace_identity_on_initialize: AtomicBool,
@@ -105,6 +106,7 @@ impl JoinDaemon {
                 join_attempts: AtomicUsize::new(0),
                 lose_lifecycle_reply: AtomicBool::new(false),
                 initialize_requests: Mutex::new(Vec::new()),
+                register_request: Mutex::new(None),
                 lose_initialize_reply: AtomicBool::new(false),
                 startup_inspect_failures: AtomicUsize::new(0),
                 replace_identity_on_initialize: AtomicBool::new(false),
@@ -160,6 +162,15 @@ impl JoinDaemon {
 
     pub fn initialize_requests(&self) -> Vec<InitializeRequest> {
         self.inner.initialize_requests.lock().unwrap().clone()
+    }
+
+    pub fn register_request(&self) -> ployz_core::RegisterRequest {
+        self.inner
+            .register_request
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("Register was called")
     }
 
     pub fn reset_count(&self) -> usize {
@@ -454,6 +465,7 @@ impl MachineRpc for JoinDaemon {
             )
             .await?;
         }
+        *self.inner.current_machine.lock().unwrap() = join.registration.assigned_machine.clone();
         *self.inner.join_request.lock().unwrap() = Some(join);
         self.inner.joined.store(true, Ordering::SeqCst);
         if self
@@ -533,6 +545,11 @@ impl MachineRpc for JoinDaemon {
         let pairing = init.cloud_pairing.clone();
         let mut machine = self.inner.current_machine.lock().unwrap().clone();
         machine.name = init.name.clone();
+        machine.labels = init.initial_policy.labels.clone();
+        machine.accepts_builds = init.initial_policy.accepts_builds;
+        machine.accepts_services = init.initial_policy.accepts_services;
+        machine.accepts_ingress = init.initial_policy.accepts_ingress;
+        *self.inner.current_machine.lock().unwrap() = machine.clone();
         self.inner.initialize_requests.lock().unwrap().push(init);
         self.record("initialize");
         self.inner.joined.store(true, Ordering::SeqCst);
@@ -584,6 +601,7 @@ impl MachineRpc for JoinDaemon {
             .into_inner()
             .decode_request()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        self.record("update_machine");
         let RpcRequestBody::UpdateMachine(request) = decoded.body else {
             return Err(Status::invalid_argument("expected UpdateMachine"));
         };
@@ -599,8 +617,16 @@ impl MachineRpc for JoinDaemon {
     }
     async fn register(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::Register(request) = decoded.body else {
+            return Err(Status::invalid_argument("expected Register"));
+        };
+        *self.inner.register_request.lock().unwrap() = Some(request);
         rpc_ok(self.inner.registration.clone())
     }
     async fn list_machines(

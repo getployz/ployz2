@@ -48,21 +48,54 @@ fn machine_record_is_created_once_and_reopened_with_private_permissions() {
     assert_eq!(reopened.record().phase(), LocalMachinePhase::Uninitialized);
 }
 
+#[tokio::test]
+async fn initialize_commits_policy_in_the_first_participating_record() {
+    let dir = TestDir::new("ployzd-initialize-policy");
+    let local = LocalMachine::new(
+        Arc::new(Mutex::new(LocalMachineStore::open(&dir.0).unwrap())),
+        tokio::sync::watch::channel(false).0,
+    );
+    let request = serde_json::from_value(serde_json::json!({
+        "name": "builder",
+        "cluster_network": "10.210.0.0/16",
+        "advertised_endpoints": ["192.0.2.1:51820"],
+        "cloud_pairing": null,
+        "initial_policy": {
+            "labels": {"pool": "build"},
+            "accepts_builds": true,
+            "accepts_services": false,
+            "accepts_ingress": false
+        }
+    }))
+    .unwrap();
+    let initialized = local.initialize(request).await.unwrap().machine;
+    assert!(
+        !initialized.accepts_services,
+        "initial durable record must refuse Services"
+    );
+    assert!(!initialized.accepts_ingress);
+    assert!(initialized.accepts_builds);
+    assert_eq!(initialized.labels.get("pool").unwrap().as_str(), "build");
+    drop(local);
+    let reopened = LocalMachineStore::open(&dir.0).unwrap();
+    assert_eq!(reopened.record().phase(), LocalMachinePhase::Participating);
+    assert_eq!(reopened.record().machine(), Some(&initialized));
+}
+
 #[test]
 fn initialize_and_join_persist_the_only_supported_transitions() {
     let first_dir = TestDir::new("ployzd-initialize");
     let mut first = LocalMachineStore::open(&first_dir.0).unwrap();
     let initialized = first
-        .initialize(
-            MachineName::parse("first").unwrap(),
-            ployzd::machine::FoundingCluster {
-                network: "10.210.0.0/16".parse().unwrap(),
-            },
-            Some("203.0.113.1".parse().unwrap()),
-            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            Some(1400),
-            None,
-        )
+        .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("first").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: Some("203.0.113.1".parse().unwrap()),
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            wireguard_mtu: Some(1400),
+            cloud_pairing: None,
+        })
         .unwrap();
     assert_eq!(first.record().phase(), LocalMachinePhase::Participating);
     assert_eq!(first.record().machine(), Some(&initialized));
@@ -81,16 +114,15 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     assert_eq!(first.record().cloud_pairing, None);
     assert!(
         first
-            .initialize(
-                MachineName::parse("again").unwrap(),
-                ployzd::machine::FoundingCluster {
-                    network: "10.210.0.0/16".parse().unwrap(),
-                },
-                None,
-                vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
-                None,
-                None,
-            )
+            .initialize(ployz_core::InitializeRequest {
+                initial_policy: Default::default(),
+                name: MachineName::parse("again").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            })
             .is_err()
     );
 
@@ -144,6 +176,7 @@ async fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential()
 
     local
         .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
             public_ip: None,
@@ -186,6 +219,7 @@ async fn set_cloud_pairing_after_initialize_persists() {
 
     local
         .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
             public_ip: None,
@@ -218,6 +252,7 @@ async fn set_cloud_pairing_none_clears_persisted_pairing() {
     let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
     local
         .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
             public_ip: None,
@@ -252,16 +287,15 @@ async fn join_with_cloud_pairing_stores_the_same_two_fields() {
     let first_dir = TestDir::new("ployzd-join-cloud-pairing-first");
     let mut first = LocalMachineStore::open(&first_dir.0).unwrap();
     let initialized = first
-        .initialize(
-            MachineName::parse("first").unwrap(),
-            ployzd::machine::FoundingCluster {
-                network: "10.210.0.0/16".parse().unwrap(),
-            },
-            None,
-            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            None,
-            None,
-        )
+        .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("first").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
         .unwrap();
 
     let second_dir = TestDir::new("ployzd-join-cloud-pairing-second");
@@ -312,16 +346,15 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
     let dir = TestDir::new("ployzd-runtime-refresh");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
     store
-        .initialize(
-            MachineName::parse("machine").unwrap(),
-            ployzd::machine::FoundingCluster {
-                network: "10.210.0.0/16".parse().unwrap(),
-            },
-            None,
-            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            None,
-            None,
-        )
+        .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("machine").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
         .unwrap();
     drop(store);
 
@@ -350,16 +383,15 @@ fn machine_update_is_atomic_and_durable() {
     let dir = TestDir::new("ployzd-update");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
     let original = store
-        .initialize(
-            MachineName::parse("before").unwrap(),
-            ployzd::machine::FoundingCluster {
-                network: "10.210.0.0/16".parse().unwrap(),
-            },
-            None,
-            vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            None,
-            None,
-        )
+        .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("before").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
         .unwrap();
     let endpoints = vec![AdvertisedEndpoint("198.51.100.2:6000".parse().unwrap())];
     let updated = store
@@ -464,6 +496,7 @@ async fn inspect_reports_stored_cloud_pairing_without_the_secret() {
     let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
     local
         .initialize(ployz_core::InitializeRequest {
+            initial_policy: Default::default(),
             name: MachineName::parse("first").unwrap(),
             cluster_network: "10.210.0.0/16".parse().unwrap(),
             public_ip: None,

@@ -5,7 +5,7 @@ mod admission;
 
 use super::*;
 use crate::{
-    machine::{FoundingCluster, LocalMachineStore},
+    machine::LocalMachineStore,
     machine_api::{MachineApi, MachineService},
 };
 use ployz_core::MachineRpcClient;
@@ -44,18 +44,17 @@ impl Fixture {
         .unwrap();
         let mut store = LocalMachineStore::open(root.join("machine")).unwrap();
         let machine = store
-            .initialize(
-                ployz_core::MachineName::parse("builder").unwrap(),
-                FoundingCluster {
-                    network: "10.210.0.0/16".parse().unwrap(),
-                },
-                None,
-                vec![ployz_core::AdvertisedEndpoint(
+            .initialize(ployz_core::InitializeRequest {
+                initial_policy: Default::default(),
+                name: ployz_core::MachineName::parse("builder").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
                     "127.0.0.1:7569".parse().unwrap(),
                 )],
-                None,
-                None,
-            )
+                wireguard_mtu: None,
+                cloud_pairing: None,
+            })
             .unwrap();
         let (restart, _) = tokio::sync::watch::channel(false);
         let (runtime, _) = crate::docker::test_support::fake_runtime_with(Default::default()).await;

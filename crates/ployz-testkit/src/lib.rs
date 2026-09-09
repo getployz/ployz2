@@ -376,6 +376,7 @@ impl Cluster {
             client
                 .initialize(
                     op::Initialize::into_request(InitializeRequest {
+                        initial_policy: Default::default(),
                         name: MachineName::parse("machine-1")?,
                         cluster_network: "10.210.0.0/16".parse().expect("static network is valid"),
                         public_ip: None,

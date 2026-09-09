@@ -67,6 +67,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let registration = entry
             .call_repeatable::<op::Register>(
                 RegisterRequest {
+                    initial_policy: policy,
                     name,
                     storage,
                     public_key: token.public_key,
@@ -101,15 +102,11 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     config.save()?;
     println!("{}", added_machine_line(&assigned));
 
-    let assigned = runtime.block_on(async {
-        let mut ready = helpers::wait_direct_participating(
-            matches,
-            &connection,
-            "added Machine did not become ready",
-        )
-        .await?;
-        super::apply_enrollment_policy(&mut ready, policy).await
-    })?;
+    runtime.block_on(helpers::wait_direct_participating(
+        matches,
+        &connection,
+        "added Machine did not become ready",
+    ))?;
 
     let catch_up = runtime.block_on(async {
         let mut entry = super::super::reconnect_client(matches, options.context()).await?;

@@ -23,6 +23,7 @@ use crate::{
 };
 
 mod harness;
+mod policy;
 use harness::*;
 
 #[tokio::test]
