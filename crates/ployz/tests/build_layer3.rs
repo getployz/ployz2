@@ -744,3 +744,5 @@ with tarfile.open(sys.argv[1]) as archive:
     command(["volume", "inspect", &cache_volume()]);
     fs::remove_dir_all(root).unwrap();
 }
+#[path = "build_layer3/policy.rs"]
+mod policy;

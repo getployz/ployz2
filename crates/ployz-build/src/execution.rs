@@ -68,6 +68,8 @@ pub use tokio_util::sync::CancellationToken as Cancellation;
 pub struct HostPolicy {
     /// Machine-local retained builder ownership.
     pub state_directory: PathBuf,
+    /// Host-owned settings file, read once at admission.
+    pub configuration_file: PathBuf,
     /// Host-installed Docker executable.
     pub docker: PathBuf,
     /// Total active budget beginning at admission.
@@ -77,6 +79,9 @@ impl Default for HostPolicy {
     fn default() -> Self {
         Self {
             state_directory: crate::builder::directory(),
+            configuration_file: std::env::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/"))
+                .join(".ployz/build.yaml"),
             docker: "docker".into(),
             active_timeout: EXECUTION_TIMEOUT,
         }
@@ -89,21 +94,27 @@ pub struct Admission {
     pub(crate) lock: Lock,
     pub(crate) deadline: Deadline,
     pub(crate) cancellation: Cancellation,
+    pub(crate) resources: crate::policy::Resources,
 }
 impl Admission {
     /// Acquire under host policy, including the deadline that starts before upload.
     /// # Errors
     /// Refuses busy or quarantined state and reports filesystem failures.
     pub fn try_acquire_with(policy: &HostPolicy) -> Result<Self, BuildError> {
+        let resources = crate::policy::Resources::load(&policy.configuration_file)?;
         Ok(Self {
+            resources,
             lock: Lock::try_acquire_in(&policy.state_directory)?,
             deadline: Deadline::starting_now(policy.active_timeout),
             cancellation: Cancellation::default(),
         })
     }
     pub(crate) fn wait(cancellation: &Cancellation) -> Result<Self, BuildError> {
+        let lock = Lock::acquire(cancellation)?;
+        let resources = crate::policy::Resources::load(&HostPolicy::default().configuration_file)?;
         Ok(Self {
-            lock: Lock::acquire(cancellation)?,
+            resources,
+            lock,
             deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
             cancellation: cancellation.clone(),
         })

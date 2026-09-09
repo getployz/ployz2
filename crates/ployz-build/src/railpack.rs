@@ -15,6 +15,8 @@ use std::{
 const IMAGE: &str = "ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103";
 
 /// Private captured inputs for a Railpack target. Never a display payload.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Railpack {
     /// Buildx target name before Compose's dot normalization.
     pub name: String,
@@ -52,6 +54,7 @@ pub(crate) fn prepare(
     docker: &Docker<'_>,
     request: &Request<'_>,
     native: &str,
+    resources: &crate::policy::Resources,
 ) -> Result<Option<Preparation>, BuildError> {
     if request.railpack.is_empty() {
         return Ok(None);
@@ -142,6 +145,7 @@ pub(crate) fn prepare(
             &request.working_dir.join(&recipe.context),
             &script,
             &plan,
+            resources,
         )?;
         // Length-delimited, sorted JSON prevents ambiguous concatenations. Only
         // the digest reaches BuildKit metadata; values travel as secret mounts.
@@ -175,18 +179,20 @@ fn prepare_container(
     context: &Path,
     script: &Path,
     plan: &Path,
+    resources: &crate::policy::Resources,
 ) -> Result<(), BuildError> {
     let name = format!("{}-prepare", builder_name());
+    let mut arguments = vec![
+        "--network".into(),
+        "host".into(),
+        "--entrypoint".into(),
+        "/bin/sh".into(),
+    ];
+    arguments.extend(resources.preparation_arguments());
+    arguments.extend([IMAGE.into(), "/prepare.sh".into()]);
     docker.with_container(
         &name,
-        &[
-            "--network",
-            "host",
-            "--entrypoint",
-            "/bin/sh",
-            IMAGE,
-            "/prepare.sh",
-        ],
+        &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
         |name| {
             docker.run(
                 "copy captured Railpack source",

@@ -13,6 +13,8 @@
 mod builder;
 mod execution;
 mod index;
+mod policy;
+pub use policy::clear_cache;
 mod received_recipe;
 pub mod remote;
 mod upload;
@@ -267,16 +269,19 @@ pub fn execute_admitted(
     let metadata = request.working_dir.join("build-metadata.json");
     progress(Progress::Stage(Stage::Preparation));
     docker
+        .require_local()
+        .map_err(|error| error.at(Stage::Preparation))?;
+    docker
         .run("check Buildx", &["buildx", "version"], Streams::Captured)
         .map_err(|error| error.at(Stage::Preparation))?;
-    let builder =
-        Builder::acquire(&docker, admission.lock).map_err(|error| error.at(Stage::Preparation))?;
+    let builder = Builder::acquire(&docker, admission.lock, &admission.resources)
+        .map_err(|error| error.at(Stage::Preparation))?;
     let mut preparation = None;
     let result = (|| {
         let native = builder
-            .native_platform(request.targets)
+            .native_platform(request.targets, &admission.resources)
             .map_err(|error| error.at(Stage::Preparation))?;
-        preparation = railpack::prepare(&docker, request, &native)
+        preparation = railpack::prepare(&docker, request, &native, &admission.resources)
             .map_err(|error| error.at(Stage::Preparation))?;
         let overrides = preparation
             .as_ref()
@@ -366,6 +371,15 @@ pub fn execute_admitted(
             .collect())
     })();
     progress(Progress::Stage(Stage::Cleanup));
+    // An ephemeral worker may exit before periodic GC runs. Use upstream
+    // pruning after successful output, while the same ownership is still held.
+    let result = result.and_then(|images| {
+        admission
+            .resources
+            .collect_cache(&docker.releasing())
+            .map_err(|error| error.at(Stage::Cleanup))?;
+        Ok(images)
+    });
     builder.finish(result)
 }
 
@@ -663,6 +677,39 @@ impl<'a> Docker<'a> {
             .filter(|host| !host.is_empty())
             .cloned()
             .unwrap_or_else(|| "unix:///var/run/docker.sock".into())
+    }
+
+    /// Host policy and builder ownership apply only to this Machine's Docker.
+    fn require_local(&self) -> Result<(), BuildError> {
+        if self
+            .environment
+            .get("DOCKER_HOST")
+            .is_some_and(|host| !host.is_empty() && !host.starts_with("unix:///"))
+            || self
+                .environment
+                .get("DOCKER_CONTEXT")
+                .is_some_and(|context| !matches!(context.as_str(), "" | "default"))
+        {
+            return Err(BuildError::Prerequisite(
+                "build operations require local Docker; use a selected Machine for remote builds"
+                    .into(),
+            ));
+        }
+        // Resolve currentContext before any builder mutation.
+        if self
+            .run(
+                "inspect Docker context",
+                &["context", "show"],
+                Streams::Captured,
+            )?
+            .trim()
+            != "default"
+        {
+            return Err(BuildError::Prerequisite(
+                "build operations require local Docker's default context".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// The same Docker with a fresh budget for releasing resources, so

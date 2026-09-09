@@ -504,6 +504,7 @@ fn multi_platform_failures_preserve_output_stage_and_completed_image_evidence() 
     }];
     let environment = BTreeMap::from([("PATH".into(), std::env::var("PATH").unwrap())]);
     let policy = HostPolicy {
+        configuration_file: root.join("build.yaml"),
         state_directory: root.join("state"),
         docker,
         active_timeout: std::time::Duration::from_secs(15),
