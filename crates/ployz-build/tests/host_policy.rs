@@ -122,6 +122,7 @@ fn admitted_limits_cover_worker_and_railpack_preparation_despite_later_policy_ed
     let host = Host::new(&format!(
         r#"
 case "$1 $2" in
+ 'context show') echo default ;;
  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CpuCfsPeriod":true,"CpuCfsQuota":true,"MemoryLimit":true,"SwapLimit":true}}' ;;
  'version --format') echo linux/amd64 ;;
  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
@@ -175,7 +176,7 @@ exit 0
 #[test]
 fn resource_launch_failure_reports_preparation_and_releases_confirmed_ownership() {
     let host = Host::new(
-        "if [ \"$1 $2\" = 'buildx create' ]; then echo 'CPU quota unsupported' >&2; exit 1; fi\nexit 0",
+        "if [ \"$1 $2\" = 'context show' ]; then echo default; fi\nif [ \"$1 $2\" = 'buildx create' ]; then echo 'CPU quota unsupported' >&2; exit 1; fi\nexit 0",
     );
     host.configure("cpu_cores: 0.5");
     let targets = [Target {
@@ -286,6 +287,55 @@ fn missing_home_uses_the_accounts_build_policy() {
             fs::read(&output).unwrap(),
             expected.as_os_str().as_encoded_bytes()
         );
+    }
+}
+
+#[test]
+fn builds_refuse_remote_routing_before_builder_mutation() {
+    let host = Host::new(
+        r#"
+root=$(dirname "$0")
+if [ "$1 $2" = 'context show' ]; then echo "${PLOYZ_POLICY_CONTEXT:-default}"; exit 0; fi
+echo "$*" >> "$root/mutations"
+"#,
+    );
+    let targets = [Target {
+        name: "api".into(),
+        platform: None,
+    }];
+    for (key, value) in [
+        ("DOCKER_HOST", "ssh://remote"),
+        ("DOCKER_HOST", "tcp://remote:2375"),
+        ("DOCKER_CONTEXT", "remote"),
+        ("PLOYZ_POLICY_CONTEXT", "remote"),
+    ] {
+        let environment = BTreeMap::from([
+            (key.into(), value.into()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ]);
+        let error = execute_admitted(
+            &Request {
+                compose_file: &host.file("compose.yaml"),
+                working_dir: &host.policy.state_directory,
+                environment: &environment,
+                docker: Some(&host.policy.docker),
+                targets: &targets,
+                railpack: &[],
+                build_args: &[],
+                output: Output::Validate,
+                no_cache: false,
+                pull: false,
+            },
+            Admission::try_acquire_with(&host.policy).unwrap(),
+            &|_| {},
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("local Docker"),
+            "{key}={value}: {error}"
+        );
+        assert!(!host.file("mutations").exists(), "{key}={value}");
+        assert!(Admission::try_acquire_with(&host.policy).is_ok());
     }
 }
 

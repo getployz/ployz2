@@ -250,6 +250,9 @@ pub fn execute_admitted(
     let metadata = request.working_dir.join("build-metadata.json");
     progress(Progress::Stage(Stage::Preparation));
     docker
+        .require_local()
+        .map_err(|error| error.at(Stage::Preparation))?;
+    docker
         .run("check Buildx", &["buildx", "version"], Streams::Captured)
         .map_err(|error| error.at(Stage::Preparation))?;
     let builder = Builder::acquire(&docker, admission.lock, &admission.resources)
@@ -629,6 +632,39 @@ pub(crate) struct Docker<'a> {
 }
 
 impl<'a> Docker<'a> {
+    /// Host policy and builder ownership apply only to this Machine's Docker.
+    fn require_local(&self) -> Result<(), BuildError> {
+        if self
+            .environment
+            .get("DOCKER_HOST")
+            .is_some_and(|host| !host.is_empty() && !host.starts_with("unix:///"))
+            || self
+                .environment
+                .get("DOCKER_CONTEXT")
+                .is_some_and(|context| !matches!(context.as_str(), "" | "default"))
+        {
+            return Err(BuildError::Prerequisite(
+                "build operations require local Docker; use a selected Machine for remote builds"
+                    .into(),
+            ));
+        }
+        // Resolve currentContext before any builder mutation.
+        if self
+            .run(
+                "inspect Docker context",
+                &["context", "show"],
+                Streams::Captured,
+            )?
+            .trim()
+            != "default"
+        {
+            return Err(BuildError::Prerequisite(
+                "build operations require local Docker's default context".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// The same Docker with a fresh budget for releasing resources, so
     /// cleanup still runs, bounded, after the attempt's deadline passes.
     pub(crate) fn releasing(&self) -> Docker<'a> {

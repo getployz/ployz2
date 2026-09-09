@@ -182,6 +182,7 @@ fn cancellation_between_pushes_leaves_later_targets_unattempted() {
         &format!(
             r#"#!/bin/sh
 case "$1 $2" in
+  'context show') echo default ;;
   'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake') echo invoked >> pushes ;;

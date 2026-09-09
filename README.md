@@ -42,6 +42,11 @@ exclusive Ployz builder cache; unrelated Docker builder caches are untouched.
 Builds on the selected Machine. That Machine supplies the build resource policy;
 source uploads and build requests cannot change it.
 
+Ordinary builds use local Docker: remote `DOCKER_HOST` endpoints and non-default
+Docker contexts are rejected by the shared executor before builder mutation.
+Use a selected Machine for remote builds so policy and ownership are enforced
+on the execution host.
+
 Configure the execution user on each build host in `~/.ployz/build.yaml` (the daemon
 user for selected-Machine Builds). If `HOME` is unset or empty, the user's account
 home is used. The file is read once at admission. All fields

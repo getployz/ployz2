@@ -182,17 +182,6 @@ impl Resources {
 pub fn clear_cache(policy: &HostPolicy) -> Result<(), BuildError> {
     let admission = Admission::try_acquire_with(policy)?;
     let environment: BTreeMap<String, String> = std::env::vars().collect();
-    if environment
-        .get("DOCKER_HOST")
-        .is_some_and(|host| !host.is_empty() && !host.starts_with("unix:///"))
-        || environment
-            .get("DOCKER_CONTEXT")
-            .is_some_and(|context| !matches!(context.as_str(), "" | "default"))
-    {
-        return Err(BuildError::Prerequisite(
-            "cache clearing requires local Docker; unset remote DOCKER_HOST/DOCKER_CONTEXT".into(),
-        ));
-    }
     // Private command output must not collide with a concurrent caller or a Build.
     let directory = policy
         .state_directory
@@ -208,20 +197,7 @@ pub fn clear_cache(policy: &HostPolicy) -> Result<(), BuildError> {
         progress: None,
     };
     let result = (|| {
-        // Ask Docker to resolve currentContext before touching the builder.
-        if docker
-            .run(
-                "inspect Docker context",
-                &["context", "show"],
-                Streams::Captured,
-            )?
-            .trim()
-            != "default"
-        {
-            return Err(BuildError::Prerequisite(
-                "cache clearing requires local Docker's default context".into(),
-            ));
-        }
+        docker.require_local()?;
         let builder = Builder::acquire(&docker, admission.lock, &admission.resources)?;
         let result = docker
             .run(
