@@ -344,12 +344,10 @@ mod tests {
         fs::write(source.join(".dockerignore"), "ignored\n").unwrap();
         fs::write(source.join("included"), "original").unwrap();
         let _socket = UnixListener::bind(source.join("ignored/socket")).unwrap();
-        rustix::fs::mknodat(
+        rustix::fs::mkfifoat(
             rustix::fs::CWD,
             source.join("ignored/fifo"),
-            rustix::fs::FileType::Fifo,
             rustix::fs::Mode::RUSR,
-            0,
         )
         .unwrap();
         fs::write(source.join("ignored/unreadable"), "private").unwrap();
