@@ -280,6 +280,7 @@ pub fn capture_build(
         }
     }
     inputs.verify()?;
+    inputs.railpack(&railpack_recipes)?;
     let mut secrets = BTreeMap::new();
     for name in secret_names {
         let value = project.resolve_secret(&name)?;
@@ -577,13 +578,6 @@ impl CapturedBuild {
                     images: images.into_iter().map(|service| service.built).collect(),
                 },
                 Err(outcome) => outcome,
-            };
-        }
-        if !self.railpack.is_empty() {
-            return ployz_build::remote::Outcome::Failed {
-                stage: ployz_build::Stage::Preparation,
-                message: "remote builds currently support Dockerfile recipes only; Railpack requires a local build".into(),
-                work: ployz_build::WorkEvidence::new(&self.targets),
             };
         }
         let definition = ployz_build::remote::Definition {

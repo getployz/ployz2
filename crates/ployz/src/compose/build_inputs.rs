@@ -144,6 +144,15 @@ impl BuildInputs {
                 .map_err(input_error)?;
             }
         }
+        let metadata = inputs.root.join("private/railpack.json");
+        if metadata.exists() {
+            let mut recipes: Vec<ployz_build::Railpack> =
+                serde_json::from_slice(&fs::read(&metadata).map_err(input_error)?)
+                    .map_err(|error| ComposeError::Invalid(error.to_string()))?;
+            recipes.retain(|recipe| recipe.name == name);
+            fs::remove_file(metadata).map_err(input_error)?;
+            inputs.railpack(&recipes)?;
+        }
         let mut recipe: serde_norway::Value = serde_norway::from_slice(
             &fs::read(self.root.join("compose.yaml")).map_err(input_error)?,
         )
@@ -302,8 +311,20 @@ impl BuildInputs {
         Ok(captured)
     }
 
-    /// Write the captured Compose file beside the sources it points at, so the
-    /// build sees one private directory rather than scattered temporary paths.
+    /// Keep Railpack recipe metadata and variables in private upload material.
+    ///
+    /// # Errors
+    /// Fails if the private file cannot be written.
+    pub(super) fn railpack(&self, recipes: &[ployz_build::Railpack]) -> Result<(), ComposeError> {
+        if recipes.is_empty() {
+            return Ok(());
+        }
+        let bytes =
+            serde_json::to_vec(recipes).map_err(|error| input_error(io::Error::other(error)))?;
+        self.private(&self.root.join("private/railpack.json"), &bytes)
+    }
+
+    /// Write the captured Compose file beside its sources.
     ///
     /// # Errors
     /// Fails if the private file cannot be written.
@@ -653,6 +674,43 @@ fn validate_link(path: &Path, root: &Path, selection: Option<&Selection>) -> io:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn per_service_capture_keeps_only_its_railpack_recipe() {
+        let inputs = BuildInputs::new().unwrap();
+        inputs
+            .compose("services: {api: {build: .}, web: {build: .}, base: {build: .}}\n")
+            .unwrap();
+        inputs
+            .railpack(&["api", "web"].map(|name| ployz_build::Railpack {
+                name: name.into(),
+                context: "source".into(),
+                variables: BTreeMap::new(),
+                refresh_cache: false,
+            }))
+            .unwrap();
+        for name in ["api", "web", "base"] {
+            let selected = inputs.for_service(name).unwrap();
+            let metadata = selected.root().join("private/railpack.json");
+            if name == "base" {
+                assert!(!metadata.exists());
+            } else {
+                let recipes: Vec<ployz_build::Railpack> =
+                    serde_json::from_slice(&fs::read(metadata).unwrap()).unwrap();
+                assert_eq!(recipes.len(), 1);
+                assert_eq!(recipes.first().unwrap().name, name);
+            }
+        }
+        let original: Vec<ployz_build::Railpack> =
+            serde_json::from_slice(&fs::read(inputs.root().join("private/railpack.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            original.len(),
+            2,
+            "per-target selection changed the original capture"
+        );
+    }
+
     use std::os::unix::net::UnixListener;
 
     #[test]

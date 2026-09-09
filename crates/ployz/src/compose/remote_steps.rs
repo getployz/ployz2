@@ -47,9 +47,6 @@ impl CapturedBuild {
             )
             .with_work(work));
         }
-        if !self.railpack.is_empty() {
-            return Err(failed(Stage::Preparation, "remote builds currently support Dockerfile recipes only; Railpack requires a local build".into()).with_work(work));
-        }
         if self
             .targets
             .iter()
