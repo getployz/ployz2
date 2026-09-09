@@ -118,7 +118,7 @@ fn placement_constraints_are_validated_and_canonical_on_the_wire() {
     programmatic.constraints.reverse();
     programmatic
         .constraints
-        .push(programmatic.constraints[0].clone());
+        .push(programmatic.constraints.first().unwrap().clone());
     assert_eq!(placement, programmatic);
     assert_eq!(
         serde_json::to_value(&placement).unwrap(),
