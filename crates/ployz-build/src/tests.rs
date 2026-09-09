@@ -356,6 +356,7 @@ fn executing_a_build_does_not_change_process_signal_handlers() {
             &format!(
                 r#"#!/bin/sh
 case "$1 $2" in
+  'context show') echo default ;;
   'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
 esac
