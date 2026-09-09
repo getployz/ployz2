@@ -9,7 +9,9 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
         std::env::temp_dir().join(format!("ployzd-policy-join-{}", MachineId::random()));
     let joiner_store = LocalMachineStore::open(&joiner_dir).unwrap();
     let public_key = joiner_store.record().private_key().public_key();
-    let mut wire = serde_json::to_value(request("builder", public_key)).unwrap();
+    let mut identity = request("builder", public_key);
+    identity.machine_id = Some(joiner_store.record().id());
+    let mut wire = serde_json::to_value(identity).unwrap();
     wire.as_object_mut().unwrap().insert(
         "initial_policy".into(),
         serde_json::json!({
@@ -90,6 +92,8 @@ async fn registration_replay_refuses_current_policy_mismatch_without_publication
     ] {
         let outcome = local
             .register(RegisterRequest {
+                machine_id: None,
+                assigned_subnet: None,
                 initial_policy: changed,
                 ..identity.clone()
             })

@@ -422,6 +422,7 @@ impl MachineRpc for JoinDaemon {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         rpc_ok(MachineToken {
+            id: self.inner.current_machine.lock().unwrap().id,
             public_key: *self.inner.public_key.lock().unwrap(),
             public_ip: None,
             advertised_endpoints: self
@@ -475,7 +476,9 @@ impl MachineRpc for JoinDaemon {
         {
             return Err(Status::unavailable("lost lifecycle reply"));
         }
-        rpc_ok(JoinAccepted {})
+        rpc_ok(JoinAccepted {
+            already_accepted: false,
+        })
     }
 
     async fn set_cloud_pairing(
@@ -646,7 +649,10 @@ impl MachineRpc for JoinDaemon {
                 .cloned()
                 .map(up_machine),
         );
-        rpc_ok(MachineList { machines })
+        rpc_ok(MachineList {
+            enrollment: None,
+            machines,
+        })
     }
     async fn list_containers(
         &self,

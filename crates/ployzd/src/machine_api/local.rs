@@ -923,6 +923,11 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             message: error.to_string(),
             details: Value::Null,
         }),
+        LocalMachineError::Enrollment(error) => respond(RpcError {
+            code: RpcErrorCode::Conflict,
+            message: error.to_string(),
+            details: Value::Null,
+        }),
         LocalMachineError::EmptyUpdate => respond(RpcError {
             code: RpcErrorCode::InvalidArgument,
             message: "at least one Machine update is required".into(),
@@ -1063,6 +1068,7 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::AlreadyRunning(_) => RpcErrorCode::Conflict,
         StoreError::MissingEndpoints
         | StoreError::MissingPeers
+        | StoreError::IdentityMismatch
         | StoreError::KeyMismatch
         | StoreError::InvalidNetwork(_) => RpcErrorCode::InvalidArgument,
         StoreError::MachineUpdate(ployz_core::MachineUpdateError::DuplicateName) => {

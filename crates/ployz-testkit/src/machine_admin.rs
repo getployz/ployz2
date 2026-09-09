@@ -55,6 +55,8 @@ impl Cluster {
             client
                 .register(
                     op::Register::into_request(RegisterRequest {
+                        machine_id: Some(token.id),
+                        assigned_subnet: None,
                         initial_policy: Default::default(),
                         name: MachineName::parse(name)?,
                         storage: ployz_core::StorageChoice::None,

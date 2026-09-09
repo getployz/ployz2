@@ -210,6 +210,10 @@ used_bytes: number, };
 
 export type EncryptedSecretValue = { version: 1, iv: string, tag: string, ciphertext: string, };
 
+export type EnrollmentAssignment = { request: RegisterRequest, network: string, machine: Machine, };
+
+export type EnrollmentSnapshot = { network: string, machines: Array<Machine>, target_versions: { [key in string]: number }, };
+
 export type EnvSource = { kind: 'variable_group', resourceId: string, resourceName: string, variableGroupId: string, key: string, };
 
 export type EnvironmentNodeType = "service" | "variable_group" | "volume";
@@ -449,6 +453,14 @@ export type PullPolicy = "always" | "missing" | "never";
 export type QualifiedService = string;
 
 export type RegisterRequest = {
+/**
+ * Durable identity of the joining Machine; required for client allocation.
+ */
+machine_id: MachineId | null,
+/**
+ * Client-selected subnet. Omitted only by the temporary legacy path.
+ */
+assigned_subnet: MachineSubnet | null,
 /**
  * Complete policy committed in the first Machine assignment, before participation.
  */

@@ -14,6 +14,8 @@ import {
 const preferred = Schema.decodeUnknownSync(rustMachineIdSchema)("a".repeat(32));
 const other = Schema.decodeUnknownSync(rustMachineIdSchema)("b".repeat(32));
 const identity: RegisterRequest = {
+  machine_id: preferred,
+  assigned_subnet: null,
   initial_policy: {
     labels: {},
     accepts_builds: true,

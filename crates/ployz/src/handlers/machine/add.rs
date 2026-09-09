@@ -67,6 +67,8 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let registration = entry
             .call_repeatable::<op::Register>(
                 RegisterRequest {
+                    machine_id: Some(token.id),
+                    assigned_subnet: None,
                     initial_policy: policy,
                     name,
                     storage,
