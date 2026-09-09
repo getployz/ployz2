@@ -554,6 +554,7 @@ fn multi_platform_failures_preserve_output_stage_and_completed_image_evidence() 
         state_directory: root.join("state"),
         docker,
         active_timeout: std::time::Duration::from_secs(15),
+        ..HostPolicy::default()
     };
     let request = Request {
         compose_file: &capture.join("compose.yaml"),
