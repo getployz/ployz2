@@ -244,7 +244,7 @@ pub(crate) async fn push_using_machines(
             // The image arrived, so the success stands; say why this Machine
             // will not serve its peers rather than let a second push look odd.
             Err(error) => eprintln!(
-                "Machine {} received {image} but cannot serve it to peers ({error}); pushing to the next Machine",
+                "WARNING: Machine {} received {image} but cannot serve it to peers ({error}); pushing to the next Machine",
                 machine.name
             ),
         }
