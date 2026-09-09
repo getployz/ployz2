@@ -102,12 +102,12 @@ impl PushError {
     }
 }
 
-struct Cancellation<'a> {
-    token: &'a tokio_util::sync::CancellationToken,
+struct Cancellation<'token> {
+    token: &'token tokio_util::sync::CancellationToken,
 }
 
-impl<'a> Cancellation<'a> {
-    fn new(token: &'a tokio_util::sync::CancellationToken) -> Self {
+impl<'token> Cancellation<'token> {
+    fn new(token: &'token tokio_util::sync::CancellationToken) -> Self {
         Self { token }
     }
 

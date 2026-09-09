@@ -351,10 +351,6 @@ pub fn execute_admitted(
         }
         for target in &multi {
             let image = index::build(&docker, &builder, request, target, overrides.as_deref())?;
-            progress(Progress::Target {
-                name: target.target.name.clone(),
-                outcome: TargetEvidence::Image(image.clone()),
-            });
             images.push(image);
         }
         let mut by_name = ordinary

@@ -144,13 +144,7 @@ pub fn validate_capture(root: &Path, definition: &Definition) -> Result<(), Inpu
                 .iter()
                 .find(|target| target.name == name)
                 .expect("validated target");
-            if platforms.iter().map(text).collect::<Result<Vec<_>, _>>()?
-                != target
-                    .platforms
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-            {
+            if platforms.iter().map(text).collect::<Result<Vec<_>, _>>()? != target.platforms {
                 return Err("Build recipe platforms differ from the admitted request".into());
             }
         }

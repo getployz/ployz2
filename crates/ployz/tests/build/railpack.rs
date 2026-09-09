@@ -340,7 +340,7 @@ case "$*" in
   'cp '*:/tmp/variant.tar) exit 0 ;;
   'image load '*) test ! -f "$root/import-fails"; exit $? ;;
   'image save '*) test ! -f "$root/missing-content"; exit $? ;;
-  'image tag '*) exit 0 ;;
+  'image tag '*) if [ -f "$root/cleanup-fails" ]; then touch "$root/active"; fi; exit 0 ;;
 esac
 exec "$root/base-docker" "$@"
 "#,
@@ -439,6 +439,80 @@ fn railpack_cancellation_stops_work_and_releases_private_inputs_and_admission() 
         fs::remove_file(root.join("interrupt")).unwrap();
         fs::remove_file(marker).unwrap();
         fs::remove_file(root.join("active")).unwrap();
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn multi_platform_failures_preserve_output_stage_and_completed_image_evidence() {
+    use ployz_build::{
+        Admission, HostPolicy, Progress, Request, Stage, Target, TargetEvidence, WorkEvidence,
+    };
+    use std::collections::BTreeMap;
+    let root = std::env::temp_dir().join(format!("ployz-railpack-evidence-{}", std::process::id()));
+    let capture = root.join("capture");
+    fs::create_dir_all(capture.join("private")).unwrap();
+    fs::create_dir(capture.join("source")).unwrap();
+    fs::create_dir(root.join("state")).unwrap();
+    fs::write(capture.join("compose.yaml"), "services: {}\n").unwrap();
+    let docker = write_multi_docker(&root);
+    let targets = [Target {
+        name: "api".into(),
+        platforms: vec!["linux/amd64".into(), "linux/arm64".into()],
+    }];
+    let recipes = [ployz_build::Railpack {
+        name: "api".into(),
+        context: "source".into(),
+        variables: BTreeMap::new(),
+        refresh_cache: false,
+    }];
+    let environment = BTreeMap::from([("PATH".into(), std::env::var("PATH").unwrap())]);
+    let policy = HostPolicy {
+        state_directory: root.join("state"),
+        docker,
+        active_timeout: std::time::Duration::from_secs(15),
+    };
+    let request = Request {
+        compose_file: &capture.join("compose.yaml"),
+        working_dir: &capture,
+        environment: &environment,
+        docker: Some(&policy.docker),
+        targets: &targets,
+        railpack: &recipes,
+        build_args: &[],
+        output: ployz_build::Output::Load,
+        no_cache: false,
+        pull: false,
+    };
+    for (failure, stage, completed) in [
+        ("assembly-fails", Stage::Output, false),
+        ("import-fails", Stage::Output, false),
+        ("cleanup-fails", Stage::Cleanup, true),
+    ] {
+        fs::write(root.join(failure), "").unwrap();
+        let evidence = std::sync::Mutex::new(WorkEvidence::new(&targets));
+        let error = ployz_build::execute_admitted(
+            &request,
+            Admission::try_acquire_with(&policy).unwrap(),
+            &|event: Progress| {
+                evidence.lock().unwrap().observe(&event);
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.stage(), stage, "{error}");
+        assert_eq!(error.is_unknown(), completed, "{error}");
+        let evidence = evidence.into_inner().unwrap();
+        let evidence = evidence.0.get("api").unwrap();
+        if completed {
+            let TargetEvidence::Image(image) = evidence else {
+                panic!("completed image evidence was lost: {evidence:?}");
+            };
+            assert_eq!(image.reference, FIRST_CONTENT);
+            assert_eq!(image.platforms, ["linux/amd64", "linux/arm64"]);
+        } else {
+            assert_eq!(evidence, &TargetEvidence::Unknown);
+        }
+        fs::remove_file(root.join(failure)).unwrap();
     }
     fs::remove_dir_all(root).unwrap();
 }

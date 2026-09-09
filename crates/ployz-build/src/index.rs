@@ -3,8 +3,8 @@
 //! https://github.com/getployz/ployz2/blob/c3ca5519a4607256ffb28052d77a1c7d89f1bbe1/prototypes/railpack-transfer/FINDINGS.md
 
 use crate::{
-    BuildError, BuiltImage, Docker, Planned, Request, Streams, TargetMetadata, bake_arguments,
-    builder::Builder, builder_name,
+    BuildError, BuiltImage, Docker, Planned, Progress, Request, Stage, Streams, TargetEvidence,
+    TargetMetadata, bake_arguments, builder::Builder, builder_name,
 };
 use std::{collections::BTreeMap, path::Path};
 
@@ -35,11 +35,18 @@ pub(crate) fn build(
             "infinity",
         ],
         |name| {
-            docker.run("start image assembly", &["start", name], Streams::Captured)?;
+            docker
+                .run("start image assembly", &["start", name], Streams::Captured)
+                .map_err(|error| error.at(Stage::Preparation))?;
+            let output = |action, arguments: &[&str], streams| {
+                docker
+                    .run(action, arguments, streams)
+                    .map_err(|error| error.at(Stage::Output))
+            };
             let regctl = |action, args: &[&str]| {
                 let mut command = vec!["exec", name, "regctl"];
                 command.extend_from_slice(args);
-                docker.run(action, &command, Streams::Captured)
+                output(action, &command, Streams::Captured)
             };
             let mut refs = Vec::new();
             let mut tags = Vec::new();
@@ -57,18 +64,18 @@ pub(crate) fn build(
                     args.extend(["--set".into(), setting]);
                 }
                 if let Some(progress) = docker.progress {
-                    progress(crate::Progress::Stage(crate::Stage::Building));
+                    progress(Progress::Stage(Stage::Building));
                 }
                 builder.run(&args, || {
                     if let Some(progress) = docker.progress {
-                        progress(crate::Progress::Target {
+                        progress(Progress::Target {
                             name: target.target.name.clone(),
-                            outcome: crate::TargetEvidence::Unknown,
+                            outcome: TargetEvidence::Unknown,
                         });
                     }
                 })?;
                 if let Some(progress) = docker.progress {
-                    progress(crate::Progress::Stage(crate::Stage::Output));
+                    progress(Progress::Stage(Stage::Output));
                 }
                 let results: BTreeMap<String, TargetMetadata> =
                     serde_json::from_slice(&std::fs::read(&metadata).map_err(result_error)?)
@@ -84,7 +91,7 @@ pub(crate) fn build(
                         "Railpack solves reported different image tags".into(),
                     ));
                 }
-                docker.run(
+                output(
                     "copy Railpack variant for assembly",
                     &[
                         "cp",
@@ -133,7 +140,7 @@ pub(crate) fn build(
                 ],
             )?;
             let archive = request.working_dir.join("private/railpack/complete.tar");
-            docker.run(
+            output(
                 "copy assembled Railpack image",
                 &[
                     "cp",
@@ -142,13 +149,13 @@ pub(crate) fn build(
                 ],
                 Streams::Captured,
             )?;
-            docker.run(
+            output(
                 "load assembled Railpack image",
                 &["image", "load", "--input", &archive.to_string_lossy()],
                 Streams::Captured,
             )?;
             let reference = digest.to_owned();
-            let inspected = docker.run(
+            let inspected = output(
                 "inspect assembled Railpack image",
                 &["image", "inspect", &reference, "--format", "{{json .}}"],
                 Streams::Captured,
@@ -165,25 +172,32 @@ pub(crate) fn build(
             for platform in &target.target.platforms {
                 // Export forces Docker to read the manifest, config and every layer.
                 // Inspect alone can list an index variant whose content is absent.
-                docker.run(
+                output(
                     "verify Railpack platform content",
                     &["image", "save", "--platform", platform, &reference],
                     Streams::Discarded,
                 )?;
             }
             for tag in &tags {
-                docker.run(
+                output(
                     "tag completed Railpack image",
                     &["image", "tag", &reference, tag],
                     Streams::Captured,
                 )?;
             }
-            Ok(BuiltImage {
+            let image = BuiltImage {
                 reference,
                 tags,
                 platforms: target.target.platforms.clone(),
                 location: docker.location(),
-            })
+            };
+            if let Some(progress) = docker.progress {
+                progress(Progress::Target {
+                    name: target.target.name.clone(),
+                    outcome: TargetEvidence::Image(image.clone()),
+                });
+            }
+            Ok(image)
         },
     )
 }
