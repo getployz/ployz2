@@ -39,52 +39,53 @@ impl Bootstrap {
             })?;
         let archive = directory.path().join(archive_name);
         let checksums = directory.path().join("checksums.txt");
-        let local_source = if let Some(source) = env::var_os("PLOYZ_RELEASE_DIR") {
-            let source = PathBuf::from(source);
-            copy_file(
-                &source.join(archive_name),
-                &archive,
-                "copy bootstrap daemon archive",
-            )?;
-            copy_file(
-                &source.join("checksums.txt"),
-                &checksums,
-                "copy bootstrap release checksums",
-            )?;
-            true
-        } else {
-            let base = format!(
-                "{RELEASE_REPOSITORY}/releases/download/v{}",
-                env!("CARGO_PKG_VERSION")
-            );
-            let client = reqwest::Client::builder()
-                .https_only(true)
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(120))
-                .user_agent("ployz-bootstrap")
-                .build()
-                .map_err(|source| ProvisionError::BootstrapDownload {
-                    stage: "build bootstrap download client",
-                    source,
-                })?;
-            download(
-                &client,
-                &format!("{base}/{archive_name}"),
-                &archive,
-                "download bootstrap daemon archive",
-            )
-            .await?;
-            download(
-                &client,
-                &format!("{base}/checksums.txt"),
-                &checksums,
-                "download bootstrap release checksums",
-            )
-            .await?;
-            false
-        };
+        let (archive_bytes, checksum_bytes, local_source) =
+            if let Some(source) = env::var_os("PLOYZ_RELEASE_DIR") {
+                let source = PathBuf::from(source);
+                let archive_bytes =
+                    read_file(&source.join(archive_name), "copy bootstrap daemon archive")?;
+                let checksum_bytes = read_file(
+                    &source.join("checksums.txt"),
+                    "copy bootstrap release checksums",
+                )?;
+                (archive_bytes, checksum_bytes, true)
+            } else {
+                let base = format!(
+                    "{RELEASE_REPOSITORY}/releases/download/v{}",
+                    env!("CARGO_PKG_VERSION")
+                );
+                let client = reqwest::Client::builder()
+                    .https_only(true)
+                    .connect_timeout(Duration::from_secs(10))
+                    .read_timeout(Duration::from_secs(30))
+                    .user_agent("ployz-bootstrap")
+                    .build()
+                    .map_err(|source| ProvisionError::BootstrapDownload {
+                        stage: "build bootstrap download client",
+                        source,
+                    })?;
+                let archive_bytes = download(
+                    &client,
+                    &format!("{base}/{archive_name}"),
+                    "download bootstrap daemon archive",
+                )
+                .await?;
+                let checksum_bytes = download(
+                    &client,
+                    &format!("{base}/checksums.txt"),
+                    "download bootstrap release checksums",
+                )
+                .await?;
+                (archive_bytes, checksum_bytes, false)
+            };
 
-        verify_checksum(&archive, &checksums, archive_name)?;
+        verify_checksum(&archive_bytes, &checksum_bytes, archive_name)?;
+        write_file(&archive, &archive_bytes, "stage bootstrap daemon archive")?;
+        write_file(
+            &checksums,
+            &checksum_bytes,
+            "stage bootstrap release checksums",
+        )?;
         let daemon = directory.path().join("ployzd");
         let mut extract = Command::new("tar");
         extract
@@ -158,10 +159,9 @@ pub(super) async fn verify_command_version(
 async fn download(
     client: &reqwest::Client,
     url: &str,
-    destination: &Path,
     stage: &'static str,
-) -> Result<(), ProvisionError> {
-    let bytes = client
+) -> Result<Vec<u8>, ProvisionError> {
+    client
         .get(url)
         .send()
         .await
@@ -170,26 +170,22 @@ async fn download(
         .map_err(|source| ProvisionError::BootstrapDownload { stage, source })?
         .bytes()
         .await
-        .map_err(|source| ProvisionError::BootstrapDownload { stage, source })?;
-    fs::write(destination, bytes).map_err(|source| ProvisionError::BootstrapIo { stage, source })
+        .map(|bytes| bytes.to_vec())
+        .map_err(|source| ProvisionError::BootstrapDownload { stage, source })
 }
 
-fn copy_file(source: &Path, destination: &Path, stage: &'static str) -> Result<(), ProvisionError> {
-    fs::copy(source, destination)
-        .map(|_| ())
-        .map_err(|source| ProvisionError::BootstrapIo { stage, source })
+fn read_file(path: &Path, stage: &'static str) -> Result<Vec<u8>, ProvisionError> {
+    fs::read(path).map_err(|source| ProvisionError::BootstrapIo { stage, source })
 }
 
 fn verify_checksum(
-    archive: &Path,
-    checksums: &Path,
+    archive: &[u8],
+    checksums: &[u8],
     archive_name: &str,
 ) -> Result<(), ProvisionError> {
-    let checksums =
-        fs::read_to_string(checksums).map_err(|source| ProvisionError::BootstrapIo {
-            stage: "read bootstrap release checksums",
-            source,
-        })?;
+    let checksums = std::str::from_utf8(checksums).map_err(|error| {
+        ProvisionError::BootstrapVerification(format!("checksums.txt is not UTF-8: {error}"))
+    })?;
     let expected = checksums
         .lines()
         .find_map(|line| {
@@ -206,11 +202,7 @@ fn verify_checksum(
                 "checksums.txt has no SHA-256 hash for {archive_name}"
             ))
         })?;
-    let bytes = fs::read(archive).map_err(|source| ProvisionError::BootstrapIo {
-        stage: "read bootstrap daemon archive",
-        source,
-    })?;
-    let actual = hex::encode(Sha256::digest(bytes));
+    let actual = hex::encode(Sha256::digest(archive));
     if actual == expected {
         Ok(())
     } else {
@@ -218,6 +210,10 @@ fn verify_checksum(
             "{archive_name} checksum was {actual}, expected {expected}"
         )))
     }
+}
+
+fn write_file(path: &Path, bytes: &[u8], stage: &'static str) -> Result<(), ProvisionError> {
+    fs::write(path, bytes).map_err(|source| ProvisionError::BootstrapIo { stage, source })
 }
 
 async fn command_status(stage: &'static str, command: Command) -> Result<(), ProvisionError> {
