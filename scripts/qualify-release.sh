@@ -329,7 +329,7 @@ done
 
 echo "establish a synthetic non-null Cloud Pairing through Cloud enrollment"
 start_enroll_fixture
-"$PLOYZ" cloud enroll pmet_qualification --name qualify-1 --storage none --no-dns --accepts-ingress=false --cloud-url "http://127.0.0.1:$ENROLL_PORT" --context "$CONTEXT"
+"$PLOYZ" cloud enroll pmet_qualification --name qualify-1 --label-add qualify=primary --storage none --no-dns --accepts-ingress=false --cloud-url "http://127.0.0.1:$ENROLL_PORT" --context "$CONTEXT"
 finish_enroll_fixture
 pairing_before=$(machine_cloud_pairing)
 [ "$pairing_before" = "$PAIRING" ] || error "Machine did not persist the exact synthetic Cloud Pairing"

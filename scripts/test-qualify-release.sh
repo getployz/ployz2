@@ -61,19 +61,21 @@ case "$1" in
         [ "$2" = enroll ] || { echo "unexpected cloud action: $2" >&2; exit 1; }
         token=$3
         shift 3
-        name= storage= context= cloud_url= no_dns=no no_ingress=no
+        name= storage= context= cloud_url= no_dns=no no_ingress=no label=
         while [ "$#" -gt 0 ]; do
             case "$1" in
                 --name) name=$2; shift ;;
                 --storage) storage=$2; shift ;;
                 --context) context=$2; shift ;;
                 --cloud-url) cloud_url=$2; shift ;;
+                --label-add) label=$2; shift ;;
                 --no-dns) no_dns=yes ;;
                 --accepts-ingress=false) no_ingress=yes ;;
                 *) echo "unexpected cloud enroll argument: $1" >&2; exit 1 ;;
             esac
             shift
         done
+        [ "$label" = qualify=primary ] || { echo "resumed enrollment policy differs from founder label" >&2; exit 1; }
         printf 'cloud-enroll token=%s name=%s storage=%s context=%s cloud_url=%s no_dns=%s no_ingress=%s\n' "$token" "$name" "$storage" "$context" "$cloud_url" "$no_dns" "$no_ingress" >>"$LOG"
         python3 - "$cloud_url" "$token" <<'PY'
 import json
