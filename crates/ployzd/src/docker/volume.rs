@@ -65,22 +65,53 @@ impl ContainerRuntime {
         match self.inspect_volume(machine_id, name).await {
             Ok(volume) => verify_volume(source, &volume),
             Err(error) if volume_not_found(&error) => {
-                let request = source
-                    .to_create_volume_request()
-                    .expect("managed Docker Volume sources have creation requests");
-                match self.create_volume(machine_id, request).await {
-                    Ok(CreateVolumeReport::Verified { volume }) => verify_volume(source, &volume),
-                    Ok(CreateVolumeReport::Unverified { id, error }) => {
-                        Err(Error::VolumeCreatedButUnverified {
-                            id,
-                            error: Box::new(error),
-                        })
-                    }
-                    Err(error) if volume_conflict(&error) => {
-                        verify_volume(source, &self.inspect_volume(machine_id, name).await?)
-                    }
-                    Err(error) => Err(error),
-                }
+                self.create_managed_volume(machine_id, source).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn create_managed_volume(
+        &self,
+        machine_id: &MachineId,
+        source: &VolumeSource,
+    ) -> Result<(), Error> {
+        let name = source
+            .docker_volume_name()
+            .expect("managed Docker Volume sources have names");
+        let request = source
+            .to_create_volume_request()
+            .expect("managed Docker Volume sources have creation requests");
+        match self.create_volume(machine_id, request).await {
+            Ok(CreateVolumeReport::Verified { volume }) => verify_volume(source, &volume),
+            Ok(CreateVolumeReport::Unverified { id, error }) => {
+                Err(Error::VolumeCreatedButUnverified {
+                    id,
+                    error: Box::new(error),
+                })
+            }
+            Err(error) if volume_conflict(&error) => {
+                verify_volume(source, &self.inspect_volume(machine_id, name).await?)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn finish_prepared_volume(
+        &self,
+        machine_id: &MachineId,
+        source: &VolumeSource,
+    ) -> Result<(), Error> {
+        let name = source
+            .docker_volume_name()
+            .expect("provisioned Volume has a name");
+        match self.inspect_volume(machine_id, name).await {
+            Ok(volume) if prepared_volume_needs_registration(source, &volume) => {
+                self.create_managed_volume(machine_id, source).await
+            }
+            Ok(volume) => verify_volume(source, &volume),
+            Err(error) if volume_not_found(&error) => {
+                self.create_managed_volume(machine_id, source).await
             }
             Err(error) => Err(error),
         }
@@ -126,7 +157,7 @@ impl ContainerRuntime {
     ) -> Result<(), Error> {
         for spec in specs {
             for volume in spec.volume_graph().mounted_provisioned_volumes() {
-                self.ensure_volume_source(machine_id, &volume.source)
+                self.finish_prepared_volume(machine_id, &volume.source)
                     .await?;
             }
         }
@@ -330,6 +361,25 @@ fn verify_volume(source: &VolumeSource, observed: &DockerVolume) -> Result<(), E
         });
     }
     Ok(())
+}
+
+fn prepared_volume_needs_registration(source: &VolumeSource, observed: &DockerVolume) -> bool {
+    let ployz_core::RawVolumeSource::Provisioned {
+        name,
+        maximum_bytes,
+        ..
+    } = source.kind()
+    else {
+        return false;
+    };
+    observed.id.name == *name
+        && observed.options.is_empty()
+        && observed.labels.is_empty()
+        && matches!(
+            &observed.storage,
+            DockerVolumeStorageObservation::Provisioned { bound_bytes, .. }
+                if bound_bytes.get() == maximum_bytes.get()
+        )
 }
 
 fn volume_not_found(error: &Error) -> bool {
