@@ -882,9 +882,7 @@ fn no_eligible_shared(
             .filter_map(|(name, uses)| {
                 let mut requested = std::collections::BTreeSet::new();
                 for volume_use in uses.iter() {
-                    for target in &volume_use.service.placement.constraints {
-                        requested.insert(target.clone());
-                    }
+                    requested.extend(volume_use.service.placement.constraints.iter().cloned());
                 }
                 if requested.is_empty() {
                     volume_anchor(snapshot, plan, name, &requested)
