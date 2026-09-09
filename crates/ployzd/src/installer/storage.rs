@@ -4,6 +4,7 @@ use std::{
     ffi::OsStr,
     fs::{self, OpenOptions},
     io::Write,
+    os::unix::fs::MetadataExt,
     path::Path,
     process::Command,
 };
@@ -13,10 +14,11 @@ use ployz_core::StorageChoice;
 use super::{Error, InstallPaths, command_exists, run_apt, run_command, run_host};
 use super::{
     host::write_file_atomically,
-    release::{Staging, write_private},
+    release::{staging_directory, write_private},
 };
 
 const ZFS_SMOKE_BYTES: u64 = 128 * 1024 * 1024;
+const POSIX_STAT_BLOCK_BYTES: u64 = 512;
 
 pub(super) fn prepare_storage(storage: StorageChoice, paths: &InstallPaths) -> Result<(), Error> {
     match storage {
@@ -121,26 +123,11 @@ fn uname(arg: &str, stage: &str) -> Result<String, Error> {
 }
 
 fn require_host_root_reserve(allocation: u64) -> Result<(), Error> {
-    let output = run_host(
-        "inspect host-root capacity for ZFS storage preparation",
-        "df",
-        ["-B1", "--output=size,avail", "/"],
-    )?;
-    let line = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .last()
-        .unwrap_or_default()
-        .to_owned();
-    let mut fields = line.split_whitespace();
-    let parse = |value: Option<&str>| value.and_then(|value| value.parse::<u64>().ok());
-    let (Some(size), Some(available), None) =
-        (parse(fields.next()), parse(fields.next()), fields.next())
-    else {
-        return Err(Error::Command {
-            stage: "prepare ZFS storage".into(),
-            message: "Could not read host-root capacity for ZFS storage preparation".into(),
-        });
-    };
+    let (size, available) =
+        crate::host_capacity::filesystem_space(Path::new("/")).map_err(|source| Error::Io {
+            stage: "inspect host-root capacity for ZFS storage preparation",
+            source,
+        })?;
     let reserve = (size / 4).max(10 * 1024 * 1024 * 1024);
     if available < reserve.saturating_add(allocation) {
         return Err(Error::Command {
@@ -218,11 +205,12 @@ pub(super) fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
         let mut show = Command::new("apt-cache");
         show.args(["show", &candidate]);
         if !show
-            .status()
+            .output()
             .map_err(|source| Error::Io {
                 stage: "inspect Ubuntu ZFS module packages",
                 source,
             })?
+            .status
             .success()
         {
             continue;
@@ -233,16 +221,16 @@ pub(super) fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
             package = Some(candidate);
             break;
         }
-        let scratch = Staging::new(Path::new("/var/tmp"))?;
+        let scratch = staging_directory(Path::new("/var/tmp"))?;
         if let Err(error) = run_apt(
             "download Ubuntu ZFS module package",
             ["download", &candidate],
-            Some(&scratch.path),
+            Some(scratch.path()),
         ) {
             download_error = Some(error);
             continue;
         }
-        let archive = fs::read_dir(&scratch.path)
+        let archive = fs::read_dir(scratch.path())
             .map_err(|source| Error::Io {
                 stage: "inspect downloaded Ubuntu ZFS module package",
                 source,
@@ -341,8 +329,8 @@ fn set_and_verify_zfs_arc_max(cap: u64) -> Result<(), Error> {
 
 fn validate_zfs() -> Result<(), Error> {
     require_host_root_reserve(ZFS_SMOKE_BYTES)?;
-    let stage = Staging::new(Path::new("/var/tmp"))?;
-    let backing = stage.path.join("backing");
+    let stage = staging_directory(Path::new("/var/tmp"))?;
+    let backing = stage.path().join("backing");
     write_private(&backing, b"", "create ZFS smoke backing file")?;
     // The installer lock serializes smoke Pools, and the process ID is the shell installer's
     // existing collision boundary.
@@ -354,26 +342,21 @@ fn validate_zfs() -> Result<(), Error> {
             .args(["-l", &ZFS_SMOKE_BYTES.to_string()])
             .arg(&backing);
         run_command("preallocate ZFS smoke backing file", &mut allocate)?;
-        let mut stat = Command::new("stat");
-        stat.args(["-c", "%b %B"]).arg(&backing);
-        let output = run_command("verify ZFS smoke backing allocation", &mut stat)?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut fields = stdout.split_whitespace();
-        let blocks = fields.next().and_then(|value| value.parse::<u64>().ok());
-        let block_size = fields.next().and_then(|value| value.parse::<u64>().ok());
-        if blocks
-            .zip(block_size)
-            .is_none_or(|(blocks, size)| blocks.saturating_mul(size) < ZFS_SMOKE_BYTES)
-        {
+        let metadata = backing.metadata().map_err(|source| Error::Io {
+            stage: "inspect ZFS smoke backing file",
+            source,
+        })?;
+        if metadata.blocks().saturating_mul(POSIX_STAT_BLOCK_BYTES) < ZFS_SMOKE_BYTES {
             return Err(Error::Verification(format!(
                 "ZFS smoke backing file {} is sparse",
                 backing.display()
             )));
         }
-        let mut mount = Command::new("findmnt");
-        mount.args(["-n", "-o", "TARGET", "-T"]).arg(&backing);
-        let output = run_command("verify ZFS smoke backing filesystem", &mut mount)?;
-        if String::from_utf8_lossy(&output.stdout).trim() != "/" {
+        let root = fs::metadata("/").map_err(|source| Error::Io {
+            stage: "inspect host-root filesystem",
+            source,
+        })?;
+        if metadata.dev() != root.dev() {
             return Err(Error::Verification(format!(
                 "ZFS smoke backing file {} is not on the host root filesystem",
                 backing.display()

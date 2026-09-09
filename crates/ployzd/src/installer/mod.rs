@@ -5,14 +5,13 @@ mod release;
 mod storage;
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File, OpenOptions, TryLockError},
     io,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Output},
 };
 
-use fs2::FileExt;
 use ployz_core::StorageChoice;
 use thiserror::Error;
 
@@ -146,7 +145,7 @@ impl Drop for InstallLock {
     fn drop(&mut self) {
         // Forked children can inherit this file descriptor before exec; unlock the shared lock
         // explicitly instead of waiting for every inherited descriptor to close.
-        let _ = self.0.unlock();
+        let _ = File::unlock(&self.0);
     }
 }
 
@@ -166,27 +165,29 @@ async fn install_at(request: InstallRequest, paths: InstallPaths) -> Result<Inst
     verify_system(request.install_only)?;
     let target = resolve_release(&request.release, &request.source).await?;
 
-    match &request.preparation {
-        Preparation::SoftwareOnly => verify_software_prerequisites(&paths)?,
-        Preparation::PrepareHost {
-            storage,
-            group_user,
-        } => {
-            prepare_storage(*storage, &paths)?;
-            install_prerequisites()?;
-            let inherited_group = sudo_user();
-            create_user_and_directories(
-                group_user.as_deref().or(inherited_group.as_deref()),
-                &paths,
-            )?;
+    if !request.install_only {
+        match &request.preparation {
+            Preparation::SoftwareOnly => verify_software_prerequisites(&paths)?,
+            Preparation::PrepareHost {
+                storage,
+                group_user,
+            } => {
+                prepare_storage(*storage, &paths)?;
+                install_prerequisites()?;
+                let inherited_group = sudo_user();
+                create_user_and_directories(
+                    group_user.as_deref().or(inherited_group.as_deref()),
+                    &paths,
+                )?;
+            }
         }
     }
 
     let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
     restart_required |= install_binaries(&request.source, &paths, &target).await?;
     install_systemd(&paths, request.install_only)?;
-    if matches!(request.preparation, Preparation::PrepareHost { .. }) {
-        install_docker(&paths, request.install_only).await?;
+    if !request.install_only && matches!(request.preparation, Preparation::PrepareHost { .. }) {
+        install_docker(&paths).await?;
     }
 
     let readiness = if request.install_only {
@@ -240,16 +241,16 @@ fn claim_lock(run_dir: &Path) -> Result<InstallLock, Error> {
             stage: "open installation lock",
             source,
         })?;
-    file.try_lock_exclusive().map_err(|source| {
-        if source.kind() == io::ErrorKind::WouldBlock {
-            Error::Busy
-        } else {
-            Error::Io {
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => return Err(Error::Busy),
+        Err(TryLockError::Error(source)) => {
+            return Err(Error::Io {
                 stage: "lock installation",
                 source,
-            }
+            });
         }
-    })?;
+    }
     Ok(InstallLock(file))
 }
 
@@ -258,6 +259,12 @@ fn verify_system(install_only: bool) -> Result<(), Error> {
         return Err(Error::UnsupportedOs);
     }
     daemon_archive()?;
+    if !command_exists("tar") {
+        return Err(Error::Command {
+            stage: "preflight daemon archive extraction".into(),
+            message: "tar is required to extract Ployz release archives".into(),
+        });
+    }
     if !install_only && !Path::new("/run/systemd/system").is_dir() {
         return Err(Error::SystemdRequired);
     }
@@ -354,10 +361,10 @@ mod tests {
         io::Write,
         os::unix::fs::{PermissionsExt, symlink},
         process::Command,
-        time::{SystemTime, UNIX_EPOCH},
     };
 
     use semver::Version;
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -372,20 +379,48 @@ mod tests {
 
         for case in [
             "success",
+            "install-only",
             "same-target",
             "missing",
+            "missing-tar",
             "bad-checksum",
             "corrupt",
             "rejected-executable",
             "hung-executable",
-            "software-prerequisite",
             "busy",
         ] {
             let fixture = fixture(case);
-            create_installation_fixture(&fixture, case);
-            run_contract_child("installation_interface_contract", &fixture, case);
-            fs::remove_dir_all(fixture).unwrap();
+            create_installation_fixture(fixture.path(), case);
+            run_contract_child("installation_interface_contract", fixture.path(), case);
         }
+    }
+
+    #[test]
+    fn software_only_prerequisite_contract() {
+        if env::var_os("PLOYZ_SOFTWARE_PREREQUISITE_CONTRACT").is_some() {
+            let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+            let paths = InstallPaths::at(&root);
+            assert!(matches!(
+                verify_software_prerequisites(&paths),
+                Err(Error::Command { stage, message })
+                    if stage == "software-only preflight"
+                        && message
+                            == "Docker is not installed; run ployzd install without --software-only first"
+            ));
+            fs::write(root.join("child-completed"), "software-prerequisite").unwrap();
+            return;
+        }
+
+        let fixture = fixture("software-prerequisite");
+        fs::create_dir_all(fixture.path().join("commands")).unwrap();
+        run_contract_child_with_environment(
+            "software_only_prerequisite_contract",
+            fixture.path(),
+            OsString::from("PLOYZ_SOFTWARE_PREREQUISITE_CONTRACT"),
+            OsString::from("1"),
+            "software-prerequisite",
+            [],
+        );
     }
 
     #[test]
@@ -398,9 +433,9 @@ mod tests {
         }
 
         let fixture = fixture("zfs-candidate");
-        let commands = fixture.join("commands");
+        let commands = fixture.path().join("commands");
         fs::create_dir_all(&commands).unwrap();
-        let marker = fixture.join("installed");
+        let marker = fixture.path().join("installed");
         write_script(
             &commands.join("apt-cache"),
             "[ \"$2\" = linux-main-modules-zfs-test-kernel ]",
@@ -419,7 +454,7 @@ mod tests {
         );
         run_contract_child_with_environment(
             "zfs_candidate_download_contract",
-            &fixture,
+            fixture.path(),
             OsString::from("PLOYZ_ZFS_CANDIDATE_CONTRACT"),
             OsString::from("1"),
             "zfs-candidate",
@@ -428,27 +463,35 @@ mod tests {
                 marker.into_os_string(),
             )],
         );
-        assert!(fixture.join("installed").is_file());
-        fs::remove_dir_all(fixture).unwrap();
+        assert!(fixture.path().join("installed").is_file());
     }
 
     async fn run_installation_case(case: &str) {
         let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
         let paths = InstallPaths::at(&root);
-        fs::create_dir_all(&paths.data_dir).unwrap();
         let existing = match case {
-            "success" => None,
+            "success" | "install-only" => None,
             "same-target" => Some(write_existing_daemon(&paths, "1.2.3")),
             _ => Some(write_existing_daemon(&paths, "1.2.2")),
         };
-        if case == "software-prerequisite" {
+        if case == "install-only" {
             fs::remove_file(root.join("commands/dockerd")).unwrap();
+        }
+        if case == "missing-tar" {
+            fs::remove_file(root.join("commands/tar")).unwrap();
         }
 
         let request = InstallRequest {
             release: ReleaseRequest::Exact(Version::parse("1.2.3").unwrap()),
             source: ReleaseSource::Local(root.join("release")),
-            preparation: Preparation::SoftwareOnly,
+            preparation: if case == "install-only" {
+                Preparation::PrepareHost {
+                    storage: StorageChoice::None,
+                    group_user: None,
+                }
+            } else {
+                Preparation::SoftwareOnly
+            },
             install_only: true,
         };
         let result = if case == "busy" {
@@ -459,12 +502,16 @@ mod tests {
         };
 
         match case {
-            "success" => {
+            "success" | "install-only" => {
                 let outcome = result.unwrap();
                 assert_eq!(outcome.target, "1.2.3");
                 assert_eq!(outcome.readiness, Readiness::InstallationOnly);
                 assert!(paths.bin_dir.join("ployzd").is_file());
                 assert!(paths.systemd_dir.join("ployz.service").is_file());
+                if case == "install-only" {
+                    assert!(!root.join("forbidden-invocation").exists());
+                    assert!(!paths.data_dir.exists());
+                }
             }
             "same-target" => {
                 let outcome = result.unwrap();
@@ -477,7 +524,12 @@ mod tests {
                 );
             }
             "busy" => assert!(matches!(result, Err(Error::Busy))),
-            "software-prerequisite" => assert!(matches!(result, Err(Error::Command { .. }))),
+            "missing-tar" => assert!(matches!(
+                result,
+                Err(Error::Command { stage, message })
+                    if stage == "preflight daemon archive extraction"
+                        && message == "tar is required to extract Ployz release archives"
+            )),
             "hung-executable" => {
                 assert!(matches!(
                     result,
@@ -485,7 +537,20 @@ mod tests {
                         if stage == "preflight staged daemon" && message == "timed out after 100ms"
                 ));
             }
-            "missing" | "bad-checksum" | "corrupt" | "rejected-executable" => {
+            "bad-checksum" => assert!(matches!(
+                result,
+                Err(Error::Verification(message))
+                    if message
+                        == format!("checksums.txt has no hash for {}", daemon_archive().unwrap())
+            )),
+            "corrupt" => assert!(matches!(
+                result,
+                Err(Error::Verification(message))
+                    if message.contains(daemon_archive().unwrap())
+                        && message.contains("checksum was")
+                        && message.contains("expected")
+            )),
+            "missing" | "rejected-executable" => {
                 assert!(result.is_err(), "{case} artifact was accepted");
             }
             other => panic!("unknown contract case {other}"),
@@ -515,6 +580,27 @@ mod tests {
         };
         write_script(&payload.join("ployzd"), daemon);
         write_script(&payload.join("ployz-uninstall"), "exit 0");
+        if case == "install-only" {
+            write_script(
+                &commands.join("id"),
+                "if [ \"$1\" = -u ]; then echo 0; else echo id >> \"$PLOYZ_INSTALLER_FORBIDDEN\"; exit 97; fi",
+            );
+            for command in [
+                "apt-get",
+                "dnf",
+                "yum",
+                "pacman",
+                "zypper",
+                "bash",
+                "docker",
+                "systemctl",
+            ] {
+                write_script(
+                    &commands.join(command),
+                    "echo \"$0\" >> \"$PLOYZ_INSTALLER_FORBIDDEN\"; exit 97",
+                );
+            }
+        }
         if case != "missing" {
             let archive = release.join(daemon_archive().unwrap());
             let status = Command::new("tar")
@@ -576,14 +662,24 @@ mod tests {
     }
 
     fn run_contract_child(test: &str, root: &Path, case: &str) {
-        run_contract_child_with_environment(
-            test,
-            root,
-            OsString::from("PLOYZ_INSTALLER_CONTRACT_CASE"),
-            OsString::from(case),
-            &format!("installation:{case}"),
-            [],
-        );
+        let key = OsString::from("PLOYZ_INSTALLER_CONTRACT_CASE");
+        let value = OsString::from(case);
+        let completion = format!("installation:{case}");
+        if case == "install-only" {
+            run_contract_child_with_environment(
+                test,
+                root,
+                key,
+                value,
+                &completion,
+                [(
+                    OsString::from("PLOYZ_INSTALLER_FORBIDDEN"),
+                    root.join("forbidden-invocation").into_os_string(),
+                )],
+            );
+        } else {
+            run_contract_child_with_environment(test, root, key, value, &completion, []);
+        }
     }
 
     fn run_contract_child_with_environment<const N: usize>(
@@ -623,16 +719,10 @@ mod tests {
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    fn fixture(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+    fn fixture(name: &str) -> TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("ployzd-installer-{name}-"))
+            .tempdir()
             .unwrap()
-            .as_nanos();
-        let root = env::temp_dir().join(format!(
-            "ployzd-installer-{name}-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&root).unwrap();
-        root
     }
 }
