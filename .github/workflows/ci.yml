@@ -127,10 +127,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Build native SDK for Node-backed tests
-        run: cargo build -p ployz-sdk --locked --timings
-      - name: Compile Rust tests
-        run: cargo test --workspace --all-features --locked --no-run --timings
+      - name: Build native SDK and Rust tests together
+        run: cargo build --workspace --all-targets --all-features --profile test --locked --timings
+      - name: Inspect Kache prefetch
+        if: always() && env.KACHE_S3_BUCKET != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.KACHE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.KACHE_S3_SECRET_ACCESS_KEY }}
+        run: |
+          grep -E 'manifest prefetch|shard prefetch|prefetch:|prefetch plan' "$KACHE_RUNTIME_DIR/daemon.log" || true
+          aws --endpoint-url "$KACHE_S3_ENDPOINT" --region "$KACHE_S3_REGION" s3 cp \
+            "s3://$KACHE_S3_BUCKET/ployz2/kache-v1/_manifests/$KACHE_MANIFEST_KEY.json" "$RUNNER_TEMP/manifest.json"
+          python3 - <<'PY'
+          import json, os, statistics
+          from pathlib import Path
+          manifest = json.loads((Path(os.environ['RUNNER_TEMP']) / 'manifest.json').read_text())
+          entries = manifest['entries']
+          print('Created:', manifest['created'], 'Entries:', len(entries))
+          print('Eligible at 1000ms:', sum(e['compile_time_ms'] >= 1000 for e in entries))
+          print('Median compile ms:', statistics.median(e['compile_time_ms'] for e in entries))
+          PY
       - name: Test with a hostile ambient Ployz context
         env:
           PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
