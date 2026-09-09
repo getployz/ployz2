@@ -365,11 +365,14 @@ mod tests {
     async fn installation_interface_contract() {
         if let Ok(case) = env::var("PLOYZ_INSTALLER_CONTRACT_CASE") {
             run_installation_case(&case).await;
+            let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+            fs::write(root.join("child-completed"), format!("installation:{case}")).unwrap();
             return;
         }
 
         for case in [
             "success",
+            "same-target",
             "missing",
             "bad-checksum",
             "corrupt",
@@ -389,6 +392,8 @@ mod tests {
     fn zfs_candidate_download_contract() {
         if env::var_os("PLOYZ_ZFS_CANDIDATE_CONTRACT").is_some() {
             super::storage::install_zfs_packages("test-kernel").unwrap();
+            let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+            fs::write(root.join("child-completed"), "zfs-candidate").unwrap();
             return;
         }
 
@@ -417,11 +422,13 @@ mod tests {
             &fixture,
             OsString::from("PLOYZ_ZFS_CANDIDATE_CONTRACT"),
             OsString::from("1"),
+            "zfs-candidate",
             [(
                 OsString::from("PLOYZ_ZFS_INSTALLED"),
                 marker.into_os_string(),
             )],
         );
+        assert!(fixture.join("installed").is_file());
         fs::remove_dir_all(fixture).unwrap();
     }
 
@@ -429,10 +436,10 @@ mod tests {
         let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
         let paths = InstallPaths::at(&root);
         fs::create_dir_all(&paths.data_dir).unwrap();
-        let existing = if case == "success" {
-            None
-        } else {
-            Some(write_existing_daemon(&paths))
+        let existing = match case {
+            "success" => None,
+            "same-target" => Some(write_existing_daemon(&paths, "1.2.3")),
+            _ => Some(write_existing_daemon(&paths, "1.2.2")),
         };
         if case == "software-prerequisite" {
             fs::remove_file(root.join("commands/dockerd")).unwrap();
@@ -459,14 +466,31 @@ mod tests {
                 assert!(paths.bin_dir.join("ployzd").is_file());
                 assert!(paths.systemd_dir.join("ployz.service").is_file());
             }
+            "same-target" => {
+                let outcome = result.unwrap();
+                assert_eq!(outcome.target, "1.2.3");
+                let existing = existing.as_ref().unwrap();
+                assert_ne!(fs::read(paths.bin_dir.join("ployzd")).unwrap(), *existing);
+                assert_eq!(
+                    fs::read(paths.bin_dir.join("ployzd.previous")).unwrap(),
+                    *existing
+                );
+            }
             "busy" => assert!(matches!(result, Err(Error::Busy))),
             "software-prerequisite" => assert!(matches!(result, Err(Error::Command { .. }))),
-            "missing" | "bad-checksum" | "corrupt" | "rejected-executable" | "hung-executable" => {
+            "hung-executable" => {
+                assert!(matches!(
+                    result,
+                    Err(Error::Command { stage, message })
+                        if stage == "preflight staged daemon" && message == "timed out after 100ms"
+                ));
+            }
+            "missing" | "bad-checksum" | "corrupt" | "rejected-executable" => {
                 assert!(result.is_err(), "{case} artifact was accepted");
             }
             other => panic!("unknown contract case {other}"),
         }
-        if let Some(existing) = existing {
+        if let Some(existing) = existing.filter(|_| case != "same-target") {
             assert_eq!(fs::read(paths.bin_dir.join("ployzd")).unwrap(), existing);
         }
     }
@@ -481,6 +505,8 @@ mod tests {
         write_script(&commands.join("id"), "if [ \"$1\" = -u ]; then echo 0; fi");
         write_script(&commands.join("dockerd"), "exit 0");
         symlink("/usr/bin/tar", commands.join("tar")).unwrap();
+        symlink("/usr/bin/gzip", commands.join("gzip")).unwrap();
+        symlink("/usr/bin/sleep", commands.join("sleep")).unwrap();
 
         let daemon = match case {
             "rejected-executable" => "case \"$1\" in version) echo 9.9.9 ;; esac",
@@ -537,9 +563,9 @@ mod tests {
         }
     }
 
-    fn write_existing_daemon(paths: &InstallPaths) -> Vec<u8> {
+    fn write_existing_daemon(paths: &InstallPaths, version: &str) -> Vec<u8> {
         fs::create_dir_all(&paths.bin_dir).unwrap();
-        let existing = b"#!/bin/sh\n[ \"$1\" = version ] && echo 1.2.2\n".to_vec();
+        let existing = format!("#!/bin/sh\n[ \"$1\" = version ] && echo {version}\n").into_bytes();
         fs::write(paths.bin_dir.join("ployzd"), &existing).unwrap();
         fs::set_permissions(
             paths.bin_dir.join("ployzd"),
@@ -555,6 +581,7 @@ mod tests {
             root,
             OsString::from("PLOYZ_INSTALLER_CONTRACT_CASE"),
             OsString::from(case),
+            &format!("installation:{case}"),
             [],
         );
     }
@@ -564,11 +591,13 @@ mod tests {
         root: &Path,
         key: OsString,
         value: OsString,
+        completion: &str,
         extra: [(OsString, OsString); N],
     ) {
+        let test = format!("installer::tests::{test}");
         let mut command = Command::new(env::current_exe().unwrap());
         command
-            .args(["--exact", test, "--nocapture"])
+            .args(["--exact", &test, "--nocapture"])
             .env("PLOYZ_INSTALLER_CONTRACT_ROOT", root)
             .env("PATH", root.join("commands"))
             .env(key, value);
@@ -581,6 +610,11 @@ mod tests {
             "contract child {test} failed:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("child-completed")).unwrap(),
+            completion,
+            "contract child {test} did not complete its fixture",
         );
     }
 

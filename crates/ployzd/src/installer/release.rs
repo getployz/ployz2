@@ -342,10 +342,7 @@ async fn version_command(path: &Path, stage: &str) -> Result<std::process::Outpu
         }),
         Err(_) => Err(Error::Command {
             stage: stage.into(),
-            message: format!(
-                "timed out after {} seconds",
-                VERSION_COMMAND_TIMEOUT.as_secs()
-            ),
+            message: format!("timed out after {}ms", VERSION_COMMAND_TIMEOUT.as_millis()),
         }),
     }
 }
