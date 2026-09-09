@@ -155,23 +155,36 @@ pub fn capture_build(
             .get("context")
             .and_then(Value::as_str)
             .is_some_and(is_ssh_context);
-        if let Some(recipe) = capture_recipe(&name, build, options, project, &mut inputs)? {
+        let recipe = capture_recipe(&name, build, options, project, &mut inputs)?;
+        let railpack = recipe.is_some();
+        if let Some(recipe) = recipe {
             railpack_recipes.push(recipe);
         }
-        let platform = requested_platform(&name, build)?.or_else(|| {
-            project
+        let mut platforms = requested_platforms(&name, build, railpack)?;
+        if platforms.is_empty()
+            && let Some(platform) = project
                 .environment
                 .get("DOCKER_DEFAULT_PLATFORM")
-                .filter(|platform| !platform.is_empty())
-                .cloned()
-        });
-        if let Some(platform) = &platform {
+                .filter(|p| !p.is_empty())
+        {
+            platforms.push(platform.clone());
+        }
+        if railpack
+            && platforms
+                .iter()
+                .any(|p| !matches!(p.as_str(), "linux/amd64" | "linux/arm64"))
+        {
+            return Err(invalid_build(
+                "Railpack supports only linux/amd64 and linux/arm64",
+            ));
+        }
+        if !platforms.is_empty() {
             build.insert(
                 Value::String("platforms".into()),
-                Value::Sequence(vec![Value::String(platform.clone())]),
+                Value::Sequence(platforms.iter().cloned().map(Value::String).collect()),
             );
         }
-        targets.push(ployz_build::Target { name, platform });
+        targets.push(ployz_build::Target { name, platforms });
         retain_service_image_tag(&service.name, image, build)?;
         if let Some(ssh) = build
             .get_mut(Value::String("ssh".into()))
@@ -658,36 +671,38 @@ fn refuse_unpassable_settings(
     Ok(())
 }
 
-/// The single platform this Service asks for, if it asks for one.
-///
-/// A Dockerfile Build produces one image for one platform, so several
-/// requested platforms are refused here, where the Service is named.
-fn requested_platform(
+/// Dockerfiles remain single-platform; Railpack assembles explicit variants.
+fn requested_platforms(
     service: &str,
     build: &serde_norway::Mapping,
-) -> Result<Option<String>, ComposeError> {
-    let Some(platforms) = build
-        .get(Value::String("platforms".into()))
-        .and_then(Value::as_sequence)
-    else {
-        return Ok(None);
+    railpack: bool,
+) -> Result<Vec<String>, ComposeError> {
+    let Some(value) = build.get("platforms") else {
+        return Ok(Vec::new());
     };
-    match platforms.as_slice() {
-        [] => Ok(None),
-        [platform] => platform
-            .as_str()
-            .map(ToOwned::to_owned)
-            .map(Some)
-            .ok_or_else(|| {
-                invalid_build(&format!(
-                    "service '{service}' has an invalid build platform"
-                ))
-            }),
-        several => Err(invalid_build(&format!(
+    let platforms = value
+        .as_sequence()
+        .ok_or_else(|| invalid_build("build.platforms must be a list"))?;
+    if !railpack && platforms.len() > 1 {
+        return Err(invalid_build(&format!(
             "service '{service}' requests {} build platforms; a Dockerfile Build produces one platform",
-            several.len()
-        ))),
+            platforms.len()
+        )));
     }
+    platforms
+        .iter()
+        .map(|platform| {
+            platform
+                .as_str()
+                .filter(|p| !p.is_empty())
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| {
+                    invalid_build(&format!(
+                        "service '{service}' has an invalid build platform"
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// Upstream translation uses explicit build tags alone; keep the Service image

@@ -49,7 +49,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
                 println!(
                     "Built {} ({}) as {} in local Docker",
                     service.built.tags.join(", "),
-                    service.built.platform,
+                    service.built.platforms.join(", "),
                     service.built.reference,
                 );
             }

@@ -11,6 +11,8 @@
 //! bounded attempt, and one image bound to the content that attempt produced.
 
 mod builder;
+mod cancellation;
+mod index;
 mod railpack;
 
 pub use railpack::Railpack;
@@ -19,6 +21,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 
@@ -78,9 +81,9 @@ pub struct Request<'a> {
 pub struct Target {
     /// Caller's name for this image, as the captured Compose file names it.
     pub name: String,
-    /// Platform the capture asks for, which the completed image must carry.
-    /// `None` accepts whichever platform the builder produces.
-    pub platform: Option<String>,
+    /// Platforms the capture asks for, which the completed image must carry.
+    /// Empty accepts the native platform.
+    pub platforms: Vec<String>,
 }
 
 /// What an attempt does with its result. These outcomes are exclusive: an
@@ -100,13 +103,15 @@ pub enum Output {
 /// the content this attempt observed there.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuiltImage {
-    /// Digest-pinned reference. Binds later use to this attempt's content, so
-    /// a later Build moving a shared tag cannot substitute its image.
+    /// Docker content digest on the execution host. Unlike repository@digest,
+    /// this still resolves after the repository's last tag moves to another image.
     pub reference: String,
     /// Tags this attempt applied, as the execution host recorded them.
     pub tags: Vec<String>,
-    /// The platform actually present, not the one requested.
-    pub platform: String,
+    /// Platforms verified in the execution host’s image store.
+    pub platforms: Vec<String>,
+    /// Docker endpoint holding this content.
+    pub location: String,
 }
 
 /// Why a Build Attempt did not produce the image it was asked for.
@@ -124,11 +129,14 @@ pub enum BuildError {
         action: &'static str,
         diagnostic: String,
     },
+    /// The caller interrupted this attempt.
+    #[error("the build was cancelled")]
+    Cancelled,
     /// The attempt exceeded its bounded execution time and was terminated.
     #[error("the build exceeded its {0}s execution timeout and was terminated")]
     TimedOut(u64),
     /// The attempt stopped, but its termination could not be observed.
-    #[error("the build was terminated but its builder did not stop: {0}")]
+    #[error("build resource cleanup could not be confirmed: {0}")]
     UncertainTermination(String),
     /// The build finished, but its result is not the image it claims.
     #[error("{0}")]
@@ -152,30 +160,74 @@ pub enum BuildError {
 /// claims.
 pub fn execute(request: &Request<'_>) -> Result<Vec<BuiltImage>, BuildError> {
     let planned = plan(request.targets)?;
+    for target in request.targets {
+        if target.platforms.len() > 1 && !request.railpack.iter().any(|r| r.name == target.name) {
+            return Err(BuildError::Request(
+                "a Dockerfile Build produces one platform".into(),
+            ));
+        }
+    }
+    if request.output != Output::Load && request.targets.iter().any(|t| t.platforms.len() > 1) {
+        return Err(BuildError::Request(
+            "multi-platform Railpack builds require local image output".into(),
+        ));
+    }
     if planned.is_empty() {
         return Ok(Vec::new());
     }
     // Waiting for another local build is queueing, not attempt time, so the
     // attempt's clock starts once this process owns the builder.
-    let lock = Lock::acquire()?;
+    let cancellation = cancellation::Cancellation::new()?;
+    let lock = Lock::acquire(&cancellation.flag)?;
     let docker = Docker {
         program: request.docker.unwrap_or_else(|| Path::new("docker")),
         environment: request.environment,
         working_dir: request.working_dir,
         deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
+        cancelled: Some(&cancellation.flag),
     };
     let metadata = request.working_dir.join("build-metadata.json");
-    let builder = Builder::acquire(&docker, lock)?;
-    let preparation = railpack::prepare(&docker, request)?;
-    let overrides = preparation
-        .as_ref()
-        .map(railpack::Preparation::override_file);
-    let arguments = bake_arguments(request, &planned, &metadata, overrides.as_deref());
-    builder.run(&arguments)?;
-    match request.output {
-        Output::Load => built_images(&docker, &metadata, &planned),
-        Output::Registry | Output::Validate => Ok(Vec::new()),
-    }
+    let mut builder = Builder::acquire(&docker, lock)?;
+    let mut preparation = None;
+    let result = (|| {
+        preparation = railpack::prepare(&docker, request)?;
+        let overrides = preparation
+            .as_ref()
+            .map(railpack::Preparation::override_file);
+        let (multi, ordinary): (Vec<_>, Vec<_>) = planned
+            .into_iter()
+            .partition(|p| p.target.platforms.len() > 1);
+        let mut images = Vec::new();
+        if !ordinary.is_empty() {
+            let arguments = bake_arguments(request, &ordinary, &metadata, overrides.as_deref());
+            builder.run(&arguments)?;
+            if request.output == Output::Load {
+                images = built_images(&docker, &metadata, &ordinary)?;
+            }
+        }
+        for target in &multi {
+            images.push(index::build(
+                &docker,
+                &builder,
+                request,
+                target,
+                overrides.as_deref(),
+            )?);
+        }
+        // Keep the public result aligned with the caller's captured targets.
+        let mut by_name = ordinary
+            .iter()
+            .chain(&multi)
+            .map(|p| p.target.name.as_str())
+            .zip(images)
+            .collect::<BTreeMap<_, _>>();
+        Ok(request
+            .targets
+            .iter()
+            .filter_map(|t| by_name.remove(t.name.as_str()))
+            .collect())
+    })();
+    builder.finish(result)
 }
 
 /// One target with the Buildx name it will carry, derived once.
@@ -277,31 +329,23 @@ fn built_images(
                         ))
                     })
                 })?;
-            let tags = result
-                .name
-                .split(',')
-                .map(str::trim)
-                .filter(|tag| !tag.is_empty())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>();
-            let repository = tags
-                .first()
-                .map(|tag| repository(tag))
-                .ok_or_else(|| {
-                    BuildError::Result(format!("the build tagged no image for '{name}'"))
-                })?
-                .to_owned();
-            let reference = format!("{repository}@{}", result.digest);
+            let tags = result.tags();
+            if tags.is_empty() {
+                return Err(BuildError::Result(format!(
+                    "the build tagged no image for '{name}'"
+                )));
+            }
+            let reference = result.digest;
             let platform = verify(
                 docker,
                 &reference,
-                &result.digest,
-                planned.target.platform.as_deref(),
+                planned.target.platforms.first().map(String::as_str),
             )?;
             Ok(BuiltImage {
                 reference,
                 tags,
-                platform,
+                platforms: vec![platform],
+                location: docker.location(),
             })
         })
         .collect()
@@ -312,7 +356,6 @@ fn built_images(
 fn verify(
     docker: &Docker<'_>,
     reference: &str,
-    digest: &str,
     requested: Option<&str>,
 ) -> Result<String, BuildError> {
     let inspected = docker
@@ -336,7 +379,7 @@ fn verify(
             "the local image store reports no content descriptor for {reference}; Ployz Builds require Docker's containerd image store"
         )));
     };
-    if descriptor.digest != digest {
+    if descriptor.digest != reference {
         return Err(BuildError::Result(format!(
             "the local image store holds {} for {reference} rather than the completed content",
             descriptor.digest
@@ -373,21 +416,23 @@ fn covers(observed: &str, requested: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// The repository part of a tag, keeping a registry port intact.
-fn repository(tag: &str) -> &str {
-    let start = tag.rfind('/').map_or(0, |slash| slash + 1);
-    match tag.get(start..).and_then(|name| name.find([':', '@'])) {
-        Some(offset) => tag.get(..start + offset).unwrap_or(tag),
-        None => tag,
-    }
-}
-
 #[derive(Deserialize)]
 struct TargetMetadata {
     #[serde(rename = "containerimage.digest")]
     digest: String,
     #[serde(rename = "image.name")]
     name: String,
+}
+
+impl TargetMetadata {
+    fn tags(&self) -> Vec<String> {
+        self.name
+            .split(',')
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
 }
 
 #[derive(Deserialize)]
@@ -436,6 +481,8 @@ pub(crate) enum Streams {
     Inherited,
     /// Evidence this crate reads.
     Captured,
+    /// Read failure diagnostics while discarding binary image content.
+    Discarded,
 }
 
 /// The Docker CLI this attempt drives, with the values captured for it.
@@ -447,9 +494,18 @@ pub(crate) struct Docker<'a> {
     environment: &'a BTreeMap<String, String>,
     working_dir: &'a Path,
     deadline: Deadline,
+    cancelled: Option<&'a AtomicBool>,
 }
 
 impl<'a> Docker<'a> {
+    fn location(&self) -> String {
+        self.environment
+            .get("DOCKER_HOST")
+            .filter(|host| !host.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "unix:///var/run/docker.sock".into())
+    }
+
     /// The same Docker with a fresh budget for releasing resources, so
     /// cleanup still runs, bounded, after the attempt's deadline passes.
     pub(crate) fn releasing(&self) -> Docker<'a> {
@@ -458,6 +514,7 @@ impl<'a> Docker<'a> {
             environment: self.environment,
             working_dir: self.working_dir,
             deadline: Deadline::starting_now(CLEANUP_TIMEOUT),
+            cancelled: None,
         }
     }
 
@@ -471,6 +528,15 @@ impl<'a> Docker<'a> {
         arguments: &[&str],
         streams: Streams,
     ) -> Result<String, BuildError> {
+        if self
+            .cancelled
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            return Err(BuildError::Cancelled);
+        }
+        if self.deadline.remaining().is_zero() {
+            return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
+        }
         let mut command = Command::new(self.program);
         command
             .env_clear()
@@ -483,31 +549,40 @@ impl<'a> Docker<'a> {
         // block until its deadline.
         let output = self.working_dir.join("docker-output");
         let diagnosis = self.working_dir.join("docker-diagnosis");
-        if streams == Streams::Captured {
+        if streams != Streams::Inherited {
             command
-                .stdout(self.create(action, &output)?)
+                .stdout(match streams {
+                    Streams::Captured => Stdio::from(self.create(action, &output)?),
+                    Streams::Discarded => Stdio::null(),
+                    Streams::Inherited => unreachable!(),
+                })
                 .stderr(self.create(action, &diagnosis)?);
         }
         let mut child = command.spawn().map_err(|error| BuildError::Docker {
             action,
             diagnostic: error.to_string(),
         })?;
-        let Some(status) =
-            wait_bounded(&mut child, self.deadline.remaining()).map_err(|error| {
-                BuildError::Docker {
-                    action,
-                    diagnostic: error.to_string(),
-                }
-            })?
-        else {
-            return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
-        };
+        let status = wait_bounded(&mut child, self.deadline.remaining(), self.cancelled).map_err(
+            |error| BuildError::Docker {
+                action,
+                diagnostic: error.to_string(),
+            },
+        )?;
+        if self
+            .cancelled
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            return Err(BuildError::Cancelled);
+        }
+        let status = status.ok_or(BuildError::TimedOut(self.deadline.budget.as_secs()))?;
         if !status.success() {
             // Only a captured command has a diagnosis this side can read back.
             // Inherited output already reached the operator, and the file
             // still holds whatever the previous captured command wrote.
             let diagnostic = match streams {
-                Streams::Captured => std::fs::read_to_string(&diagnosis).unwrap_or_default(),
+                Streams::Captured | Streams::Discarded => {
+                    std::fs::read_to_string(&diagnosis).unwrap_or_default()
+                }
                 Streams::Inherited => String::new(),
             };
             let diagnostic = diagnostic.trim();
@@ -527,7 +602,7 @@ impl<'a> Docker<'a> {
                     diagnostic: error.to_string(),
                 })
             }
-            Streams::Inherited => Ok(String::new()),
+            Streams::Inherited | Streams::Discarded => Ok(String::new()),
         }
     }
 
@@ -540,13 +615,17 @@ impl<'a> Docker<'a> {
 }
 
 /// Wait for a child, terminating it when the budget runs out.
-fn wait_bounded(child: &mut Child, budget: Duration) -> std::io::Result<Option<ExitStatus>> {
+fn wait_bounded(
+    child: &mut Child,
+    budget: Duration,
+    cancelled: Option<&AtomicBool>,
+) -> std::io::Result<Option<ExitStatus>> {
     let deadline = Instant::now() + budget;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline || cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
             child.kill()?;
             child.wait()?;
             return Ok(None);
@@ -596,6 +675,7 @@ mod tests {
             environment: &environment,
             working_dir: &directory,
             deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
+            cancelled: None,
         };
 
         // A captured command carries its own diagnosis.
@@ -622,7 +702,7 @@ mod tests {
     fn target(name: &str, platform: Option<&str>) -> Target {
         Target {
             name: name.to_owned(),
-            platform: platform.map(ToOwned::to_owned),
+            platforms: platform.map(ToOwned::to_owned).into_iter().collect(),
         }
     }
 
@@ -652,25 +732,6 @@ mod tests {
         assert!(covers("linux/arm64", "linux/arm64/v8"));
         assert!(!covers("linux/amd64", "linux/arm64"));
         assert!(!covers("linux/arm", "linux/arm64"));
-    }
-
-    #[test]
-    fn a_repository_survives_tags_digests_and_registry_ports() {
-        assert_eq!(
-            repository("docker.io/library/api:v1"),
-            "docker.io/library/api"
-        );
-        assert_eq!(repository("127.0.0.1:5000/api:v1"), "127.0.0.1:5000/api");
-        assert_eq!(
-            repository("registry.test:5000/team/api"),
-            "registry.test:5000/team/api"
-        );
-        assert_eq!(
-            repository(
-                "api@sha256:0000000000000000000000000000000000000000000000000000000000000000"
-            ),
-            "api"
-        );
     }
 
     #[test]
@@ -723,7 +784,7 @@ mod tests {
             .unwrap();
         let waited = Instant::now();
         assert!(
-            wait_bounded(&mut child, Duration::from_millis(200))
+            wait_bounded(&mut child, Duration::from_millis(200), None)
                 .unwrap()
                 .is_none()
         );

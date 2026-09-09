@@ -71,6 +71,60 @@ pub(crate) fn prepare(
             "Railpack requires a native Linux AMD64 or ARM64 builder".into(),
         ));
     }
+    docker.run(
+        "inspect build worker capabilities",
+        &["buildx", "inspect", &builder_name(), "--bootstrap"],
+        Streams::Captured,
+    )?;
+    let workers = docker.run(
+        "read build worker capabilities",
+        &["buildx", "ls", "--format", "{{json .}}"],
+        Streams::Captured,
+    )?;
+    let worker = workers
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|worker| {
+            worker.get("Name").and_then(serde_json::Value::as_str) == Some(&builder_name())
+        })
+        .ok_or_else(|| {
+            BuildError::Prerequisite("the build worker reported no capabilities".into())
+        })?;
+    let supports = |platform: &str| {
+        worker
+            .get("Nodes")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|node| node.get("Platforms").and_then(serde_json::Value::as_array))
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .any(|p| crate::covers(p, platform))
+    };
+    for recipe in request.railpack {
+        let target = request
+            .targets
+            .iter()
+            .find(|t| t.name == recipe.name)
+            .ok_or_else(|| BuildError::Request("Railpack recipe has no build target".into()))?;
+        for platform in target
+            .platforms
+            .iter()
+            .map(String::as_str)
+            .chain(target.platforms.is_empty().then_some(native))
+        {
+            if !matches!(platform, "linux/amd64" | "linux/arm64") {
+                return Err(BuildError::Request(
+                    "Railpack supports only linux/amd64 and linux/arm64".into(),
+                ));
+            }
+            if !supports(platform) {
+                return Err(BuildError::Prerequisite(format!(
+                    "the build worker cannot execute {platform}; configure native or emulated support before building"
+                )));
+            }
+        }
+    }
     let directory = request.working_dir.join("private/railpack");
     fs::DirBuilder::new()
         .mode(0o700)
@@ -81,11 +135,6 @@ pub(crate) fn prepare(
     if request.railpack.iter().any(|recipe| recipe.refresh_cache) {
         // ponytail: this frontend ignores no-cache/pull. Prune only the locked,
         // Ployz-owned builder; replace this cold rebuild when upstream supports them.
-        docker.run(
-            "start the builder for cache refresh",
-            &["buildx", "inspect", &builder_name(), "--bootstrap"],
-            Streams::Captured,
-        )?;
         docker.run(
             "refresh Railpack build cache",
             &[
@@ -100,17 +149,6 @@ pub(crate) fn prepare(
         )?;
     }
     for (index, recipe) in request.railpack.iter().enumerate() {
-        if request
-            .targets
-            .iter()
-            .find(|target| target.name == recipe.name)
-            .and_then(|target| target.platform.as_deref())
-            .is_some_and(|platform| !crate::covers(native, platform))
-        {
-            return Err(BuildError::Request(format!(
-                "Railpack requires the execution host's native platform {native}"
-            )));
-        }
         let directory = preparation.directory.join(index.to_string());
         fs::DirBuilder::new()
             .mode(0o700)
@@ -162,7 +200,7 @@ pub(crate) fn prepare(
             recipe.name.replace('.', "_"),
             json!({
                 "dockerfile": plan,
-                "platforms": [native],
+                "platforms": [request.targets.iter().find(|t| t.name == recipe.name).and_then(|t| t.platforms.first()).map_or(native, String::as_str)],
                 "args": {"BUILDKIT_SYNTAX": IMAGE, "secrets-hash": hash},
                 "secret": secrets,
             }),

@@ -233,12 +233,9 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     );
     let service = one_built(outcome);
     assert_eq!(service.image, "example.test/api:version2");
-    assert_eq!(
-        service.built.reference,
-        format!("example.test/api@{FIRST_CONTENT}")
-    );
+    assert_eq!(service.built.reference, FIRST_CONTENT);
     assert_eq!(service.built.tags, ["example.test/api:version2"]);
-    assert_eq!(service.built.platform, "linux/amd64");
+    assert_eq!(service.built.platforms, ["linux/amd64"]);
     let override_yaml = fs::read_to_string(captured).unwrap();
     assert!(override_yaml.contains("api"));
     assert!(override_yaml.contains("example.test/api:version2"));
@@ -374,20 +371,15 @@ fn built_images_bind_to_exact_content_after_tag_reuse() {
 
     let (first, second) = (one_built(first), one_built(second));
     assert_eq!(first.built.tags, second.built.tags);
-    assert_eq!(
-        first.built.reference,
-        format!("example.test/api@{FIRST_CONTENT}")
-    );
-    assert_eq!(
-        second.built.reference,
-        format!("example.test/api@{SECOND_CONTENT}")
-    );
+    assert_eq!(first.built.reference, FIRST_CONTENT);
+    assert_eq!(second.built.reference, SECOND_CONTENT);
     // Each attempt verified its own content instead of the shared tag.
     let calls = fs::read_to_string(root.join("calls")).unwrap();
     for content in [FIRST_CONTENT, SECOND_CONTENT] {
         assert!(
-            calls.lines().any(|call| call
-                == format!("image inspect example.test/api@{content} --format {{{{json .}}}}")),
+            calls
+                .lines()
+                .any(|call| call == format!("image inspect {content} --format {{{{json .}}}}")),
             "{calls}"
         );
     }
@@ -430,7 +422,7 @@ fn an_image_the_store_does_not_hold_is_refused_as_a_result() {
 #[test]
 fn several_requested_build_platforms_are_refused_with_the_service_named() {
     let mut project = parse_normalized(
-        "name: demo\nservices: {api: {build: {context: ., platforms: [linux/amd64, linux/arm64]}}}\n",
+        "name: demo\nservices: {api: {build: {context: ., dockerfile_inline: 'FROM scratch', platforms: [linux/amd64, linux/arm64]}}}\n",
         ".",
     )
     .unwrap();
@@ -554,7 +546,7 @@ case "$1 $2" in
   'buildx rm') rm -f "$root/builder"; exit 0 ;;
   'buildx ls')
     if [ -f "$root/builder" ]; then
-      printf '%s\n' '{{"Name":"{builder}","Nodes":[{{"Platforms":["linux/amd64"],"DriverOpts":{{"image":"{image}"}}}}]}}'
+      printf '%s\n' '{{"Name":"{builder}","Nodes":[{{"Platforms":["linux/amd64","linux/arm64"],"DriverOpts":{{"image":"{image}"}}}}]}}'
     fi
     exit 0 ;;
   'image inspect')

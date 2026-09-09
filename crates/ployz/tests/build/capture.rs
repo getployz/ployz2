@@ -454,7 +454,7 @@ fn default_platform_is_captured_and_verified_unless_compose_overrides_it() {
             );
             "linux/arm64"
         } else {
-            assert_eq!(one_built(result.unwrap()).built.platform, "linux/amd64");
+            assert_eq!(one_built(result.unwrap()).built.platforms, ["linux/amd64"]);
             "linux/amd64"
         };
         let config: serde_norway::Value =

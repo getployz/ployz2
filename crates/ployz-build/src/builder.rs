@@ -17,6 +17,7 @@ pub(crate) struct Builder<'a> {
     docker: &'a Docker<'a>,
     name: String,
     _lock: Lock,
+    removed: bool,
 }
 
 impl<'a> Builder<'a> {
@@ -30,14 +31,19 @@ impl<'a> Builder<'a> {
     /// Fails when Buildx is unavailable or the container cannot be created.
     pub(crate) fn acquire(docker: &'a Docker<'a>, lock: Lock) -> Result<Self, BuildError> {
         let name = builder_name();
-        // Best effort: any container left behind is stale by construction.
-        let _ = remove(&docker.releasing(), &name);
-        create(docker, &name)?;
-        Ok(Self {
+        // Confirm stale work has stopped before reusing its cache.
+        remove(&docker.releasing(), &name)
+            .map_err(|e| BuildError::UncertainTermination(e.to_string()))?;
+        let mut builder = Self {
             docker,
             name,
             _lock: lock,
-        })
+            removed: false,
+        };
+        if let Err(error) = create(docker, &builder.name) {
+            return builder.finish(Err(error));
+        }
+        Ok(builder)
     }
 
     /// Run one build, bounded by the attempt's deadline.
@@ -47,18 +53,31 @@ impl<'a> Builder<'a> {
     /// confirmed stopped, or an uncertain termination when it is not.
     pub(crate) fn run(&self, arguments: &[String]) -> Result<(), BuildError> {
         let borrowed = arguments.iter().map(String::as_str).collect::<Vec<_>>();
-        match self.docker.run("the build", &borrowed, Streams::Inherited) {
-            Ok(_) => Ok(()),
-            Err(BuildError::TimedOut(seconds)) => Err(self.terminate(seconds)),
-            Err(error) => Err(error),
-        }
+        self.docker
+            .run("the build", &borrowed, Streams::Inherited)
+            .map(|_| ())
     }
 
-    /// The attempt was terminated; report whether its builder stopped too.
-    fn terminate(&self, seconds: u64) -> BuildError {
-        match remove(&self.docker.releasing(), &self.name) {
-            Ok(()) => BuildError::TimedOut(seconds),
-            Err(error) => BuildError::UncertainTermination(error.to_string()),
+    /// Confirm cleanup before releasing admission, preserving existing failures.
+    ///
+    /// # Errors
+    /// Reports uncertain cleanup, the original failure, or a late cancellation.
+    pub(crate) fn finish<T>(&mut self, result: Result<T, BuildError>) -> Result<T, BuildError> {
+        let cleanup = remove(&self.docker.releasing(), &self.name);
+        self.removed = true;
+        match cleanup {
+            Ok(()) => result.and_then(|output| {
+                if self
+                    .docker
+                    .cancelled
+                    .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+                {
+                    Err(BuildError::Cancelled)
+                } else {
+                    Ok(output)
+                }
+            }),
+            Err(error) => Err(BuildError::UncertainTermination(error.to_string())),
         }
     }
 }
@@ -69,7 +88,9 @@ impl Drop for Builder<'_> {
     /// A removal that fails is reported rather than discarded: the image this
     /// attempt built stays usable, and the next attempt replaces the container.
     fn drop(&mut self) {
-        if let Err(error) = remove(&self.docker.releasing(), &self.name) {
+        if !self.removed
+            && let Err(error) = remove(&self.docker.releasing(), &self.name)
+        {
             eprintln!(
                 "WARNING: build container '{}' was left behind: {error}. The next build replaces it.",
                 self.name
@@ -127,11 +148,14 @@ impl Lock {
     ///
     /// # Errors
     /// Fails when the lock file cannot be opened or locked.
-    pub(crate) fn acquire() -> Result<Self, BuildError> {
-        Self::acquire_in(&directory())
+    pub(crate) fn acquire(cancelled: &std::sync::atomic::AtomicBool) -> Result<Self, BuildError> {
+        Self::acquire_in(&directory(), cancelled)
     }
 
-    fn acquire_in(directory: &std::path::Path) -> Result<Self, BuildError> {
+    fn acquire_in(
+        directory: &std::path::Path,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, BuildError> {
         use rustix::fs::{FlockOperation, flock};
 
         let path = directory.join(format!("{}.lock", builder_name()));
@@ -153,6 +177,9 @@ impl Lock {
         eprintln!("Waiting for another local Ployz build to finish.");
         let deadline = std::time::Instant::now() + QUEUE_TIMEOUT;
         while std::time::Instant::now() < deadline {
+            if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(BuildError::Cancelled);
+            }
             std::thread::sleep(std::time::Duration::from_millis(200));
             if flock(&file, FlockOperation::NonBlockingLockExclusive).is_ok() {
                 return Ok(Self { _file: file });
@@ -204,9 +231,11 @@ mod tests {
             environment: &environment,
             working_dir: &directory,
             deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+            cancelled: None,
         };
 
-        let lock = Lock::acquire_in(&directory).unwrap();
+        let lock =
+            Lock::acquire_in(&directory, &std::sync::atomic::AtomicBool::new(false)).unwrap();
         let builder = Builder::acquire(&docker, lock).unwrap();
         let name = builder_name();
         let acquired = fs::read_to_string(directory.join("calls")).unwrap();

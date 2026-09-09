@@ -499,12 +499,14 @@ fn build_cli_selects_recipes_without_fallback() {
             r#"#!/bin/sh
 printf '%s\n' "$1 $2" >> '{}'
 case "$1 $2" in
+  'buildx ls') printf '{{"Name":"{builder}","Nodes":[{{"Platforms":["linux/amd64"]}}]}}\n' ;;
   'version --format') printf 'linux/amd64\n' ;;
   'buildx bake') echo dockerfile-failed >&2; exit 23 ;;
   'start --attach') echo preparation-failed >&2; exit 24 ;;
 esac
 "#,
-            calls.display()
+            calls.display(),
+            builder = ployz_build::builder_name()
         ),
     );
     let path = std::env::join_paths(
