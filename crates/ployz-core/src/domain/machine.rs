@@ -37,6 +37,10 @@ pub(super) fn resolve_machine_text<'a>(
 /// One Machine's durable advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Machine {
+    pub labels: BTreeMap<String, String>,
+    pub accepts_builds: bool,
+    pub accepts_services: bool,
+    pub accepts_ingress: bool,
     pub id: MachineId,
     pub name: MachineName,
     pub subnet: MachineSubnet,
@@ -207,6 +211,16 @@ pub enum PublicIpUpdate {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineUpdate {
     #[serde(default)]
+    pub label_add: BTreeMap<String, String>,
+    #[serde(default)]
+    pub label_rm: Vec<String>,
+    #[serde(default)]
+    pub accepts_builds: Option<bool>,
+    #[serde(default)]
+    pub accepts_services: Option<bool>,
+    #[serde(default)]
+    pub accepts_ingress: Option<bool>,
+    #[serde(default)]
     pub name: Option<MachineName>,
     #[serde(default)]
     pub public_ip: PublicIpUpdate,
@@ -215,9 +229,36 @@ pub struct MachineUpdate {
 }
 
 impl MachineUpdate {
+    /// Validate a metadata patch before changing any durable fields.
+    pub fn validate(&self) -> Result<(), MachineUpdateError> {
+        for key in self.label_add.keys().chain(self.label_rm.iter()) {
+            if key.is_empty()
+                || key
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || c == '=')
+            {
+                return Err(MachineUpdateError::InvalidLabel(key.clone()));
+            }
+        }
+        for (key, value) in &self.label_add {
+            if value.chars().any(char::is_control) {
+                return Err(MachineUpdateError::InvalidLabel(key.clone()));
+            }
+            if self.label_rm.contains(key) {
+                return Err(MachineUpdateError::ConflictingLabel(key.clone()));
+            }
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.name.is_none()
+        self.label_add.is_empty()
+            && self.label_rm.is_empty()
+            && self.accepts_builds.is_none()
+            && self.accepts_services.is_none()
+            && self.accepts_ingress.is_none()
+            && self.name.is_none()
             && self.public_ip == PublicIpUpdate::Keep
             && self.advertised_endpoints.is_none()
     }
@@ -225,6 +266,12 @@ impl MachineUpdate {
 
 #[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
 pub enum MachineUpdateError {
+    #[error(
+        "invalid Machine Label {0:?}: keys must be nonempty without whitespace or '=', and keys and values must not contain control characters"
+    )]
+    InvalidLabel(String),
+    #[error("Machine Label {0:?} cannot be added and removed in the same patch")]
+    ConflictingLabel(String),
     #[error("Machine name is already visible on another Machine")]
     DuplicateName,
     #[error("at least one Advertised Endpoint is required")]
@@ -236,6 +283,7 @@ pub fn apply_machine_update(
     visible: &[Machine],
     update: MachineUpdate,
 ) -> Result<Machine, MachineUpdateError> {
+    update.validate()?;
     if update.name.as_ref().is_some_and(|name| {
         name != &machine.name
             && visible
@@ -253,6 +301,19 @@ pub fn apply_machine_update(
     }
 
     let mut updated = machine.clone();
+    updated.labels.extend(update.label_add);
+    for key in update.label_rm {
+        updated.labels.remove(&key);
+    }
+    if let Some(accepts) = update.accepts_builds {
+        updated.accepts_builds = accepts;
+    }
+    if let Some(accepts) = update.accepts_services {
+        updated.accepts_services = accepts;
+    }
+    if let Some(accepts) = update.accepts_ingress {
+        updated.accepts_ingress = accepts;
+    }
     if let Some(name) = update.name {
         updated.name = name;
     }
@@ -733,6 +794,10 @@ mod placement_tests {
 
     fn machine(hex: char, name: &str) -> Machine {
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: MachineSubnet::parse("10.210.0.0/24").unwrap(),

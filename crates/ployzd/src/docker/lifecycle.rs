@@ -613,6 +613,10 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
 
     let [a, b, c, _] = gateway.0.octets();
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: machine_id,
         name: MachineName::parse("docker-test").unwrap(),
         subnet: format!("{a}.{b}.{c}.0/24").parse().unwrap(),

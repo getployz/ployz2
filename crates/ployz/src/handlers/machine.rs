@@ -148,6 +148,7 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
         name,
         public_ip,
         advertised_endpoints,
+        ..Default::default()
     };
     if update.is_empty() {
         return Err(Error::usage("at least one Machine update flag is required"));

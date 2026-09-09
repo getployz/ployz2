@@ -1054,6 +1054,10 @@ fn up_machine(machine: Machine) -> MachineObservation {
 
 fn joiner_machine() -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
         name: MachineName::parse("joiner").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
@@ -1066,6 +1070,10 @@ fn joiner_machine() -> Machine {
 
 pub fn founder_machine() -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap(),
         name: MachineName::parse("founder").unwrap(),
         subnet: "10.210.0.0/24".parse().unwrap(),

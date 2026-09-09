@@ -315,6 +315,10 @@ fn container_selector_uses_exact_id_then_display_name_then_prefix() {
 
 fn machine(id: char, name: &str, seed: u8) -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{seed}.0/24").parse().unwrap(),

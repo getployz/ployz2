@@ -23,6 +23,10 @@ async fn starting_machine() -> (
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 ) {
     let machine = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::random(),
         name: MachineName::parse("founder").unwrap(),
         subnet: "10.210.0.0/24".parse().unwrap(),

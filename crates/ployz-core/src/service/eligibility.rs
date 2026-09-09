@@ -278,6 +278,10 @@ mod tests {
 
     fn machine(name: &str) -> Machine {
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse("1".repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: "10.210.1.0/24".parse().unwrap(),

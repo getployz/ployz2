@@ -98,6 +98,10 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     let mut second = LocalMachineStore::open(&second_dir.0).unwrap();
     let public_key = second.record().private_key().public_key();
     let assigned = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::random(),
         name: MachineName::parse("second").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
@@ -257,6 +261,10 @@ fn join_with_cloud_pairing_stores_the_same_two_fields() {
     let store = LocalMachineStore::open(&second_dir.0).unwrap();
     let public_key = store.record().private_key().public_key();
     let assigned = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::random(),
         name: MachineName::parse("second").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),
@@ -349,9 +357,12 @@ fn machine_update_is_atomic_and_durable() {
     let updated = store
         .update(
             MachineUpdate {
+                label_add: std::collections::BTreeMap::from([("zone".into(), "west".into())]),
+                accepts_services: Some(false),
                 name: Some(MachineName::parse("after").unwrap()),
                 public_ip: PublicIpUpdate::Set("203.0.113.7".parse().unwrap()),
                 advertised_endpoints: Some(endpoints.clone()),
+                ..Default::default()
             },
             std::slice::from_ref(&original),
         )
@@ -362,6 +373,9 @@ fn machine_update_is_atomic_and_durable() {
     assert_eq!(updated.management_address(), original.management_address());
     assert_eq!(updated.public_key, original.public_key);
     assert_eq!(updated.advertised_endpoints, endpoints);
+    assert_eq!(updated.labels.get("zone").map(String::as_str), Some("west"));
+    assert!(!updated.accepts_services);
+    assert!(updated.accepts_builds && updated.accepts_ingress);
     drop(store);
 
     let mut reopened = LocalMachineStore::open(&dir.0).unwrap();
@@ -760,6 +774,10 @@ fn pre_616_participating_authority_shape_is_not_migrated() {
 
 fn sample_machine(id: MachineId, public_key: ployz_core::WireGuardPublicKey) -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id,
         name: MachineName::parse("machine").unwrap(),
         subnet: "10.210.1.0/24".parse().unwrap(),

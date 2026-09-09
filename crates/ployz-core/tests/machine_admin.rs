@@ -20,6 +20,7 @@ fn update_mapping_preserves_omissions_and_applies_one_atomic_patch() {
             name: Some(MachineName::parse("renamed").unwrap()),
             public_ip: PublicIpUpdate::Set("203.0.113.9".parse().unwrap()),
             advertised_endpoints: Some(endpoints.clone()),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -209,6 +210,10 @@ fn wireguard_projection_keeps_unknown_peers_and_optional_live_fields() {
 
 fn machine(id: char, name: &str, seed: u8) -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
         subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
@@ -244,4 +249,48 @@ fn machine_management_address_is_derived_after_decode_and_key_update() {
     );
     decoded.public_key = WireGuardPublicKey([0; 32]);
     assert_eq!(decoded.management_address().0.to_string(), "fdcc::");
+}
+
+#[test]
+fn label_and_role_patch_preserves_unrelated_metadata_and_rejects_conflicts() {
+    let mut original = machine('1', "first", 1);
+    original.labels = BTreeMap::from([
+        ("zone".into(), "west".into()),
+        ("keep".into(), "yes".into()),
+    ]);
+    let patch = MachineUpdate {
+        label_add: BTreeMap::from([("zone".into(), "east".into())]),
+        label_rm: vec!["missing".into()],
+        accepts_services: Some(false),
+        ..Default::default()
+    };
+    assert!(!patch.is_empty());
+    let updated = apply_machine_update(&original, &[], patch).unwrap();
+    assert_eq!(
+        updated.labels,
+        BTreeMap::from([
+            ("zone".into(), "east".into()),
+            ("keep".into(), "yes".into())
+        ])
+    );
+    assert!(updated.accepts_builds && updated.accepts_ingress);
+    assert!(!updated.accepts_services);
+    assert_eq!(updated.name, original.name);
+    for patch in [
+        MachineUpdate {
+            label_add: BTreeMap::from([("zone".into(), "east".into())]),
+            label_rm: vec!["zone".into()],
+            ..Default::default()
+        },
+        MachineUpdate {
+            label_rm: vec![" ".into()],
+            ..Default::default()
+        },
+        MachineUpdate {
+            label_add: BTreeMap::from([("zone".into(), "bad\nvalue".into())]),
+            ..Default::default()
+        },
+    ] {
+        assert!(apply_machine_update(&original, &[], patch).is_err());
+    }
 }

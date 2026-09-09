@@ -1055,9 +1055,7 @@ fn store_error(error: StoreError) -> RpcError {
         StoreError::MachineUpdate(ployz_core::MachineUpdateError::DuplicateName) => {
             RpcErrorCode::Conflict
         }
-        StoreError::MachineUpdate(ployz_core::MachineUpdateError::MissingEndpoints) => {
-            RpcErrorCode::InvalidArgument
-        }
+        StoreError::MachineUpdate(_) => RpcErrorCode::InvalidArgument,
         StoreError::Io(_)
         | StoreError::Json(_)
         | StoreError::UnsafeDataDirectory(_)

@@ -308,6 +308,10 @@ mod tests {
         {
             let mut store = store.lock().unwrap();
             let machine = Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
                 id: store.record().id(),
                 name: MachineName::parse("joining").unwrap(),
                 subnet: "10.210.0.0/24".parse().unwrap(),

@@ -480,6 +480,10 @@ impl MachineRpc for DiscoveryService {
             return Err(Status::invalid_argument("expected Register"));
         };
         let assigned_machine = Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
             name: body.name,
             subnet: "10.210.1.0/24".parse().unwrap(),
@@ -1026,6 +1030,10 @@ fn created_container_id() -> ContainerId {
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
     MachineObservation::new(
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: machine_id(hex),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())

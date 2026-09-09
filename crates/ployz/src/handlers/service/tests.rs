@@ -570,6 +570,10 @@ fn service_named(id: char, project: &str, name: &str) -> ployz_core::ServiceObse
 fn machine(id: char, name: &str, membership: MembershipObservation) -> MachineObservation {
     MachineObservation::new(
         Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),
             subnet: format!("10.210.{}.0/24", id.to_digit(16).unwrap())

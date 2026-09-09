@@ -529,6 +529,10 @@ impl LocalMachineStore {
         }
         let public_key = self.record.wireguard_private_key.public_key();
         let machine = Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: self.record.id(),
             name,
             subnet: allocate_machine_subnet(founding_cluster.network, [])

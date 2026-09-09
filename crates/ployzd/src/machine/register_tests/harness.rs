@@ -93,6 +93,10 @@ pub(super) async fn publish_peers(replicated: &ReplicatedStore, count: usize) ->
     for index in 0..count {
         let seed = u8::try_from(index + 10).expect("peer seeds fit u8");
         let machine = Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
             id: MachineId::random(),
             name: MachineName::parse(format!("peer-{seed}")).unwrap(),
             subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
@@ -167,6 +171,10 @@ pub(super) async fn write_admin_frame(stream: &mut UnixStream, data: &[u8]) -> i
 
 pub(super) fn unreachable_allocator(id: MachineId) -> Machine {
     Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
         id,
         name: MachineName::parse("allocator").unwrap(),
         subnet: "10.210.0.0/24".parse().unwrap(),

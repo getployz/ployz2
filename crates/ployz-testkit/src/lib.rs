@@ -1045,6 +1045,10 @@ mod tests {
 
         fn machine(name: &str, key: u8) -> Machine {
             Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
                 id: MachineId::random(),
                 name: MachineName::parse(name).unwrap(),
                 subnet: format!("10.210.{key}.0/24").parse().unwrap(),

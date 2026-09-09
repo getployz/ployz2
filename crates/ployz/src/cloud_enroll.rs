@@ -381,6 +381,10 @@ mod tests {
     fn registration() -> Registered {
         Registered {
             assigned_machine: Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
                 id: MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
                 name: MachineName::parse("joiner").unwrap(),
                 subnet: "10.210.1.0/24".parse().unwrap(),
