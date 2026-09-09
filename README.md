@@ -33,8 +33,9 @@ ARM64 platform. Set `build.platforms: [linux/amd64, linux/arm64]` to build both;
 the execution host must provide native or emulated support for each platform.
 Separate solves are assembled locally with pinned regctl 0.11.6 into one immutable
 image in Docker’s containerd store, with every platform’s content verified.
-Multi-platform builds currently require local output; Dockerfiles remain limited
-to one platform. Deploy platform inference is separate work.
+Multi-platform builds currently require local output and reject requested
+`build.provenance`; Dockerfiles remain limited to one platform. Deploy platform
+inference is separate work.
 
 The [prototype findings](https://github.com/getployz/ployz2/blob/c3ca5519a4607256ffb28052d77a1c7d89f1bbe1/prototypes/railpack-transfer/FINDINGS.md)
 preserve the evidence for this assembly approach. They used shipped beta binaries

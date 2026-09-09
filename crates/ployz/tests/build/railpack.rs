@@ -241,6 +241,42 @@ fn railpack_accepts_explicit_linux_architectures_and_rejects_other_platforms() {
 }
 
 #[test]
+fn multi_platform_railpack_refuses_requested_provenance() {
+    let root =
+        std::env::temp_dir().join(format!("ployz-railpack-provenance-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    for (platforms, provenance, accepted) in [
+        ("linux/amd64, linux/arm64", "true", false),
+        ("linux/amd64, linux/arm64", "mode=max", false),
+        ("linux/amd64, linux/arm64", "false", true),
+        ("linux/amd64", "true", true),
+        ("linux/arm64", "mode=max", true),
+    ] {
+        let mut project = parse_normalized(&format!("services:\n  api:\n    build: {{context: ., x-recipe: railpack, platforms: [{platforms}], provenance: {provenance}}}\n"), &root).unwrap();
+        let options = BuildOptions::default();
+        let plan = plan_build(&project, &options).unwrap();
+        let result = capture_build(&plan, &options, &mut project);
+        if accepted {
+            assert!(
+                result.is_ok(),
+                "{platforms}, {provenance}: {:?}",
+                result.err()
+            );
+        } else {
+            let error = result
+                .err()
+                .expect("requested provenance must not be discarded")
+                .to_string();
+            assert!(
+                error.contains("multi-platform Railpack") && error.contains("build.provenance"),
+                "{error}"
+            );
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn multi_platform_build_requires_complete_content_and_cleans_up_failed_attempts() {
     let root = std::env::temp_dir().join(format!("ployz-railpack-outcomes-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
