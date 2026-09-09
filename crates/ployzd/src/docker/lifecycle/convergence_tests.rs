@@ -35,6 +35,7 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
         .create_with_admission(
             &machine,
             ContainerRequest {
+                creation_key: None,
                 kind: ContainerKind::ServiceContainer,
                 project_name: &project,
                 spec: &ineligible,
@@ -46,6 +47,17 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
     assert!(matches!(ordinary, Err(Error::ServicePlacementMismatch)));
 
     let unknown = spec_with_sources(vec![provisioned_source("bounded", 1_073_741_824)]);
+    let mut request = container_request(
+        ContainerKind::ServiceContainer,
+        &project,
+        &unknown,
+        std::future::ready(None),
+    );
+    request.creation_key = Some("unknown-storage");
+    assert!(matches!(
+        runtime.create_with_admission(&machine, request).await,
+        Err(Error::StorageUnobservable)
+    ));
     let global = runtime
         .converge_global_slot(
             &machine,

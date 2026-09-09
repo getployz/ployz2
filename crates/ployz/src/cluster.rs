@@ -681,9 +681,11 @@ impl Client {
         kind: ContainerKind,
         project_name: ProjectName,
         resolved_spec: ResolvedServiceSpec,
+        creation_key: Option<String>,
     ) -> Result<ContainerCreated, RpcError> {
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
+                creation_key,
                 kind,
                 project_name,
                 resolved_spec,

@@ -196,6 +196,7 @@ impl MachineOperations for Client {
         .await?;
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
+                creation_key: None,
                 kind,
                 project_name: project_name.clone(),
                 resolved_spec: spec.clone(),
