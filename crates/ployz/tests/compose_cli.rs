@@ -252,7 +252,19 @@ x-volumes:
         ),
     )
     .unwrap();
-    let docker = executable(&root, "docker", "#!/bin/sh\nexec /usr/bin/docker \"$@\"\n");
+    // Buildx still parses the captured Compose file, but this shape check needs
+    // no daemon, image pull, or BuildKit container.
+    let docker = executable(
+        &root,
+        "docker",
+        r#"#!/bin/sh
+case "$1 $2" in
+  'buildx create'|'buildx rm') exit 0 ;;
+  'buildx bake') exec /usr/bin/docker "$@" --print ;;
+  *) exit 99 ;;
+esac
+"#,
+    );
     let load = LoadOptions {
         command: "build".into(),
         working_dir: Some(root.clone()),
@@ -267,9 +279,6 @@ x-volumes:
     };
     let plan = plan_build(&project, &options).unwrap();
     let result = execute_build(&plan, &options, &load, &mut project);
-    let _ = Command::new("/usr/bin/docker")
-        .args(["image", "rm", "-f", &image])
-        .status();
     result.unwrap();
     fs::remove_dir_all(root).unwrap();
 }
