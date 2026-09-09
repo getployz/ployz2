@@ -31,6 +31,9 @@ pub struct ComposeProject {
     pub name: String,
     pub working_dir: PathBuf,
     pub context: Option<String>,
+    /// Preferred Build execution location from the Compose `x-build-machine`
+    /// extension: a Machine Target, `auto`, or `local`.
+    pub build_machine: Option<String>,
     #[serde(deserialize_with = "deserialize_services")]
     pub services: BTreeMap<String, RequestedServiceSpec>,
     pub builds: BTreeMap<String, BuildSpec>,

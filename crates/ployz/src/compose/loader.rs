@@ -347,6 +347,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compose_carries_the_preferred_build_machine_and_refuses_a_non_string() {
+        let project = |preference: &str| {
+            parse_normalized(
+                &format!("name: demo\n{preference}services:\n  api:\n    image: busybox\n"),
+                ".",
+            )
+        };
+        assert_eq!(project("").unwrap().build_machine, None);
+        for preference in ["tower", "auto", "local"] {
+            assert_eq!(
+                project(&format!("x-build-machine: {preference}\n"))
+                    .unwrap()
+                    .build_machine
+                    .as_deref(),
+                Some(preference)
+            );
+        }
+        for invalid in ["x-build-machine: [tower]\n", "x-build-machine: \"\"\n"] {
+            assert!(
+                project(invalid)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("x-build-machine"),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn helper_contract_failures_do_not_suggest_editing_compose_settings() {
         let protocol = helper::<serde_json::Value>(&serde_json::json!({"version": 2})).unwrap_err();
         let output = helper::<bool>(&serde_json::json!({"version": 1, "port": "80"})).unwrap_err();
