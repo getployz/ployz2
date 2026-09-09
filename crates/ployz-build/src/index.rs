@@ -66,7 +66,20 @@ pub(crate) fn build(
             ] {
                 args.extend(["--set".into(), setting]);
             }
-            builder.run(&args)?;
+            if let Some(progress) = docker.progress {
+                progress(crate::Progress::Stage(crate::Stage::Building));
+            }
+            builder.run(&args, || {
+                if let Some(progress) = docker.progress {
+                    progress(crate::Progress::Target {
+                        name: target.target.name.clone(),
+                        outcome: crate::TargetEvidence::Unknown,
+                    });
+                }
+            })?;
+            if let Some(progress) = docker.progress {
+                progress(crate::Progress::Stage(crate::Stage::Output));
+            }
             let results: BTreeMap<String, TargetMetadata> =
                 serde_json::from_slice(&std::fs::read(&metadata).map_err(result_error)?)
                     .map_err(result_error)?;
