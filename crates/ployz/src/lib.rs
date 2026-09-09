@@ -1,3 +1,4 @@
+mod cancellation;
 pub mod changes;
 pub mod cli;
 mod cloud_enroll;
@@ -20,3 +21,6 @@ pub mod sdk;
 pub mod service;
 mod setup_retry;
 pub mod volume;
+// Shared Machine transport fixtures also exercise the in-process CLI handlers.
+#[cfg(test)]
+extern crate self as ployz;

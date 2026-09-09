@@ -62,7 +62,7 @@ pub(super) async fn serve_discovery(
 pub(super) enum DescribeOutcome {
     Status(Status),
     Remote(RpcError),
-    Hang,
+    Hang(tokio::sync::oneshot::Sender<()>),
 }
 
 #[derive(Clone)]
@@ -140,6 +140,7 @@ fn send_watch_event(sender: &mpsc::Sender<Result<OpaquePayload, Status>>, event:
 
 #[derive(Clone)]
 pub(super) struct DiscoveryService {
+    pub(super) builds: Option<Arc<BuildRecorder>>,
     description: ContractDescription,
     pub(super) describe_outcomes: Arc<Mutex<VecDeque<DescribeOutcome>>>,
     pub(super) stream_opens: Arc<AtomicUsize>,
@@ -176,6 +177,7 @@ pub(super) struct DiscoveryService {
 impl DiscoveryService {
     pub(super) fn new(description: ContractDescription) -> Self {
         Self {
+            builds: None,
             description,
             describe_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             stream_opens: Arc::new(AtomicUsize::new(0)),
@@ -285,6 +287,105 @@ impl Connector for CountingConnector {
 #[tonic::async_trait]
 impl MachineRpc for DiscoveryService {
     type ExecStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type BuildStream = ReceiverStream<Result<OpaquePayload, Status>>;
+
+    async fn build(
+        &self,
+        request: Request<tonic::Streaming<OpaquePayload>>,
+    ) -> Result<Response<Self::BuildStream>, Status> {
+        let recorder = self
+            .builds
+            .clone()
+            .ok_or_else(|| Status::unimplemented("Build is not used by this fixture"))?;
+        recorder
+            .routes
+            .lock()
+            .unwrap()
+            .push(ployz_core::routing_from_metadata(request.metadata()).unwrap());
+        let machine_id = self.description.machine_id;
+        let (sender, receiver) = mpsc::channel(2);
+        tokio::spawn(async move {
+            use ployz_build::{
+                Output,
+                remote::{self, Event, Input, Outcome},
+            };
+            let mut request = request.into_inner();
+            let first = request.message().await.unwrap().unwrap();
+            let Input::Start(definition) = remote::decode(&first).unwrap() else {
+                panic!("expected Build definition")
+            };
+            recorder.targets.lock().unwrap().push(
+                definition
+                    .targets
+                    .iter()
+                    .map(|target| target.name.clone())
+                    .collect(),
+            );
+            if recorder.queued {
+                sender
+                    .send(Ok(remote::encode(&Event::Progress(
+                        ployz_build::Progress::Stage(ployz_build::Stage::Queued),
+                    ))
+                    .unwrap()))
+                    .await
+                    .unwrap();
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_millis(50), request.message())
+                        .await
+                        .is_err(),
+                    "client uploaded before admission"
+                );
+            }
+            if let Some(outcome) = &recorder.admission_outcome {
+                let _ = sender
+                    .send(Ok(
+                        remote::encode(&Event::Finished(outcome.clone())).unwrap()
+                    ))
+                    .await;
+                return;
+            }
+            sender
+                .send(Ok(remote::encode(&Event::Admitted {
+                    machine_id,
+                    active_timeout: ployz_build::EXECUTION_TIMEOUT,
+                })
+                .unwrap()))
+                .await
+                .unwrap();
+            let mut upload = remote::Upload::new().unwrap();
+            loop {
+                let payload = request.message().await.unwrap().unwrap();
+                let frame: Input = remote::decode(&payload).unwrap();
+                let finish = matches!(frame, Input::Finish);
+                upload.accept(frame).unwrap();
+                if finish {
+                    break;
+                }
+            }
+            recorder.uploads.fetch_add(1, Ordering::SeqCst);
+            let outcome = match definition.output {
+                Output::Validate => Outcome::Validated { machine_id },
+                Output::Registry => Outcome::Published { machine_id },
+                Output::Load => Outcome::Images {
+                    machine_id,
+                    images: definition
+                        .targets
+                        .iter()
+                        .map(|_| ployz_build::BuiltImage {
+                            reference: format!("sha256:{}", "1".repeat(64)),
+                            tags: vec!["example.test/api:built".into()],
+                            platforms: vec!["linux/amd64".into()],
+                            location: "unix:///var/run/docker.sock".into(),
+                        })
+                        .collect(),
+                },
+            };
+            let _ = sender
+                .send(Ok(remote::encode(&Event::Finished(outcome)).unwrap()))
+                .await;
+        });
+        Ok(Response::new(ReceiverStream::new(receiver)))
+    }
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = ReceiverStream<Result<OpaquePayload, Status>>;
@@ -299,7 +400,10 @@ impl MachineRpc for DiscoveryService {
             Some(DescribeOutcome::Remote(error)) => {
                 return Ok(Response::new(RpcResponse::from(error).encode().unwrap()));
             }
-            Some(DescribeOutcome::Hang) => return std::future::pending().await,
+            Some(DescribeOutcome::Hang(received)) => {
+                received.send(()).unwrap();
+                return std::future::pending().await;
+            }
             None => {}
         }
         let request = request
@@ -1013,16 +1117,67 @@ pub(super) async fn connected_client(
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
     Arc<AtomicUsize>,
 ) {
-    let (address, server) = serve_discovery(service).await;
+    // Keep semantic RPC tests inside Tokio so paused time never outruns OS I/O.
+    // Transport tests use serve_discovery / SystemConnector directly.
+    struct MemoryConnector {
+        incoming: mpsc::UnboundedSender<Result<tokio::io::DuplexStream, std::io::Error>>,
+        connects: Arc<AtomicUsize>,
+    }
+    #[tonic::async_trait]
+    impl Connector for MemoryConnector {
+        async fn connect(&self, _: &Connection) -> Result<Channel, ConnectError> {
+            self.connects.fetch_add(1, Ordering::SeqCst);
+            let incoming = self.incoming.clone();
+            Channel::from_static("http://memory.invalid")
+                .connect_with_connector(tower::service_fn(move |_| {
+                    let (client, server) = tokio::io::duplex(64 * 1024);
+                    incoming.send(Ok(server)).unwrap();
+                    async move { Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client)) }
+                }))
+                .await
+                .map_err(Into::into)
+        }
+
+        async fn dial_proxy(
+            &self,
+            _: &Connection,
+            _: &str,
+            _: &str,
+        ) -> Result<BoxProxyStream, ConnectError> {
+            Err(ConnectError::Attempt("unused".into()))
+        }
+    }
+    let (incoming, receiver) = mpsc::unbounded_channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(service))
+            .serve_with_incoming(tokio_stream::wrappers::UnboundedReceiverStream::new(
+                receiver,
+            )),
+    );
     let connects = Arc::new(AtomicUsize::new(0));
     let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
-            connections: vec![Connection::tcp(address)],
+            connections: vec![Connection::tcp("127.0.0.1:1".parse().unwrap())],
         },
-        Arc::new(CountingConnector::new(connects.clone())),
+        Arc::new(MemoryConnector {
+            incoming,
+            connects: connects.clone(),
+        }),
     )
     .await
     .unwrap();
     (client, server, connects)
+}
+
+/// Records the owned Build transport. It never invokes a build tool and makes
+/// no claim that its synthetic image exists; informing tests establish that.
+#[derive(Default)]
+pub(super) struct BuildRecorder {
+    pub(super) routes: Mutex<Vec<ployz_core::RoutingRequest>>,
+    pub(super) targets: Mutex<Vec<Vec<String>>>,
+    pub(super) uploads: AtomicUsize,
+    pub(super) queued: bool,
+    pub(super) admission_outcome: Option<ployz_build::remote::Outcome>,
 }

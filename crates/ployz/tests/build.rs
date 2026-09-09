@@ -1,6 +1,9 @@
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
-use ployz::compose::{BuildOptions, BuiltService, capture_build, parse_normalized, plan_build};
+use ployz::compose::{
+    BuildOptions, BuiltService, LoadOptions, capture_build, load_project, parse_normalized,
+    plan_build,
+};
 use ployz_build::Output;
 
 /// Digests the Docker stand-in reports for one attempt's completed image.
@@ -50,11 +53,11 @@ services:
             .iter()
             .map(|service| service.name.as_str())
             .collect::<Vec<_>>(),
-        ["api", "base"]
+        ["base", "api"]
     );
-    assert_eq!(direct.first().unwrap().image, "example.test/api:version2");
+    assert_eq!(direct.get(1).unwrap().image, "example.test/api:version2");
     assert_eq!(
-        direct.get(1).unwrap().image,
+        direct.first().unwrap().image,
         project.services.get("base").unwrap().container.image
     );
 
@@ -72,7 +75,7 @@ services:
             .iter()
             .map(|service| service.name.as_str())
             .collect::<Vec<_>>(),
-        ["api", "base", "database", "frontend"]
+        ["base", "database", "api", "frontend"]
     );
     assert_eq!(
         with_deps.get(3).unwrap().image,
@@ -116,7 +119,7 @@ services:
             .iter()
             .map(|service| service.name.as_str())
             .collect::<Vec<_>>(),
-        ["api", "base"]
+        ["base", "api"]
     );
 
     let cycle = parse_normalized(
@@ -136,6 +139,7 @@ services:
         .to_string()
         .contains("build dependency cycle")
     );
+    assert!(plan_build(&cycle, &BuildOptions::default()).is_err());
 }
 
 #[test]
@@ -144,6 +148,9 @@ services:
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 fn captured_build_preserves_sources_configuration_and_builder_flags() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
@@ -155,21 +162,24 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     fs::create_dir(root.join("api")).unwrap();
     fs::create_dir(root.join("shared")).unwrap();
     fs::write(root.join("api/source"), "original source").unwrap();
+    fs::create_dir(root.join("api/readonly")).unwrap();
+    fs::write(root.join("api/readonly/data"), "read-only source").unwrap();
+    fs::set_permissions(root.join("api/readonly"), fs::Permissions::from_mode(0o555)).unwrap();
     fs::write(root.join("shared/data"), "original shared").unwrap();
     fs::write(root.join("Dockerfile"), "FROM scratch\nCOPY . /app\n").unwrap();
-    fs::write(root.join("Dockerfile.dockerignore"), "hidden\n").unwrap();
+    fs::write(root.join("Dockerfile.dockerignore"), "hidden\nkey\n").unwrap();
     fs::write(root.join("api/.dockerignore"), "source\n").unwrap();
     fs::create_dir(root.join("api/hidden")).unwrap();
     let _socket = std::os::unix::net::UnixListener::bind(root.join("api/hidden/socket")).unwrap();
     fs::write(root.join("shared/.dockerignore"), "socket\n").unwrap();
     let _shared_socket =
         std::os::unix::net::UnixListener::bind(root.join("shared/socket")).unwrap();
-    fs::write(root.join("key"), "private-key").unwrap();
+    fs::write(root.join("api/key"), "private-key").unwrap();
     write_docker(&docker, &root);
     fs::write(root.join("digest"), FIRST_CONTENT).unwrap();
     fs::write(root.join("image"), "example.test/api:version2").unwrap();
     let mut project = parse_normalized(
-        "name: demo\nservices:\n  api:\n    image: example.test/api:version2\n    build: {context: ./api, dockerfile: ../Dockerfile, additional_contexts: {shared: ./shared}, ssh: [deploy=./key], args: {VALUE: '$CAPTURED'}}\n  runtime:\n    image: alpine\n",
+        "name: demo\nservices:\n  api:\n    image: example.test/api:version2\n    build: {context: ./api, dockerfile: ../Dockerfile, additional_contexts: {shared: ./shared}, ssh: [deploy=./api/key], args: {VALUE: '$CAPTURED'}}\n  runtime:\n    image: alpine\n",
         &root,
     )
     .unwrap();
@@ -184,13 +194,15 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
 
     let build = capture_build(&plan, &options, &mut project).unwrap();
     fs::write(&compose, "invalid: [edited after capture").unwrap();
+    fs::set_permissions(root.join("api/readonly"), fs::Permissions::from_mode(0o755)).unwrap();
     fs::remove_dir_all(root.join("api")).unwrap();
     fs::remove_dir_all(root.join("shared")).unwrap();
     fs::remove_file(root.join("Dockerfile")).unwrap();
     fs::remove_file(root.join("Dockerfile.dockerignore")).unwrap();
-    fs::remove_file(root.join("key")).unwrap();
     project.builds.clear();
-    let outcome = build.execute(Some(&docker)).unwrap();
+    let outcome = build
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+        .unwrap();
     let calls = fs::read_to_string(calls).unwrap();
     let bake = calls
         .lines()
@@ -203,10 +215,10 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     assert!(!bake.contains("--push"), "{bake}");
     assert!(bake.contains("--no-cache"), "{bake}");
     assert!(bake.contains("--pull"), "{bake}");
-    assert!(bake.contains("--set *.args.MODE=release"), "{bake}");
-    // No platform is configured, so the builder uses its own, as Docker did.
-    assert!(!bake.contains(".platform="), "{bake}");
-    assert!(bake.ends_with(" api"), "{bake}");
+    assert!(
+        !bake.contains("MODE=release"),
+        "private arguments reached argv: {bake}"
+    );
     // The builder runs the pinned BuildKit release and is removed afterwards
     // with its cache kept. The version is spelled out so an unpin fails here.
     assert!(
@@ -224,39 +236,46 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     );
     let service = one_built(outcome);
     assert_eq!(service.image, "example.test/api:version2");
-    assert_eq!(
-        service.built.reference,
-        format!("example.test/api@{FIRST_CONTENT}")
-    );
+    assert_eq!(service.built.reference, FIRST_CONTENT);
     assert_eq!(service.built.tags, ["example.test/api:version2"]);
-    assert_eq!(service.built.platform, "linux/amd64");
+    assert_eq!(service.built.platforms, ["linux/amd64"]);
     let override_yaml = fs::read_to_string(captured).unwrap();
     assert!(override_yaml.contains("api"));
     assert!(override_yaml.contains("example.test/api:version2"));
     let config: serde_norway::Value = serde_norway::from_str(&override_yaml).unwrap();
     let captured_build = &config["services"]["api"]["build"];
-    let context = std::path::Path::new(captured_build["context"].as_str().unwrap());
+    let staged = root.join("relocated");
+    assert!(
+        !override_yaml.contains("/ployz-build-"),
+        "capture paths must be relocatable"
+    );
+    let context = staged.join(captured_build["context"].as_str().unwrap());
+    assert!(
+        !context.join("key").exists(),
+        "SSH material entered reusable source"
+    );
     assert!(!context.join("hidden").exists());
     assert_eq!(
         fs::read_to_string(context.join("source")).unwrap(),
         "original source"
     );
     assert_eq!(
-        fs::read_to_string(captured_build["dockerfile"].as_str().unwrap()).unwrap(),
+        fs::read_to_string(context.join(captured_build["dockerfile"].as_str().unwrap())).unwrap(),
         "FROM scratch\nCOPY . /app\n"
     );
-    let dockerfile = captured_build["dockerfile"].as_str().unwrap();
+    let dockerfile = context.join(captured_build["dockerfile"].as_str().unwrap());
+    let dockerfile = dockerfile.display();
     assert_eq!(
         fs::read_to_string(format!("{dockerfile}.dockerignore")).unwrap(),
-        "hidden\n"
+        "hidden\nkey\n"
     );
     let ssh = captured_build["ssh"][0]
         .as_str()
         .unwrap()
         .strip_prefix("deploy=")
         .unwrap();
-    assert_eq!(fs::read_to_string(ssh).unwrap(), "private-key");
-    let shared = std::path::Path::new(
+    assert_eq!(fs::read_to_string(staged.join(ssh)).unwrap(), "private-key");
+    let shared = staged.join(
         captured_build["additional_contexts"]["shared"]
             .as_str()
             .unwrap(),
@@ -267,10 +286,12 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
         "original shared"
     );
     assert_eq!(captured_build["args"]["VALUE"].as_str(), Some("$$CAPTURED"));
-    let context = context.to_owned();
+    assert_eq!(captured_build["args"]["MODE"].as_str(), Some("release"));
+    let original = fs::read_to_string(root.join("capture-root")).unwrap();
     drop(build);
-    assert!(!context.exists());
+    assert!(!Path::new(original.trim()).exists());
     assert!(!override_yaml.contains("runtime"));
+    fs::set_permissions(context.join("readonly"), fs::Permissions::from_mode(0o755)).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -324,6 +345,9 @@ fn check_with_direct_push_stops_after_validation() {
 
 #[test]
 fn built_images_bind_to_exact_content_after_tag_reuse() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-binding-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -342,31 +366,26 @@ fn built_images_bind_to_exact_content_after_tag_reuse() {
 
     let first = capture_build(&plan, &options, &mut project)
         .unwrap()
-        .execute(Some(&docker))
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
         .unwrap();
     // A later Build moves the same requested tag onto different content.
     fs::write(root.join("digest"), SECOND_CONTENT).unwrap();
     let second = capture_build(&plan, &options, &mut project)
         .unwrap()
-        .execute(Some(&docker))
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
         .unwrap();
 
     let (first, second) = (one_built(first), one_built(second));
     assert_eq!(first.built.tags, second.built.tags);
-    assert_eq!(
-        first.built.reference,
-        format!("example.test/api@{FIRST_CONTENT}")
-    );
-    assert_eq!(
-        second.built.reference,
-        format!("example.test/api@{SECOND_CONTENT}")
-    );
+    assert_eq!(first.built.reference, FIRST_CONTENT);
+    assert_eq!(second.built.reference, SECOND_CONTENT);
     // Each attempt verified its own content instead of the shared tag.
     let calls = fs::read_to_string(root.join("calls")).unwrap();
     for content in [FIRST_CONTENT, SECOND_CONTENT] {
         assert!(
-            calls.lines().any(|call| call
-                == format!("image inspect example.test/api@{content} --format {{{{json .}}}}")),
+            calls
+                .lines()
+                .any(|call| call == format!("image inspect {content} --format {{{{json .}}}}")),
             "{calls}"
         );
     }
@@ -375,6 +394,9 @@ fn built_images_bind_to_exact_content_after_tag_reuse() {
 
 #[test]
 fn an_image_the_store_does_not_hold_is_refused_as_a_result() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-content-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -394,7 +416,7 @@ fn an_image_the_store_does_not_hold_is_refused_as_a_result() {
     let plan = plan_build(&project, &options).unwrap();
 
     let build = capture_build(&plan, &options, &mut project).unwrap();
-    let error = match build.execute(Some(&docker)) {
+    let error = match build.execute(Some(&docker), &tokio_util::sync::CancellationToken::new()) {
         Ok(outcome) => panic!("substituted content was reported as built: {outcome:?}"),
         Err(error) => error.to_string(),
     };
@@ -409,7 +431,7 @@ fn an_image_the_store_does_not_hold_is_refused_as_a_result() {
 #[test]
 fn several_requested_build_platforms_are_refused_with_the_service_named() {
     let mut project = parse_normalized(
-        "name: demo\nservices: {api: {build: {context: ., platforms: [linux/amd64, linux/arm64]}}}\n",
+        "name: demo\nservices: {api: {build: {context: ., dockerfile_inline: 'FROM scratch', platforms: [linux/amd64, linux/arm64]}}}\n",
         ".",
     )
     .unwrap();
@@ -425,6 +447,9 @@ fn several_requested_build_platforms_are_refused_with_the_service_named() {
 
 #[test]
 fn content_holding_several_platforms_is_refused_however_it_was_requested() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-index-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -448,7 +473,7 @@ fn content_holding_several_platforms_is_refused_however_it_was_requested() {
     let plan = plan_build(&project, &options).unwrap();
 
     let build = capture_build(&plan, &options, &mut project).unwrap();
-    let error = match build.execute(Some(&docker)) {
+    let error = match build.execute(Some(&docker), &tokio_util::sync::CancellationToken::new()) {
         Ok(built) => panic!("a multi-platform image was reported as built: {built:?}"),
         Err(error) => error.to_string(),
     };
@@ -457,13 +482,13 @@ fn content_holding_several_platforms_is_refused_however_it_was_requested() {
 }
 
 #[test]
-fn a_registry_cache_still_reaches_buildkit() {
+fn registry_and_inline_caches_still_reach_buildkit() {
     let root = std::env::temp_dir().join(format!("ployz-build-cache-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(root.join("src/Dockerfile"), "FROM scratch\n").unwrap();
     let mut project = parse_normalized(
-        "name: demo\nservices: {api: {build: {context: ./src, cache_from: ['type=registry\\,ref=example.test/cache']}}}\n",
+        "name: demo\nservices: {api: {build: {context: ./src, cache_from: ['type=registry\\,ref=example.test/cache'], cache_to: ['type=inline']}}}\n",
         &root,
     )
     .unwrap();
@@ -481,6 +506,9 @@ fn settings_upstream_would_drop_are_named_before_execution() {
         ("entitlements", "[network.host]"),
         ("cache_from", "['type=local\\,src=./cache']"),
         ("cache_to", "['type=local\\,dest=./cache']"),
+        ("network", "host"),
+        ("x-bake", "{output: ['type=local,dest=./out']}"),
+        ("cache_to", "['type=gha']"),
     ] {
         let mut project = parse_normalized(
             &format!(
@@ -500,6 +528,33 @@ fn settings_upstream_would_drop_are_named_before_execution() {
     }
 }
 
+/// Fake Docker has no shared builder; give its production lock a private HOME too.
+/// Re-exec avoids changing process environment while other tests are running.
+fn isolated_build_test() -> bool {
+    const CHILD: &str = "PLOYZ_ISOLATED_BUILD_TEST";
+    let thread = std::thread::current();
+    let name = thread.name().expect("libtest names its test threads");
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return true;
+    }
+    let home = std::env::temp_dir().join(format!("ployz-build-home-{}", uuid::Uuid::new_v4()));
+    fs::create_dir(&home).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture"])
+        .env(CHILD, name)
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    fs::remove_dir_all(home).unwrap();
+    assert!(
+        output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "{name}:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    false
+}
+
 fn one_built(mut built: Vec<BuiltService>) -> BuiltService {
     assert_eq!(built.len(), 1, "expected one built Service, got {built:?}");
     built.remove(0)
@@ -515,20 +570,39 @@ root='{root}'
 case "$1" in --ready) exit 0 ;; esac
 printf '%s\n' "$*" >> "$root/calls"
 case "$1 $2" in
+  'info --format') printf '%s\n' '{{"OSType":"linux","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}'; exit 0 ;;
+  'context show') echo default; exit 0 ;;
+  'buildx version') exit 0 ;;
+  'version --format') printf 'linux/amd64\n'; exit 0 ;;
+  'create --name'|'rm --force') exit 0 ;;
+  'start --attach') test ! -f "$root/preparation-fails"; exit $? ;;
+  cp\ *)
+    case "$3" in
+      *:/app) rm -rf "$root/received"; cp -a "$2" "$root/received" ;;
+      *:/prepare.sh) cp "$2" "$root/prepare.sh" ;;
+      *) printf '{{}}' > "$3" ;;
+    esac
+    exit 0 ;;
   'buildx create') : > "$root/builder"; exit 0 ;;
   'buildx inspect') exit 0 ;;
   'buildx rm') rm -f "$root/builder"; exit 0 ;;
   'buildx ls')
     if [ -f "$root/builder" ]; then
-      printf '%s\n' '{{"Name":"{builder}","Nodes":[{{"Platforms":["linux/amd64"],"DriverOpts":{{"image":"{image}"}}}}]}}'
+      printf '%s\n' '{{"Name":"{builder}","Nodes":[{{"Status":"running","Platforms":["linux/amd64","linux/arm64"],"DriverOpts":{{"image":"{image}"}}}}]}}'
     fi
     exit 0 ;;
+  'image rm') exit 0 ;;
   'image inspect')
     identity=$(cat "$root/store" 2>/dev/null || cat "$root/digest")
     media=$(cat "$root/media" 2>/dev/null || printf 'application/vnd.oci.image.manifest.v1+json')
     printf '{{"Os":"linux","Architecture":"amd64","Variant":null,"Descriptor":{{"mediaType":"%s","digest":"%s"}}}}' "$media" "$identity"
     exit 0 ;;
   'buildx bake')
+    pwd > "$root/capture-root"
+    printf '%s\n' "$HOME" "$DOCKER_CONFIG" "$SSH_AUTH_SOCK" > "$root/docker-environment"
+    if [ -f "$DOCKER_CONFIG/config.json" ]; then cp "$DOCKER_CONFIG/config.json" "$root/docker-config.json"; fi
+    rm -rf "$root/relocated"
+    cp -a "$PWD" "$root/relocated"
     previous=
     for argument in "$@"; do
       if [ "$previous" = --file ]; then cp "$argument" "$root/override.yaml"; fi
@@ -572,6 +646,9 @@ exit 1
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 fn build_and_runtime_share_one_captured_secret_resolution() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-secret-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -582,20 +659,50 @@ name: demo
 services:
   api:
     image: api:1
-    build: {context: ./src, secrets: [token]}
-    environment: {TOKEN: 'secret://token'}
+    build: {context: ./src, secrets: [token], args: {MODE: compose}}
+    environment: {TOKEN: 'secret://token', MODE: runtime, DEFAULT: service}
 secrets:
-  token: {x-command: "sh -c 'echo once >> calls; printf private-token'"}
+  token: {x-command: "sh -c 'echo once >> provider-calls; printf private-token'"}
 "#,
         &root,
     )
     .unwrap();
-    let options = BuildOptions::default();
+    let docker = root.join("docker");
+    write_docker(&docker, &root);
+    let options = BuildOptions {
+        output: Output::Validate,
+        build_args: vec!["MODE=cli".into()],
+        ..Default::default()
+    };
     let plan = plan_build(&project, &options).unwrap();
     let build = capture_build(&plan, &options, &mut project).unwrap();
+    build
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+        .unwrap();
+    let config: serde_norway::Value =
+        serde_norway::from_str(&fs::read_to_string(root.join("override.yaml")).unwrap()).unwrap();
+    assert_eq!(
+        config["services"]["api"]["build"]["args"]["TOKEN"].as_str(),
+        Some("private-token")
+    );
+    assert_eq!(
+        config["services"]["api"]["build"]["args"]["DEFAULT"].as_str(),
+        Some("service")
+    );
+    assert_eq!(
+        config["services"]["api"]["build"]["args"]["MODE"].as_str(),
+        Some("cli")
+    );
+    assert_eq!(
+        project.services["api"].container.environment["MODE"],
+        "runtime"
+    );
     project.resolve_secrets().unwrap();
     project.resolve_secrets().unwrap();
-    assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "once\n");
+    assert_eq!(
+        fs::read_to_string(root.join("provider-calls")).unwrap(),
+        "once\n"
+    );
     assert_eq!(
         project.services["api"].container.environment["TOKEN"],
         "private-token"
@@ -623,3 +730,9 @@ fn mutable_remote_build_context_is_rejected_before_execution() {
             .contains("immutable Git commit or image digest")
     );
 }
+
+#[path = "build/capture.rs"]
+mod capture;
+
+#[path = "build/railpack.rs"]
+mod railpack;

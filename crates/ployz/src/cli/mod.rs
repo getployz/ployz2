@@ -139,8 +139,20 @@ fn project_name(short: Option<char>) -> Arg {
     value("project-name", short).env(env::COMPOSE_PROJECT_NAME)
 }
 
+fn build_remote() -> Arg {
+    Arg::new("remote")
+        .long("remote")
+        .num_args(0..=1)
+        .require_equals(true)
+        .default_missing_value("")
+        .value_name("MACHINE")
+        .conflicts_with("local")
+}
+
 fn build() -> Command {
     base("build", "Build service images")
+        .arg(build_remote())
+        .arg(switch("local", None))
         .arg(repeated("build-arg"))
         .arg(switch("check", None))
         .arg(switch("deps", None))
@@ -156,6 +168,8 @@ fn build() -> Command {
 
 fn deploy() -> Command {
     base("deploy", "Deploy services from a Compose file")
+        .arg(build_remote().conflicts_with("no-build"))
+        .arg(switch("local", None))
         .arg(repeated("build-arg"))
         .arg(switch("build-pull", None))
         .arg(many("file", Some('f')).default_value("compose.yaml"))
@@ -333,6 +347,8 @@ fn machine() -> Command {
         .arg_required_else_help(true)
         .subcommand(machine_add())
         .subcommand(machine_init())
+        .subcommand(base("build-cache-clear", "Clear this execution host user's Ployz build cache")
+            .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
         .subcommand(base("inspect", "Inspect a machine").arg(positional("machine", true)))
         .subcommand(
             log_flags(
