@@ -99,6 +99,8 @@ impl Daemon {
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
+        let build_policy = ployz_build::HostPolicy::from_environment()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let store = Arc::new(Mutex::new(LocalMachineStore::open(&config.data_dir)?));
         let socket_lock = claim_socket(&config.socket)?;
         let local_record = store
@@ -167,6 +169,10 @@ impl Daemon {
             .unwrap_or_else(|| Path::new("/run/ployz"))
             .join("ingress");
         let machine_api = MachineApi::builder(Arc::clone(&store), reset.clone())
+            .with_builds(
+                crate::build::Runner::new(build_policy, shutdown.clone())
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+            )
             .with_participation(participating.clone())
             .with_cluster(
                 corrosion

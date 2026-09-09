@@ -127,6 +127,7 @@ exit 0
         docker: program.clone(),
         state_directory: directory.clone(),
         active_timeout: EXECUTION_TIMEOUT,
+        ..Default::default()
     })
     .unwrap();
     let cancellation = admission.cancellation();
