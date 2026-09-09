@@ -3,17 +3,19 @@
 mod host;
 mod release;
 mod storage;
+pub mod upgrade;
 
 use std::{
-    fs::{self, File, OpenOptions, TryLockError},
     io,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Output},
 };
 
-use ployz_core::StorageChoice;
+use ployz_core::{MachineUpgradeStage, StorageChoice};
 use thiserror::Error;
+
+use crate::mutation;
 
 use self::{
     host::{
@@ -27,7 +29,11 @@ use self::{
 pub use self::release::{ReleaseRequest, ReleaseSource};
 
 const PLOYZ_USER: &str = "ployz";
-
+const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
+const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
+const DEFAULT_RUN_DIR: &str = "/run/ployz";
+/// Unix socket installed systemd services use for the local Machine API.
+pub const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
 /// Explicit host work associated with one Machine installation attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Preparation {
@@ -90,6 +96,8 @@ pub enum Error {
     UnsupportedArchitecture(String),
     #[error("Ployz requires systemd")]
     SystemdRequired,
+    #[error("{0}")]
+    NonstandardPaths(String),
     #[error("release selection: {0}")]
     ReleaseSelection(String),
     #[error("artifact verification: {0}")]
@@ -115,12 +123,12 @@ pub(super) struct InstallPaths {
 }
 
 impl InstallPaths {
-    fn system() -> Self {
+    fn system(data_dir: impl Into<PathBuf>, run_dir: impl Into<PathBuf>) -> Self {
         Self {
-            bin_dir: PathBuf::from("/usr/local/bin"),
-            systemd_dir: PathBuf::from("/etc/systemd/system"),
-            data_dir: PathBuf::from("/var/lib/ployz"),
-            run_dir: PathBuf::from("/run/ployz"),
+            bin_dir: PathBuf::from(DEFAULT_BIN_DIR),
+            systemd_dir: PathBuf::from(DEFAULT_SYSTEMD_DIR),
+            data_dir: data_dir.into(),
+            run_dir: run_dir.into(),
             docker_config: PathBuf::from("/etc/docker/daemon.json"),
             modprobe_dir: PathBuf::from("/etc/modprobe.d"),
         }
@@ -139,32 +147,57 @@ impl InstallPaths {
     }
 }
 
-struct InstallLock(File);
-
-impl Drop for InstallLock {
-    fn drop(&mut self) {
-        // Forked children can inherit this file descriptor before exec; unlock the shared lock
-        // explicitly instead of waiting for every inherited descriptor to close.
-        let _ = File::unlock(&self.0);
+pub(crate) fn require_standard_machine_paths(data_dir: &Path, socket: &Path) -> Result<(), String> {
+    if data_dir == Path::new(crate::machine::DEFAULT_DATA_DIR)
+        && socket == Path::new(DEFAULT_SOCKET_PATH)
+    {
+        return Ok(());
     }
+    Err(format!(
+        "system installation requires --data-dir {} and --socket {}; received --data-dir {} and --socket {}",
+        crate::machine::DEFAULT_DATA_DIR,
+        DEFAULT_SOCKET_PATH,
+        data_dir.display(),
+        socket.display()
+    ))
 }
 
-/// Install the selected release through the one Machine-local installation seam.
+/// Install into global host locations for the standard Machine data and socket paths.
 ///
 /// # Errors
 ///
-/// Returns the observed first failed installation stage. Acquisition and preflight failures
-/// happen before activation, so the installed daemon remains untouched.
-pub async fn install(request: InstallRequest) -> Result<InstallOutcome, Error> {
-    install_at(request, InstallPaths::system()).await
+/// Returns the observed first failed installation stage.
+pub async fn install(
+    request: InstallRequest,
+    data_dir: impl Into<PathBuf>,
+    socket: impl Into<PathBuf>,
+) -> Result<InstallOutcome, Error> {
+    let data_dir = data_dir.into();
+    let socket = socket.into();
+    require_standard_machine_paths(&data_dir, &socket).map_err(Error::NonstandardPaths)?;
+    install_at(request, InstallPaths::system(data_dir, DEFAULT_RUN_DIR)).await
 }
 
 async fn install_at(request: InstallRequest, paths: InstallPaths) -> Result<InstallOutcome, Error> {
     require_root()?;
-    let _lock = claim_lock(&paths.run_dir)?;
+    let admission = mutation::MutationGate::new(&paths.run_dir, &paths.data_dir);
+    let lock = admission.try_installation().map_err(map_admission_error)?;
+    upgrade::reconcile_for_install(&admission, &paths.data_dir)
+        .await
+        .map_err(map_upgrade_reconciliation)?;
+    install_locked(request, paths, lock, |_| Ok(())).await
+}
+
+async fn install_locked(
+    request: InstallRequest,
+    paths: InstallPaths,
+    _lock: mutation::InstallationGuard,
+    mut progress: impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
+) -> Result<InstallOutcome, Error> {
     verify_system(request.install_only)?;
     let target = resolve_release(&request.release, &request.source).await?;
 
+    progress(MachineUpgradeStage::Preparing)?;
     if !request.install_only {
         match &request.preparation {
             Preparation::SoftwareOnly => verify_software_prerequisites(&paths)?,
@@ -184,7 +217,7 @@ async fn install_at(request: InstallRequest, paths: InstallPaths) -> Result<Inst
     }
 
     let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
-    restart_required |= install_binaries(&request.source, &paths, &target).await?;
+    restart_required |= install_binaries(&request.source, &paths, &target, &mut progress).await?;
     install_systemd(&paths, request.install_only)?;
     if !request.install_only && matches!(request.preparation, Preparation::PrepareHost { .. }) {
         install_docker(&paths).await?;
@@ -194,12 +227,14 @@ async fn install_at(request: InstallRequest, paths: InstallPaths) -> Result<Inst
         Readiness::InstallationOnly
     } else {
         if restart_required {
+            progress(MachineUpgradeStage::Restarting)?;
             systemctl("restart daemon", ["restart", "ployz.service"])?;
             systemctl(
                 "restart volume plugin",
                 ["try-restart", "ployz-volume-plugin.service"],
             )?;
         }
+        progress(MachineUpgradeStage::Readiness)?;
         verify_running_daemon(&paths, &target).await?;
         Readiness::Running
     };
@@ -207,6 +242,27 @@ async fn install_at(request: InstallRequest, paths: InstallPaths) -> Result<Inst
         target: target.to_string(),
         readiness,
     })
+}
+
+fn map_admission_error(error: mutation::Error) -> Error {
+    match error {
+        mutation::Error::Busy => Error::Busy,
+        mutation::Error::Io(source) => Error::Io {
+            stage: "claim Machine installation admission",
+            source,
+        },
+    }
+}
+
+fn map_upgrade_reconciliation(error: upgrade::Error) -> Error {
+    if matches!(error, upgrade::Error::Busy) {
+        Error::Busy
+    } else {
+        Error::Command {
+            stage: "reconcile previous Machine upgrade".into(),
+            message: error.to_string(),
+        }
+    }
 }
 
 fn require_root() -> Result<(), Error> {
@@ -218,40 +274,6 @@ fn require_root() -> Result<(), Error> {
     } else {
         Err(Error::NotRoot)
     }
-}
-
-fn claim_lock(run_dir: &Path) -> Result<InstallLock, Error> {
-    fs::create_dir_all(run_dir).map_err(|source| Error::Io {
-        stage: "create installation lock directory",
-        source,
-    })?;
-    fs::set_permissions(run_dir, fs::Permissions::from_mode(0o750)).map_err(|source| {
-        Error::Io {
-            stage: "set installation lock directory permissions",
-            source,
-        }
-    })?;
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
-        .open(run_dir.join(".install.lock"))
-        .map_err(|source| Error::Io {
-            stage: "open installation lock",
-            source,
-        })?;
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => return Err(Error::Busy),
-        Err(TryLockError::Error(source)) => {
-            return Err(Error::Io {
-                stage: "lock installation",
-                source,
-            });
-        }
-    }
-    Ok(InstallLock(file))
 }
 
 fn verify_system(install_only: bool) -> Result<(), Error> {
@@ -358,6 +380,7 @@ mod tests {
     use std::{
         env,
         ffi::OsString,
+        fs,
         io::Write,
         os::unix::fs::{PermissionsExt, symlink},
         process::Command,
@@ -367,6 +390,28 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[tokio::test]
+    async fn system_install_rejects_nonstandard_machine_paths_before_mutation() {
+        let fixture = fixture("nonstandard-paths");
+        let request = InstallRequest {
+            release: ReleaseRequest::Exact(Version::parse("1.2.3").unwrap()),
+            source: ReleaseSource::Local(fixture.path().join("release")),
+            preparation: Preparation::SoftwareOnly,
+            install_only: true,
+        };
+
+        for (data_dir, socket) in [
+            (fixture.path(), Path::new(DEFAULT_SOCKET_PATH)),
+            (Path::new(crate::machine::DEFAULT_DATA_DIR), fixture.path()),
+        ] {
+            let error = install(request.clone(), data_dir, socket)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, Error::NonstandardPaths(_)));
+        }
+        assert!(fs::read_dir(fixture.path()).unwrap().next().is_none());
+    }
 
     #[tokio::test]
     async fn installation_interface_contract() {
@@ -495,7 +540,8 @@ mod tests {
             install_only: true,
         };
         let result = if case == "busy" {
-            let _held = claim_lock(&paths.run_dir).unwrap();
+            let admission = mutation::MutationGate::new(&paths.run_dir, &paths.data_dir);
+            let _held = admission.try_installation().unwrap();
             install_at(request, paths.clone()).await
         } else {
             install_at(request, paths.clone()).await

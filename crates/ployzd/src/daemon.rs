@@ -99,7 +99,17 @@ impl Daemon {
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
-        let store = Arc::new(Mutex::new(LocalMachineStore::open(&config.data_dir)?));
+        let run_dir = config
+            .socket
+            .parent()
+            .unwrap_or_else(|| Path::new("/run/ployz"));
+        crate::installer::upgrade::reconcile(&config.data_dir, run_dir)
+            .await
+            .map_err(io::Error::other)?;
+        let store = Arc::new(Mutex::new(LocalMachineStore::open_with_admission(
+            &config.data_dir,
+            run_dir,
+        )?));
         let socket_lock = claim_socket(&config.socket)?;
         let local_record = store
             .lock()
