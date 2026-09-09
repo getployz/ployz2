@@ -298,6 +298,141 @@ async fn missing_provisioned_volume_uses_ployz_driver_bound_and_labels() {
 }
 
 #[tokio::test]
+async fn preparation_registers_metadata_for_storage_created_by_plugin() {
+    let (runtime, fake) = fake_runtime().await;
+    let machine_id = MachineId::random();
+    let source = provisioned_source("prepared", 2_147_483_648);
+    fake.volumes.lock().unwrap().insert(
+        "app_prepared".into(),
+        serde_json::json!({
+            "Name":"app_prepared",
+            "Driver":"ployz",
+            "Mountpoint":"/var/lib/ployz-volumes/app_prepared",
+            "Status":{"bound_bytes":2147483648_u64,"used_bytes":0},
+            "Options":null,
+            "Labels":null
+        }),
+    );
+    let specs = [ployz_core::ServiceStorageSpec::from(&spec_with_sources(
+        vec![source.clone()],
+    ))];
+
+    assert!(matches!(
+        runtime.ensure_volume_source(&machine_id, &source).await,
+        Err(Error::VolumeShapeMismatch { .. })
+    ));
+    assert!(
+        fake.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(method, _)| method != Method::POST)
+    );
+
+    runtime
+        .ensure_provisioned_volumes(&machine_id, &specs)
+        .await
+        .unwrap();
+
+    let create = fake
+        .request_bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(path, _)| path.ends_with("/volumes/create"))
+        .map(|(_, request)| request.clone())
+        .expect("Docker metadata registration request");
+    assert_eq!(
+        create,
+        serde_json::json!({
+            "Name":"app_prepared",
+            "Driver":"ployz",
+            "DriverOpts":{"size":"2147483648b"},
+            "Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"}
+        })
+    );
+    let observed = runtime
+        .inspect_volume(&machine_id, source.docker_volume_name().unwrap())
+        .await
+        .unwrap();
+    assert!(source.matches_managed_volume(&observed));
+}
+
+#[tokio::test]
+async fn preparation_refuses_mismatched_or_partially_registered_volumes() {
+    let (runtime, fake) = fake_runtime().await;
+    let cases = [
+        (
+            "wrong-driver",
+            serde_json::json!({
+                "Name":"app_wrong-driver",
+                "Driver":"local",
+                "Mountpoint":"/var/lib/docker/volumes/app_wrong-driver/_data",
+                "Options":null,
+                "Labels":null
+            }),
+        ),
+        (
+            "wrong-bound",
+            serde_json::json!({
+                "Name":"app_wrong-bound",
+                "Driver":"ployz",
+                "Mountpoint":"/var/lib/ployz-volumes/app_wrong-bound",
+                "Status":{"bound_bytes":1073741824_u64,"used_bytes":0},
+                "Options":null,
+                "Labels":null
+            }),
+        ),
+        (
+            "partial-options",
+            serde_json::json!({
+                "Name":"app_partial-options",
+                "Driver":"ployz",
+                "Mountpoint":"/var/lib/ployz-volumes/app_partial-options",
+                "Status":{"bound_bytes":2147483648_u64,"used_bytes":0},
+                "Options":{"size":"2147483648b"},
+                "Labels":null
+            }),
+        ),
+        (
+            "partial-labels",
+            serde_json::json!({
+                "Name":"app_partial-labels",
+                "Driver":"ployz",
+                "Mountpoint":"/var/lib/ployz-volumes/app_partial-labels",
+                "Status":{"bound_bytes":2147483648_u64,"used_bytes":0},
+                "Options":null,
+                "Labels":{"ployz.managed":"","ployz.project.name":"app"}
+            }),
+        ),
+    ];
+
+    for (name, observed) in cases {
+        let source = provisioned_source(name, 2_147_483_648);
+        fake.volumes
+            .lock()
+            .unwrap()
+            .insert(format!("app_{name}"), observed);
+        let specs = [ployz_core::ServiceStorageSpec::from(&spec_with_sources(
+            vec![source],
+        ))];
+        assert!(matches!(
+            runtime
+                .ensure_provisioned_volumes(&MachineId::random(), &specs)
+                .await,
+            Err(Error::VolumeShapeMismatch { .. })
+        ));
+    }
+    assert!(
+        fake.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(method, _)| method != Method::POST)
+    );
+}
+
+#[tokio::test]
 async fn existing_managed_volume_allows_extra_labels() {
     let (runtime, fake) = fake_runtime().await;
     fake.volumes.lock().unwrap().insert(
