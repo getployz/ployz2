@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
-    MachineObservation, MachineTarget, PreservedVolume, ProjectName, RequestedServiceSpec,
+    MachineObservation, PlacementConstraint, PreservedVolume, ProjectName, RequestedServiceSpec,
     ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility, ServiceStorageSpec,
-    ServiceVolume, ServiceVolumeGraph, VolumeSource, machine_matches_target, owned_volume_project,
+    ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_project,
 };
 
 use crate::deploy::{
@@ -26,6 +26,7 @@ use super::placement::PlacementReservations;
 /// independently mutable list of pins or missing Volume commitments.
 pub(super) struct VolumePlan<'snapshot> {
     snapshot: &'snapshot DeploySnapshot,
+    project_name: ProjectName,
     assignments: BTreeMap<MachineId, BTreeMap<ServiceName, ServiceStorageSpec>>,
 }
 
@@ -63,12 +64,14 @@ impl<'snapshot> VolumePlan<'snapshot> {
     /// Returns conflicting definitions, incompatible modes, or unresolved locality.
     pub(super) fn new(
         snapshot: &'snapshot DeploySnapshot,
+        project_name: &ProjectName,
         target: &[RequestedServiceSpec],
         requested: &[RequestedServiceSpec],
     ) -> Result<Self, PlanError> {
         reject_mixed_volume_modes(&managed_volume_uses(requested))?;
         let plan = Self {
             snapshot,
+            project_name: project_name.clone(),
             assignments: BTreeMap::new(),
         };
         plan.validate_provisioned_volume_definitions(target)?;
@@ -313,13 +316,16 @@ impl VolumePlan<'_> {
                 continue;
             }
             let result = (|| {
-                let candidates = super::placement_candidates(spec, snapshot)?;
+                let candidates = super::placement_candidates(spec, &self.project_name, snapshot)?;
                 Self::record_provisioned(&mut definitions, spec, &candidates)?;
                 let mut machines = candidates
                     .into_iter()
                     .filter(|machine| {
-                        spec.placement_eligibility(&machine.machine, machine.storage.as_ref())
-                            == ServicePlacementEligibility::Eligible
+                        spec.placement_eligibility_in_project(
+                            &self.project_name,
+                            &machine.machine,
+                            machine.storage.as_ref(),
+                        ) == ServicePlacementEligibility::Eligible
                     })
                     .collect::<Vec<_>>();
                 if machines.is_empty() {
@@ -715,7 +721,7 @@ fn volume_eligible_machine_ids(
     plan: &VolumePlan<'_>,
     options: &PlanOptions,
 ) -> Result<Vec<MachineId>, PlanError> {
-    let mut machines = super::eligible_machines(spec, snapshot, options)?;
+    let mut machines = super::eligible_machines(spec, &plan.project_name, snapshot, options)?;
     planned_volume_constraints(spec, snapshot, plan, &mut machines)?;
     Ok(machines
         .into_iter()
@@ -852,7 +858,7 @@ fn volume_constraints<'spec>(
     }
     if machines.is_empty() {
         // ponytail: name the filter that emptied the set; no per-Machine matrix.
-        let requested = &spec.placement.machines;
+        let requested = &spec.placement.constraints;
         return Err(PlanError::no_eligible_machines(
             mounted_volumes
                 .iter()
@@ -876,7 +882,7 @@ fn no_eligible_shared(
             .filter_map(|(name, uses)| {
                 let mut requested = Vec::new();
                 for volume_use in uses.iter() {
-                    for target in &volume_use.service.placement.machines {
+                    for target in &volume_use.service.placement.constraints {
                         if !requested.contains(target) {
                             requested.push(target.clone());
                         }
@@ -899,7 +905,7 @@ fn volume_anchor(
     snapshot: &DeploySnapshot,
     plan: &VolumePlan<'_>,
     name: &DockerVolumeName,
-    requested: &[MachineTarget],
+    requested: &[PlacementConstraint],
 ) -> Option<EliminatingConstraint> {
     let mut located_on = Vec::new();
     for located in plan
@@ -918,11 +924,11 @@ fn volume_anchor(
             located_on.push(machine_name);
         }
     }
-    let hits_located = requested.iter().any(|target| {
-        snapshot.machines.iter().any(|machine| {
-            located_on.contains(&machine.machine.name)
-                && machine_matches_target(&machine.machine, target)
-        })
+    let hits_located = snapshot.machines.iter().any(|machine| {
+        located_on.contains(&machine.machine.name)
+            && requested
+                .iter()
+                .all(|constraint| constraint.matches(&machine.machine))
     });
     if located_on.is_empty() {
         if requested.is_empty() {

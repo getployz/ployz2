@@ -8,8 +8,8 @@ use std::{
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, DockerVolumeName, HealthObservation, Machine, MachineId,
-    MachineName, MachineTarget, Placement, ProjectName, ProvisionedVolumeMaximumBytes, PullPolicy,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
+    MachineName, Placement, PlacementConstraint, ProjectName, ProvisionedVolumeMaximumBytes,
+    PullPolicy, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
     ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceObservation,
     ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig, WireGuardPublicKey,
     service_containers,
@@ -392,14 +392,16 @@ fn skip_ingress_omits_system_ingress_and_keeps_other_globals() {
 }
 
 #[test]
-fn x_machines_excluding_this_joiner_plans_no_slot() {
+fn constraints_excluding_this_joiner_plans_no_slot() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
     let services = [global_service(
         qualified("app", "api"),
         'a',
         Placement {
-            machines: vec![MachineTarget::parse("founder").unwrap()],
+            constraints: vec![
+                PlacementConstraint::parse(format!("node.id == {}", founder.id)).unwrap(),
+            ],
         },
         running_on(&founder, 'a'),
     )];
@@ -407,16 +409,16 @@ fn x_machines_excluding_this_joiner_plans_no_slot() {
 }
 
 #[test]
-fn x_machines_including_this_joiner_plans_a_slot() {
+fn constraints_including_this_joiner_plans_a_slot() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
     let services = [global_service(
         qualified("app", "api"),
         'a',
         Placement {
-            machines: vec![
-                MachineTarget::parse("founder").unwrap(),
-                MachineTarget::parse("joiner").unwrap(),
+            constraints: vec![
+                PlacementConstraint::parse(format!("node.id != {}", machine('2', "other").id))
+                    .unwrap(),
             ],
         },
         running_on(&founder, 'a'),
