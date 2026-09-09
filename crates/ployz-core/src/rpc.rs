@@ -227,6 +227,7 @@ pub(super) fn default_wireguard_port() -> u16 {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InitializeRequest {
+    /// Complete policy committed in the first Machine assignment, before participation.
     pub initial_policy: crate::InitialMachinePolicy,
     pub name: MachineName,
     pub cluster_network: Ipv4Net,
@@ -240,6 +241,7 @@ pub struct InitializeRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RegisterRequest {
+    /// Complete policy committed in the first Machine assignment, before participation.
     pub initial_policy: crate::InitialMachinePolicy,
     pub name: MachineName,
     pub storage: StorageChoice,

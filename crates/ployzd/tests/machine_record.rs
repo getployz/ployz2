@@ -397,9 +397,9 @@ fn machine_update_is_atomic_and_durable() {
     let updated = store
         .update(
             MachineUpdate {
-                label_add: std::collections::BTreeMap::from([(
+                label_changes: std::collections::BTreeMap::from([(
                     "zone".parse().unwrap(),
-                    "west".parse().unwrap(),
+                    Some("west".parse().unwrap()),
                 )]),
                 accepts_services: Some(false),
                 name: Some(MachineName::parse("after").unwrap()),

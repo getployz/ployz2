@@ -35,12 +35,17 @@ pub(super) fn resolve_machine_text<'a>(
 }
 
 /// Complete admission policy committed with a Machine's initial assignment.
+/// Every field is required on the wire; defaults are explicit caller choices.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct InitialMachinePolicy {
+    /// Operator classifications used by placement constraints.
     pub labels: BTreeMap<MachineLabelKey, MachineLabelValue>,
+    /// Whether to admit new Builds; revocation preserves existing work.
     pub accepts_builds: bool,
+    /// Whether to admit new application Services; revocation preserves existing work.
     pub accepts_services: bool,
+    /// Whether to admit the trusted Ingress Proxy; revocation preserves existing work.
     pub accepts_ingress: bool,
 }
 
@@ -69,9 +74,13 @@ impl Default for InitialMachinePolicy {
 /// One Machine's durable advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Machine {
+    /// Operator classifications used by placement constraints.
     pub labels: BTreeMap<MachineLabelKey, MachineLabelValue>,
+    /// Whether to admit new Builds; revocation preserves existing work.
     pub accepts_builds: bool,
+    /// Whether to admit new application Services; revocation preserves existing work.
     pub accepts_services: bool,
+    /// Whether to admit the trusted Ingress Proxy; revocation preserves existing work.
     pub accepts_ingress: bool,
     pub id: MachineId,
     pub name: MachineName,
@@ -240,41 +249,38 @@ pub enum PublicIpUpdate {
     Set(IpAddr),
 }
 
+/// One atomic metadata edit; omitted fields and Label keys preserve current values.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineUpdate {
+    /// One change per Label key: a value sets it, `None` removes it.
     #[serde(default)]
-    pub label_add: BTreeMap<MachineLabelKey, MachineLabelValue>,
-    #[serde(default)]
-    pub label_rm: Vec<MachineLabelKey>,
+    pub label_changes: BTreeMap<MachineLabelKey, Option<MachineLabelValue>>,
+    /// Change Build acceptance independently; `None` preserves it and existing work remains.
     #[serde(default)]
     pub accepts_builds: Option<bool>,
+    /// Change application Service acceptance independently; `None` preserves it.
     #[serde(default)]
     pub accepts_services: Option<bool>,
+    /// Change trusted Ingress acceptance independently; `None` preserves it.
     #[serde(default)]
     pub accepts_ingress: Option<bool>,
+    /// Replace the Machine Name, or preserve it when omitted.
     #[serde(default)]
     pub name: Option<MachineName>,
+    /// Explicitly preserve, remove, or replace the advertised public IP.
     #[serde(default)]
     pub public_ip: PublicIpUpdate,
+    /// Replace all Advertised Endpoints, or preserve them when omitted.
     #[serde(default)]
     pub advertised_endpoints: Option<Vec<AdvertisedEndpoint>>,
 }
 
 impl MachineUpdate {
-    /// Validate a metadata patch before changing any durable fields.
-    pub fn validate(&self) -> Result<(), MachineUpdateError> {
-        for key in self.label_add.keys() {
-            if self.label_rm.contains(key) {
-                return Err(MachineUpdateError::ConflictingLabel(key.clone()));
-            }
-        }
-        Ok(())
-    }
-
+    /// Whether the patch requests no metadata changes.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.label_add.is_empty()
-            && self.label_rm.is_empty()
+        self.label_changes.is_empty()
             && self.accepts_builds.is_none()
             && self.accepts_services.is_none()
             && self.accepts_ingress.is_none()
@@ -284,22 +290,26 @@ impl MachineUpdate {
     }
 }
 
+/// A metadata edit that cannot be applied to the observed Machine set.
 #[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
 pub enum MachineUpdateError {
-    #[error("Machine Label {0} cannot be added and removed in the same patch")]
-    ConflictingLabel(MachineLabelKey),
+    /// Another observed Machine already uses the requested Name.
     #[error("Machine name is already visible on another Machine")]
     DuplicateName,
+    /// Replacing Advertised Endpoints with an empty list is not allowed.
     #[error("at least one Advertised Endpoint is required")]
     MissingEndpoints,
 }
 
+/// Apply one complete edit without modifying the source Machine.
+///
+/// # Errors
+/// Rejects a Name used by another visible Machine or an empty endpoint replacement.
 pub fn apply_machine_update(
     machine: &Machine,
     visible: &[Machine],
     update: MachineUpdate,
 ) -> Result<Machine, MachineUpdateError> {
-    update.validate()?;
     if update.name.as_ref().is_some_and(|name| {
         name != &machine.name
             && visible
@@ -317,9 +327,12 @@ pub fn apply_machine_update(
     }
 
     let mut updated = machine.clone();
-    updated.labels.extend(update.label_add);
-    for key in update.label_rm {
-        updated.labels.remove(&key);
+    for (key, value) in update.label_changes {
+        if let Some(value) = value {
+            updated.labels.insert(key, value);
+        } else {
+            updated.labels.remove(&key);
+        }
     }
     if let Some(accepts) = update.accepts_builds {
         updated.accepts_builds = accepts;

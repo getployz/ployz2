@@ -166,19 +166,32 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
 }
 
 pub(super) fn parse_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
-    let update = MachineUpdate {
-        label_add: parse_label_add(matches)?,
-        label_rm: string_values(matches, "label-rm")
-            .into_iter()
-            .map(ployz_core::MachineLabelKey::parse)
-            .collect::<Result<_, _>>()?,
+    let mut label_changes = parse_label_add(matches)?
+        .into_iter()
+        .map(|(key, value)| (key, Some(value)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for key in string_values(matches, "label-rm") {
+        let key = ployz_core::MachineLabelKey::parse(key)?;
+        match label_changes.entry(key) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(None);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) if entry.get().is_some() => {
+                return Err(Error::usage(format!(
+                    "Machine Label {} cannot be added and removed in the same patch",
+                    entry.key()
+                )));
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+    Ok(MachineUpdate {
+        label_changes,
         accepts_builds: matches.get_one::<bool>("accepts-builds").copied(),
         accepts_services: matches.get_one::<bool>("accepts-services").copied(),
         accepts_ingress: matches.get_one::<bool>("accepts-ingress").copied(),
         ..Default::default()
-    };
-    update.validate()?;
-    Ok(update)
+    })
 }
 
 fn parse_label_add(
@@ -309,19 +322,13 @@ mod tests {
         .unwrap();
         assert_eq!(
             patch
-                .label_add
+                .label_changes
                 .get("region")
+                .and_then(Option::as_ref)
                 .map(ployz_core::MachineLabelValue::as_str),
             Some("west")
         );
-        assert_eq!(
-            patch
-                .label_rm
-                .iter()
-                .map(ployz_core::MachineLabelKey::as_str)
-                .collect::<Vec<_>>(),
-            ["old"]
-        );
+        assert_eq!(patch.label_changes.get("old"), Some(&None));
         assert_eq!(patch.accepts_builds, Some(true));
         assert_eq!(patch.accepts_services, Some(false));
         assert_eq!(patch.accepts_ingress, Some(true));

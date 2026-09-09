@@ -216,7 +216,7 @@ async fn active_build_refuses_an_upgrade_request() {
         fixture.local.update(
             serde_json::from_value(serde_json::json!({
                 "update": {
-                    "label_add": {"pool": "build"},
+                    "label_changes": {"pool": "build"},
                     "accepts_builds": false,
                     "accepts_services": false,
                     "accepts_ingress": false
@@ -284,7 +284,7 @@ async fn durable_upgrade_marker_refuses_build_before_execution() {
     fs::write(&marker, "active-upgrade").unwrap();
 
     let policy = serde_json::from_value(serde_json::json!({
-        "update": {"label_add": {"pool": "build"}, "accepts_builds": false, "accepts_services": false, "accepts_ingress": false}
+        "update": {"label_changes": {"pool": "build"}, "accepts_builds": false, "accepts_services": false, "accepts_ingress": false}
     }))
     .unwrap();
     assert!(matches!(

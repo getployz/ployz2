@@ -465,22 +465,26 @@ async fn builder_selection_filters_observations_without_using_service_policy_or_
     let (mut client, server) =
         connected(service.with_machines(vec![builder.clone(), disabled, down])).await;
     assert_eq!(
-        client
-            .build_machine(None, &build_targets(&["linux/amd64"]), &Default::default())
-            .await
-            .unwrap()
-            .id,
-        builder.machine.id
-    );
-    let error = client
-        .build_machine(
-            Some(&ployz_core::MachineTarget::parse("down").unwrap()),
+        super::super::build::select_build_machine(
+            &mut client,
+            None,
             &build_targets(&["linux/amd64"]),
-            &Default::default(),
+            &Default::default()
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap()
+        .id,
+        builder.machine.id
+    );
+    let error = super::super::build::select_build_machine(
+        &mut client,
+        Some(&ployz_core::MachineTarget::parse("down").unwrap()),
+        &build_targets(&["linux/amd64"]),
+        &Default::default(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
     assert!(error.contains("Down"), "{error}");
     assert!(builds.definitions.lock().unwrap().is_empty());
     server.abort();
@@ -497,11 +501,15 @@ async fn builder_selection_reports_missing_capability_and_preserves_pin_ambiguit
     down.membership = MembershipObservation::Down;
     let (mut client, server) =
         connected(service.with_machines(vec![machine('a', "builder"), disabled, down])).await;
-    let error = client
-        .build_machine(None, &build_targets(&["linux/amd64"]), &Default::default())
-        .await
-        .unwrap_err()
-        .to_string();
+    let error = super::super::build::select_build_machine(
+        &mut client,
+        None,
+        &build_targets(&["linux/amd64"]),
+        &Default::default(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
     for reason in [
         "does not support remote Builds",
         "does not accept Builds",
@@ -509,15 +517,15 @@ async fn builder_selection_reports_missing_capability_and_preserves_pin_ambiguit
     ] {
         assert!(error.contains(reason), "{error}");
     }
-    let error = client
-        .build_machine(
-            Some(&ployz_core::MachineTarget::parse("builder").unwrap()),
-            &build_targets(&["linux/amd64"]),
-            &Default::default(),
-        )
-        .await
-        .unwrap_err()
-        .to_string();
+    let error = super::super::build::select_build_machine(
+        &mut client,
+        Some(&ployz_core::MachineTarget::parse("builder").unwrap()),
+        &build_targets(&["linux/amd64"]),
+        &Default::default(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
     assert!(error.contains("ambiguous"), "{error}");
     assert!(builds.definitions.lock().unwrap().is_empty());
     server.abort();
@@ -546,28 +554,32 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
     ]);
     let (mut client, server) =
         connected(service.with_machines(vec![amd.clone(), arm.clone()])).await;
-    let selected = client
-        .build_machine(None, &build_targets(&["linux/arm64"]), &Default::default())
-        .await
-        .unwrap();
+    let selected = super::super::build::select_build_machine(
+        &mut client,
+        None,
+        &build_targets(&["linux/arm64"]),
+        &Default::default(),
+    )
+    .await
+    .unwrap();
     assert_eq!(selected.id, arm.machine.id);
     let targets = build_targets(&["linux/amd64", "linux/arm64"]);
-    let error = client
-        .build_machine(None, &targets, &Default::default())
-        .await
-        .unwrap_err()
-        .to_string();
+    let error =
+        super::super::build::select_build_machine(&mut client, None, &targets, &Default::default())
+            .await
+            .unwrap_err()
+            .to_string();
     assert!(error.contains("cannot build linux/arm64"), "{error}");
     assert!(error.contains("cannot build linux/amd64"), "{error}");
-    let error = client
-        .build_machine(
-            Some(&ployz_core::MachineTarget::from(&amd.machine.id)),
-            &build_targets(&["linux/arm64"]),
-            &Default::default(),
-        )
-        .await
-        .unwrap_err()
-        .to_string();
+    let error = super::super::build::select_build_machine(
+        &mut client,
+        Some(&ployz_core::MachineTarget::from(&amd.machine.id)),
+        &build_targets(&["linux/arm64"]),
+        &Default::default(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
     assert!(error.contains("cannot build linux/arm64"), "{error}");
     assert!(builds.definitions.lock().unwrap().is_empty());
     server.abort();

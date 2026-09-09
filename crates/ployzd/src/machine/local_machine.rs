@@ -102,6 +102,7 @@ pub enum Error {
     #[error(
         "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine"
     )]
+    /// Enrollment policy differs from the current assignment and cannot overwrite it.
     InitialPolicyMismatch,
     #[error("at least one Machine update is required")]
     EmptyUpdate,

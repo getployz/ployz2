@@ -293,86 +293,6 @@ impl Client {
             .into_inner())
     }
 
-    pub(crate) async fn build_machine(
-        &mut self,
-        target: Option<&MachineTarget>,
-        targets: &[ployz_build::Target],
-        cancellation: &tokio_util::sync::CancellationToken,
-    ) -> Result<Machine, ConnectError> {
-        let visible = self.machines().await?;
-        // Resolve pins before filtering so policy cannot hide Name Ambiguity.
-        let mut candidates = if let Some(target) = target {
-            vec![visible_machine(target, &visible).map_err(ConnectError::Remote)?]
-        } else {
-            visible.iter().collect::<Vec<_>>()
-        };
-        if target.is_none() {
-            candidates.sort_by_cached_key(|_| uuid::Uuid::new_v4());
-        }
-        let mut reasons = Vec::new();
-        for observed in candidates {
-            if cancellation.is_cancelled() {
-                reasons.push("Build selection cancelled".into());
-                break;
-            }
-            let machine = &observed.machine;
-            let reason = if !observed.membership.invites_rpc() {
-                format!("membership is {:?}", observed.membership)
-            } else if !machine.accepts_builds {
-                "does not accept Builds".into()
-            } else {
-                match self
-                    .invoke::<op::DescribeContract>(
-                        DescribeContractRequest {},
-                        &MachineTarget::from(&machine.id),
-                        Some(Duration::from_secs(5)),
-                    )
-                    .await
-                {
-                    Ok(contract) if contract.machine_id != machine.id => format!(
-                        "contract identifies a different Machine ({})",
-                        contract.machine_id
-                    ),
-                    Ok(contract) if !contract.supports(ployz_core::BUILD_CAPABILITY) => {
-                        "does not support remote Builds".into()
-                    }
-                    Ok(_) => match self
-                        .check_build_capabilities(machine.id, targets, cancellation)
-                        .await
-                    {
-                        Ok(()) => {
-                            if !reasons.is_empty() {
-                                eprintln!(
-                                    "Build eligibility was not confirmed for {}",
-                                    reasons.join("; ")
-                                );
-                            }
-                            return Ok(machine.clone());
-                        }
-                        Err(error) => format!("Build capability could not be verified: {error}"),
-                    },
-                    Err(error) => format!("Build capability could not be verified: {error}"),
-                }
-            };
-            reasons.push(format!(
-                "Machine {} ({}): {reason}",
-                machine.name, machine.id
-            ));
-        }
-        Err(ConnectError::Remote(RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: format!(
-                "no eligible Build Machine: {}; retry after resolving these observations, pin with --remote=<Machine>, or build here with --local",
-                if reasons.is_empty() {
-                    "no Machines observed".into()
-                } else {
-                    reasons.join("; ")
-                }
-            ),
-            details: Value::Null,
-        }))
-    }
-
     pub(crate) async fn exec_stream(
         &self,
         target: &MachineTarget,
@@ -948,7 +868,11 @@ async fn refuse_last_cloud_paired(
     })
 }
 
-fn visible_machine<'list>(
+/// Resolve a Machine Target without hiding Name Ambiguity in the visible observations.
+///
+/// # Errors
+/// Returns NotFound or Ambiguous when the target does not resolve to one Machine.
+pub(crate) fn visible_machine<'list>(
     machine: &MachineTarget,
     machines: &'list [MachineObservation],
 ) -> Result<&'list MachineObservation, RpcError> {
