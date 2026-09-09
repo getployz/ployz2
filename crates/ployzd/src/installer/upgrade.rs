@@ -8,15 +8,14 @@ use std::{
 
 use ployz_core::{
     MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
-    MachineUpgradeStage, MachineVersion, RequestMachineUpgradeRequest,
+    MachineUpgradeStage, RequestMachineUpgradeRequest,
 };
-use semver::Version;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{process::Command, time::timeout};
 
 use super::{
-    Error as InstallError, InstallPaths, InstallRequest, Preparation, ReleaseRequest, ReleaseSource,
+    Error as InstallError, InstallMode, InstallPaths, InstallRequest, ReleaseRequest, ReleaseSource,
 };
 use crate::mutation;
 
@@ -150,8 +149,6 @@ pub(crate) async fn request_locked(
     let target = super::release::resolve_release(&release, &source)
         .await
         .map_err(Error::Resolve)?;
-    let target = MachineVersion::parse(target.to_string())
-        .expect("the installer accepts only supported Machine versions");
     let mut stored = StoredAttempt {
         requested: request.release,
         source,
@@ -227,8 +224,6 @@ pub async fn run_worker(
         return Err(Error::NotActive(attempt_id));
     }
     let target = stored.attempt.target.clone();
-    let target_version = Version::parse(target.as_str())
-        .expect("a MachineVersion contains a supported semantic version");
     let mut stage = MachineUpgradeStage::Preparing;
     stored.attempt.outcome = MachineUpgradeOutcome::Running {
         stage: stage.clone(),
@@ -237,10 +232,9 @@ pub async fn run_worker(
 
     let result = super::install_locked(
         InstallRequest {
-            release: ReleaseRequest::Exact(target_version),
+            release: ReleaseRequest::Exact(target.clone()),
             source: stored.source.clone(),
-            preparation: Preparation::SoftwareOnly,
-            install_only: false,
+            mode: InstallMode::SoftwareOnly,
         },
         InstallPaths::system(data_dir, run_dir),
         guard,
@@ -477,6 +471,7 @@ fn write(data_dir: &Path, stored: &StoredAttempt) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::MachineVersion;
 
     const CONTRACT_CASE: &str = "PLOYZ_UPGRADE_CONTRACT_CASE";
     const CONTRACT_ROOT: &str = "PLOYZ_UPGRADE_CONTRACT_ROOT";

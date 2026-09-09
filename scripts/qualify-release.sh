@@ -25,12 +25,15 @@ RESET=${PLOYZ_QUALIFY_RESET:-0}
 SSH_KEY=${PLOYZ_QUALIFY_SSH_KEY:-}
 CONFIG_DIR=
 TRAFFIC_PID=
+ENROLL_FIXTURE_PID=
+ENROLL_PORT=
 TRAFFIC_STOP=/var/lib/ployz/qualification/traffic.stop
 REMOTE_RELEASE_ROOT=/var/lib/ployz/qualification/releases
 APP_URL=http://127.0.0.1:18082/identity
 APP_VALUE=qualify-persistent-data
 APP_VOLUME=qualify-release_qualify-data
 APP_VOLUME_MOUNT=/var/lib/ployz-volumes/$APP_VOLUME
+PAIRING='{"relayUrl":"http://127.0.0.1:1/","secret":"qualification-synthetic-pairing-secret-v1"}'
 
 error() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -106,6 +109,37 @@ def stable(item):
     return item
 encoded = json.dumps(stable(value), sort_keys=True, separators=(",", ":")).encode()
 print(hashlib.sha256(encoded).hexdigest())'
+}
+
+machine_cloud_pairing() {
+    ssh_host "$first" sudo cat /var/lib/ployz/machine.json | python3 -c 'import json, sys
+value = json.load(sys.stdin)["cloud_pairing"]
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))'
+}
+
+start_enroll_fixture() {
+    local port_file=$work/cloud-enroll.port i
+    python3 "$COMPOSE_DIR/cloud-enroll-fixture.py" "$port_file" "$work/cloud-enroll-evidence.jsonl" >"$work/cloud-enroll.log" 2>&1 &
+    ENROLL_FIXTURE_PID=$!
+    for ((i = 0; i < 50; i++)); do
+        if [ -s "$port_file" ]; then
+            ENROLL_PORT=$(cat "$port_file")
+            return
+        fi
+        kill -0 "$ENROLL_FIXTURE_PID" 2>/dev/null || break
+        sleep 0.1
+    done
+    cat "$work/cloud-enroll.log" >&2 || true
+    error "Cloud enrollment fixture did not start"
+}
+
+finish_enroll_fixture() {
+    if ! wait "$ENROLL_FIXTURE_PID"; then
+        cat "$work/cloud-enroll.log" >&2 || true
+        error "Cloud enrollment fixture rejected the enrollment contract"
+    fi
+    ENROLL_FIXTURE_PID=
+    [ "$(wc -l <"$work/cloud-enroll-evidence.jsonl")" -eq 2 ] || error "Cloud enrollment fixture did not observe exactly two requests"
 }
 
 read_receipt() {
@@ -194,6 +228,11 @@ stop_traffic() {
 
 cleanup() {
     stop_traffic
+    if [ -n "$ENROLL_FIXTURE_PID" ]; then
+        kill "$ENROLL_FIXTURE_PID" >/dev/null 2>&1 || true
+        wait "$ENROLL_FIXTURE_PID" >/dev/null 2>&1 || true
+        ENROLL_FIXTURE_PID=
+    fi
     [ -z "${work:-}" ] || rm -rf "$work"
     [ -z "$CONFIG_DIR" ] || rm -rf "$CONFIG_DIR"
 }
@@ -244,7 +283,7 @@ if [ "$DRY_RUN" != 0 ]; then
     else
         echo "reset: no (initialized hosts fail without PLOYZ_QUALIFY_RESET=1)"
     fi
-    echo "steps: normal ZFS machine init/add from the source release; persistent application traffic; target upgrade with client disconnect and reconnect; corrupt preflight; failed activation; explicit previous-binary repair"
+    echo "steps: normal ZFS machine init/add from the source release; synthetic loopback Cloud Pairing; persistent application traffic; target upgrade with client disconnect and reconnect; corrupt preflight; failed activation; explicit previous-binary repair"
     exit 0
 fi
 
@@ -287,6 +326,13 @@ while [ "$i" -lt "${#HOST_LIST[@]}" ]; do
     "${add_cmd[@]}" "${HOST_LIST[$i]}"
     i=$((i + 1))
 done
+
+echo "establish a synthetic non-null Cloud Pairing through Cloud enrollment"
+start_enroll_fixture
+"$PLOYZ" cloud enroll pmet_qualification --name qualify-1 --storage none --no-dns --no-ingress --cloud-url "http://127.0.0.1:$ENROLL_PORT" --context "$CONTEXT"
+finish_enroll_fixture
+pairing_before=$(machine_cloud_pairing)
+[ "$pairing_before" = "$PAIRING" ] || error "Machine did not persist the exact synthetic Cloud Pairing"
 
 machine_arch=$(ssh_host "$first" uname -m)
 machine_archive=$(daemon_archive "$machine_arch")
@@ -344,6 +390,7 @@ require_field "$success_inspection" version "$target_version"
 assert_remote_hash /usr/local/bin/ployzd "$target_daemon_hash"
 wait_for_application
 [ "$(machine_state_signature)" = "$state_before" ] || error "Machine identity, pairing, or configuration changed during upgrade"
+[ "$(machine_cloud_pairing)" = "$pairing_before" ] || error "Cloud Pairing changed during upgrade"
 
 echo "reject a checksum-corrupt target before activation"
 select_remote_release corrupt
@@ -389,6 +436,7 @@ require_field "$failure_inspection" stage "$failure_stage"
 assert_remote_hash /usr/local/bin/ployzd "$target_daemon_hash"
 wait_for_application
 [ "$(machine_state_signature)" = "$state_before" ] || error "Machine identity, pairing, or configuration changed after explicit repair"
+[ "$(machine_cloud_pairing)" = "$pairing_before" ] || error "Cloud Pairing changed after explicit repair"
 
 stop_traffic
 if grep -q '^failure:' "$work/traffic.log"; then

@@ -17,7 +17,7 @@ use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
     installer::{
-        DEFAULT_SOCKET_PATH, InstallRequest, Preparation, Readiness, ReleaseRequest, ReleaseSource,
+        DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness, ReleaseRequest, ReleaseSource,
     },
     machine::DEFAULT_DATA_DIR,
     network::NetworkError,
@@ -214,7 +214,9 @@ fn install_request(
             "--install-only cannot be combined with --group-user",
         ));
     }
-    let preparation = if software_only {
+    let mode = if install_only {
+        InstallMode::InstallationOnly
+    } else if software_only {
         if storage != StorageChoice::None {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -227,9 +229,9 @@ fn install_request(
                 "--software-only cannot be combined with --group-user",
             ));
         }
-        Preparation::SoftwareOnly
+        InstallMode::SoftwareOnly
     } else {
-        Preparation::PrepareHost {
+        InstallMode::PrepareHost {
             storage,
             group_user,
         }
@@ -237,8 +239,7 @@ fn install_request(
     Ok(InstallRequest {
         release,
         source: release_dir.map_or(ReleaseSource::Published, ReleaseSource::Local),
-        preparation,
-        install_only,
+        mode,
     })
 }
 
@@ -332,10 +333,10 @@ mod tests {
     }
 
     #[test]
-    fn install_cli_builds_one_explicit_preparation_mode() {
+    fn install_cli_builds_one_explicit_mode() {
         let replacement =
             install_request("1.2.3".into(), StorageChoice::None, true, true, None, None).unwrap();
-        assert!(matches!(replacement.preparation, Preparation::SoftwareOnly));
+        assert!(matches!(replacement.mode, InstallMode::InstallationOnly));
 
         let host = install_request(
             "1.2.3".into(),
@@ -347,8 +348,8 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            host.preparation,
-            Preparation::PrepareHost {
+            host.mode,
+            InstallMode::PrepareHost {
                 storage: StorageChoice::Zfs,
                 group_user: Some(_)
             }

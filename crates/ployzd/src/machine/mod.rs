@@ -32,8 +32,8 @@ mod store;
 use store::PENDING_RESET_FILE_NAME;
 pub use store::{LocalMachineStore, StoreError};
 
-pub(crate) use local_machine::RuntimeWatchTelemetry;
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
+pub(crate) use local_machine::{MutationAdmission, RuntimeWatchTelemetry};
 
 #[cfg(test)]
 mod register_tests;

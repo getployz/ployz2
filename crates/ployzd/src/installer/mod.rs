@@ -34,9 +34,11 @@ const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
 const DEFAULT_RUN_DIR: &str = "/run/ployz";
 /// Unix socket installed systemd services use for the local Machine API.
 pub const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
-/// Explicit host work associated with one Machine installation attempt.
+/// Mutually exclusive host work for one Machine installation attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Preparation {
+pub enum InstallMode {
+    /// Write the release and units without starting systemd or preparing the host.
+    InstallationOnly,
     /// Replace the daemon only after confirming the Machine is already prepared.
     SoftwareOnly,
     /// Prepare the host and optionally configure its requested storage.
@@ -55,10 +57,8 @@ pub struct InstallRequest {
     pub release: ReleaseRequest,
     /// Trusted release source. Published releases never accept caller-provided URLs.
     pub source: ReleaseSource,
-    /// Explicit host preparation or ordinary software-only replacement.
-    pub preparation: Preparation,
-    /// Write the release and units without starting systemd.
-    pub install_only: bool,
+    /// Installation-only, software-only replacement, or full host preparation.
+    pub mode: InstallMode,
 }
 
 /// What installation directly observed after activation.
@@ -194,36 +194,36 @@ async fn install_locked(
     _lock: mutation::InstallationGuard,
     mut progress: impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
 ) -> Result<InstallOutcome, Error> {
-    verify_system(request.install_only)?;
+    let installation_only = matches!(request.mode, InstallMode::InstallationOnly);
+    verify_system(installation_only)?;
     let target = resolve_release(&request.release, &request.source).await?;
 
     progress(MachineUpgradeStage::Preparing)?;
-    if !request.install_only {
-        match &request.preparation {
-            Preparation::SoftwareOnly => verify_software_prerequisites(&paths)?,
-            Preparation::PrepareHost {
-                storage,
-                group_user,
-            } => {
-                prepare_storage(*storage, &paths)?;
-                install_prerequisites()?;
-                let inherited_group = sudo_user();
-                create_user_and_directories(
-                    group_user.as_deref().or(inherited_group.as_deref()),
-                    &paths,
-                )?;
-            }
+    match &request.mode {
+        InstallMode::InstallationOnly => {}
+        InstallMode::SoftwareOnly => verify_software_prerequisites(&paths)?,
+        InstallMode::PrepareHost {
+            storage,
+            group_user,
+        } => {
+            prepare_storage(*storage, &paths)?;
+            install_prerequisites()?;
+            let inherited_group = sudo_user();
+            create_user_and_directories(
+                group_user.as_deref().or(inherited_group.as_deref()),
+                &paths,
+            )?;
         }
     }
 
     let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
     restart_required |= install_binaries(&request.source, &paths, &target, &mut progress).await?;
-    install_systemd(&paths, request.install_only)?;
-    if !request.install_only && matches!(request.preparation, Preparation::PrepareHost { .. }) {
+    install_systemd(&paths, installation_only)?;
+    if matches!(request.mode, InstallMode::PrepareHost { .. }) {
         install_docker(&paths).await?;
     }
 
-    let readiness = if request.install_only {
+    let readiness = if installation_only {
         Readiness::InstallationOnly
     } else {
         if restart_required {
@@ -386,7 +386,7 @@ mod tests {
         process::Command,
     };
 
-    use semver::Version;
+    use ployz_core::MachineVersion;
     use tempfile::TempDir;
 
     use super::*;
@@ -395,10 +395,9 @@ mod tests {
     async fn system_install_rejects_nonstandard_machine_paths_before_mutation() {
         let fixture = fixture("nonstandard-paths");
         let request = InstallRequest {
-            release: ReleaseRequest::Exact(Version::parse("1.2.3").unwrap()),
+            release: ReleaseRequest::Exact(MachineVersion::parse("1.2.3").unwrap()),
             source: ReleaseSource::Local(fixture.path().join("release")),
-            preparation: Preparation::SoftwareOnly,
-            install_only: true,
+            mode: InstallMode::InstallationOnly,
         };
 
         for (data_dir, socket) in [
@@ -527,17 +526,9 @@ mod tests {
         }
 
         let request = InstallRequest {
-            release: ReleaseRequest::Exact(Version::parse("1.2.3").unwrap()),
+            release: ReleaseRequest::Exact(MachineVersion::parse("1.2.3").unwrap()),
             source: ReleaseSource::Local(root.join("release")),
-            preparation: if case == "install-only" {
-                Preparation::PrepareHost {
-                    storage: StorageChoice::None,
-                    group_user: None,
-                }
-            } else {
-                Preparation::SoftwareOnly
-            },
-            install_only: true,
+            mode: InstallMode::InstallationOnly,
         };
         let result = if case == "busy" {
             let admission = mutation::MutationGate::new(&paths.run_dir, &paths.data_dir);

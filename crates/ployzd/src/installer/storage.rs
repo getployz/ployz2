@@ -128,7 +128,7 @@ fn require_host_root_reserve(allocation: u64) -> Result<(), Error> {
             stage: "inspect host-root capacity for ZFS storage preparation",
             source,
         })?;
-    let reserve = (size / 4).max(10 * 1024 * 1024 * 1024);
+    let reserve = ployz_core::storage_host_reserve(size);
     if available < reserve.saturating_add(allocation) {
         return Err(Error::Command {
             stage: "prepare ZFS storage".into(),

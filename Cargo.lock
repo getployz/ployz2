@@ -2287,7 +2287,6 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "sd-notify",
- "semver",
  "serde",
  "serde_json",
  "sha2",

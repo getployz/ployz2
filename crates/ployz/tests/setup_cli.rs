@@ -8,27 +8,6 @@ use std::{
 };
 
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
-
-struct Fixture(PathBuf);
-
-impl Fixture {
-    fn new() -> Self {
-        let path = env::temp_dir().join(format!("ployz-setup-cli-{}", Uuid::new_v4()));
-        fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 fn write_executable(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
@@ -97,7 +76,7 @@ fn run(args: &[&str], root: &Path, release: &Path, bin: &Path) -> Output {
 
 #[test]
 fn local_setup_runs_the_verified_bootstrap_installer() {
-    let fixture = Fixture::new();
+    let fixture = tempfile::tempdir().unwrap();
     let log = fixture.path().join("commands.log");
     let release = release_fixture(fixture.path(), &log);
     let bin = fixture.path().join("bin");
@@ -136,7 +115,7 @@ fn local_setup_runs_the_verified_bootstrap_installer() {
 
 #[test]
 fn corrupt_local_bootstrap_is_rejected_before_execution() {
-    let fixture = Fixture::new();
+    let fixture = tempfile::tempdir().unwrap();
     let log = fixture.path().join("commands.log");
     let release = release_fixture(fixture.path(), &log);
     fs::write(release.join(daemon_archive()), b"corrupt").unwrap();
@@ -174,7 +153,7 @@ fn corrupt_local_bootstrap_is_rejected_before_execution() {
 
 #[test]
 fn ssh_setup_transfers_one_bootstrap_and_no_install_skips_it() {
-    let fixture = Fixture::new();
+    let fixture = tempfile::tempdir().unwrap();
     let log = fixture.path().join("commands.log");
     let release = release_fixture(fixture.path(), &log);
     let bin = fixture.path().join("bin");
@@ -285,7 +264,7 @@ esac
 
 #[test]
 fn remote_preflight_timeout_kills_the_child_and_cleans_the_stage() {
-    let fixture = Fixture::new();
+    let fixture = tempfile::tempdir().unwrap();
     let log = fixture.path().join("commands.log");
     let release = release_fixture(fixture.path(), &fixture.path().join("installer.log"));
     let bin = fixture.path().join("bin");
@@ -351,7 +330,7 @@ esac
 
 #[test]
 fn remote_cleanup_failure_is_returned_after_successful_installation() {
-    let fixture = Fixture::new();
+    let fixture = tempfile::tempdir().unwrap();
     let release = release_fixture(fixture.path(), &fixture.path().join("installer.log"));
     let bin = fixture.path().join("bin");
     fs::create_dir(&bin).unwrap();

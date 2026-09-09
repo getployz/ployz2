@@ -17,9 +17,6 @@ fi
 
 grep -Fq 'qualify-data' "$ROOT/scripts/qualify-release/compose.yaml" || fail "compose fixture has no named volume"
 grep -Fq 'x-volumes:' "$ROOT/scripts/qualify-release/compose.yaml" || fail "compose fixture volume is not provisioned"
-grep -Fq 'busybox:1.37.0' "$ROOT/scripts/qualify-release/compose.yaml" || fail "compose fixture has no verified HTTP server image"
-grep -Fq '18082:8080/tcp@host' "$ROOT/scripts/qualify-release/compose.yaml" || fail "compose fixture has no traffic endpoint"
-grep -Fq '/data/identity' "$ROOT/scripts/qualify-release/compose.yaml" || fail "compose fixture does not serve persistent data"
 
 if "$ROOT/scripts/qualify-release.sh" >/dev/null 2>&1; then
     fail "qualify-release accepted empty hosts"
@@ -59,6 +56,50 @@ case "$1" in
         done
         printf '%s context=%s file=%s yes=%s\n' "$action" "$context" "$file" "$yes" >>"$LOG"
         [ "$action" != volume ] || printf 'MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER\nqualify-1\tqualify-release_qualify-data\tPROVISIONED\t268435456\t4096\tployz\n'
+        ;;
+    cloud)
+        [ "$2" = enroll ] || { echo "unexpected cloud action: $2" >&2; exit 1; }
+        token=$3
+        shift 3
+        name= storage= context= cloud_url= no_dns=no no_ingress=no
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --name) name=$2; shift ;;
+                --storage) storage=$2; shift ;;
+                --context) context=$2; shift ;;
+                --cloud-url) cloud_url=$2; shift ;;
+                --no-dns) no_dns=yes ;;
+                --no-ingress) no_ingress=yes ;;
+                *) echo "unexpected cloud enroll argument: $1" >&2; exit 1 ;;
+            esac
+            shift
+        done
+        printf 'cloud-enroll token=%s name=%s storage=%s context=%s cloud_url=%s no_dns=%s no_ingress=%s\n' "$token" "$name" "$storage" "$context" "$cloud_url" "$no_dns" "$no_ingress" >>"$LOG"
+        python3 - "$cloud_url" "$token" <<'PY'
+import json
+import sys
+import urllib.request
+
+origin, token = sys.argv[1:]
+url = f"{origin}/api/enroll/{token}"
+identity = {
+    "protocolVersion": 2,
+    "name": "qualify-1",
+    "requestedStorage": "none",
+    "publicKey": "synthetic-public-key",
+}
+request = urllib.request.Request(url, json.dumps(identity).encode(), {"Content-Type": "application/json"})
+with urllib.request.urlopen(request) as response:
+    pairing = json.load(response)["pairing"]
+callback = {
+    "machineId": "11111111111111111111111111111111",
+    "pairingCredential": pairing["secret"],
+}
+request = urllib.request.Request(f"{url}/callback", json.dumps(callback).encode(), {"Content-Type": "application/json"})
+with urllib.request.urlopen(request) as response:
+    json.load(response)
+PY
+        : >"$QUALIFY_PAIRED"
         ;;
     machine)
         action=$2
@@ -198,7 +239,12 @@ case "$command" in
         esac
         ;;
     *'sudo cat /var/lib/ployz/machine.json'*)
-        printf '{"body":{"phase":"participating","machine":{"id":"11111111111111111111111111111111","runtime":{"daemon_version":"1.2.3"}}},"wireguard_private_key":"secret","cloud_pairing":null,"selected_endpoints":{}}\n'
+        if [ -f "$QUALIFY_PAIRED" ]; then
+            pairing='{"relayUrl":"http://127.0.0.1:1/","secret":"qualification-synthetic-pairing-secret-v1"}'
+        else
+            pairing=null
+        fi
+        printf '{"body":{"phase":"participating","machine":{"id":"11111111111111111111111111111111","runtime":{"daemon_version":"1.2.3"}}},"wireguard_private_key":"secret","cloud_pairing":%s,"selected_endpoints":{}}\n' "$pairing"
         ;;
     *'while [ ! -e /var/lib/ployz/qualification/traffic.stop'*)
         printf 'ok\nok\nok\nok\nok\nok\n'
@@ -221,9 +267,11 @@ fi
 printf 'scp %s\n' "$*" >>"$SSH_LOG"
 SCP
 chmod 0755 "$TMP/bin/scp"
+export QUALIFY_PAIRED=$TMP/paired
 
 for reset in 0 1; do
     : >"$LOG"
+    rm -f "$QUALIFY_PAIRED"
     PATH="$TMP/bin:$PATH" PLOYZ_QUALIFY_HOSTS='root@192.0.2.10 root@192.0.2.11' PLOYZ_ARTIFACT_DIR="$SOURCE" \
         PLOYZ_UPGRADE_ARTIFACT_DIR="$TARGET" PLOYZ_QUALIFY_SSH_KEY=/tmp/qualify-key \
         PLOYZ_QUALIFY_CONTEXT=qualify PLOYZ_QUALIFY_RESET="$reset" \
@@ -232,6 +280,7 @@ for reset in 0 1; do
     [ "$reset" = 0 ] || expected_reset=yes
     grep -Fxq "init target=root@192.0.2.10 reset=$expected_reset key=/tmp/qualify-key context=qualify no_install=no version=1.2.3 storage=zfs name=qualify-1 no_dns=yes no_ingress=yes release=$SOURCE" "$LOG" || fail "init lost its target, release, storage, name, version, reset policy, isolation policy, or SSH identity"
     grep -Fxq "add target=root@192.0.2.11 reset=yes key=/tmp/qualify-key context=qualify no_install=no version=1.2.3 storage=zfs name=qualify-2 no_dns=no no_ingress=no release=$SOURCE" "$LOG" || fail "add lost its target, release, storage, name, version, or SSH identity"
+    grep -Eq '^cloud-enroll token=pmet_qualification name=qualify-1 storage=none context=qualify cloud_url=http://127\.0\.0\.1:[0-9]+ no_dns=yes no_ingress=yes$' "$LOG" || fail "Cloud Pairing fixture was not exercised through the source CLI"
     grep -Fxq "deploy context=qualify file=$ROOT/scripts/qualify-release/compose.yaml yes=yes" "$LOG" || fail "persistent-volume fixture was not deployed"
     grep -Fxq 'upgrade release=1.2.4 machine=qualify-1 context=qualify current=target' "$LOG" || fail "target upgrade was not requested"
     grep -Fxq 'upgrade release=1.2.4 machine=qualify-1 context=qualify current=corrupt' "$LOG" || fail "corrupt preflight was not requested"

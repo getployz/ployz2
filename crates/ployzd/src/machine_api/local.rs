@@ -566,6 +566,7 @@ impl MachineRpc for MachineService {
             self.local_record()?.id(),
             request.into_inner(),
             self.builds.clone(),
+            self.local.clone(),
         )))
     }
 

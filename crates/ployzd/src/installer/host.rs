@@ -8,11 +8,10 @@ use std::{
     process::{Command, Stdio},
 };
 
-use semver::Version;
 use tonic::transport::Endpoint;
 
 use crate::filesystem::atomic_write;
-use ployz_core::{DescribeContractRequest, MachineRpcClient, op};
+use ployz_core::{DescribeContractRequest, MachineRpcClient, MachineVersion, op};
 
 use super::release::{fetch, installed_release};
 use super::{Error, InstallPaths, PLOYZ_USER, command_exists, run_apt, run_host, systemctl};
@@ -268,7 +267,7 @@ pub(super) async fn install_docker(paths: &InstallPaths) -> Result<(), Error> {
 
 pub(super) async fn verify_running_daemon(
     paths: &InstallPaths,
-    target: &Version,
+    target: &MachineVersion,
 ) -> Result<(), Error> {
     systemctl(
         "check daemon readiness",
@@ -311,7 +310,7 @@ pub(super) async fn verify_running_daemon(
     verify_daemon_contract(&paths.run_dir.join("ployz.sock"), target).await
 }
 
-async fn verify_daemon_contract(socket: &Path, target: &Version) -> Result<(), Error> {
+async fn verify_daemon_contract(socket: &Path, target: &MachineVersion) -> Result<(), Error> {
     let endpoint =
         Endpoint::from_shared(format!("unix:{}", socket.display())).map_err(|error| {
             Error::Verification(format!("invalid Machine API socket address: {error}"))
@@ -337,8 +336,8 @@ async fn verify_daemon_contract(socket: &Path, target: &Version) -> Result<(), E
     require_running_version(&response.daemon_version, target)
 }
 
-fn require_running_version(observed: &str, target: &Version) -> Result<(), Error> {
-    let observed = Version::parse(observed).map_err(|_| {
+fn require_running_version(observed: &str, target: &MachineVersion) -> Result<(), Error> {
+    let observed = MachineVersion::parse(observed).map_err(|_| {
         Error::Verification(format!(
             "running Machine API reported invalid daemon version {observed:?}"
         ))
@@ -358,7 +357,7 @@ mod tests {
 
     #[test]
     fn running_machine_api_version_must_match_the_target() {
-        let target = Version::parse("1.2.3-beta.4").unwrap();
+        let target = MachineVersion::parse("1.2.3-beta.4").unwrap();
         assert!(require_running_version("1.2.3-beta.4", &target).is_ok());
         assert!(matches!(
             require_running_version("1.2.3-beta.3", &target),

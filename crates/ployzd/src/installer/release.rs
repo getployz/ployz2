@@ -13,13 +13,12 @@ use std::{
 #[cfg(not(test))]
 use std::os::unix::fs::chown;
 
-use semver::Version;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::{process::Command, time::timeout};
 
 use super::{Error, InstallPaths, daemon_archive, run_command};
-use ployz_core::MachineUpgradeStage;
+use ployz_core::{MachineUpgradeStage, MachineVersion};
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
 const CHANNEL_URL: &str = "https://ployz.sh";
@@ -37,7 +36,7 @@ pub enum ReleaseRequest {
     /// Resolve the beta channel once for this installation attempt.
     Beta,
     /// Install this exact published daemon version.
-    Exact(Version),
+    Exact(MachineVersion),
 }
 
 impl FromStr for ReleaseRequest {
@@ -49,7 +48,11 @@ impl FromStr for ReleaseRequest {
             "" | "latest" | "stable" => Ok(Self::Stable),
             "beta" => Ok(Self::Beta),
             "nightly" => Err(Error::Nightly),
-            value => parse_release(value).map(Self::Exact),
+            value => MachineVersion::parse(value.to_owned())
+                .map(Self::Exact)
+                .map_err(|_| Error::InvalidVersion {
+                    value: value.to_owned(),
+                }),
         }
     }
 }
@@ -88,7 +91,7 @@ impl ReleaseSource {
 
     async fn release_file(
         &self,
-        target: &Version,
+        target: &MachineVersion,
         file: &str,
         stage: &'static str,
     ) -> Result<Vec<u8>, Error> {
@@ -105,28 +108,24 @@ impl ReleaseSource {
 pub(super) async fn resolve_release(
     request: &ReleaseRequest,
     source: &ReleaseSource,
-) -> Result<Version, Error> {
+) -> Result<MachineVersion, Error> {
     match request {
-        ReleaseRequest::Stable => parse_release(source.channel("stable").await?.trim()),
-        ReleaseRequest::Beta => parse_release(source.channel("beta").await?.trim()),
+        ReleaseRequest::Stable => {
+            let value = source.channel("stable").await?;
+            parse_channel_version(value.trim())
+        }
+        ReleaseRequest::Beta => {
+            let value = source.channel("beta").await?;
+            parse_channel_version(value.trim())
+        }
         ReleaseRequest::Exact(version) => Ok(version.clone()),
     }
 }
 
-fn parse_release(value: &str) -> Result<Version, Error> {
-    let version = Version::parse(value).map_err(|_| Error::InvalidVersion {
-        value: value.into(),
-    })?;
-    let pre = version.pre.as_str();
-    let beta_is_valid = pre.strip_prefix("beta.").is_some_and(|number| {
-        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
-    });
-    if !version.build.is_empty() || (!pre.is_empty() && !beta_is_valid) {
-        return Err(Error::InvalidVersion {
-            value: value.into(),
-        });
-    }
-    Ok(version)
+fn parse_channel_version(value: &str) -> Result<MachineVersion, Error> {
+    MachineVersion::parse(value.to_owned()).map_err(|_| Error::InvalidVersion {
+        value: value.to_owned(),
+    })
 }
 
 pub(super) async fn fetch(url: &str, stage: &str) -> Result<Vec<u8>, Error> {
@@ -151,14 +150,14 @@ pub(super) async fn fetch(url: &str, stage: &str) -> Result<Vec<u8>, Error> {
         .map_err(|error| Error::ReleaseSelection(format!("{stage}: {error}")))
 }
 
-fn release_url(target: &Version, file: &str) -> String {
+fn release_url(target: &MachineVersion, file: &str) -> String {
     format!("{RELEASE_REPOSITORY}/releases/download/v{target}/{file}")
 }
 
 pub(super) async fn install_binaries(
     source: &ReleaseSource,
     paths: &InstallPaths,
-    target: &Version,
+    target: &MachineVersion,
     progress: &mut impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
 ) -> Result<bool, Error> {
     let installed = installed_release(&paths.bin_dir.join("ployzd")).await?;
@@ -195,13 +194,13 @@ pub(super) async fn install_binaries(
 
 fn replacement_required(
     source: &ReleaseSource,
-    installed: Option<&Version>,
-    target: &Version,
+    installed: Option<&MachineVersion>,
+    target: &MachineVersion,
 ) -> bool {
     source.is_local() || installed.is_none_or(|installed| installed != target)
 }
 
-pub(super) async fn installed_release(path: &Path) -> Result<Option<Version>, Error> {
+pub(super) async fn installed_release(path: &Path) -> Result<Option<MachineVersion>, Error> {
     if !path.is_file() {
         return Ok(None);
     }
@@ -212,14 +211,14 @@ pub(super) async fn installed_release(path: &Path) -> Result<Option<Version>, Er
             output.status
         )));
     }
-    parse_release(String::from_utf8_lossy(&output.stdout).trim())
+    MachineVersion::parse(String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .map(Some)
         .map_err(|_| Error::Verification("installed daemon reported an invalid version".into()))
 }
 
 async fn release_checksum(
     source: &ReleaseSource,
-    target: &Version,
+    target: &MachineVersion,
     archive: &str,
 ) -> Result<String, Error> {
     let checksums = source
@@ -271,7 +270,7 @@ fn extract_archive(archive: &Path, destination: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-async fn verify_executable(path: &Path, target: &Version) -> Result<(), Error> {
+async fn verify_executable(path: &Path, target: &MachineVersion) -> Result<(), Error> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(|source| Error::Io {
         stage: "mark staged daemon executable",
         source,
@@ -284,7 +283,7 @@ async fn verify_executable(path: &Path, target: &Version) -> Result<(), Error> {
         )));
     }
     let observed = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if observed == target.to_string() {
+    if observed == target.as_str() {
         Ok(())
     } else {
         Err(Error::Verification(format!(
@@ -439,7 +438,7 @@ mod tests {
         assert!(matches!("beta".parse(), Ok(ReleaseRequest::Beta)));
         assert_eq!(
             "v1.2.3-beta.4".parse::<ReleaseRequest>().unwrap(),
-            ReleaseRequest::Exact(Version::parse("1.2.3-beta.4").unwrap())
+            ReleaseRequest::Exact(MachineVersion::parse("1.2.3-beta.4").unwrap())
         );
         for invalid in ["1.2", "1.2.3-rc.1", "1.2.3-beta.x", "1.2.3+build.1"] {
             assert!(invalid.parse::<ReleaseRequest>().is_err(), "{invalid}");
@@ -459,7 +458,7 @@ mod tests {
 
     #[test]
     fn resolved_channels_replace_the_exact_target_and_skip_only_the_same_target() {
-        let target = Version::parse("1.2.3").unwrap();
+        let target = MachineVersion::parse("1.2.3").unwrap();
         assert!(!replacement_required(
             &ReleaseSource::Published,
             Some(&target),
@@ -467,7 +466,7 @@ mod tests {
         ));
         assert!(replacement_required(
             &ReleaseSource::Published,
-            Some(&Version::parse("1.2.4").unwrap()),
+            Some(&MachineVersion::parse("1.2.4").unwrap()),
             &target
         ));
         assert!(replacement_required(

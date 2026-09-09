@@ -127,9 +127,20 @@ pub enum Error {
     Upgrade(#[from] crate::installer::upgrade::Error),
 }
 
-struct MutationAdmission {
+pub(crate) struct MutationAdmission {
     _local: OwnedMutexGuard<()>,
     _installation: crate::mutation::MutationGuard,
+}
+
+impl MutationAdmission {
+    pub(crate) fn into_installation_guard(self) -> crate::mutation::MutationGuard {
+        let Self {
+            _local,
+            _installation,
+        } = self;
+        drop(_local);
+        _installation
+    }
 }
 
 impl LocalMachine {
@@ -190,7 +201,7 @@ impl LocalMachine {
         self.store.lock().map_err(|_| Error::LockPoisoned)
     }
 
-    async fn admit_mutation(&self) -> Result<MutationAdmission, Error> {
+    pub(crate) async fn admit_mutation(&self) -> Result<MutationAdmission, Error> {
         let (local, installation) = {
             let store = self.lock_store()?;
             (store.admission_lock.clone(), store.mutation_gate.clone())

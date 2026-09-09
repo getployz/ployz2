@@ -159,7 +159,14 @@ async fn run_one(
         attempt_id,
         release,
     };
-    let accepted = match request_until(deadline, client, &target, request).await {
+    let accepted = match client
+        .request_upgrade(
+            request,
+            &target,
+            deadline.saturating_duration_since(Instant::now()),
+        )
+        .await
+    {
         Ok(accepted) => accepted,
         Err(crate::setup_retry::Error::Permanent(error)) => return Err(error.into()),
         Err(crate::setup_retry::Error::Exhausted(error)) => {
@@ -178,7 +185,14 @@ async fn run_one(
         {
             return Err(uncertain_timeout(machine, attempt_id));
         }
-        let observed = inspect_until(deadline, client, &target, attempt_id)
+        let observed = client
+            .inspect_upgrade(
+                InspectMachineUpgradeRequest {
+                    attempt_id: Some(attempt_id),
+                },
+                &target,
+                deadline.saturating_duration_since(Instant::now()),
+            )
             .await
             .map_err(|error| match error {
                 crate::setup_retry::Error::Permanent(error) => error.into(),
@@ -190,38 +204,6 @@ async fn run_one(
             return Ok(observed);
         }
     }
-}
-
-async fn request_until(
-    deadline: Instant,
-    client: &mut impl UpgradeRequests,
-    target: &MachineTarget,
-    request: RequestMachineUpgradeRequest,
-) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-    client
-        .request_upgrade(
-            request,
-            target,
-            deadline.saturating_duration_since(Instant::now()),
-        )
-        .await
-}
-
-async fn inspect_until(
-    deadline: Instant,
-    client: &mut impl UpgradeRequests,
-    target: &MachineTarget,
-    attempt_id: MachineUpgradeAttemptId,
-) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-    client
-        .inspect_upgrade(
-            InspectMachineUpgradeRequest {
-                attempt_id: Some(attempt_id),
-            },
-            target,
-            deadline.saturating_duration_since(Instant::now()),
-        )
-        .await
 }
 
 fn print_attempt(machine: &Machine, attempt: &MachineUpgradeAttempt) {
