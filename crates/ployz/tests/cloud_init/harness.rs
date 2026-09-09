@@ -85,6 +85,7 @@ struct JoinInner {
     target_inspect_attempts: AtomicUsize,
     transient_target_inspect_failures: AtomicUsize,
     fail_ensure: AtomicBool,
+    fail_target_inspect: AtomicBool,
     fail_list_on: Mutex<Option<MachineId>>,
     assigned_membership: Mutex<MembershipObservation>,
     _register: Mutex<Option<JoinHandle<()>>>,
@@ -127,6 +128,7 @@ impl JoinDaemon {
                 target_inspect_attempts: AtomicUsize::new(0),
                 transient_target_inspect_failures: AtomicUsize::new(0),
                 fail_ensure: AtomicBool::new(false),
+                fail_target_inspect: AtomicBool::new(false),
                 fail_list_on: Mutex::new(None),
                 assigned_membership: Mutex::new(MembershipObservation::Up),
                 _register: Mutex::new(None),
@@ -248,6 +250,11 @@ impl JoinDaemon {
         self.inner.events.lock().unwrap().record(event);
     }
 
+    pub fn fail_target_inspect(self) -> Self {
+        self.inner.fail_target_inspect.store(true, Ordering::SeqCst);
+        self
+    }
+
     pub fn fail_ensure(self) -> Self {
         self.inner.fail_ensure.store(true, Ordering::SeqCst);
         self
@@ -348,6 +355,11 @@ impl MachineRpc for JoinDaemon {
             self.inner
                 .target_inspect_attempts
                 .fetch_add(1, Ordering::SeqCst);
+            if self.inner.fail_target_inspect.load(Ordering::SeqCst) {
+                return Err(Status::failed_precondition(
+                    "target Machine cannot provide capacity",
+                ));
+            }
             if consume_transient_failure(&self.inner.transient_target_inspect_failures) {
                 return Err(Status::unavailable("target Machine is not ready"));
             }

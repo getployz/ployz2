@@ -36,15 +36,12 @@ pub async fn serve_ingress_probe(machine_id: MachineId) -> (JoinHandle<()>, u16)
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(async move {
-        let mut drop_first = true;
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 1024];
             let _ = stream.read(&mut request).await.unwrap();
-            // Exercise recovery from a lost response without waiting for a real timeout.
-            if std::mem::take(&mut drop_first) {
-                continue;
-            }
+            // Probe retry coverage lives in dns::probe::tests; this fixture
+            // verifies that founder enrollment reaches the real HTTP endpoint.
             let body = machine_id.as_str();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

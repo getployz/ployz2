@@ -346,6 +346,8 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
                 "caddy:2.10.0",
                 "--yes",
             ])
+            // Health-monitor timing is covered under virtual time in deploy tests.
+            .env("PLOYZ_HEALTH_MONITOR_PERIOD", "0s")
             .env("PLOYZ_INGRESS_VERIFY_PORT", probe_port.to_string())
             .env("HTTPS_PROXY", &proxy)
             .env("https_proxy", &proxy)

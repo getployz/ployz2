@@ -1,47 +1,20 @@
 //! Real setup RPC deadlines and initialization recovery under virtual time.
 
 use std::{
-    convert::Infallible,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use futures_util::StreamExt;
+use crate::connect::Client;
 use ployz_core::{
     InitializeRequest, InspectRequest, LocalMachinePhase, Machine, MachineDetails, MachineId,
     MachineName, OpaquePayload, RpcRequestBody, RpcResponse, WireGuardPublicKey, op,
 };
 use tokio::time::Instant;
-use tonic::{
-    Request, Response, Status,
-    codec::ProstCodec,
-    transport::{Channel, Server},
-};
-
-use crate::{
-    connect::{BoxProxyStream, Client, ConnectError, Connector},
-    context::{Connection, ConnectionSource},
-};
-
-struct Connected(Channel);
-
-#[tonic::async_trait]
-impl Connector for Connected {
-    async fn connect(&self, _: &Connection) -> Result<Channel, ConnectError> {
-        Ok(self.0.clone())
-    }
-    async fn dial_proxy(
-        &self,
-        _: &Connection,
-        _: &str,
-        _: &str,
-    ) -> Result<BoxProxyStream, ConnectError> {
-        unreachable!("setup RPCs do not open a proxy")
-    }
-}
+use tonic::{Request, Response, Status};
 
 async fn starting_machine() -> (
     Client,
@@ -62,7 +35,7 @@ async fn starting_machine() -> (
     let calls = initialized.clone();
     let observed = machine.clone();
     let ready = Instant::now() + Duration::from_secs(70);
-    let rpc = tower::service_fn(move |request: Request<OpaquePayload>| {
+    let rpc = move |request: Request<OpaquePayload>| {
         let calls = calls.clone();
         let machine = observed.clone();
         async move {
@@ -101,37 +74,8 @@ async fn starting_machine() -> (
                 request => panic!("unexpected setup request: {request:?}"),
             }
         }
-    });
-    let service = tower::service_fn(move |request: http::Request<tonic::body::Body>| {
-        let rpc = rpc.clone();
-        async move {
-            Ok::<_, Infallible>(
-                tonic::server::Grpc::new(ProstCodec::default())
-                    .unary(rpc, request)
-                    .await,
-            )
-        }
-    });
-    // Both peers run inside Tokio; clock advancement cannot outrun socket I/O.
-    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-    let incoming =
-        tokio_stream::once(Ok::<_, std::io::Error>(server_io)).chain(tokio_stream::pending());
-    let server = tokio::spawn(Server::builder().serve_with_incoming(service, incoming));
-    let client_io = Arc::new(Mutex::new(Some(client_io)));
-    let channel = Channel::from_static("http://memory.invalid")
-        .connect_with_connector(tower::service_fn(move |_| {
-            std::future::ready(Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(
-                client_io.lock().unwrap().take().unwrap(),
-            )))
-        }))
-        .await
-        .unwrap();
-    let client = Client::new(
-        channel.clone(),
-        Connection::tcp("127.0.0.1:1".parse().unwrap()),
-        ConnectionSource::Direct,
-        Arc::new(Connected(channel)),
-    );
+    };
+    let (client, server) = crate::connect::test_support::rpc_client(rpc).await;
     (client, machine, initialized, server)
 }
 
