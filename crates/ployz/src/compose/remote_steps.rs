@@ -10,6 +10,71 @@ use ployz_core::MachineId;
 use tokio_util::sync::CancellationToken;
 
 impl CapturedBuild {
+    /// Execute this capture on one resolved Machine over the authenticated
+    /// Ployz stream. No local Docker or local image store is consulted.
+    pub async fn execute_remote(
+        self,
+        client: &crate::connect::Client,
+        machine_id: ployz_core::MachineId,
+        cancellation: tokio_util::sync::CancellationToken,
+        progress: impl Fn(ployz_build::Progress),
+    ) -> ployz_build::remote::Outcome {
+        if self.options.output == Output::Load {
+            let locations = self
+                .targets
+                .iter()
+                .map(|target| (target.name.clone(), machine_id))
+                .collect();
+            return match self
+                .execute_remote_steps(client, &locations, cancellation, progress)
+                .await
+            {
+                Ok(images) => ployz_build::remote::Outcome::Images {
+                    machine_id,
+                    images: images.into_iter().map(|service| service.built).collect(),
+                },
+                Err(outcome) => outcome,
+            };
+        }
+        let definition = ployz_build::remote::Definition {
+            retained_tags: Vec::new(),
+            image_contexts: Default::default(),
+            targets: self.targets,
+            output: self.options.output,
+            no_cache: self.options.no_cache,
+            pull: self.options.pull,
+        };
+        super::super::remote_build::execute(
+            self.inputs,
+            definition,
+            client,
+            machine_id,
+            cancellation,
+            progress,
+        )
+        .await
+        .into_outcome()
+    }
+
+    /// Execute remotely and bind each completed output to its captured Service.
+    /// # Errors
+    /// Failed, unknown, or image-less outcomes cannot be used by Deploy.
+    pub async fn execute_remote_images(
+        self,
+        client: &crate::connect::Client,
+        machine_id: ployz_core::MachineId,
+        cancellation: tokio_util::sync::CancellationToken,
+        progress: impl Fn(ployz_build::Progress),
+    ) -> Result<Vec<BuiltService>, ComposeError> {
+        let locations = self
+            .targets
+            .iter()
+            .map(|target| (target.name.clone(), machine_id))
+            .collect();
+        self.execute_on_machines(client, &locations, cancellation, progress)
+            .await
+    }
+
     /// Build on already-resolved Machines, independently of application placement.
     /// Every target must have a location before any source is submitted.
     /// Keys are raw Compose Build names, not DNS-label Deploy Service names.
@@ -108,6 +173,12 @@ impl CapturedBuild {
             let outcome = super::super::remote_build::execute(
                 inputs,
                 Definition {
+                    retained_tags: self
+                        .retained_tags
+                        .get(&target.name)
+                        .cloned()
+                        .into_iter()
+                        .collect(),
                     targets: vec![target.clone()],
                     image_contexts: contexts,
                     output: Output::Load,
@@ -121,7 +192,7 @@ impl CapturedBuild {
             )
             .await;
             match outcome {
-                Outcome::Images { images, .. } => {
+                super::super::remote_build::Completion::Images { images, stream, .. } => {
                     let image = images
                         .into_iter()
                         .next()
@@ -134,9 +205,12 @@ impl CapturedBuild {
                         machines: service.machines.clone(),
                         location: BuildLocation::Machine(machine_id),
                         built: image,
+                        _retention: Some(BuildRetention::Remote { _stream: stream }),
                     });
                 }
-                outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }) => {
+                super::super::remote_build::Completion::Report(
+                    outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }),
+                ) => {
                     if let Outcome::Failed { work: observed, .. }
                     | Outcome::Unknown { work: observed, .. } = &outcome
                         && let Some(evidence) = observed.0.get(&target.name)
@@ -145,7 +219,9 @@ impl CapturedBuild {
                     }
                     return Err(outcome.with_work(work));
                 }
-                Outcome::Validated { .. } | Outcome::Published { .. } => {
+                super::super::remote_build::Completion::Report(
+                    Outcome::Validated { .. } | Outcome::Published { .. } | Outcome::Images { .. },
+                ) => {
                     unreachable!("adapter validated output disposition")
                 }
             }

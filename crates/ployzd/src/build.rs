@@ -6,10 +6,20 @@ use ployz_build::{
     remote::{self, Definition, Event, Input, Outcome, Upload},
 };
 use ployz_core::{MachineId, OpaquePayload};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
 use tokio::sync::mpsc;
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::Status;
+
+#[derive(Default)]
+struct AttemptState {
+    evidence: Mutex<ployz_build::WorkEvidence>,
+    retained: Mutex<Option<ployz_build::ImageRetention>>,
+}
 
 pub(crate) fn start(
     machine_id: MachineId,
@@ -18,7 +28,8 @@ pub(crate) fn start(
 ) -> RpcStream {
     let (events, receiver) = mpsc::channel(8);
     tokio::spawn(async move {
-        let outcome = attempt(machine_id, requests, &events, policy).await;
+        let state = Arc::new(AttemptState::default());
+        let outcome = attempt(machine_id, requests, &events, policy, state.clone()).await;
         let message = "Build terminal report exceeds the response size limit";
         let fallback = match &outcome {
             Outcome::Unknown { stage, .. } => Outcome::Unknown {
@@ -35,6 +46,17 @@ pub(crate) fn start(
             remote::encode(&Event::Finished(fallback)).expect("bounded terminal fallback")
         });
         let _ = tokio::time::timeout(Duration::from_secs(5), events.send(Ok(payload))).await;
+        // Admission is already released. Only image retention follows this stream.
+        if state
+            .retained
+            .lock()
+            .expect("Build retention lock")
+            .is_some()
+        {
+            events.closed().await;
+        }
+        let retained = state.retained.lock().expect("Build retention lock").take();
+        let _ = tokio::task::spawn_blocking(move || drop(retained)).await;
     });
     ReceiverStream::new(receiver)
 }
@@ -44,6 +66,7 @@ async fn attempt(
     mut requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     policy: HostPolicy,
+    state: Arc<AttemptState>,
 ) -> Outcome {
     let start = tokio::time::timeout(Duration::from_secs(10), requests.next()).await;
     let definition = match start {
@@ -72,10 +95,9 @@ async fn attempt(
         Ok(Err(error)) => return failure(Stage::Admission, error),
         Err(_) => return failed(Stage::Admission, "Build admission task failed"),
     };
-    let evidence = std::sync::Arc::new(std::sync::Mutex::new(ployz_build::WorkEvidence::new(
-        &definition.targets,
-    )));
-    let observed = evidence.clone();
+    *state.evidence.lock().expect("Build evidence lock") =
+        ployz_build::WorkEvidence::new(&definition.targets);
+    let observed = state.clone();
     let cancellation = admission.cancellation();
     let remaining = admission.remaining();
     let deadline = tokio::time::Instant::now() + remaining;
@@ -97,7 +119,7 @@ async fn attempt(
         let input = pump(&mut requests, upload);
         tokio::pin!(input);
         tokio::select! {
-            result = &mut execution => return joined(result).with_work(evidence.lock().expect("Build evidence lock").clone()),
+            result = &mut execution => return joined(result).with_work(state.evidence.lock().expect("Build evidence lock").clone()),
             reason = &mut input => reason,
             () = events.closed() => "Build client disconnected".to_owned(),
             () = tokio::time::sleep_until(deadline) => "Build active timeout expired".to_owned(),
@@ -126,7 +148,7 @@ async fn attempt(
             ),
         },
     };
-    outcome.with_work(evidence.lock().expect("Build evidence lock").clone())
+    outcome.with_work(state.evidence.lock().expect("Build evidence lock").clone())
 }
 
 async fn pump(
@@ -159,7 +181,7 @@ fn receive_and_execute(
     admission: Admission,
     policy: HostPolicy,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
-    evidence: &std::sync::Mutex<ployz_build::WorkEvidence>,
+    state: &AttemptState,
 ) -> Outcome {
     let cancellation = admission.cancellation();
     let mut upload = match Upload::new() {
@@ -194,7 +216,8 @@ fn receive_and_execute(
     };
     let deadline = std::time::Instant::now() + admission.remaining();
     let progress = |progress| {
-        evidence
+        state
+            .evidence
             .lock()
             .expect("Build evidence lock")
             .observe(&progress);
@@ -232,12 +255,21 @@ fn receive_and_execute(
         context.source.port = proxy.port;
         proxies.push(proxy);
     }
-    match upload.execute(&definition, admission, Some(&policy.docker), &progress) {
-        Ok(images) => match definition.output {
-            Output::Load => Outcome::Images { machine_id, images },
-            Output::Validate => Outcome::Validated { machine_id },
-            Output::Registry => Outcome::Published { machine_id },
-        },
+    let result = upload.execute(&definition, admission, Some(&policy.docker), &progress);
+    match result {
+        Ok(completed) => {
+            if !definition.retained_tags.is_empty() {
+                *state.retained.lock().expect("Build retention lock") = Some(completed.retention);
+            }
+            match definition.output {
+                Output::Load => Outcome::Images {
+                    machine_id,
+                    images: completed.images,
+                },
+                Output::Validate => Outcome::Validated { machine_id },
+                Output::Registry => Outcome::Published { machine_id },
+            }
+        }
         Err(error) => failure(error.stage(), error),
     }
 }

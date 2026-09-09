@@ -141,19 +141,22 @@ async fn failed_unknown_and_cancelled_builds_leave_hooks_containers_and_volumes_
 
 #[tokio::test]
 async fn incompatible_application_platform_refuses_before_transfer_or_mutations() {
-    let (root, service, builds) = fixture();
-    let mutations = service.mutating_rpcs();
-    let mut destination = machine('b', "application");
-    destination.machine.runtime.architecture = "aarch64".into();
-    let service = service.with_machines(vec![machine('a', "builder"), destination]);
-    let error = deploy(&root, service).await.unwrap_err().to_string();
-    assert!(
-        error.contains("linux/amd64") && error.contains("aarch64"),
-        "{error}"
-    );
-    assert_eq!(mutations.load(Ordering::SeqCst), 0);
-    assert!(builds.pulls.lock().unwrap().is_empty());
-    fs::remove_dir_all(root).unwrap();
+    for (architecture, platform) in [("aarch64", "linux/amd64"), ("armv6l", "linux/arm/v7")] {
+        let (root, service, builds) = fixture();
+        let mutations = service.mutating_rpcs();
+        *builds.platform.lock().unwrap() = Some(platform.into());
+        let mut destination = machine('b', "application");
+        destination.machine.runtime.architecture = architecture.into();
+        let service = service.with_machines(vec![machine('a', "builder"), destination]);
+        let error = deploy(&root, service).await.unwrap_err().to_string();
+        assert!(
+            error.contains(platform) && error.contains(architecture),
+            "{error}"
+        );
+        assert_eq!(mutations.load(Ordering::SeqCst), 0);
+        assert!(builds.pulls.lock().unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[tokio::test]
@@ -351,4 +354,39 @@ async fn incomplete_build_locations_refuse_before_source_submission() {
     assert!(builds.definitions.lock().unwrap().is_empty());
     server.abort();
     fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn remote_deploy_accepts_matching_non_primary_architectures() {
+    for (architecture, platform) in [
+        ("x86", "linux/386"),
+        ("arm", "linux/arm/v7"),
+        ("powerpc", "linux/ppc"),
+        ("powerpc64", "linux/ppc64"),
+        ("ppc64le", "linux/ppc64le"),
+        ("s390x", "linux/s390x"),
+        ("riscv64", "linux/riscv64"),
+        ("mips64el", "linux/mips64le"),
+        ("loongarch64", "linux/loong64"),
+    ] {
+        let (root, service, builds) = fixture();
+        let created = service.created_specs();
+        *builds.platform.lock().unwrap() = Some(platform.into());
+        let mut destination = machine('b', "application");
+        destination.machine.runtime.architecture = architecture.into();
+        let yaml = fs::read_to_string(root.join("compose.yaml")).unwrap();
+        fs::write(
+            root.join("compose.yaml"),
+            yaml.replace("    x-pre_deploy: {command: ['true']}\n", ""),
+        )
+        .unwrap();
+        deploy(
+            &root,
+            service.with_machines(vec![machine('a', "builder"), destination]),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{architecture}/{platform}: {error}"));
+        assert!(!created.lock().unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

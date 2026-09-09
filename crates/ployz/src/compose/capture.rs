@@ -100,3 +100,56 @@ impl ComposeProject {
         }
     }
 }
+
+#[cfg(test)]
+#[test]
+fn deploy_binds_each_service_to_its_build_when_requested_tags_are_shared() {
+    use super::build::BuiltService;
+    use crate::compose::{BuildLocation, parse_normalized};
+    let first_content = format!("sha256:{}", "1".repeat(64));
+    let second_content = format!("sha256:{}", "2".repeat(64));
+    let project = parse_normalized(
+        "services: {one: {image: 'example.test/shared:latest', build: .}, two: {image: 'example.test/shared:latest', build: .}}",
+        ".",
+    ).unwrap();
+    let mut candidate = project.capture(
+        ployz_core::ProjectName::parse("app").unwrap(),
+        Default::default(),
+        vec![],
+        None,
+        vec![],
+    );
+    let builds = [
+        ("one", first_content.as_str()),
+        ("two", second_content.as_str()),
+    ]
+    .map(|(name, digest)| BuiltService {
+        name: name.into(),
+        _retention: None,
+        image: "example.test/shared:latest".into(),
+        machines: vec![],
+        location: BuildLocation::Machine(ployz_core::MachineId::parse("a".repeat(32)).unwrap()),
+        built: ployz_build::BuiltImage {
+            reference: format!("example.test/shared@{digest}"),
+            tags: vec!["example.test/shared:latest".into()],
+            platform: "linux/amd64".into(),
+        },
+    });
+    candidate.bind_builds(&builds);
+    for (name, digest) in [
+        ("one", first_content.as_str()),
+        ("two", second_content.as_str()),
+    ] {
+        let service = candidate
+            .intent()
+            .target
+            .iter()
+            .find(|service| service.name.as_str() == name)
+            .unwrap();
+        assert_eq!(
+            service.container.image,
+            format!("example.test/shared@{digest}")
+        );
+        assert_eq!(service.container.pull_policy, ployz_core::PullPolicy::Never);
+    }
+}

@@ -2,7 +2,7 @@
 
 use crate::remote::InputError;
 use crate::{
-    Admission, BuildError, BuiltImage, Progress, Request,
+    Admission, BuildError, Progress, Request,
     remote::{CHUNK_SIZE, Definition, Input, Kind},
 };
 use std::{
@@ -217,7 +217,7 @@ impl Upload {
 }
 
 impl CompletedUpload {
-    /// Consume only a completed capture. The remote host supplies its own PATH
+    /// Execute only a completed capture. The remote host supplies its own PATH
     /// and Docker socket; client environment and plugin paths are never used.
     /// # Errors
     /// Returns recipe validation or host execution failure.
@@ -227,7 +227,7 @@ impl CompletedUpload {
         admission: Admission,
         docker: Option<&Path>,
         progress: &(dyn Fn(Progress) + Sync),
-    ) -> Result<Vec<BuiltImage>, BuildError> {
+    ) -> Result<crate::RetainedImages, BuildError> {
         let mut upload = self.0;
         let railpack = crate::received_recipe::validate_capture(&upload.root, definition)
             .map_err(|error| BuildError::Request(error.to_string()))?;
@@ -253,6 +253,11 @@ impl CompletedUpload {
                     .into_owned(),
             ),
         ]);
+        let retention = crate::ImageRetention::new(
+            definition.retained_tags.clone(),
+            docker,
+            environment.clone(),
+        )?;
         let result = crate::execute_admitted(
             &Request {
                 image_contexts: &definition.image_contexts,
@@ -273,7 +278,7 @@ impl CompletedUpload {
         // Unconfirmed processes may still read private attempt files. Keep them
         // protected alongside quarantined builder ownership until safe cleanup.
         upload.retain = result.as_ref().is_err_and(|error| error.is_unknown());
-        result
+        result.map(|images| crate::RetainedImages { images, retention })
     }
 }
 

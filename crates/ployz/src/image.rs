@@ -25,7 +25,7 @@ use self::proxy::{ImageProxy, ProxyMode, detect_mode};
 mod built;
 mod proxy;
 pub use built::push_from_machine;
-pub(crate) use built::{push_from_machine_using_machines, serve_build_image};
+pub(crate) use built::{platform_compatible, push_from_machine_using_machines, serve_build_image};
 
 #[must_use]
 pub fn with_default_tag(image: &str) -> String {

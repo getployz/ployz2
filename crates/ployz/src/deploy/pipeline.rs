@@ -293,11 +293,8 @@ pub(super) async fn push_project_images(
         for target in &targets {
             let architecture = machines.iter().find(|machine| machine.machine.id == *target)
                 .map(|machine| machine.machine.runtime.architecture.as_str());
-            let compatible = match architecture {
-                Some("x86_64" | "amd64") => service.built.platform == "linux/amd64",
-                Some("aarch64" | "arm64") => matches!(service.built.platform.as_str(), "linux/arm64" | "linux/arm64/v8"),
-                _ => false,
-            };
+            let compatible = architecture.is_some_and(|architecture|
+                crate::image::platform_compatible(&service.built.platform, architecture));
             if !compatible {
                 return Err(Failure::usage(format!("Build for Service {} contains {}; destination Machine {target} reports architecture {}. No Service, hook, or volume change was attempted.", service.name, service.built.platform, architecture.unwrap_or("unknown"))));
             }

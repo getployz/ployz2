@@ -16,6 +16,8 @@ mod image_contexts;
 mod policy;
 pub use policy::clear_cache;
 mod received_recipe;
+mod retention;
+pub use retention::{ImageRetention, RetainedImages};
 pub mod remote;
 mod upload;
 

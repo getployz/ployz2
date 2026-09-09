@@ -558,6 +558,7 @@ case "$1 $2" in
       printf '%s\n' '{{"Name":"{builder}","Nodes":[{{"Status":"running","Platforms":["linux/amd64","linux/arm64"],"DriverOpts":{{"image":"{image}"}}}}]}}'
     fi
     exit 0 ;;
+  'image rm') exit 0 ;;
   'image inspect')
     identity=$(cat "$root/store" 2>/dev/null || cat "$root/digest")
     media=$(cat "$root/media" 2>/dev/null || printf 'application/vnd.oci.image.manifest.v1+json')
@@ -697,45 +698,3 @@ mod capture;
 
 #[path = "build/railpack.rs"]
 mod railpack;
-
-#[test]
-fn deploy_binds_each_service_to_its_build_when_requested_tags_are_shared() {
-    use ployz::compose::BuildLocation;
-    let project = parse_normalized(
-        "services: {one: {image: 'example.test/shared:latest', build: .}, two: {image: 'example.test/shared:latest', build: .}}",
-        ".",
-    ).unwrap();
-    let mut candidate = project.capture(
-        ployz_core::ProjectName::parse("app").unwrap(),
-        Default::default(),
-        vec![],
-        None,
-        vec![],
-    );
-    let builds =
-        [("one", FIRST_CONTENT), ("two", SECOND_CONTENT)].map(|(name, digest)| BuiltService {
-            name: name.into(),
-            image: "example.test/shared:latest".into(),
-            machines: vec![],
-            location: BuildLocation::Machine(ployz_core::MachineId::parse("a".repeat(32)).unwrap()),
-            built: ployz_build::BuiltImage {
-                reference: format!("example.test/shared@{digest}"),
-                tags: vec!["example.test/shared:latest".into()],
-                platform: "linux/amd64".into(),
-            },
-        });
-    candidate.bind_builds(&builds);
-    for (name, digest) in [("one", FIRST_CONTENT), ("two", SECOND_CONTENT)] {
-        let service = candidate
-            .intent()
-            .target
-            .iter()
-            .find(|service| service.name.as_str() == name)
-            .unwrap();
-        assert_eq!(
-            service.container.image,
-            format!("example.test/shared@{digest}")
-        );
-        assert_eq!(service.container.pull_policy, ployz_core::PullPolicy::Never);
-    }
-}

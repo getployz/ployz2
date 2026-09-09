@@ -17,6 +17,7 @@ use tonic::{Request, Response, Status};
 #[derive(Default)]
 pub struct BuildFixture {
     pub terminal: Mutex<Option<Outcome>>,
+    pub platform: Mutex<Option<String>>,
     pub definitions: Mutex<Vec<remote::Definition>>,
     pub stores: Mutex<BTreeMap<MachineId, MachineImages>>,
     pub opened: Mutex<Vec<MachineId>>,
@@ -118,7 +119,12 @@ impl BuildFixture {
                                 (offset + index + 1).to_string().repeat(64)
                             ),
                             tags: vec!["registry.invalid/shared:latest".into()],
-                            platform: "linux/amd64".into(),
+                            platform: self
+                                .platform
+                                .lock()
+                                .unwrap()
+                                .clone()
+                                .unwrap_or_else(|| "linux/amd64".into()),
                         })
                         .collect::<Vec<_>>();
                     let mut stores = self.stores.lock().unwrap();

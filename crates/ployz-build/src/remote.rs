@@ -48,6 +48,9 @@ pub const CHUNK_SIZE: usize = 32 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
+    /// Command-generated temporary tags, retained until the response stream closes.
+    #[serde(default)]
+    pub retained_tags: Vec<String>,
     /// Completed Service contexts, bound to immutable content and serving endpoints.
     #[serde(default)]
     pub image_contexts: std::collections::BTreeMap<String, crate::ImageContext>,

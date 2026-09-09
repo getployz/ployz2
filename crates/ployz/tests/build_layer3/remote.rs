@@ -215,6 +215,7 @@ async fn request(
     sender
         .send(
             remote::encode(&Input::Start(Definition {
+                retained_tags: Vec::new(),
                 image_contexts: Default::default(),
                 targets: vec![ployz_build::Target {
                     name: "app".into(),
@@ -315,6 +316,7 @@ async fn remote_build_delivers_dependency_content_and_deploys_without_a_registry
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!root.join("local-docker-called").exists());
+    assert_temporary_tags_released(&cluster).await;
     let container = cluster
         .machine_shell(0, "docker ps -q --filter label=ployz.service.name=app")
         .unwrap();
@@ -394,5 +396,27 @@ async fn remote_build_delivers_dependency_content_and_deploys_without_a_registry
             .unwrap(),
         "dependency-output\nremote-application-ran\n"
     );
+    drop(images);
+    assert_temporary_tags_released(&cluster).await;
     fs::remove_dir_all(root).unwrap();
+}
+
+async fn assert_temporary_tags_released(cluster: &Cluster) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let mut empty = true;
+            for machine in 0..2 {
+                let tags = cluster
+                    .machine_shell(machine, "docker image ls --format '{{.Tag}}'")
+                    .unwrap();
+                empty &= !tags.lines().any(|tag| tag.starts_with("ployz-build-"));
+            }
+            if empty {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("command left temporary Build tags on a Machine");
 }

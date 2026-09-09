@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
+    sync::{Arc, Mutex},
 };
 
 use ployz_build::{BuiltImage, Output};
@@ -70,6 +71,7 @@ pub struct CapturedBuild {
     options: BuildOptions,
     environment: BTreeMap<String, String>,
     inputs: BuildInputs,
+    retained_tags: BTreeMap<String, String>,
 }
 
 /// Where a completed image is available; Machine identity is already resolved.
@@ -83,7 +85,7 @@ pub enum BuildLocation {
 }
 
 /// A Service whose image this command built, bound to the content produced.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct BuiltService {
     /// Raw Compose Build target name, including build-only dependencies.
     /// Build names may contain dots/underscores, unlike Deploy Service names.
@@ -96,6 +98,32 @@ pub struct BuiltService {
     pub machines: Vec<MachineTarget>,
     /// The image this command built for it.
     pub built: BuiltImage,
+    pub(super) _retention: Option<BuildRetention>,
+}
+
+#[derive(Clone)]
+pub(super) enum BuildRetention {
+    Local {
+        _tags: Arc<ployz_build::ImageRetention>,
+    },
+    Remote {
+        _stream: Arc<Mutex<tonic::Streaming<ployz_core::OpaquePayload>>>,
+    },
+}
+impl std::fmt::Debug for BuildRetention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BuildRetention")
+    }
+}
+
+impl PartialEq for BuiltService {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.location == other.location
+            && self.image == other.image
+            && self.machines == other.machines
+            && self.built == other.built
+    }
 }
 
 impl BuiltService {
@@ -158,6 +186,7 @@ pub fn capture_build(
     let mut plan = plan.to_vec();
     let mut secret_names = BTreeSet::new();
     let mut targets = Vec::new();
+    let mut retained_tags = BTreeMap::new();
     let mut railpack_recipes = Vec::new();
     for service in &mut plan {
         let image = service.image.clone();
@@ -202,6 +231,7 @@ pub fn capture_build(
                 reference.repository(),
                 uuid::Uuid::new_v4()
             );
+            retained_tags.insert(service.name.clone(), retained.clone());
             let tags = build
                 .entry(Value::String("tags".into()))
                 .or_insert_with(|| Value::Sequence(vec![Value::String(service.image.clone())]));
@@ -339,6 +369,7 @@ pub fn capture_build(
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
         inputs,
+        retained_tags,
     })
 }
 
@@ -554,69 +585,6 @@ fn effective_build_args(
 }
 
 impl CapturedBuild {
-    /// Execute this capture on one resolved Machine over the authenticated
-    /// Ployz stream. No local Docker or local image store is consulted.
-    pub async fn execute_remote(
-        self,
-        client: &crate::connect::Client,
-        machine_id: ployz_core::MachineId,
-        cancellation: tokio_util::sync::CancellationToken,
-        progress: impl Fn(ployz_build::Progress),
-    ) -> ployz_build::remote::Outcome {
-        if self.options.output == Output::Load {
-            let locations = self
-                .targets
-                .iter()
-                .map(|target| (target.name.clone(), machine_id))
-                .collect();
-            return match self
-                .execute_remote_steps(client, &locations, cancellation, progress)
-                .await
-            {
-                Ok(images) => ployz_build::remote::Outcome::Images {
-                    machine_id,
-                    images: images.into_iter().map(|service| service.built).collect(),
-                },
-                Err(outcome) => outcome,
-            };
-        }
-        let definition = ployz_build::remote::Definition {
-            image_contexts: Default::default(),
-            targets: self.targets,
-            output: self.options.output,
-            no_cache: self.options.no_cache,
-            pull: self.options.pull,
-        };
-        super::remote_build::execute(
-            self.inputs,
-            definition,
-            client,
-            machine_id,
-            cancellation,
-            progress,
-        )
-        .await
-    }
-
-    /// Execute remotely and bind each completed output to its captured Service.
-    /// # Errors
-    /// Failed, unknown, or image-less outcomes cannot be used by Deploy.
-    pub async fn execute_remote_images(
-        self,
-        client: &crate::connect::Client,
-        machine_id: ployz_core::MachineId,
-        cancellation: tokio_util::sync::CancellationToken,
-        progress: impl Fn(ployz_build::Progress),
-    ) -> Result<Vec<BuiltService>, ComposeError> {
-        let locations = self
-            .targets
-            .iter()
-            .map(|target| (target.name.clone(), machine_id))
-            .collect();
-        self.execute_on_machines(client, &locations, cancellation, progress)
-            .await
-    }
-
     /// Build this capture through the shared runner, without reading the
     /// original sources again.
     ///
@@ -641,6 +609,16 @@ impl CapturedBuild {
                 .to_string_lossy()
                 .into_owned(),
         );
+        let retention = BuildRetention::Local {
+            _tags: Arc::new(
+                ployz_build::ImageRetention::new(
+                    self.retained_tags.values().cloned().collect(),
+                    docker,
+                    environment.clone(),
+                )
+                .map_err(|error| invalid_build(&error.to_string()))?,
+            ),
+        };
         let images = ployz_build::execute(&ployz_build::Request {
             image_contexts: &BTreeMap::new(),
             compose_file: Path::new("compose.yaml"),
@@ -675,6 +653,7 @@ impl CapturedBuild {
                 image: service.image.clone(),
                 machines: service.machines.clone(),
                 built,
+                _retention: Some(retention.clone()),
             })
             .collect())
     }

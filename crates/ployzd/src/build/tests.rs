@@ -94,6 +94,7 @@ impl Fixture {
         sender
             .send(
                 remote::encode(&Input::Start(Definition {
+                    retained_tags: Vec::new(),
                     image_contexts: Default::default(),
                     targets: vec![ployz_build::Target {
                         name: "api".into(),
@@ -316,6 +317,7 @@ case "$1 $2" in
       previous=$arg
     done
     if [ -f "$root/fail-after-output" ]; then exit 1; fi ;;
+  'image rm') printf '%s\n' "$*" >> "$root/released-tags" ;;
   'image inspect') printf '%s\n' '{{"Os":"linux","Architecture":"amd64","Descriptor":{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:{}"}}}}' ;;
   *) exit 1 ;;
 esac
@@ -376,6 +378,7 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
     let (sender, receiver) = mpsc::channel(2);
     sender
         .send(Ok(remote::encode(&Input::Start(Definition {
+            retained_tags: Vec::new(),
             image_contexts: Default::default(),
             targets: vec![ployz_build::Target {
                 name: "api".into(),
@@ -554,4 +557,38 @@ async fn host_configuration_and_cache_clearing_share_remote_admission() {
         }
     ));
     assert!(Admission::try_acquire_with(&fixture.policy).is_ok());
+}
+
+#[tokio::test]
+async fn dropping_completed_build_releases_only_its_temporary_tags() {
+    let fixture = Fixture::new().await;
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    let images = fixture
+        .capture()
+        .execute_remote_images(
+            &client,
+            fixture.machine.id,
+            tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert!(!fixture.root.join("released-tags").exists());
+    drop(images);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !fixture.root.join("released-tags").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("completed Build leaked its retention tag");
+    let released = fs::read_to_string(fixture.root.join("released-tags")).unwrap();
+    assert!(released.contains(":ployz-build-"), "{released}");
+    assert!(!released.contains("example.test/api:built"), "{released}");
 }
