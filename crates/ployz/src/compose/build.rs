@@ -171,6 +171,7 @@ pub fn capture_build(
                         "multi-platform Railpack does not support build.{field}; use false or a single platform",
                     )));
                 }
+                build.remove(field);
             }
         }
         if platforms.is_empty()
@@ -927,6 +928,39 @@ impl BuildSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_multi_platform_attestations_pass_remote_validation() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-disabled-attestations-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for settings in [
+            "provenance: false",
+            "sbom: false",
+            "provenance: false, sbom: false",
+        ] {
+            let mut project = crate::compose::parse_normalized(
+                &format!("services:\n  api:\n    build: {{context: ., x-recipe: railpack, platforms: [linux/amd64, linux/arm64], {settings}}}\n"),
+                &root,
+            ).unwrap();
+            let options = BuildOptions::default();
+            let plan = plan_build(&project, &options).unwrap();
+            let captured = capture_build(&plan, &options, &mut project).unwrap();
+            let definition = ployz_build::remote::Definition {
+                targets: captured.targets,
+                output: options.output,
+                no_cache: options.no_cache,
+                pull: options.pull,
+            };
+            let recipes =
+                ployz_build::remote::validate_capture(captured.inputs.root(), &definition)
+                    .unwrap_or_else(|error| panic!("{settings}: {error}"));
+            assert_eq!(recipes.len(), 1);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn git_context_suffix_rules_follow_buildkit_transports() {
