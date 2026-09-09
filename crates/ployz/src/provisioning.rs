@@ -1,13 +1,23 @@
 use std::{
+    env,
+    ffi::OsString,
+    fs,
     io::{self, IsTerminal, Write},
-    path::PathBuf,
-    process::{Command, Stdio},
+    os::unix::fs::{DirBuilderExt, PermissionsExt},
+    path::{Path, PathBuf},
+    process::{Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
-use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::ArgMatches;
 use ployz_core::StorageChoice;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
+use uuid::Uuid;
+
+const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
+const BOOTSTRAP_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Error)]
 pub enum ProvisionError {
@@ -31,6 +41,35 @@ pub enum ProvisionError {
     Sudo(#[source] io::Error),
     #[error("remote user {user} could not authenticate or obtain sudo privileges to install Ployz")]
     SudoRequired { user: String },
+    #[error("inspect remote Machine platform: {0}")]
+    Platform(#[source] io::Error),
+    #[error("remote Machine platform inspection failed: {0}")]
+    PlatformFailed(String),
+    #[error("remote Machine platform inspection returned non-UTF-8 output")]
+    PlatformUtf8,
+    #[error("Ployz Machine must be Linux")]
+    UnsupportedOs,
+    #[error("unsupported Machine architecture: {0}")]
+    UnsupportedArchitecture(String),
+    #[error("{stage}: {source}")]
+    BootstrapIo {
+        stage: &'static str,
+        #[source]
+        source: io::Error,
+    },
+    #[error("{stage} exited with {status}")]
+    BootstrapCommand {
+        stage: &'static str,
+        status: std::process::ExitStatus,
+    },
+    #[error("bootstrap verification: {0}")]
+    BootstrapVerification(String),
+    #[error("bootstrap acquisition: {0}")]
+    BootstrapDownload(String),
+    #[error("transfer bootstrap daemon: {0}")]
+    Transfer(#[source] io::Error),
+    #[error("bootstrap daemon transfer exited with {status}")]
+    TransferFailed { status: std::process::ExitStatus },
     #[error("run Ployz installer: {0}")]
     Install(#[source] io::Error),
     #[error("Ployz installer exited with {status}")]
@@ -89,31 +128,287 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn encoded_installer() -> String {
-    STANDARD.encode(include_bytes!("../../../scripts/install.sh"))
+fn daemon_archive(architecture: &str) -> Result<&'static str, ProvisionError> {
+    match architecture {
+        "x86_64" => Ok("ployzd_linux_amd64.tar.gz"),
+        "aarch64" => Ok("ployzd_linux_arm64.tar.gz"),
+        architecture => Err(ProvisionError::UnsupportedArchitecture(
+            architecture.to_owned(),
+        )),
+    }
 }
 
-fn pipefail(pipeline: &str) -> String {
-    format!("set -o pipefail; {pipeline}")
+struct Bootstrap {
+    directory: PathBuf,
+    daemon: PathBuf,
 }
 
-fn install_command(
-    script: &str,
+impl Bootstrap {
+    fn new() -> Result<Self, ProvisionError> {
+        let directory = env::temp_dir().join(format!("ployz-bootstrap-{}", Uuid::new_v4()));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .map_err(|source| ProvisionError::BootstrapIo {
+                stage: "create bootstrap directory",
+                source,
+            })?;
+        let daemon = directory.join("ployzd");
+        Ok(Self { directory, daemon })
+    }
+}
+
+impl Drop for Bootstrap {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+fn bootstrap_source() -> Option<PathBuf> {
+    env::var_os("PLOYZ_RELEASE_DIR").map(PathBuf::from)
+}
+
+fn acquire_bootstrap(
+    architecture: &str,
+    source: Option<&Path>,
+) -> Result<Bootstrap, ProvisionError> {
+    let archive = daemon_archive(architecture)?;
+    let bootstrap = Bootstrap::new()?;
+    let archive_path = bootstrap.directory.join(archive);
+    let checksums_path = bootstrap.directory.join("checksums.txt");
+    if let Some(source) = source {
+        copy_bootstrap_file(
+            &source.join(archive),
+            &archive_path,
+            "copy bootstrap daemon archive",
+        )?;
+        copy_bootstrap_file(
+            &source.join("checksums.txt"),
+            &checksums_path,
+            "copy bootstrap release checksums",
+        )?;
+    } else {
+        let repository = env::var("PLOYZ_GITHUB_URL").unwrap_or_else(|_| RELEASE_REPOSITORY.into());
+        let base = format!(
+            "{repository}/releases/download/v{}",
+            env!("CARGO_PKG_VERSION")
+        );
+        download_bootstrap(
+            &format!("{base}/{archive}"),
+            &archive_path,
+            "download bootstrap daemon archive",
+        )?;
+        download_bootstrap(
+            &format!("{base}/checksums.txt"),
+            &checksums_path,
+            "download bootstrap release checksums",
+        )?;
+    }
+    verify_bootstrap_checksum(&archive_path, &checksums_path, archive)?;
+    let mut extract = Command::new("tar");
+    extract
+        .arg("-xzf")
+        .arg(&archive_path)
+        .arg("-C")
+        .arg(&bootstrap.directory)
+        .arg("ployzd");
+    bootstrap_status("extract bootstrap daemon", extract.status())?;
+    fs::set_permissions(&bootstrap.daemon, fs::Permissions::from_mode(0o700)).map_err(
+        |source| ProvisionError::BootstrapIo {
+            stage: "mark bootstrap daemon executable",
+            source,
+        },
+    )?;
+    Ok(bootstrap)
+}
+
+fn copy_bootstrap_file(
+    source: &Path,
+    destination: &Path,
+    stage: &'static str,
+) -> Result<(), ProvisionError> {
+    fs::copy(source, destination)
+        .map(|_| ())
+        .map_err(|source| ProvisionError::BootstrapIo { stage, source })
+}
+
+fn download_bootstrap(
+    url: &str,
+    destination: &Path,
+    stage: &'static str,
+) -> Result<(), ProvisionError> {
+    let url = url.to_owned();
+    let bytes = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("{stage}: build download runtime: {error}"))?;
+        runtime.block_on(async {
+            let client = reqwest::Client::builder()
+                .https_only(true)
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(120))
+                .user_agent("ployz-bootstrap")
+                .build()
+                .map_err(|error| format!("{stage}: build download client: {error}"))?;
+            client
+                .get(url)
+                .send()
+                .await
+                .map_err(|error| format!("{stage}: {error}"))?
+                .error_for_status()
+                .map_err(|error| format!("{stage}: {error}"))?
+                .bytes()
+                .await
+                .map(|bytes| bytes.to_vec())
+                .map_err(|error| format!("{stage}: {error}"))
+        })
+    })
+    .join()
+    .map_err(|_| ProvisionError::BootstrapDownload(format!("{stage}: worker panicked")))?
+    .map_err(ProvisionError::BootstrapDownload)?;
+    fs::write(destination, bytes).map_err(|source| ProvisionError::BootstrapIo { stage, source })
+}
+
+fn bootstrap_status(
+    stage: &'static str,
+    result: io::Result<std::process::ExitStatus>,
+) -> Result<(), ProvisionError> {
+    let status = result.map_err(|source| ProvisionError::BootstrapIo { stage, source })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ProvisionError::BootstrapCommand { stage, status })
+    }
+}
+
+fn verify_bootstrap_checksum(
+    archive: &Path,
+    checksums: &Path,
+    archive_name: &str,
+) -> Result<(), ProvisionError> {
+    let checksums =
+        fs::read_to_string(checksums).map_err(|source| ProvisionError::BootstrapIo {
+            stage: "read bootstrap release checksums",
+            source,
+        })?;
+    let expected = checksums
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let hash = fields.next()?;
+            let name = fields.next()?.trim_start_matches('*');
+            (name == archive_name
+                && hash.len() == 64
+                && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then(|| hash.to_ascii_lowercase())
+        })
+        .ok_or_else(|| {
+            ProvisionError::BootstrapVerification(format!(
+                "checksums.txt has no SHA-256 hash for {archive_name}"
+            ))
+        })?;
+    let bytes = fs::read(archive).map_err(|source| ProvisionError::BootstrapIo {
+        stage: "read bootstrap daemon archive",
+        source,
+    })?;
+    let actual = hex::encode(Sha256::digest(bytes));
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(ProvisionError::BootstrapVerification(format!(
+            "{archive_name} checksum was {actual}, expected {expected}"
+        )))
+    }
+}
+
+fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> io::Result<Output> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output();
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    child.kill()?;
+    let _ = child.wait();
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("timed out after {} seconds", timeout.as_secs()),
+    ))
+}
+
+fn verify_bootstrap_version(command: &mut Command) -> Result<(), ProvisionError> {
+    let output =
+        command_output_with_timeout(command, BOOTSTRAP_VERSION_TIMEOUT).map_err(|source| {
+            ProvisionError::BootstrapIo {
+                stage: "preflight bootstrap daemon",
+                source,
+            }
+        })?;
+    if !output.status.success() {
+        return Err(ProvisionError::BootstrapCommand {
+            stage: "preflight bootstrap daemon",
+            status: output.status,
+        });
+    }
+    let observed = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if observed == env!("CARGO_PKG_VERSION") {
+        Ok(())
+    } else {
+        Err(ProvisionError::BootstrapVerification(format!(
+            "bootstrap daemon reported version {observed:?}, expected {}",
+            env!("CARGO_PKG_VERSION")
+        )))
+    }
+}
+
+enum Preparation<'user> {
+    Host {
+        storage: StorageChoice,
+        group_user: Option<&'user str>,
+    },
+    SoftwareOnly,
+}
+
+fn normalized_version(version: &str) -> &str {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    match version {
+        "" | "latest" => "stable",
+        version => version,
+    }
+}
+
+fn install_arguments(
     version: &str,
-    group_user: Option<&str>,
-    via_sudo: bool,
-    storage: StorageChoice,
-) -> String {
-    let script = shell_quote(script);
-    let version = shell_quote(version);
-    let group = group_user
-        .map(|user| format!("PLOYZ_GROUP_ADD_USER={} ", shell_quote(user)))
-        .unwrap_or_default();
-    let sudo = if via_sudo { "sudo " } else { "" };
-    format!(
-        "printf '%s' {script} | base64 -d | {sudo}{group}PLOYZ_STORAGE={} PLOYZ_VERSION={version} bash",
-        shell_quote(storage.as_str())
-    )
+    preparation: Preparation<'_>,
+    release_dir: Option<&Path>,
+) -> Vec<OsString> {
+    let mut arguments = vec![
+        "install".into(),
+        "--version".into(),
+        normalized_version(version).into(),
+    ];
+    match preparation {
+        Preparation::Host {
+            storage,
+            group_user,
+        } => {
+            arguments.extend(["--storage".into(), storage.as_str().into()]);
+            if let Some(user) = group_user {
+                arguments.extend(["--group-user".into(), user.into()]);
+            }
+        }
+        Preparation::SoftwareOnly => arguments.push("--software-only".into()),
+    }
+    if let Some(directory) = release_dir {
+        arguments.extend(["--release-dir".into(), directory.as_os_str().to_owned()]);
+    }
+    arguments
 }
 
 fn installer_status(result: io::Result<std::process::ExitStatus>) -> Result<(), ProvisionError> {
@@ -183,6 +478,86 @@ fn ssh_command(matches: &ArgMatches) -> Result<(Command, String), ProvisionError
     Ok((command, destination))
 }
 
+fn scp_command(matches: &ArgMatches) -> Result<(Command, String), ProvisionError> {
+    let destination = matches
+        .get_one::<String>("destination")
+        .ok_or(ProvisionError::MissingDestination)?;
+    let (destination, port) = ssh_parts(destination)?;
+    let mut command = Command::new("scp");
+    command.arg("-o").arg(format!(
+        "ConnectTimeout={}",
+        crate::cli::ssh_timeout(matches).as_secs()
+    ));
+    command.args(["-o", "BatchMode=no"]);
+    command.args(crate::connect::ssh_control_args(
+        crate::connect::control_path().as_deref(),
+    ));
+    command.arg("-i").arg(ssh_key(matches));
+    if let Some(port) = port {
+        command.arg("-P").arg(port);
+    }
+    Ok((command, destination))
+}
+
+fn scp_destination(destination: &str, path: &str) -> String {
+    let (user, host) = destination
+        .split_once('@')
+        .expect("validated SSH destinations include a user");
+    if host.contains(':') && !host.starts_with('[') {
+        format!("{user}@[{host}]:{path}")
+    } else {
+        format!("{destination}:{path}")
+    }
+}
+
+fn remote_platform(matches: &ArgMatches) -> Result<String, ProvisionError> {
+    let (mut platform, destination) = ssh_command(matches)?;
+    let output = platform
+        .arg(destination)
+        .arg("uname -s; uname -m")
+        .output()
+        .map_err(ProvisionError::Platform)?;
+    if !output.status.success() {
+        return Err(ProvisionError::PlatformFailed(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
+    }
+    let output = String::from_utf8(output.stdout).map_err(|_| ProvisionError::PlatformUtf8)?;
+    let mut lines = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    if lines.next() != Some("Linux") {
+        return Err(ProvisionError::UnsupportedOs);
+    }
+    lines
+        .next()
+        .map(str::to_owned)
+        .ok_or_else(|| ProvisionError::PlatformFailed("uname returned no architecture".into()))
+}
+
+fn remote_command(program: &str, arguments: &[OsString], via_sudo: bool) -> String {
+    let mut command = String::new();
+    if via_sudo {
+        command.push_str("sudo ");
+    }
+    command.push_str(&shell_quote(program));
+    for argument in arguments {
+        command.push(' ');
+        command.push_str(&shell_quote(&argument.to_string_lossy()));
+    }
+    command
+}
+
+fn cleanup_remote_bootstrap(matches: &ArgMatches, path: &str) {
+    if let Ok((mut cleanup, destination)) = ssh_command(matches) {
+        let _ = cleanup
+            .arg(destination)
+            .arg(format!("rm -f -- {}", shell_quote(path)))
+            .status();
+    }
+}
+
 pub fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(), ProvisionError> {
     let (mut whoami, destination) = ssh_command(matches)?;
     let output = whoami
@@ -221,49 +596,116 @@ pub fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(), Pro
         }
     }
 
-    let encoded = encoded_installer();
+    let architecture = remote_platform(matches)?;
+    let bootstrap = acquire_bootstrap(&architecture, bootstrap_source().as_deref())?;
+    let remote_bootstrap = format!("/tmp/ployz-bootstrap-{}", Uuid::new_v4());
+    let (mut transfer, destination) = scp_command(matches)?;
+    let status = transfer
+        .arg(&bootstrap.daemon)
+        .arg(scp_destination(&destination, &remote_bootstrap))
+        .status()
+        .map_err(ProvisionError::Transfer)?;
+    if !status.success() {
+        cleanup_remote_bootstrap(matches, &remote_bootstrap);
+        return Err(ProvisionError::TransferFailed { status });
+    }
+
+    let preflight = (|| {
+        let (mut verify, destination) = ssh_command(matches)?;
+        let command = format!(
+            "chmod 700 {path} && {path} version",
+            path = shell_quote(&remote_bootstrap)
+        );
+        let output = verify
+            .arg(destination)
+            .arg(command)
+            .output()
+            .map_err(|source| ProvisionError::BootstrapIo {
+                stage: "preflight remote bootstrap daemon",
+                source,
+            })?;
+        if !output.status.success() {
+            return Err(ProvisionError::BootstrapCommand {
+                stage: "preflight remote bootstrap daemon",
+                status: output.status,
+            });
+        }
+        let observed = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if observed != env!("CARGO_PKG_VERSION") {
+            return Err(ProvisionError::BootstrapVerification(format!(
+                "remote bootstrap daemon reported version {observed:?}, expected {}",
+                env!("CARGO_PKG_VERSION")
+            )));
+        }
+        Ok(())
+    })();
+    if let Err(error) = preflight {
+        cleanup_remote_bootstrap(matches, &remote_bootstrap);
+        return Err(error);
+    }
+
     let version = matches
         .get_one::<String>("version")
         .expect("version has a default");
     let via_sudo = user != "root";
-    let remote = format!(
-        "bash -c {}",
-        shell_quote(&pipefail(&install_command(
-            &encoded,
-            version,
-            via_sudo.then_some(user),
-            via_sudo,
+    let arguments = install_arguments(
+        version,
+        Preparation::Host {
             storage,
-        )))
+            group_user: via_sudo.then_some(user),
+        },
+        None,
     );
+    let remote = remote_command(&remote_bootstrap, &arguments, via_sudo);
     let (mut install, destination) = ssh_command(matches)?;
-    installer_status(install.arg(destination).arg(remote).status())
+    let result = installer_status(install.arg(destination).arg(remote).status());
+    cleanup_remote_bootstrap(matches, &remote_bootstrap);
+    result
 }
 
-/// Install and start local `ployzd` with the embedded Machine installer.
+/// Install and start local `ployzd` through a verified temporary daemon.
 ///
 /// # Errors
 ///
 /// Returns [`ProvisionError::NotRoot`] when this process is not root.
 /// Returns [`ProvisionError::Install`] when the installer cannot be spawned,
 /// or [`ProvisionError::InstallFailed`] when it exits non-zero.
-pub fn provision_local(storage: StorageChoice) -> Result<(), ProvisionError> {
+pub fn provision_local(version: &str, storage: StorageChoice) -> Result<(), ProvisionError> {
+    let group_user = env::var("SUDO_USER").ok().filter(|user| !user.is_empty());
+    provision_local_with(
+        version,
+        Preparation::Host {
+            storage,
+            group_user: group_user.as_deref(),
+        },
+    )
+}
+
+/// Synchronize the local daemon binary without preparing host software or storage.
+///
+/// # Errors
+///
+/// Returns the first bootstrap acquisition, verification, or installation failure.
+pub fn synchronize_local_daemon() -> Result<(), ProvisionError> {
+    provision_local_with(env!("CARGO_PKG_VERSION"), Preparation::SoftwareOnly)
+}
+
+fn provision_local_with(version: &str, preparation: Preparation<'_>) -> Result<(), ProvisionError> {
     if !process_is_root() {
         return Err(ProvisionError::NotRoot);
     }
-    let group_user = std::env::var("SUDO_USER")
-        .ok()
-        .filter(|user| !user.is_empty());
+    if env::consts::OS != "linux" {
+        return Err(ProvisionError::UnsupportedOs);
+    }
+    let bootstrap = acquire_bootstrap(env::consts::ARCH, bootstrap_source().as_deref())?;
+    let mut version_command = Command::new(&bootstrap.daemon);
+    version_command.arg("version");
+    verify_bootstrap_version(&mut version_command)?;
+    let release_dir = (normalized_version(version) == env!("CARGO_PKG_VERSION"))
+        .then_some(bootstrap.directory.as_path());
     installer_status(
-        Command::new("bash")
-            .arg("-c")
-            .arg(pipefail(&install_command(
-                &encoded_installer(),
-                env!("CARGO_PKG_VERSION"),
-                group_user.as_deref(),
-                false,
-                storage,
-            )))
+        Command::new(&bootstrap.daemon)
+            .args(install_arguments(version, preparation, release_dir))
             .status(),
     )
 }
@@ -309,18 +751,59 @@ mod tests {
     }
 
     #[test]
-    fn embedded_installer_command_preserves_root_sudo_and_local_group() {
+    fn scp_brackets_bare_ipv6_hosts() {
         assert_eq!(
-            install_command("SCRIPT", "latest", None, false, StorageChoice::None),
-            "printf '%s' 'SCRIPT' | base64 -d | PLOYZ_STORAGE='none' PLOYZ_VERSION='latest' bash"
+            scp_destination("deploy@2001:db8::1", "/tmp/bootstrap"),
+            "deploy@[2001:db8::1]:/tmp/bootstrap"
         );
         assert_eq!(
-            install_command("SCRIPT", "1.2.3", Some("deploy"), true, StorageChoice::Zfs,),
-            "printf '%s' 'SCRIPT' | base64 -d | sudo PLOYZ_GROUP_ADD_USER='deploy' PLOYZ_STORAGE='zfs' PLOYZ_VERSION='1.2.3' bash"
+            scp_destination("deploy@[2001:db8::1]", "/tmp/bootstrap"),
+            "deploy@[2001:db8::1]:/tmp/bootstrap"
+        );
+    }
+
+    #[test]
+    fn shared_installer_arguments_keep_bootstrap_and_target_distinct() {
+        assert_eq!(
+            install_arguments(
+                "v1.2.3",
+                Preparation::Host {
+                    storage: StorageChoice::None,
+                    group_user: None,
+                },
+                None,
+            ),
+            ["install", "--version", "1.2.3", "--storage", "none"]
+                .map(OsString::from)
+                .to_vec()
+        );
+        assert_eq!(normalized_version("latest"), "stable");
+        assert_eq!(
+            install_arguments(
+                "1.2.3",
+                Preparation::Host {
+                    storage: StorageChoice::Zfs,
+                    group_user: Some("deploy"),
+                },
+                None,
+            ),
+            [
+                "install",
+                "--version",
+                "1.2.3",
+                "--storage",
+                "zfs",
+                "--group-user",
+                "deploy",
+            ]
+            .map(OsString::from)
+            .to_vec()
         );
         assert_eq!(
-            install_command("SCRIPT", "1.2.3", Some("nick"), false, StorageChoice::None,),
-            "printf '%s' 'SCRIPT' | base64 -d | PLOYZ_GROUP_ADD_USER='nick' PLOYZ_STORAGE='none' PLOYZ_VERSION='1.2.3' bash"
+            install_arguments("1.2.3", Preparation::SoftwareOnly, None),
+            ["install", "--version", "1.2.3", "--software-only"]
+                .map(OsString::from)
+                .to_vec()
         );
     }
 
@@ -383,7 +866,7 @@ mod tests {
             return;
         }
         assert!(matches!(
-            provision_local(StorageChoice::None),
+            provision_local(env!("CARGO_PKG_VERSION"), StorageChoice::None),
             Err(ProvisionError::NotRoot)
         ));
     }

@@ -23,7 +23,7 @@ fi
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/bin" "$TMP/installed"
+mkdir -p "$TMP/bin"
 export LOG=$TMP/calls.log
 cat > "$TMP/ployz" <<'CLI'
 #!/bin/sh
@@ -74,24 +74,15 @@ chmod 0755 "$TMP/ployz"
 for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz; do
     tar -czf "$TMP/$archive" -C "$TMP" ployz
 done
-
-# Same-version local archives must still replace the installed payload.
-for payload in old new; do
-    printf '#!/bin/sh\nif [ "$1" = version ]; then echo 1.2.3; else echo %s; fi\n' "$payload" > "$TMP/$payload"
-    chmod 0755 "$TMP/$payload"
-done
-cp "$TMP/old" "$TMP/installed/ployzd"
-cp "$TMP/new" "$TMP/ployzd"
-cp "$TMP/new" "$TMP/ployz-uninstall"
+cp "$TMP/ployz" "$TMP/ployzd"
+cp "$TMP/ployz" "$TMP/ployz-uninstall"
 for archive in ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz; do
     tar -czf "$TMP/$archive" -C "$TMP" ployzd ployz-uninstall
 done
 (
-    export PLOYZ_INSTALL_TEST_ONLY=true INSTALL_BIN_DIR="$TMP/installed" PLOYZ_RELEASE_DIR="$TMP" PLOYZ_VERSION=1.2.3
-    source "$ROOT/scripts/install.sh"
-    install_binaries
+    cd "$TMP"
+    sha256sum ployz_*.tar.gz ployzd_*.tar.gz | sort -k2 > checksums.txt
 )
-[ "$("$TMP/installed/ployzd")" = new ] || fail "same-version local archive was not installed"
 
 export SSH_LOG=$TMP/ssh.log
 cat > "$TMP/bin/ssh" <<'SSH'
@@ -107,7 +98,10 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$key" = /tmp/qualify-key ] || { echo 'remote command lost SSH identity' >&2; exit 1; }
 printf '%s identity=%s\n' "${0##*/}" "$key" >> "$SSH_LOG"
-case "$*" in *'uname -m') echo x86_64 ;; esac
+case "$*" in
+    *'/ployzd version') echo 1.2.3 ;;
+    *'uname -m') echo x86_64 ;;
+esac
 SSH
 chmod 0755 "$TMP/bin/ssh"
 ln -s ssh "$TMP/bin/scp"

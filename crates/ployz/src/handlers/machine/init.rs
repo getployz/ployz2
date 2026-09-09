@@ -51,8 +51,11 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let no_install = matches.get_flag("no-install");
     let storage = crate::provisioning::resolve_storage(matches)?;
     if !no_install {
+        let version = matches
+            .get_one::<String>("version")
+            .expect("version has a default");
         if local {
-            crate::provisioning::provision_local(storage)?;
+            crate::provisioning::provision_local(version, storage)?;
         } else {
             crate::provisioning::provision(matches, storage)?;
         }

@@ -17,7 +17,7 @@ use crate::context::{ContextError, Transport};
 
 pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
     enroll_with_installer(root, &|| {
-        crate::provisioning::provision_local(StorageChoice::None).map_err(Into::into)
+        crate::provisioning::synchronize_local_daemon().map_err(Into::into)
     })
 }
 
@@ -288,7 +288,7 @@ fn provision_storage(client: &Client, storage: StorageChoice) -> Result<(), Erro
             client.connection()
         )));
     }
-    crate::provisioning::provision_local(storage)?;
+    crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), storage)?;
     Ok(())
 }
 
@@ -337,7 +337,10 @@ async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {
     {
         Ok(client) => Ok(client),
         Err(ConnectError::Context(ContextError::NoConfig)) => {
-            crate::provisioning::provision_local(ployz_core::StorageChoice::None)?;
+            crate::provisioning::provision_local(
+                env!("CARGO_PKG_VERSION"),
+                ployz_core::StorageChoice::None,
+            )?;
             wait_client(matches).await
         }
         Err(error) => Err(error.into()),

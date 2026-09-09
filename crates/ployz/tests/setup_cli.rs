@@ -1,0 +1,268 @@
+//! CLI setup adapters invoking the shared Machine installer.
+
+use std::{
+    env, fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::{Command, Output},
+};
+
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+struct Fixture(PathBuf);
+
+impl Fixture {
+    fn new() -> Self {
+        let path = env::temp_dir().join(format!("ployz-setup-cli-{}", Uuid::new_v4()));
+        fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn write_executable(path: &Path, body: &str) {
+    fs::write(path, body).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn daemon_archive() -> &'static str {
+    match env::consts::ARCH {
+        "x86_64" => "ployzd_linux_amd64.tar.gz",
+        "aarch64" => "ployzd_linux_arm64.tar.gz",
+        architecture => panic!("unsupported test architecture {architecture}"),
+    }
+}
+
+fn release_fixture(root: &Path, log: &Path) -> PathBuf {
+    let release = root.join("release");
+    let payload = root.join("payload");
+    fs::create_dir(&release).unwrap();
+    fs::create_dir(&payload).unwrap();
+    write_executable(
+        &payload.join("ployzd"),
+        &format!(
+            "#!/bin/sh\nif [ \"${{1:-}}\" = version ]; then printf '%s\\n' '{}'; else printf '%s\\n' \"$*\" >> '{}'; exit \"${{PLOYZ_FAKE_INSTALL_STATUS:-0}}\"; fi\n",
+            env!("CARGO_PKG_VERSION"),
+            log.display()
+        ),
+    );
+    let archive = release.join(daemon_archive());
+    assert!(
+        Command::new("tar")
+            .args(["-czf"])
+            .arg(&archive)
+            .arg("-C")
+            .arg(&payload)
+            .arg("ployzd")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let hash = hex::encode(Sha256::digest(fs::read(&archive).unwrap()));
+    fs::write(
+        release.join("checksums.txt"),
+        format!("{hash}  {}\n", daemon_archive()),
+    )
+    .unwrap();
+    release
+}
+
+fn run(args: &[&str], root: &Path, release: &Path, bin: &Path) -> Output {
+    let inherited = env::var_os("PATH").unwrap_or_default();
+    let path =
+        env::join_paths(std::iter::once(bin.to_path_buf()).chain(env::split_paths(&inherited)))
+            .unwrap();
+    Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .env("PATH", path)
+        .env("PLOYZ_RELEASE_DIR", release)
+        .env("PLOYZ_CONFIG", root.join("config.yaml"))
+        .env("PLOYZ_FAKE_INSTALL_STATUS", "17")
+        .env_remove("SUDO_USER")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn local_setup_runs_the_verified_bootstrap_installer() {
+    let fixture = Fixture::new();
+    let log = fixture.path().join("commands.log");
+    let release = release_fixture(fixture.path(), &log);
+    let bin = fixture.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    write_executable(
+        &bin.join("id"),
+        "#!/bin/sh\nif [ \"$1\" = -u ]; then echo 0; else exec /usr/bin/id \"$@\"; fi\n",
+    );
+
+    let output = run(
+        &[
+            "machine",
+            "init",
+            "--yes",
+            "--storage",
+            "none",
+            "--no-dns",
+            "--no-ingress",
+            "--context",
+            "setup-local",
+        ],
+        fixture.path(),
+        &release,
+        &bin,
+    );
+    assert!(!output.status.success(), "fake daemon must not accept RPC");
+    let log = fs::read_to_string(log).unwrap();
+    assert!(
+        log.contains(&format!(
+            "install --version {} --storage none --release-dir",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{log}"
+    );
+}
+
+#[test]
+fn corrupt_local_bootstrap_is_rejected_before_execution() {
+    let fixture = Fixture::new();
+    let log = fixture.path().join("commands.log");
+    let release = release_fixture(fixture.path(), &log);
+    fs::write(release.join(daemon_archive()), b"corrupt").unwrap();
+    let bin = fixture.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    write_executable(
+        &bin.join("id"),
+        "#!/bin/sh\nif [ \"$1\" = -u ]; then echo 0; else exec /usr/bin/id \"$@\"; fi\n",
+    );
+
+    let output = run(
+        &[
+            "machine",
+            "init",
+            "--yes",
+            "--storage",
+            "none",
+            "--no-dns",
+            "--no-ingress",
+            "--context",
+            "setup-corrupt",
+        ],
+        fixture.path(),
+        &release,
+        &bin,
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("bootstrap verification"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!log.exists(), "corrupt bootstrap executed");
+}
+
+#[test]
+fn ssh_setup_transfers_one_bootstrap_and_no_install_skips_it() {
+    let fixture = Fixture::new();
+    let log = fixture.path().join("commands.log");
+    let release = release_fixture(fixture.path(), &log);
+    let bin = fixture.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    write_executable(
+        &bin.join("ssh"),
+        &format!(
+            r#"#!/bin/sh
+printf 'ssh %s\n' "$*" >> "$LOG"
+case "$*" in
+  *' whoami') echo deploy ;;
+  *' sudo true') ;;
+  *'uname -s; uname -m') printf 'Linux\n{}\n' ;;
+  *'chmod 700 '*' version') printf '%s\n' '{}' ;;
+  *" 'install' "*) ;;
+  *'rm -f -- '*) ;;
+  *' true') exit 23 ;;
+  *) echo "unexpected ssh invocation: $*" >&2; exit 24 ;;
+esac
+"#,
+            env::consts::ARCH,
+            env!("CARGO_PKG_VERSION")
+        ),
+    );
+    write_executable(
+        &bin.join("scp"),
+        "#!/bin/sh\nprintf 'scp %s\\n' \"$*\" >> \"$LOG\"\n",
+    );
+
+    let common = [
+        "machine",
+        "init",
+        "deploy@host",
+        "--yes",
+        "--storage",
+        "none",
+        "--no-dns",
+        "--no-ingress",
+        "--context",
+        "setup-ssh",
+    ];
+    let inherited = env::var_os("PATH").unwrap_or_default();
+    let path =
+        env::join_paths(std::iter::once(bin.clone()).chain(env::split_paths(&inherited))).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(common)
+        .env("PATH", &path)
+        .env("LOG", &log)
+        .env("PLOYZ_RELEASE_DIR", &release)
+        .env("PLOYZ_CONFIG", fixture.path().join("ssh-config.yaml"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "fake daemon must not accept RPC");
+    let setup_log = fs::read_to_string(&log).unwrap();
+    assert!(setup_log.contains("scp "), "{setup_log}");
+    assert!(
+        setup_log.contains(&format!(
+            "'install' '--version' '{}' '--storage' 'none' '--group-user' 'deploy'",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{setup_log}"
+    );
+    assert!(!setup_log.contains("base64"), "{setup_log}");
+
+    fs::write(&log, "").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "machine",
+            "init",
+            "deploy@host",
+            "--no-install",
+            "--yes",
+            "--storage",
+            "none",
+            "--no-dns",
+            "--no-ingress",
+            "--context",
+            "setup-no-install",
+        ])
+        .env("PATH", path)
+        .env("LOG", &log)
+        .env("PLOYZ_RELEASE_DIR", release)
+        .env(
+            "PLOYZ_CONFIG",
+            fixture.path().join("no-install-config.yaml"),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "fake daemon must not accept RPC");
+    let no_install_log = fs::read_to_string(log).unwrap();
+    assert!(!no_install_log.contains("scp "), "{no_install_log}");
+    assert!(!no_install_log.contains("'install'"), "{no_install_log}");
+}

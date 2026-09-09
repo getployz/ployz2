@@ -29,6 +29,22 @@ need_archive() {
     [ -f "$ARTIFACT_DIR/$1" ] || error "PLOYZ_ARTIFACT_DIR is missing $1"
 }
 
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+verify_archive() {
+    local archive=$1 expected actual
+    expected=$(awk -v archive="$archive" '$2 == archive || $2 == "*" archive { print $1; exit }' "$ARTIFACT_DIR/checksums.txt")
+    [ -n "$expected" ] || error "checksums.txt has no hash for $archive"
+    actual=$(sha256 "$ARTIFACT_DIR/$archive")
+    [ "$actual" = "$expected" ] || error "$archive checksum was $actual, expected $expected"
+}
+
 cli_archive() {
     case "$(uname -s):$(uname -m)" in
         Linux:x86_64) echo ployz_linux_amd64.tar.gz ;;
@@ -84,6 +100,7 @@ need_archive ployz_linux_arm64.tar.gz
 need_archive ployzd_linux_amd64.tar.gz
 need_archive ployzd_linux_arm64.tar.gz
 need_archive "$(cli_archive)"
+need_archive checksums.txt
 
 if [ "$DRY_RUN" != 0 ]; then
     echo "qualify dry-run"
@@ -96,7 +113,7 @@ if [ "$DRY_RUN" != 0 ]; then
     else
         echo "reset: no (initialized hosts fail without PLOYZ_QUALIFY_RESET=1)"
     fi
-    echo "steps: install daemon from PLOYZ_RELEASE_DIR (always replace), machine init --no-install, machine add, deploy named volume qualify-data, volume ls"
+    echo "steps: verify and run temporary artifact ployzd, install daemon from --release-dir (always replace), machine init --no-install, machine add, deploy named volume qualify-data, volume ls"
     exit 0
 fi
 
@@ -110,17 +127,30 @@ CONFIG_DIR=$(mktemp -d)
 export PLOYZ_CONFIG=$CONFIG_DIR/config.yaml
 
 install_host() {
-    local host=$1 arch archive remote
+    local host=$1 arch archive remote bootstrap observed status
     arch=$(ssh_host "$host" uname -m)
     archive=$(daemon_archive "$arch")
+    verify_archive "$archive"
+    bootstrap=$(mktemp -d "$work/bootstrap.XXXXXX")
+    tar -xzf "$ARTIFACT_DIR/$archive" -C "$bootstrap" ployzd
+    [ -x "$bootstrap/ployzd" ] || error "$archive did not contain executable ployzd"
     remote=/tmp/ployz-qualify-$$
     ssh_host "$host" mkdir -p "$remote"
     # shellcheck disable=SC2086
-    scp $SSH_OPTS "$ROOT/scripts/install.sh" "$ARTIFACT_DIR/$archive" "$host:$remote/"
-    ssh_host "$host" sudo env \
-        PLOYZ_RELEASE_DIR="$remote" \
-        PLOYZ_VERSION="$version" \
-        bash "$remote/install.sh"
+    if ! scp $SSH_OPTS "$bootstrap/ployzd" "$ARTIFACT_DIR/$archive" "$ARTIFACT_DIR/checksums.txt" "$host:$remote/"; then
+        ssh_host "$host" rm -rf "$remote" || true
+        return 1
+    fi
+    if ! observed=$(ssh_host "$host" "$remote/ployzd" version) || [ "$observed" != "$version" ]; then
+        ssh_host "$host" rm -rf "$remote" || true
+        error "bootstrap daemon on $host reported ${observed:-no version}, expected $version"
+    fi
+    status=0
+    ssh_host "$host" sudo "$remote/ployzd" install \
+        --version "$version" \
+        --release-dir "$remote" || status=$?
+    ssh_host "$host" rm -rf "$remote" || true
+    return "$status"
 }
 
 for host in "${HOST_LIST[@]}"; do
