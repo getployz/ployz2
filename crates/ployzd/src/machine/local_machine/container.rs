@@ -23,7 +23,7 @@ impl LocalMachine {
         &self,
         specs: Vec<ployz_core::ServiceStorageSpec>,
     ) -> Result<ployz_core::PreparedVolumes, Error> {
-        use ployz_core::{RawVolumeSource, RpcError};
+        use ployz_core::RawVolumeSource;
         let admission = self.lock_store()?.admission_lock.clone();
         let guard = admission.lock_owned().await;
         let local = self.clone();
@@ -71,12 +71,7 @@ impl LocalMachine {
                 crate::storage::plugin("Storage.Prepare", &requested).await?;
             containers
                 .ensure_provisioned_volumes(&machine.id, &specs)
-                .await
-                .map_err(|error| {
-                    let mut error = RpcError::from(&error);
-                    error.details = serde_json::json!({ "prepared_volumes": names });
-                    error
-                })?;
+                .await?;
             Ok(ployz_core::PreparedVolumes { names })
         })
         .await?
