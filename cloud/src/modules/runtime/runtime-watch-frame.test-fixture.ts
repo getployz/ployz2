@@ -123,7 +123,7 @@ export function resolvedServiceSpecFixture(): ResolvedServiceSpec {
     service_id: "a".repeat(32) as ServiceId,
     name: "api",
     mode: { mode: "replicated", replicas: 1 },
-    placement: { machines: [] },
+    placement: { constraints: [] },
     ports: [], volumes: [], mounts: [], configs: [],
     pre_deploy: null, ingress_proxy_fragment: null,
     update: { order: "start_first", monitor_millis: null },
