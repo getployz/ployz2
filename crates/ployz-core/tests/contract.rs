@@ -1513,7 +1513,10 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
     };
     let response = RpcResponse::from(attempt.clone());
     assert_eq!(
-        response.decode::<op::RequestMachineUpgrade>().unwrap(),
+        response
+            .clone()
+            .decode::<op::RequestMachineUpgrade>()
+            .unwrap(),
         attempt
     );
     assert_eq!(

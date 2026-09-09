@@ -709,14 +709,25 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::RequestMachineUpgrade>(request)?;
+        let (data_dir, run_dir) = match self.local.upgrade_paths() {
+            Ok(paths) => paths,
+            Err(error) => return local_error(error),
+        };
+        match crate::installer::upgrade::existing_request(&request, &data_dir) {
+            Ok(Some(attempt)) => return respond(attempt),
+            Ok(None) => {}
+            Err(error) => return respond(upgrade_error(error)),
+        }
         let admission = match self.local.try_upgrade_admission() {
             Ok(admission) => admission,
             Err(error) => return local_error(error),
         };
+        debug_assert_eq!(admission.data_dir, data_dir);
+        debug_assert_eq!(admission.run_dir, run_dir);
         match crate::installer::upgrade::request_locked(
             request,
-            &admission.data_dir,
-            &admission.run_dir,
+            &data_dir,
+            &run_dir,
             &admission.install,
         )
         .await

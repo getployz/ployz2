@@ -93,6 +93,24 @@ impl StoredReleaseSource {
     }
 }
 
+/// Return the durable result of retrying the same request without requiring installation
+/// ownership. The receipt is atomically replaced, so an active worker can be observed safely.
+pub fn existing_request(
+    request: &RequestMachineUpgradeRequest,
+    data_dir: &Path,
+) -> Result<Option<MachineUpgradeAttempt>, Error> {
+    let Some(stored) = read_optional(data_dir)? else {
+        return Ok(None);
+    };
+    if stored.attempt.attempt_id() != request.attempt_id {
+        return Ok(None);
+    }
+    if stored.requested != request.release {
+        return Err(Error::AttemptConflict(request.attempt_id));
+    }
+    Ok(Some(stored.attempt))
+}
+
 /// Persist an accepted attempt and launch its old-daemon worker while installation admission is
 /// held. Reusing the same attempt ID returns the same attempt.
 pub async fn request_locked(
@@ -421,6 +439,9 @@ fn write(data_dir: &Path, stored: &StoredAttempt) -> Result<(), Error> {
 mod tests {
     use super::*;
 
+    const CONTRACT_CASE: &str = "PLOYZ_UPGRADE_CONTRACT_CASE";
+    const CONTRACT_ROOT: &str = "PLOYZ_UPGRADE_CONTRACT_ROOT";
+
     #[test]
     fn stored_attempt_round_trips_without_exposing_local_source_in_response() {
         let attempt_id = MachineUpgradeAttemptId::random();
@@ -445,5 +466,173 @@ mod tests {
             serde_json::from_str::<StoredAttempt>(&encoded).unwrap(),
             stored
         );
+    }
+
+    #[test]
+    fn upgrade_attempt_contract() {
+        if let Ok(case) = env::var(CONTRACT_CASE) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(run_contract_case(&case));
+            let root = PathBuf::from(env::var_os(CONTRACT_ROOT).unwrap());
+            fs::write(root.join("child-completed"), case).unwrap();
+            return;
+        }
+
+        for case in ["retry-active", "interrupted", "launch-failed"] {
+            let root = tempfile::Builder::new()
+                .prefix(&format!("ployzd-upgrade-{case}-"))
+                .tempdir()
+                .unwrap();
+            let commands = root.path().join("commands");
+            fs::create_dir(&commands).unwrap();
+            write_script(
+                &commands.join("systemd-run"),
+                if case == "launch-failed" {
+                    "echo worker launch refused >&2; exit 1"
+                } else {
+                    "printf '%s\\n' \"$*\" >> \"$PLOYZ_UPGRADE_COMMAND_LOG\""
+                },
+            );
+            write_script(
+                &commands.join("systemctl"),
+                if case == "interrupted" {
+                    "exit 3"
+                } else {
+                    "exit 0"
+                },
+            );
+            fs::create_dir(root.path().join("release")).unwrap();
+            let output = std::process::Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "installer::upgrade::tests::upgrade_attempt_contract",
+                    "--nocapture",
+                ])
+                .env(CONTRACT_CASE, case)
+                .env(CONTRACT_ROOT, root.path())
+                .env(QUALIFICATION_RELEASE_DIR, root.path().join("release"))
+                .env(
+                    "PLOYZ_UPGRADE_COMMAND_LOG",
+                    root.path().join("commands.log"),
+                )
+                .env("PATH", &commands)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                fs::read_to_string(root.path().join("child-completed")).unwrap(),
+                case
+            );
+        }
+    }
+
+    async fn run_contract_case(case: &str) {
+        let root = PathBuf::from(env::var_os(CONTRACT_ROOT).unwrap());
+        let data = root.join("data");
+        let run = root.join("run");
+        let admission = admission::Admission::new(&run, &data);
+        let attempt_id = MachineUpgradeAttemptId::parse("a".repeat(32)).unwrap();
+        let request = RequestMachineUpgradeRequest {
+            attempt_id,
+            release: MachineRelease::parse("1.2.3").unwrap(),
+        };
+        let guard = admission.try_install().unwrap();
+        let accepted = request_locked(request.clone(), &data, &run, &guard)
+            .await
+            .unwrap();
+        drop(guard);
+
+        match case {
+            "retry-active" => {
+                assert!(matches!(accepted, MachineUpgradeAttempt::Accepted { .. }));
+                assert_eq!(
+                    existing_request(&request, &data).unwrap(),
+                    Some(accepted.clone())
+                );
+                assert!(matches!(
+                    admission.try_mutation(),
+                    Err(admission::Error::Busy)
+                ));
+                let conflict = RequestMachineUpgradeRequest {
+                    attempt_id,
+                    release: MachineRelease::parse("1.2.4").unwrap(),
+                };
+                assert!(matches!(
+                    existing_request(&conflict, &data),
+                    Err(Error::AttemptConflict(id)) if id == attempt_id
+                ));
+
+                let guard = admission.try_install().unwrap();
+                assert_eq!(
+                    request_locked(request, &data, &run, &guard).await.unwrap(),
+                    accepted
+                );
+                let other = RequestMachineUpgradeRequest {
+                    attempt_id: MachineUpgradeAttemptId::parse("b".repeat(32)).unwrap(),
+                    release: MachineRelease::parse("1.2.3").unwrap(),
+                };
+                assert!(matches!(
+                    request_locked(other, &data, &run, &guard).await,
+                    Err(Error::Busy)
+                ));
+                drop(guard);
+                let log = fs::read_to_string(root.join("commands.log")).unwrap();
+                assert_eq!(log.lines().count(), 1, "{log}");
+                for required in [
+                    "--property=Type=exec",
+                    "--property=RuntimeMaxSec=15min",
+                    "--property=NoNewPrivileges=yes",
+                    "--property=ProtectSystem=full",
+                    "upgrade-worker",
+                    "--attempt",
+                    attempt_id.as_str(),
+                ] {
+                    assert!(log.contains(required), "missing {required}: {log}");
+                }
+            }
+            "interrupted" => {
+                let observed = inspect(Some(attempt_id), &data, &run).await.unwrap();
+                assert!(matches!(
+                    observed,
+                    MachineUpgradeAttempt::Interrupted {
+                        stage: MachineUpgradeStage::Launching,
+                        ..
+                    }
+                ));
+                assert!(!admission.active());
+                assert!(admission.try_mutation().is_ok());
+            }
+            "launch-failed" => {
+                assert!(matches!(
+                    accepted,
+                    MachineUpgradeAttempt::Failed {
+                        stage: MachineUpgradeStage::Launching,
+                        ref error,
+                        ..
+                    } if error == "launch Machine upgrade worker: worker launch refused"
+                ));
+                assert!(!admission.active());
+                assert_eq!(
+                    inspect(Some(attempt_id), &data, &run).await.unwrap(),
+                    accepted
+                );
+            }
+            other => panic!("unknown upgrade contract case {other}"),
+        }
+    }
+
+    fn write_script(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 }

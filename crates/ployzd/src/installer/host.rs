@@ -9,8 +9,10 @@ use std::{
 };
 
 use semver::Version;
+use tonic::transport::Endpoint;
 
 use crate::filesystem::atomic_write;
+use ployz_core::{DescribeContractRequest, MachineRpcClient, op};
 
 use super::release::{fetch, installed_release};
 use super::{Error, InstallPaths, PLOYZ_USER, command_exists, run_apt, run_host, systemctl};
@@ -296,12 +298,78 @@ pub(super) async fn verify_running_daemon(
         ));
     }
     match installed_release(&paths.bin_dir.join("ployzd")).await? {
-        Some(observed) if &observed == target => Ok(()),
+        Some(observed) if &observed == target => {}
         Some(observed) => Err(Error::Verification(format!(
             "activated daemon reported {observed}, expected {target}"
-        ))),
-        None => Err(Error::Verification(
-            "activated daemon no longer reports a valid version".into(),
-        )),
+        )))?,
+        None => {
+            return Err(Error::Verification(
+                "activated daemon no longer reports a valid version".into(),
+            ));
+        }
+    }
+    verify_daemon_contract(&paths.run_dir.join("ployz.sock"), target).await
+}
+
+async fn verify_daemon_contract(socket: &Path, target: &Version) -> Result<(), Error> {
+    let endpoint =
+        Endpoint::from_shared(format!("unix:{}", socket.display())).map_err(|error| {
+            Error::Verification(format!("invalid Machine API socket address: {error}"))
+        })?;
+    let channel = tokio::time::timeout(std::time::Duration::from_secs(10), endpoint.connect())
+        .await
+        .map_err(|_| Error::Verification("Machine API readiness timed out after 10s".into()))?
+        .map_err(|error| Error::Verification(format!("Machine API is not ready: {error}")))?;
+    let payload = op::DescribeContract::into_request(DescribeContractRequest {})
+        .encode()
+        .map_err(|error| Error::Verification(format!("encode readiness request: {error}")))?;
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        MachineRpcClient::new(channel).describe_contract(tonic::Request::new(payload)),
+    )
+    .await
+    .map_err(|_| Error::Verification("Machine API readiness timed out after 10s".into()))?
+    .map_err(|error| Error::Verification(format!("Machine API is not ready: {error}")))?
+    .into_inner()
+    .decode_response()
+    .and_then(|response| response.decode::<op::DescribeContract>())
+    .map_err(|error| Error::Verification(format!("decode readiness response: {error}")))?;
+    require_running_version(&response.daemon_version, target)
+}
+
+fn require_running_version(observed: &str, target: &Version) -> Result<(), Error> {
+    let observed = Version::parse(observed).map_err(|_| {
+        Error::Verification(format!(
+            "running Machine API reported invalid daemon version {observed:?}"
+        ))
+    })?;
+    if &observed == target {
+        Ok(())
+    } else {
+        Err(Error::Verification(format!(
+            "running Machine API reported {observed}, expected {target}"
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn running_machine_api_version_must_match_the_target() {
+        let target = Version::parse("1.2.3-beta.4").unwrap();
+        assert!(require_running_version("1.2.3-beta.4", &target).is_ok());
+        assert!(matches!(
+            require_running_version("1.2.3-beta.3", &target),
+            Err(Error::Verification(message))
+                if message == "running Machine API reported 1.2.3-beta.3, expected 1.2.3-beta.4"
+        ));
+        assert!(matches!(
+            require_running_version("not-a-version", &target),
+            Err(Error::Verification(message))
+                if message
+                    == "running Machine API reported invalid daemon version \"not-a-version\""
+        ));
     }
 }
