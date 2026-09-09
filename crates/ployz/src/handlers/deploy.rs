@@ -121,7 +121,11 @@ async fn build_images(
     if !platforms.is_empty() {
         eprintln!(
             "Build platforms: {}",
-            platforms.iter().cloned().collect::<Vec<_>>().join(", ")
+            platforms
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     match location {
