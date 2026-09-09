@@ -18,7 +18,7 @@ use ployz_core::{
     synthesize_membership,
 };
 use thiserror::Error;
-use tokio::sync::watch;
+use tokio::sync::{OwnedMutexGuard, watch};
 
 use super::{FoundingCluster, LocalMachineRecord, LocalMachineStore, StoreError, local_runtime};
 
@@ -120,6 +120,20 @@ pub enum Error {
     NotAllocator,
     #[error("this Machine is isolation-locked")]
     IsolationLocked,
+    #[error(transparent)]
+    Admission(#[from] crate::installer::admission::Error),
+}
+
+pub(crate) struct UpgradeAdmission {
+    pub(crate) data_dir: std::path::PathBuf,
+    pub(crate) run_dir: std::path::PathBuf,
+    pub(crate) install: crate::installer::admission::InstallGuard,
+    _local: OwnedMutexGuard<()>,
+}
+
+struct MutationAdmission {
+    _local: OwnedMutexGuard<()>,
+    _installation: crate::installer::admission::MutationGuard,
 }
 
 impl LocalMachine {
@@ -178,6 +192,65 @@ impl LocalMachine {
 
     pub(super) fn lock_store(&self) -> Result<MutexGuard<'_, LocalMachineStore>, Error> {
         self.store.lock().map_err(|_| Error::LockPoisoned)
+    }
+
+    async fn admit_mutation(&self) -> Result<MutationAdmission, Error> {
+        let (local, installation) = {
+            let store = self.lock_store()?;
+            (
+                store.admission_lock.clone(),
+                store.installation_admission.clone(),
+            )
+        };
+        let local = local.lock_owned().await;
+        let installation = installation.try_mutation()?;
+        Ok(MutationAdmission {
+            _local: local,
+            _installation: installation,
+        })
+    }
+
+    pub(crate) async fn run_mutation<T, F>(&self, work: F) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+    {
+        let admission = self.admit_mutation().await?;
+        tokio::spawn(async move {
+            let _admission = admission;
+            work.await
+        })
+        .await?
+    }
+
+    pub(crate) fn try_upgrade_admission(&self) -> Result<UpgradeAdmission, Error> {
+        let (data_dir, run_dir, local, installation) = {
+            let store = self.lock_store()?;
+            (
+                store.data_dir.clone(),
+                store.installation_admission.lock_dir().to_owned(),
+                store.admission_lock.clone(),
+                store.installation_admission.clone(),
+            )
+        };
+        let local = local
+            .try_lock_owned()
+            .map_err(|_| crate::installer::admission::Error::Busy)?;
+        let install = installation.try_install()?;
+        Ok(UpgradeAdmission {
+            data_dir,
+            run_dir,
+            install,
+            _local: local,
+        })
+    }
+
+    pub(crate) fn upgrade_paths(&self) -> Result<(std::path::PathBuf, std::path::PathBuf), Error> {
+        let store = self.lock_store()?;
+        Ok((
+            store.data_dir.clone(),
+            store.installation_admission.lock_dir().to_owned(),
+        ))
     }
 
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {
@@ -367,6 +440,15 @@ impl LocalMachine {
         Ok(Initialized { machine })
     }
 
+    pub(crate) async fn initialize_mutation(
+        &self,
+        request: InitializeRequest,
+    ) -> Result<Initialized, Error> {
+        let local = self.clone();
+        self.run_mutation(async move { local.initialize(request) })
+            .await
+    }
+
     /// Assign a new Machine into the Cluster from this participating Machine
     /// when cluster KV names this Machine as Allocator. A replica row with the
     /// same public key and name is returned as-is, without publishing. Replay
@@ -387,6 +469,12 @@ impl LocalMachine {
     /// another Machine or is missing, [`Error::Network`] when subnet allocation
     /// fails, and [`Error::Cluster`] when replicated I/O fails.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
+        let local = self.clone();
+        self.run_mutation(async move { local.register_admitted(request).await })
+            .await
+    }
+
+    async fn register_admitted(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let me = {
             let record = self.record()?;
             if record.phase() != LocalMachinePhase::Participating {
@@ -484,7 +572,6 @@ impl LocalMachine {
                     advertised_endpoints: request.advertised_endpoints,
                     runtime: request.runtime,
                 };
-                // TODO: cross-process registration stays unfenced and has no rollback.
                 publication.publish(&assigned_machine).await?;
                 assigned_machine
             }
@@ -525,6 +612,11 @@ impl LocalMachine {
         Ok(JoinAccepted {})
     }
 
+    pub(crate) async fn join_mutation(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
+        let local = self.clone();
+        self.run_mutation(async move { local.join(request) }).await
+    }
+
     /// Persist Cloud Pairing so this Machine can hold Relay Register, or clear
     /// it so Register is dropped.
     ///
@@ -540,6 +632,15 @@ impl LocalMachine {
         }
         store.persist_cloud_pairing(pairing)?;
         Ok(())
+    }
+
+    pub(crate) async fn set_cloud_pairing_mutation(
+        &self,
+        pairing: Option<CloudPairing>,
+    ) -> Result<(), Error> {
+        let local = self.clone();
+        self.run_mutation(async move { local.set_cloud_pairing(pairing) })
+            .await
     }
 
     /// Membership Observation of Machines visible from this participating Machine.
@@ -583,6 +684,15 @@ impl LocalMachine {
     /// [`Error::Store`] when the update is not legal, and [`Error::Cluster`]
     /// when listing visible Machines fails.
     pub async fn update(&self, request: UpdateMachineRequest) -> Result<MachineUpdated, Error> {
+        let local = self.clone();
+        self.run_mutation(async move { local.update_admitted(request).await })
+            .await
+    }
+
+    async fn update_admitted(
+        &self,
+        request: UpdateMachineRequest,
+    ) -> Result<MachineUpdated, Error> {
         if request.update.is_empty() {
             return Err(Error::EmptyUpdate);
         }
@@ -605,6 +715,15 @@ impl LocalMachine {
     /// missing, [`Error::Cluster`] when the replicated delete fails, and
     /// [`Error::LockPoisoned`] when the local record lock is poisoned.
     pub async fn remove_peer(
+        &self,
+        request: RemoveMachineRequest,
+    ) -> Result<MachineRemoved, Error> {
+        let local = self.clone();
+        self.run_mutation(async move { local.remove_peer_admitted(request).await })
+            .await
+    }
+
+    async fn remove_peer_admitted(
         &self,
         request: RemoveMachineRequest,
     ) -> Result<MachineRemoved, Error> {
@@ -634,14 +753,9 @@ impl LocalMachine {
         &self,
         request: RemoveLocalMachineRequest,
     ) -> Result<LocalMachineRemoved, Error> {
-        let admission = self.lock_store()?.admission_lock.clone();
-        let guard = admission.lock_owned().await;
         let local = self.clone();
-        tokio::spawn(async move {
-            let _guard = guard;
-            local.remove_local_admitted(request).await
-        })
-        .await?
+        self.run_mutation(async move { local.remove_local_admitted(request).await })
+            .await
     }
 
     async fn remove_local_admitted(
@@ -690,14 +804,9 @@ impl LocalMachine {
     /// [`Error::Store`] when reset is not legal in the current phase, and
     /// [`Error::OperationTask`] if the admitted operation task fails.
     pub async fn reset(&self) -> Result<ResetAccepted, Error> {
-        let admission = self.lock_store()?.admission_lock.clone();
-        let guard = admission.lock_owned().await;
         let local = self.clone();
-        tokio::spawn(async move {
-            let _guard = guard;
-            local.reset_admitted().await
-        })
-        .await?
+        self.run_mutation(async move { local.reset_admitted().await })
+            .await
     }
 
     async fn reset_admitted(&self) -> Result<ResetAccepted, Error> {

@@ -12,7 +12,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use ployz_core::{DOCKER_NETWORK_CONFLICT_EXIT_STATUS, StorageChoice};
+use ployz_core::{DOCKER_NETWORK_CONFLICT_EXIT_STATUS, MachineUpgradeAttemptId, StorageChoice};
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
@@ -54,6 +54,12 @@ enum Command {
     DialStdio,
     /// Serve the Docker Volume plugin on its systemd socket.
     VolumePlugin,
+    /// Execute one accepted Machine upgrade from its transient systemd service.
+    #[command(hide = true)]
+    UpgradeWorker {
+        #[arg(long)]
+        attempt: MachineUpgradeAttemptId,
+    },
     /// Install or replace this Machine's daemon release.
     Install {
         /// Release channel (stable or beta) or exact published version.
@@ -119,6 +125,17 @@ async fn run(args: Args) -> Result<(), Error> {
     if matches!(args.command, Some(Command::DialStdio)) {
         return dial_stdio(&args.socket).await.map_err(Error::from);
     }
+    let run_dir = args
+        .socket
+        .parent()
+        .unwrap_or_else(|| Path::new("/run/ployz"))
+        .to_owned();
+    if let Some(Command::UpgradeWorker { attempt }) = args.command {
+        return ployzd::installer::upgrade::run_worker(attempt, &args.data_dir, &run_dir)
+            .await
+            .map_err(io::Error::other)
+            .map_err(Error::from);
+    }
     if let Some(Command::Install {
         version,
         storage,
@@ -137,7 +154,7 @@ async fn run(args: Args) -> Result<(), Error> {
             release_dir,
         )
         .map_err(Error::from)?;
-        let outcome = ployzd::installer::install(request)
+        let outcome = ployzd::installer::install_in(request, &args.data_dir, &run_dir)
             .await
             .map_err(io::Error::other)?;
         match outcome.readiness {
@@ -157,7 +174,9 @@ async fn run(args: Args) -> Result<(), Error> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     if matches!(args.command, Some(Command::VolumePlugin)) {
         let listener = volume_plugin::inherited_listener()?;
-        return volume_plugin::run(listener).await.map_err(Error::from);
+        return volume_plugin::run(listener, &args.data_dir, &run_dir)
+            .await
+            .map_err(Error::from);
     }
     let daemon = Daemon::start(DaemonConfig {
         data_dir: args.data_dir,

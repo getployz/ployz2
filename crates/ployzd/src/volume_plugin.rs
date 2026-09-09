@@ -15,7 +15,11 @@ use axum::{
 };
 use ployzd::machine_pool::MachinePool;
 use serde::{Deserialize, Serialize};
-use tokio::{net::UnixListener, process::Command, sync::Mutex};
+use tokio::{
+    net::UnixListener,
+    process::Command,
+    sync::{Mutex, OwnedMutexGuard},
+};
 
 mod capacity;
 mod pool;
@@ -82,6 +86,7 @@ struct VolumeStorage {
     pool: PoolStorage,
     zfs: PathBuf,
     mutation: Arc<Mutex<()>>,
+    installation: ployzd::installer::admission::Admission,
 }
 
 enum CapacityAdmission {
@@ -90,11 +95,12 @@ enum CapacityAdmission {
 }
 
 impl VolumeStorage {
-    fn new() -> Self {
+    fn new(data_dir: impl Into<PathBuf>, run_dir: impl Into<PathBuf>) -> Self {
         Self {
             pool: PoolStorage::new("zpool"),
             zfs: "zfs".into(),
             mutation: Arc::new(Mutex::new(())),
+            installation: ployzd::installer::admission::Admission::new(run_dir, data_dir),
         }
     }
 
@@ -102,11 +108,33 @@ impl VolumeStorage {
     fn with_programs(zpool: impl Into<PathBuf>, zfs: impl Into<PathBuf>) -> Self {
         let zpool = zpool.into();
         let backing = zpool.with_file_name("machine-pool");
+        let fixture = zpool
+            .parent()
+            .expect("test command has a fixture directory")
+            .to_owned();
         Self {
             pool: PoolStorage::new(zpool).with_backing(backing),
             zfs: zfs.into(),
             mutation: Arc::new(Mutex::new(())),
+            installation: ployzd::installer::admission::Admission::new(
+                fixture.join("admission-run"),
+                fixture.join("admission-data"),
+            ),
         }
+    }
+
+    async fn admit_mutation(
+        &self,
+    ) -> Result<(
+        OwnedMutexGuard<()>,
+        ployzd::installer::admission::MutationGuard,
+    )> {
+        let local = Arc::clone(&self.mutation).lock_owned().await;
+        let installation = self
+            .installation
+            .try_mutation()
+            .map_err(|error| VolumeError::from(error.to_string()))?;
+        Ok((local, installation))
     }
 
     async fn create_volume(
@@ -175,7 +203,7 @@ impl VolumeStorage {
     }
 
     async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
-        let _guard = self.mutation.lock().await;
+        let _guard = self.admit_mutation().await?;
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
         let dataset = Self::dataset(&datasets, &pool, name)?
@@ -475,9 +503,17 @@ pub(super) fn inherited_listener() -> io::Result<StdUnixListener> {
 /// # Errors
 ///
 /// Returns an error when the listener cannot become asynchronous or serving fails.
-pub(super) async fn run(listener: StdUnixListener) -> io::Result<()> {
+pub(super) async fn run(
+    listener: StdUnixListener,
+    data_dir: &std::path::Path,
+    run_dir: &std::path::Path,
+) -> io::Result<()> {
     listener.set_nonblocking(true)?;
-    serve(UnixListener::from_std(listener)?, VolumeStorage::new()).await
+    serve(
+        UnixListener::from_std(listener)?,
+        VolumeStorage::new(data_dir, run_dir),
+    )
+    .await
 }
 
 async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()> {

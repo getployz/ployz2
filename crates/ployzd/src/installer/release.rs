@@ -19,7 +19,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::{process::Command, time::timeout};
 
-use super::{Error, InstallPaths, daemon_archive, run_command};
+use super::{Error, InstallPaths, InstallStage, daemon_archive, run_command};
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
 const CHANNEL_URL: &str = "https://ployz.sh";
@@ -170,6 +170,7 @@ pub(super) async fn install_binaries(
     source: &ReleaseSource,
     paths: &InstallPaths,
     target: &Version,
+    progress: &mut impl FnMut(InstallStage) -> Result<(), Error>,
 ) -> Result<bool, Error> {
     let installed = installed_release(&paths.bin_dir.join("ployzd")).await?;
     let replace = replacement_required(source, installed.as_ref(), target);
@@ -181,6 +182,7 @@ pub(super) async fn install_binaries(
         return Ok(false);
     }
 
+    progress(InstallStage::Acquiring)?;
     let archive = daemon_archive()?;
     let stage = Staging::new(&paths.bin_dir)?;
     let archive_path = stage.path.join(archive);
@@ -189,6 +191,7 @@ pub(super) async fn install_binaries(
         .release_file(target, archive, "download daemon archive")
         .await?;
     write_private(&archive_path, &archive_bytes, "stage daemon archive")?;
+    progress(InstallStage::Verifying)?;
     verify_checksum(&archive_path, &checksum)?;
     extract_archive(&archive_path, &stage.path)?;
     let daemon = stage.path.join("ployzd");
@@ -196,6 +199,7 @@ pub(super) async fn install_binaries(
     verify_executable(&daemon, target).await?;
     verify_uninstall(&uninstall)?;
     sync_staged_files(&daemon, &uninstall, &stage.path)?;
+    progress(InstallStage::Activating)?;
     activate(&daemon, &uninstall, paths)?;
     Ok(true)
 }

@@ -24,11 +24,8 @@ impl LocalMachine {
         specs: Vec<ployz_core::ServiceStorageSpec>,
     ) -> Result<ployz_core::PreparedVolumes, Error> {
         use ployz_core::{RawVolumeSource, RpcError};
-        let admission = self.lock_store()?.admission_lock.clone();
-        let guard = admission.lock_owned().await;
         let local = self.clone();
-        tokio::spawn(async move {
-            let _guard = guard;
+        self.run_mutation(async move {
             let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
             let record = local.record()?;
             if !matches!(
@@ -79,7 +76,7 @@ impl LocalMachine {
                 })?;
             Ok(ployz_core::PreparedVolumes { names })
         })
-        .await?
+        .await
     }
 
     /// Create a container after storage admission and deferred Machine-local validation.
@@ -95,14 +92,11 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
         // Once admitted, caller cancellation must not let reset overtake a Docker request.
-        let admission = self.lock_store()?.admission_lock.clone();
-        let guard = admission.lock_owned().await;
         let (local, project, spec) = (self.clone(), project.clone(), spec.clone());
-        tokio::spawn(async move {
-            let _guard = guard;
-            local.create_container_admitted(kind, &project, &spec).await
-        })
-        .await?
+        self.run_mutation(
+            async move { local.create_container_admitted(kind, &project, &spec).await },
+        )
+        .await
     }
 
     async fn create_container_admitted(
@@ -145,14 +139,9 @@ impl LocalMachine {
         project: &ProjectName,
         spec: &ResolvedServiceSpec,
     ) -> Result<GlobalSlotConvergence, Error> {
-        let admission = self.lock_store()?.admission_lock.clone();
-        let guard = admission.lock_owned().await;
         let (local, project, spec) = (self.clone(), project.clone(), spec.clone());
-        tokio::spawn(async move {
-            let _guard = guard;
-            local.converge_global_slot_admitted(&project, &spec).await
-        })
-        .await?
+        self.run_mutation(async move { local.converge_global_slot_admitted(&project, &spec).await })
+            .await
     }
 
     async fn converge_global_slot_admitted(

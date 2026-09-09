@@ -2181,6 +2181,7 @@ dependencies = [
  "base64",
  "ipnet",
  "prost",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

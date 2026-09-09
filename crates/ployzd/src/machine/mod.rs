@@ -363,6 +363,7 @@ pub struct LocalMachineStore {
     // Reset waits for admitted operations, including Docker streams with no total deadline.
     // ponytail: serialize local creates; use shared admission reads if throughput requires it.
     admission_lock: Arc<tokio::sync::Mutex<()>>,
+    installation_admission: crate::installer::admission::Admission,
 }
 
 pub(crate) struct PreparedReset {
@@ -407,7 +408,16 @@ impl Drop for LocalMachineStore {
 
 impl LocalMachineStore {
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let data_dir = data_dir.as_ref();
+        Self::open_with_admission(data_dir, data_dir.join(".run"))
+    }
+
+    pub(crate) fn open_with_admission(
+        data_dir: impl AsRef<Path>,
+        run_dir: impl AsRef<Path>,
+    ) -> Result<Self, StoreError> {
         let data_dir = data_dir.as_ref().to_owned();
+        let run_dir = run_dir.as_ref().to_owned();
         validate_data_dir(&data_dir)?;
         claim_data_dir(&data_dir)?;
         fs::create_dir_all(&data_dir)?;
@@ -450,16 +460,19 @@ impl LocalMachineStore {
         };
 
         let mut store = Self {
-            data_dir,
+            data_dir: data_dir.clone(),
             record,
             _lock: lock,
             admission_lock: Arc::new(tokio::sync::Mutex::new(())),
+            installation_admission: crate::installer::admission::Admission::new(
+                &run_dir, &data_dir,
+            ),
         };
         if store.record.phase() == LocalMachinePhase::Resetting {
             let data_dir = store.data_dir.clone();
             store.complete_reset()?;
             drop(store);
-            return Self::open(data_dir);
+            return Self::open_with_admission(data_dir, run_dir);
         }
         store.refresh_runtime()?;
         Ok(store)

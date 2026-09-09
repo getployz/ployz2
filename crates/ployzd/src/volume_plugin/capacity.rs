@@ -69,7 +69,7 @@ impl VolumeStorage {
         &self,
         requested: &Volumes,
     ) -> Result<Vec<ployz_core::DockerVolumeName>, ployz_core::RpcError> {
-        let _guard = self.mutation.lock().await;
+        let _guard = self.admit_mutation().await.map_err(storage_error)?;
         let _pool_guard = self.pool.lock_mutation().await.map_err(storage_error)?;
         let capacity = self.capacity().await.map_err(unknown)?;
         let budget = capacity
@@ -133,7 +133,7 @@ pub(super) async fn inspect(
     // Finish import recovery under the locks even if the observer disconnects.
     Json(
         tokio::spawn(async move {
-            let _guard = storage.mutation.lock().await;
+            let _guard = storage.admit_mutation().await.map_err(unknown)?;
             let _pool_guard = storage.pool.lock_mutation().await.map_err(unknown)?;
             storage.capacity().await.map_err(unknown)
         })

@@ -302,7 +302,11 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.initialize(expect::<op::Initialize>(request)?))
+        finish(
+            self.local
+                .initialize_mutation(expect::<op::Initialize>(request)?)
+                .await,
+        )
     }
 
     async fn register(
@@ -331,7 +335,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.join(expect::<op::Join>(request)?))
+        finish(self.local.join_mutation(expect::<op::Join>(request)?).await)
     }
 
     async fn set_cloud_pairing(
@@ -339,7 +343,11 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetCloudPairing>(request)?;
-        if let Err(error) = self.local.set_cloud_pairing(request.cloud_pairing.clone()) {
+        if let Err(error) = self
+            .local
+            .set_cloud_pairing_mutation(request.cloud_pairing.clone())
+            .await
+        {
             return local_error(error);
         }
         if let Some(sender) = &self.cloud_pairing {
@@ -448,15 +456,18 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::StartContainer>(request)?;
         let containers = match self.containers() {
-            Ok(containers) => containers,
+            Ok(containers) => containers.clone(),
             Err(error) => return respond(error),
         };
-        match containers.start(&request.container_id).await {
-            Ok(()) => respond(ContainerChanged {
-                container_id: request.container_id,
-            }),
-            Err(error) => respond(RpcError::from(&error)),
-        }
+        let container_id = request.container_id;
+        finish(
+            self.local
+                .run_mutation(async move {
+                    containers.start(&container_id).await?;
+                    Ok(ContainerChanged { container_id })
+                })
+                .await,
+        )
     }
 
     async fn stop_container(
@@ -465,22 +476,24 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::StopContainer>(request)?;
         let containers = match self.containers() {
-            Ok(containers) => containers,
+            Ok(containers) => containers.clone(),
             Err(error) => return respond(error),
         };
-        match containers
-            .stop(
-                &request.container_id,
-                request.signal.as_deref(),
-                request.grace_period_seconds,
-            )
-            .await
-        {
-            Ok(()) => respond(ContainerChanged {
-                container_id: request.container_id,
-            }),
-            Err(error) => respond(RpcError::from(&error)),
-        }
+        let container_id = request.container_id;
+        finish(
+            self.local
+                .run_mutation(async move {
+                    containers
+                        .stop(
+                            &container_id,
+                            request.signal.as_deref(),
+                            request.grace_period_seconds,
+                        )
+                        .await?;
+                    Ok(ContainerChanged { container_id })
+                })
+                .await,
+        )
     }
 
     async fn remove_container(
@@ -489,18 +502,20 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::RemoveContainer>(request)?;
         let containers = match self.containers() {
-            Ok(containers) => containers,
+            Ok(containers) => containers.clone(),
             Err(error) => return respond(error),
         };
-        match containers
-            .remove(&request.container_id, request.remove_volumes, request.force)
-            .await
-        {
-            Ok(()) => respond(ContainerChanged {
-                container_id: request.container_id,
-            }),
-            Err(error) => respond(RpcError::from(&error)),
-        }
+        let container_id = request.container_id;
+        finish(
+            self.local
+                .run_mutation(async move {
+                    containers
+                        .remove(&container_id, request.remove_volumes, request.force)
+                        .await?;
+                    Ok(ContainerChanged { container_id })
+                })
+                .await,
+        )
     }
 
     async fn create_volume(
@@ -510,13 +525,16 @@ impl MachineRpc for MachineService {
         let request = expect::<op::CreateVolume>(request)?;
         let machine_id = self.local_record()?.id();
         let containers = match self.containers() {
-            Ok(containers) => containers,
+            Ok(containers) => containers.clone(),
             Err(error) => return respond(error),
         };
-        match containers.create_volume(&machine_id, request).await {
-            Ok(volume) => respond(volume),
-            Err(error) => respond(RpcError::from(&error)),
-        }
+        finish(
+            self.local
+                .run_mutation(
+                    async move { Ok(containers.create_volume(&machine_id, request).await?) },
+                )
+                .await,
+        )
     }
 
     async fn inspect_storage(
@@ -576,13 +594,19 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::RemoveVolume>(request)?;
         let containers = match self.containers() {
-            Ok(containers) => containers,
+            Ok(containers) => containers.clone(),
             Err(error) => return respond(error),
         };
-        match containers.remove_volume(&request.name, request.force).await {
-            Ok(()) => respond(VolumeRemoved {}),
-            Err(error) => respond(RpcError::from(&error)),
-        }
+        finish(
+            self.local
+                .run_mutation(async move {
+                    containers
+                        .remove_volume(&request.name, request.force)
+                        .await?;
+                    Ok(VolumeRemoved {})
+                })
+                .await,
+        )
     }
 
     async fn exec(
@@ -680,6 +704,43 @@ impl MachineRpc for MachineService {
         )
     }
 
+    async fn request_machine_upgrade(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::RequestMachineUpgrade>(request)?;
+        let admission = match self.local.try_upgrade_admission() {
+            Ok(admission) => admission,
+            Err(error) => return local_error(error),
+        };
+        match crate::installer::upgrade::request_locked(
+            request,
+            &admission.data_dir,
+            &admission.run_dir,
+            &admission.install,
+        )
+        .await
+        {
+            Ok(attempt) => respond(attempt),
+            Err(error) => respond(upgrade_error(error)),
+        }
+    }
+
+    async fn inspect_machine_upgrade(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::InspectMachineUpgrade>(request)?;
+        let (data_dir, run_dir) = match self.local.upgrade_paths() {
+            Ok(paths) => paths,
+            Err(error) => return local_error(error),
+        };
+        match crate::installer::upgrade::inspect(request.attempt_id, &data_dir, &run_dir).await {
+            Ok(attempt) => respond(attempt),
+            Err(error) => respond(upgrade_error(error)),
+        }
+    }
+
     async fn remove_local_machine(
         &self,
         request: Request<OpaquePayload>,
@@ -740,10 +801,18 @@ impl MachineRpc for MachineService {
                 ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
             );
         };
-        match self.ingest.open(machine.management_address()).await {
-            Ok(opened) => respond(opened),
-            Err(error) => respond(error),
-        }
+        let address = machine.management_address();
+        let ingest = Arc::clone(&self.ingest);
+        finish(
+            self.local
+                .run_mutation(async move {
+                    ingest
+                        .open(address)
+                        .await
+                        .map_err(LocalMachineError::StoragePreparation)
+                })
+                .await,
+        )
     }
 
     async fn pull_image_from_machine(
@@ -761,10 +830,14 @@ impl MachineRpc for MachineService {
         if self.containers().is_err() {
             return respond(unavailable("Docker is not available"));
         }
-        match crate::docker::pull_from_ingest(&request.image, request.source).await {
-            Ok(()) => respond(ImagePulled {}),
-            Err(error) => respond(RpcError::from(&error)),
-        }
+        finish(
+            self.local
+                .run_mutation(async move {
+                    crate::docker::pull_from_ingest(&request.image, request.source).await?;
+                    Ok(ImagePulled {})
+                })
+                .await,
+        )
     }
 
     async fn get_ingress_proxy_config(
@@ -955,6 +1028,42 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         LocalMachineError::AllocatorNotQuiet
         | LocalMachineError::NotAllocator
         | LocalMachineError::IsolationLocked => respond(unavailable(&error.to_string())),
+        LocalMachineError::Admission(crate::installer::admission::Error::Busy) => {
+            respond(RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "a Ployz installation or upgrade is active".into(),
+                details: Value::Null,
+            })
+        }
+        LocalMachineError::Admission(crate::installer::admission::Error::Io(error)) => {
+            Err(Status::internal(error.to_string()))
+        }
+    }
+}
+
+fn upgrade_error(error: crate::installer::upgrade::Error) -> RpcError {
+    use crate::installer::{admission, upgrade::Error};
+    let code = match &error {
+        Error::NotFound => RpcErrorCode::NotFound,
+        Error::AttemptConflict(_) | Error::Busy | Error::Admission(admission::Error::Busy) => {
+            RpcErrorCode::Conflict
+        }
+        Error::Resolve(_) => RpcErrorCode::InvalidArgument,
+        Error::Read(_)
+        | Error::Decode(_)
+        | Error::Write(_)
+        | Error::Encode(_)
+        | Error::QualificationSource(_)
+        | Error::Launch(_)
+        | Error::InspectWorker(_)
+        | Error::NotActive(_)
+        | Error::Installation(_)
+        | Error::Admission(admission::Error::Io(_)) => RpcErrorCode::Internal,
+    };
+    RpcError {
+        code,
+        message: error.to_string(),
+        details: Value::Null,
     }
 }
 
