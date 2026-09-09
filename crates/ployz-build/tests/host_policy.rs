@@ -54,6 +54,7 @@ fn cache_clearing_and_builds_share_exclusive_ownership_and_quarantine() {
     let host = Host::new(
         r#"
 root=$(dirname "$0")
+if [ "$1 $2" = 'context show' ]; then echo default; exit 0; fi
 if [ "$1 $2" = 'buildx prune' ]; then
     touch "$root/clearing"
     while [ ! -f "$root/release" ]; do sleep 0.02; done
@@ -236,4 +237,99 @@ fn changing_home_cannot_fork_default_builder_ownership() {
             .as_os_str()
             .as_encoded_bytes()
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn missing_home_uses_the_accounts_build_policy() {
+    if let Some(output) = std::env::var_os("PLOYZ_POLICY_HOME_CHILD") {
+        fs::write(
+            output,
+            HostPolicy::default()
+                .configuration_file
+                .as_os_str()
+                .as_encoded_bytes(),
+        )
+        .unwrap();
+        return;
+    }
+    let uid = rustix::process::getuid().as_raw().to_string();
+    let accounts = fs::read_to_string("/etc/passwd").unwrap();
+    let account_home = accounts
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split(':');
+            (fields.nth(2) == Some(uid.as_str()))
+                .then(|| fields.nth(2))
+                .flatten()
+        })
+        .expect("test user has a passwd entry");
+    let host = Host::new("exit 99");
+    let output = host.file("configuration-path");
+    for home in [
+        None,
+        Some(""),
+        Some(host.policy.state_directory.to_str().unwrap()),
+    ] {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "missing_home_uses_the_accounts_build_policy"])
+            .env_remove("HOME")
+            .env("PLOYZ_POLICY_HOME_CHILD", &output);
+        if let Some(home) = home {
+            command.env("HOME", home);
+        }
+        assert!(command.status().unwrap().success());
+        let expected = PathBuf::from(home.filter(|home| !home.is_empty()).unwrap_or(account_home))
+            .join(".ployz/build.yaml");
+        assert_eq!(
+            fs::read(&output).unwrap(),
+            expected.as_os_str().as_encoded_bytes()
+        );
+    }
+}
+
+#[test]
+fn cache_clearing_refuses_remote_routing_before_builder_mutation() {
+    if let Some(root) = std::env::var_os("PLOYZ_POLICY_CACHE_CHILD") {
+        let root = PathBuf::from(root);
+        let policy = HostPolicy {
+            docker: root.join("docker"),
+            configuration_file: root.join("build.yaml"),
+            state_directory: root.join("state"),
+            ..HostPolicy::default()
+        };
+        let error = clear_cache(&policy).unwrap_err();
+        assert!(error.to_string().contains("local Docker"), "{error}");
+        assert!(Admission::try_acquire_with(&policy).is_ok());
+        return;
+    }
+    let host = Host::new(
+        r#"
+root=$(dirname "$0")
+if [ "$1 $2" = 'context show' ]; then echo "${PLOYZ_POLICY_CONTEXT:-default}"; exit 0; fi
+echo "$*" >> "$root/mutations"
+"#,
+    );
+    for (key, value) in [
+        ("DOCKER_HOST", "ssh://remote"),
+        ("DOCKER_HOST", "tcp://remote:2375"),
+        ("DOCKER_CONTEXT", "remote"),
+        ("PLOYZ_POLICY_CONTEXT", "remote"),
+    ] {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cache_clearing_refuses_remote_routing_before_builder_mutation",
+            ])
+            .env_remove("DOCKER_HOST")
+            .env_remove("DOCKER_CONTEXT")
+            .env_remove("PLOYZ_POLICY_CONTEXT")
+            .env("PLOYZ_POLICY_CACHE_CHILD", &host.policy.state_directory)
+            .env(key, value)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{key}={value}");
+        assert!(!host.file("mutations").exists(), "{key}={value}");
+    }
 }

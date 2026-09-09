@@ -43,7 +43,8 @@ Builds on the selected Machine. That Machine supplies the build resource policy;
 source uploads and build requests cannot change it.
 
 Configure the execution user on each build host in `~/.ployz/build.yaml` (the daemon
-user for selected-Machine Builds). The file is read once at admission. All fields
+user for selected-Machine Builds). If `HOME` is unset or empty, the user's account
+home is used. The file is read once at admission. All fields
 are optional; omitted CPU/memory limits are disabled and unconfigured GC keeps
 BuildKit 0.26.2 defaults:
 
@@ -73,7 +74,9 @@ Run `ployz machine build-cache-clear` **on the execution host as its build user*
 to clear Ployz's retained builder cache. It preserves completed Docker images and
 unrelated Docker data, requires no running daemon, and refuses active or
 quarantined ownership. It does not accept a remote connection/context; use host
-administration to run it on the selected Machine. Local CLI and daemon Builds
+administration to run it on the selected Machine. Docker must use its default
+context and a local Unix socket; remote `DOCKER_HOST` and non-default Docker
+contexts are refused before builder mutation. Local CLI and daemon Builds
 share a stable per-user lock under `/var/tmp/ployz-build-<uid>`, even with different
 home or Docker configuration directories. There is still one active Build per
 builder; no configurable concurrency or cache replication is introduced.

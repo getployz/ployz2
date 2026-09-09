@@ -97,8 +97,7 @@ impl Default for HostPolicy {
     fn default() -> Self {
         Self {
             state_directory: crate::builder::directory(),
-            configuration_file: std::env::var_os("HOME")
-                .map(PathBuf::from)
+            configuration_file: std::env::home_dir()
                 .unwrap_or_else(|| PathBuf::from("/"))
                 .join(".ployz/build.yaml"),
             docker: "docker".into(),
