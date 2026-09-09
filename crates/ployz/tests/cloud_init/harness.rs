@@ -777,6 +777,29 @@ impl MachineRpc for JoinDaemon {
             .lock()
             .unwrap()
             .push(ensure.clone());
+        let machine = self.inner.current_machine.lock().unwrap().clone();
+        let eligibility = ensure.resolved_spec.placement_eligibility_in_project(
+            &ensure.project_name,
+            &machine,
+            None,
+        );
+        if eligibility != ployz_core::ServicePlacementEligibility::Eligible {
+            if matches!(
+                eligibility,
+                ployz_core::ServicePlacementEligibility::Ineligible(_)
+            ) {
+                self.inner.containers.lock().unwrap().retain(|container| {
+                    container.machine_id != machine.id
+                        || container.project_name != ensure.project_name
+                        || container.resolved_spec.name != ensure.resolved_spec.name
+                });
+            }
+            return rpc_ok(RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "target Global slot is ineligible or unknown".into(),
+                details: serde_json::Value::Null,
+            });
+        }
         let n = self.inner.ensure_requests.lock().unwrap().len();
         let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
         let machine_id = self.inner.registration.assigned_machine.id;
@@ -1041,17 +1064,7 @@ pub fn registration() -> Registered {
 }
 
 pub fn ingress_on(machine: &Machine) -> ContainerObservation {
-    let spec: ployz_core::RequestedServiceSpec = serde_json::from_value(serde_json::json!({
-        "name": "ingress",
-        "mode": { "mode": "global" },
-        "container": {
-            "image": "caddy:2.10.0",
-            "pull_policy": "missing",
-            "command": ["caddy", "run", "-c", "/config/caddy/Caddyfile"],
-            "environment": { "CADDY_ADMIN": "unix//run/ingress/caddy/admin.sock" }
-        }
-    }))
-    .unwrap();
+    let spec = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Vec::new(), None);
     let spec = spec
         .to_resolved(
             ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),

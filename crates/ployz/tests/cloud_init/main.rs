@@ -1099,6 +1099,9 @@ async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
     );
     let ensured = daemon.ensure_requests();
     assert_eq!(ensure_names(&ensured), [("app", "api")]);
+    assert!(daemon.containers().iter().all(|container| {
+        container.machine_id == founder.id || container.resolved_spec.name.as_str() != "ingress"
+    }));
     let details = connect_daemon(machine_addr)
         .await
         .call::<op::Inspect>(InspectRequest::default(), None)
