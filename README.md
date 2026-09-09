@@ -39,8 +39,9 @@ Dockerfiles pass them to BuildKit and remain limited to one platform.
 
 `ployz deploy` derives each Railpack Service's platforms from the Machines it may
 be placed on, read from the current Cluster Observation, before building; explicit
-`build.platforms` must cover them. Standalone `ployz build` keeps the native
-default. After every Build succeeds, the completed platforms are checked against
+`build.platforms` must cover them, and `DOCKER_DEFAULT_PLATFORM` is replaced
+because it describes this client, not the Cluster. Standalone `ployz build`
+keeps the native default. After every Build succeeds, the completed platforms are checked against
 the fresh Deploy plan's destinations; a Machine no variant runs stops the Deploy
 before any Service, hook, or volume change, and the fix is a rerun, never an
 automatic rebuild or a moved placement. Images travel by exact content digest
