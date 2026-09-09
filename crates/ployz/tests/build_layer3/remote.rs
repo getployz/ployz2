@@ -925,20 +925,17 @@ async fn railpack_deploy_derives_machine_platforms_and_partial_peers_never_serve
         "{completed:?}"
     );
     for (platform, expected) in [(native, native_arch), (other, other_arch)] {
-        assert_eq!(
-            cluster
-                .machine_shell(
-                    1,
-                    &format!(
-                        "docker run --rm --pull=never --platform {platform} {}",
-                        built.built.reference
-                    )
-                )
-                .unwrap()
-                .trim(),
-            expected,
-            "{platform}"
-        );
+        let printed = cluster
+            .machine_shell(
+                1,
+                &format!(
+                    "docker run --rm --pull=never --platform {platform} {}",
+                    built.built.reference
+                ),
+            )
+            .unwrap();
+        // npm echoes the start script before the process prints its architecture.
+        assert_eq!(printed.lines().last(), Some(expected), "{platform}");
     }
     drop(built);
     assert_temporary_tags_released(&cluster).await;
