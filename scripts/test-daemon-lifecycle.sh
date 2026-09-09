@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+trap 'sudo rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/install" "$TMP/systemd" "$TMP/state" "$TMP/run"
 LOG=$TMP/commands.log
 SCENARIO=active
@@ -83,7 +83,7 @@ run_uninstall() {
         PLOYZ_DATA_DIR="$TMP/state" PLOYZ_RUN_DIR="$TMP/run" bash "$ROOT/scripts/uninstall.sh"
 }
 
-for SCENARIO in active late absent worker-stop-failure list-failure daemon-stop-failure busy; do
+for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure active late absent worker-stop-failure list-failure daemon-stop-failure busy; do
     : > "$LOG"
     mkdir -p "$TMP/state" "$TMP/run"
     touch "$TMP/state/receipt" "$TMP/run/socket"
@@ -92,11 +92,43 @@ for SCENARIO in active late absent worker-stop-failure list-failure daemon-stop-
     chmod 0755 "$TMP/install/ployzd" "$TMP/install/ployz-uninstall"
     touch "$TMP/docker" "$TMP/images" "$TMP/volumes" "$TMP/docker-config"
 
+    if [ "$SCENARIO" = symlink-failure ]; then
+        printf 'protected target\n' | sudo tee "$TMP/protected-target" >/dev/null
+        sudo chmod 0600 "$TMP/protected-target"
+        ln -s "$TMP/protected-target" "$TMP/run/.install.lock"
+    fi
+    case "$SCENARIO" in
+        dangling-failure) ln -s "$TMP/missing-target" "$TMP/run/.install.lock" ;;
+        fifo-failure) mkfifo "$TMP/run/.install.lock" ;;
+        directory-failure) mkdir "$TMP/run/.install.lock" ;;
+        active) printf 'existing lock\n' > "$TMP/run/.install.lock" ;;
+    esac
     if [ "$SCENARIO" = busy ]; then
         exec {lock_fd}>"$TMP/run/.install.lock"
         flock -n "$lock_fd"
     fi
-    if run_uninstall; then
+    result=0
+    run_uninstall || result=$?
+    case "$SCENARIO" in
+        worker-stop-failure|list-failure) ;;
+        *) [ "$(sudo stat -c %u "$TMP/run")" = 0 ] || {
+            echo "runtime directory is not root-controlled" >&2
+            exit 1
+        } ;;
+    esac
+    # Restore test access only after uninstall has exited.
+    sudo chown "$(id -u):$(id -g)" "$TMP/run"
+    [ ! -e "$TMP/missing-target" ]
+    if [ "$SCENARIO" = active ]; then
+        [ "$(sudo cat "$TMP/run/.install.lock")" = 'existing lock' ]
+    fi
+    if [ "$SCENARIO" = symlink-failure ]; then
+        [ "$(sudo cat "$TMP/protected-target")" = 'protected target' ] || {
+            echo "uninstall truncated the symlink target" >&2
+            exit 1
+        }
+    fi
+    if [ "$result" -eq 0 ]; then
         case "$SCENARIO" in *failure|busy) echo "unexpected uninstall success: $SCENARIO" >&2; exit 1 ;; esac
         [ ! -e "$TMP/install/ployzd" ]
         [ ! -e "$TMP/install/ployz-uninstall" ]

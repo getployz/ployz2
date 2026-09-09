@@ -44,9 +44,16 @@ main() {
     stop_loaded_units 'ployz-upgrade-*.service'
     # Share MutationGate's flock so installation cannot race destructive cleanup.
     umask 077
+    [ ! -L "$PLOYZ_RUN_DIR" ] || error "Refusing symlink runtime directory: $PLOYZ_RUN_DIR"
     mkdir -p "$PLOYZ_RUN_DIR"
+    # Remove the service account's ability to swap the lock between inspection and open.
+    chown root:root "$PLOYZ_RUN_DIR"
     chmod 0750 "$PLOYZ_RUN_DIR"
-    exec {installation_lock}>"$PLOYZ_RUN_DIR/.install.lock"
+    local lock_path="$PLOYZ_RUN_DIR/.install.lock"
+    if [ -L "$lock_path" ] || { [ -e "$lock_path" ] && [ ! -f "$lock_path" ]; }; then
+        error "Refusing symlink or non-regular installation lock: $lock_path"
+    fi
+    exec {installation_lock}<>"$lock_path"
     flock -n "$installation_lock" || error "Ployz mutation or installation is active; retry uninstall"
     stop_loaded_units ployz.service
     # Catch an accepted worker launched during the first stop, now blocked on our lock.
