@@ -69,7 +69,7 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
                 let attempt = match run_one(client, machine, release.clone(), attempt_id).await {
                     Ok(attempt) => attempt,
                     Err(error) => {
-                        print_unattempted(&machines[index + 1..], machine);
+                        print_unattempted(machines.iter().skip(index.saturating_add(1)), machine);
                         return Err(error);
                     }
                 };
@@ -77,11 +77,11 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
                 match attempt.outcome {
                     MachineUpgradeOutcome::Succeeded { .. } => {}
                     MachineUpgradeOutcome::Failed { error, .. } => {
-                        print_unattempted(&machines[index + 1..], machine);
+                        print_unattempted(machines.iter().skip(index.saturating_add(1)), machine);
                         return Err(Error::usage(error));
                     }
                     MachineUpgradeOutcome::Interrupted { .. } => {
-                        print_unattempted(&machines[index + 1..], machine);
+                        print_unattempted(machines.iter().skip(index.saturating_add(1)), machine);
                         return Err(Error::usage(format!(
                             "Machine {} upgrade was interrupted; {}",
                             machine.name,
@@ -260,15 +260,18 @@ fn print_attempt_target(machine: &str, attempt: &MachineUpgradeAttempt) {
     }
 }
 
-fn print_unattempted(machines: &[Machine], after: &Machine) {
+fn print_unattempted<'a>(machines: impl IntoIterator<Item = &'a Machine>, after: &Machine) {
     for line in unattempted_lines(machines, after) {
         println!("{line}");
     }
 }
 
-fn unattempted_lines(machines: &[Machine], after: &Machine) -> Vec<String> {
+fn unattempted_lines<'a>(
+    machines: impl IntoIterator<Item = &'a Machine>,
+    after: &Machine,
+) -> Vec<String> {
     machines
-        .iter()
+        .into_iter()
         .map(|machine| {
             format!(
                 "Machine {} ({}): upgrade unattempted after {} ({})",
@@ -410,17 +413,23 @@ mod tests {
         ];
 
         let first = unattempted_lines(&machines[1..], &machines[0]);
-        assert_eq!(first.len(), 3);
-        assert!(first[0].contains("Machine b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)"));
-        assert!(first[0].contains("after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"));
-        assert!(first[1].contains("Machine c (cccccccccccccccccccccccccccccccc)"));
-        assert!(first[2].contains("Machine d (dddddddddddddddddddddddddddddddd)"));
+        assert_eq!(
+            first,
+            [
+                "Machine b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+                "Machine c (cccccccccccccccccccccccccccccccc): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+                "Machine d (dddddddddddddddddddddddddddddddd): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+            ]
+        );
 
         let middle = unattempted_lines(&machines[2..], &machines[1]);
-        assert_eq!(middle.len(), 2);
-        assert!(middle[0].contains("Machine c (cccccccccccccccccccccccccccccccc)"));
-        assert!(middle[0].contains("after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)"));
-        assert!(middle[1].contains("Machine d (dddddddddddddddddddddddddddddddd)"));
+        assert_eq!(
+            middle,
+            [
+                "Machine c (cccccccccccccccccccccccccccccccc): upgrade unattempted after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
+                "Machine d (dddddddddddddddddddddddddddddddd): upgrade unattempted after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
+            ]
+        );
     }
 
     fn machine(id: char, subnet: u8) -> Machine {

@@ -16,13 +16,14 @@ use ployz_core::{DOCKER_NETWORK_CONFLICT_EXIT_STATUS, MachineUpgradeAttemptId, S
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
-    installer::{InstallRequest, Preparation, Readiness, ReleaseRequest, ReleaseSource},
+    installer::{
+        DEFAULT_SOCKET_PATH, InstallRequest, Preparation, Readiness, ReleaseRequest, ReleaseSource,
+    },
     machine::DEFAULT_DATA_DIR,
     network::NetworkError,
 };
 use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
 
-const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
 const DIAL_STDIO_SOCKET_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Parser)]
@@ -154,7 +155,7 @@ async fn run(args: Args) -> Result<(), Error> {
             release_dir,
         )
         .map_err(Error::from)?;
-        let outcome = ployzd::installer::install(request, &args.data_dir, &run_dir)
+        let outcome = ployzd::installer::install(request, &args.data_dir, &args.socket)
             .await
             .map_err(io::Error::other)?;
         match outcome.readiness {

@@ -31,6 +31,9 @@ pub use self::release::{ReleaseRequest, ReleaseSource};
 const PLOYZ_USER: &str = "ployz";
 const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
 const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
+const DEFAULT_RUN_DIR: &str = "/run/ployz";
+/// Unix socket installed systemd services use for the local Machine API.
+pub const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
 /// Explicit host work associated with one Machine installation attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Preparation {
@@ -93,6 +96,10 @@ pub enum Error {
     UnsupportedArchitecture(String),
     #[error("Ployz requires systemd")]
     SystemdRequired,
+    #[error(
+        "system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir {data_dir:?} and --socket {socket:?}"
+    )]
+    NonstandardPaths { data_dir: PathBuf, socket: PathBuf },
     #[error("release selection: {0}")]
     ReleaseSelection(String),
     #[error("artifact verification: {0}")]
@@ -142,7 +149,7 @@ impl InstallPaths {
     }
 }
 
-/// Install using the daemon's configured data and runtime directories.
+/// Install into global host locations for the standard Machine data and socket paths.
 ///
 /// # Errors
 ///
@@ -150,9 +157,16 @@ impl InstallPaths {
 pub async fn install(
     request: InstallRequest,
     data_dir: impl Into<PathBuf>,
-    run_dir: impl Into<PathBuf>,
+    socket: impl Into<PathBuf>,
 ) -> Result<InstallOutcome, Error> {
-    install_at(request, InstallPaths::system(data_dir, run_dir)).await
+    let data_dir = data_dir.into();
+    let socket = socket.into();
+    if data_dir != Path::new(crate::machine::DEFAULT_DATA_DIR)
+        || socket != Path::new(DEFAULT_SOCKET_PATH)
+    {
+        return Err(Error::NonstandardPaths { data_dir, socket });
+    }
+    install_at(request, InstallPaths::system(data_dir, DEFAULT_RUN_DIR)).await
 }
 
 async fn install_at(request: InstallRequest, paths: InstallPaths) -> Result<InstallOutcome, Error> {
@@ -367,6 +381,28 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[tokio::test]
+    async fn system_install_rejects_nonstandard_machine_paths_before_mutation() {
+        let fixture = fixture("nonstandard-paths");
+        let request = InstallRequest {
+            release: ReleaseRequest::Exact(Version::parse("1.2.3").unwrap()),
+            source: ReleaseSource::Local(fixture.path().join("release")),
+            preparation: Preparation::SoftwareOnly,
+            install_only: true,
+        };
+
+        for (data_dir, socket) in [
+            (fixture.path(), Path::new(DEFAULT_SOCKET_PATH)),
+            (Path::new(crate::machine::DEFAULT_DATA_DIR), fixture.path()),
+        ] {
+            let error = install(request.clone(), data_dir, socket)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, Error::NonstandardPaths { .. }));
+        }
+        assert!(fs::read_dir(fixture.path()).unwrap().next().is_none());
+    }
 
     #[tokio::test]
     async fn installation_interface_contract() {
