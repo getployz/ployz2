@@ -201,20 +201,18 @@ pub(super) fn write_file_atomically(
     atomic_write(path, content.as_bytes(), 0o644).map_err(|source| Error::Io { stage, source })
 }
 
-pub(super) async fn install_docker(paths: &InstallPaths, install_only: bool) -> Result<(), Error> {
+pub(super) async fn install_docker(paths: &InstallPaths) -> Result<(), Error> {
     if command_exists("dockerd") {
-        if !install_only {
-            let mut command = Command::new("docker");
-            command.args(["info", "-f", "{{ .DriverStatus }}"]);
-            let snapshotter = command.output().ok().is_some_and(|output| {
-                output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).contains("io.containerd.snapshotter")
-            });
-            if !snapshotter {
-                eprintln!(
-                    "WARNING: Docker is retained unchanged; enable its containerd image store for best results"
-                );
-            }
+        let mut command = Command::new("docker");
+        command.args(["info", "-f", "{{ .DriverStatus }}"]);
+        let snapshotter = command.output().ok().is_some_and(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("io.containerd.snapshotter")
+        });
+        if !snapshotter {
+            eprintln!(
+                "WARNING: Docker is retained unchanged; enable its containerd image store for best results"
+            );
         }
         return Ok(());
     }
@@ -262,9 +260,7 @@ pub(super) async fn install_docker(paths: &InstallPaths, install_only: bool) -> 
         DOCKER_DAEMON_CONFIG,
         "write Docker configuration",
     )?;
-    if !install_only {
-        systemctl("restart Docker", ["restart", "docker"])?;
-    }
+    systemctl("restart Docker", ["restart", "docker"])?;
     Ok(())
 }
 

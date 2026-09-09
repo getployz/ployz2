@@ -7,7 +7,6 @@ use std::{
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     str::FromStr,
-    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -15,21 +14,19 @@ use std::{
 use std::os::unix::fs::chown;
 
 use semver::Version;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use tempfile::TempDir;
 use tokio::{process::Command, time::timeout};
 
 use super::{Error, InstallPaths, InstallStage, daemon_archive, run_command};
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
 const CHANNEL_URL: &str = "https://ployz.sh";
-const RELEASE_API: &str = "https://api.github.com/repos/getployz/ployz2";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
 const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
 const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_millis(100);
-static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// A trusted release target selected at the CLI boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,17 +100,6 @@ impl ReleaseSource {
     }
 }
 
-#[derive(Deserialize)]
-struct GitHubRelease {
-    assets: Vec<GitHubAsset>,
-}
-
-#[derive(Deserialize)]
-struct GitHubAsset {
-    name: String,
-    digest: Option<String>,
-}
-
 pub(super) async fn resolve_release(
     request: &ReleaseRequest,
     source: &ReleaseSource,
@@ -144,7 +130,8 @@ fn parse_release(value: &str) -> Result<Version, Error> {
 pub(super) async fn fetch(url: &str, stage: &str) -> Result<Vec<u8>, Error> {
     let client = reqwest::Client::builder()
         .https_only(true)
-        .timeout(DOWNLOAD_TIMEOUT)
+        .connect_timeout(DOWNLOAD_TIMEOUT)
+        .read_timeout(DOWNLOAD_TIMEOUT)
         .user_agent("ployzd-installer")
         .build()
         .map_err(|error| Error::ReleaseSelection(format!("build download client: {error}")))?;
@@ -184,21 +171,21 @@ pub(super) async fn install_binaries(
 
     progress(InstallStage::Acquiring)?;
     let archive = daemon_archive()?;
-    let stage = Staging::new(&paths.bin_dir)?;
-    let archive_path = stage.path.join(archive);
-    let checksum = published_checksum(source, target, archive).await?;
+    let stage = staging_directory(&paths.bin_dir)?;
+    let archive_path = stage.path().join(archive);
+    let checksum = release_checksum(source, target, archive).await?;
     let archive_bytes = source
         .release_file(target, archive, "download daemon archive")
         .await?;
-    write_private(&archive_path, &archive_bytes, "stage daemon archive")?;
     progress(InstallStage::Verifying)?;
-    verify_checksum(&archive_path, &checksum)?;
-    extract_archive(&archive_path, &stage.path)?;
-    let daemon = stage.path.join("ployzd");
-    let uninstall = stage.path.join("ployz-uninstall");
+    verify_checksum(&archive_bytes, archive, &checksum)?;
+    write_private(&archive_path, &archive_bytes, "stage daemon archive")?;
+    extract_archive(&archive_path, stage.path())?;
+    let daemon = stage.path().join("ployzd");
+    let uninstall = stage.path().join("ployz-uninstall");
     verify_executable(&daemon, target).await?;
     verify_uninstall(&uninstall)?;
-    sync_staged_files(&daemon, &uninstall, &stage.path)?;
+    sync_staged_files(&daemon, &uninstall, stage.path())?;
     progress(InstallStage::Activating)?;
     activate(&daemon, &uninstall, paths)?;
     Ok(true)
@@ -228,7 +215,7 @@ pub(super) async fn installed_release(path: &Path) -> Result<Option<Version>, Er
         .map_err(|_| Error::Verification("installed daemon reported an invalid version".into()))
 }
 
-async fn published_checksum(
+async fn release_checksum(
     source: &ReleaseSource,
     target: &Version,
     archive: &str,
@@ -236,15 +223,8 @@ async fn published_checksum(
     let checksums = source
         .release_file(target, "checksums.txt", "download release checksums")
         .await?;
-    if let Some(checksum) = checksum_for(&checksums, archive) {
-        return Ok(checksum);
-    }
-    if source.is_local() {
-        return Err(Error::Verification(format!(
-            "checksums.txt has no hash for {archive}"
-        )));
-    }
-    github_asset_digest(target, archive).await
+    checksum_for(&checksums, archive)
+        .ok_or_else(|| Error::Verification(format!("checksums.txt has no hash for {archive}")))
 }
 
 pub(super) fn checksum_for(checksums: &[u8], archive: &str) -> Option<String> {
@@ -261,39 +241,15 @@ fn valid_checksum(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-async fn github_asset_digest(target: &Version, archive: &str) -> Result<String, Error> {
-    let endpoint = format!("{RELEASE_API}/releases/tags/v{target}");
-    let response = fetch(&endpoint, "read published daemon checksum").await?;
-    let release: GitHubRelease = serde_json::from_slice(&response).map_err(|error| {
-        Error::Verification(format!("published release metadata is invalid: {error}"))
-    })?;
-    let digest = release
-        .assets
-        .iter()
-        .find(|asset| asset.name == archive)
-        .and_then(|asset| asset.digest.as_deref())
-        .and_then(|digest| digest.strip_prefix("sha256:"))
-        .filter(|digest| valid_checksum(digest))
-        .ok_or_else(|| {
-            Error::Verification(format!(
-                "published release metadata has no SHA-256 digest for {archive}"
-            ))
-        })?;
-    Ok(digest.to_ascii_lowercase())
-}
-
-fn verify_checksum(path: &Path, expected: &str) -> Result<(), Error> {
-    let bytes = fs::read(path).map_err(|source| Error::Io {
-        stage: "read staged daemon archive",
-        source,
-    })?;
+fn verify_checksum(bytes: &[u8], archive: &str, expected: &str) -> Result<(), Error> {
     let actual = hex::encode(Sha256::digest(bytes));
     if actual == expected {
         Ok(())
     } else {
         Err(Error::Verification(format!(
             "{} checksum was {actual}, expected {expected}",
-            path.file_name()
+            Path::new(archive)
+                .file_name()
                 .and_then(OsStr::to_str)
                 .unwrap_or("daemon archive")
         )))
@@ -385,48 +341,19 @@ fn sync_staged_files(daemon: &Path, uninstall: &Path, staging: &Path) -> Result<
         })
 }
 
-pub(super) struct Staging {
-    pub(super) path: PathBuf,
-}
-
-impl Staging {
-    pub(super) fn new(parent: &Path) -> Result<Self, Error> {
-        fs::create_dir_all(parent).map_err(|source| Error::Io {
-            stage: "create daemon installation directory",
+pub(super) fn staging_directory(parent: &Path) -> Result<TempDir, Error> {
+    fs::create_dir_all(parent).map_err(|source| Error::Io {
+        stage: "create daemon installation directory",
+        source,
+    })?;
+    tempfile::Builder::new()
+        .prefix(".ployz-stage-")
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in(parent)
+        .map_err(|source| Error::Io {
+            stage: "create private daemon staging directory",
             source,
-        })?;
-        for _ in 0..100 {
-            let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path = parent.join(format!(".ployz-stage-{}-{sequence}", std::process::id()));
-            match fs::create_dir(&path) {
-                Ok(()) => {
-                    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(
-                        |source| Error::Io {
-                            stage: "protect daemon staging directory",
-                            source,
-                        },
-                    )?;
-                    return Ok(Self { path });
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(source) => {
-                    return Err(Error::Io {
-                        stage: "create daemon staging directory",
-                        source,
-                    });
-                }
-            }
-        }
-        Err(Error::Verification(
-            "could not create a private daemon staging directory".into(),
-        ))
-    }
-}
-
-impl Drop for Staging {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
+        })
 }
 
 pub(super) fn write_private(path: &Path, bytes: &[u8], stage: &'static str) -> Result<(), Error> {
@@ -500,6 +427,8 @@ fn root_ownership(path: &Path, stage: &'static str) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     #[test]
@@ -544,5 +473,19 @@ mod tests {
             Some(&target),
             &target
         ));
+    }
+
+    #[test]
+    fn staging_directory_is_private_and_removed_on_drop() {
+        let parent = tempfile::tempdir().unwrap();
+        let path = {
+            let staging = staging_directory(parent.path()).unwrap();
+            assert_eq!(
+                staging.path().metadata().unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            staging.path().to_owned()
+        };
+        assert!(!path.exists());
     }
 }

@@ -201,6 +201,18 @@ fn install_request(
     let release = version
         .parse::<ReleaseRequest>()
         .map_err(io::Error::other)?;
+    if install_only && storage != StorageChoice::None {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--install-only cannot be combined with --storage",
+        ));
+    }
+    if install_only && group_user.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--install-only cannot be combined with --group-user",
+        ));
+    }
     let preparation = if software_only {
         if storage != StorageChoice::None {
             return Err(io::Error::new(
@@ -293,6 +305,32 @@ mod tests {
     }
 
     #[test]
+    fn install_cli_rejects_host_options_for_installation_only() {
+        let storage = install_request("stable".into(), StorageChoice::Zfs, false, true, None, None)
+            .unwrap_err();
+        assert_eq!(storage.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            storage.to_string(),
+            "--install-only cannot be combined with --storage"
+        );
+
+        let group = install_request(
+            "stable".into(),
+            StorageChoice::None,
+            false,
+            true,
+            Some("operator".into()),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(group.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            group.to_string(),
+            "--install-only cannot be combined with --group-user"
+        );
+    }
+
+    #[test]
     fn install_cli_builds_one_explicit_preparation_mode() {
         let replacement =
             install_request("1.2.3".into(), StorageChoice::None, true, true, None, None).unwrap();
@@ -302,7 +340,7 @@ mod tests {
             "1.2.3".into(),
             StorageChoice::Zfs,
             false,
-            true,
+            false,
             Some("operator".into()),
             None,
         )
