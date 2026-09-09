@@ -1662,3 +1662,31 @@ fn equivalent_constraint_formatting_keeps_running_containers() {
             .is_empty()
     );
 }
+
+#[test]
+fn reserved_ingress_deploy_uses_ingress_acceptance_independently() {
+    let service = ployz_core::caddy_service_spec("caddy:test".into(), Vec::new(), None);
+    let mut target = machine('1', "edge");
+    target.machine.accepts_services = false;
+    let mut snapshot = DeploySnapshot {
+        machines: vec![target],
+        ..Default::default()
+    };
+    let intent = DeployIntent::apply_all(
+        ployz_core::QualifiedService::system_ingress().project,
+        [&service],
+        PlanOptions::default(),
+    );
+    let plan = preview_deploy(&intent, &snapshot, IngressContext::default()).unwrap();
+    assert!(
+        matches!(operations(&plan).as_slice(), [DeployOperation::RunContainer { machine_id: destination, .. }] if *destination == machine_id('1'))
+    );
+    snapshot.machines[0].machine.accepts_services = true;
+    snapshot.machines[0].machine.accepts_ingress = false;
+    assert!(
+        preview_deploy(&intent, &snapshot, IngressContext::default())
+            .unwrap_err()
+            .to_string()
+            .contains("do not accept this work")
+    );
+}

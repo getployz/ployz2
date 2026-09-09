@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use ployz_core::{
     HookContainer, Machine, MachineFailure, MachineId, MachineName, MachineObservation,
-    MachineTarget, MembershipObservation, PartialResult, Placement, RpcError, RpcErrorCode,
+    MembershipObservation, PartialResult, Placement, PlacementConstraint, RpcError, RpcErrorCode,
     ServiceContainer, ServiceId, ServiceMode, ServiceName, WireGuardPublicKey,
     derive_live_services,
 };
@@ -71,20 +71,20 @@ fn global_summary_counts_only_up_placement_eligible_machines() {
     observation
         .try_update(|parts| {
             parts.resolved_spec.placement = Placement {
-                machines: ["edge-a", "edge-b", "edge-c"]
-                    .into_iter()
-                    .map(|name| MachineTarget::parse(name).unwrap())
-                    .collect(),
+                constraints: vec![PlacementConstraint::parse("node.labels.group == edge").unwrap()],
             }
         })
         .unwrap();
     service.containers = vec![ServiceContainer::try_from(observation).unwrap()];
-    let machines = [
+    let mut machines = [
         machine('a', "edge-a", MembershipObservation::Up),
         machine('b', "edge-b", MembershipObservation::Up),
         machine('c', "edge-c", MembershipObservation::Down),
         machine('d', "batch", MembershipObservation::Up),
     ];
+    for machine in &mut machines[..3] {
+        machine.machine.labels.insert("group".into(), "edge".into());
+    }
 
     assert_eq!(
         service_counts(&service, &machines),
@@ -93,6 +93,11 @@ fn global_summary_counts_only_up_placement_eligible_machines() {
             expected: 2,
             unknown: 0,
         }
+    );
+    machines[0].machine.accepts_services = false;
+    assert_eq!(
+        service_count_text(service_counts(&service, &machines)),
+        "1/1"
     );
 }
 
@@ -750,4 +755,27 @@ fn observation(
         labels: Default::default(),
     })
     .unwrap()
+}
+
+#[test]
+fn global_ingress_summary_uses_ingress_acceptance() {
+    let mut service = service_named('a', "ployz-system", "ingress");
+    let mut observation = service.containers.pop().unwrap().into_observation();
+    observation
+        .try_update(|parts| {
+            parts.resolved_spec =
+                ployz_core::caddy_service_spec("caddy:test".into(), Vec::new(), None)
+                    .to_resolved(
+                        service.service_id,
+                        ployz_core::ResolvedUpdateConfig::default(),
+                    )
+                    .unwrap();
+        })
+        .unwrap();
+    service.containers = vec![ServiceContainer::try_from(observation).unwrap()];
+    let mut target = machine('a', "edge", MembershipObservation::Up);
+    target.machine.accepts_services = false;
+    assert_eq!(service_counts(&service, &[target.clone()]).expected, 1);
+    target.machine.accepts_ingress = false;
+    assert_eq!(service_counts(&service, &[target]).expected, 0);
 }

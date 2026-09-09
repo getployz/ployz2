@@ -717,7 +717,7 @@ fn eligible_machines<'snapshot>(
         if !unknown.is_empty() {
             return Err(PlanError::ProvisionedVolumeStorageUnknown { names: unknown });
         }
-        if requested.placement.constraints.len() == 1 && candidates.len() == 1 {
+        if !requested.placement.constraints.is_empty() && candidates.len() == 1 {
             return Err(PlanError::ProvisionedVolumeStorageRequired {
                 machine: candidates
                     .first()
