@@ -112,8 +112,18 @@ async fn build_images(
     load: &LoadOptions,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<crate::compose::BuiltService>, Error> {
-    let machines =
+    let mut machines =
         crate::cancellation::read(cancellation, async { Ok(client.machines().await?) }).await?;
+    let applied = candidate.intent().applied_names();
+    if candidate.intent().target.iter().any(|spec| {
+        applied.contains(&spec.name) && spec.volume_graph().has_mounted_provisioned_volume()
+    }) {
+        crate::cancellation::read(cancellation, async {
+            client.observe_machine_storage(&mut machines).await;
+            Ok(())
+        })
+        .await?;
+    }
     build
         .cover_machines(candidate, &machines)
         .map_err(crate::deploy::DeployError::from)?;

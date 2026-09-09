@@ -231,7 +231,9 @@ pub(crate) async fn push_using_machines(
         let pushed =
             push_to_machine(client, content, platform, &machine, mode, &mut cancellation).await;
         let delivered = pushed.is_ok();
-        record(&mut result, &machine, pushed.map(|_| ()))?;
+        if record(&mut result, &machine, pushed.map(|_| ())).is_err() {
+            break;
+        }
         if !delivered {
             continue;
         }
@@ -240,7 +242,7 @@ pub(crate) async fn push_using_machines(
                 source = Some(opened);
                 break;
             }
-            Err(error) if error.is_cancellation() => return Err(error),
+            Err(error) if error.is_cancellation() => break,
             // The image arrived, so the success stands; say why this Machine
             // will not serve its peers rather than let a second push look odd.
             Err(error) => eprintln!(
@@ -250,14 +252,18 @@ pub(crate) async fn push_using_machines(
         }
     }
     let Some(source) = source else {
+        result.omissions.extend(targets.map(|machine| machine.id));
         return Ok(result);
     };
-    for machine in targets {
+    for machine in targets.by_ref() {
         let outcome = source
             .deliver(client, image, image, &machine, platform, &mut cancellation)
             .await;
-        record(&mut result, &machine, outcome)?;
+        if record(&mut result, &machine, outcome).is_err() {
+            break;
+        }
     }
+    result.omissions.extend(targets.map(|machine| machine.id));
     Ok(result)
 }
 
@@ -272,7 +278,10 @@ fn record(
             machine_id: machine.id,
             value: (),
         }),
-        Err(error) if error.is_cancellation() => return Err(error),
+        Err(error) if error.is_cancellation() => {
+            result.omissions.push(machine.id);
+            return Err(error);
+        }
         Err(error) => result.failures.push(MachineFailure {
             machine_id: machine.id,
             error: PushError::Machine {
@@ -732,6 +741,22 @@ mod tests {
             },
             MembershipObservation::Up,
         )
+    }
+
+    #[test]
+    fn cancellation_preserves_completed_deliveries() {
+        let completed = machine(1).machine;
+        let cancelled = machine(2).machine;
+        let mut result = PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        };
+        record(&mut result, &completed, Ok(())).unwrap();
+        assert!(record(&mut result, &cancelled, Err(PushError::Cancelled)).is_err());
+        assert_eq!(result.successes[0].machine_id, completed.id);
+        assert!(result.failures.is_empty());
+        assert_eq!(result.omissions, [cancelled.id]);
     }
 
     #[test]

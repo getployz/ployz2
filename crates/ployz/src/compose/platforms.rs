@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     Machine, MachineObservation, MembershipObservation, RequestedServiceSpec,
-    ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    ServicePlacementEligibility,
 };
 
 use super::{CapturedBuild, ComposeError, invalid_build};
@@ -29,6 +29,7 @@ impl CapturedBuild {
         candidate: &CapturedCompose,
         machines: &[MachineObservation],
     ) -> Result<(), ComposeError> {
+        let applied = candidate.intent().applied_names();
         for target in &mut self.targets {
             if !self
                 .railpack
@@ -43,7 +44,7 @@ impl CapturedBuild {
                 .intent()
                 .target
                 .iter()
-                .find(|spec| spec.name.as_str() == target.name)
+                .find(|spec| spec.name.as_str() == target.name && applied.contains(&spec.name))
             else {
                 continue;
             };
@@ -92,10 +93,8 @@ fn machine_platforms<'observed>(
         .filter(|machine| machine.membership != MembershipObservation::Down)
         .filter(|machine| {
             !matches!(
-                spec.placement_eligibility(&machine.machine, None),
-                ServicePlacementEligibility::Ineligible(
-                    ServicePlacementIneligibleReason::PlacementMismatch
-                )
+                spec.placement_eligibility(&machine.machine, machine.storage.as_ref()),
+                ServicePlacementEligibility::Ineligible(_)
             )
         })
     {
@@ -204,6 +203,15 @@ mod tests {
             platforms(&captured, "anywhere"),
             ["linux/amd64", "linux/arm64"]
         );
+        let definition = ployz_build::remote::Definition {
+            targets: captured.targets.clone(),
+            retained_tags: Vec::new(),
+            image_contexts: Default::default(),
+            output: ployz_build::Output::Load,
+            no_cache: false,
+            pull: false,
+        };
+        ployz_build::remote::validate_capture(captured.inputs.root(), &definition).unwrap();
         // A Dockerfile keeps the host default; Deploy's coverage check decides.
         assert_eq!(platforms(&captured, "file"), ["linux/amd64"]);
         assert!(captured.cover_machines(&candidate, &[]).is_ok());
@@ -227,6 +235,30 @@ mod tests {
             "{error}"
         );
         assert!(captured.cover_machines(&candidate, &machines[..1]).is_ok());
+
+        let (mut dependency, dependency_candidate) = capture(
+            "services:\n  app:\n    build: {context: ., additional_contexts: {base: 'service:base'}}\n  base:\n    profiles: [build-only]\n    build: {context: ., x-recipe: railpack, platforms: [linux/amd64]}\n",
+        );
+        dependency
+            .cover_machines(&dependency_candidate, &machines)
+            .unwrap();
+        assert_eq!(platforms(&dependency, "base"), ["linux/amd64"]);
+
+        let (mut volume_build, volume_candidate) = capture(
+            "services:\n  app:\n    build: {context: ., x-recipe: railpack, platforms: [linux/amd64]}\n    volumes: [data:/data]\nx-volumes: {data: 1G}\n",
+        );
+        let mut storage_machines = machines.clone();
+        storage_machines[0].storage = Some(ployz_core::MachineStorageObservation::Ready);
+        storage_machines[1].storage = Some(ployz_core::MachineStorageObservation::Stateless);
+        volume_build
+            .cover_machines(&volume_candidate, &storage_machines)
+            .unwrap();
+        storage_machines[1].storage = None;
+        assert!(
+            volume_build
+                .cover_machines(&volume_candidate, &storage_machines)
+                .is_err()
+        );
 
         // A possible placement Railpack cannot build for is refused before
         // compilation: no rerun could cover it.

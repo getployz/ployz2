@@ -249,7 +249,11 @@ pub fn capture_build(
                 "Railpack supports only linux/amd64 and linux/arm64",
             ));
         }
-        if !platforms.is_empty() {
+        // Railpack consumes Target.platforms directly. Keep an inherited host
+        // default out of the recipe: Deploy may replace it after capture.
+        if railpack && !authored_platforms.contains(&name) {
+            build.remove("platforms");
+        } else if !platforms.is_empty() {
             build.insert(
                 Value::String("platforms".into()),
                 Value::Sequence(platforms.iter().cloned().map(Value::String).collect()),
