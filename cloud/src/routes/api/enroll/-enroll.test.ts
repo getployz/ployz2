@@ -199,20 +199,26 @@ describe("machine enrollment routes", () => {
       accepts_services: false,
       accepts_ingress: false,
     };
-    for (const initialPolicy of [
-      undefined,
-      { labels: complete.labels, accepts_services: false, accepts_ingress: false },
-      { ...complete, labels: { "rack/zone": "west" } },
-      { ...complete, labels: { "région": "west" } },
-      { ...complete, labels: { pool: "" } },
-      { ...complete, labels: { pool: " west" } },
-      { ...complete, labels: { pool: "west " } },
-      { ...complete, labels: { pool: "é" } },
-      { ...complete, labels: { pool: "🦀" } },
-      { ...complete, labels: { pool: "west\n" } },
-    ]) {
-      const response = await join({ ...identity, initialPolicy });
-      expect(response.status, JSON.stringify(initialPolicy)).toBe(422);
+    const invalidBodies: JsonValue[] = [
+      {
+        protocolVersion: identity.protocolVersion,
+        name: identity.name,
+        publicKey: identity.publicKey,
+        advertisedEndpoints: identity.advertisedEndpoints,
+      },
+      { ...identity, initialPolicy: { labels: complete.labels, accepts_services: false, accepts_ingress: false } },
+      { ...identity, initialPolicy: { ...complete, labels: { "rack/zone": "west" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { "région": "west" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: "" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: " west" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: "west " } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: "é" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: "🦀" } } },
+      { ...identity, initialPolicy: { ...complete, labels: { pool: "west\n" } } },
+    ];
+    for (const body of invalidBodies) {
+      const response = await join(body);
+      expect(response.status, JSON.stringify(body)).toBe(422);
     }
     expect(mocks.enroll).not.toHaveBeenCalled();
   });
