@@ -161,16 +161,17 @@ pub fn capture_build(
             railpack_recipes.push(recipe);
         }
         let mut platforms = requested_platforms(&name, build, railpack)?;
-        if railpack
-            && platforms.len() > 1
-            && build.get("provenance").is_some_and(|value| {
-                !matches!(value, Value::Null | Value::Bool(false))
-                    && value.as_str() != Some("false")
-            })
-        {
-            return Err(invalid_build(
-                "multi-platform Railpack does not support build.provenance; use false or a single platform",
-            ));
+        if railpack && platforms.len() > 1 {
+            for field in ["provenance", "sbom"] {
+                if build.get(field).is_some_and(|value| {
+                    !matches!(value, Value::Null | Value::Bool(false))
+                        && value.as_str() != Some("false")
+                }) {
+                    return Err(invalid_build(&format!(
+                        "multi-platform Railpack does not support build.{field}; use false or a single platform",
+                    )));
+                }
+            }
         }
         if platforms.is_empty()
             && let Some(platform) = project
