@@ -693,10 +693,9 @@ async fn build_location_selects_automatically_honours_a_pin_and_yields_to_local(
 #[ignore = "informing: requires the privileged Ployz testkit image with Buildx and host Docker with containerd storage and AMD64/ARM64 worker support"]
 async fn railpack_deploy_derives_machine_platforms_and_partial_peers_never_serve_missing_variants()
 {
-    let cluster = Cluster::create(
-        ClusterPlan::new(&format!("l3-build-806-{}", std::process::id()), 2).unwrap(),
-    )
-    .unwrap();
+    let plan = ClusterPlan::new(&format!("l3-build-806-{}", std::process::id()), 2).unwrap();
+    let first_container = plan.machine_name(0);
+    let cluster = Cluster::create(plan).unwrap();
     let machines = cluster.initialize_two().await.unwrap();
     let first = machines.first().unwrap().id;
     let second = machines.get(1).unwrap().id;
@@ -819,16 +818,25 @@ async fn railpack_deploy_derives_machine_platforms_and_partial_peers_never_serve
         .await
         .unwrap();
     let cancellation = CancellationToken::new();
-    let delivered = ployz::image::push(
-        &mut client,
-        built.content(),
-        None,
-        &[first.to_string()],
-        &cancellation,
-    )
-    .await
-    .unwrap();
-    assert_eq!(delivered.successes.len(), 1, "{:?}", delivered.failures);
+    // A direct push from this host needs a proxied connection the testkit's
+    // plain TCP endpoint does not offer, so Machine 0 loads the exact archive
+    // Docker would have pushed: the complete index with both variants.
+    let archive = root.join("multi.tar");
+    super::command([
+        "image",
+        "save",
+        "--output",
+        archive.to_str().unwrap(),
+        &built.built.reference,
+    ]);
+    super::command([
+        "cp",
+        archive.to_str().unwrap(),
+        &format!("{first_container}:/tmp/multi.tar"),
+    ]);
+    cluster
+        .machine_shell(0, "docker load --input /tmp/multi.tar")
+        .unwrap();
     let lister = client.clone();
     let listed = |machine: MachineId| {
         let mut client = lister.clone();
