@@ -12,6 +12,7 @@
 
 mod builder;
 mod execution;
+mod image_contexts;
 mod received_recipe;
 pub mod remote;
 mod upload;
@@ -58,6 +59,8 @@ pub fn builder_name() -> String {
 /// Paths point into the caller's private capture; nothing here is read from
 /// the original sources again.
 pub struct Request<'a> {
+    /// Completed Service image contexts served from their actual Build hosts.
+    pub image_contexts: &'a BTreeMap<String, ImageContext>,
     /// Captured Compose file describing every target of this Build.
     pub compose_file: &'a Path,
     /// Private directory the build runs in, so no stray file can join it.
@@ -114,6 +117,18 @@ pub struct BuiltImage {
     pub tags: Vec<String>,
     /// The platform actually present, not the one requested.
     pub platform: String,
+}
+
+/// An immutable named image context, delivered by the existing Machine image
+/// server. It carries no Machine selection or Deploy policy into the host.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageContext {
+    /// Repository reference pinned to the completed manifest’s SHA-256 digest.
+    pub reference: String,
+    /// The single platform actually available in that completed image.
+    pub platform: String,
+    /// Open serving endpoint of the Machine containing that exact content.
+    pub source: ployz_core::ImageIngestDestination,
 }
 
 /// Why a Build Attempt did not produce the image it was asked for.
@@ -250,12 +265,25 @@ pub fn execute_admitted(
     docker
         .run("check Buildx", &["buildx", "version"], Streams::Captured)
         .map_err(|error| error.at(Stage::Preparation))?;
+    image_contexts::prepare(request).map_err(|error| error.at(Stage::Preparation))?;
     let builder =
         Builder::acquire(&docker, admission.lock).map_err(|error| error.at(Stage::Preparation))?;
     let result = (|| {
         let native = builder
             .native_platform(request.targets)
             .map_err(|error| error.at(Stage::Preparation))?;
+        for image in request.image_contexts.values() {
+            for target in request.targets {
+                let platform = target.platform.as_deref().unwrap_or(&native);
+                if !covers(&image.platform, platform) {
+                    return Err(BuildError::Request(format!(
+                        "image context {} contains {}, but this Build requires {platform}",
+                        image.reference, image.platform
+                    ))
+                    .at(Stage::Preparation));
+                }
+            }
+        }
         let preparation =
             railpack::prepare(&docker, request).map_err(|error| error.at(Stage::Preparation))?;
         let overrides = preparation

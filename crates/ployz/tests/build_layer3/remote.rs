@@ -215,6 +215,7 @@ async fn request(
     sender
         .send(
             remote::encode(&Input::Start(Definition {
+                image_contexts: Default::default(),
                 targets: vec![ployz_build::Target {
                     name: "app".into(),
                     platform: None,
@@ -245,4 +246,153 @@ async fn terminal(response: &mut tonic::Streaming<OpaquePayload>) -> Outcome {
             return outcome;
         }
     }
+}
+
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
+async fn remote_build_delivers_dependency_content_and_deploys_without_a_registry() {
+    let cluster = Cluster::create(
+        ClusterPlan::new(&format!("l3-build-803-{}", std::process::id()), 2).unwrap(),
+    )
+    .unwrap();
+    let machines = cluster.initialize_two().await.unwrap();
+    let selected = machines.get(1).unwrap().id;
+    let destination = machines.first().unwrap().id;
+    let address = cluster.api_address(0).unwrap();
+    let root = std::env::temp_dir().join(format!("ployz-build-803-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(root.join("base")).unwrap();
+    fs::create_dir_all(root.join("app")).unwrap();
+    let image = format!("registry.invalid/ployz-803-{}:shared", std::process::id());
+    fs::write(root.join("compose.yaml"), format!(
+        "name: remote\nservices:\n  base:\n    image: {image}\n    build: ./base\n    profiles: [build-only]\n  app:\n    image: {image}\n    pull_policy: never\n    x-machines: [{destination}]\n    build:\n      context: ./app\n      additional_contexts:\n        base: service:base\n"
+    )).unwrap();
+    fs::write(
+        root.join("base/Dockerfile"),
+        "FROM alpine:3.23.3\nRUN echo dependency-output > /dependency\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("app/Dockerfile"),
+        "FROM base\nCOPY payload /payload\nCMD [\"sleep\", \"3600\"]\n",
+    )
+    .unwrap();
+    fs::write(root.join("app/payload"), "remote-application-ran\n").unwrap();
+    fs::write(
+        root.join("docker"),
+        format!(
+            "#!/bin/sh\nprintf invoked > '{}'\nexit 99\n",
+            root.join("local-docker-called").display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(root.join("docker"), fs::Permissions::from_mode(0o700)).unwrap();
+    let output = tokio::time::timeout(
+        Duration::from_secs(240),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .current_dir(&root)
+            .env("PATH", &root)
+            .env("HOME", &root)
+            .env("PLOYZ_CONFIG", root.join("config.yaml"))
+            .env("DOCKER_HOST", "unix:///no-local-docker.sock")
+            .args([
+                "--connect",
+                &address,
+                "deploy",
+                &format!("--remote={selected}"),
+                "--yes",
+                "app",
+            ])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!root.join("local-docker-called").exists());
+    let container = cluster
+        .machine_shell(0, "docker ps -q --filter label=ployz.service.name=app")
+        .unwrap();
+    let container = container.trim();
+    assert!(!container.is_empty(), "application was not running");
+    assert_eq!(
+        cluster
+            .machine_shell(
+                0,
+                &format!("docker exec {container} cat /dependency /payload")
+            )
+            .unwrap(),
+        "dependency-output\nremote-application-ran\n"
+    );
+    let spec_image = cluster
+        .machine_shell(
+            0,
+            &format!("docker inspect {container} --format '{{{{.Config.Image}}}}'"),
+        )
+        .unwrap();
+    assert!(spec_image.contains("@sha256:"), "{spec_image}");
+    assert_eq!(
+        cluster
+            .machine_shell(1, "docker ps -q --filter label=ployz.service.name=app")
+            .unwrap(),
+        ""
+    );
+    // The same captured graph also works when each Build runs on a different Machine.
+    let load = ployz::compose::LoadOptions {
+        command: "build".into(),
+        all_profiles: true,
+        working_dir: Some(root.clone()),
+        ..Default::default()
+    };
+    let mut project = ployz::compose::load_project(&load).unwrap();
+    let options = ployz::compose::BuildOptions {
+        services: vec!["app".into()],
+        ..Default::default()
+    };
+    let plan = ployz::compose::plan_build(&project, &options).unwrap();
+    let captured = ployz::compose::capture_build(&plan, &options, &mut project).unwrap();
+    let mut client = ployz::connect::connect(&root.join("config.yaml"), Some(&address), None)
+        .await
+        .unwrap();
+    let images = captured
+        .execute_on_machines(
+            &client,
+            &std::collections::BTreeMap::from([
+                ("base".into(), selected),
+                ("app".into(), destination),
+            ]),
+            CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let app = images.iter().find(|image| image.name == "app").unwrap();
+    let result = ployz::image::push_from_machine(
+        &mut client,
+        &app.built,
+        destination,
+        &[selected.to_string()],
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.successes.len(), 1);
+    assert!(result.failures.is_empty() && result.omissions.is_empty());
+    assert_eq!(
+        cluster
+            .machine_shell(
+                1,
+                &format!(
+                    "docker run --rm --pull=never {} cat /dependency /payload",
+                    app.built.reference,
+                )
+            )
+            .unwrap(),
+        "dependency-output\nremote-application-ran\n"
+    );
+    fs::remove_dir_all(root).unwrap();
 }

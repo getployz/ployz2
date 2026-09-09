@@ -8,6 +8,22 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub use crate::received_recipe::{validate_capture, validate_remote_context};
 pub use crate::upload::{Upload, upload};
 
+/// Whether a completed image reports a well-formed Linux platform. Worker
+/// capability checks, rather than a fixed architecture list, determine support.
+#[must_use]
+pub fn linux_platform(platform: &str) -> bool {
+    let valid = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    };
+    let mut parts = platform.split('/');
+    parts.next() == Some("linux")
+        && parts.next().is_some_and(valid)
+        && parts.next().is_none_or(valid)
+        && parts.next().is_none()
+}
 /// Invalid or unavailable captured input at the transport trust boundary.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -32,6 +48,9 @@ pub const CHUNK_SIZE: usize = 32 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
+    /// Completed Service contexts, bound to immutable content and serving endpoints.
+    #[serde(default)]
+    pub image_contexts: std::collections::BTreeMap<String, crate::ImageContext>,
     /// Targets in this admitted attempt.
     pub targets: Vec<Target>,
     /// Requested disposition of completed output.
@@ -135,6 +154,21 @@ impl Outcome {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn linux_platform_validation_keeps_worker_architectures_and_rejects_malformed_values() {
+        for value in ["linux/amd64", "linux/386", "linux/arm/v7", "linux/ppc64le"] {
+            assert!(super::linux_platform(value), "{value}");
+        }
+        for value in [
+            "windows/amd64",
+            "linux//v7",
+            "linux/arm/",
+            "linux/arm/v7/extra",
+        ] {
+            assert!(!super::linux_platform(value), "{value}");
+        }
+    }
+
     #[test]
     fn oversized_messages_are_rejected_before_sending() {
         assert!(super::encode(&"x".repeat(super::FRAME_LIMIT)).is_err());

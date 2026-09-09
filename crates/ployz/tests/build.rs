@@ -53,11 +53,11 @@ services:
             .iter()
             .map(|service| service.name.as_str())
             .collect::<Vec<_>>(),
-        ["api", "base"]
+        ["base", "api"]
     );
-    assert_eq!(direct.first().unwrap().image, "example.test/api:version2");
+    assert_eq!(direct.get(1).unwrap().image, "example.test/api:version2");
     assert_eq!(
-        direct.get(1).unwrap().image,
+        direct.first().unwrap().image,
         project.services.get("base").unwrap().container.image
     );
 
@@ -75,7 +75,7 @@ services:
             .iter()
             .map(|service| service.name.as_str())
             .collect::<Vec<_>>(),
-        ["api", "base", "database", "frontend"]
+        ["base", "database", "api", "frontend"]
     );
     assert_eq!(
         with_deps.get(3).unwrap().image,
@@ -119,7 +119,7 @@ services:
             .iter()
             .map(|service| service.name.as_str())
             .collect::<Vec<_>>(),
-        ["api", "base"]
+        ["base", "api"]
     );
 
     let cycle = parse_normalized(
@@ -139,6 +139,7 @@ services:
         .to_string()
         .contains("build dependency cycle")
     );
+    assert!(plan_build(&cycle, &BuildOptions::default()).is_err());
 }
 
 #[test]
@@ -695,3 +696,45 @@ mod capture;
 
 #[path = "build/railpack.rs"]
 mod railpack;
+
+#[test]
+fn deploy_binds_each_service_to_its_build_when_requested_tags_are_shared() {
+    use ployz::compose::BuildLocation;
+    let project = parse_normalized(
+        "services: {one: {image: 'example.test/shared:latest', build: .}, two: {image: 'example.test/shared:latest', build: .}}",
+        ".",
+    ).unwrap();
+    let mut candidate = project.capture(
+        ployz_core::ProjectName::parse("app").unwrap(),
+        Default::default(),
+        vec![],
+        None,
+        vec![],
+    );
+    let builds =
+        [("one", FIRST_CONTENT), ("two", SECOND_CONTENT)].map(|(name, digest)| BuiltService {
+            name: name.into(),
+            image: "example.test/shared:latest".into(),
+            machines: vec![],
+            location: BuildLocation::Machine(ployz_core::MachineId::parse("a".repeat(32)).unwrap()),
+            built: ployz_build::BuiltImage {
+                reference: format!("example.test/shared@{digest}"),
+                tags: vec!["example.test/shared:latest".into()],
+                platform: "linux/amd64".into(),
+            },
+        });
+    candidate.bind_builds(&builds);
+    for (name, digest) in [("one", FIRST_CONTENT), ("two", SECOND_CONTENT)] {
+        let service = candidate
+            .intent()
+            .target
+            .iter()
+            .find(|service| service.name.as_str() == name)
+            .unwrap();
+        assert_eq!(
+            service.container.image,
+            format!("example.test/shared@{digest}")
+        );
+        assert_eq!(service.container.pull_policy, ployz_core::PullPolicy::Never);
+    }
+}

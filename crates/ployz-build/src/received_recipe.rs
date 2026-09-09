@@ -35,6 +35,28 @@ pub fn validate_capture(root: &Path, definition: &Definition) -> Result<(), Inpu
     {
         return Err("invalid Build target names".into());
     }
+    if definition.image_contexts.len() > 128
+        || definition.image_contexts.keys().any(|name| {
+            names.contains(name.as_str())
+                || name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
+        })
+    {
+        return Err("invalid completed Build context names".into());
+    }
+    for context in definition.image_contexts.values() {
+        validate_remote_context(&format!("docker-image://{}", context.reference))?;
+        if context.source.port == 0 || !crate::remote::linux_platform(&context.platform) {
+            return Err("invalid completed Build image context".into());
+        }
+    }
+    let context_names = names
+        .iter()
+        .copied()
+        .chain(definition.image_contexts.keys().map(String::as_str))
+        .collect();
     let bytes = fs::read(root.join("compose.yaml")).map_err(|_| "Build recipe is missing")?;
     let document: Value =
         serde_norway::from_slice(&bytes).map_err(|_| "invalid captured Build recipe")?;
@@ -97,7 +119,7 @@ pub fn validate_capture(root: &Path, definition: &Definition) -> Result<(), Inpu
                 .get("context")
                 .ok_or("Build recipe has no captured context")?,
         )?;
-        context_path(root, context, &names, default_ssh)?;
+        context_path(root, context, &context_names, default_ssh)?;
         if let Some(recipe) = build.get("dockerfile") {
             let recipe = text(recipe)?;
             if remote(context) {
@@ -115,7 +137,7 @@ pub fn validate_capture(root: &Path, definition: &Definition) -> Result<(), Inpu
             match contexts {
                 Value::Mapping(contexts) => {
                     for value in contexts.values() {
-                        context_path(root, text(value)?, &names, default_ssh)?;
+                        context_path(root, text(value)?, &context_names, default_ssh)?;
                     }
                 }
                 Value::Sequence(contexts) => {
@@ -123,7 +145,7 @@ pub fn validate_capture(root: &Path, definition: &Definition) -> Result<(), Inpu
                         let (_, value) = text(value)?
                             .split_once('=')
                             .ok_or("invalid named Build context")?;
-                        context_path(root, value, &names, default_ssh)?;
+                        context_path(root, value, &context_names, default_ssh)?;
                     }
                 }
                 Value::Null => {}
@@ -397,6 +419,7 @@ mod tests {
         fs::write(root.join("private/key"), "captured-key").unwrap();
         fs::write(root.join("source/key"), "source-content").unwrap();
         let definition = Definition {
+            image_contexts: Default::default(),
             targets: vec![crate::Target {
                 name: "api".into(),
                 platform: None,

@@ -22,6 +22,9 @@ pub(super) async fn execute(
     progress: impl Fn(Progress),
 ) -> Outcome {
     let mut evidence = ployz_build::WorkEvidence::new(&definition.targets);
+    if cancellation.is_cancelled() {
+        return failed(Stage::Admission, "Build cancelled before submission").with_work(evidence);
+    }
     if let Err(error) = remote::validate_capture(inputs.root(), &definition) {
         return failed(Stage::Preparation, error.to_string()).with_work(evidence);
     }
@@ -174,7 +177,7 @@ fn validate_outcome(
                     .and_then(|reference| reference.digest().map(str::to_owned))
                     .is_none()
                     || image.tags.is_empty()
-                    || !linux_platform(&image.platform)
+                    || !remote::linux_platform(&image.platform)
             }) {
                 return unknown(
                     Stage::Output,
@@ -204,19 +207,6 @@ fn validate_outcome(
     outcome
 }
 
-fn linux_platform(platform: &str) -> bool {
-    let valid = |part: &str| {
-        !part.is_empty()
-            && part
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-    };
-    let mut parts = platform.split('/');
-    parts.next() == Some("linux")
-        && parts.next().is_some_and(valid)
-        && parts.next().is_none_or(valid)
-        && parts.next().is_none()
-}
 fn failed(stage: Stage, message: impl Into<String>) -> Outcome {
     Outcome::Failed {
         work: Default::default(),

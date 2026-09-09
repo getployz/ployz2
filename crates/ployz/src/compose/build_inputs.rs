@@ -124,6 +124,42 @@ impl BuildInputs {
         })
     }
 
+    /// Isolate one target's generated recipe while retaining captured bytes.
+    pub(super) fn for_service(&self, name: &str) -> Result<Self, ComposeError> {
+        let inputs = Self::new()?;
+        // ponytail: copy the already-filtered capture per remote target. Select
+        // per-target source trees if large multi-Service captures become costly.
+        for area in ["source", "private"] {
+            let source = self.root.join(area);
+            for entry in entries(&source, &source, None).map_err(input_error)? {
+                copy(
+                    &entry,
+                    &inputs
+                        .root
+                        .join(area)
+                        .join(entry.file_name().expect("entry")),
+                    &source,
+                    None,
+                )
+                .map_err(input_error)?;
+            }
+        }
+        let mut recipe: serde_norway::Value = serde_norway::from_slice(
+            &fs::read(self.root.join("compose.yaml")).map_err(input_error)?,
+        )
+        .map_err(|error| ComposeError::Invalid(error.to_string()))?;
+        recipe
+            .get_mut("services")
+            .and_then(serde_norway::Value::as_mapping_mut)
+            .ok_or_else(|| ComposeError::Invalid("captured Build has no services".into()))?
+            .retain(|key, _| key.as_str() == Some(name));
+        inputs.compose(
+            &serde_norway::to_string(&recipe)
+                .map_err(|error| ComposeError::Invalid(error.to_string()))?,
+        )?;
+        Ok(inputs)
+    }
+
     /// Copy a source once, rejecting edits observed during the copy.
     ///
     /// # Errors

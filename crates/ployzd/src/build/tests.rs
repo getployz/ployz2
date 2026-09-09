@@ -88,6 +88,7 @@ impl Fixture {
         sender
             .send(
                 remote::encode(&Input::Start(Definition {
+                    image_contexts: Default::default(),
                     targets: vec![ployz_build::Target {
                         name: "api".into(),
                         platform: None,
@@ -368,6 +369,7 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
     let (sender, receiver) = mpsc::channel(2);
     sender
         .send(Ok(remote::encode(&Input::Start(Definition {
+            image_contexts: Default::default(),
             targets: vec![ployz_build::Target {
                 name: "api".into(),
                 platform: None,
@@ -453,7 +455,12 @@ async fn terminal_failures_preserve_completed_images_and_uncertain_targets() {
         if failure != "fail-cleanup" {
             assert_eq!(
                 work.0.get("web"),
-                Some(&ployz_build::TargetEvidence::Unknown)
+                Some(&if failure == "fail-after-output" {
+                    // The next target is never submitted after this step fails.
+                    ployz_build::TargetEvidence::Unattempted
+                } else {
+                    ployz_build::TargetEvidence::Unknown
+                })
             );
         }
     }

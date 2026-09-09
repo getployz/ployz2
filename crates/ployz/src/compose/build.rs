@@ -10,6 +10,9 @@ use serde_norway::Value;
 
 use super::{BuildSpec, ComposeError, ComposeProject, LoadOptions, build_inputs::BuildInputs};
 
+#[path = "remote_steps.rs"]
+mod remote_steps;
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BuildOptions {
     pub build_args: Vec<String>,
@@ -33,18 +36,16 @@ pub fn plan_build(
     project: &ComposeProject,
     options: &BuildOptions,
 ) -> Result<Vec<BuildService>, ComposeError> {
-    if options.services.is_empty() {
-        return project
-            .builds
-            .keys()
-            .map(|name| build_service(project, name))
-            .collect();
-    }
+    let names = if options.services.is_empty() {
+        project.builds.keys().cloned().collect::<Vec<_>>()
+    } else {
+        options.services.clone()
+    };
 
     let mut selected = Vec::new();
     let mut seen = BTreeSet::new();
     let mut visiting = BTreeSet::new();
-    for name in &options.services {
+    for name in &names {
         include_service(
             project,
             name,
@@ -71,9 +72,24 @@ pub struct CapturedBuild {
     inputs: BuildInputs,
 }
 
+/// Where a completed image is available; Machine identity is already resolved.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BuildLocation {
+    /// The invoking client’s Docker store contains the completed image.
+    #[default]
+    Local,
+    /// This resolved Machine contains the completed image.
+    Machine(ployz_core::MachineId),
+}
+
 /// A Service whose image this command built, bound to the content produced.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BuiltService {
+    /// Raw Compose Build target name, including build-only dependencies.
+    /// Build names may contain dots/underscores, unlike Deploy Service names.
+    pub name: String,
+    /// Store that holds this completed image.
+    pub location: BuildLocation,
     /// Reference the Service requested, used when the image is published.
     pub image: String,
     /// Machines this Service is placed on.
@@ -173,6 +189,26 @@ pub fn capture_build(
         }
         targets.push(ployz_build::Target { name, platform });
         retain_service_image_tag(&service.name, image, build)?;
+        if options.output == Output::Load {
+            // Bake can import multiple Services under one requested tag in any
+            // order. Retain every result before a sibling or later client moves it.
+            let reference = service
+                .image
+                .parse::<oci_client::Reference>()
+                .map_err(|error| invalid_build(&error.to_string()))?;
+            let retained = format!(
+                "{}/{}:ployz-build-{}",
+                reference.registry(),
+                reference.repository(),
+                uuid::Uuid::new_v4()
+            );
+            let tags = build
+                .entry(Value::String("tags".into()))
+                .or_insert_with(|| Value::Sequence(vec![Value::String(service.image.clone())]));
+            tags.as_sequence_mut()
+                .ok_or_else(|| invalid_build("invalid build tags"))?
+                .push(Value::String(retained));
+        }
         if let Some(ssh) = build
             .get_mut(Value::String("ssh".into()))
             .and_then(Value::as_sequence_mut)
@@ -526,6 +562,23 @@ impl CapturedBuild {
         cancellation: tokio_util::sync::CancellationToken,
         progress: impl Fn(ployz_build::Progress),
     ) -> ployz_build::remote::Outcome {
+        if self.options.output == Output::Load {
+            let locations = self
+                .targets
+                .iter()
+                .map(|target| (target.name.clone(), machine_id))
+                .collect();
+            return match self
+                .execute_remote_steps(client, &locations, cancellation, progress)
+                .await
+            {
+                Ok(images) => ployz_build::remote::Outcome::Images {
+                    machine_id,
+                    images: images.into_iter().map(|service| service.built).collect(),
+                },
+                Err(outcome) => outcome,
+            };
+        }
         if !self.railpack.is_empty() {
             return ployz_build::remote::Outcome::Failed {
                 stage: ployz_build::Stage::Preparation,
@@ -534,6 +587,7 @@ impl CapturedBuild {
             };
         }
         let definition = ployz_build::remote::Definition {
+            image_contexts: Default::default(),
             targets: self.targets,
             output: self.options.output,
             no_cache: self.options.no_cache,
@@ -548,6 +602,25 @@ impl CapturedBuild {
             progress,
         )
         .await
+    }
+
+    /// Execute remotely and bind each completed output to its captured Service.
+    /// # Errors
+    /// Failed, unknown, or image-less outcomes cannot be used by Deploy.
+    pub async fn execute_remote_images(
+        self,
+        client: &crate::connect::Client,
+        machine_id: ployz_core::MachineId,
+        cancellation: tokio_util::sync::CancellationToken,
+        progress: impl Fn(ployz_build::Progress),
+    ) -> Result<Vec<BuiltService>, ComposeError> {
+        let locations = self
+            .targets
+            .iter()
+            .map(|target| (target.name.clone(), machine_id))
+            .collect();
+        self.execute_on_machines(client, &locations, cancellation, progress)
+            .await
     }
 
     /// Build this capture through the shared runner, without reading the
@@ -575,6 +648,7 @@ impl CapturedBuild {
                 .into_owned(),
         );
         let images = ployz_build::execute(&ployz_build::Request {
+            image_contexts: &BTreeMap::new(),
             compose_file: Path::new("compose.yaml"),
             working_dir: self.inputs.root(),
             environment: &environment,
@@ -602,6 +676,8 @@ impl CapturedBuild {
             .iter()
             .zip(images)
             .map(|(service, built)| BuiltService {
+                name: service.name.clone(),
+                location: BuildLocation::Local,
                 image: service.image.clone(),
                 machines: service.machines.clone(),
                 built,
@@ -823,7 +899,6 @@ fn include_service<'a>(
         return Ok(());
     }
     visiting.insert(name);
-    selected.push(name);
     if let Some(build) = project.builds.get(name) {
         for dependency in build.additional_services() {
             include_service(project, dependency, deps, visiting, seen, selected)?;
@@ -841,6 +916,7 @@ fn include_service<'a>(
             )?;
         }
     }
+    selected.push(name);
     visiting.remove(name);
     seen.insert(name);
     Ok(())

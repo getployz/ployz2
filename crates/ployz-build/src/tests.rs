@@ -189,6 +189,7 @@ exit 0
     let targets = [target("api", None), target("web", None)];
     let environment = BTreeMap::new();
     let request = Request {
+        image_contexts: &BTreeMap::new(),
         railpack: &[],
         compose_file: &directory.join("compose.json"),
         working_dir: &directory,
@@ -284,7 +285,9 @@ fn requested_output_selects_exclusive_bake_behavior() {
     let planned = plan(&targets).unwrap();
     let metadata = Path::new("/private/build-metadata.json");
     let build_args = ["MODE=release".to_owned()];
+    let image_contexts = BTreeMap::new();
     let request = |output| Request {
+        image_contexts: &image_contexts,
         railpack: &[],
         compose_file: Path::new("/private/compose.yaml"),
         working_dir: Path::new("/private"),

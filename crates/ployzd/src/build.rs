@@ -53,7 +53,10 @@ async fn attempt(
         },
         _ => return failed(Stage::Admission, "Build request ended before admission"),
     };
-    if definition.targets.is_empty() || definition.targets.len() > 128 {
+    if definition.targets.is_empty()
+        || definition.targets.len() > 128
+        || definition.image_contexts.len() > 128
+    {
         return failed(
             Stage::Admission,
             "Build must name between one and 128 targets",
@@ -151,7 +154,7 @@ async fn pump(
 
 fn receive_and_execute(
     machine_id: MachineId,
-    definition: Definition,
+    mut definition: Definition,
     mut source: mpsc::Receiver<OpaquePayload>,
     admission: Admission,
     policy: HostPolicy,
@@ -214,6 +217,21 @@ fn receive_and_execute(
         }
     };
     progress(Progress::Stage(Stage::Upload));
+    // Keep bytes on the Machines. Reuse the Docker peer-pull bridge because
+    // Buildx cannot reliably encode IPv6 registry keys in its TOML config.
+    let mut proxies = Vec::new();
+    for context in definition.image_contexts.values_mut() {
+        let proxy = match tokio::runtime::Handle::current()
+            .block_on(crate::docker::ImageProxy::open(context.source))
+        {
+            Ok(proxy) => proxy,
+            Err(error) => return failed(Stage::Preparation, error.to_string()),
+        };
+        context.source.management_address =
+            ployz_core::ManagementAddress(std::net::Ipv4Addr::LOCALHOST.to_ipv6_mapped());
+        context.source.port = proxy.port;
+        proxies.push(proxy);
+    }
     match upload.execute(&definition, admission, Some(&policy.docker), &progress) {
         Ok(images) => match definition.output {
             Output::Load => Outcome::Images { machine_id, images },

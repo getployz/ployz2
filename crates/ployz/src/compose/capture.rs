@@ -30,6 +30,20 @@ pub struct CapturedCompose {
 }
 
 impl CapturedCompose {
+    /// Use each Service's completed content for Containers and hooks. A tag
+    /// overwritten by another Service or client cannot substitute its image.
+    pub fn bind_builds(&mut self, builds: &[super::BuiltService]) {
+        for service in &mut self.intent.target {
+            if let Some(build) = builds
+                .iter()
+                .find(|build| build.name == service.name.as_str())
+            {
+                service.container.image.clone_from(&build.built.reference);
+                service.container.pull_policy = ployz_core::PullPolicy::Never;
+            }
+        }
+    }
+
     /// Identity of this capture, unchanged by later edits to the source files.
     #[must_use]
     pub fn id(&self) -> &str {
