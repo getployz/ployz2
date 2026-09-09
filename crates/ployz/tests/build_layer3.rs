@@ -346,6 +346,8 @@ RUN --mount=type=secret,id=token test ! -e /source/token && test ! -e /source/ig
     drop(cleanup);
 }
 
+#[path = "build_layer3/remote.rs"]
+mod remote;
 #[tokio::test]
 #[ignore = "informing: requires Docker with the containerd image store and the privileged Ployz testkit"]
 async fn railpack_build_and_deploy_preserve_variables_cache_and_failure_boundaries() {
@@ -579,3 +581,6 @@ async fn railpack_build_and_deploy_preserve_variables_cache_and_failure_boundari
     fs::remove_dir_all(ssh).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[path = "build_layer3/policy.rs"]
+mod policy;

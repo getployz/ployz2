@@ -252,18 +252,24 @@ x-volumes:
         ),
     )
     .unwrap();
-    // Buildx still parses the captured Compose file, but this shape check needs
-    // no daemon, image pull, or BuildKit container.
+    let calls = root.join("bake-calls");
     let docker = executable(
         &root,
         "docker",
-        r#"#!/bin/sh
+        &format!(
+            r#"#!/bin/sh
 case "$1 $2" in
-  'buildx create'|'buildx rm') exit 0 ;;
-  'buildx bake') exec /usr/bin/docker "$@" --print ;;
+  'info --format') echo '{{"OSType":"linux","Architecture":"amd64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
+  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
+  'buildx bake') printf '%s\n' "$@" > '{}' ;;
+  'context show') echo default ;;
+  'buildx version'|'buildx create'|'buildx inspect'|'buildx rm') exit 0 ;;
   *) exit 99 ;;
 esac
 "#,
+            ployz_build::builder_name(),
+            calls.display()
+        ),
     );
     let load = LoadOptions {
         command: "build".into(),
@@ -278,8 +284,10 @@ esac
         ..Default::default()
     };
     let plan = plan_build(&project, &options).unwrap();
-    let result = execute_build(&plan, &options, &load, &mut project);
-    result.unwrap();
+    execute_build(&plan, &options, &load, &mut project).unwrap();
+    let calls = fs::read_to_string(calls).unwrap();
+    assert!(calls.lines().any(|argument| argument == "--check"));
+    assert!(calls.lines().any(|argument| argument == "api"));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -508,12 +516,16 @@ fn build_cli_selects_recipes_without_fallback() {
             r#"#!/bin/sh
 printf '%s\n' "$1 $2" >> '{}'
 case "$1 $2" in
+  'info --format') echo '{{"OSType":"linux","Architecture":"amd64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
+  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'version --format') printf 'linux/amd64\n' ;;
+  'context show') echo default ;;
   'buildx bake') echo dockerfile-failed >&2; exit 23 ;;
   'start --attach') echo preparation-failed >&2; exit 24 ;;
 esac
 "#,
-            calls.display()
+            calls.display(),
+            ployz_build::builder_name()
         ),
     );
     let path = std::env::join_paths(
