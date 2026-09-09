@@ -28,7 +28,7 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
     let project = ProjectName::parse("app").unwrap();
     let mut ineligible = spec_with_sources(Vec::new());
     ineligible.placement = ployz_core::Placement {
-        machines: vec![ployz_core::MachineTarget::parse("other").unwrap()],
+        constraints: vec!["node.labels.target==other".parse().unwrap()],
     };
 
     let ordinary = runtime

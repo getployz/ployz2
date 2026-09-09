@@ -596,7 +596,7 @@ impl MachineRpc for MachineService {
         self.containers()
             .map_err(|error| Status::unavailable(error.message))?;
         Ok(Response::new(crate::build::start(
-            self.local_record()?.id(),
+            self.local.clone(),
             request.into_inner(),
             self.builds.clone(),
         )))

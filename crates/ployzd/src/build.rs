@@ -25,7 +25,7 @@ struct AttemptState {
 }
 
 pub(crate) fn start(
-    machine_id: MachineId,
+    local: crate::machine::LocalMachine,
     requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
     runner: std::sync::Arc<Runner>,
 ) -> RpcStream {
@@ -33,7 +33,7 @@ pub(crate) fn start(
     tokio::spawn(async move {
         let shutdown = runner.shutdown.clone();
         let state = Arc::new(AttemptState::default());
-        let outcome = attempt(machine_id, requests, &events, runner, state.clone()).await;
+        let outcome = attempt(local, requests, &events, runner, state.clone()).await;
         let message = "Build terminal report exceeds the response size limit";
         let fallback = match &outcome {
             Outcome::Unknown { stage, .. } => Outcome::Unknown {
@@ -65,8 +65,19 @@ pub(crate) fn start(
     ReceiverStream::new(receiver)
 }
 
+fn require_build_acceptance(local: &crate::machine::LocalMachine) -> Result<MachineId, String> {
+    let record = local.record().map_err(|error| error.to_string())?;
+    let machine = record
+        .machine()
+        .ok_or("Machine is not participating; Build execution was not attempted")?;
+    if !machine.accepts_builds {
+        return Err("Machine does not accept Builds; execution was not attempted".into());
+    }
+    Ok(machine.id)
+}
+
 async fn attempt(
-    machine_id: MachineId,
+    local: crate::machine::LocalMachine,
     mut requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     runner: Arc<Runner>,
@@ -90,6 +101,9 @@ async fn attempt(
         );
     }
     let work = ployz_build::WorkEvidence::new(&definition.targets);
+    if let Err(reason) = require_build_acceptance(&local) {
+        return failed(Stage::Admission, reason).with_work(work);
+    }
     let permit = match runner.enter() {
         Ok(queue::Entry::Active(permit)) => permit,
         Ok(queue::Entry::Waiting(waiting)) => {
@@ -128,6 +142,10 @@ async fn attempt(
         Ok(Ok(admission)) => admission,
         Ok(Err(error)) => return failure(Stage::Admission, error).with_work(work),
         Err(_) => return failed(Stage::Admission, "Build admission task failed"),
+    };
+    let machine_id = match require_build_acceptance(&local) {
+        Ok(id) => id,
+        Err(reason) => return failed(Stage::Admission, reason).with_work(work),
     };
     *state.evidence.lock().expect("Build evidence lock") =
         ployz_build::WorkEvidence::new(&definition.targets);

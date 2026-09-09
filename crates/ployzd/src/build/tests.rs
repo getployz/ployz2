@@ -22,6 +22,7 @@ struct Fixture {
     policy: HostPolicy,
     cluster: tokio::task::JoinHandle<()>,
     machine: ployz_core::Machine,
+    local: crate::machine::LocalMachine,
     address: String,
     server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 }
@@ -58,8 +59,14 @@ impl Fixture {
         let (runtime, _) = crate::docker::test_support::fake_runtime_with(Default::default()).await;
         let (replicated, cluster) = crate::corrosion::fake_cluster::store().await;
         replicated.publish_local_machine(&machine).await.unwrap();
+        let store = Arc::new(Mutex::new(store));
+        let local =
+            crate::machine::LocalMachine::new(store.clone(), restart.clone()).with_cluster(Some((
+                replicated.clone(),
+                crate::corrosion::AdminClient::new("/no/admin"),
+            )));
         let mut service = MachineService::with_cluster(
-            Arc::new(Mutex::new(store)),
+            store,
             restart,
             Some((replicated, crate::corrosion::AdminClient::new("/no/admin"))),
         )
@@ -87,6 +94,7 @@ impl Fixture {
             policy,
             cluster,
             machine,
+            local,
             address,
             server,
         }
@@ -165,6 +173,46 @@ async fn terminal(response: &mut tonic::Streaming<OpaquePayload>) -> Outcome {
 }
 
 #[tokio::test]
+async fn build_revocation_rejects_new_and_queued_work_but_preserves_admitted_upload() {
+    let fixture = Fixture::new().await;
+    let (first, mut running) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut running).await, Event::Admitted { .. }));
+    let (_second, mut queued) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        event(&mut queued).await,
+        Event::Progress(Progress::Stage(Stage::Queued))
+    ));
+    fixture
+        .local
+        .update(
+            serde_json::from_value(serde_json::json!({
+                "update": { "accepts_builds": false }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (_third, mut rejected) = fixture.request(Output::Load).await;
+    assert!(matches!(terminal(&mut rejected).await, Outcome::Failed {
+        stage: Stage::Admission, message, ..
+    } if message.contains("does not accept Builds")));
+    // Admission remains owned by the first stream after revocation.
+    assert!(Admission::try_acquire_with(&fixture.policy).is_err());
+    drop(first);
+    assert!(matches!(
+        terminal(&mut running).await,
+        Outcome::Failed {
+            stage: Stage::Upload,
+            ..
+        }
+    ));
+    assert!(matches!(terminal(&mut queued).await, Outcome::Failed {
+        stage: Stage::Admission, message, ..
+    } if message.contains("does not accept Builds")));
+    assert!(!fixture.root.join("executed").exists());
+}
+
+#[tokio::test]
 async fn admitted_upload_queues_competitors_and_disconnect_releases_unused_ownership() {
     let fixture = Fixture::new().await;
     let (first, mut response) = fixture.request(Output::Load).await;
@@ -197,6 +245,45 @@ async fn admitted_upload_queues_competitors_and_disconnect_releases_unused_owner
     let _ = terminal(&mut queued).await;
     let (_third, mut admitted) = fixture.request(Output::Load).await;
     assert!(matches!(event(&mut admitted).await, Event::Admitted { .. }));
+}
+
+#[tokio::test]
+async fn running_build_finishes_after_build_acceptance_is_revoked() {
+    let fixture = Fixture::new().await;
+    let capture = fixture.capture();
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    fs::write(fixture.root.join("hold-build"), "").unwrap();
+    let revoke = async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !fixture.root.join("executed").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        fixture
+            .local
+            .update(
+                serde_json::from_value(serde_json::json!({
+                    "update": { "accepts_builds": false }
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        fs::remove_file(fixture.root.join("hold-build")).unwrap();
+    };
+    let (outcome, ()) = tokio::join!(
+        capture.execute_remote(&client, fixture.machine.id, Default::default(), |_| {}),
+        revoke,
+    );
+    assert!(matches!(outcome, Outcome::Images { .. }), "{outcome:?}");
 }
 
 #[tokio::test]
@@ -302,6 +389,7 @@ case "$1 $2" in
   'buildx ls') printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake')
     : > "$root/executed"
+    while [ -f "$root/hold-build" ]; do sleep 0.01; done
     if [ -f "$root/registry-attempt" ]; then
       for arg in "$@"; do
         case "$arg" in
@@ -398,7 +486,7 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
         .await
         .unwrap();
     let mut responses = start(
-        fixture.machine.id,
+        fixture.local.clone(),
         ReceiverStream::new(receiver),
         Runner::new(policy, Default::default()).unwrap(),
     );
