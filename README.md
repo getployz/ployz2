@@ -50,7 +50,7 @@ Railpack refuses `--check` and unsupported frontend settings by name. On this
 pinned frontend, `--no-cache` and `--pull` force a cold build by clearing the
 exclusive Ployz builder cache; unrelated Docker builder caches are untouched.
 
-Remote Builds (`ployz build --remote=<machine>`) use one active
+Remote Builds (`ployz build --remote`) use one active
 slot per Machine and a FIFO of eight waiting attempts. Source and secrets stay
 on the client until admission. Configure the daemon environment and restart it:
 
@@ -67,11 +67,17 @@ restart. Bounded abandoned-builder teardown does not clear that uncertainty:
 an operator must confirm the builder and its host processes have stopped before
 clearing the lock marker named in the error. Work is never replayed.
 
-`ployz build --remote=<Machine>` runs Dockerfile or native-platform Railpack
-Builds on the selected Machine. That Machine supplies the build resource policy;
-source uploads and build requests cannot change it.
+`ployz build` stays local by default. `ployz build --remote` and connected
+`ployz deploy` choose one responsive, Build-accepting Machine randomly and run all
+of the command's Builds there. Use `--remote=<Machine>` to pin a builder or
+`deploy --local` to build on the CLI host. `--local` conflicts with `--remote`
+and `--no-build`. A rejected or failed Build is never moved to another host.
 
-Ordinary builds use local Docker: remote `DOCKER_HOST` endpoints and non-default
+The selected Machine runs Dockerfile or native-platform Railpack Builds and
+supplies the build resource policy; source uploads cannot change it. Application
+placement constraints select image destinations, independently of the builder.
+
+Local Builds use local Docker: remote `DOCKER_HOST` endpoints and non-default
 Docker contexts are rejected by the shared executor before builder mutation.
 Use a selected Machine for remote builds so policy and ownership are enforced
 on the execution host.

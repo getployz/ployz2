@@ -146,6 +146,7 @@ fn build_remote() -> Arg {
         .require_equals(true)
         .default_missing_value("")
         .value_name("MACHINE")
+        .help("Build remotely: choose automatically, or pin with --remote=MACHINE")
         .conflicts_with("local")
 }
 
@@ -169,7 +170,11 @@ fn build() -> Command {
 fn deploy() -> Command {
     base("deploy", "Deploy services from a Compose file")
         .arg(build_remote().conflicts_with("no-build"))
-        .arg(switch("local", None))
+        .arg(
+            switch("local", None)
+                .conflicts_with("no-build")
+                .help("Build on this CLI host instead of an automatically selected Machine"),
+        )
         .arg(repeated("build-arg"))
         .arg(switch("build-pull", None))
         .arg(many("file", Some('f')).default_value("compose.yaml"))

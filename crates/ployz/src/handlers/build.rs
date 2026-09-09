@@ -24,11 +24,6 @@ pub(super) fn clear_cache(matches: &ArgMatches) -> Result<(), Error> {
 pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
     let remote = leaf.get_one::<String>("remote");
-    if remote.is_some_and(String::is_empty) {
-        return Err(Error::usage(
-            "select a Build Machine with --remote=<Machine>; automatic selection is not available",
-        ));
-    }
     if remote.is_some() && leaf.get_flag("push") && !leaf.get_flag("check") {
         return Err(Error::usage(
             "remote build --push is not supported yet; remote build leaves the image on its selected Machine, or --push-registry publishes explicitly",
@@ -61,7 +56,9 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         return Ok(());
     }
     if let Some(target) = remote {
-        let target = ployz_core::MachineTarget::parse(target)?;
+        let target = (!target.is_empty())
+            .then(|| ployz_core::MachineTarget::parse(target))
+            .transpose()?;
         let context = project
             .selected_context(
                 leaf.get_one::<String>("context").map(String::as_str),
@@ -71,7 +68,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         return runtime()?.block_on(async {
             let cancellation = super::cancellation_on_ctrl_c();
             let mut client = connect_client(matches, context.as_deref()).await?;
-            let machine = select_build_machine(&mut client, &target).await?;
+            let machine = select_build_machine(&mut client, target.as_ref()).await?;
             let captured = capture_build(&plan, &options, &mut project)?;
             let outcome = captured
                 .execute_remote(&client, machine.id, cancellation.clone(), progress)
@@ -145,24 +142,11 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
 
 pub(super) async fn select_build_machine(
     client: &mut crate::connect::Client,
-    target: &ployz_core::MachineTarget,
+    target: Option<&ployz_core::MachineTarget>,
 ) -> Result<ployz_core::Machine, Error> {
     let machine = client.build_machine(target).await?;
     println!("Selected Build Machine {} ({})", machine.name, machine.id);
     eprintln!("Build Machine: {}", machine.id);
-    let contract = client
-        .invoke::<ployz_core::op::DescribeContract>(
-            ployz_core::DescribeContractRequest {},
-            &ployz_core::MachineTarget::from(&machine.id),
-            Some(std::time::Duration::from_secs(5)),
-        )
-        .await?;
-    if contract.machine_id != machine.id || !contract.supports(ployz_core::BUILD_CAPABILITY) {
-        return Err(Error::usage(format!(
-            "Machine {} does not support remote Builds",
-            machine.id
-        )));
-    }
     Ok(machine)
 }
 
