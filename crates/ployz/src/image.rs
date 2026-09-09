@@ -24,7 +24,10 @@ use self::proxy::{ImageProxy, ProxyMode, detect_mode};
 mod built;
 mod proxy;
 pub use built::push_from_machine;
-pub(crate) use built::{platform_compatible, push_from_machine_using_machines, serve_build_image};
+pub(crate) use built::{
+    available_variant, platform_compatible, push_from_machine_using_machines, serve_build_image,
+};
+use built::{holds_platform, observe_store};
 
 #[must_use]
 pub fn with_default_tag(image: &str) -> String {
@@ -42,9 +45,9 @@ pub fn with_default_tag(image: &str) -> String {
 #[derive(Debug, Error)]
 pub enum PushError {
     #[error(
-        "Build image {image} on Machine {machine_id} is not available with platform {platform}"
+        "Machine {machine_id} does not hold {image} content for {platform}; a tag or image index alone is not deliverable content"
     )]
-    BuildImageUnavailable {
+    VariantUnavailable {
         image: String,
         machine_id: MachineId,
         platform: String,
@@ -202,43 +205,86 @@ pub(crate) async fn push_using_machines(
             command_error("inspect local image", &inspected)
         });
     }
-    let targets = select_targets(machines, selectors)?;
+    let mut targets = select_targets(machines, selectors)?.into_iter();
     let mode = cancellation.race(detect_mode()).await??;
     let mut result = PartialResult {
         successes: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
+    // Docker pushes the whole image to the first reachable target, which then
+    // serves its peers. Read back what that target actually holds before any
+    // peer relies on it.
     let mut source = None;
-    for machine in targets {
-        let outcome = match source {
-            None => push_to_machine(client, content, platform, &machine, mode, &mut cancellation)
+    for machine in targets.by_ref() {
+        let outcome =
+            match push_to_machine(client, content, platform, &machine, mode, &mut cancellation)
                 .await
-                .map(|destination| {
-                    source = Some(destination);
-                }),
-            Some(destination) => {
-                pull_on_machine(client, image, &machine, destination, &mut cancellation).await
-            }
-        };
-        match outcome {
-            Ok(()) => result.successes.push(MachineSuccess {
-                machine_id: machine.id,
-                value: (),
-            }),
-            Err(error) if error.is_cancellation() => {
-                return Err(error);
-            }
-            Err(error) => result.failures.push(MachineFailure {
-                machine_id: machine.id,
-                error: PushError::Machine {
-                    machine: machine.name.to_string(),
-                    source: Box::new(error),
-                },
-            }),
+            {
+                Ok(destination) => observe_store(client, machine.id, &mut cancellation)
+                    .await
+                    .map(|store| source = Some((machine.id, destination, store))),
+                Err(error) => Err(error),
+            };
+        let served = outcome.is_ok();
+        record(&mut result, &machine, outcome)?;
+        if served {
+            break;
         }
     }
+    let Some((holder, destination, store)) = source else {
+        return Ok(result);
+    };
+    for machine in targets {
+        // Each peer receives only a variant the first target demonstrably holds.
+        let variant = match platform {
+            Some(platform) => holds_platform(&store, image, platform).then_some(platform),
+            None => available_variant(&store, image, &machine.runtime.architecture),
+        };
+        let outcome = match variant {
+            Some(variant) => {
+                pull_on_machine(
+                    client,
+                    image,
+                    &machine,
+                    destination,
+                    Some(variant),
+                    &mut cancellation,
+                )
+                .await
+            }
+            None => Err(PushError::VariantUnavailable {
+                image: image.to_owned(),
+                machine_id: holder,
+                platform: platform.unwrap_or(&machine.runtime.architecture).to_owned(),
+            }),
+        };
+        record(&mut result, &machine, outcome)?;
+    }
     Ok(result)
+}
+
+/// Keep one Machine's outcome in the partial result; cancellation ends the fan-out.
+fn record(
+    result: &mut PartialResult<(), PushError>,
+    machine: &Machine,
+    outcome: Result<(), PushError>,
+) -> Result<(), PushError> {
+    match outcome {
+        Ok(()) => result.successes.push(MachineSuccess {
+            machine_id: machine.id,
+            value: (),
+        }),
+        Err(error) if error.is_cancellation() => return Err(error),
+        Err(error) => result.failures.push(MachineFailure {
+            machine_id: machine.id,
+            error: PushError::Machine {
+                machine: machine.name.to_string(),
+                source: Box::new(error),
+            },
+        }),
+    }
+    Ok(())
 }
 
 pub(crate) struct ImageListSelection {
@@ -339,6 +385,7 @@ async fn pull_on_machine(
     image: &str,
     machine: &Machine,
     source: ImageIngestDestination,
+    platform: Option<&str>,
     cancellation: &mut Cancellation<'_>,
 ) -> Result<(), PushError> {
     cancellation
@@ -346,6 +393,7 @@ async fn pull_on_machine(
             PullImageFromMachineRequest {
                 image: image.to_owned(),
                 source,
+                platform: platform.map(ToOwned::to_owned),
             },
             Some(&MachineTarget::from(&machine.id)),
         ))
@@ -354,12 +402,13 @@ async fn pull_on_machine(
         .map_err(|error| PushError::PeerPull(rpc_error(error)))
 }
 
-/// Pull a missing image from a cluster peer that already has it.
+/// Pull a missing image from a cluster peer that demonstrably holds it.
 ///
 /// `Always` leaves the registry pull to the destination Machine. `Missing` and
-/// `Never` pull from a peer when one has the image. `Missing` without a peer
-/// leaves the registry pull to the destination. `Never` without a peer leaves
-/// the destination to fail if the image is absent.
+/// `Never` pull from a peer whose store holds the variant the destination's
+/// architecture runs, selected by [`available_variant`]. `Missing` without such
+/// a peer leaves the registry pull to the destination. `Never` without one
+/// leaves the destination to fail if the image is absent.
 ///
 /// # Errors
 ///
@@ -376,18 +425,29 @@ pub(crate) async fn ensure_cluster_image(
     }
     let mut listing_client = client.clone();
     let machines = listing_client.machines().await.map_err(rpc_error)?;
+    let Some(architecture) = machines
+        .iter()
+        .find(|machine| machine.machine.id == *dest)
+        .map(|machine| machine.machine.runtime.architecture.clone())
+    else {
+        return Ok(());
+    };
     let targets = machines
         .into_iter()
         .filter(|machine| machine.membership.invites_rpc())
         .map(|machine| machine.machine)
         .collect::<Vec<_>>();
-    let listings = listing_client
-        .list_images(Some(image.to_owned()), &targets)
-        .await;
-    if destination_has_image(dest, &listings.successes, image) {
+    // Docker's reference filter does not match repository@digest.
+    let filter = (!image.contains('@')).then(|| image.to_owned());
+    let listings = listing_client.list_images(filter, &targets).await;
+    let mut holders = listings.successes.iter().filter_map(|success| {
+        available_variant(&success.value.images, image, &architecture)
+            .map(|platform| (success.machine_id, platform))
+    });
+    if holders.clone().any(|(machine_id, _)| machine_id == *dest) {
         return Ok(());
     }
-    let Some(peer) = peer_with_image(dest, &listings.successes, image) else {
+    let Some((peer, platform)) = holders.find(|(machine_id, _)| machine_id != dest) else {
         return Ok(());
     };
     let opened = listing_client
@@ -402,44 +462,13 @@ pub(crate) async fn ensure_cluster_image(
             PullImageFromMachineRequest {
                 image: image.to_owned(),
                 source: opened.destination,
+                platform: Some(platform.to_owned()),
             },
             Some(&MachineTarget::from(dest)),
         )
         .await
         .map(|_| ())
         .map_err(rpc_error)
-}
-
-fn destination_has_image(
-    dest: &MachineId,
-    listings: &[MachineSuccess<MachineImagesObservation>],
-    image: &str,
-) -> bool {
-    listings
-        .iter()
-        .any(|success| success.machine_id == *dest && image_present(&success.value.images, image))
-}
-
-fn peer_with_image(
-    dest: &MachineId,
-    listings: &[MachineSuccess<MachineImagesObservation>],
-    image: &str,
-) -> Option<MachineId> {
-    listings.iter().find_map(|success| {
-        (success.machine_id != *dest && image_present(&success.value.images, image))
-            .then_some(success.machine_id)
-    })
-}
-
-fn image_present(images: &MachineImages, image: &str) -> bool {
-    images.images.iter().any(|summary| {
-        summary.repo_tags.iter().any(|tag| {
-            tag == image
-                || tag
-                    .strip_suffix(image)
-                    .is_some_and(|prefix| prefix.ends_with('/'))
-        })
-    })
 }
 
 fn ingest_error(error: RpcError) -> PushError {
@@ -681,8 +710,8 @@ fn not_found(output: &Output) -> bool {
 mod tests {
     use super::*;
     use ployz_core::{
-        ImageSummary, MachineId, MachineImages, MachineName, MachineObservation,
-        MembershipObservation, RpcErrorCode, WireGuardPublicKey,
+        MachineId, MachineName, MachineObservation, MembershipObservation, RpcErrorCode,
+        WireGuardPublicKey,
     };
     use serde_json::Value;
 
@@ -868,45 +897,5 @@ mod tests {
             .to_string(),
             "Cluster operation failed: image ingest: transport error"
         );
-    }
-
-    fn listing(seed: u8, tags: &[&str]) -> MachineSuccess<MachineImagesObservation> {
-        MachineSuccess {
-            machine_id: machine(seed).machine.id,
-            value: MachineImagesObservation {
-                machine_name: MachineName::parse(format!("machine-{seed}")).unwrap(),
-                images: MachineImages {
-                    containerd_store: true,
-                    images: vec![ImageSummary {
-                        id: format!("sha256:{seed}"),
-                        repo_tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
-                        created: 0,
-                        size: 0,
-                        containers: 0,
-                        platforms: Vec::new(),
-                    }],
-                },
-            },
-        }
-    }
-
-    #[test]
-    fn missing_image_selects_a_peer_that_already_has_it() {
-        let dest = machine(1).machine.id;
-        let listings = [
-            listing(1, &[]),
-            listing(2, &["docker.io/library/busybox:1.37.0"]),
-        ];
-        assert!(!destination_has_image(&dest, &listings, "busybox:1.37.0"));
-        assert_eq!(
-            peer_with_image(&dest, &listings, "busybox:1.37.0"),
-            Some(machine(2).machine.id)
-        );
-        assert!(destination_has_image(
-            &machine(2).machine.id,
-            &listings,
-            "busybox:1.37.0"
-        ));
-        assert_eq!(peer_with_image(&dest, &listings, "missing:tag"), None);
     }
 }

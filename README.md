@@ -34,8 +34,20 @@ the execution host must provide native or emulated support for each platform.
 Separate solves are assembled locally with pinned regctl 0.11.6 into one immutable
 image in Docker’s containerd store, with every platform’s content verified.
 Multi-platform builds currently require local output and reject requested
-`build.provenance` or `build.sbom`; Dockerfiles remain limited to one platform. Deploy platform
-inference is separate work.
+`build.provenance` or `build.sbom`; Dockerfiles remain limited to one platform.
+
+`ployz deploy` derives each Railpack Service's platforms from the Machines it may
+be placed on, read from the current Cluster observation, before building; explicit
+`build.platforms` must cover them. Standalone `ployz build` keeps the native
+default. After every Build succeeds, the completed platforms are checked against
+the fresh Deploy plan's destinations; a Machine no variant runs stops the Deploy
+before any Service, hook, or volume change, and the fix is a rerun, never an
+automatic rebuild or a moved placement. Images travel by exact content digest
+from the complete Build host, and every peer-to-peer transfer names the
+destination's platform. A Machine serves an image only when Docker reports that
+variant's manifest, configuration and layers present in its containerd store: a
+tag, an image index, or a listed-but-absent platform is not content, so a peer
+that pulled one platform is never the source for another.
 
 The [prototype findings](https://github.com/getployz/ployz2/blob/c3ca5519a4607256ffb28052d77a1c7d89f1bbe1/prototypes/railpack-transfer/FINDINGS.md)
 preserve the evidence for this assembly approach. They used shipped beta binaries

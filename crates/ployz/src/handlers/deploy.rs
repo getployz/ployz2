@@ -70,7 +70,24 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
         // Every required Build finishes before preparation or application changes.
         let builds = match captured_build {
-            Some(build) => match &location {
+            Some(mut build) => {
+                // Read-only: the platforms this Deploy's possible placements run
+                // decide what Railpack builds and which Machine can build it.
+                let machines = crate::cancellation::read(&cancellation, async {
+                    Ok(client.machines().await?)
+                })
+                .await?;
+                build
+                    .cover_machines(&candidate, &machines)
+                    .map_err(crate::deploy::DeployError::from)?;
+                let platforms = build.platforms();
+                if !platforms.is_empty() {
+                    eprintln!(
+                        "Build platforms: {}",
+                        platforms.into_iter().collect::<Vec<_>>().join(", ")
+                    );
+                }
+                match &location {
                 crate::build_location::Location::Remote(selection) => {
                     let machine = super::build::resolve_build_machine(
                         &mut client,
@@ -94,10 +111,11 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                     }
                     result.map_err(crate::deploy::DeployError::from)?
                 }
-                crate::build_location::Location::Local => build
-                    .execute(load.docker.as_deref(), &cancellation)
-                    .map_err(crate::deploy::DeployError::from)?,
-            },
+                    crate::build_location::Location::Local => build
+                        .execute(load.docker.as_deref(), &cancellation)
+                        .map_err(crate::deploy::DeployError::from)?,
+                }
+            }
             None => Vec::new(),
         };
         candidate

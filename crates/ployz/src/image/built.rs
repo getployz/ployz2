@@ -1,7 +1,12 @@
 //! Deliver a completed Build from the Machine that holds its exact content.
+//!
+//! Every image source is selected by one rule, [`available_variant`]: a
+//! Machine serves a destination only the variant its store demonstrably holds
+//! for that destination. Build delivery, the local push peer hop, and Deploy's
+//! peer lookup all route through it.
 
 use ployz_build::BuiltImage;
-use ployz_core::{ListImagesRequest, MachineObservation};
+use ployz_core::{ImageSummary, ListImagesRequest, MachineObservation};
 
 use super::*;
 
@@ -51,7 +56,10 @@ pub(crate) async fn push_from_machine_using_machines(
     if selection.targets.is_empty() {
         return Ok(result);
     }
-    let source = serve_build_image(client, image, source, cancellation).await?;
+    let mut cancellation = Cancellation::new(cancellation);
+    let store = observe_store(client, source, &mut cancellation).await?;
+    require_complete(&store, image, source)?;
+    let opened = open_ingest(client, source, &mut cancellation).await?;
     let reference =
         image
             .repository_reference(repository)
@@ -59,10 +67,29 @@ pub(crate) async fn push_from_machine_using_machines(
                 reference: image.reference.clone(),
                 message: error.to_string(),
             })?;
-    let mut cancellation = Cancellation::new(cancellation);
     let mut remaining = selection.targets.into_iter();
     while let Some(machine) = remaining.next() {
-        match pull_on_machine(client, &reference, &machine, source, &mut cancellation).await {
+        // The destination names the variant it runs; the source must hold it.
+        let delivery =
+            match available_variant(&store, &image.reference, &machine.runtime.architecture) {
+                Some(platform) => {
+                    pull_on_machine(
+                        client,
+                        &reference,
+                        &machine,
+                        opened,
+                        Some(platform),
+                        &mut cancellation,
+                    )
+                    .await
+                }
+                None => Err(PushError::VariantUnavailable {
+                    image: image.reference.clone(),
+                    machine_id: source,
+                    platform: machine.runtime.architecture.clone(),
+                }),
+            };
+        match delivery {
             Ok(()) => result.successes.push(MachineSuccess {
                 machine_id: machine.id,
                 value: (),
@@ -91,39 +118,130 @@ pub(crate) async fn serve_build_image(
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<ImageIngestDestination, PushError> {
     let mut cancellation = Cancellation::new(cancellation);
-    let digest = &image.reference;
-    let target = MachineTarget::from(&source);
-    // Docker's reference filter does not match repository@digest. Compare the
-    // manifest identity and available platforms in the source's actual store.
+    let store = observe_store(client, source, &mut cancellation).await?;
+    require_complete(&store, image, source)?;
+    open_ingest(client, source, &mut cancellation).await
+}
+
+/// Read one Machine's actual image store. Only the containerd store reports
+/// which variants are present, so any other store cannot serve images.
+pub(super) async fn observe_store(
+    client: &mut Client,
+    machine: MachineId,
+    cancellation: &mut Cancellation<'_>,
+) -> Result<MachineImages, PushError> {
+    // Docker's reference filter does not match repository@digest; read the
+    // whole store and compare identities.
     let stored = cancellation
-        .race(client.call::<op::ListImages>(ListImagesRequest { reference: None }, Some(&target)))
+        .race(client.call::<op::ListImages>(
+            ListImagesRequest { reference: None },
+            Some(&MachineTarget::from(&machine)),
+        ))
         .await??;
     if !stored.containerd_store {
         return Err(PushError::UnsupportedImageStore);
     }
-    if !stored.images.iter().any(|stored| {
-        &stored.id == digest
-            && image.platforms.iter().all(|expected| {
-                stored.platforms.iter().any(|platform| {
-                    platform == expected
-                        || matches!(
-                            (platform.as_str(), expected.as_str()),
-                            ("linux/arm64", "linux/arm64/v8") | ("linux/arm64/v8", "linux/arm64")
-                        )
-                })
-            })
-    }) {
-        return Err(PushError::BuildImageUnavailable {
-            image: image.reference.clone(),
-            machine_id: source,
-            platform: image.platforms.join(", "),
-        });
-    }
+    Ok(stored)
+}
+
+/// Open the Machine's image server for peers to pull from.
+pub(super) async fn open_ingest(
+    client: &mut Client,
+    machine: MachineId,
+    cancellation: &mut Cancellation<'_>,
+) -> Result<ImageIngestDestination, PushError> {
     let opened = cancellation
-        .race(client.call::<op::EnsureImageIngest>(EnsureImageIngestRequest {}, Some(&target)))
+        .race(client.call::<op::EnsureImageIngest>(
+            EnsureImageIngestRequest {},
+            Some(&MachineTarget::from(&machine)),
+        ))
         .await?
         .map_err(|error| ingest_error(rpc_error(error)))?;
     Ok(opened.destination)
+}
+
+/// The Build host must hold every platform the attempt verified; anything less
+/// is a partial peer, not the complete Build.
+pub(super) fn require_complete(
+    store: &MachineImages,
+    image: &BuiltImage,
+    machine_id: MachineId,
+) -> Result<(), PushError> {
+    let missing = image
+        .platforms
+        .iter()
+        .filter(|platform| !holds_platform(store, &image.reference, platform))
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(PushError::VariantUnavailable {
+            image: image.reference.clone(),
+            machine_id,
+            platform: missing.join(", "),
+        })
+    }
+}
+
+/// The platform a Machine's store demonstrably holds for `image` that
+/// `architecture` runs natively, if any.
+///
+/// `image` names exact content when it carries a digest (`sha256:…` or
+/// `repository@sha256:…`): it is matched against the store's image identity,
+/// so a tag that moved to another image cannot substitute. Any other reference
+/// is matched by tag. Only platforms Docker reports available count, meaning
+/// the manifest, configuration and every layer are present locally. A tag, an
+/// index descriptor, or a listed-but-absent variant proves nothing: a peer that
+/// pulled one platform keeps the whole index while lacking the other variant's data.
+pub(crate) fn available_variant<'store>(
+    store: &'store MachineImages,
+    image: &str,
+    architecture: &str,
+) -> Option<&'store str> {
+    stored(store, image)?
+        .platforms
+        .iter()
+        .map(String::as_str)
+        .find(|platform| platform_compatible(platform, architecture))
+}
+
+/// Whether the store holds `image` content for exactly `platform`.
+pub(super) fn holds_platform(store: &MachineImages, image: &str, platform: &str) -> bool {
+    stored(store, image).is_some_and(|summary| {
+        summary
+            .platforms
+            .iter()
+            .any(|stored| same_platform(stored, platform))
+    })
+}
+
+fn stored<'store>(store: &'store MachineImages, image: &str) -> Option<&'store ImageSummary> {
+    if !store.containerd_store {
+        return None;
+    }
+    let digest = image
+        .rsplit_once('@')
+        .map(|(_, digest)| digest)
+        .or_else(|| image.starts_with("sha256:").then_some(image));
+    store.images.iter().find(|summary| match digest {
+        Some(digest) => summary.id == digest,
+        None => summary.repo_tags.iter().any(|tag| {
+            tag == image
+                || tag
+                    .strip_suffix(image)
+                    .is_some_and(|prefix| prefix.ends_with('/'))
+        }),
+    })
+}
+
+/// Docker lists ARM64 with or without its only variant.
+fn same_platform(left: &str, right: &str) -> bool {
+    left == right
+        || matches!(
+            (left, right),
+            ("linux/arm64", "linux/arm64/v8") | ("linux/arm64/v8", "linux/arm64")
+        )
 }
 
 /// Compare completed image platforms against the destination's reported architecture.
@@ -166,6 +284,100 @@ pub(crate) fn platform_compatible(platform: &str, architecture: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn store(id: &str, tags: &[&str], platforms: &[&str]) -> MachineImages {
+        MachineImages {
+            containerd_store: true,
+            images: vec![ImageSummary {
+                id: id.into(),
+                repo_tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+                created: 0,
+                size: 0,
+                containers: 0,
+                platforms: platforms
+                    .iter()
+                    .map(|platform| (*platform).to_owned())
+                    .collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_source_serves_only_a_variant_it_demonstrably_holds() {
+        let digest = format!("sha256:{}", "1".repeat(64));
+        let repository = format!("registry.invalid/api@{digest}");
+        // The prototype's partial peer: the full index remains while the
+        // unselected platform's manifest, configuration and layers are absent.
+        let partial = store(&digest, &["registry.invalid/api:v1"], &["linux/arm64/v8"]);
+        assert_eq!(
+            available_variant(&partial, &repository, "aarch64"),
+            Some("linux/arm64/v8")
+        );
+        assert_eq!(available_variant(&partial, &repository, "x86_64"), None);
+        assert_eq!(available_variant(&partial, &digest, "x86_64"), None);
+        assert!(holds_platform(&partial, &digest, "linux/arm64"));
+        assert!(!holds_platform(&partial, &digest, "linux/amd64"));
+
+        // A tag race: the requested tag now names another image, but the
+        // exact content still identifies itself.
+        let moved = store(&digest, &["registry.invalid/api:other"], &["linux/amd64"]);
+        assert_eq!(
+            available_variant(&moved, &repository, "x86_64"),
+            Some("linux/amd64")
+        );
+        assert_eq!(
+            available_variant(&moved, "registry.invalid/api:v1", "x86_64"),
+            None
+        );
+
+        // A tag alone: no available platform is no deliverable content.
+        let tag_only = store("sha256:other", &["docker.io/library/busybox:1.37.0"], &[]);
+        assert_eq!(
+            available_variant(&tag_only, "busybox:1.37.0", "x86_64"),
+            None
+        );
+        let tagged = store(
+            "sha256:other",
+            &["docker.io/library/busybox:1.37.0"],
+            &["linux/amd64"],
+        );
+        assert_eq!(
+            available_variant(&tagged, "busybox:1.37.0", "x86_64"),
+            Some("linux/amd64")
+        );
+        assert_eq!(available_variant(&tagged, "busybox:1.37.0", ""), None);
+        assert_eq!(available_variant(&tagged, "busybox:1.36.0", "x86_64"), None);
+
+        // Only the containerd store reports available variants.
+        let mut classic = tagged;
+        classic.containerd_store = false;
+        assert_eq!(
+            available_variant(&classic, "busybox:1.37.0", "x86_64"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_build_host_must_hold_every_verified_platform() {
+        let digest = format!("sha256:{}", "2".repeat(64));
+        let image = BuiltImage {
+            reference: digest.clone(),
+            tags: vec!["registry.invalid/api:v1".into()],
+            platforms: vec!["linux/amd64".into(), "linux/arm64".into()],
+            location: "unix:///var/run/docker.sock".into(),
+        };
+        let machine = MachineId::parse("a".repeat(32)).unwrap();
+        let complete = store(&digest, &[], &["linux/amd64", "linux/arm64/v8"]);
+        require_complete(&complete, &image, machine).unwrap();
+        let partial = store(&digest, &["registry.invalid/api:v1"], &["linux/amd64"]);
+        let error = require_complete(&partial, &image, machine).unwrap_err();
+        assert!(
+            matches!(&error, PushError::VariantUnavailable { platform, .. } if platform == "linux/arm64"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn platform_compatibility_preserves_known_arm_generations() {
         for (platform, architecture, compatible) in [

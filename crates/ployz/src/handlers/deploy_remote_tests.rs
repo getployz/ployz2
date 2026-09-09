@@ -163,13 +163,21 @@ async fn incompatible_application_platform_refuses_before_transfer_or_mutations(
 #[tokio::test]
 async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
     let (root, service, builds) = fixture();
-    let source = machine('a', "builder");
-    let failed = machine('b', "failed");
-    let success = machine('c', "success");
+    let native = |hex, name| {
+        let mut machine = machine(hex, name);
+        machine.machine.runtime.architecture = "x86_64".into();
+        machine
+    };
+    let source = native('a', "builder");
+    let failed = native('b', "failed");
+    let success = native('c', "success");
     let missing = ployz_core::MachineObservation::new(
         machine('d', "missing").machine,
         MembershipObservation::Down,
     );
+    // No built variant runs here, so the source cannot serve it.
+    let mut foreign = machine('e', "foreign");
+    foreign.machine.runtime.architecture = "riscv64".into();
     let image = ployz_build::BuiltImage {
         reference: format!("sha256:{}", "1".repeat(64)),
         tags: vec![
@@ -207,6 +215,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
         failed.clone(),
         success.clone(),
         missing.clone(),
+        foreign.clone(),
     ]))
     .await;
     let result = crate::image::push_from_machine(
@@ -227,7 +236,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
             .collect::<Vec<_>>(),
         [source.machine.id, success.machine.id]
     );
-    assert_eq!(result.failures.len(), 1);
+    assert_eq!(result.failures.len(), 2);
     assert_eq!(
         result.failures.first().unwrap().machine_id,
         failed.machine.id
@@ -241,13 +250,27 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
             .to_string()
             .contains("containerd image store")
     );
+    let unserved = result.failures.get(1).unwrap();
+    assert_eq!(unserved.machine_id, foreign.machine.id);
+    assert!(
+        matches!(&unserved.error, crate::image::PushError::VariantUnavailable { platform, .. } if platform == "riscv64"),
+        "{}",
+        unserved.error
+    );
     assert_eq!(result.omissions, [missing.machine.id]);
-    assert!(builds.pulls.lock().unwrap().iter().all(|(_, pull)| {
+    let pulls = builds.pulls.lock().unwrap().clone();
+    assert_eq!(
+        pulls.len(),
+        3,
+        "the unserved Machine was never asked to pull"
+    );
+    assert!(pulls.iter().all(|(_, pull)| {
         pull.image
             == image
                 .repository_reference("registry.invalid/shared:latest")
                 .unwrap()
             && pull.source.management_address == source.machine.management_address()
+            && pull.platform.as_deref() == Some("linux/amd64")
     }));
     builds
         .stores
@@ -401,4 +424,184 @@ async fn remote_deploy_accepts_matching_non_primary_architectures() {
         assert!(!created.lock().unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[tokio::test]
+async fn a_partial_source_is_refused_and_each_destination_names_its_variant() {
+    let (root, service, builds) = fixture();
+    let observed = |hex, name, architecture: &str| {
+        let mut machine = machine(hex, name);
+        machine.machine.runtime.architecture = architecture.into();
+        machine
+    };
+    let source = observed('a', "builder", "x86_64");
+    let amd64 = observed('b', "amd64", "x86_64");
+    let arm64 = observed('c', "arm64", "aarch64");
+    let image = ployz_build::BuiltImage {
+        reference: format!("sha256:{}", "3".repeat(64)),
+        tags: vec!["registry.invalid/shared:latest".into()],
+        platforms: vec!["linux/amd64".into(), "linux/arm64".into()],
+        location: "unix:///var/run/docker.sock".into(),
+    };
+    let store = |platforms: &[&str]| MachineImages {
+        containerd_store: true,
+        images: vec![ployz_core::ImageSummary {
+            id: image.reference.clone(),
+            // The requested tag now points elsewhere; only content proves identity.
+            repo_tags: vec!["registry.invalid/shared:retained".into()],
+            created: 0,
+            size: 1,
+            containers: 0,
+            platforms: platforms
+                .iter()
+                .map(|platform| (*platform).to_owned())
+                .collect(),
+        }],
+    };
+    // The prototype's partial peer: the index is listed, ARM64 data is absent.
+    builds
+        .stores
+        .lock()
+        .unwrap()
+        .insert(source.machine.id, store(&["linux/amd64"]));
+    let (mut client, server) =
+        connected(service.with_machines(vec![source.clone(), amd64.clone(), arm64.clone()])).await;
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let error = crate::image::push_from_machine(
+        &mut client,
+        &image,
+        "registry.invalid/shared:latest",
+        source.machine.id,
+        &[],
+        &cancellation,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&error, crate::image::PushError::VariantUnavailable { platform, .. } if platform == "linux/arm64"),
+        "{error}"
+    );
+    assert!(builds.pulls.lock().unwrap().is_empty());
+    assert!(builds.opened.lock().unwrap().is_empty());
+
+    builds
+        .stores
+        .lock()
+        .unwrap()
+        .insert(source.machine.id, store(&["linux/amd64", "linux/arm64/v8"]));
+    let result = crate::image::push_from_machine(
+        &mut client,
+        &image,
+        "registry.invalid/shared:latest",
+        source.machine.id,
+        &[amd64.machine.id.to_string(), arm64.machine.id.to_string()],
+        &cancellation,
+    )
+    .await
+    .unwrap();
+    assert!(result.failures.is_empty() && result.omissions.is_empty());
+    let pulls = builds.pulls.lock().unwrap();
+    let platform = |id| {
+        pulls
+            .iter()
+            .find(|(machine, _)| *machine == id)
+            .unwrap()
+            .1
+            .platform
+            .clone()
+    };
+    assert_eq!(platform(amd64.machine.id).as_deref(), Some("linux/amd64"));
+    assert_eq!(
+        platform(arm64.machine.id).as_deref(),
+        Some("linux/arm64/v8")
+    );
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn deploy_derives_railpack_platforms_from_the_machines_a_service_may_run_on() {
+    let mut builder = machine('a', "builder");
+    builder.machine.runtime.architecture = "x86_64".into();
+    let mut arm = machine('b', "application");
+    arm.machine.runtime.architecture = "aarch64".into();
+    for (placement, expected) in [
+        (
+            format!("    x-machines: [{}]\n", arm.machine.id),
+            vec!["linux/arm64"],
+        ),
+        (String::new(), vec!["linux/amd64", "linux/arm64"]),
+    ] {
+        let (root, service, builds) = fixture();
+        let created = service.created_specs();
+        *builds.platforms.lock().unwrap() = Some(
+            expected
+                .iter()
+                .map(|platform| (*platform).to_owned())
+                .collect(),
+        );
+        fs::remove_file(root.join("Dockerfile")).unwrap();
+        fs::write(
+            root.join("compose.yaml"),
+            format!(
+                "name: example\nservices:\n  one:\n    image: registry.invalid/shared:latest\n    build: {{context: ., x-recipe: railpack}}\n{placement}"
+            ),
+        )
+        .unwrap();
+        deploy(
+            &root,
+            service.with_machines(vec![builder.clone(), arm.clone()]),
+        )
+        .await
+        .unwrap();
+        let definitions = builds.definitions.lock().unwrap();
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(
+            definitions
+                .first()
+                .unwrap()
+                .targets
+                .first()
+                .unwrap()
+                .platforms,
+            expected,
+            "{placement:?}"
+        );
+        assert!(!created.lock().unwrap().is_empty());
+        drop(definitions);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn explicit_platforms_that_miss_a_placement_machine_refuse_before_any_upload() {
+    let (root, service, builds) = fixture();
+    let mutations = service.mutating_rpcs();
+    let mut builder = machine('a', "builder");
+    builder.machine.runtime.architecture = "x86_64".into();
+    let mut arm = machine('b', "application");
+    arm.machine.runtime.architecture = "aarch64".into();
+    fs::remove_file(root.join("Dockerfile")).unwrap();
+    fs::write(
+        root.join("compose.yaml"),
+        format!(
+            "name: example\nservices:\n  one:\n    image: registry.invalid/shared:latest\n    build: {{context: ., x-recipe: railpack, platforms: [linux/amd64]}}\n    x-machines: [{}]\n",
+            arm.machine.id
+        ),
+    )
+    .unwrap();
+    let error = deploy(&root, service.with_machines(vec![builder, arm]))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("linux/arm64")
+            && error.contains("build.platforms")
+            && error.contains("No Service, hook, or volume change was attempted"),
+        "{error}"
+    );
+    assert!(builds.definitions.lock().unwrap().is_empty());
+    assert!(builds.pulls.lock().unwrap().is_empty());
+    assert_eq!(mutations.load(Ordering::SeqCst), 0);
+    fs::remove_dir_all(root).unwrap();
 }
