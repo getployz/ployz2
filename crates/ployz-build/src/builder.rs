@@ -359,7 +359,7 @@ impl Lock {
         })
     }
 
-    fn clear(&mut self) -> Result<(), BuildError> {
+    pub(crate) fn clear(&mut self) -> Result<(), BuildError> {
         self.file.0.set_len(0).map_err(lock_error)?;
         self.file.0.sync_all().map_err(lock_error)
     }
