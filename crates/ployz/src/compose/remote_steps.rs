@@ -208,7 +208,7 @@ impl CapturedBuild {
                     completed.push(BuiltService {
                         name: service.name.clone(),
                         image: service.image.clone(),
-                        machines: service.machines.clone(),
+                        placement: service.placement.clone(),
                         location: BuildLocation::Machine(machine_id),
                         built: image,
                         _retention: Some(BuildRetention::Remote { _stream: stream }),

@@ -5,7 +5,7 @@ use std::{
 };
 
 use ployz_build::{BuiltImage, Output};
-use ployz_core::MachineTarget;
+use ployz_core::Placement;
 use serde::Serialize;
 use serde_norway::Value;
 
@@ -30,7 +30,7 @@ pub struct BuildService {
     pub name: String,
     pub image: String,
     pub build: Value,
-    pub machines: Vec<MachineTarget>,
+    pub placement: Placement,
 }
 
 pub fn plan_build(
@@ -94,8 +94,8 @@ pub struct BuiltService {
     pub location: BuildLocation,
     /// Reference the Service requested, used when the image is published.
     pub image: String,
-    /// Machines this Service is placed on.
-    pub machines: Vec<MachineTarget>,
+    /// Runtime destination constraints used for local image prewarming.
+    pub placement: Placement,
     /// The image this command built for it.
     pub built: BuiltImage,
     pub(super) _retention: Option<BuildRetention>,
@@ -121,7 +121,7 @@ impl PartialEq for BuiltService {
         self.name == other.name
             && self.location == other.location
             && self.image == other.image
-            && self.machines == other.machines
+            && self.placement == other.placement
             && self.built == other.built
     }
 }
@@ -684,7 +684,7 @@ impl CapturedBuild {
                 name: service.name.clone(),
                 location: BuildLocation::Local,
                 image: service.image.clone(),
-                machines: service.machines.clone(),
+                placement: service.placement.clone(),
                 built,
                 _retention: Some(retention.clone()),
             })
@@ -945,7 +945,7 @@ fn build_service(project: &ComposeProject, name: &str) -> Result<BuildService, C
             .expect("build services come from the build map")
             .raw
             .clone(),
-        machines: service.placement.machines.clone(),
+        placement: service.placement.clone(),
     })
 }
 
