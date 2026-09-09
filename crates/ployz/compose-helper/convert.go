@@ -320,10 +320,8 @@ func classify(name string, raw, extensions object) ([]string, error) {
 			warnings = append(warnings, fmt.Sprintf("service '%s': unsupported feature '%s'", name, key))
 		}
 	}
-	for _, pair := range [][2]string{{"x-port", "x-ports"}} {
-		if _, ok := extensions[pair[0]]; ok {
-			warnings = append(warnings, fmt.Sprintf("service '%s': unsupported feature '%s'; use %s", name, pair[0], pair[1]))
-		}
+	if _, ok := extensions["x-port"]; ok {
+		warnings = append(warnings, fmt.Sprintf("service '%s': unsupported feature 'x-port'; use x-ports", name))
 	}
 	for _, key := range []string{"mem_swappiness", "memswap_limit"} {
 		if n, _ := strconv.ParseFloat(fmt.Sprint(raw[key]), 64); n > 0 {
