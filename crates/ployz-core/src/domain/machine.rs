@@ -382,14 +382,13 @@ pub fn machine_matches_target(machine: &Machine, target: &MachineTarget) -> bool
     machine.id.as_str() == target.as_str() || machine.name.as_str() == target.as_str()
 }
 
-/// Empty Placement is every Machine; otherwise any Machine Target matches.
+/// Empty Placement is every Machine; otherwise every constraint must match.
 #[must_use]
-pub(crate) fn machine_matches_placement(machine: &Machine, placement: &Placement) -> bool {
-    placement.machines.is_empty()
-        || placement
-            .machines
-            .iter()
-            .any(|target| machine_matches_target(machine, target))
+pub fn machine_matches_placement(machine: &Machine, placement: &Placement) -> bool {
+    placement
+        .constraints
+        .iter()
+        .all(|constraint| constraint.matches(machine))
 }
 
 /// Resolve fan-out selection to visible Machines. `*` selects every visible Machine;
@@ -786,9 +785,7 @@ mod cloud_pairing_tests {
 #[cfg(test)]
 mod placement_tests {
 
-    use crate::{
-        MachineId, MachineName, MachineSubnet, MachineTarget, Placement, WireGuardPublicKey,
-    };
+    use crate::{MachineId, MachineName, MachineSubnet, Placement, WireGuardPublicKey};
 
     use super::{Machine, machine_matches_placement};
 
@@ -815,19 +812,31 @@ mod placement_tests {
     }
 
     #[test]
-    fn placement_targets_match_by_name_or_id() {
-        let first = machine('a', "first");
-        let by_name = Placement {
-            machines: vec![MachineTarget::parse("first").unwrap()],
-        };
-        let by_id = Placement {
-            machines: vec![MachineTarget::parse(first.id.as_str()).unwrap()],
-        };
-        let other = Placement {
-            machines: vec![MachineTarget::parse("other").unwrap()],
-        };
-        assert!(machine_matches_placement(&first, &by_name));
-        assert!(machine_matches_placement(&first, &by_id));
-        assert!(!machine_matches_placement(&first, &other));
+    fn placement_constraints_follow_swarm_matching() {
+        let mut first = machine('a', "first");
+        first.labels.insert("Region".into(), "EU-West".into());
+        for (expressions, expected) in [
+            (vec!["node.labels.Region==eu-WEST"], true),
+            (vec!["node.labels.region==eu-west"], false),
+            (vec!["node.labels.missing!=anything"], true),
+            (vec!["node.labels.missing==anything"], false),
+            (vec!["node.labels.Region==eu-*"], false),
+            (
+                vec![
+                    "node.labels.Region==eu-west",
+                    "node.id!=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ],
+                false,
+            ),
+            (vec!["node.id==AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], true),
+        ] {
+            let placement = Placement {
+                constraints: expressions
+                    .into_iter()
+                    .map(|text| crate::PlacementConstraint::parse(text).unwrap())
+                    .collect(),
+            };
+            assert_eq!(machine_matches_placement(&first, &placement), expected);
+        }
     }
 }

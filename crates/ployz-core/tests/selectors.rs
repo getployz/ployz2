@@ -99,26 +99,34 @@ fn fanout_resolution_treats_star_as_all_and_all_as_a_name() {
 }
 
 #[test]
-fn placement_accepts_only_machine_identities() {
-    let placement = Placement {
-        machines: vec![MachineTarget::parse("all").unwrap()],
-    };
-    assert_eq!(placement.machines.first().unwrap().as_str(), "all");
-    assert!(Placement::default().machines.is_empty());
-    assert!(serde_json::from_value::<Placement>(json!({"machines": ["*"]})).is_err());
-    assert_eq!(
-        serde_json::from_value::<Placement>(json!({"machines": ["all"]}))
-            .unwrap()
-            .machines
-            .first()
-            .unwrap()
-            .as_str(),
-        "all"
-    );
+fn placement_constraints_are_validated_and_canonical_on_the_wire() {
+    let placement: Placement = serde_json::from_value(json!({
+        "constraints": [" NODE.LABELS.Region == EU-West ", "node.id!=abc"]
+    }))
+    .unwrap();
     assert_eq!(
         serde_json::to_value(&placement).unwrap(),
-        json!({"machines": ["all"]})
+        json!({
+            "constraints": ["node.labels.Region==eu-west", "node.id!=abc"]
+        })
     );
+    for expression in [
+        "",
+        "node.hostname==edge",
+        "node.labels.==x",
+        "node.id=x",
+        "node.id===x",
+        "node.id==",
+        "node.labels.x > y",
+        "node.id==x && node.id==y",
+        "node.labels.x==é",
+    ] {
+        assert!(
+            serde_json::from_value::<Placement>(json!({"constraints": [expression]})).is_err(),
+            "{expression}"
+        );
+    }
+    assert!(serde_json::from_value::<Placement>(json!({"machines": ["edge"]})).is_err());
 }
 
 #[test]

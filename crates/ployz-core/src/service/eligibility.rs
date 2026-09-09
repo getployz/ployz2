@@ -21,6 +21,8 @@ pub enum ServicePlacementEligibility {
 pub enum ServicePlacementIneligibleReason {
     /// The Machine does not match the Service's placement selectors.
     PlacementMismatch,
+    /// The Machine does not accept this kind of new work.
+    WorkNotAccepted,
     /// The Machine is known not to support mounted Provisioned Volumes.
     ProvisionedStorageUnsupported,
 }
@@ -43,7 +45,32 @@ impl RequestedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        placement_eligibility(&self.placement, self.volume_graph(), machine, storage)
+        placement_eligibility(
+            &self.placement,
+            self.volume_graph(),
+            machine,
+            storage,
+            false,
+        )
+    }
+
+    /// Assess role admission with the Project identity required for trusted Ingress.
+    #[must_use]
+    pub fn placement_eligibility_in_project(
+        &self,
+        project: &crate::ProjectName,
+        machine: &Machine,
+        storage: Option<&MachineStorageObservation>,
+    ) -> ServicePlacementEligibility {
+        let ingress = *project == crate::QualifiedService::system_ingress().project
+            && crate::validate_requested_ingress_service_spec(self).is_ok();
+        placement_eligibility(
+            &self.placement,
+            self.volume_graph(),
+            machine,
+            storage,
+            ingress,
+        )
     }
 }
 
@@ -58,7 +85,32 @@ impl ResolvedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        placement_eligibility(&self.placement, self.volume_graph(), machine, storage)
+        placement_eligibility(
+            &self.placement,
+            self.volume_graph(),
+            machine,
+            storage,
+            false,
+        )
+    }
+
+    /// Assess role admission with the Project identity required for trusted Ingress.
+    #[must_use]
+    pub fn placement_eligibility_in_project(
+        &self,
+        project: &crate::ProjectName,
+        machine: &Machine,
+        storage: Option<&MachineStorageObservation>,
+    ) -> ServicePlacementEligibility {
+        let ingress = *project == crate::QualifiedService::system_ingress().project
+            && crate::validate_ingress_service_spec(self).is_ok();
+        placement_eligibility(
+            &self.placement,
+            self.volume_graph(),
+            machine,
+            storage,
+            ingress,
+        )
     }
 }
 
@@ -70,7 +122,13 @@ impl crate::ServiceStorageSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        placement_eligibility(&self.placement, self.volume_graph(), machine, storage)
+        placement_eligibility(
+            &self.placement,
+            self.volume_graph(),
+            machine,
+            storage,
+            false,
+        )
     }
 }
 
@@ -84,10 +142,20 @@ fn placement_eligibility(
     volumes: &ServiceVolumeGraph,
     machine: &Machine,
     storage: Option<&MachineStorageObservation>,
+    ingress: bool,
 ) -> ServicePlacementEligibility {
     if !machine_matches_placement(machine, placement) {
         return ServicePlacementEligibility::Ineligible(
             ServicePlacementIneligibleReason::PlacementMismatch,
+        );
+    }
+    if !(if ingress {
+        machine.accepts_ingress
+    } else {
+        machine.accepts_services
+    }) {
+        return ServicePlacementEligibility::Ineligible(
+            ServicePlacementIneligibleReason::WorkNotAccepted,
         );
     }
     if !volumes.has_mounted_provisioned_volume() {
@@ -128,7 +196,7 @@ mod tests {
     fn whole_specs_assess_placement_and_only_mounted_provisioned_storage() {
         let machine = machine("storage");
         let other = Placement {
-            machines: vec![crate::MachineTarget::parse("other").unwrap()],
+            constraints: vec![crate::PlacementConstraint::parse("node.id==other").unwrap()],
         };
         let provisioned = volume_graph(
             crate::RawVolumeSource::Provisioned {
@@ -274,6 +342,61 @@ mod tests {
             );
             assert_eq!(crate::ServiceStorageSpec::from(&resolved), storage_spec);
         }
+    }
+
+    #[test]
+    fn role_admission_requires_reserved_caddy_identity_and_complete_wiring() {
+        let mut machine = machine("edge");
+        machine.accepts_services = false;
+        machine.accepts_ingress = true;
+        machine.accepts_builds = true;
+        let reserved = crate::QualifiedService::system_ingress().project;
+        let app = crate::ProjectName::parse("app").unwrap();
+        let caddy = crate::caddy_service_spec("caddy:test".into(), Vec::new(), None);
+        let denied = ServicePlacementEligibility::Ineligible(
+            ServicePlacementIneligibleReason::WorkNotAccepted,
+        );
+        assert_eq!(
+            caddy.placement_eligibility_in_project(&reserved, &machine, None),
+            ServicePlacementEligibility::Eligible
+        );
+        assert_eq!(
+            caddy.placement_eligibility_in_project(&app, &machine, None),
+            denied
+        );
+        assert_eq!(caddy.placement_eligibility(&machine, None), denied);
+        let mut forged = caddy.clone();
+        forged.container.command = vec!["sh".into()];
+        assert_eq!(
+            forged.placement_eligibility_in_project(&reserved, &machine, None),
+            denied
+        );
+        let resolved = caddy
+            .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+            .unwrap();
+        assert_eq!(
+            resolved.placement_eligibility_in_project(&reserved, &machine, None),
+            ServicePlacementEligibility::Eligible
+        );
+        assert_eq!(
+            resolved.placement_eligibility_in_project(&app, &machine, None),
+            denied
+        );
+        assert_eq!(
+            crate::ServiceStorageSpec::from(&resolved).placement_eligibility(&machine, None),
+            denied
+        );
+        machine.accepts_ingress = false;
+        machine.accepts_services = true;
+        assert_eq!(
+            resolved.placement_eligibility_in_project(&reserved, &machine, None),
+            denied
+        );
+        assert_eq!(
+            requested(Placement::default(), ServiceVolumeGraph::default())
+                .placement_eligibility(&machine, None),
+            ServicePlacementEligibility::Eligible
+        );
     }
 
     fn machine(name: &str) -> Machine {
