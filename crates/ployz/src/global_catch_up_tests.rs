@@ -895,3 +895,38 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
         }
     }
 }
+
+#[test]
+fn joiner_evaluates_stored_labels_and_independent_acceptance() {
+    let founder = machine('f', "founder");
+    let mut joiner = machine('1', "joiner");
+    let services = [
+        observed_caddy_ingress(&founder, 'c'),
+        global_service(
+            qualified("app", "api"),
+            'a',
+            Placement {
+                constraints: vec![
+                    PlacementConstraint::parse("node.labels.tier == runtime").unwrap(),
+                ],
+            },
+            running_on(&founder, 'a'),
+        ),
+    ];
+    assert_eq!(
+        identities(&plan_global_catch_up(&services, &joiner, None, false)),
+        ["ployz-system/ingress"]
+    );
+    joiner.labels.insert("tier".into(), "RUNTIME".into());
+    joiner.accepts_ingress = false;
+    assert_eq!(
+        identities(&plan_global_catch_up(&services, &joiner, None, false)),
+        ["app/api"]
+    );
+    joiner.accepts_services = false;
+    joiner.accepts_ingress = true;
+    assert_eq!(
+        identities(&plan_global_catch_up(&services, &joiner, None, false)),
+        ["ployz-system/ingress"]
+    );
+}
