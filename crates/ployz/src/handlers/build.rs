@@ -136,6 +136,7 @@ pub(super) async fn select_build_machine(
 ) -> Result<ployz_core::Machine, Error> {
     let machine = client.build_machine(target).await?;
     println!("Selected Build Machine {} ({})", machine.name, machine.id);
+    eprintln!("Build Machine: {}", machine.id);
     let contract = client
         .invoke::<ployz_core::op::DescribeContract>(
             ployz_core::DescribeContractRequest {},
@@ -157,6 +158,14 @@ pub(super) fn progress(event: ployz_build::Progress) {
     match event {
         ployz_build::Progress::Stage(stage) => eprintln!("Build: {stage:?}"),
         ployz_build::Progress::Target { .. } => {}
+        ployz_build::Progress::Timing {
+            queue_wait,
+            execution,
+        } => eprintln!(
+            "Build queue wait: {:.2}s; execution: {:.2}s",
+            queue_wait.as_secs_f64(),
+            execution.as_secs_f64()
+        ),
         ployz_build::Progress::Output(bytes) => {
             let _ = std::io::stderr().write_all(&bytes);
         }

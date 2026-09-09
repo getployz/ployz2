@@ -117,7 +117,7 @@ impl PushError {
 }
 
 struct Cancellation {
-    signal: Pin<Box<dyn Future<Output = std::io::Result<()>>>>,
+    signal: Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>>,
 }
 
 impl Cancellation {

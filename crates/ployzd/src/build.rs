@@ -1,9 +1,12 @@
 //! Admission and lifetime of one connection-scoped remote Build.
 
+mod queue;
+pub(crate) use queue::Runner;
+
 use crate::logs::RpcStream;
 use ployz_build::{
     Admission, BuildError, HostPolicy, Output, Progress, Stage,
-    remote::{self, Definition, Event, Input, Outcome, Upload},
+    remote::{self, Definition, Event, Input, Outcome},
 };
 use ployz_core::{MachineId, OpaquePayload};
 use std::{
@@ -24,12 +27,13 @@ struct AttemptState {
 pub(crate) fn start(
     machine_id: MachineId,
     requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
-    policy: HostPolicy,
+    runner: std::sync::Arc<Runner>,
 ) -> RpcStream {
     let (events, receiver) = mpsc::channel(8);
     tokio::spawn(async move {
+        let shutdown = runner.shutdown.clone();
         let state = Arc::new(AttemptState::default());
-        let outcome = attempt(machine_id, requests, &events, policy, state.clone()).await;
+        let outcome = attempt(machine_id, requests, &events, runner, state.clone()).await;
         let message = "Build terminal report exceeds the response size limit";
         let fallback = match &outcome {
             Outcome::Unknown { stage, .. } => Outcome::Unknown {
@@ -53,7 +57,7 @@ pub(crate) fn start(
             .expect("Build retention lock")
             .is_some()
         {
-            events.closed().await;
+            tokio::select! { () = events.closed() => {}, () = shutdown.cancelled() => {} }
         }
         let retained = state.retained.lock().expect("Build retention lock").take();
         let _ = tokio::task::spawn_blocking(move || drop(retained)).await;
@@ -65,7 +69,7 @@ async fn attempt(
     machine_id: MachineId,
     mut requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
-    policy: HostPolicy,
+    runner: Arc<Runner>,
     state: Arc<AttemptState>,
 ) -> Outcome {
     let start = tokio::time::timeout(Duration::from_secs(10), requests.next()).await;
@@ -85,6 +89,36 @@ async fn attempt(
             "Build must name between one and 128 targets",
         );
     }
+    let work = ployz_build::WorkEvidence::new(&definition.targets);
+    let permit = match runner.enter() {
+        Ok(queue::Entry::Active(permit)) => permit,
+        Ok(queue::Entry::Waiting(waiting)) => {
+            let queued = remote::encode(&Event::Progress(Progress::Stage(Stage::Queued)))
+                .expect("bounded queue frame");
+            if events.send(Ok(queued)).await.is_err() {
+                return failed(Stage::Queued, "Build client disconnected").with_work(work);
+            }
+            tokio::select! {
+                biased;
+                () = runner.shutdown.cancelled() => return failed(Stage::Queued, "Build daemon stopped; execution was not attempted").with_work(work),
+                () = events.closed() => return failed(Stage::Queued, "Build client disconnected").with_work(work),
+                frame = requests.next() => {
+                    let reason = match frame {
+                        Some(Ok(payload)) if matches!(remote::decode::<Input>(&payload), Ok(Input::Cancel)) => "Build cancelled while queued; execution was not attempted",
+                        None | Some(Err(_)) => "Build client disconnected while queued; execution was not attempted",
+                        Some(Ok(_)) => "Build upload before admission is forbidden; execution was not attempted",
+                    };
+                    return failed(Stage::Queued, reason).with_work(work);
+                }
+                admitted = runner.admit(waiting) => match admitted {
+                    Ok(permit) => permit,
+                    Err(reason) => return failed(Stage::Queued, reason.to_string()).with_work(work),
+                },
+            }
+        }
+        Err(reason) => return failed(Stage::Queued, reason.to_string()).with_work(work),
+    };
+    let policy = runner.policy.clone();
     let admission = match tokio::task::spawn_blocking({
         let policy = policy.clone();
         move || Admission::try_acquire_with(&policy)
@@ -92,7 +126,7 @@ async fn attempt(
     .await
     {
         Ok(Ok(admission)) => admission,
-        Ok(Err(error)) => return failure(Stage::Admission, error),
+        Ok(Err(error)) => return failure(Stage::Admission, error).with_work(work),
         Err(_) => return failed(Stage::Admission, "Build admission task failed"),
     };
     *state.evidence.lock().expect("Build evidence lock") =
@@ -101,14 +135,18 @@ async fn attempt(
     let cancellation = admission.cancellation();
     let remaining = admission.remaining();
     let deadline = tokio::time::Instant::now() + remaining;
-    let admitted =
-        remote::encode(&Event::Admitted { machine_id }).expect("bounded admission frame");
+    let admitted = remote::encode(&Event::Admitted {
+        machine_id,
+        active_timeout: policy.active_timeout,
+    })
+    .expect("bounded admission frame");
     if events.send(Ok(admitted)).await.is_err() {
         return failed(Stage::Admission, "Build client disconnected");
     }
     let (upload, source) = mpsc::channel(2);
     let output = events.clone();
     let mut execution = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         receive_and_execute(
             machine_id, definition, source, admission, policy, &output, &observed,
         )
@@ -121,6 +159,7 @@ async fn attempt(
         tokio::select! {
             result = &mut execution => return joined(result).with_work(state.evidence.lock().expect("Build evidence lock").clone()),
             reason = &mut input => reason,
+            () = runner.shutdown.cancelled() => "Build daemon stopped".to_owned(),
             () = events.closed() => "Build client disconnected".to_owned(),
             () = tokio::time::sleep_until(deadline) => "Build active timeout expired".to_owned(),
         }
@@ -130,10 +169,13 @@ async fn attempt(
     // confirm its end keeps both its admission and persistent quarantine.
     let outcome = match tokio::time::timeout(Duration::from_secs(70), execution).await {
         Ok(result) => match joined(result) {
-            outcome @ (Outcome::Images { .. }
-            | Outcome::Validated { .. }
-            | Outcome::Published { .. }
-            | Outcome::Unknown { .. }) => outcome,
+            outcome @ Outcome::Unknown { .. } => outcome,
+            Outcome::Images { .. } | Outcome::Validated { .. } | Outcome::Published { .. } => {
+                failed(
+                    Stage::Cleanup,
+                    format!("{reason}; output completed before cancellation was observed"),
+                )
+            }
             Outcome::Failed {
                 stage,
                 message,
@@ -184,14 +226,12 @@ fn receive_and_execute(
     state: &AttemptState,
 ) -> Outcome {
     let cancellation = admission.cancellation();
-    let mut upload = match Upload::new() {
+    let deadline = std::time::Instant::now() + admission.remaining();
+    let mut upload = match admission.upload() {
         Ok(upload) => upload,
         Err(error) => return failed(Stage::Upload, error.to_string()),
     };
     loop {
-        if let Err(error) = admission.check() {
-            return failure(Stage::Upload, error);
-        }
         let Some(payload) = source.blocking_recv() else {
             return failed(
                 Stage::Upload,
@@ -210,11 +250,6 @@ fn receive_and_execute(
             break;
         }
     }
-    let upload = match upload.complete() {
-        Ok(upload) => upload,
-        Err(error) => return failed(Stage::Upload, error.to_string()),
-    };
-    let deadline = std::time::Instant::now() + admission.remaining();
     let progress = |progress| {
         state
             .evidence
@@ -255,7 +290,7 @@ fn receive_and_execute(
         context.source.port = proxy.port;
         proxies.push(proxy);
     }
-    let result = upload.execute(&definition, admission, Some(&policy.docker), &progress);
+    let result = upload.execute(&definition, Some(&policy.docker), &progress);
     match result {
         Ok(completed) => {
             if !definition.retained_tags.is_empty() {

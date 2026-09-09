@@ -91,7 +91,11 @@ impl BuildFixture {
                 offset
             };
             sender
-                .send(Ok(remote::encode(&Event::Admitted { machine_id }).unwrap()))
+                .send(Ok(remote::encode(&Event::Admitted {
+                    machine_id,
+                    active_timeout: ployz_build::EXECUTION_TIMEOUT,
+                })
+                .unwrap()))
                 .await
                 .unwrap();
             let mut upload = remote::Upload::new().unwrap();
