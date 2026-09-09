@@ -39,7 +39,7 @@ impl LocalMachine {
         let installation = gate.try_installation()?;
         crate::installer::require_standard_machine_paths(&data_dir, &run_dir.join("ployz.sock"))
             .map_err(crate::installer::upgrade::Error::NonstandardPaths)?;
-        crate::installer::upgrade::request_locked(request, &data_dir, &run_dir, &installation)
+        crate::installer::upgrade::request(request, data_dir, run_dir, installation)
             .await
             .map_err(Into::into)
     }

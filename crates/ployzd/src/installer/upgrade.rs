@@ -114,13 +114,28 @@ pub(crate) fn existing_request(
     Ok(Some(stored.attempt))
 }
 
-/// Persist an accepted attempt and launch its old-daemon worker while installation admission is
-/// held. Reusing the same attempt ID returns the same attempt.
-pub(crate) async fn request_locked(
+/// Own acceptance and worker launch independently of the requesting client's lifetime.
+/// Dropping the returned future only stops waiting; the task retains exclusive admission.
+pub(crate) fn request(
+    request: RequestMachineUpgradeRequest,
+    data_dir: PathBuf,
+    run_dir: PathBuf,
+    guard: mutation::InstallationGuard,
+) -> impl Future<Output = Result<MachineUpgradeAttempt, Error>> {
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        request_locked(request, &data_dir, &run_dir).await
+    });
+    async move {
+        task.await
+            .map_err(|error| Error::Launch(format!("upgrade acceptance task failed: {error}")))?
+    }
+}
+
+async fn request_locked(
     request: RequestMachineUpgradeRequest,
     data_dir: &Path,
     run_dir: &Path,
-    _guard: &mutation::InstallationGuard,
 ) -> Result<MachineUpgradeAttempt, Error> {
     let admission = mutation::MutationGate::new(run_dir, data_dir);
     if let Some(mut stored) = read_optional(data_dir)? {
@@ -537,6 +552,8 @@ mod tests {
             "interrupted",
             "inspection-unknown",
             "launch-failed",
+            "cancelled-launch",
+            "cancelled-launch-failed",
         ] {
             let root = tempfile::Builder::new()
                 .prefix(&format!("ployzd-upgrade-{case}-"))
@@ -546,7 +563,9 @@ mod tests {
             fs::create_dir(&commands).unwrap();
             write_script(
                 &commands.join("systemd-run"),
-                if case == "launch-failed" {
+                if case.starts_with("cancelled-launch") {
+                    "echo started > \"$PLOYZ_UPGRADE_CONTRACT_ROOT/launch-started\"\nwhile [ ! -f \"$PLOYZ_UPGRADE_CONTRACT_ROOT/launch-release\" ]; do /bin/sleep 0.01; done\nprintf '%s\\n' \"$*\" >> \"$PLOYZ_UPGRADE_COMMAND_LOG\"\nif [ \"$PLOYZ_UPGRADE_CONTRACT_CASE\" = cancelled-launch-failed ]; then echo worker launch refused >&2; exit 1; fi"
+                } else if case == "launch-failed" {
                     "echo worker launch refused >&2; exit 1"
                 } else {
                     "printf '%s\\n' \"$*\" >> \"$PLOYZ_UPGRADE_COMMAND_LOG\""
@@ -601,10 +620,62 @@ mod tests {
             release: MachineRelease::parse("1.2.3").unwrap(),
         };
         let guard = admission.try_installation().unwrap();
-        let accepted = request_locked(request.clone(), &data, &run, &guard)
+        if case.starts_with("cancelled-launch") {
+            let launch = tokio::spawn({
+                let data = data.clone();
+                let run = run.clone();
+                let request = request.clone();
+                async move { super::request(request, data, run, guard).await }
+            });
+            timeout(Duration::from_secs(5), async {
+                while !root.join("launch-started").exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("launch did not reach the cancellation window");
+            launch.abort();
+            assert!(launch.await.unwrap_err().is_cancelled());
+            assert!(admission.active().unwrap());
+            assert!(matches!(
+                admission.try_installation(),
+                Err(mutation::Error::Busy)
+            ));
+            fs::write(root.join("launch-release"), "continue").unwrap();
+            timeout(Duration::from_secs(5), async {
+                while admission.try_installation().is_err() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("detached launch did not finish");
+            let observed = existing_request(&request, &data).unwrap().unwrap();
+            if case == "cancelled-launch-failed" {
+                assert!(matches!(
+                    observed.outcome,
+                    MachineUpgradeOutcome::Failed {
+                        stage: MachineUpgradeStage::Launching,
+                        ..
+                    }
+                ));
+                assert!(!admission.active().unwrap());
+                assert!(admission.try_mutation().is_ok());
+            } else {
+                assert!(matches!(observed.outcome, MachineUpgradeOutcome::Accepted));
+                assert!(admission.active().unwrap());
+            }
+            assert_eq!(
+                fs::read_to_string(root.join("commands.log"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                1
+            );
+            return;
+        }
+        let accepted = super::request(request.clone(), data.clone(), run.clone(), guard)
             .await
             .unwrap();
-        drop(guard);
 
         match case {
             "retry-active" => {
@@ -628,18 +699,20 @@ mod tests {
 
                 let guard = admission.try_installation().unwrap();
                 assert_eq!(
-                    request_locked(request, &data, &run, &guard).await.unwrap(),
+                    super::request(request, data.clone(), run.clone(), guard)
+                        .await
+                        .unwrap(),
                     accepted
                 );
+                let guard = admission.try_installation().unwrap();
                 let other = RequestMachineUpgradeRequest {
                     attempt_id: MachineUpgradeAttemptId::parse("b".repeat(32)).unwrap(),
                     release: MachineRelease::parse("1.2.3").unwrap(),
                 };
                 assert!(matches!(
-                    request_locked(other, &data, &run, &guard).await,
+                    super::request(other, data.clone(), run.clone(), guard).await,
                     Err(Error::Busy)
                 ));
-                drop(guard);
                 let log = fs::read_to_string(root.join("commands.log")).unwrap();
                 assert_eq!(log.lines().count(), 1, "{log}");
                 for required in [

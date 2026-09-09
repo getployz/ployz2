@@ -333,36 +333,49 @@ fn validate_zfs() -> Result<(), Error> {
     let stage = staging_directory(Path::new("/var/tmp"))?;
     let backing = stage.path().join("backing");
     write_private(&backing, b"", "create ZFS smoke backing file")?;
-    // The installer lock serializes smoke Pools, and the process ID is the shell installer's
-    // existing collision boundary.
-    let pool = format!("ployz-smoke-{}", std::process::id());
+    let mut allocate = Command::new("fallocate");
+    allocate
+        .args(["-l", &ZFS_SMOKE_BYTES.to_string()])
+        .arg(&backing);
+    run_command("preallocate ZFS smoke backing file", &mut allocate)?;
+    let metadata = backing.metadata().map_err(|source| Error::Io {
+        stage: "inspect ZFS smoke backing file",
+        source,
+    })?;
+    if metadata.blocks().saturating_mul(POSIX_STAT_BLOCK_BYTES) < ZFS_SMOKE_BYTES {
+        return Err(Error::Verification(format!(
+            "ZFS smoke backing file {} is sparse",
+            backing.display()
+        )));
+    }
+    let root = fs::metadata("/").map_err(|source| Error::Io {
+        stage: "inspect host-root filesystem",
+        source,
+    })?;
+    if metadata.dev() != root.dev() {
+        return Err(Error::Verification(format!(
+            "ZFS smoke backing file {} is not on the host root filesystem",
+            backing.display()
+        )));
+    }
+    validate_zfs_pool(stage)
+}
+
+fn validate_zfs_pool(stage: tempfile::TempDir) -> Result<(), Error> {
+    let pool = format!(
+        "ployz-smoke-{}",
+        stage
+            .path()
+            .file_name()
+            .expect("temporary directory name")
+            .to_string_lossy()
+    );
+    // ZFS may own this backing file as soon as creation is attempted. A persistent path
+    // cannot unlink it on error or unwind; only positively verified cleanup may delete it.
+    let directory = stage.keep();
+    let backing = directory.join("backing");
     let mut pool_created = false;
     let result = (|| {
-        let mut allocate = Command::new("fallocate");
-        allocate
-            .args(["-l", &ZFS_SMOKE_BYTES.to_string()])
-            .arg(&backing);
-        run_command("preallocate ZFS smoke backing file", &mut allocate)?;
-        let metadata = backing.metadata().map_err(|source| Error::Io {
-            stage: "inspect ZFS smoke backing file",
-            source,
-        })?;
-        if metadata.blocks().saturating_mul(POSIX_STAT_BLOCK_BYTES) < ZFS_SMOKE_BYTES {
-            return Err(Error::Verification(format!(
-                "ZFS smoke backing file {} is sparse",
-                backing.display()
-            )));
-        }
-        let root = fs::metadata("/").map_err(|source| Error::Io {
-            stage: "inspect host-root filesystem",
-            source,
-        })?;
-        if metadata.dev() != root.dev() {
-            return Err(Error::Verification(format!(
-                "ZFS smoke backing file {} is not on the host root filesystem",
-                backing.display()
-            )));
-        }
         let mut create = Command::new("zpool");
         create
             .args(["create", "-f", "-m", "none", "-o", "cachefile=none", &pool])
@@ -381,7 +394,19 @@ fn validate_zfs() -> Result<(), Error> {
         )?;
         Ok(())
     })();
-    let cleanup = cleanup_zfs_smoke(&pool, &backing, pool_created);
+    let cleanup = cleanup_zfs_smoke(&pool, &backing, pool_created)
+        .and_then(|()| {
+            fs::remove_dir(&directory).map_err(|source| Error::Io {
+                stage: "remove temporary ZFS smoke directory",
+                source,
+            })
+        })
+        .map_err(|error| {
+            Error::Verification(format!(
+                "{error}; ZFS smoke backing directory retained at {} for inspection",
+                directory.display()
+            ))
+        });
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
@@ -391,6 +416,9 @@ fn validate_zfs() -> Result<(), Error> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 fn cleanup_zfs_smoke(pool: &str, backing: &Path, pool_created: bool) -> Result<(), Error> {
     let existing_pool = if pool_created {
