@@ -117,7 +117,9 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
             crate::cancellation::read(&cancellation, connect_client(matches, context)).await?;
         let mut failures = Vec::new();
         for service in &built {
-            let machines = crate::cancellation::read(&cancellation, async { Ok(client.machines().await?) }).await?;
+            let machines =
+                crate::cancellation::read(&cancellation, async { Ok(client.machines().await?) })
+                    .await?;
             let targets = push_targets(&explicit, &service.placement, &machines)?;
             match crate::image::push(
                 &mut client,
@@ -222,14 +224,19 @@ pub(super) fn push_targets(
     if !explicit.is_empty() {
         return Ok(explicit.to_vec());
     }
-    let targets: Vec<_> = machines.iter()
-        .filter(|observed| observed.membership == ployz_core::MembershipObservation::Up
-            && observed.machine.accepts_services
-            && ployz_core::machine_matches_placement(&observed.machine, placement))
+    let targets: Vec<_> = machines
+        .iter()
+        .filter(|observed| {
+            observed.membership == ployz_core::MembershipObservation::Up
+                && observed.machine.accepts_services
+                && ployz_core::machine_matches_placement(&observed.machine, placement)
+        })
         .map(|observed| observed.machine.id.to_string())
         .collect();
     if targets.is_empty() {
-        return Err(Error::usage("no responsive Service-accepting Machine matches the Service constraints for image prewarming"));
+        return Err(Error::usage(
+            "no responsive Service-accepting Machine matches the Service constraints for image prewarming",
+        ));
     }
     Ok(targets)
 }
@@ -291,27 +298,53 @@ mod tests {
     #[test]
     fn local_prewarming_filters_runtime_destinations_but_explicit_transfer_does_not() {
         use ployz_core::{MachineObservation, MembershipObservation, Placement};
-        let mut machines: Vec<_> = ('a'..='d').map(|id| {
-            MachineObservation::new(ployz_core::Machine {
-                id: ployz_core::MachineId::parse(id.to_string().repeat(32)).unwrap(),
-                name: ployz_core::MachineName::parse(format!("node-{id}")).unwrap(),
-                subnet: "10.210.1.0/24".parse().unwrap(),
-                public_key: ployz_core::WireGuardPublicKey([1; 32]),
-                labels: [("region".into(), "eu".into())].into(),
-                accepts_builds: true, accepts_services: true, accepts_ingress: true,
-                public_ip: None, advertised_endpoints: Vec::new(), runtime: Default::default(),
-            }, MembershipObservation::Up)
-        }).collect();
-        machines[1].machine.accepts_services = false;
-        machines[2].machine.labels.insert("region".into(), "us".into());
-        machines[3].membership = MembershipObservation::Down;
+        let mut machines: Vec<_> = ('a'..='d')
+            .map(|id| {
+                MachineObservation::new(
+                    ployz_core::Machine {
+                        id: ployz_core::MachineId::parse(id.to_string().repeat(32)).unwrap(),
+                        name: ployz_core::MachineName::parse(format!("node-{id}")).unwrap(),
+                        subnet: "10.210.1.0/24".parse().unwrap(),
+                        public_key: ployz_core::WireGuardPublicKey([1; 32]),
+                        labels: [("region".into(), "eu".into())].into(),
+                        accepts_builds: true,
+                        accepts_services: true,
+                        accepts_ingress: true,
+                        public_ip: None,
+                        advertised_endpoints: Vec::new(),
+                        runtime: Default::default(),
+                    },
+                    MembershipObservation::Up,
+                )
+            })
+            .collect();
+        machines.get_mut(1).unwrap().machine.accepts_services = false;
+        machines
+            .get_mut(2)
+            .unwrap()
+            .machine
+            .labels
+            .insert("region".into(), "us".into());
+        machines.get_mut(3).unwrap().membership = MembershipObservation::Down;
         let placement: Placement = serde_json::from_value(serde_json::json!({
             "constraints": ["node.labels.region == EU"]
-        })).unwrap();
-        assert_eq!(push_targets(&[], &placement, &machines).unwrap(), ["a".repeat(32)]);
-        assert_eq!(push_targets(&["node-b".into()], &placement, &machines).unwrap(), ["node-b"]);
-        machines[0].machine.accepts_services = false;
-        assert!(push_targets(&[], &placement, &machines).unwrap_err().to_string().contains("no responsive Service-accepting Machine"));
+        }))
+        .unwrap();
+        assert_eq!(
+            push_targets(&[], &placement, &machines).unwrap(),
+            ["a".repeat(32)]
+        );
+        assert_eq!(
+            push_targets(&["node-b".into()], &placement, &machines).unwrap(),
+            ["node-b"]
+        );
+        machines.first_mut().unwrap().machine.accepts_services = false;
+        assert!(
+            push_targets(&[], &placement, &machines)
+                .unwrap_err()
+                .to_string()
+                .contains("no responsive Service-accepting Machine")
+        );
     }
 
     #[test]

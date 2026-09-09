@@ -188,9 +188,13 @@ belongs in the client.
 **Machine-local admission.** Before creating a Service Container or hook, or
 preparing Service storage, the daemon reassesses placement against fresh local
 evidence and ensures mounted Volume readiness, including Provisioned Volumes.
-New work is refused when eligibility is ineligible or unknown. Placement and
-Machine Role changes do not prevent starting, restarting, stopping, or removing
-existing Containers.
+New creation and storage preparation are refused when eligibility is ineligible
+or unknown. Machine Labels and acceptance flags gate admission; editing them does
+not evict existing Containers or withdraw traffic. Starting, restarting, stopping,
+and removing existing Containers remain available. The next explicit Deploy applies
+current eligibility before replacement, including Machine-local Volume locality.
+Build admission checks Build acceptance again after queue wait; already-admitted
+Builds may finish.
 Observer-side eligibility remains advisory, including an Unknown safe hold. A
 dispatched Global catch-up operation makes exactly one fresh target-local
 eligibility decision: ensure eligible slots, retire definitely ineligible slots,

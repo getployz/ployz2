@@ -221,21 +221,44 @@ fn run_forms_share_normalization() {
 #[test]
 fn run_placement_accepts_constraints_and_rejects_legacy_or_unsupported_input() {
     let command = crate::cli::command();
-    let accepted = command.clone().try_get_matches_from([
-        "ployz", "run", "--constraint", "node.labels.region == EU",
-        "--constraint", "node.labels.draining != true", "alpine",
-    ]).unwrap();
+    let accepted = command
+        .clone()
+        .try_get_matches_from([
+            "ployz",
+            "run",
+            "--constraint",
+            "node.labels.region == EU",
+            "--constraint",
+            "node.labels.draining != true",
+            "alpine",
+        ])
+        .unwrap();
     let spec = run_spec(super::leaf_matches(&accepted)).unwrap();
-    assert_eq!(serde_json::to_value(spec.placement).unwrap(), serde_json::json!({
-        "constraints": ["node.labels.region==eu", "node.labels.draining!=true"]
-    }));
-    for constraint in ["node.hostname==edge", "node.labels.region=eu", "node.labels.region==eu || node.labels.region==us"] {
-        let parsed = command.clone().try_get_matches_from([
-            "ployz", "run", "--constraint", constraint, "alpine",
-        ]).unwrap();
-        assert!(run_spec(super::leaf_matches(&parsed)).is_err(), "{constraint}");
+    assert_eq!(
+        serde_json::to_value(spec.placement).unwrap(),
+        serde_json::json!({
+            "constraints": ["node.labels.draining!=true", "node.labels.region==eu"]
+        })
+    );
+    for constraint in [
+        "node.hostname==edge",
+        "node.labels.region=eu",
+        "node.labels.region==eu || node.labels.region==us",
+    ] {
+        let parsed = command
+            .clone()
+            .try_get_matches_from(["ployz", "run", "--constraint", constraint, "alpine"])
+            .unwrap();
+        assert!(
+            run_spec(super::leaf_matches(&parsed)).is_err(),
+            "{constraint}"
+        );
     }
-    assert!(command.try_get_matches_from(["ployz", "run", "--machine", "edge", "alpine"]).is_err());
+    assert!(
+        command
+            .try_get_matches_from(["ployz", "run", "--machine", "edge", "alpine"])
+            .is_err()
+    );
 }
 
 #[test]

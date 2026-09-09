@@ -1602,9 +1602,20 @@ fn next_deploy_relocates_after_policy_edits_but_preserves_volume_locality() {
                 .is_empty()
         );
         if revoke_role {
-            snapshot.machines[0].machine.accepts_services = false;
+            snapshot
+                .machines
+                .first_mut()
+                .unwrap()
+                .machine
+                .accepts_services = false;
         } else {
-            snapshot.machines[0].machine.labels.remove("fixture");
+            snapshot
+                .machines
+                .first_mut()
+                .unwrap()
+                .machine
+                .labels
+                .remove("fixture");
         }
         let plan = plan_deploy([&service], &snapshot, PlanOptions::default()).unwrap();
         assert!(matches!(operations(&plan).as_slice(), [
@@ -1681,8 +1692,18 @@ fn reserved_ingress_deploy_uses_ingress_acceptance_independently() {
     assert!(
         matches!(operations(&plan).as_slice(), [DeployOperation::RunContainer { machine_id: destination, .. }] if *destination == machine_id('1'))
     );
-    snapshot.machines[0].machine.accepts_services = true;
-    snapshot.machines[0].machine.accepts_ingress = false;
+    snapshot
+        .machines
+        .first_mut()
+        .unwrap()
+        .machine
+        .accepts_services = true;
+    snapshot
+        .machines
+        .first_mut()
+        .unwrap()
+        .machine
+        .accepts_ingress = false;
     assert!(
         preview_deploy(&intent, &snapshot, IngressContext::default())
             .unwrap_err()

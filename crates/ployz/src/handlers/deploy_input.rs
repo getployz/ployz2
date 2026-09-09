@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fs, num::NonZeroU32};
 use clap::ArgMatches;
 use ployz_core::{
     ByteQuantity, ContainerPath, ContainerResources, CpuNanos, DockerVolumeName,
-    IngressProxyFragment, PlacementConstraint, Placement, PortPublication, PullPolicy,
+    IngressProxyFragment, Placement, PlacementConstraint, PortPublication, PullPolicy,
     RequestedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
     ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, Ulimit,
     UpdateConfig,

@@ -22,7 +22,7 @@ fn fixture() -> (PathBuf, DeployService, Arc<BuildFixture>) {
     source.machine.runtime.architecture = "x86_64".into();
     destination.machine.runtime.architecture = "x86_64".into();
     fs::write(root.join("compose.yaml"), format!(
-        "name: example\nservices:\n  one:\n    image: registry.invalid/shared:latest\n    build: .\n    x-machines: [{}]\n    x-pre_deploy: {{command: ['true']}}\n    volumes: [data:/data]\n  two:\n    image: registry.invalid/shared:latest\n    build: .\n    x-machines: [{}]\nvolumes:\n  data: {{}}\n",
+        "name: example\nservices:\n  one:\n    image: registry.invalid/shared:latest\n    build: .\n    deploy: {{placement: {{constraints: [node.id=={}]}}}}\n    x-pre_deploy: {{command: ['true']}}\n    volumes: [data:/data]\n  two:\n    image: registry.invalid/shared:latest\n    build: .\n    deploy: {{placement: {{constraints: [node.id=={}]}}}}\nvolumes:\n  data: {{}}\n",
         destination.machine.id, destination.machine.id,
     )).unwrap();
     let builds = Arc::new(BuildFixture::default());

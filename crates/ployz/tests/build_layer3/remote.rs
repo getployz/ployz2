@@ -394,7 +394,7 @@ async fn remote_build_delivers_dependency_content_and_deploys_without_a_registry
     fs::create_dir_all(root.join("app")).unwrap();
     let image = format!("registry.invalid/ployz-803-{}:shared", std::process::id());
     fs::write(root.join("compose.yaml"), format!(
-        "name: remote\nservices:\n  base:\n    image: {image}\n    build: ./base\n    profiles: [build-only]\n  app:\n    image: {image}\n    pull_policy: never\n    x-machines: [{destination}]\n    build:\n      context: ./app\n      additional_contexts:\n        base: service:base\n"
+        "name: remote\nservices:\n  base:\n    image: {image}\n    build: ./base\n    profiles: [build-only]\n  app:\n    image: {image}\n    pull_policy: never\n    deploy: {{placement: {{constraints: [node.id=={destination}]}}}}\n    build:\n      context: ./app\n      additional_contexts:\n        base: service:base\n"
     )).unwrap();
     fs::write(
         root.join("base/Dockerfile"),
