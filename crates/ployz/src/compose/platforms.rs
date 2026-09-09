@@ -16,9 +16,11 @@ pub(super) const RAILPACK_PLATFORMS: [&str; 2] = ["linux/amd64", "linux/arm64"];
 
 impl CapturedBuild {
     /// Fix each Railpack target's platforms to what the Machines its Service
-    /// may be placed on run natively, from read-only observations. Explicit
-    /// `build.platforms` must already cover them. Dockerfile targets keep one
-    /// platform; Deploy's coverage check refuses a mismatch before any change.
+    /// may be placed on run natively, from read-only observations. Authored
+    /// `build.platforms` must already cover them; the execution host's default
+    /// platform is replaced, since it describes the client and not the Cluster.
+    /// Dockerfile targets keep one platform; Deploy's coverage check refuses a
+    /// mismatch before any change.
     ///
     /// # Errors
     /// Names the Service whose explicit platforms miss a Machine's platform.
@@ -46,7 +48,12 @@ impl CapturedBuild {
                 continue;
             };
             let required = machine_platforms(&target.name, spec, machines)?;
-            if target.platforms.is_empty() {
+            if required.is_empty() {
+                // No placement is visible; the coverage check after the Build
+                // decides, and nothing here can name a better platform.
+                continue;
+            }
+            if !self.authored_platforms.contains(&target.name) {
                 target.platforms = required.into_keys().collect();
             } else if let Some((platform, machines)) = required
                 .iter()
@@ -154,6 +161,10 @@ mod tests {
         ];
         let capture = |compose: &str| {
             let mut project = crate::compose::parse_normalized(compose, &root).unwrap();
+            // The client's default platform describes this host, not the Cluster.
+            project
+                .environment
+                .insert("DOCKER_DEFAULT_PLATFORM".into(), "linux/amd64".into());
             let options = BuildOptions::default();
             let plan = plan_build(&project, &options).unwrap();
             let captured = capture_build(&plan, &options, &mut project).unwrap();
@@ -171,6 +182,13 @@ mod tests {
             "services:\n  pinned:\n    image: registry.invalid/pinned:1\n    build: {{context: ., x-recipe: railpack}}\n    x-machines: [{}]\n  anywhere:\n    image: registry.invalid/anywhere:1\n    build: {{context: ., x-recipe: railpack}}\n  file:\n    image: registry.invalid/file:1\n    build: .\n",
             machines[0].machine.id
         ));
+        // Before derivation every target carries the host default.
+        assert!(
+            captured
+                .targets
+                .iter()
+                .all(|target| target.platforms == ["linux/amd64"])
+        );
         captured.cover_machines(&candidate, &machines).unwrap();
         let platforms = |captured: &CapturedBuild, name: &str| {
             captured
@@ -186,8 +204,8 @@ mod tests {
             platforms(&captured, "anywhere"),
             ["linux/amd64", "linux/arm64"]
         );
-        // A Dockerfile keeps its native default; Deploy's coverage check decides.
-        assert!(platforms(&captured, "file").is_empty());
+        // A Dockerfile keeps the host default; Deploy's coverage check decides.
+        assert_eq!(platforms(&captured, "file"), ["linux/amd64"]);
         assert!(captured.cover_machines(&candidate, &[]).is_ok());
         assert_eq!(
             platforms(&captured, "anywhere"),

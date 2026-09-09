@@ -33,8 +33,9 @@ ARM64 platform. Set `build.platforms: [linux/amd64, linux/arm64]` to build both;
 the execution host must provide native or emulated support for each platform.
 Separate solves are assembled locally with pinned regctl 0.11.6 into one immutable
 image in Docker’s containerd store, with every platform’s content verified.
-Multi-platform builds currently require local output and reject requested
-`build.provenance` or `build.sbom`; Dockerfiles remain limited to one platform.
+Multi-platform builds currently require local output. Railpack rejects
+`build.provenance` and `build.sbom` because assembly cannot carry attestations;
+Dockerfiles pass them to BuildKit and remain limited to one platform.
 
 `ployz deploy` derives each Railpack Service's platforms from the Machines it may
 be placed on, read from the current Cluster Observation, before building; explicit

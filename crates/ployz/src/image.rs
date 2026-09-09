@@ -224,18 +224,24 @@ pub(crate) async fn push_using_machines(
     };
     // Docker pushes the whole image to the first reachable target, which then
     // serves its peers. Read back what that target actually holds before any
-    // peer relies on it.
+    // peer relies on it; a target that received the image but cannot be read
+    // keeps its success and the next target is pushed to instead.
     let mut source = None;
     for machine in targets.by_ref() {
-        let outcome = async {
-            push_to_machine(client, content, platform, &machine, mode, &mut cancellation).await?;
-            Source::open(client, machine.id, &mut cancellation).await
+        let pushed =
+            push_to_machine(client, content, platform, &machine, mode, &mut cancellation).await;
+        let delivered = pushed.is_ok();
+        record(&mut result, &machine, pushed.map(|_| ()))?;
+        if !delivered {
+            continue;
         }
-        .await;
-        let outcome = outcome.map(|opened| source = Some(opened));
-        record(&mut result, &machine, outcome)?;
-        if source.is_some() {
-            break;
+        match Source::open(client, machine.id, &mut cancellation).await {
+            Ok(opened) => {
+                source = Some(opened);
+                break;
+            }
+            Err(error) if error.is_cancellation() => return Err(error),
+            Err(_) => {}
         }
     }
     let Some(source) = source else {
