@@ -121,17 +121,7 @@ impl VolumeStorage {
         let volume = format!("{root}/{name}");
 
         if let Some(existing) = Self::dataset(&datasets, pool, name)? {
-            existing.require_mountpoint(&name.mountpoint())?;
-            existing.require_writable()?;
-            return if existing.refquota == requested {
-                Ok(())
-            } else {
-                Err(format!(
-                    "Volume {name} already has a {}-byte bound; changing it to {requested} bytes is a separate update operation",
-                    existing.refquota
-                )
-                .into())
-            };
+            return existing.require_requested(name, requested);
         }
 
         if matches!(origin, CapacityAdmission::Required) {
@@ -344,6 +334,19 @@ impl Dataset {
             .into());
         }
         self.require_mountpoint(&name.mountpoint())
+    }
+
+    fn require_requested(&self, name: &DockerVolumeName, requested: u64) -> Result<()> {
+        self.require_mountpoint(&name.mountpoint())?;
+        self.require_writable()?;
+        if self.refquota == requested {
+            return Ok(());
+        }
+        Err(format!(
+            "Volume {name} already has a {}-byte bound; changing it to {requested} bytes is a separate update operation",
+            self.refquota
+        )
+        .into())
     }
 }
 

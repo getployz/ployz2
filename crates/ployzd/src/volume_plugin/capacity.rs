@@ -4,7 +4,7 @@ use axum::{Json, extract::State};
 use ployz_core::{ProvisionedVolumeMaximumBytes, StorageCapacity, StorageCapacityError};
 use std::collections::BTreeMap;
 
-use super::{CapacityAdmission, DockerVolumeName, VolumeStorage};
+use super::{DockerVolumeName, VolumeStorage};
 
 type Volumes = BTreeMap<ployz_core::DockerVolumeName, ProvisionedVolumeMaximumBytes>;
 
@@ -78,52 +78,41 @@ impl VolumeStorage {
         if requested.is_empty() {
             return Ok(Vec::new());
         }
+        let existing_pool = self.pool.one_usable().await.map_err(storage_error)?;
+        if let Some(pool) = &existing_pool {
+            let datasets = self.datasets(pool).await.map_err(storage_error)?;
+            for (name, maximum) in requested {
+                let plugin_name = name
+                    .as_str()
+                    .parse::<DockerVolumeName>()
+                    .map_err(storage_error)?;
+                if let Some(existing) =
+                    Self::dataset(&datasets, pool, &plugin_name).map_err(storage_error)?
+                {
+                    existing
+                        .require_requested(&plugin_name, maximum.get())
+                        .map_err(storage_error)?;
+                }
+            }
+        }
         let commitment = capacity
             .volumes
             .values()
             .map(|maximum| maximum.get())
             .try_fold(budget.additional_commitment_bytes, u64::checked_add)
             .ok_or_else(|| unknown("Volume commitments overflow u64"))?;
-        let pool = match self.pool.one_usable().await.map_err(storage_error)? {
+        match existing_pool {
             Some(pool) => {
                 self.pool
                     .ensure_capacity(&pool, commitment, capacity.unmanaged_used_bytes)
                     .await
                     .map_err(storage_error)?;
-                pool
             }
             None => {
                 self.pool.create(commitment).await.map_err(storage_error)?;
-                self.one_pool().await.map_err(storage_error)?
             }
-        };
-        let mut prepared = Vec::new();
-        for (name, maximum) in requested {
-            let plugin_name = name
-                .as_str()
-                .parse::<DockerVolumeName>()
-                .map_err(storage_error)?;
-            // The whole batch has physical backing; each dataset records its durable commitment.
-            if let Err(error) = self
-                .create_volume(
-                    &pool,
-                    &plugin_name,
-                    maximum.get(),
-                    CapacityAdmission::Ensured,
-                )
-                .await
-            {
-                let mut error = storage_error(error);
-                error
-                    .details
-                    .as_object_mut()
-                    .expect("storage errors have object details")
-                    .insert("prepared_volumes".into(), serde_json::json!(prepared));
-                return Err(error);
-            }
-            prepared.push(name.clone());
         }
-        Ok(prepared)
+        Ok(requested.keys().cloned().collect())
     }
 }
 
