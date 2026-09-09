@@ -117,7 +117,7 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
             crate::cancellation::read(&cancellation, connect_client(matches, context)).await?;
         let mut failures = Vec::new();
         for service in &built {
-            let machines = crate::cancellation::read(&cancellation, client.machines()).await?;
+            let machines = crate::cancellation::read(&cancellation, async { Ok(client.machines().await?) }).await?;
             let targets = push_targets(&explicit, &service.placement, &machines)?;
             match crate::image::push(
                 &mut client,
@@ -223,7 +223,7 @@ pub(super) fn push_targets(
         return Ok(explicit.to_vec());
     }
     let targets: Vec<_> = machines.iter()
-        .filter(|observed| observed.membership.is_up()
+        .filter(|observed| observed.membership == ployz_core::MembershipObservation::Up
             && observed.machine.accepts_services
             && ployz_core::machine_matches_placement(&observed.machine, placement))
         .map(|observed| observed.machine.id.to_string())
