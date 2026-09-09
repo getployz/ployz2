@@ -317,7 +317,7 @@ fn unmatched_placement_returns_no_eligible_machines() {
         &[EliminatingConstraint::UnknownPlacement {
             targets: vec![label_constraint("missing")],
         }],
-        &["placement constraints 'node.labels.fixture == missing' matched no Machine"],
+        &["placement constraints 'node.labels.fixture==missing' matched no Machine"],
     );
 }
 

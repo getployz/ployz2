@@ -897,7 +897,7 @@ fn unmatched_constraints_name_the_missing_label() {
         &[EliminatingConstraint::UnknownPlacement {
             targets: vec![label_constraint("missing-machine")],
         }],
-        &["placement constraints 'node.labels.fixture == missing-machine' matched no Machine"],
+        &["placement constraints 'node.labels.fixture==missing-machine' matched no Machine"],
     );
 }
 
@@ -954,7 +954,7 @@ fn volume_on_another_machine_names_the_volume_and_the_conflict() {
             requested: vec![label_constraint("ord1")],
         }],
         &[
-            "Docker Volume 'app_data' is already on Machine 'ewr1', which conflicts with placement constraints 'node.labels.fixture == ord1'",
+            "Docker Volume 'app_data' is already on Machine 'ewr1', which conflicts with placement constraints 'node.labels.fixture==ord1'",
         ],
     );
 }
