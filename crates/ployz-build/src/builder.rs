@@ -361,7 +361,10 @@ mod tests {
     fn dockerfile_platforms_follow_the_running_workers_capabilities() {
         let directory =
             std::env::temp_dir().join(format!("ployz-platform-{}", uuid::Uuid::new_v4()));
-        fs::create_dir(&directory).unwrap();
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
         let program = directory.join("docker");
         crate::tests::executable(
             &program,
