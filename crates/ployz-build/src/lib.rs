@@ -334,28 +334,6 @@ pub fn execute_admitted(
             .map_err(|error| error.at(Stage::Preparation))?;
         preparation = railpack::prepare(&docker, request, &native, &admission.resources)
             .map_err(|error| error.at(Stage::Preparation))?;
-        for image in request.image_contexts.values() {
-            for target in request.targets {
-                let platforms = if target.platforms.is_empty() {
-                    vec![native.clone()]
-                } else {
-                    target.platforms.clone()
-                };
-                for platform in platforms {
-                    if !image
-                        .platforms
-                        .iter()
-                        .any(|observed| covers(observed, &platform))
-                    {
-                        return Err(BuildError::Request(format!(
-                            "image context {} contains {:?}, but this Build requires {platform}",
-                            image.reference, image.platforms
-                        ))
-                        .at(Stage::Preparation));
-                    }
-                }
-            }
-        }
         let overrides = preparation
             .as_ref()
             .map(railpack::Preparation::override_file);
