@@ -769,7 +769,8 @@ async fn railpack_deploy_derives_machine_platforms_and_partial_peers_never_serve
         let logs = cluster
             .machine_shell(index, &format!("docker logs {container}"))
             .unwrap();
-        assert_eq!(logs.trim(), native_arch, "Machine {index}");
+        // npm echoes the start script before the process prints its architecture.
+        assert_eq!(logs.lines().last(), Some(native_arch), "Machine {index}");
         let spec_image = cluster
             .machine_shell(
                 index,
