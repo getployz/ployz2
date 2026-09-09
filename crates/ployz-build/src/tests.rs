@@ -94,6 +94,11 @@ fn target(name: &str, platform: Option<&str>) -> Target {
 fn cancellation_between_pushes_leaves_later_targets_unattempted() {
     let directory = std::env::temp_dir().join(format!("ployz-push-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(
+        &directory,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )
+    .unwrap();
     let program = directory.join("docker");
     executable(
         &program,
@@ -127,6 +132,7 @@ exit 0
         docker: program.clone(),
         state_directory: directory.clone(),
         active_timeout: EXECUTION_TIMEOUT,
+        configuration_file: directory.join("build.yaml"),
     })
     .unwrap();
     let cancellation = admission.cancellation();

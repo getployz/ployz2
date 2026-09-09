@@ -12,6 +12,8 @@
 
 mod builder;
 mod execution;
+mod policy;
+pub use policy::clear_cache;
 mod received_recipe;
 pub mod remote;
 mod upload;
@@ -250,14 +252,14 @@ pub fn execute_admitted(
     docker
         .run("check Buildx", &["buildx", "version"], Streams::Captured)
         .map_err(|error| error.at(Stage::Preparation))?;
-    let builder =
-        Builder::acquire(&docker, admission.lock).map_err(|error| error.at(Stage::Preparation))?;
+    let builder = Builder::acquire(&docker, admission.lock, &admission.resources)
+        .map_err(|error| error.at(Stage::Preparation))?;
     let result = (|| {
         let native = builder
-            .native_platform(request.targets)
+            .native_platform(request.targets, &admission.resources)
             .map_err(|error| error.at(Stage::Preparation))?;
-        let preparation =
-            railpack::prepare(&docker, request).map_err(|error| error.at(Stage::Preparation))?;
+        let preparation = railpack::prepare(&docker, request, &admission.resources)
+            .map_err(|error| error.at(Stage::Preparation))?;
         let overrides = preparation
             .as_ref()
             .map(railpack::Preparation::override_file);
@@ -322,6 +324,15 @@ pub fn execute_admitted(
         Ok(Vec::new())
     })();
     progress(Progress::Stage(Stage::Cleanup));
+    // An ephemeral worker may exit before periodic GC runs. Use upstream
+    // pruning after successful output, while the same ownership is still held.
+    let result = result.and_then(|images| {
+        admission
+            .resources
+            .collect_cache(&docker.releasing())
+            .map_err(|error| error.at(Stage::Cleanup))?;
+        Ok(images)
+    });
     builder.finish(result)
 }
 
