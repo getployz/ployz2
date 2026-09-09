@@ -1,152 +1,150 @@
 //! Release selection, acquisition, verification, and activation.
 
 use std::{
-    cmp::Ordering as Compare,
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    process::Command,
+    str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
-use sha2::{Digest, Sha256};
+#[cfg(not(test))]
+use std::os::unix::fs::chown;
 
-use super::{Error, InstallPaths, InstallRequest, daemon_archive, run_command};
+use semver::Version;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use tokio::{process::Command, time::timeout};
+
+use super::{Error, InstallPaths, daemon_archive, run_command};
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
 const CHANNEL_URL: &str = "https://ployz.sh";
 const RELEASE_API: &str = "https://api.github.com/repos/getployz/ployz2";
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(test))]
+const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_millis(100);
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// A trusted release target selected at the CLI boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Release {
-    major: u64,
-    minor: u64,
-    patch: u64,
-    /// `None` is a stable release, which sorts after its beta releases.
-    beta: Option<u64>,
+pub enum ReleaseRequest {
+    /// Resolve the stable channel once for this installation attempt.
+    Stable,
+    /// Resolve the beta channel once for this installation attempt.
+    Beta,
+    /// Install this exact published daemon version.
+    Exact(Version),
 }
 
-impl Release {
-    pub(super) fn parse(value: &str) -> Result<Self, Error> {
+impl FromStr for ReleaseRequest {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         let value = value.strip_prefix('v').unwrap_or(value);
-        let (core, beta) = match value.split_once("-beta.") {
-            Some((core, beta)) => (core, Some(beta)),
-            None => (value, None),
-        };
-        if core.contains('-') {
-            return Err(Error::InvalidVersion {
-                value: value.into(),
-            });
+        match value {
+            "" | "latest" | "stable" => Ok(Self::Stable),
+            "beta" => Ok(Self::Beta),
+            "nightly" => Err(Error::Nightly),
+            value => parse_release(value).map(Self::Exact),
         }
-        let mut pieces = core.split('.');
-        let parse_part = |part: Option<&str>| {
-            part.filter(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-                .and_then(|part| part.parse().ok())
-        };
-        let (Some(major), Some(minor), Some(patch), None) = (
-            parse_part(pieces.next()),
-            parse_part(pieces.next()),
-            parse_part(pieces.next()),
-            pieces.next(),
-        ) else {
-            return Err(Error::InvalidVersion {
-                value: value.into(),
-            });
-        };
-        let beta = match beta {
-            Some(beta) if beta.bytes().all(|byte| byte.is_ascii_digit()) => {
-                beta.parse().map(Some).map_err(|_| Error::InvalidVersion {
-                    value: value.into(),
+    }
+}
+
+/// A release source that is fixed by the local installer invocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReleaseSource {
+    /// Ployz's fixed, trusted published release and channel endpoints.
+    Published,
+    /// An operator-provided local release directory used only by offline qualification.
+    Local(PathBuf),
+}
+
+impl ReleaseSource {
+    fn is_local(&self) -> bool {
+        matches!(self, Self::Local(_))
+    }
+
+    async fn channel(&self, name: &str) -> Result<String, Error> {
+        let bytes = match self {
+            Self::Published => {
+                fetch(&format!("{CHANNEL_URL}/{name}"), "resolve release channel").await?
+            }
+            Self::Local(directory) => {
+                fs::read(directory.join(name)).map_err(|source| Error::Io {
+                    stage: "read local release channel",
+                    source,
                 })?
             }
-            Some(_) => {
-                return Err(Error::InvalidVersion {
-                    value: value.into(),
-                });
-            }
-            None => None,
         };
-        Ok(Self {
-            major,
-            minor,
-            patch,
-            beta,
+        String::from_utf8(bytes).map_err(|error| {
+            Error::ReleaseSelection(format!("{name} channel is not UTF-8: {error}"))
         })
     }
 
-    pub(super) fn as_string(&self) -> String {
-        let Self {
-            major,
-            minor,
-            patch,
-            beta,
-        } = self;
-        match beta {
-            Some(beta) => format!("{major}.{minor}.{patch}-beta.{beta}"),
-            None => format!("{major}.{minor}.{patch}"),
+    async fn release_file(
+        &self,
+        target: &Version,
+        file: &str,
+        stage: &'static str,
+    ) -> Result<Vec<u8>, Error> {
+        match self {
+            Self::Published => fetch(&release_url(target, file), stage).await,
+            Self::Local(directory) => fs::read(directory.join(file)).map_err(|source| Error::Io {
+                stage: "read local release artifact",
+                source,
+            }),
         }
     }
 }
 
-impl Ord for Release {
-    fn cmp(&self, other: &Self) -> Compare {
-        (self.major, self.minor, self.patch)
-            .cmp(&(other.major, other.minor, other.patch))
-            .then_with(|| match (self.beta, other.beta) {
-                (Some(left), Some(right)) => left.cmp(&right),
-                (Some(_), None) => Compare::Less,
-                (None, Some(_)) => Compare::Greater,
-                (None, None) => Compare::Equal,
-            })
+#[derive(Deserialize)]
+struct GitHubRelease {
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Deserialize)]
+struct GitHubAsset {
+    name: String,
+    digest: Option<String>,
+}
+
+pub(super) async fn resolve_release(
+    request: &ReleaseRequest,
+    source: &ReleaseSource,
+) -> Result<Version, Error> {
+    match request {
+        ReleaseRequest::Stable => parse_release(source.channel("stable").await?.trim()),
+        ReleaseRequest::Beta => parse_release(source.channel("beta").await?.trim()),
+        ReleaseRequest::Exact(version) => Ok(version.clone()),
     }
 }
 
-impl PartialOrd for Release {
-    fn partial_cmp(&self, other: &Self) -> Option<Compare> {
-        Some(self.cmp(other))
+fn parse_release(value: &str) -> Result<Version, Error> {
+    let version = Version::parse(value).map_err(|_| Error::InvalidVersion {
+        value: value.into(),
+    })?;
+    let pre = version.pre.as_str();
+    let beta_is_valid = pre.strip_prefix("beta.").is_some_and(|number| {
+        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+    });
+    if !version.build.is_empty() || (!pre.is_empty() && !beta_is_valid) {
+        return Err(Error::InvalidVersion {
+            value: value.into(),
+        });
     }
-}
-
-pub(super) async fn resolve_release(request: &InstallRequest) -> Result<Release, Error> {
-    let requested = request
-        .version
-        .strip_prefix('v')
-        .unwrap_or(&request.version);
-    if requested == "nightly" {
-        return Err(Error::Nightly);
-    }
-    match requested {
-        "" | "latest" | "stable" => {
-            let value = release_file(request, "stable").await?;
-            Release::parse(value.trim())
-        }
-        "beta" => {
-            let value = release_file(request, "beta").await?;
-            Release::parse(value.trim())
-        }
-        version => Release::parse(version),
-    }
-}
-
-async fn release_file(request: &InstallRequest, name: &str) -> Result<String, Error> {
-    let bytes = if let Some(directory) = &request.release_dir {
-        fs::read(directory.join(name)).map_err(|source| Error::Io {
-            stage: "read local release channel",
-            source,
-        })?
-    } else {
-        fetch(&format!("{CHANNEL_URL}/{name}"), "resolve release channel").await?
-    };
-    String::from_utf8(bytes)
-        .map_err(|error| Error::ReleaseSelection(format!("{name} channel is not UTF-8: {error}")))
+    Ok(version)
 }
 
 pub(super) async fn fetch(url: &str, stage: &str) -> Result<Vec<u8>, Error> {
     let client = reqwest::Client::builder()
         .https_only(true)
+        .timeout(DOWNLOAD_TIMEOUT)
         .user_agent("ployzd-installer")
         .build()
         .map_err(|error| Error::ReleaseSelection(format!("build download client: {error}")))?;
@@ -164,38 +162,21 @@ pub(super) async fn fetch(url: &str, stage: &str) -> Result<Vec<u8>, Error> {
         .map_err(|error| Error::ReleaseSelection(format!("{stage}: {error}")))
 }
 
-fn release_url(target: &Release, file: &str) -> String {
-    format!(
-        "{RELEASE_REPOSITORY}/releases/download/v{}/{file}",
-        target.as_string()
-    )
+fn release_url(target: &Version, file: &str) -> String {
+    format!("{RELEASE_REPOSITORY}/releases/download/v{target}/{file}")
 }
 
 pub(super) async fn install_binaries(
-    request: &InstallRequest,
+    source: &ReleaseSource,
     paths: &InstallPaths,
-    target: &Release,
+    target: &Version,
 ) -> Result<bool, Error> {
-    let installed = installed_release(&paths.bin_dir.join("ployzd"));
-    let pinned = !matches!(
-        request
-            .version
-            .strip_prefix('v')
-            .unwrap_or(&request.version),
-        "" | "latest" | "stable" | "beta"
-    );
-    let replace = match installed {
-        None => true,
-        Some(ref installed) if request.release_dir.is_some() => true,
-        Some(ref installed) if pinned => installed != target,
-        Some(ref installed) => installed < target,
-    };
+    let installed = installed_release(&paths.bin_dir.join("ployzd")).await?;
+    let replace = replacement_required(source, installed.as_ref(), target);
     if !replace {
         println!(
             "ployzd {} retained",
-            installed
-                .expect("replace covers missing release")
-                .as_string()
+            installed.expect("a skipped replacement has an installed release")
         );
         return Ok(false);
     }
@@ -203,56 +184,58 @@ pub(super) async fn install_binaries(
     let archive = daemon_archive()?;
     let stage = Staging::new(&paths.bin_dir)?;
     let archive_path = stage.path.join(archive);
-    let checksum = published_checksum(request, target, archive).await?;
-    let archive_bytes = if let Some(directory) = &request.release_dir {
-        fs::read(directory.join(archive)).map_err(|source| Error::Io {
-            stage: "read local daemon archive",
-            source,
-        })?
-    } else {
-        fetch(&release_url(target, archive), "download daemon archive").await?
-    };
+    let checksum = published_checksum(source, target, archive).await?;
+    let archive_bytes = source
+        .release_file(target, archive, "download daemon archive")
+        .await?;
     write_private(&archive_path, &archive_bytes, "stage daemon archive")?;
     verify_checksum(&archive_path, &checksum)?;
     extract_archive(&archive_path, &stage.path)?;
     let daemon = stage.path.join("ployzd");
     let uninstall = stage.path.join("ployz-uninstall");
-    verify_executable(&daemon, target)?;
+    verify_executable(&daemon, target).await?;
     verify_uninstall(&uninstall)?;
+    sync_staged_files(&daemon, &uninstall, &stage.path)?;
     activate(&daemon, &uninstall, paths)?;
     Ok(true)
 }
 
-pub(super) fn installed_release(path: &Path) -> Option<Release> {
+fn replacement_required(
+    source: &ReleaseSource,
+    installed: Option<&Version>,
+    target: &Version,
+) -> bool {
+    source.is_local() || installed.is_none_or(|installed| installed != target)
+}
+
+pub(super) async fn installed_release(path: &Path) -> Result<Option<Version>, Error> {
     if !path.is_file() {
-        return None;
+        return Ok(None);
     }
-    let output = Command::new(path).arg("version").output().ok()?;
-    output.status.success().then_some(())?;
-    Release::parse(String::from_utf8_lossy(&output.stdout).trim()).ok()
+    let output = version_command(path, "inspect installed daemon").await?;
+    if !output.status.success() {
+        return Err(Error::Verification(format!(
+            "installed daemon version check exited with {}",
+            output.status
+        )));
+    }
+    parse_release(String::from_utf8_lossy(&output.stdout).trim())
+        .map(Some)
+        .map_err(|_| Error::Verification("installed daemon reported an invalid version".into()))
 }
 
 async fn published_checksum(
-    request: &InstallRequest,
-    target: &Release,
+    source: &ReleaseSource,
+    target: &Version,
     archive: &str,
 ) -> Result<String, Error> {
-    let checksums = if let Some(directory) = &request.release_dir {
-        fs::read(directory.join("checksums.txt")).map_err(|source| Error::Io {
-            stage: "read local release checksums",
-            source,
-        })?
-    } else {
-        fetch(
-            &release_url(target, "checksums.txt"),
-            "download release checksums",
-        )
-        .await?
-    };
+    let checksums = source
+        .release_file(target, "checksums.txt", "download release checksums")
+        .await?;
     if let Some(checksum) = checksum_for(&checksums, archive) {
         return Ok(checksum);
     }
-    if request.release_dir.is_some() {
+    if source.is_local() {
         return Err(Error::Verification(format!(
             "checksums.txt has no hash for {archive}"
         )));
@@ -274,22 +257,17 @@ fn valid_checksum(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-async fn github_asset_digest(target: &Release, archive: &str) -> Result<String, Error> {
-    let endpoint = format!("{RELEASE_API}/releases/tags/v{}", target.as_string());
+async fn github_asset_digest(target: &Version, archive: &str) -> Result<String, Error> {
+    let endpoint = format!("{RELEASE_API}/releases/tags/v{target}");
     let response = fetch(&endpoint, "read published daemon checksum").await?;
-    let release: serde_json::Value = serde_json::from_slice(&response).map_err(|error| {
+    let release: GitHubRelease = serde_json::from_slice(&response).map_err(|error| {
         Error::Verification(format!("published release metadata is invalid: {error}"))
     })?;
     let digest = release
-        .get("assets")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|assets| {
-            assets.iter().find_map(|asset| {
-                (asset.get("name").and_then(serde_json::Value::as_str) == Some(archive))
-                    .then(|| asset.get("digest").and_then(serde_json::Value::as_str))
-                    .flatten()
-            })
-        })
+        .assets
+        .iter()
+        .find(|asset| asset.name == archive)
+        .and_then(|asset| asset.digest.as_deref())
         .and_then(|digest| digest.strip_prefix("sha256:"))
         .filter(|digest| valid_checksum(digest))
         .ok_or_else(|| {
@@ -319,9 +297,11 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), Error> {
 }
 
 fn extract_archive(archive: &Path, destination: &Path) -> Result<(), Error> {
-    let mut command = Command::new("tar");
+    let mut command = std::process::Command::new("tar");
     command
-        .args(["-xzf"])
+        // Release archives are produced by a different build user. The daemon must not inherit
+        // that user's numeric ownership when root installs it on a Machine.
+        .args(["--no-same-owner", "-xzf"])
         .arg(archive)
         .arg("-C")
         .arg(destination);
@@ -329,22 +309,44 @@ fn extract_archive(archive: &Path, destination: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn verify_executable(path: &Path, target: &Release) -> Result<(), Error> {
+async fn verify_executable(path: &Path, target: &Version) -> Result<(), Error> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(|source| Error::Io {
         stage: "mark staged daemon executable",
         source,
     })?;
-    let mut command = Command::new(path);
-    command.arg("version");
-    let output = run_command("preflight staged daemon", &mut command)?;
+    let output = version_command(path, "preflight staged daemon").await?;
+    if !output.status.success() {
+        return Err(Error::Verification(format!(
+            "staged daemon version check exited with {}",
+            output.status
+        )));
+    }
     let observed = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if observed == target.as_string() {
+    if observed == target.to_string() {
         Ok(())
     } else {
         Err(Error::Verification(format!(
-            "staged daemon reported version {observed:?}, expected {}",
-            target.as_string()
+            "staged daemon reported version {observed:?}, expected {target}"
         )))
+    }
+}
+
+async fn version_command(path: &Path, stage: &str) -> Result<std::process::Output, Error> {
+    let mut command = Command::new(path);
+    command.arg("version").kill_on_drop(true);
+    match timeout(VERSION_COMMAND_TIMEOUT, command.output()).await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => Err(Error::Command {
+            stage: stage.into(),
+            message: error.to_string(),
+        }),
+        Err(_) => Err(Error::Command {
+            stage: stage.into(),
+            message: format!(
+                "timed out after {} seconds",
+                VERSION_COMMAND_TIMEOUT.as_secs()
+            ),
+        }),
     }
 }
 
@@ -363,6 +365,23 @@ fn verify_uninstall(path: &Path) -> Result<(), Error> {
             "daemon archive does not contain a usable ployz-uninstall command".into(),
         ))
     }
+}
+
+fn sync_staged_files(daemon: &Path, uninstall: &Path, staging: &Path) -> Result<(), Error> {
+    for path in [daemon, uninstall] {
+        File::open(path)
+            .and_then(|file| file.sync_all())
+            .map_err(|source| Error::Io {
+                stage: "persist verified staged release",
+                source,
+            })?;
+    }
+    File::open(staging)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| Error::Io {
+            stage: "persist verified staging directory",
+            source,
+        })
 }
 
 pub(super) struct Staging {
@@ -424,6 +443,10 @@ pub(super) fn write_private(path: &Path, bytes: &[u8], stage: &'static str) -> R
 fn activate(daemon: &Path, uninstall: &Path, paths: &InstallPaths) -> Result<(), Error> {
     let installed = paths.bin_dir.join("ployzd");
     let previous = paths.bin_dir.join("ployzd.previous");
+    let directory = File::open(&paths.bin_dir).map_err(|source| Error::Io {
+        stage: "open daemon installation directory",
+        source,
+    })?;
     match fs::remove_file(&previous) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -439,19 +462,86 @@ fn activate(daemon: &Path, uninstall: &Path, paths: &InstallPaths) -> Result<(),
             stage: "retain previous daemon release",
             source,
         })?;
+        root_ownership(&previous, "secure retained previous daemon release")?;
     }
+    directory.sync_all().map_err(|source| Error::Io {
+        stage: "persist previous daemon release",
+        source,
+    })?;
     fs::rename(daemon, &installed).map_err(|source| Error::Io {
         stage: "activate verified daemon",
         source,
     })?;
-    fs::rename(uninstall, paths.bin_dir.join("ployz-uninstall")).map_err(|source| Error::Io {
+    root_ownership(&installed, "secure activated daemon")?;
+    directory.sync_all().map_err(|source| Error::Io {
+        stage: "persist daemon activation",
+        source,
+    })?;
+    let installed_uninstall = paths.bin_dir.join("ployz-uninstall");
+    fs::rename(uninstall, &installed_uninstall).map_err(|source| Error::Io {
         stage: "activate uninstall command",
         source,
     })?;
-    File::open(&paths.bin_dir)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|source| Error::Io {
-            stage: "persist daemon activation",
-            source,
-        })
+    root_ownership(&installed_uninstall, "secure activated uninstall command")?;
+    directory.sync_all().map_err(|source| Error::Io {
+        stage: "persist uninstall command activation",
+        source,
+    })
+}
+
+fn root_ownership(path: &Path, stage: &'static str) -> Result<(), Error> {
+    #[cfg(not(test))]
+    chown(path, Some(0), Some(0)).map_err(|source| Error::Io { stage, source })?;
+    #[cfg(test)]
+    let _ = (path, stage);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn published_release_requests_accept_only_trusted_shapes() {
+        assert!(matches!("stable".parse(), Ok(ReleaseRequest::Stable)));
+        assert!(matches!("beta".parse(), Ok(ReleaseRequest::Beta)));
+        assert_eq!(
+            "v1.2.3-beta.4".parse::<ReleaseRequest>().unwrap(),
+            ReleaseRequest::Exact(Version::parse("1.2.3-beta.4").unwrap())
+        );
+        for invalid in ["1.2", "1.2.3-rc.1", "1.2.3-beta.x", "1.2.3+build.1"] {
+            assert!(invalid.parse::<ReleaseRequest>().is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn checksum_parser_requires_the_requested_daemon_archive() {
+        let archive = "ployzd_linux_amd64.tar.gz";
+        let checksum = "2d20468cbeb9745b56fdf16897f963773baeecf45c4ea2e00a46e8d82da6ee9f";
+        assert_eq!(
+            checksum_for(format!("{checksum}  {archive}\n").as_bytes(), archive),
+            Some(checksum.into())
+        );
+        assert_eq!(checksum_for(b"bad  other.tar.gz\n", archive), None);
+    }
+
+    #[test]
+    fn resolved_channels_replace_the_exact_target_and_skip_only_the_same_target() {
+        let target = Version::parse("1.2.3").unwrap();
+        assert!(!replacement_required(
+            &ReleaseSource::Published,
+            Some(&target),
+            &target
+        ));
+        assert!(replacement_required(
+            &ReleaseSource::Published,
+            Some(&Version::parse("1.2.4").unwrap()),
+            &target
+        ));
+        assert!(replacement_required(
+            &ReleaseSource::Local(PathBuf::from("qualification")),
+            Some(&target),
+            &target
+        ));
+    }
 }

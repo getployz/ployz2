@@ -1,2 +1,2 @@
 path	rung1	rung2	rung3	rung4	rung5
-machine-installer	crates/ployzd/src/installer.rs::tests	-	-	-	ployzd install with a verified musl release on the disposable systemd Machine
+machine-installer	crates/ployzd/src/installer/mod.rs::tests::{installation_interface_contract,zfs_candidate_download_contract}; crates/ployzd/src/installer/release.rs::tests	-	-	-	ployzd install --software-only with a foreign-owned freshly built musl release on the retained Ubuntu systemd Machine

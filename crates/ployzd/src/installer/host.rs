@@ -1,18 +1,19 @@
 //! Explicit Machine host preparation and systemd lifecycle management.
 
 use std::{
-    ffi::OsStr,
-    fs::{self, File, OpenOptions},
+    fs,
     io::Write,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    os::unix::fs::MetadataExt,
     path::Path,
     process::{Command, Stdio},
 };
 
-use super::release::{Release, fetch, installed_release};
-use super::{
-    Error, InstallPaths, PLOYZ_USER, command_exists, run_apt, run_apt_with_env, run_host, systemctl,
-};
+use semver::Version;
+
+use crate::filesystem::atomic_write;
+
+use super::release::{fetch, installed_release};
+use super::{Error, InstallPaths, PLOYZ_USER, command_exists, run_apt, run_host, systemctl};
 
 const DOCKER_DAEMON_CONFIG: &str = r#"{
   "features": { "containerd-snapshotter": true },
@@ -26,10 +27,15 @@ pub(super) fn install_prerequisites() -> Result<(), Error> {
         return Ok(());
     }
     if command_exists("apt-get") {
-        run_apt("refresh packages for prerequisites", ["update", "-qq"])?;
-        run_apt_with_env(
+        run_apt(
+            "refresh packages for prerequisites",
+            ["update", "-qq"],
+            None,
+        )?;
+        run_apt(
             "install prerequisites",
             ["install", "-y", "-qq", "curl", "ca-certificates"],
+            None,
         )?;
     } else if command_exists("dnf") {
         run_host(
@@ -192,34 +198,7 @@ pub(super) fn write_file_atomically(
     content: &str,
     stage: &'static str,
 ) -> Result<(), Error> {
-    let parent = path.parent().ok_or_else(|| {
-        Error::Verification(format!(
-            "systemd unit path {} has no parent",
-            path.display()
-        ))
-    })?;
-    let temporary = parent.join(format!(
-        ".{}-{}",
-        path.file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or("ployz-unit"),
-        std::process::id()
-    ));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o644)
-            .open(&temporary)?;
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        File::open(parent)?.sync_all()
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result.map_err(|source| Error::Io { stage, source })
+    atomic_write(path, content.as_bytes(), 0o644).map_err(|source| Error::Io { stage, source })
 }
 
 pub(super) async fn install_docker(paths: &InstallPaths, install_only: bool) -> Result<(), Error> {
@@ -238,13 +217,6 @@ pub(super) async fn install_docker(paths: &InstallPaths, install_only: bool) -> 
             }
         }
         return Ok(());
-    }
-    if !command_exists("apt-get") {
-        return Err(Error::Command {
-            stage: "install Docker".into(),
-            message: "Docker is absent and apt-get is unavailable; install Docker, then retry"
-                .into(),
-        });
     }
     let script = fetch("https://get.docker.com", "download Docker installer").await?;
     let mut command = Command::new("bash");
@@ -296,7 +268,10 @@ pub(super) async fn install_docker(paths: &InstallPaths, install_only: bool) -> 
     Ok(())
 }
 
-pub(super) fn verify_running_daemon(paths: &InstallPaths, target: &Release) -> Result<(), Error> {
+pub(super) async fn verify_running_daemon(
+    paths: &InstallPaths,
+    target: &Version,
+) -> Result<(), Error> {
     systemctl(
         "check daemon readiness",
         ["is-active", "--quiet", "ployz.service"],
@@ -324,12 +299,10 @@ pub(super) fn verify_running_daemon(paths: &InstallPaths, target: &Release) -> R
             "ployz.service is active but does not run the activated daemon executable".into(),
         ));
     }
-    match installed_release(&paths.bin_dir.join("ployzd")) {
+    match installed_release(&paths.bin_dir.join("ployzd")).await? {
         Some(observed) if &observed == target => Ok(()),
         Some(observed) => Err(Error::Verification(format!(
-            "activated daemon reported {}, expected {}",
-            observed.as_string(),
-            target.as_string()
+            "activated daemon reported {observed}, expected {target}"
         ))),
         None => Err(Error::Verification(
             "activated daemon no longer reports a valid version".into(),

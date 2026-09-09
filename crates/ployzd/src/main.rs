@@ -16,7 +16,7 @@ use ployz_core::{DOCKER_NETWORK_CONFLICT_EXIT_STATUS, StorageChoice};
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
-    installer::{InstallRequest, Readiness},
+    installer::{InstallRequest, Preparation, Readiness, ReleaseRequest, ReleaseSource},
     machine::DEFAULT_DATA_DIR,
     network::NetworkError,
 };
@@ -128,16 +128,18 @@ async fn run(args: Args) -> Result<(), Error> {
         release_dir,
     }) = args.command
     {
-        let outcome = ployzd::installer::install(InstallRequest {
+        let request = install_request(
             version,
             storage,
-            prepare_host: !software_only,
+            software_only,
             install_only,
             group_user,
             release_dir,
-        })
-        .await
-        .map_err(io::Error::other)?;
+        )
+        .map_err(Error::from)?;
+        let outcome = ployzd::installer::install(request)
+            .await
+            .map_err(io::Error::other)?;
         match outcome.readiness {
             Readiness::InstallationOnly => {
                 println!(
@@ -167,6 +169,45 @@ async fn run(args: Args) -> Result<(), Error> {
     })
     .await?;
     daemon.wait().await
+}
+
+fn install_request(
+    version: String,
+    storage: StorageChoice,
+    software_only: bool,
+    install_only: bool,
+    group_user: Option<String>,
+    release_dir: Option<PathBuf>,
+) -> io::Result<InstallRequest> {
+    let release = version
+        .parse::<ReleaseRequest>()
+        .map_err(io::Error::other)?;
+    let preparation = if software_only {
+        if storage != StorageChoice::None {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--software-only cannot be combined with --storage",
+            ));
+        }
+        if group_user.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--software-only cannot be combined with --group-user",
+            ));
+        }
+        Preparation::SoftwareOnly
+    } else {
+        Preparation::PrepareHost {
+            storage,
+            group_user,
+        }
+    };
+    Ok(InstallRequest {
+        release,
+        source: release_dir.map_or(ReleaseSource::Published, ReleaseSource::Local),
+        preparation,
+        install_only,
+    })
 }
 
 async fn dial_stdio(path: &Path) -> io::Result<()> {
@@ -204,5 +245,55 @@ mod tests {
             daemon_error_exit_code(&Error::StorePoisoned),
             ExitCode::FAILURE
         );
+    }
+
+    #[test]
+    fn install_cli_rejects_host_options_for_software_only_replacement() {
+        let storage = install_request("stable".into(), StorageChoice::Zfs, true, false, None, None)
+            .unwrap_err();
+        assert_eq!(storage.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            storage.to_string(),
+            "--software-only cannot be combined with --storage"
+        );
+
+        let group = install_request(
+            "stable".into(),
+            StorageChoice::None,
+            true,
+            false,
+            Some("operator".into()),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(group.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            group.to_string(),
+            "--software-only cannot be combined with --group-user"
+        );
+    }
+
+    #[test]
+    fn install_cli_builds_one_explicit_preparation_mode() {
+        let replacement =
+            install_request("1.2.3".into(), StorageChoice::None, true, true, None, None).unwrap();
+        assert!(matches!(replacement.preparation, Preparation::SoftwareOnly));
+
+        let host = install_request(
+            "1.2.3".into(),
+            StorageChoice::Zfs,
+            false,
+            true,
+            Some("operator".into()),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            host.preparation,
+            Preparation::PrepareHost {
+                storage: StorageChoice::Zfs,
+                group_user: Some(_)
+            }
+        ));
     }
 }

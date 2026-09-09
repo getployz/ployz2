@@ -6,21 +6,17 @@ use std::{
     io::Write,
     path::Path,
     process::Command,
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 use ployz_core::StorageChoice;
 
-use super::{
-    Error, InstallPaths, command_exists, run_apt, run_apt_with_env, run_command, run_host,
-};
+use super::{Error, InstallPaths, command_exists, run_apt, run_command, run_host};
 use super::{
     host::write_file_atomically,
     release::{Staging, write_private},
 };
 
 const ZFS_SMOKE_BYTES: u64 = 128 * 1024 * 1024;
-static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn prepare_storage(storage: StorageChoice, paths: &InstallPaths) -> Result<(), Error> {
     match storage {
@@ -195,9 +191,24 @@ fn package_has_zfs_module(files: &str, kernel: &str) -> bool {
     })
 }
 
-fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
-    run_apt("refresh Ubuntu packages for ZFS", ["update", "-qq"])?;
+fn installed_package_files(candidate: &str) -> Result<Option<String>, Error> {
+    let output = Command::new("dpkg-query")
+        .args(["-L", candidate])
+        .output()
+        .map_err(|source| Error::Io {
+            stage: "inspect installed Ubuntu ZFS module package",
+            source,
+        })?;
+    Ok(output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned()))
+}
+
+pub(super) fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
+    run_apt("refresh Ubuntu packages for ZFS", ["update", "-qq"], None)?;
     let mut package = None;
+    let mut download_error = None;
     for candidate in [
         format!("linux-main-modules-zfs-{kernel}"),
         format!("linux-modules-zfs-{kernel}"),
@@ -216,21 +227,19 @@ fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
         {
             continue;
         }
-        let files = command_stdout(
-            "inspect installed Ubuntu ZFS module package",
-            "dpkg-query",
-            ["-L", &candidate],
-        )?;
-        if package_has_zfs_module(&files, kernel) {
+        if installed_package_files(&candidate)?
+            .is_some_and(|files| package_has_zfs_module(&files, kernel))
+        {
             package = Some(candidate);
             break;
         }
         let scratch = Staging::new(Path::new("/var/tmp"))?;
-        let mut download = Command::new("apt-get");
-        download
-            .args(["-o", "DPkg::Lock::Timeout=300", "download", &candidate])
-            .current_dir(&scratch.path);
-        if !run_command("download Ubuntu ZFS module package", &mut download).is_ok() {
+        if let Err(error) = run_apt(
+            "download Ubuntu ZFS module package",
+            ["download", &candidate],
+            Some(&scratch.path),
+        ) {
+            download_error = Some(error);
             continue;
         }
         let archive = fs::read_dir(&scratch.path)
@@ -241,7 +250,11 @@ fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
             .filter_map(Result::ok)
             .map(|entry| entry.path())
             .find(|path| path.extension() == Some(OsStr::new("deb")));
-        let Some(archive) = archive else { continue };
+        let Some(archive) = archive else {
+            return Err(Error::Verification(format!(
+                "downloaded Ubuntu ZFS module package {candidate} contained no Debian archive"
+            )));
+        };
         let mut contents = Command::new("dpkg-deb");
         contents.args(["-c"]).arg(&archive);
         let output = run_command(
@@ -253,13 +266,15 @@ fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
             break;
         }
     }
-    let package = package.ok_or_else(|| Error::Command {
-        stage: "prepare ZFS storage".into(),
-        message: format!(
-            "Ubuntu has no packaged ZFS module for the running kernel {kernel}; install a supported Ubuntu kernel and retry"
-        ),
+    let package = package.ok_or_else(|| {
+        download_error.unwrap_or_else(|| Error::Command {
+            stage: "prepare ZFS storage".into(),
+            message: format!(
+                "Ubuntu has no packaged ZFS module for the running kernel {kernel}; install a supported Ubuntu kernel and retry"
+            ),
+        })
     })?;
-    run_apt_with_env(
+    run_apt(
         "install ZFS packages",
         [
             "install",
@@ -269,6 +284,7 @@ fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
             "zfsutils-linux",
             &package,
         ],
+        None,
     )?;
     let files = command_stdout(
         "verify installed Ubuntu ZFS module package",
@@ -328,11 +344,9 @@ fn validate_zfs() -> Result<(), Error> {
     let stage = Staging::new(Path::new("/var/tmp"))?;
     let backing = stage.path.join("backing");
     write_private(&backing, b"", "create ZFS smoke backing file")?;
-    let pool = format!(
-        "ployz-smoke-{}-{}",
-        std::process::id(),
-        STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    );
+    // The installer lock serializes smoke Pools, and the process ID is the shell installer's
+    // existing collision boundary.
+    let pool = format!("ployz-smoke-{}", std::process::id());
     let mut pool_created = false;
     let result = (|| {
         let mut allocate = Command::new("fallocate");

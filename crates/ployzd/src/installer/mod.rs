@@ -25,22 +25,35 @@ use self::{
     storage::prepare_storage,
 };
 
+pub use self::release::{ReleaseRequest, ReleaseSource};
+
 const PLOYZ_USER: &str = "ployz";
 
+/// Explicit host work associated with one Machine installation attempt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Preparation {
+    /// Replace the daemon only after confirming the Machine is already prepared.
+    SoftwareOnly,
+    /// Prepare the host and optionally configure its requested storage.
+    PrepareHost {
+        /// Explicit storage preparation for a fresh Machine.
+        storage: StorageChoice,
+        /// Existing operator to add to the Ployz service group during host preparation.
+        group_user: Option<String>,
+    },
+}
+
+/// Choices for one local Machine installation attempt.
 #[derive(Clone, Debug)]
 pub struct InstallRequest {
-    /// A fixed version or the stable/beta channel to resolve once.
-    pub version: String,
-    /// Explicit storage preparation for a fresh Machine.
-    pub storage: StorageChoice,
-    /// Whether host prerequisites may be prepared. `false` is software-only replacement.
-    pub prepare_host: bool,
+    /// A fixed version or a channel resolved once before host mutation.
+    pub release: ReleaseRequest,
+    /// Trusted release source. Published releases never accept caller-provided URLs.
+    pub source: ReleaseSource,
+    /// Explicit host preparation or ordinary software-only replacement.
+    pub preparation: Preparation,
     /// Write the release and units without starting systemd.
     pub install_only: bool,
-    /// Existing operator to add to the Ployz service group while preparing the host.
-    pub group_user: Option<String>,
-    /// Local release directory used by offline qualification.
-    pub release_dir: Option<PathBuf>,
 }
 
 /// What installation directly observed after activation.
@@ -57,8 +70,6 @@ pub enum Readiness {
 pub struct InstallOutcome {
     /// Exact release selected before host mutation.
     pub target: String,
-    /// Whether the daemon executable changed.
-    pub replaced: bool,
     /// Readiness observed before the command returned.
     pub readiness: Readiness,
 }
@@ -70,10 +81,6 @@ pub enum Error {
     NotRoot,
     #[error("another Ployz installation is active")]
     Busy,
-    #[error(
-        "software-only replacement cannot prepare {storage} storage; run without --software-only"
-    )]
-    StorageRequiresHostPreparation { storage: StorageChoice },
     #[error("nightly is not a supported release channel")]
     Nightly,
     #[error("invalid Ployz release version '{value}'; expected X.Y.Z or X.Y.Z-beta.N")]
@@ -119,12 +126,26 @@ impl InstallPaths {
             modprobe_dir: PathBuf::from("/etc/modprobe.d"),
         }
     }
+
+    #[cfg(test)]
+    fn at(root: &Path) -> Self {
+        Self {
+            bin_dir: root.join("bin"),
+            systemd_dir: root.join("systemd"),
+            data_dir: root.join("data"),
+            run_dir: root.join("run"),
+            docker_config: root.join("docker/daemon.json"),
+            modprobe_dir: root.join("modprobe"),
+        }
+    }
 }
 
 struct InstallLock(File);
 
 impl Drop for InstallLock {
     fn drop(&mut self) {
+        // Forked children can inherit this file descriptor before exec; unlock the shared lock
+        // explicitly instead of waiting for every inherited descriptor to close.
         let _ = self.0.unlock();
     }
 }
@@ -140,51 +161,49 @@ pub async fn install(request: InstallRequest) -> Result<InstallOutcome, Error> {
 }
 
 async fn install_at(request: InstallRequest, paths: InstallPaths) -> Result<InstallOutcome, Error> {
-    if !request.prepare_host && request.storage != StorageChoice::None {
-        return Err(Error::StorageRequiresHostPreparation {
-            storage: request.storage,
-        });
-    }
     require_root()?;
     let _lock = claim_lock(&paths.run_dir)?;
     verify_system(request.install_only)?;
-    let target = resolve_release(&request).await?;
+    let target = resolve_release(&request.release, &request.source).await?;
 
-    if request.prepare_host {
-        prepare_storage(request.storage, &paths)?;
-        install_prerequisites()?;
-        let inherited_group = sudo_user();
-        create_user_and_directories(
-            request.group_user.as_deref().or(inherited_group.as_deref()),
-            &paths,
-        )?;
-    } else {
-        verify_software_prerequisites(&paths)?;
+    match &request.preparation {
+        Preparation::SoftwareOnly => verify_software_prerequisites(&paths)?,
+        Preparation::PrepareHost {
+            storage,
+            group_user,
+        } => {
+            prepare_storage(*storage, &paths)?;
+            install_prerequisites()?;
+            let inherited_group = sudo_user();
+            create_user_and_directories(
+                group_user.as_deref().or(inherited_group.as_deref()),
+                &paths,
+            )?;
+        }
     }
 
-    let mut replaced = !paths.systemd_dir.join("ployz.service").is_file();
-    replaced |= install_binaries(&request, &paths, &target).await?;
+    let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
+    restart_required |= install_binaries(&request.source, &paths, &target).await?;
     install_systemd(&paths, request.install_only)?;
-    if request.prepare_host {
+    if matches!(request.preparation, Preparation::PrepareHost { .. }) {
         install_docker(&paths, request.install_only).await?;
     }
 
     let readiness = if request.install_only {
         Readiness::InstallationOnly
     } else {
-        if replaced {
+        if restart_required {
             systemctl("restart daemon", ["restart", "ployz.service"])?;
             systemctl(
                 "restart volume plugin",
                 ["try-restart", "ployz-volume-plugin.service"],
             )?;
         }
-        verify_running_daemon(&paths, &target)?;
+        verify_running_daemon(&paths, &target).await?;
         Readiness::Running
     };
     Ok(InstallOutcome {
-        target: target.as_string(),
-        replaced,
+        target: target.to_string(),
         readiness,
     })
 }
@@ -311,76 +330,275 @@ pub(super) fn run_host<const N: usize>(
     run_command(stage, &mut command)
 }
 
-pub(super) fn run_apt<const N: usize>(stage: &str, args: [&str; N]) -> Result<Output, Error> {
-    let mut command = Command::new("apt-get");
-    command.args(["-o", "DPkg::Lock::Timeout=300"]);
-    command.args(args);
-    run_command(stage, &mut command)
-}
-
-pub(super) fn run_apt_with_env<const N: usize>(
+pub(super) fn run_apt<const N: usize>(
     stage: &str,
     args: [&str; N],
+    working_directory: Option<&Path>,
 ) -> Result<Output, Error> {
     let mut command = Command::new("apt-get");
     command
         .args(["-o", "DPkg::Lock::Timeout=300"])
         .args(args)
         .env("DEBIAN_FRONTEND", "noninteractive");
+    if let Some(working_directory) = working_directory {
+        command.current_dir(working_directory);
+    }
     run_command(stage, &mut command)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::release::{Release, checksum_for};
+    use std::{
+        env,
+        ffi::OsString,
+        io::Write,
+        os::unix::fs::{PermissionsExt, symlink},
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use semver::Version;
+
     use super::*;
 
-    #[test]
-    fn release_versions_accept_published_shapes_and_order_beta_before_stable() {
-        assert_eq!(Release::parse("v1.2.3").unwrap().as_string(), "1.2.3");
-        assert_eq!(
-            Release::parse("1.2.3-beta.4").unwrap().as_string(),
-            "1.2.3-beta.4"
-        );
-        assert!(Release::parse("1.2.3-beta.4").unwrap() < Release::parse("1.2.3").unwrap());
-    }
+    #[tokio::test]
+    async fn installation_interface_contract() {
+        if let Ok(case) = env::var("PLOYZ_INSTALLER_CONTRACT_CASE") {
+            run_installation_case(&case).await;
+            return;
+        }
 
-    #[test]
-    fn release_versions_reject_non_published_shapes() {
-        for invalid in ["", "v", "1.2", "1.2.3-rc.1", "1.2.3-beta.x", "1.2.3.4"] {
-            assert!(Release::parse(invalid).is_err(), "{invalid}");
+        for case in [
+            "success",
+            "missing",
+            "bad-checksum",
+            "corrupt",
+            "rejected-executable",
+            "hung-executable",
+            "software-prerequisite",
+            "busy",
+        ] {
+            let fixture = fixture(case);
+            create_installation_fixture(&fixture, case);
+            run_contract_child("installation_interface_contract", &fixture, case);
+            fs::remove_dir_all(fixture).unwrap();
         }
     }
 
     #[test]
-    fn checksum_parser_requires_the_requested_daemon_archive() {
-        let archive = "ployzd_linux_amd64.tar.gz";
-        let checksum = "2d20468cbeb9745b56fdf16897f963773baeecf45c4ea2e00a46e8d82da6ee9f";
-        assert_eq!(
-            checksum_for(format!("{checksum}  {archive}\n").as_bytes(), archive),
-            Some(checksum.into())
+    fn zfs_candidate_download_contract() {
+        if env::var_os("PLOYZ_ZFS_CANDIDATE_CONTRACT").is_some() {
+            super::storage::install_zfs_packages("test-kernel").unwrap();
+            return;
+        }
+
+        let fixture = fixture("zfs-candidate");
+        let commands = fixture.join("commands");
+        fs::create_dir_all(&commands).unwrap();
+        let marker = fixture.join("installed");
+        write_script(
+            &commands.join("apt-cache"),
+            "[ \"$2\" = linux-main-modules-zfs-test-kernel ]",
         );
-        assert_eq!(checksum_for(b"bad  other.tar.gz\n", archive), None);
+        write_script(
+            &commands.join("dpkg-query"),
+            "if [ -f \"$PLOYZ_ZFS_INSTALLED\" ]; then echo /lib/modules/test-kernel/kernel/zfs.ko; exit 0; fi\nexit 1",
+        );
+        write_script(
+            &commands.join("apt-get"),
+            "case \"$*\" in\n  *download*) : > module.deb ;;\n  *install*) : > \"$PLOYZ_ZFS_INSTALLED\" ;;\nesac",
+        );
+        write_script(
+            &commands.join("dpkg-deb"),
+            "echo /lib/modules/test-kernel/kernel/zfs.ko",
+        );
+        run_contract_child_with_environment(
+            "zfs_candidate_download_contract",
+            &fixture,
+            OsString::from("PLOYZ_ZFS_CANDIDATE_CONTRACT"),
+            OsString::from("1"),
+            [(
+                OsString::from("PLOYZ_ZFS_INSTALLED"),
+                marker.into_os_string(),
+            )],
+        );
+        fs::remove_dir_all(fixture).unwrap();
     }
 
-    #[tokio::test]
-    async fn software_only_rejects_storage_preparation_before_host_mutation() {
-        let error = install_at(
-            InstallRequest {
-                version: "1.2.3".into(),
-                storage: StorageChoice::Zfs,
-                prepare_host: false,
-                install_only: true,
-                group_user: None,
-                release_dir: None,
-            },
-            InstallPaths::system(),
+    async fn run_installation_case(case: &str) {
+        let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+        let paths = InstallPaths::at(&root);
+        fs::create_dir_all(&paths.data_dir).unwrap();
+        let existing = if case == "success" {
+            None
+        } else {
+            Some(write_existing_daemon(&paths))
+        };
+        if case == "software-prerequisite" {
+            fs::remove_file(root.join("commands/dockerd")).unwrap();
+        }
+
+        let request = InstallRequest {
+            release: ReleaseRequest::Exact(Version::parse("1.2.3").unwrap()),
+            source: ReleaseSource::Local(root.join("release")),
+            preparation: Preparation::SoftwareOnly,
+            install_only: true,
+        };
+        let result = if case == "busy" {
+            let _held = claim_lock(&paths.run_dir).unwrap();
+            install_at(request, paths.clone()).await
+        } else {
+            install_at(request, paths.clone()).await
+        };
+
+        match case {
+            "success" => {
+                let outcome = result.unwrap();
+                assert_eq!(outcome.target, "1.2.3");
+                assert_eq!(outcome.readiness, Readiness::InstallationOnly);
+                assert!(paths.bin_dir.join("ployzd").is_file());
+                assert!(paths.systemd_dir.join("ployz.service").is_file());
+            }
+            "busy" => assert!(matches!(result, Err(Error::Busy))),
+            "software-prerequisite" => assert!(matches!(result, Err(Error::Command { .. }))),
+            "missing" | "bad-checksum" | "corrupt" | "rejected-executable" | "hung-executable" => {
+                assert!(result.is_err(), "{case} artifact was accepted");
+            }
+            other => panic!("unknown contract case {other}"),
+        }
+        if let Some(existing) = existing {
+            assert_eq!(fs::read(paths.bin_dir.join("ployzd")).unwrap(), existing);
+        }
+    }
+
+    fn create_installation_fixture(root: &Path, case: &str) {
+        let commands = root.join("commands");
+        let release = root.join("release");
+        let payload = root.join("payload");
+        fs::create_dir_all(&commands).unwrap();
+        fs::create_dir_all(&release).unwrap();
+        fs::create_dir_all(&payload).unwrap();
+        write_script(&commands.join("id"), "if [ \"$1\" = -u ]; then echo 0; fi");
+        write_script(&commands.join("dockerd"), "exit 0");
+        symlink("/usr/bin/tar", commands.join("tar")).unwrap();
+
+        let daemon = match case {
+            "rejected-executable" => "case \"$1\" in version) echo 9.9.9 ;; esac",
+            "hung-executable" => "case \"$1\" in version) sleep 1; echo 1.2.3 ;; esac",
+            _ => "case \"$1\" in version) echo 1.2.3 ;; esac",
+        };
+        write_script(&payload.join("ployzd"), daemon);
+        write_script(&payload.join("ployz-uninstall"), "exit 0");
+        if case != "missing" {
+            let archive = release.join(daemon_archive().unwrap());
+            let status = Command::new("tar")
+                .args(["-czf"])
+                .arg(&archive)
+                .args(["-C"])
+                .arg(&payload)
+                .args(["ployzd", "ployz-uninstall"])
+                .status()
+                .unwrap();
+            assert!(status.success());
+            let checksum = String::from_utf8(
+                Command::new("sha256sum")
+                    .arg(&archive)
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_owned();
+            fs::write(
+                release.join("checksums.txt"),
+                format!("{checksum}  {}\n", daemon_archive().unwrap()),
+            )
+            .unwrap();
+            if case == "corrupt" {
+                fs::OpenOptions::new()
+                    .append(true)
+                    .open(archive)
+                    .unwrap()
+                    .write_all(b"corrupt")
+                    .unwrap();
+            }
+        } else {
+            fs::write(
+                release.join("checksums.txt"),
+                format!("{}  {}\n", "0".repeat(64), daemon_archive().unwrap()),
+            )
+            .unwrap();
+        }
+        if case == "bad-checksum" {
+            fs::write(release.join("checksums.txt"), "bad checksum\n").unwrap();
+        }
+    }
+
+    fn write_existing_daemon(paths: &InstallPaths) -> Vec<u8> {
+        fs::create_dir_all(&paths.bin_dir).unwrap();
+        let existing = b"#!/bin/sh\n[ \"$1\" = version ] && echo 1.2.2\n".to_vec();
+        fs::write(paths.bin_dir.join("ployzd"), &existing).unwrap();
+        fs::set_permissions(
+            paths.bin_dir.join("ployzd"),
+            fs::Permissions::from_mode(0o755),
         )
-        .await
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            Error::StorageRequiresHostPreparation { .. }
+        .unwrap();
+        existing
+    }
+
+    fn run_contract_child(test: &str, root: &Path, case: &str) {
+        run_contract_child_with_environment(
+            test,
+            root,
+            OsString::from("PLOYZ_INSTALLER_CONTRACT_CASE"),
+            OsString::from(case),
+            [],
+        );
+    }
+
+    fn run_contract_child_with_environment<const N: usize>(
+        test: &str,
+        root: &Path,
+        key: OsString,
+        value: OsString,
+        extra: [(OsString, OsString); N],
+    ) {
+        let mut command = Command::new(env::current_exe().unwrap());
+        command
+            .args(["--exact", test, "--nocapture"])
+            .env("PLOYZ_INSTALLER_CONTRACT_ROOT", root)
+            .env("PATH", root.join("commands"))
+            .env(key, value);
+        for (key, value) in extra {
+            command.env(key, value);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "contract child {test} failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    fn write_script(path: &Path, body: &str) {
+        fs::write(path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "ployzd-installer-{name}-{}-{nonce}",
+            std::process::id()
         ));
+        fs::create_dir(&root).unwrap();
+        root
     }
 }
