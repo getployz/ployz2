@@ -81,7 +81,7 @@ Goreleaser does not touch the tap (`--skip=homebrew`); `scripts/promote-release.
 
 ## Machine daemon
 
-`scripts/install.sh` on Linux. Same version tokens: `latest` / `stable` / `beta` / pin. Set `PLOYZ_VERSION`.
+`ployzd install` on Linux installs or replaces a Machine daemon. It accepts `--version stable`, `--version beta`, or an exact version; use `--software-only` for ordinary replacement after the Machine has already been prepared. The bootstrap script remains available for the first executable during the migration.
 
 ## Cloud Relay
 

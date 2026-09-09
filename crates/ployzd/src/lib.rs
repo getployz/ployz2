@@ -22,6 +22,7 @@ pub(crate) mod filesystem;
 mod host_capacity;
 mod hosted_dns;
 pub(crate) mod ingress;
+pub mod installer;
 pub mod logs;
 pub mod machine;
 pub mod machine_api;
