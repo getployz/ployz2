@@ -43,12 +43,10 @@ pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let remote = matches.get_one::<String>("remote");
-    if remote.is_some_and(String::is_empty) {
-        return Err(Error::usage(
-            "select a Build Machine with --remote=<Machine>; automatic selection is not available",
-        ));
-    }
-    let remote = remote.map(ployz_core::MachineTarget::parse).transpose()?;
+    let remote = remote
+        .filter(|target| !target.is_empty())
+        .map(ployz_core::MachineTarget::parse)
+        .transpose()?;
     let load = deploy_load(matches);
     let resolved = resolve_from_compose_load(matches, &load)?;
     let project = load_project(&load)?;
@@ -72,9 +70,10 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
         // Every required Build finishes before preparation or application changes.
         let builds = match captured_build {
-            Some(build) => match remote {
-                Some(target) => {
-                    let machine = super::build::select_build_machine(&mut client, &target).await?;
+            Some(build) => {
+                if !matches.get_flag("local") {
+                    let machine =
+                        super::build::select_build_machine(&mut client, remote.as_ref()).await?;
                     let result = build
                         .execute_remote_images(
                             &client,
@@ -90,11 +89,12 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                         ));
                     }
                     result.map_err(crate::deploy::DeployError::from)?
+                } else {
+                    build
+                        .execute(load.docker.as_deref(), &cancellation)
+                        .map_err(crate::deploy::DeployError::from)?
                 }
-                None => build
-                    .execute(load.docker.as_deref(), &cancellation)
-                    .map_err(crate::deploy::DeployError::from)?,
-            },
+            }
             None => Vec::new(),
         };
         candidate

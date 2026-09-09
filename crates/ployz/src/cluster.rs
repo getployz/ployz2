@@ -279,13 +279,64 @@ impl Client {
 
     pub(crate) async fn build_machine(
         &mut self,
-        target: &MachineTarget,
+        target: Option<&MachineTarget>,
     ) -> Result<Machine, ConnectError> {
         let visible = self.machines().await?;
-        Ok(visible_machine(target, &visible)
-            .map_err(ConnectError::Remote)?
-            .machine
-            .clone())
+        // Resolve pins before filtering so policy cannot hide Name Ambiguity.
+        let mut candidates = if let Some(target) = target {
+            vec![visible_machine(target, &visible).map_err(ConnectError::Remote)?]
+        } else {
+            visible.iter().collect::<Vec<_>>()
+        };
+        if target.is_none() {
+            candidates.sort_by_cached_key(|_| uuid::Uuid::new_v4());
+        }
+        let mut reasons = Vec::new();
+        for observed in candidates {
+            let machine = &observed.machine;
+            let reason = if !observed.membership.invites_rpc() {
+                format!("membership is {:?}", observed.membership)
+            } else if !machine.accepts_builds {
+                "does not accept Builds".into()
+            } else {
+                // This contract verifies remote Build support, not worker platforms.
+                // BuildKit checks every requested platform at target-local admission.
+                match self
+                    .invoke::<op::DescribeContract>(
+                        DescribeContractRequest {},
+                        &MachineTarget::from(&machine.id),
+                        Some(Duration::from_secs(5)),
+                    )
+                    .await
+                {
+                    Ok(contract) if contract.machine_id != machine.id => format!(
+                        "contract identifies a different Machine ({})",
+                        contract.machine_id
+                    ),
+                    Ok(contract) if !contract.supports(ployz_core::BUILD_CAPABILITY) => {
+                        "does not support remote Builds".into()
+                    }
+                    Ok(_) => return Ok(machine.clone()),
+                    Err(error) => format!("Build capability could not be verified: {error}"),
+                }
+            };
+            reasons.push(format!(
+                "Machine {} ({}): {reason}",
+                machine.name, machine.id
+            ));
+        }
+        Err(ConnectError::Remote(RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: format!(
+                "no eligible Build Machine: {}",
+                if reasons.is_empty() {
+                    "no Machines observed".into()
+                } else {
+                    reasons.join("; ")
+                }
+            ),
+            details: Value::Null,
+        }))
     }
 
     pub(crate) async fn exec_stream(

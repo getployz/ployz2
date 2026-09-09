@@ -191,3 +191,33 @@ fn ingress_deploy_accepts_repeated_constraints_and_rejects_legacy_machine_select
             .is_err()
     );
 }
+
+#[test]
+fn deploy_build_choices_preserve_services_and_reject_conflicting_overrides() {
+    for choice in ["--remote", "--remote=tower", "--local"] {
+        let matches = ployz::cli::command()
+            .try_get_matches_from(["ployz", "deploy", choice, "api"])
+            .unwrap();
+        let deploy = matches.subcommand_matches("deploy").unwrap();
+        assert_eq!(
+            deploy
+                .get_many::<String>("service")
+                .unwrap()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["api"]
+        );
+    }
+    for choices in [
+        ["--local", "--remote"],
+        ["--local", "--no-build"],
+        ["--remote", "--no-build"],
+    ] {
+        assert!(
+            ployz::cli::command()
+                .try_get_matches_from(["ployz", "deploy", choices[0], choices[1]])
+                .is_err(),
+            "{choices:?}"
+        );
+    }
+}

@@ -55,6 +55,7 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
     for args in [
         vec!["--remote=tower", "api"],
         vec!["--remote=tower", "--check", "api"],
+        vec!["--remote", "api"],
     ] {
         let output = tokio::time::timeout(Duration::from_secs(20), run(&args).output())
             .await
@@ -78,7 +79,7 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
             "{stdout}"
         );
     }
-    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 2);
+    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 3);
     assert!(
         recorder
             .targets
@@ -97,7 +98,6 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
                 == &RoutingRequest::One(MachineTarget::from(&support::machine_id('a'))))
     );
     for args in [
-        vec!["--remote", "api"],
         vec!["--remote=tower", "--local", "api"],
         vec!["--remote=missing", "api"],
     ] {
@@ -106,7 +106,7 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
     }
     assert_eq!(
         recorder.uploads.load(Ordering::SeqCst),
-        2,
+        3,
         "refusals must not resubmit source"
     );
     assert!(
@@ -138,7 +138,7 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
     }
     assert_eq!(
         recorder.uploads.load(Ordering::SeqCst),
-        2,
+        3,
         "SSH refusal must precede upload"
     );
     fs::write(root.join("key"), "captured-key").unwrap();
@@ -149,7 +149,7 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 3);
+    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 4);
     fs::write(
         root.join("compose.yaml"),
         "name: demo\nservices:\n  api:\n    build: {context: ., x-recipe: railpack}\n",
@@ -161,8 +161,39 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 4);
+    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 5);
     assert!(!root.join("docker-called").exists());
+    // An explicit local Deploy reaches the CLI host even with a connected builder.
+    fs::write(
+        root.join("compose.yaml"),
+        "name: demo\nservices: {api: {build: .}}\n",
+    )
+    .unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .current_dir(&root)
+        .env("PATH", &root)
+        .env("HOME", &root)
+        .env("PLOYZ_CONFIG", root.join("config.yaml"))
+        .args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "deploy",
+            "--local",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "the local Docker sentinel must fail"
+    );
+    assert!(
+        root.join("docker-called").exists(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 5);
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }
@@ -183,6 +214,7 @@ async fn remote_queue_outcomes_name_machine_and_unattempted_work() {
         "queue expired",
         "queue cancelled",
         "termination unknown",
+        "Build acceptance revoked",
     ] {
         let mut description = support::test_description();
         description.machine_id = support::machine_id('a');
@@ -224,7 +256,7 @@ async fn remote_queue_outcomes_name_machine_and_unattempted_work() {
                 "--connect",
                 &format!("tcp://{address}"),
                 "build",
-                "--remote=tower",
+                "--remote",
                 "api",
             ])
             .output()
@@ -243,6 +275,11 @@ async fn remote_queue_outcomes_name_machine_and_unattempted_work() {
             "{stderr}"
         );
         assert_eq!(recorder.uploads.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            recorder.routes.lock().unwrap().len(),
+            1,
+            "rejected Builds must not be resubmitted"
+        );
         server.abort();
     }
     fs::remove_dir_all(root).unwrap();

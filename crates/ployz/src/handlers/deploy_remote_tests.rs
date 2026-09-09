@@ -19,6 +19,8 @@ fn fixture() -> (PathBuf, DeployService, Arc<BuildFixture>) {
     fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
     let mut source = machine('a', "builder");
     let mut destination = machine('b', "application");
+    destination.machine.accepts_builds = false;
+    source.machine.accepts_services = false;
     source.machine.runtime.architecture = "x86_64".into();
     destination.machine.runtime.architecture = "x86_64".into();
     fs::write(root.join("compose.yaml"), format!(
@@ -45,7 +47,6 @@ async fn deploy(root: &Path, service: DeployService) -> Result<(), crate::failur
             "--ployz-config",
             config.to_str().unwrap(),
             "deploy",
-            "--remote=builder",
             "--yes",
             "--skip-health",
             "--file",
@@ -60,17 +61,40 @@ async fn deploy(root: &Path, service: DeployService) -> Result<(), crate::failur
 }
 
 #[tokio::test]
-async fn remote_deploy_uses_each_services_completed_content_without_local_inspection() {
+async fn automatic_deploy_uses_one_build_only_source_for_all_services() {
     let (root, service, builds) = fixture();
     *builds.platforms.lock().unwrap() = Some(vec!["linux/arm64".into(), "linux/amd64".into()]);
     let created = service.created_specs();
     let yaml = fs::read_to_string(root.join("compose.yaml")).unwrap();
     fs::write(
         root.join("compose.yaml"),
-        yaml.replace("    x-pre_deploy: {command: ['true']}\n", ""),
+        yaml.replace("    x-pre_deploy: {command: ['true']}\n", "").replace(
+            "  two:\n    image: registry.invalid/shared:latest\n    build: .",
+            "  two:\n    image: registry.invalid/shared:latest\n    build: {context: ., additional_contexts: {base: 'service:one'}}",
+        ),
     )
     .unwrap();
     deploy(&root, service).await.unwrap();
+    let definitions = builds.definitions.lock().unwrap();
+    assert_eq!(
+        definitions
+            .iter()
+            .flat_map(|definition| &definition.targets)
+            .map(|target| target.name.as_str())
+            .collect::<Vec<_>>(),
+        ["one", "two"]
+    );
+    assert_eq!(
+        definitions
+            .get(1)
+            .unwrap()
+            .image_contexts
+            .get("one")
+            .unwrap()
+            .reference,
+        format!("registry.invalid/shared@sha256:{}", "1".repeat(64))
+    );
+
     let created = created.lock().unwrap();
     assert!(!created.is_empty());
     for spec in created.iter() {
@@ -147,6 +171,7 @@ async fn incompatible_application_platform_refuses_before_transfer_or_mutations(
         let mutations = service.mutating_rpcs();
         *builds.platforms.lock().unwrap() = Some(vec![platform.into()]);
         let mut destination = machine('b', "application");
+        destination.machine.accepts_builds = false;
         destination.machine.runtime.architecture = architecture.into();
         let service = service.with_machines(vec![machine('a', "builder"), destination]);
         let error = deploy(&root, service).await.unwrap_err().to_string();
@@ -384,6 +409,7 @@ async fn remote_deploy_accepts_matching_non_primary_architectures() {
         let created = service.created_specs();
         *builds.platforms.lock().unwrap() = Some(vec![platform.into()]);
         let mut destination = machine('b', "application");
+        destination.machine.accepts_builds = false;
         destination.machine.runtime.architecture = architecture.into();
         let yaml = fs::read_to_string(root.join("compose.yaml")).unwrap();
         fs::write(
@@ -400,4 +426,81 @@ async fn remote_deploy_accepts_matching_non_primary_architectures() {
         assert!(!created.lock().unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[tokio::test]
+async fn pinned_builder_cannot_bypass_build_acceptance() {
+    let (root, service, builds) = fixture();
+    let mut source = machine('a', "builder");
+    source.machine.accepts_builds = false;
+    let (mut client, server) = connected(service.with_machines(vec![source])).await;
+    let error = super::super::build::select_build_machine(
+        &mut client,
+        Some(&ployz_core::MachineTarget::parse("builder").unwrap()),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("does not accept Builds"), "{error}");
+    assert!(builds.definitions.lock().unwrap().is_empty());
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+// Rung 1: selection through the existing Machine transport boundary.
+#[tokio::test]
+async fn builder_selection_filters_observations_without_using_service_policy_or_cpu_architecture() {
+    let (root, service, builds) = fixture();
+    let mut builder = machine('a', "builder");
+    builder.machine.accepts_services = false;
+    builder.machine.accepts_ingress = false;
+    builder.machine.runtime.architecture = "unreported".into();
+    let mut disabled = machine('b', "disabled");
+    disabled.machine.accepts_builds = false;
+    let mut down = machine('c', "down");
+    down.membership = MembershipObservation::Down;
+    let (mut client, server) =
+        connected(service.with_machines(vec![builder.clone(), disabled, down])).await;
+    assert_eq!(
+        client.build_machine(None).await.unwrap().id,
+        builder.machine.id
+    );
+    let error = client
+        .build_machine(Some(&ployz_core::MachineTarget::parse("down").unwrap()))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Down"), "{error}");
+    assert!(builds.definitions.lock().unwrap().is_empty());
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn builder_selection_reports_missing_capability_and_preserves_pin_ambiguity() {
+    let (root, mut service, builds) = fixture();
+    service.builds = None;
+    let mut disabled = machine('b', "builder");
+    disabled.machine.accepts_builds = false;
+    let mut down = machine('c', "down");
+    down.membership = MembershipObservation::Down;
+    let (mut client, server) =
+        connected(service.with_machines(vec![machine('a', "builder"), disabled, down])).await;
+    let error = client.build_machine(None).await.unwrap_err().to_string();
+    for reason in [
+        "does not support remote Builds",
+        "does not accept Builds",
+        "Down",
+    ] {
+        assert!(error.contains(reason), "{error}");
+    }
+    let error = client
+        .build_machine(Some(&ployz_core::MachineTarget::parse("builder").unwrap()))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("ambiguous"), "{error}");
+    assert!(builds.definitions.lock().unwrap().is_empty());
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
 }
