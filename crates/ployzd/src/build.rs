@@ -30,6 +30,11 @@ struct RetainedBuild {
     _installation: crate::mutation::MutationGuard,
 }
 
+struct ExecutionAdmission {
+    build: Admission,
+    machine: crate::machine::MutationAdmission,
+}
+
 pub(crate) fn start(
     machine_id: MachineId,
     requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
@@ -179,7 +184,16 @@ async fn attempt(
     let mut execution = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         receive_and_execute(
-            machine_id, definition, source, admission, mutation, policy, &output, &observed,
+            machine_id,
+            definition,
+            source,
+            ExecutionAdmission {
+                build: admission,
+                machine: mutation,
+            },
+            policy,
+            &output,
+            &observed,
         )
     });
     // Dropping the input pump closes the upload channel. A receiver blocked
@@ -251,12 +265,15 @@ fn receive_and_execute(
     machine_id: MachineId,
     mut definition: Definition,
     mut source: mpsc::Receiver<OpaquePayload>,
-    admission: Admission,
-    mutation: crate::machine::MutationAdmission,
+    admission: ExecutionAdmission,
     policy: HostPolicy,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     state: &AttemptState,
 ) -> Outcome {
+    let ExecutionAdmission {
+        build: admission,
+        machine: mutation,
+    } = admission;
     let cancellation = admission.cancellation();
     let deadline = std::time::Instant::now() + admission.remaining();
     let mut upload = match admission.upload() {
