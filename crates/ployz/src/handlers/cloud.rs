@@ -35,6 +35,7 @@ pub fn enroll_with_installer(
     install: &dyn Fn() -> Result<(), Error>,
 ) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    super::machine::enrollment_policy(matches)?;
     let token = CloudEnrollToken::parse(required(matches, "token")?)?;
     let cloud_url = matches
         .get_one::<String>("cloud-url")
@@ -119,7 +120,9 @@ async fn enroll_join(
     join: Join,
 ) -> Result<(), Error> {
     let assigned = join.registration.assigned_machine.clone();
+    let policy = super::machine::enrollment_policy(matches)?;
     if already_assigned(&details, &assigned) {
+        super::machine::apply_enrollment_policy(&mut client, policy).await?;
         println!("Initialised Machine {} ({})", assigned.name, assigned.id);
         return Ok(());
     }
@@ -147,13 +150,8 @@ async fn enroll_join(
         "joined Machine did not become ready",
     )
     .await?;
-    if let Err(error) = crate::global_catch_up::catch_up_globals(
-        &mut ready,
-        &assigned,
-        matches.get_flag("no-ingress"),
-    )
-    .await
-    {
+    let assigned = super::machine::apply_enrollment_policy(&mut ready, policy).await?;
+    if let Err(error) = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await {
         return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
             error,
         )));
@@ -205,7 +203,8 @@ async fn enroll_founder(
             )));
         }
     };
-    let no_ingress = matches.get_flag("no-ingress");
+    let policy = super::machine::enrollment_policy(matches)?;
+    let no_ingress = policy.accepts_ingress == Some(false);
     let no_dns = matches.get_flag("no-dns");
     let ingress_image = matches.get_one::<String>("ingress-image").cloned();
     let ingress = if no_ingress {
@@ -246,6 +245,7 @@ async fn enroll_founder(
         }
     };
 
+    super::machine::apply_enrollment_policy(&mut ready, policy).await?;
     if !no_dns {
         let domain =
             crate::dns::reserve_if_missing(&mut ready, crate::dns::HOSTED_DNS_ENDPOINT.to_owned())

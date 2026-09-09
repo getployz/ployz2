@@ -448,7 +448,7 @@ async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservatio
                 &enroll.url,
                 "--name",
                 "founder",
-                "--no-ingress",
+                "--accepts-ingress=false",
                 "--reset",
                 "--yes",
             ])

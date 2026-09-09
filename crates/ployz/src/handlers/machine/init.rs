@@ -11,6 +11,8 @@ use crate::{
 
 pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    let policy = super::enrollment_policy(matches)?;
+    let want_ingress = policy.accepts_ingress == Some(true);
     if matches.get_one::<String>("connect").is_some() {
         return Err(Error::usage(
             "machine init creates a new context; do not use --connect",
@@ -108,7 +110,6 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         println!("Switched context to '{current_context}'");
     }
     println!("Initialised Machine {} ({})", machine.name, machine.id);
-    let want_ingress = !matches.get_flag("no-ingress");
     let want_dns = !matches.get_flag("no-dns");
     let ingress_recovery =
         super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
@@ -121,6 +122,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         let mut ready =
             helpers::wait_direct_participating(matches, &connection, "initial Machine did not become ready")
                 .await.map_err(|error| Error::usage(format!("Machine initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
+        super::apply_enrollment_policy(&mut ready, policy).await?;
         if want_dns {
             let endpoint = matches
                 .get_one::<String>("dns-endpoint")

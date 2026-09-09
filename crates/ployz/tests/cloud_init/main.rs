@@ -175,7 +175,7 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
             "10.210.0.0/16",
             "--wg-mtu",
             "1400",
-            "--no-ingress",
+            "--accepts-ingress=false",
             "--no-dns",
             "--yes",
         ])
@@ -351,7 +351,7 @@ async fn cloud_init_initialize_reserves_hosted_dns() {
             &enroll.url,
             "--name",
             "founder",
-            "--no-ingress",
+            "--accepts-ingress=false",
             "--yes",
         ])
         .output()
@@ -502,7 +502,7 @@ async fn cloud_init_retries_not_yet_then_initializes() {
             &enroll.url,
             "--name",
             "founder",
-            "--no-ingress",
+            "--accepts-ingress=false",
             "--no-dns",
             "--yes",
         ])
@@ -555,7 +555,7 @@ async fn init_cloud(
         enroll_url,
         "--name",
         name,
-        "--no-ingress",
+        "--accepts-ingress=false",
         "--no-dns",
     ]);
     if reset {
@@ -707,7 +707,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
             "not-a-cidr",
             "--reset",
             "--yes",
-            "--no-ingress",
+            "--accepts-ingress=false",
             "--no-dns",
         ])
         .output()
@@ -1054,7 +1054,7 @@ async fn partial_peer_observation_reports_incomplete_catch_up_before_placement()
 }
 
 #[tokio::test]
-async fn join_no_ingress_skips_ingress_and_still_places_other_globals() {
+async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
     let founder = founder_machine();
     let mut registration = registration();
     registration.visible_peers = vec![founder.clone()];
@@ -1085,7 +1085,7 @@ async fn join_no_ingress_skips_ingress_and_still_places_other_globals() {
             &enroll.url,
             "--name",
             "joiner",
-            "--no-ingress",
+            "--accepts-ingress=false",
             "--yes",
         ])
         .output()
@@ -1099,6 +1099,12 @@ async fn join_no_ingress_skips_ingress_and_still_places_other_globals() {
     );
     let ensured = daemon.ensure_requests();
     assert_eq!(ensure_names(&ensured), [("app", "api")]);
+    let details = connect_daemon(machine_addr)
+        .await
+        .call::<op::Inspect>(InspectRequest::default(), None)
+        .await
+        .unwrap();
+    assert!(!details.machine.unwrap().accepts_ingress);
 }
 
 #[tokio::test]

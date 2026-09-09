@@ -10,7 +10,7 @@ use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let deploy_ingress = !matches.get_flag("no-ingress");
+    let policy = super::enrollment_policy(matches)?;
     let options = ConnectionOptions::from_matches(root)?;
     let (mut config, context_name) = options.active_config()?;
     let destination = target(matches, "destination")?;
@@ -100,17 +100,19 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     config.save()?;
     println!("{}", added_machine_line(&assigned));
 
-    runtime()?.block_on(helpers::wait_direct_participating(
-        matches,
-        &connection,
-        "added Machine did not become ready",
-    ))?;
+    let assigned = runtime()?.block_on(async {
+        let mut ready = helpers::wait_direct_participating(
+            matches,
+            &connection,
+            "added Machine did not become ready",
+        )
+        .await?;
+        super::apply_enrollment_policy(&mut ready, policy).await
+    })?;
 
     let catch_up = runtime()?.block_on(async {
         let mut entry = super::super::reconnect_client(matches, options.context()).await?;
-        Ok::<_, Error>(
-            crate::global_catch_up::catch_up_globals(&mut entry, &assigned, !deploy_ingress).await,
-        )
+        Ok::<_, Error>(crate::global_catch_up::catch_up_globals(&mut entry, &assigned).await)
     })?;
     if let Err(error) = catch_up {
         let recovery =

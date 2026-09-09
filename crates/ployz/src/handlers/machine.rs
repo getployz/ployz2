@@ -148,7 +148,7 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
         name,
         public_ip,
         advertised_endpoints,
-        ..Default::default()
+        ..parse_policy(matches)?
     };
     if update.is_empty() {
         return Err(Error::usage("at least one Machine update flag is required"));
@@ -161,6 +161,48 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
         return Err(Error::usage("at least one WireGuard endpoint is required"));
     }
     Ok(update)
+}
+
+pub(super) fn parse_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
+    let mut update = MachineUpdate {
+        label_rm: string_values(matches, "label-rm"),
+        accepts_builds: matches.get_one::<bool>("accepts-builds").copied(),
+        accepts_services: matches.get_one::<bool>("accepts-services").copied(),
+        accepts_ingress: matches.get_one::<bool>("accepts-ingress").copied(),
+        ..Default::default()
+    };
+    for label in string_values(matches, "label-add") {
+        let (key, value) = label
+            .split_once('=')
+            .ok_or_else(|| Error::usage(format!("invalid label {label:?}: expected KEY=VALUE")))?;
+        if update
+            .label_add
+            .insert(key.to_owned(), value.to_owned())
+            .is_some()
+        {
+            return Err(Error::usage(format!("duplicate label key {key:?}")));
+        }
+    }
+    update.validate()?;
+    Ok(update)
+}
+
+pub(super) fn enrollment_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
+    let mut policy = parse_policy(matches)?;
+    policy.accepts_builds.get_or_insert(true);
+    policy.accepts_services.get_or_insert(true);
+    policy.accepts_ingress.get_or_insert(true);
+    Ok(policy)
+}
+
+pub(super) async fn apply_enrollment_policy(
+    client: &mut crate::connect::Client,
+    update: MachineUpdate,
+) -> Result<ployz_core::Machine, Error> {
+    Ok(client
+        .call_repeatable::<op::UpdateMachine>(UpdateMachineRequest { update }, None)
+        .await?
+        .machine)
 }
 
 pub(super) fn parse_endpoints(
@@ -231,6 +273,42 @@ mod tests {
             parse_update(leaf_matches(&remove)).unwrap().public_ip,
             PublicIpUpdate::Remove
         );
+    }
+
+    #[test]
+    fn update_cli_validates_labels_and_preserves_independent_roles() {
+        let parse = |flags: &[&str]| {
+            let mut args = vec!["ployz", "machine", "update", "node-a"];
+            args.extend_from_slice(flags);
+            let matches = crate::cli::command().try_get_matches_from(args).unwrap();
+            parse_update(leaf_matches(&matches))
+        };
+        let patch = parse(&[
+            "--label-add",
+            "region=west",
+            "--label-rm",
+            "old",
+            "--accepts-builds=true",
+            "--accepts-services=false",
+            "--accepts-ingress=true",
+        ])
+        .unwrap();
+        assert_eq!(
+            patch.label_add.get("region").map(String::as_str),
+            Some("west")
+        );
+        assert_eq!(patch.label_rm, ["old"]);
+        assert_eq!(patch.accepts_builds, Some(true));
+        assert_eq!(patch.accepts_services, Some(false));
+        assert_eq!(patch.accepts_ingress, Some(true));
+        for flags in [
+            vec!["--label-add", "region"],
+            vec!["--label-add", "=west"],
+            vec!["--label-add", "region=west", "--label-add", "region=east"],
+            vec!["--label-add", "region=west", "--label-rm", "region"],
+        ] {
+            assert!(parse(&flags).is_err(), "{flags:?}");
+        }
     }
 
     #[test]

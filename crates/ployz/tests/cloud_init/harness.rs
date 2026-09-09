@@ -53,6 +53,7 @@ pub struct JoinDaemon {
 
 struct JoinInner {
     registration: Registered,
+    current_machine: Mutex<Machine>,
     public_key: Mutex<WireGuardPublicKey>,
     daemon_version: Mutex<String>,
     joined: AtomicBool,
@@ -96,6 +97,7 @@ impl JoinDaemon {
         Self {
             inner: Arc::new(JoinInner {
                 public_key: Mutex::new(registration.assigned_machine.public_key),
+                current_machine: Mutex::new(registration.assigned_machine.clone()),
                 registration,
                 daemon_version: Mutex::new(env!("CARGO_PKG_VERSION").into()),
                 joined: AtomicBool::new(false),
@@ -388,7 +390,7 @@ impl MachineRpc for JoinDaemon {
             } else {
                 LocalMachinePhase::Uninitialized
             },
-            machine: joined.then(|| self.inner.registration.assigned_machine.clone()),
+            machine: joined.then(|| self.inner.current_machine.lock().unwrap().clone()),
             public_key: *self.inner.public_key.lock().unwrap(),
             advertised_endpoints: self
                 .inner
@@ -515,7 +517,7 @@ impl MachineRpc for JoinDaemon {
             return Err(Status::invalid_argument("expected Initialize"));
         };
         let pairing = init.cloud_pairing.clone();
-        let mut machine = self.inner.registration.assigned_machine.clone();
+        let mut machine = self.inner.current_machine.lock().unwrap().clone();
         machine.name = init.name.clone();
         self.inner.initialize_requests.lock().unwrap().push(init);
         self.record("initialize");
@@ -560,6 +562,38 @@ impl MachineRpc for JoinDaemon {
         }
         rpc_ok(Initialized { machine })
     }
+    async fn update_machine(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::UpdateMachine(request) = decoded.body else {
+            return Err(Status::invalid_argument("expected UpdateMachine"));
+        };
+        request
+            .update
+            .validate()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let mut machine = self.inner.current_machine.lock().unwrap().clone();
+        machine.labels.extend(request.update.label_add);
+        for key in request.update.label_rm {
+            machine.labels.remove(&key);
+        }
+        if let Some(value) = request.update.accepts_builds {
+            machine.accepts_builds = value;
+        }
+        if let Some(value) = request.update.accepts_services {
+            machine.accepts_services = value;
+        }
+        if let Some(value) = request.update.accepts_ingress {
+            machine.accepts_ingress = value;
+        }
+        *self.inner.current_machine.lock().unwrap() = machine.clone();
+        rpc_ok(ployz_core::MachineUpdated { machine })
+    }
     async fn register(
         &self,
         _request: Request<OpaquePayload>,
@@ -571,7 +605,7 @@ impl MachineRpc for JoinDaemon {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let assigned = MachineObservation::new(
-            self.inner.registration.assigned_machine.clone(),
+            self.inner.current_machine.lock().unwrap().clone(),
             self.inner.assigned_membership.lock().unwrap().clone(),
         );
         let mut machines = vec![assigned];
@@ -953,12 +987,6 @@ impl MachineRpc for JoinDaemon {
             return Err(Status::unavailable("lost lifecycle reply"));
         }
         rpc_ok(ResetAccepted {})
-    }
-    async fn update_machine(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
     }
     async fn remove_local_machine(
         &self,

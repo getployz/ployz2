@@ -53,7 +53,7 @@ fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
             cloud_url,
             "--name",
             "joiner",
-            "--no-ingress",
+            "--accepts-ingress=false",
             "--no-dns",
             "--yes",
         ])

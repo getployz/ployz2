@@ -111,3 +111,50 @@ fn remote_build_target_requires_equals_and_preserves_positional_service() {
             .is_err()
     );
 }
+
+#[test]
+fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rejected() {
+    for path in [
+        vec!["machine", "update", "node"],
+        vec!["machine", "init"],
+        vec!["machine", "add", "root@node"],
+        vec!["cloud", "enroll", "pmet_test"],
+    ] {
+        let mut args = vec!["ployz"];
+        args.extend(path);
+        let mut valid = args.clone();
+        valid.extend([
+            "--accepts-builds=true",
+            "--accepts-services=false",
+            "--accepts-ingress=true",
+            "--label-add",
+            "region=west",
+            "--label-add",
+            "disk=ssd",
+            "--label-rm",
+            "retired",
+        ]);
+        let matches = ployz::cli::command().try_get_matches_from(valid).unwrap();
+        let mut leaf = &matches;
+        while let Some((_, child)) = leaf.subcommand() {
+            leaf = child;
+        }
+        assert_eq!(leaf.get_one::<bool>("accepts-builds"), Some(&true));
+        assert_eq!(leaf.get_one::<bool>("accepts-services"), Some(&false));
+        assert_eq!(leaf.get_one::<bool>("accepts-ingress"), Some(&true));
+        assert_eq!(leaf.get_many::<String>("label-add").unwrap().count(), 2);
+        for invalid in [
+            "--no-ingress",
+            "--accepts-services",
+            "--accepts-builds=maybe",
+        ] {
+            let mut invalid_args = args.clone();
+            invalid_args.push(invalid);
+            assert!(
+                ployz::cli::command()
+                    .try_get_matches_from(invalid_args)
+                    .is_err()
+            );
+        }
+    }
+}
