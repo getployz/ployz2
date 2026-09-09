@@ -88,6 +88,8 @@ fn run(args: &[&str], root: &Path, release: &Path, bin: &Path) -> Output {
         .env("PLOYZ_RELEASE_DIR", release)
         .env("PLOYZ_CONFIG", root.join("config.yaml"))
         .env("PLOYZ_FAKE_INSTALL_STATUS", "17")
+        .env("LOG", root.join("commands.log"))
+        .env("PLOYZ_TEST_PID", root.join("preflight.pid"))
         .env_remove("SUDO_USER")
         .output()
         .unwrap()
@@ -186,9 +188,10 @@ case "$*" in
   *' whoami') echo deploy ;;
   *' sudo true') ;;
   *'uname -s; uname -m') printf 'Linux\n{}\n' ;;
+  *'mkdir -m 700 -- '*) ;;
   *'chmod 700 '*' version') printf '%s\n' '{}' ;;
   *" 'install' "*) ;;
-  *'rm -f -- '*) ;;
+  *'rm -rf -- '*) ;;
   *' true') exit 23 ;;
   *) echo "unexpected ssh invocation: $*" >&2; exit 24 ;;
 esac
@@ -205,7 +208,7 @@ esac
     let common = [
         "machine",
         "init",
-        "deploy@host",
+        "deploy@2001:db8::1",
         "--yes",
         "--storage",
         "none",
@@ -229,12 +232,21 @@ esac
     let setup_log = fs::read_to_string(&log).unwrap();
     assert!(setup_log.contains("scp "), "{setup_log}");
     assert!(
+        setup_log.contains("deploy@[2001:db8::1]:/tmp/ployz-bootstrap-"),
+        "{setup_log}"
+    );
+    assert!(!setup_log.contains(" -P 1 "), "{setup_log}");
+    assert!(setup_log.contains(daemon_archive()), "{setup_log}");
+    assert!(setup_log.contains("checksums.txt"), "{setup_log}");
+    assert!(
         setup_log.contains(&format!(
             "'install' '--version' '{}' '--storage' 'none' '--group-user' 'deploy'",
             env!("CARGO_PKG_VERSION")
         )),
         "{setup_log}"
     );
+    assert!(setup_log.contains("'--release-dir' '/tmp/ployz-bootstrap-"));
+    assert!(setup_log.contains("rm -rf --"), "{setup_log}");
     assert!(!setup_log.contains("base64"), "{setup_log}");
 
     fs::write(&log, "").unwrap();
@@ -242,7 +254,7 @@ esac
         .args([
             "machine",
             "init",
-            "deploy@host",
+            "deploy@2001:db8::1",
             "--no-install",
             "--yes",
             "--storage",
@@ -265,4 +277,123 @@ esac
     let no_install_log = fs::read_to_string(log).unwrap();
     assert!(!no_install_log.contains("scp "), "{no_install_log}");
     assert!(!no_install_log.contains("'install'"), "{no_install_log}");
+}
+
+#[test]
+fn remote_preflight_timeout_kills_the_child_and_cleans_the_stage() {
+    let fixture = Fixture::new();
+    let log = fixture.path().join("commands.log");
+    let release = release_fixture(fixture.path(), &fixture.path().join("installer.log"));
+    let bin = fixture.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    write_executable(
+        &bin.join("ssh"),
+        &format!(
+            r#"#!/bin/sh
+printf 'ssh %s\n' "$*" >> "$LOG"
+case "$*" in
+  *' whoami') echo root ;;
+  *'uname -s; uname -m') printf 'Linux\n{}\n' ;;
+  *'mkdir -m 700 -- '*) ;;
+  *'chmod 700 '*' version') echo $$ > "$PLOYZ_TEST_PID"; exec sleep 30 ;;
+  *'rm -rf -- '*) ;;
+  *) exit 24 ;;
+esac
+"#,
+            env::consts::ARCH
+        ),
+    );
+    write_executable(&bin.join("scp"), "#!/bin/sh\nexit 0\n");
+
+    let output = run(
+        &[
+            "machine",
+            "init",
+            "root@host",
+            "--yes",
+            "--storage",
+            "none",
+            "--no-dns",
+            "--no-ingress",
+            "--context",
+            "setup-timeout",
+        ],
+        fixture.path(),
+        &release,
+        &bin,
+    );
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("timed out after 10 seconds"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log = fs::read_to_string(log).unwrap();
+    assert!(log.contains("rm -rf --"), "{log}");
+    let pid = fs::read_to_string(fixture.path().join("preflight.pid"))
+        .unwrap()
+        .trim()
+        .to_owned();
+    assert!(
+        !Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .unwrap()
+            .success(),
+        "timed-out SSH child {pid} survived"
+    );
+}
+
+#[test]
+fn remote_cleanup_failure_is_returned_after_successful_installation() {
+    let fixture = Fixture::new();
+    let release = release_fixture(fixture.path(), &fixture.path().join("installer.log"));
+    let bin = fixture.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    write_executable(
+        &bin.join("ssh"),
+        &format!(
+            r#"#!/bin/sh
+case "$*" in
+  *' whoami') echo root ;;
+  *'uname -s; uname -m') printf 'Linux\n{}\n' ;;
+  *'mkdir -m 700 -- '*) ;;
+  *'chmod 700 '*' version') printf '%s\n' '{}' ;;
+  *" 'install' "*) ;;
+  *'rm -rf -- '*) exit 29 ;;
+  *) exit 24 ;;
+esac
+"#,
+            env::consts::ARCH,
+            env!("CARGO_PKG_VERSION")
+        ),
+    );
+    write_executable(&bin.join("scp"), "#!/bin/sh\nexit 0\n");
+
+    let output = run(
+        &[
+            "machine",
+            "init",
+            "root@host",
+            "--yes",
+            "--storage",
+            "none",
+            "--no-dns",
+            "--no-ingress",
+            "--context",
+            "setup-cleanup",
+        ],
+        fixture.path(),
+        &release,
+        &bin,
+    );
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("remote bootstrap cleanup exited with exit status: 29"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

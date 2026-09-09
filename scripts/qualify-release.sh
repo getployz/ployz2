@@ -6,7 +6,7 @@
 #   PLOYZ_ARTIFACT_DIR=/path/to/dist \
 #   scripts/qualify-release.sh
 #
-# Optional: PLOYZ_QUALIFY_DRY_RUN=1, PLOYZ_QUALIFY_SSH_OPTS, PLOYZ_QUALIFY_SSH_KEY,
+# Optional: PLOYZ_QUALIFY_DRY_RUN=1, PLOYZ_QUALIFY_SSH_KEY,
 # PLOYZ_QUALIFY_CONTEXT, PLOYZ_QUALIFY_RESET=1.
 # Hosts must be uninitialized unless PLOYZ_QUALIFY_RESET=1. Reset destroys
 # managed containers on that Machine.
@@ -18,9 +18,9 @@ COMPOSE_DIR=$ROOT/scripts/qualify-release
 HOSTS=${PLOYZ_QUALIFY_HOSTS:-}
 ARTIFACT_DIR=${PLOYZ_ARTIFACT_DIR:-}
 DRY_RUN=${PLOYZ_QUALIFY_DRY_RUN:-0}
-SSH_OPTS=${PLOYZ_QUALIFY_SSH_OPTS:-"-o StrictHostKeyChecking=accept-new"}
 CONTEXT=${PLOYZ_QUALIFY_CONTEXT:-qualify}
 RESET=${PLOYZ_QUALIFY_RESET:-0}
+SSH_KEY=${PLOYZ_QUALIFY_SSH_KEY:-}
 CONFIG_DIR=
 
 error() { echo "ERROR: $*" >&2; exit 1; }
@@ -55,39 +55,6 @@ cli_archive() {
     esac
 }
 
-daemon_archive() {
-    case "$1" in
-        x86_64) echo ployzd_linux_amd64.tar.gz ;;
-        aarch64) echo ployzd_linux_arm64.tar.gz ;;
-        *) error "unsupported Machine architecture $1" ;;
-    esac
-}
-
-if [ -n "${PLOYZ_QUALIFY_SSH_KEY:-}" ]; then
-    SSH_OPTS="$SSH_OPTS -i $PLOYZ_QUALIFY_SSH_KEY"
-fi
-
-ssh_identity() {
-    # shellcheck disable=SC2086
-    set -- $SSH_OPTS
-    while [ $# -gt 0 ]; do
-        case $1 in
-            -i | --identity)
-                printf '%s\n' "${2:-}"
-                return
-                ;;
-        esac
-        shift
-    done
-}
-
-SSH_KEY=$(ssh_identity)
-
-ssh_host() {
-    # shellcheck disable=SC2086
-    ssh $SSH_OPTS "$1" "${@:2}"
-}
-
 [ -n "$HOSTS" ] || error "set PLOYZ_QUALIFY_HOSTS to one or more user@host targets"
 [ -n "$ARTIFACT_DIR" ] || error "set PLOYZ_ARTIFACT_DIR to the draft archive directory"
 [ -f "$COMPOSE_DIR/compose.yaml" ] || error "missing $COMPOSE_DIR/compose.yaml"
@@ -113,54 +80,24 @@ if [ "$DRY_RUN" != 0 ]; then
     else
         echo "reset: no (initialized hosts fail without PLOYZ_QUALIFY_RESET=1)"
     fi
-    echo "steps: verify and run temporary artifact ployzd, install daemon from --release-dir (always replace), machine init --no-install, machine add, deploy named volume qualify-data, volume ls"
+    echo "steps: verify the artifact CLI, run normal machine init/add from the local release, deploy named volume qualify-data, volume ls"
     exit 0
 fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work" "$CONFIG_DIR"' EXIT
+verify_archive "$(cli_archive)"
 tar -xzf "$ARTIFACT_DIR/$(cli_archive)" -C "$work"
 PLOYZ=$work/ployz
 [ -x "$PLOYZ" ] || error "CLI archive did not contain ployz"
 version=$("$PLOYZ" version) || error "could not read ployz version from the artifact"
 CONFIG_DIR=$(mktemp -d)
 export PLOYZ_CONFIG=$CONFIG_DIR/config.yaml
-
-install_host() {
-    local host=$1 arch archive remote bootstrap observed status
-    arch=$(ssh_host "$host" uname -m)
-    archive=$(daemon_archive "$arch")
-    verify_archive "$archive"
-    bootstrap=$(mktemp -d "$work/bootstrap.XXXXXX")
-    tar -xzf "$ARTIFACT_DIR/$archive" -C "$bootstrap" ployzd
-    [ -x "$bootstrap/ployzd" ] || error "$archive did not contain executable ployzd"
-    remote=/tmp/ployz-qualify-$$
-    ssh_host "$host" mkdir -p "$remote"
-    # shellcheck disable=SC2086
-    if ! scp $SSH_OPTS "$bootstrap/ployzd" "$ARTIFACT_DIR/$archive" "$ARTIFACT_DIR/checksums.txt" "$host:$remote/"; then
-        ssh_host "$host" rm -rf "$remote" || true
-        return 1
-    fi
-    if ! observed=$(ssh_host "$host" "$remote/ployzd" version) || [ "$observed" != "$version" ]; then
-        ssh_host "$host" rm -rf "$remote" || true
-        error "bootstrap daemon on $host reported ${observed:-no version}, expected $version"
-    fi
-    status=0
-    ssh_host "$host" sudo "$remote/ployzd" install \
-        --version "$version" \
-        --release-dir "$remote" || status=$?
-    ssh_host "$host" rm -rf "$remote" || true
-    return "$status"
-}
-
-for host in "${HOST_LIST[@]}"; do
-    echo "install $host"
-    install_host "$host"
-done
+export PLOYZ_RELEASE_DIR=$ARTIFACT_DIR
 
 first=${HOST_LIST[0]}
 echo "machine init $first"
-init_cmd=("$PLOYZ" machine init --no-install --context "$CONTEXT")
+init_cmd=("$PLOYZ" machine init --version "$version" --context "$CONTEXT")
 if [ "$RESET" != 0 ]; then
     init_cmd+=(--yes)
 fi
@@ -172,7 +109,7 @@ fi
 i=1
 while [ "$i" -lt "${#HOST_LIST[@]}" ]; do
     echo "machine add ${HOST_LIST[$i]}"
-    add_cmd=("$PLOYZ" machine add --yes --no-install --context "$CONTEXT")
+    add_cmd=("$PLOYZ" machine add --yes --version "$version" --context "$CONTEXT")
     if [ -n "$SSH_KEY" ]; then
         add_cmd+=(--ssh-key "$SSH_KEY")
     fi
