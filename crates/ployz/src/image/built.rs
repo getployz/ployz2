@@ -59,7 +59,7 @@ pub(crate) async fn push_from_machine_using_machines(
     let mut cancellation = Cancellation::new(cancellation);
     let store = observe_store(client, source, &mut cancellation).await?;
     require_complete(&store, image, source)?;
-    let opened = open_ingest(client, source, &mut cancellation).await?;
+    let source = Source::open(client, source, store, &mut cancellation).await?;
     let reference =
         image
             .repository_reference(repository)
@@ -69,26 +69,16 @@ pub(crate) async fn push_from_machine_using_machines(
             })?;
     let mut remaining = selection.targets.into_iter();
     while let Some(machine) = remaining.next() {
-        // The destination names the variant it runs; the source must hold it.
-        let delivery =
-            match available_variant(&store, &image.reference, &machine.runtime.architecture) {
-                Some(platform) => {
-                    pull_on_machine(
-                        client,
-                        &reference,
-                        &machine,
-                        opened,
-                        Some(platform),
-                        &mut cancellation,
-                    )
-                    .await
-                }
-                None => Err(PushError::VariantUnavailable {
-                    image: image.reference.clone(),
-                    machine_id: source,
-                    platform: machine.runtime.architecture.clone(),
-                }),
-            };
+        let delivery = source
+            .deliver(
+                client,
+                &image.reference,
+                &reference,
+                &machine,
+                None,
+                &mut cancellation,
+            )
+            .await;
         match delivery {
             Ok(()) => result.successes.push(MachineSuccess {
                 machine_id: machine.id,
@@ -120,44 +110,109 @@ pub(crate) async fn serve_build_image(
     let mut cancellation = Cancellation::new(cancellation);
     let store = observe_store(client, source, &mut cancellation).await?;
     require_complete(&store, image, source)?;
-    open_ingest(client, source, &mut cancellation).await
+    Ok(Source::open(client, source, store, &mut cancellation)
+        .await?
+        .destination)
 }
 
 /// Read one Machine's actual image store. Only the containerd store reports
 /// which variants are present, so any other store cannot serve images.
 pub(super) async fn observe_store(
     client: &mut Client,
-    machine: MachineId,
+    machine_id: MachineId,
     cancellation: &mut Cancellation<'_>,
 ) -> Result<MachineImages, PushError> {
     // Docker's reference filter does not match repository@digest; read the
     // whole store and compare identities.
-    let stored = cancellation
+    let store = cancellation
         .race(client.call::<op::ListImages>(
             ListImagesRequest { reference: None },
-            Some(&MachineTarget::from(&machine)),
+            Some(&MachineTarget::from(&machine_id)),
         ))
         .await??;
-    if !stored.containerd_store {
-        return Err(PushError::UnsupportedImageStore);
+    if store.containerd_store {
+        Ok(store)
+    } else {
+        Err(PushError::UnsupportedImageStore)
     }
-    Ok(stored)
 }
 
-/// Open the Machine's image server for peers to pull from.
-pub(super) async fn open_ingest(
-    client: &mut Client,
-    machine: MachineId,
-    cancellation: &mut Cancellation<'_>,
-) -> Result<ImageIngestDestination, PushError> {
-    let opened = cancellation
-        .race(client.call::<op::EnsureImageIngest>(
-            EnsureImageIngestRequest {},
-            Some(&MachineTarget::from(&machine)),
-        ))
-        .await?
-        .map_err(|error| ingest_error(rpc_error(error)))?;
-    Ok(opened.destination)
+/// A Machine whose actual image store was read and whose image server is open.
+/// It serves a destination only a variant that store demonstrably holds.
+pub(super) struct Source {
+    pub machine_id: MachineId,
+    pub destination: ImageIngestDestination,
+    pub store: MachineImages,
+}
+
+impl Source {
+    /// Open the image server of a Machine whose store was already read with
+    /// [`observe_store`] and judged fit to serve.
+    pub(super) async fn open(
+        client: &mut Client,
+        machine_id: MachineId,
+        store: MachineImages,
+        cancellation: &mut Cancellation<'_>,
+    ) -> Result<Self, PushError> {
+        let opened = cancellation
+            .race(client.call::<op::EnsureImageIngest>(
+                EnsureImageIngestRequest {},
+                Some(&MachineTarget::from(&machine_id)),
+            ))
+            .await?
+            .map_err(|error| ingest_error(rpc_error(error)))?;
+        Ok(Self {
+            machine_id,
+            destination: opened.destination,
+            store,
+        })
+    }
+
+    /// The variant of `image` this source holds for `machine`: `platform` when
+    /// the caller fixed one, otherwise the one the Machine's architecture runs.
+    ///
+    /// # Errors
+    /// Names the platform the source does not hold.
+    pub(super) fn variant<'select>(
+        &'select self,
+        image: &str,
+        machine: &Machine,
+        platform: Option<&'select str>,
+    ) -> Result<&'select str, PushError> {
+        let held = match platform {
+            Some(platform) => holds_platform(&self.store, image, platform).then_some(platform),
+            None => available_variant(&self.store, image, &machine.runtime.architecture),
+        };
+        held.ok_or_else(|| PushError::VariantUnavailable {
+            image: image.to_owned(),
+            machine_id: self.machine_id,
+            platform: platform.unwrap_or(&machine.runtime.architecture).to_owned(),
+        })
+    }
+
+    /// Have `machine` pull `reference` from this source, naming the variant
+    /// [`Self::variant`] selected for it. `image` identifies the content in
+    /// this store; `reference` is what the destination pulls.
+    pub(super) async fn deliver(
+        &self,
+        client: &mut Client,
+        image: &str,
+        reference: &str,
+        machine: &Machine,
+        platform: Option<&str>,
+        cancellation: &mut Cancellation<'_>,
+    ) -> Result<(), PushError> {
+        let variant = self.variant(image, machine, platform)?;
+        pull_on_machine(
+            client,
+            reference,
+            machine,
+            self.destination,
+            Some(variant),
+            cancellation,
+        )
+        .await
+    }
 }
 
 /// The Build host must hold every platform the attempt verified; anything less
@@ -207,7 +262,7 @@ pub(crate) fn available_variant<'store>(
 }
 
 /// Whether the store holds `image` content for exactly `platform`.
-pub(super) fn holds_platform(store: &MachineImages, image: &str, platform: &str) -> bool {
+fn holds_platform(store: &MachineImages, image: &str, platform: &str) -> bool {
     stored(store, image).is_some_and(|summary| {
         summary
             .platforms

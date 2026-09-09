@@ -24,10 +24,10 @@ use self::proxy::{ImageProxy, ProxyMode, detect_mode};
 mod built;
 mod proxy;
 pub use built::push_from_machine;
+use built::{Source, observe_store};
 pub(crate) use built::{
     available_variant, platform_compatible, push_from_machine_using_machines, serve_build_image,
 };
-use built::{holds_platform, observe_store};
 
 #[must_use]
 pub fn with_default_tag(image: &str) -> String {
@@ -191,7 +191,8 @@ pub(crate) async fn push_using_machines(
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<PartialResult<(), PushError>, PushError> {
     let mut cancellation = Cancellation::new(cancellation);
-    // TODO: without an explicit platform, Docker chooses what to push; target platforms are not inferred.
+    // Without an explicit platform Docker pushes every variant it holds; each
+    // destination then receives the one its architecture runs.
     let platform = platform.map(validated_platform).transpose()?;
     let image = content.published;
     validate_push_reference(image)?;
@@ -213,52 +214,31 @@ pub(crate) async fn push_using_machines(
         omissions: Vec::new(),
     };
     // Docker pushes the whole image to the first reachable target, which then
-    // serves its peers. Read back what that target actually holds before any
-    // peer relies on it.
+    // serves its peers. Read back what that target actually holds before
+    // anyone, including that target, relies on it.
     let mut source = None;
     for machine in targets.by_ref() {
-        let outcome =
-            match push_to_machine(client, content, platform, &machine, mode, &mut cancellation)
-                .await
-            {
-                Ok(destination) => observe_store(client, machine.id, &mut cancellation)
-                    .await
-                    .map(|store| source = Some((machine.id, destination, store))),
-                Err(error) => Err(error),
-            };
-        let served = outcome.is_ok();
+        let outcome = async {
+            push_to_machine(client, content, platform, &machine, mode, &mut cancellation).await?;
+            let store = observe_store(client, machine.id, &mut cancellation).await?;
+            let opened = Source::open(client, machine.id, store, &mut cancellation).await?;
+            let held = opened.variant(image, &machine, platform).map(|_| ());
+            source = Some(opened);
+            held
+        }
+        .await;
         record(&mut result, &machine, outcome)?;
-        if served {
+        if source.is_some() {
             break;
         }
     }
-    let Some((holder, destination, store)) = source else {
+    let Some(source) = source else {
         return Ok(result);
     };
     for machine in targets {
-        // Each peer receives only a variant the first target demonstrably holds.
-        let variant = match platform {
-            Some(platform) => holds_platform(&store, image, platform).then_some(platform),
-            None => available_variant(&store, image, &machine.runtime.architecture),
-        };
-        let outcome = match variant {
-            Some(variant) => {
-                pull_on_machine(
-                    client,
-                    image,
-                    &machine,
-                    destination,
-                    Some(variant),
-                    &mut cancellation,
-                )
-                .await
-            }
-            None => Err(PushError::VariantUnavailable {
-                image: image.to_owned(),
-                machine_id: holder,
-                platform: platform.unwrap_or(&machine.runtime.architecture).to_owned(),
-            }),
-        };
+        let outcome = source
+            .deliver(client, image, image, &machine, platform, &mut cancellation)
+            .await;
         record(&mut result, &machine, outcome)?;
     }
     Ok(result)

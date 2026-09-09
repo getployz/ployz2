@@ -77,7 +77,9 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         return runtime()?.block_on(async {
             let cancellation = super::cancellation_on_ctrl_c();
             let mut client = connect_client(matches, context.as_deref()).await?;
-            let machine = resolve_build_machine(&mut client, &selection, &required).await?;
+            let machines = client.machines().await?;
+            let machine =
+                resolve_build_machine(&mut client, &selection, &required, machines).await?;
             let outcome = captured
                 .execute_remote(&client, machine, cancellation.clone(), progress)
                 .await;
@@ -196,6 +198,7 @@ pub(super) async fn resolve_build_machine(
     client: &mut crate::connect::Client,
     selection: &Selection,
     required: &BTreeSet<String>,
+    machines: Vec<ployz_core::MachineObservation>,
 ) -> Result<MachineId, Error> {
     let resolved = match selection {
         Selection::Pinned(target) => {
@@ -215,7 +218,7 @@ pub(super) async fn resolve_build_machine(
             }
         }
         Selection::Automatic => {
-            let candidates = observe_build_candidates(client).await?;
+            let candidates = observe_build_candidates(client, machines).await?;
             let choice = build_location::choose(&candidates, required).map_err(no_machine)?;
             Resolved {
                 name: choice.machine.name.clone(),
@@ -252,11 +255,12 @@ fn no_machine(error: build_location::NoBuildMachine) -> Error {
 // the handful of Machines the product targets; sequential probing would cost
 // the 5s describe timeout per Machine on every automatic Build.
 async fn observe_build_candidates(
-    client: &mut crate::connect::Client,
+    client: &crate::connect::Client,
+    machines: Vec<ployz_core::MachineObservation>,
 ) -> Result<Vec<Candidate>, Error> {
     let mut candidates = Vec::new();
     let mut probes = Vec::new();
-    for observation in client.machines().await? {
+    for observation in machines {
         let machine = observation.machine;
         if !observation.membership.invites_rpc() {
             candidates.push(Candidate {

@@ -717,7 +717,7 @@ async fn railpack_deploy_derives_machine_platforms_and_partial_peers_never_serve
     // destination receives that variant from the Build Machine.
     let image = format!("registry.invalid/ployz-806-{}:app", std::process::id());
     fs::write(root.join("compose.yaml"), format!(
-        "name: mixed\nservices:\n  app:\n    image: {image}\n    pull_policy: never\n    x-machines: [{first}, {second}]\n    build:\n      context: ./app\n      x-recipe: railpack\n"
+        "name: mixed\nservices:\n  app:\n    image: {image}\n    pull_policy: never\n    deploy: {{mode: global}}\n    x-machines: [{first}, {second}]\n    build:\n      context: ./app\n      x-recipe: railpack\n"
     )).unwrap();
     fs::write(root.join("app/package.json"), r#"{"name":"mixed","version":"1.0.0","engines":{"node":"22.16.0"},"scripts":{"start":"node index.js"}}"#).unwrap();
     fs::write(

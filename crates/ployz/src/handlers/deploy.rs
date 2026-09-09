@@ -70,51 +70,16 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
         // Every required Build finishes before preparation or application changes.
         let builds = match captured_build {
-            Some(mut build) => {
-                // Read-only: the platforms this Deploy's possible placements run
-                // decide what Railpack builds and which Machine can build it.
-                let machines = crate::cancellation::read(&cancellation, async {
-                    Ok(client.machines().await?)
-                })
-                .await?;
-                build
-                    .cover_machines(&candidate, &machines)
-                    .map_err(crate::deploy::DeployError::from)?;
-                let platforms = build.platforms();
-                if !platforms.is_empty() {
-                    eprintln!(
-                        "Build platforms: {}",
-                        platforms.into_iter().collect::<Vec<_>>().join(", ")
-                    );
-                }
-                match &location {
-                crate::build_location::Location::Remote(selection) => {
-                    let machine = super::build::resolve_build_machine(
-                        &mut client,
-                        selection,
-                        &build.platforms(),
-                    )
-                    .await?;
-                    let result = build
-                        .execute_remote_images(
-                            &client,
-                            machine,
-                            cancellation.clone(),
-                            super::build::progress,
-                        )
-                        .await;
-                    let cancelled = cancellation.is_cancelled();
-                    if cancelled {
-                        return Err(Error::usage(
-                            "Build cancelled. No Service, hook, or volume change was attempted.",
-                        ));
-                    }
-                    result.map_err(crate::deploy::DeployError::from)?
-                }
-                    crate::build_location::Location::Local => build
-                        .execute(load.docker.as_deref(), &cancellation)
-                        .map_err(crate::deploy::DeployError::from)?,
-                }
+            Some(build) => {
+                build_images(
+                    &mut client,
+                    build,
+                    &candidate,
+                    &location,
+                    &load,
+                    &cancellation,
+                )
+                .await?
             }
             None => Vec::new(),
         };
@@ -134,6 +99,55 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         )
         .await
     })
+}
+
+/// Build every captured target where the Deploy asked, from one read-only
+/// Machine observation: it fixes the platforms Railpack builds and the
+/// Machines an automatic selection may choose between.
+async fn build_images(
+    client: &mut crate::connect::Client,
+    mut build: CapturedBuild,
+    candidate: &CapturedCompose,
+    location: &crate::build_location::Location,
+    load: &LoadOptions,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<Vec<crate::compose::BuiltService>, Error> {
+    let machines =
+        crate::cancellation::read(cancellation, async { Ok(client.machines().await?) }).await?;
+    build
+        .cover_machines(candidate, &machines)
+        .map_err(crate::deploy::DeployError::from)?;
+    let platforms = build.platforms();
+    if !platforms.is_empty() {
+        eprintln!(
+            "Build platforms: {}",
+            platforms.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+    match location {
+        crate::build_location::Location::Remote(selection) => {
+            let machine =
+                super::build::resolve_build_machine(client, selection, &platforms, machines)
+                    .await?;
+            let result = build
+                .execute_remote_images(
+                    client,
+                    machine,
+                    cancellation.clone(),
+                    super::build::progress,
+                )
+                .await;
+            if cancellation.is_cancelled() {
+                return Err(Error::usage(
+                    "Build cancelled. No Service, hook, or volume change was attempted.",
+                ));
+            }
+            Ok(result.map_err(crate::deploy::DeployError::from)?)
+        }
+        crate::build_location::Location::Local => Ok(build
+            .execute(load.docker.as_deref(), cancellation)
+            .map_err(crate::deploy::DeployError::from)?),
+    }
 }
 
 /// Render the captured Compose candidate against fresh, read-only Cluster evidence.
