@@ -244,6 +244,8 @@ export type IngressHostname = { "kind": "cluster_domain", label: ClusterDomainLa
 
 export type IngressProxyFragment = string;
 
+export type InitialMachinePolicy = { labels: { [key in MachineLabelKey]: MachineLabelValue }, accepts_builds: boolean, accepts_services: boolean, accepts_ingress: boolean, };
+
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
 export type LocalMachineRemoved = { reset_warning: string | null, };
@@ -414,7 +416,7 @@ export type PullPolicy = "always" | "missing" | "never";
 
 export type QualifiedService = string;
 
-export type RegisterRequest = { name: MachineName, storage: StorageChoice, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
+export type RegisterRequest = { initial_policy: InitialMachinePolicy, name: MachineName, storage: StorageChoice, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
 
 export type Registered = { assigned_machine: Machine, visible_peers: Array<Machine>, target_versions: { [key in string]: number }, };
 
