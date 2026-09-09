@@ -301,7 +301,9 @@ impl Lock {
     pub(crate) fn cleanup_abandoned(policy: &crate::HostPolicy) -> Result<(), BuildError> {
         let lock = Self::open_locked(&policy.state_directory)?;
         if lock.file.0.metadata().map_err(lock_error)?.len() == 0 {
-            return Ok(());
+            return crate::upload::remove_abandoned(&lock.directory.join("build-upload")).map_err(
+                |error| BuildError::Prerequisite(format!("remove abandoned Build upload: {error}")),
+            );
         }
         let environment = crate::upload::environment(&lock.directory.join("build-upload"));
         let docker = Docker {

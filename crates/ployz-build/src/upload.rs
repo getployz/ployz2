@@ -102,10 +102,7 @@ impl Upload {
     pub(crate) fn owned(root: PathBuf) -> Result<Self, InputError> {
         // Called only with retained-builder ownership. An execution marker
         // prevents reaching this point while abandoned work is uncertain.
-        if root.try_exists().map_err(io_error)? {
-            make_removable(&root).map_err(io_error)?;
-            fs::remove_dir_all(&root).map_err(io_error)?;
-        }
+        remove_abandoned(&root).map_err(io_error)?;
         Self::create(root)
     }
 
@@ -323,6 +320,15 @@ impl Drop for Upload {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
+}
+
+/// Caller must hold builder ownership and verify that no execution is uncertain.
+pub(crate) fn remove_abandoned(root: &Path) -> io::Result<()> {
+    if root.try_exists()? {
+        make_removable(root)?;
+        fs::remove_dir_all(root)?;
+    }
+    Ok(())
 }
 
 fn make_removable(path: &Path) -> io::Result<()> {

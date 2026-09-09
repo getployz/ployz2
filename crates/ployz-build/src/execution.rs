@@ -267,6 +267,10 @@ mod tests {
         std::fs::create_dir(root.join("build-upload")).unwrap();
         std::fs::write(root.join("build-upload/abandoned"), "private old capture").unwrap();
         Admission::cleanup_abandoned(&policy).unwrap();
+        assert!(
+            !root.join("build-upload").exists(),
+            "startup left abandoned inputs"
+        );
         let admission = Admission::try_acquire_with(&policy).unwrap();
         let upload = admission.upload().unwrap();
         assert!(!root.join("build-upload/abandoned").exists());
