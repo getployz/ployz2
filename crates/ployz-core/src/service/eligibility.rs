@@ -35,25 +35,6 @@ pub enum ServicePlacementUnknownReason {
 }
 
 impl RequestedServiceSpec {
-    /// Assess this complete Service specification against one Machine.
-    ///
-    /// Membership Observation is intentionally a consumer concern. Provisioned
-    /// maxima are enforced ceilings and are not compared with current free bytes.
-    #[must_use]
-    pub fn placement_eligibility(
-        &self,
-        machine: &Machine,
-        storage: Option<&MachineStorageObservation>,
-    ) -> ServicePlacementEligibility {
-        placement_eligibility(
-            &self.placement,
-            self.volume_graph(),
-            machine,
-            storage,
-            false,
-        )
-    }
-
     /// Assess role admission with the Project identity required for trusted Ingress.
     #[must_use]
     pub fn placement_eligibility_in_project(
@@ -75,25 +56,6 @@ impl RequestedServiceSpec {
 }
 
 impl ResolvedServiceSpec {
-    /// Assess this complete Service specification against one Machine.
-    ///
-    /// Membership Observation is intentionally a consumer concern. Provisioned
-    /// maxima are enforced ceilings and are not compared with current free bytes.
-    #[must_use]
-    pub fn placement_eligibility(
-        &self,
-        machine: &Machine,
-        storage: Option<&MachineStorageObservation>,
-    ) -> ServicePlacementEligibility {
-        placement_eligibility(
-            &self.placement,
-            self.volume_graph(),
-            machine,
-            storage,
-            false,
-        )
-    }
-
     /// Assess role admission with the Project identity required for trusted Ingress.
     #[must_use]
     pub fn placement_eligibility_in_project(
@@ -195,6 +157,7 @@ mod tests {
     #[test]
     fn whole_specs_assess_placement_and_only_mounted_provisioned_storage() {
         let machine = machine("storage");
+        let project = crate::ProjectName::parse("shop").unwrap();
         let other = Placement {
             constraints: [crate::PlacementConstraint::parse("node.id==other").unwrap()].into(),
         };
@@ -293,7 +256,7 @@ mod tests {
                     requested
                         .volume_graph()
                         .clone()
-                        .scope_to_project(&crate::ProjectName::parse("shop").unwrap())
+                        .scope_to_project(&project)
                         .unwrap(),
                 )
                 .unwrap();
@@ -330,14 +293,14 @@ mod tests {
                 expected
             );
             assert_eq!(
-                requested.placement_eligibility(&machine, storage.as_ref()),
+                requested.placement_eligibility_in_project(&project, &machine, storage.as_ref()),
                 expected
             );
             let resolved = requested
                 .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
                 .expect("volume graph is scoped");
             assert_eq!(
-                resolved.placement_eligibility(&machine, storage.as_ref()),
+                resolved.placement_eligibility_in_project(&project, &machine, storage.as_ref()),
                 expected
             );
             assert_eq!(crate::ServiceStorageSpec::from(&resolved), storage_spec);
@@ -364,7 +327,6 @@ mod tests {
             caddy.placement_eligibility_in_project(&app, &machine, None),
             denied
         );
-        assert_eq!(caddy.placement_eligibility(&machine, None), denied);
         let mut forged = caddy.clone();
         forged.container.command = vec!["sh".into()];
         assert_eq!(
@@ -394,7 +356,7 @@ mod tests {
         );
         assert_eq!(
             requested(Placement::default(), ServiceVolumeGraph::default())
-                .placement_eligibility(&machine, None),
+                .placement_eligibility_in_project(&app, &machine, None),
             ServicePlacementEligibility::Eligible
         );
     }
