@@ -358,9 +358,11 @@ export type PidMode = string;
 
 export type Placement = {
 /**
- * Machine Targets. An empty list remains every eligible Machine.
+ * AND predicates retained for future Machines. Empty adds no restriction.
  */
-machines: Array<MachineTarget>, };
+constraints: Array<PlacementConstraint>, };
+
+export type PlacementConstraint = string;
 
 export type PlanOptions = {
 /**

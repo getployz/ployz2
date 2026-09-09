@@ -341,7 +341,7 @@ func classify(name string, raw, extensions object) ([]string, error) {
 	}
 	deployKeys := []string{}
 	for key, value := range mapping(raw["deploy"]) {
-		if value != nil && key != "mode" && key != "replicas" && key != "resources" && key != "update_config" && !strings.HasPrefix(key, "x-") && key != "#extensions" {
+		if value != nil && key != "mode" && key != "replicas" && key != "resources" && key != "update_config" && key != "placement" && !strings.HasPrefix(key, "x-") && key != "#extensions" {
 			deployKeys = append(deployKeys, key)
 		}
 	}
