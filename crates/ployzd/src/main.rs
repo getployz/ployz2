@@ -12,10 +12,11 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use ployz_core::DOCKER_NETWORK_CONFLICT_EXIT_STATUS;
+use ployz_core::{DOCKER_NETWORK_CONFLICT_EXIT_STATUS, StorageChoice};
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
+    installer::{InstallRequest, Readiness},
     machine::DEFAULT_DATA_DIR,
     network::NetworkError,
 };
@@ -53,6 +54,27 @@ enum Command {
     DialStdio,
     /// Serve the Docker Volume plugin on its systemd socket.
     VolumePlugin,
+    /// Install or replace this Machine's daemon release.
+    Install {
+        /// Release channel (stable or beta) or exact published version.
+        #[arg(long, default_value = "stable")]
+        version: String,
+        /// Prepare ZFS storage, or leave this Machine stateless.
+        #[arg(long, default_value = "none")]
+        storage: StorageChoice,
+        /// Replace daemon software only; do not install Docker, OS packages, or prepare storage.
+        #[arg(long)]
+        software_only: bool,
+        /// Write files and units but do not contact or start systemd.
+        #[arg(long)]
+        install_only: bool,
+        /// Add this existing operator to the Ployz service group during host preparation.
+        #[arg(long, value_name = "USER")]
+        group_user: Option<String>,
+        /// Read a verified release from this local directory. Used by offline qualification.
+        #[arg(long, hide = true, value_name = "DIR")]
+        release_dir: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -96,6 +118,38 @@ async fn run(args: Args) -> Result<(), Error> {
     }
     if matches!(args.command, Some(Command::DialStdio)) {
         return dial_stdio(&args.socket).await.map_err(Error::from);
+    }
+    if let Some(Command::Install {
+        version,
+        storage,
+        software_only,
+        install_only,
+        group_user,
+        release_dir,
+    }) = args.command
+    {
+        let outcome = ployzd::installer::install(InstallRequest {
+            version,
+            storage,
+            prepare_host: !software_only,
+            install_only,
+            group_user,
+            release_dir,
+        })
+        .await
+        .map_err(io::Error::other)?;
+        match outcome.readiness {
+            Readiness::InstallationOnly => {
+                println!(
+                    "Ployz {} installed; systemd was not started",
+                    outcome.target
+                );
+            }
+            Readiness::Running => {
+                println!("Ployz {} is running and ready", outcome.target);
+            }
+        }
+        return Ok(());
     }
     diag::init(args.log_level.as_deref())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;

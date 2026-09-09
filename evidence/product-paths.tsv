@@ -1,0 +1,2 @@
+path	rung1	rung2	rung3	rung4	rung5
+machine-installer	crates/ployzd/src/installer.rs::tests	-	-	-	ployzd install with a verified musl release on the disposable systemd Machine
