@@ -48,7 +48,12 @@ impl CapturedBuild {
             else {
                 continue;
             };
-            let required = machine_platforms(&target.name, spec, machines)?;
+            let required = machine_platforms(
+                &target.name,
+                &candidate.intent().project_name,
+                spec,
+                machines,
+            )?;
             if required.is_empty() {
                 // No placement is visible; the coverage check after the Build
                 // decides, and nothing here can name a better platform.
@@ -84,6 +89,7 @@ impl CapturedBuild {
 /// no rerun can cover it, so the Build is refused before compilation.
 fn machine_platforms<'observed>(
     service: &str,
+    project: &ployz_core::ProjectName,
     spec: &RequestedServiceSpec,
     machines: &'observed [MachineObservation],
 ) -> Result<BTreeMap<String, Vec<&'observed Machine>>, ComposeError> {
@@ -93,7 +99,11 @@ fn machine_platforms<'observed>(
         .filter(|machine| machine.membership != MembershipObservation::Down)
         .filter(|machine| {
             !matches!(
-                spec.placement_eligibility(&machine.machine, machine.storage.as_ref()),
+                spec.placement_eligibility_in_project(
+                    project,
+                    &machine.machine,
+                    machine.storage.as_ref()
+                ),
                 ServicePlacementEligibility::Ineligible(_)
             )
         })
@@ -104,7 +114,7 @@ fn machine_platforms<'observed>(
             .find(|platform| crate::image::platform_compatible(platform, architecture))
         else {
             return Err(invalid_build(&format!(
-                "service '{service}' may run on {}, which reports architecture {architecture:?}; Railpack builds only {}. Pin x-machines to Machines it builds for",
+                "service '{service}' may run on {}, which reports architecture {architecture:?}; Railpack builds only {}. Use deploy.placement.constraints to select Machines it builds for",
                 named(&machine.machine),
                 RAILPACK_PLATFORMS.join(" and ")
             )));
@@ -137,13 +147,17 @@ mod tests {
         let observed = |seed: u8, architecture: &str, membership| {
             MachineObservation::new(
                 Machine {
-                    // Letters keep the ID a YAML string inside `x-machines`.
+                    // Letters keep the ID a YAML string inside placement constraints.
                     id: MachineId::parse(char::from(b'a' + seed).to_string().repeat(32)).unwrap(),
                     name: MachineName::parse(format!("machine-{seed}")).unwrap(),
                     subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
                     public_key: WireGuardPublicKey([seed; 32]),
                     public_ip: None,
                     advertised_endpoints: Vec::new(),
+                    labels: Default::default(),
+                    accepts_services: true,
+                    accepts_builds: true,
+                    accepts_ingress: true,
                     runtime: ployz_core::MachineRuntime {
                         architecture: architecture.into(),
                         ..Default::default()
@@ -178,7 +192,7 @@ mod tests {
         };
 
         let (mut captured, candidate) = capture(&format!(
-            "services:\n  pinned:\n    image: registry.invalid/pinned:1\n    build: {{context: ., x-recipe: railpack}}\n    x-machines: [{}]\n  anywhere:\n    image: registry.invalid/anywhere:1\n    build: {{context: ., x-recipe: railpack}}\n  file:\n    image: registry.invalid/file:1\n    build: .\n",
+            "services:\n  pinned:\n    image: registry.invalid/pinned:1\n    build: {{context: ., x-recipe: railpack}}\n    deploy: {{placement: {{constraints: [node.id=={}]}}}}\n  anywhere:\n    image: registry.invalid/anywhere:1\n    build: {{context: ., x-recipe: railpack}}\n  file:\n    image: registry.invalid/file:1\n    build: .\n",
             machines[0].machine.id
         ));
         // Before derivation every target carries the host default.
@@ -262,7 +276,7 @@ mod tests {
 
         // A possible placement Railpack cannot build for is refused before
         // compilation: no rerun could cover it.
-        let unbuildable = [
+        let mut unbuildable = [
             machines[0].clone(),
             observed(4, "riscv64", MembershipObservation::Up),
         ];
@@ -273,9 +287,12 @@ mod tests {
         assert!(
             error.contains("machine-4")
                 && error.contains("riscv64")
-                && error.contains("x-machines"),
+                && error.contains("deploy.placement.constraints"),
             "{error}"
         );
+        // A Build-only Machine cannot place the Service, regardless of CPU.
+        unbuildable[1].machine.accepts_services = false;
+        captured.cover_machines(&candidate, &unbuildable).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -731,6 +731,10 @@ mod tests {
     fn machine(seed: u8) -> MachineObservation {
         MachineObservation::new(
             Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
                 id: MachineId::parse(format!("{seed:032x}")).unwrap(),
                 name: MachineName::parse(format!("machine-{seed}")).unwrap(),
                 subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
@@ -754,7 +758,7 @@ mod tests {
         };
         record(&mut result, &completed, Ok(())).unwrap();
         assert!(record(&mut result, &cancelled, Err(PushError::Cancelled)).is_err());
-        assert_eq!(result.successes[0].machine_id, completed.id);
+        assert_eq!(result.successes.first().unwrap().machine_id, completed.id);
         assert!(result.failures.is_empty());
         assert_eq!(result.omissions, [cancelled.id]);
     }
@@ -825,6 +829,10 @@ mod tests {
         assert!(select_targets(&machines, &["all".into()]).is_err());
         let named_all = MachineObservation {
             machine: Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
                 name: MachineName::parse("all").unwrap(),
                 ..machines[0].machine.clone()
             },

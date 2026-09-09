@@ -45,11 +45,6 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let load = deploy_load(matches);
     let resolved = resolve_from_compose_load(matches, &load)?;
     let project = load_project(&load)?;
-    let location = crate::build_location::Location::requested(
-        matches.get_one::<String>("remote").map(String::as_str),
-        matches.get_flag("local"),
-    )
-    .map_err(|error| Error::usage(error.to_string()))?;
     let context = project
         .selected_context(
             matches.get_one::<String>("context").map(String::as_str),
@@ -75,7 +70,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                     &mut client,
                     build,
                     &candidate,
-                    &location,
+                    matches,
                     &load,
                     &cancellation,
                 )
@@ -108,7 +103,7 @@ async fn build_images(
     client: &mut crate::connect::Client,
     mut build: CapturedBuild,
     candidate: &CapturedCompose,
-    location: &crate::build_location::Location,
+    matches: &ArgMatches,
     load: &LoadOptions,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<crate::compose::BuiltService>, Error> {
@@ -127,41 +122,49 @@ async fn build_images(
     build
         .cover_machines(candidate, &machines)
         .map_err(crate::deploy::DeployError::from)?;
-    let platforms = build.platforms();
+    let platforms = build
+        .targets()
+        .iter()
+        .flat_map(|target| target.platforms.iter().map(String::as_str))
+        .collect::<std::collections::BTreeSet<_>>();
     if !platforms.is_empty() {
         eprintln!(
             "Build platforms: {}",
-            platforms
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
+            platforms.into_iter().collect::<Vec<_>>().join(", ")
         );
     }
-    match location {
-        crate::build_location::Location::Remote(selection) => {
-            let machine =
-                super::build::resolve_build_machine(client, selection, &platforms, machines)
-                    .await?;
-            let result = build
-                .execute_remote_images(
-                    client,
-                    machine,
-                    cancellation.clone(),
-                    super::build::progress,
-                )
-                .await;
-            if cancellation.is_cancelled() {
-                return Err(Error::usage(
-                    "Build cancelled. No Service, hook, or volume change was attempted.",
-                ));
-            }
-            Ok(result.map_err(crate::deploy::DeployError::from)?)
-        }
-        crate::build_location::Location::Local => Ok(build
+    if matches.get_flag("local") {
+        return Ok(build
             .execute(load.docker.as_deref(), cancellation)
-            .map_err(crate::deploy::DeployError::from)?),
+            .map_err(crate::deploy::DeployError::from)?);
     }
+    let remote = matches
+        .get_one::<String>("remote")
+        .filter(|target| !target.is_empty())
+        .map(ployz_core::MachineTarget::parse)
+        .transpose()?;
+    let machine = super::build::select_build_machine(
+        client,
+        remote.as_ref(),
+        build.targets(),
+        &machines,
+        cancellation,
+    )
+    .await?;
+    let result = build
+        .execute_remote_images(
+            client,
+            machine.id,
+            cancellation.clone(),
+            super::build::progress,
+        )
+        .await;
+    if cancellation.is_cancelled() {
+        return Err(Error::usage(
+            "Build cancelled. No Service, hook, or volume change was attempted.",
+        ));
+    }
+    Ok(result.map_err(crate::deploy::DeployError::from)?)
 }
 
 /// Render the captured Compose candidate against fresh, read-only Cluster evidence.
