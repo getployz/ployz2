@@ -250,7 +250,7 @@ async fn remote_queue_outcomes_name_machine_and_unattempted_work() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// Automatic selection, Compose preference, and the overrides that beat it.
+/// Automatic selection, an explicit pin, and the local override.
 #[tokio::test]
 async fn automatic_selection_uses_capable_machines_and_explicit_flags_beat_compose() {
     let root = std::env::temp_dir().join(format!("ployz-auto-cli-{}", uuid::Uuid::new_v4()));
@@ -306,15 +306,10 @@ async fn automatic_selection_uses_capable_machines_and_explicit_flags_beat_compo
         command
     };
     let (address, server) = support::serve_discovery(capable(builds.clone())).await;
-    // Automatic selection skips the Machine that does not advertise Builds,
-    // whether it was asked for on the command line or in Compose.
-    for (preference, args) in [
-        ("", vec!["--remote", "api"]),
-        ("x-build-machine: auto\n", vec!["api"]),
-        // An explicit pin beats the Compose preference.
-        ("x-build-machine: forge\n", vec!["--remote=tower", "api"]),
-    ] {
-        compose(preference);
+    // Automatic selection skips the Machine that does not advertise Builds, and
+    // an explicit pin reaches the same Machine.
+    compose("");
+    for args in [vec!["--remote", "api"], vec!["--remote=tower", "api"]] {
         let output = tokio::time::timeout(Duration::from_secs(20), run(&address, &args).output())
             .await
             .unwrap()
@@ -331,8 +326,7 @@ async fn automatic_selection_uses_capable_machines_and_explicit_flags_beat_compo
             "{stdout}"
         );
     }
-    // An ambiguous name refuses the same way from the flag and from Compose,
-    // naming every Machine it matched.
+    // An ambiguous name refuses, naming every Machine it matched.
     let (ambiguous_address, ambiguous_server) = {
         let mut service = support::DiscoveryService::new(builds.clone());
         service.machines = vec![
@@ -341,11 +335,8 @@ async fn automatic_selection_uses_capable_machines_and_explicit_flags_beat_compo
         ];
         support::serve_discovery(service).await
     };
-    for (preference, args) in [
-        ("", vec!["--remote=tower", "api"]),
-        ("x-build-machine: tower\n", vec!["api"]),
-    ] {
-        compose(preference);
+    {
+        let args = vec!["--remote=tower", "api"];
         let output = run(&ambiguous_address, &args).output().await.unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{stderr}");
@@ -358,9 +349,11 @@ async fn automatic_selection_uses_capable_machines_and_explicit_flags_beat_compo
     }
     ambiguous_server.abort();
 
-    // A Compose preference naming an incapable Machine refuses with evidence.
-    compose("x-build-machine: forge\n");
-    let output = run(&address, &["api"]).output().await.unwrap();
+    // Pinning the Machine that does not advertise Builds refuses with evidence.
+    let output = run(&address, &["--remote=forge", "api"])
+        .output()
+        .await
+        .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
     assert!(
@@ -368,8 +361,7 @@ async fn automatic_selection_uses_capable_machines_and_explicit_flags_beat_compo
         "{stderr}"
     );
     assert!(!root.join("docker-called").exists(), "{stderr}");
-    // --local overrides the Compose preference and runs here.
-    compose("x-build-machine: tower\n");
+    // --local runs here even with a Cluster available.
     assert!(
         !run(&address, &["--local", "api"])
             .output()

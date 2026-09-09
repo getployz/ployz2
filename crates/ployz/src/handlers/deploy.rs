@@ -48,7 +48,6 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let location = crate::build_location::Location::requested(
         matches.get_one::<String>("remote").map(String::as_str),
         matches.get_flag("local"),
-        project.build_machine.as_deref(),
     )
     .map_err(|error| Error::usage(error.to_string()))?;
     let context = project

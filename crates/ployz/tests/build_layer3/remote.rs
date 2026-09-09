@@ -553,7 +553,7 @@ async fn assert_temporary_tags_released(cluster: &Cluster) {
 }
 
 /// Two compatible candidates: automatic selection, an explicit pin, and the
-/// local override that beats a Compose preference.
+/// local override.
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
 async fn build_location_selects_automatically_honours_a_pin_and_yields_to_local() {
@@ -671,9 +671,8 @@ async fn build_location_selects_automatically_honours_a_pin_and_yields_to_local(
         "selected-machine-ran\n"
     );
 
-    // --local overrides a Compose preference and runs on this host's Docker,
-    // which the fixture stub refuses. Compose precedence itself is rung 3.
-    compose(&format!("x-build-machine: {pinned}\n"));
+    // --local runs on this host's Docker even with the Cluster reachable, which
+    // the fixture stub refuses.
     assert!(!root.join("local-docker-called").exists());
     let output = run(vec!["build".into(), "--local".into(), "app".into()])
         .output()

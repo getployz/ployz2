@@ -83,11 +83,7 @@ func convert(p *types.Project, model, provisioned, secrets object) (object, erro
 		}
 		warnings = append(warnings, w...)
 	}
-	buildMachine, declared := p.Extensions["x-build-machine"]
-	if value, _ := buildMachine.(string); declared && value == "" {
-		return nil, fmt.Errorf("x-build-machine must be a Machine name or ID, 'auto', or 'local'")
-	}
-	return object{"name": p.Name, "working_dir": p.WorkingDir, "context": p.Extensions["x-context"], "build_machine": buildMachine, "services": services, "builds": builds, "dependencies": dependencies, "service_profiles": profiles, "warnings": warnings, "secrets": secrets, "environment": p.Environment}, nil
+	return object{"name": p.Name, "working_dir": p.WorkingDir, "context": p.Extensions["x-context"], "services": services, "builds": builds, "dependencies": dependencies, "service_profiles": profiles, "warnings": warnings, "secrets": secrets, "environment": p.Environment}, nil
 }
 
 func service(p *types.Project, s types.ServiceConfig, raw, provisioned object) (object, error) {

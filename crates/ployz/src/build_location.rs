@@ -14,14 +14,10 @@ pub(crate) const AUTOMATIC: &str = "";
 
 use crate::image::platform_compatible;
 
-/// A requested build location that names no Machine. The origin is part of the
-/// message: the same text can come from a flag or from Compose.
+/// A `--remote` value that names no Machine.
 #[derive(Debug, Error)]
-#[error("{origin} {value:?} is not a Machine name or ID, `auto`, or `local`")]
-pub(crate) struct InvalidLocation {
-    origin: &'static str,
-    value: String,
-}
+#[error("--remote {0:?} is not a Machine name or ID")]
+pub(crate) struct InvalidLocation(String);
 
 /// Execution location a user asked for, before any Machine is observed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -42,41 +38,25 @@ pub(crate) enum Selection {
 }
 
 impl Location {
-    /// Resolve the requested location. An explicit flag always beats Compose,
-    /// and Compose beats the local default.
+    /// Resolve the requested location. A Build runs on this host unless a flag
+    /// sends it to a Machine.
     ///
     /// `remote` is the `--remote` value: absent when the flag was not given,
-    /// empty for plain `--remote`, which always asks for a fresh automatic
-    /// choice rather than the Compose pin. `preferred` is the Compose
-    /// `x-build-machine` value. `auto` and `local` name modes wherever they
-    /// appear, so a Machine called either is pinned by its ID instead.
+    /// [`AUTOMATIC`] for plain `--remote`, otherwise the pinned Machine.
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidLocation`] when a pinned target is not a Machine
-    /// identity, naming the flag or Compose key it was written in.
-    pub(crate) fn requested(
-        remote: Option<&str>,
-        local: bool,
-        preferred: Option<&str>,
-    ) -> Result<Self, InvalidLocation> {
+    /// Returns [`InvalidLocation`] when a pinned target is not a Machine identity.
+    pub(crate) fn requested(remote: Option<&str>, local: bool) -> Result<Self, InvalidLocation> {
         if local {
             return Ok(Self::Local);
         }
-        let (origin, value) = match (remote, preferred) {
-            (Some(value), _) => ("--remote", value),
-            (None, Some(value)) => ("Compose x-build-machine", value),
-            (None, None) => return Ok(Self::Local),
-        };
-        match value {
-            "local" => Ok(Self::Local),
-            AUTOMATIC | "auto" => Ok(Self::Remote(Selection::Automatic)),
-            target => MachineTarget::parse(target)
+        match remote {
+            None => Ok(Self::Local),
+            Some(AUTOMATIC) => Ok(Self::Remote(Selection::Automatic)),
+            Some(target) => MachineTarget::parse(target)
                 .map(|target| Self::Remote(Selection::Pinned(target)))
-                .map_err(|_| InvalidLocation {
-                    origin,
-                    value: target.to_owned(),
-                }),
+                .map_err(|_| InvalidLocation(target.to_owned())),
         }
     }
 }
@@ -114,9 +94,9 @@ pub(crate) struct Choice<'list> {
     /// Required platforms this client could not confirm the Machine runs
     /// natively. The Machine confirms or refuses them at admission.
     pub unconfirmed: Vec<String>,
-    /// Visible Machines that never answered, so a better candidate may have
-    /// been passed over. One line of evidence each.
-    pub unanswered: Vec<String>,
+    /// Visible Machines that never answered for themselves, so a better
+    /// candidate may have been passed over. One line of evidence each.
+    pub unresolved: Vec<String>,
 }
 
 /// Why no Machine could be chosen. The observed evidence belongs here; the
@@ -125,10 +105,15 @@ pub(crate) struct Choice<'list> {
 pub(crate) enum NoBuildMachine {
     #[error("no Machine is visible, so no Build Machine can be selected")]
     Invisible,
-    #[error("no visible Machine answered, so none could be selected. Observed {}", .unanswered.join("; "))]
-    Silent { unanswered: Vec<String> },
-    #[error("no visible Machine can run this Build. Observed {}", .observed.join("; "))]
-    Incapable { observed: Vec<String> },
+    /// At least one Machine never spoke for itself, so "none can build" would
+    /// claim more than was observed.
+    #[error("no Machine that answered can run this Build, and {} did not answer. Observed {}", .unresolved.len(), observed(.refused, .unresolved))]
+    Inconclusive {
+        refused: Vec<String>,
+        unresolved: Vec<String>,
+    },
+    #[error("no visible Machine can run this Build. Observed {}", .refused.join("; "))]
+    Incapable { refused: Vec<String> },
 }
 
 /// Pick one Machine for an automatic Build.
@@ -147,8 +132,8 @@ pub(crate) fn choose<'list>(
     required: &BTreeSet<String>,
 ) -> Result<Choice<'list>, NoBuildMachine> {
     let mut eligible = Vec::new();
-    let mut excluded = Vec::new();
-    let mut unanswered = Vec::new();
+    let mut refused = Vec::new();
+    let mut unresolved = Vec::new();
     for candidate in candidates {
         let name = &candidate.name;
         let id = &candidate.id;
@@ -157,11 +142,13 @@ pub(crate) fn choose<'list>(
                 eligible.push((candidate, unconfirmed(architecture, required)));
             }
             Evidence::Refuses => {
-                excluded.push(format!("{name} ({id}) does not run remote Builds"));
+                refused.push(format!("{name} ({id}) does not run remote Builds"));
             }
-            Evidence::Ineligible(reason) => excluded.push(format!("{name} ({id}) {reason}")),
+            // Membership is one Machine's stale judgment of another, never the
+            // Machine speaking for itself, so it cannot settle capability.
+            Evidence::Ineligible(reason) => unresolved.push(format!("{name} ({id}) {reason}")),
             Evidence::Unanswered(reason) => {
-                unanswered.push(format!("{name} ({id}) capability unknown: {reason}"));
+                unresolved.push(format!("{name} ({id}) capability unknown: {reason}"));
             }
         }
     }
@@ -174,21 +161,32 @@ pub(crate) fn choose<'list>(
                 .then_with(|| left.id.as_str().cmp(right.id.as_str()))
         });
     let Some((machine, unconfirmed)) = chosen else {
-        // Nothing answered is a reachability problem, not a capability one;
-        // telling that user to upgrade a Machine would be wrong advice.
-        return Err(match (excluded.is_empty(), unanswered.is_empty()) {
+        // Any silence leaves a Machine that might have built this, so the
+        // capability conclusion is only available when every Machine answered.
+        return Err(match (refused.is_empty(), unresolved.is_empty()) {
             (true, true) => NoBuildMachine::Invisible,
-            (true, false) => NoBuildMachine::Silent { unanswered },
-            _ => NoBuildMachine::Incapable {
-                observed: excluded.into_iter().chain(unanswered).collect(),
+            (_, false) => NoBuildMachine::Inconclusive {
+                refused,
+                unresolved,
             },
+            (false, true) => NoBuildMachine::Incapable { refused },
         });
     };
     Ok(Choice {
         machine,
         unconfirmed,
-        unanswered,
+        unresolved,
     })
+}
+
+/// Every observed line, refusals before silence.
+fn observed(refused: &[String], unresolved: &[String]) -> String {
+    refused
+        .iter()
+        .chain(unresolved)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Required platforms this client cannot confirm the Machine runs natively. An
@@ -225,50 +223,27 @@ mod tests {
     }
 
     #[test]
-    fn explicit_flags_override_compose_and_compose_overrides_the_local_default() {
+    fn flags_choose_the_location_and_a_bad_pin_names_the_flag() {
         let requested = Location::requested;
         let pinned = |name: &str| Location::Remote(Selection::Pinned(name.parse().unwrap()));
-        assert_eq!(requested(None, false, None).unwrap(), Location::Local);
+        assert_eq!(requested(None, false).unwrap(), Location::Local);
+        assert_eq!(requested(None, true).unwrap(), Location::Local);
+        // Plain --remote asks for a choice; a value pins one Machine.
         assert_eq!(
-            requested(None, false, Some("local")).unwrap(),
-            Location::Local
-        );
-        assert_eq!(
-            requested(None, false, Some("auto")).unwrap(),
+            requested(Some(AUTOMATIC), false).unwrap(),
             Location::Remote(Selection::Automatic)
         );
-        assert_eq!(
-            requested(None, false, Some("tower")).unwrap(),
-            pinned("tower")
+        assert_eq!(requested(Some("tower"), false).unwrap(), pinned("tower"));
+        // --local wins over a --remote clap already refuses to pair it with.
+        assert_eq!(requested(Some("tower"), true).unwrap(), Location::Local);
+        // Nothing reserves these words now that no Compose key spells modes.
+        assert_eq!(requested(Some("auto"), false).unwrap(), pinned("auto"));
+        assert_eq!(requested(Some("local"), false).unwrap(), pinned("local"));
+        let rejected = requested(Some("*"), false).unwrap_err().to_string();
+        assert!(
+            rejected.contains("--remote") && rejected.contains("*"),
+            "{rejected}"
         );
-        // Plain --remote asks for a fresh choice, never the configured pin.
-        assert_eq!(
-            requested(Some(""), false, Some("tower")).unwrap(),
-            Location::Remote(Selection::Automatic)
-        );
-        assert_eq!(
-            requested(Some("edge"), false, Some("tower")).unwrap(),
-            pinned("edge")
-        );
-        assert_eq!(
-            requested(None, true, Some("tower")).unwrap(),
-            Location::Local
-        );
-        assert_eq!(
-            requested(None, true, Some("auto")).unwrap(),
-            Location::Local
-        );
-        // The two mode words mean the same on the flag as in Compose.
-        assert_eq!(
-            requested(Some("auto"), false, Some("tower")).unwrap(),
-            Location::Remote(Selection::Automatic)
-        );
-        assert_eq!(
-            requested(Some("local"), false, Some("tower")).unwrap(),
-            Location::Local
-        );
-        assert!(requested(Some("*"), false, None).is_err());
-        assert!(requested(None, false, Some("*")).is_err());
     }
 
     #[test]
@@ -287,7 +262,7 @@ mod tests {
             let machines = observed(order);
             let native = choose(&machines, &platforms(["linux/arm64"])).unwrap();
             assert_eq!(native.machine.name.as_str(), "arm");
-            assert!(native.unconfirmed.is_empty() && native.unanswered.is_empty());
+            assert!(native.unconfirmed.is_empty() && native.unresolved.is_empty());
             // No native candidate: the lowest Machine ID wins and the platforms
             // it cannot prove stay visible.
             let emulating = choose(&machines, &platforms(["linux/riscv64"])).unwrap();
@@ -323,29 +298,38 @@ mod tests {
             ),
             "an empty Cluster is not a capability refusal"
         );
-        // Nothing answered at all is a reachability refusal, not a capability
-        // one. A Machine that was never eligible to be asked is neither.
-        let silent = [candidate(
-            'b',
-            "gone",
+        // Any silence leaves the capability question open, whether it came
+        // from a failed probe or from another Machine's judgment of it.
+        for unresolved in [
             Evidence::Unanswered("did not answer".into()),
-        )];
+            Evidence::Ineligible("has membership down and does not invite an RPC".into()),
+        ] {
+            let quiet = [candidate('b', "gone", unresolved)];
+            assert!(matches!(
+                choose(&quiet, &BTreeSet::new()).unwrap_err(),
+                NoBuildMachine::Inconclusive { .. }
+            ));
+            // A definite refusal alongside silence still cannot conclude.
+            let mixed = [
+                candidate('a', "old", Evidence::Refuses),
+                quiet.into_iter().next().unwrap(),
+            ];
+            let error = choose(&mixed, &BTreeSet::new()).unwrap_err();
+            assert!(
+                matches!(error, NoBuildMachine::Inconclusive { .. }),
+                "one silent Machine must not license a capability conclusion"
+            );
+            assert!(error.to_string().contains("did not answer"), "{error}");
+        }
+        // Only when every visible Machine answered is the conclusion available.
         assert!(matches!(
-            choose(&silent, &BTreeSet::new()).unwrap_err(),
-            NoBuildMachine::Silent { .. }
+            choose(
+                &[candidate('a', "old", Evidence::Refuses)],
+                &BTreeSet::new()
+            )
+            .unwrap_err(),
+            NoBuildMachine::Incapable { .. }
         ));
-        let draining = [candidate(
-            'b',
-            "gone",
-            Evidence::Ineligible("is draining".into()),
-        )];
-        assert!(
-            matches!(
-                choose(&draining, &BTreeSet::new()).unwrap_err(),
-                NoBuildMachine::Incapable { .. }
-            ),
-            "a Machine that cannot be asked is not a connection problem"
-        );
         // One capable Machine among them is selected, and the Machine that
         // never answered stays visible on that success.
         let mut machines = Vec::from_iter(machines);
@@ -353,8 +337,8 @@ mod tests {
         let choice = choose(&machines, &platforms(["linux/amd64"])).unwrap();
         assert_eq!(choice.machine.name.as_str(), "tower");
         assert!(choice.unconfirmed.is_empty());
-        assert_eq!(choice.unanswered.len(), 1, "{choice:?}");
-        assert!(choice.unanswered.concat().contains("gone"), "{choice:?}");
+        assert_eq!(choice.unresolved.len(), 1, "{choice:?}");
+        assert!(choice.unresolved.concat().contains("gone"), "{choice:?}");
     }
 
     #[test]

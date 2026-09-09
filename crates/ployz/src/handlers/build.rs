@@ -52,7 +52,6 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     let location = Location::requested(
         leaf.get_one::<String>("remote").map(String::as_str),
         leaf.get_flag("local"),
-        project.build_machine.as_deref(),
     )
     .map_err(|error| Error::usage(error.to_string()))?;
     if matches!(location, Location::Remote(_)) && leaf.get_flag("push") && !leaf.get_flag("check") {
@@ -153,7 +152,7 @@ struct Resolved {
     /// Required platforms this client could not confirm run natively.
     unconfirmed: Vec<String>,
     /// Visible Machines whose Build capability could not be observed.
-    unanswered: Vec<String>,
+    unresolved: Vec<String>,
 }
 
 impl Resolved {
@@ -164,7 +163,7 @@ impl Resolved {
             name,
             id,
             unconfirmed,
-            unanswered,
+            unresolved,
         } = self;
         println!("Selected Build Machine {name} ({id})");
         eprintln!("Build Machine: {id}");
@@ -176,12 +175,12 @@ impl Resolved {
                 unconfirmed.join(", ")
             );
         }
-        if !unanswered.is_empty() {
+        if !unresolved.is_empty() {
             // A silent Machine may have been the better candidate. Say so
             // rather than let the choice look better evidenced than it is.
             eprintln!(
                 "Build capability was not observed for {}",
-                unanswered.join("; ")
+                unresolved.join("; ")
             );
         }
     }
@@ -212,7 +211,7 @@ pub(super) async fn resolve_build_machine(
                 unconfirmed: build_location::unconfirmed(&machine.runtime.architecture, required),
                 name: machine.name,
                 id: machine.id,
-                unanswered: Vec::new(),
+                unresolved: Vec::new(),
             }
         }
         Selection::Automatic => {
@@ -222,7 +221,7 @@ pub(super) async fn resolve_build_machine(
                 name: choice.machine.name.clone(),
                 id: choice.machine.id,
                 unconfirmed: choice.unconfirmed,
-                unanswered: choice.unanswered,
+                unresolved: choice.unresolved,
             }
         }
     };
@@ -236,11 +235,11 @@ fn no_machine(error: build_location::NoBuildMachine) -> Error {
         build_location::NoBuildMachine::Invisible => {
             "add one with `ployz machine add`, or build here with --local"
         }
-        build_location::NoBuildMachine::Silent { .. } => {
-            "check the Cluster connection and retry, or build here with --local"
+        build_location::NoBuildMachine::Inconclusive { .. } => {
+            "wait for those Machines and retry, name one with --remote=<Machine>, or build here with --local"
         }
         build_location::NoBuildMachine::Incapable { .. } => {
-            "upgrade or restore a Machine from the evidence above, name one with --remote=<Machine>, or build here with --local"
+            "upgrade a Machine, name one with --remote=<Machine>, or build here with --local"
         }
     };
     Error::usage(format!("{error}; {action}"))
