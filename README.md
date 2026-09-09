@@ -37,7 +37,7 @@ Multi-platform builds currently require local output and reject requested
 `build.provenance` or `build.sbom`; Dockerfiles remain limited to one platform.
 
 `ployz deploy` derives each Railpack Service's platforms from the Machines it may
-be placed on, read from the current Cluster observation, before building; explicit
+be placed on, read from the current Cluster Observation, before building; explicit
 `build.platforms` must cover them. Standalone `ployz build` keeps the native
 default. After every Build succeeds, the completed platforms are checked against
 the fresh Deploy plan's destinations; a Machine no variant runs stops the Deploy

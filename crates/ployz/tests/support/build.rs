@@ -70,7 +70,7 @@ impl BuildFixture {
                 containerd_store: true,
                 images: Vec::new(),
             });
-            let platforms = pull.platform.clone().into_iter().collect();
+            let platforms = vec![pull.platform.clone()];
             match store.images.iter_mut().find(|stored| stored.id == id) {
                 Some(stored) => stored.platforms.extend(platforms),
                 None => store.images.push(ployz_core::ImageSummary {

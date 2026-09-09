@@ -270,7 +270,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
                 .repository_reference("registry.invalid/shared:latest")
                 .unwrap()
             && pull.source.management_address == source.machine.management_address()
-            && pull.platform.as_deref() == Some("linux/amd64")
+            && pull.platform == "linux/amd64"
     }));
     builds
         .stores
@@ -478,11 +478,10 @@ async fn a_partial_source_is_refused_and_each_destination_names_its_variant() {
     .await
     .unwrap_err();
     assert!(
-        matches!(&error, crate::image::PushError::VariantUnavailable { platform, .. } if platform == "linux/arm64"),
+        matches!(&error, crate::image::PushError::BuildIncomplete { missing, .. } if missing == &["linux/arm64"]),
         "{error}"
     );
     assert!(builds.pulls.lock().unwrap().is_empty());
-    assert!(builds.opened.lock().unwrap().is_empty());
 
     builds
         .stores
@@ -510,11 +509,8 @@ async fn a_partial_source_is_refused_and_each_destination_names_its_variant() {
             .platform
             .clone()
     };
-    assert_eq!(platform(amd64.machine.id).as_deref(), Some("linux/amd64"));
-    assert_eq!(
-        platform(arm64.machine.id).as_deref(),
-        Some("linux/arm64/v8")
-    );
+    assert_eq!(platform(amd64.machine.id), "linux/amd64");
+    assert_eq!(platform(arm64.machine.id), "linux/arm64/v8");
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }
@@ -603,5 +599,98 @@ async fn explicit_platforms_that_miss_a_placement_machine_refuse_before_any_uplo
     assert!(builds.definitions.lock().unwrap().is_empty());
     assert!(builds.pulls.lock().unwrap().is_empty());
     assert_eq!(mutations.load(Ordering::SeqCst), 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn deploy_pulls_only_from_a_peer_that_holds_the_destinations_variant() {
+    let (root, service, builds) = fixture();
+    let observed = |hex, name, architecture: &str| {
+        let mut machine = machine(hex, name);
+        machine.machine.runtime.architecture = architecture.into();
+        machine
+    };
+    let destination = observed('a', "destination", "x86_64");
+    let partial = observed('b', "partial", "aarch64");
+    let complete = observed('c', "complete", "x86_64");
+    let image = "docker.io/library/busybox:1.37.0";
+    let store = |platforms: &[&str]| MachineImages {
+        containerd_store: true,
+        images: vec![ployz_core::ImageSummary {
+            id: format!("sha256:{}", "4".repeat(64)),
+            repo_tags: vec![image.into()],
+            created: 0,
+            size: 1,
+            containers: 0,
+            platforms: platforms
+                .iter()
+                .map(|platform| (*platform).to_owned())
+                .collect(),
+        }],
+    };
+    // The tag is visible on both peers; only one holds the AMD64 content.
+    builds
+        .stores
+        .lock()
+        .unwrap()
+        .insert(partial.machine.id, store(&["linux/arm64"]));
+    let (client, server) = connected(service.with_machines(vec![
+        destination.clone(),
+        partial.clone(),
+        complete.clone(),
+    ]))
+    .await;
+    crate::image::ensure_cluster_image(
+        &client,
+        &destination.machine.id,
+        image,
+        ployz_core::PullPolicy::Never,
+    )
+    .await
+    .unwrap();
+    assert!(
+        builds.pulls.lock().unwrap().is_empty(),
+        "a tag without the destination's variant is not a source"
+    );
+
+    builds
+        .stores
+        .lock()
+        .unwrap()
+        .insert(complete.machine.id, store(&["linux/amd64", "linux/arm64"]));
+    crate::image::ensure_cluster_image(
+        &client,
+        &destination.machine.id,
+        image,
+        ployz_core::PullPolicy::Missing,
+    )
+    .await
+    .unwrap();
+    let pulls = builds.pulls.lock().unwrap().clone();
+    assert_eq!(pulls.len(), 1);
+    let (target, pull) = pulls.first().unwrap();
+    assert_eq!(*target, destination.machine.id);
+    assert_eq!(pull.image, image);
+    assert_eq!(pull.platform, "linux/amd64");
+    assert_eq!(
+        pull.source.management_address,
+        complete.machine.management_address()
+    );
+    assert_eq!(
+        builds.opened.lock().unwrap().as_slice(),
+        [complete.machine.id]
+    );
+
+    // The destination now holds it, so a second Deploy step pulls nothing.
+    crate::image::ensure_cluster_image(
+        &client,
+        &destination.machine.id,
+        image,
+        ployz_core::PullPolicy::Missing,
+    )
+    .await
+    .unwrap();
+    assert_eq!(builds.pulls.lock().unwrap().len(), 1);
+    server.abort();
     fs::remove_dir_all(root).unwrap();
 }

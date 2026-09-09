@@ -23,8 +23,8 @@ use self::proxy::{ImageProxy, ProxyMode, detect_mode};
 
 mod built;
 mod proxy;
+use built::Source;
 pub use built::push_from_machine;
-use built::{Source, observe_store};
 pub(crate) use built::{
     available_variant, platform_compatible, push_from_machine_using_machines, serve_build_image,
 };
@@ -51,6 +51,15 @@ pub enum PushError {
         image: String,
         machine_id: MachineId,
         platform: String,
+    },
+    #[error(
+        "Machine {machine_id} holds Build image {image} without {}; a partial Build host cannot be the source",
+        .missing.join(", ")
+    )]
+    BuildIncomplete {
+        image: String,
+        machine_id: MachineId,
+        missing: Vec<String>,
     },
     #[error("invalid image reference '{reference}': {message}")]
     InvalidReference { reference: String, message: String },
@@ -214,19 +223,16 @@ pub(crate) async fn push_using_machines(
         omissions: Vec::new(),
     };
     // Docker pushes the whole image to the first reachable target, which then
-    // serves its peers. Read back what that target actually holds before
-    // anyone, including that target, relies on it.
+    // serves its peers. Read back what that target actually holds before any
+    // peer relies on it.
     let mut source = None;
     for machine in targets.by_ref() {
         let outcome = async {
             push_to_machine(client, content, platform, &machine, mode, &mut cancellation).await?;
-            let store = observe_store(client, machine.id, &mut cancellation).await?;
-            let opened = Source::open(client, machine.id, store, &mut cancellation).await?;
-            let held = opened.variant(image, &machine, platform).map(|_| ());
-            source = Some(opened);
-            held
+            Source::open(client, machine.id, &mut cancellation).await
         }
         .await;
+        let outcome = outcome.map(|opened| source = Some(opened));
         record(&mut result, &machine, outcome)?;
         if source.is_some() {
             break;
@@ -365,7 +371,7 @@ async fn pull_on_machine(
     image: &str,
     machine: &Machine,
     source: ImageIngestDestination,
-    platform: Option<&str>,
+    platform: &str,
     cancellation: &mut Cancellation<'_>,
 ) -> Result<(), PushError> {
     cancellation
@@ -373,7 +379,7 @@ async fn pull_on_machine(
             PullImageFromMachineRequest {
                 image: image.to_owned(),
                 source,
-                platform: platform.map(ToOwned::to_owned),
+                platform: platform.to_owned(),
             },
             Some(&MachineTarget::from(&machine.id)),
         ))
@@ -405,6 +411,9 @@ pub(crate) async fn ensure_cluster_image(
     }
     let mut listing_client = client.clone();
     let machines = listing_client.machines().await.map_err(rpc_error)?;
+    // The Deploy plan chose `dest` from an earlier observation. If this one no
+    // longer shows it, nothing here can name its platform; the destination's
+    // own pull policy decides, as it does when no peer holds the image.
     let Some(architecture) = machines
         .iter()
         .find(|machine| machine.machine.id == *dest)
@@ -420,20 +429,24 @@ pub(crate) async fn ensure_cluster_image(
     // Docker's reference filter does not match repository@digest.
     let filter = (!image.contains('@')).then(|| image.to_owned());
     let listings = listing_client.list_images(filter, &targets).await;
-    let mut holders = listings.successes.iter().filter_map(|success| {
-        available_variant(&success.value.images, image, &architecture)
-            .map(|platform| (success.machine_id, platform))
-    });
-    if holders.clone().any(|(machine_id, _)| machine_id == *dest) {
+    let holders = listings
+        .successes
+        .iter()
+        .filter_map(|success| {
+            available_variant(&success.value.images, image, &architecture)
+                .map(|platform| (success.machine_id, platform))
+        })
+        .collect::<Vec<_>>();
+    if holders.iter().any(|(machine_id, _)| machine_id == dest) {
         return Ok(());
     }
-    let Some((peer, platform)) = holders.find(|(machine_id, _)| machine_id != dest) else {
+    let Some((peer, platform)) = holders.iter().find(|(machine_id, _)| machine_id != dest) else {
         return Ok(());
     };
     let opened = listing_client
         .call::<op::EnsureImageIngest>(
             EnsureImageIngestRequest {},
-            Some(&MachineTarget::from(&peer)),
+            Some(&MachineTarget::from(peer)),
         )
         .await
         .map_err(rpc_error)?;
@@ -442,7 +455,7 @@ pub(crate) async fn ensure_cluster_image(
             PullImageFromMachineRequest {
                 image: image.to_owned(),
                 source: opened.destination,
-                platform: Some(platform.to_owned()),
+                platform: (*platform).to_owned(),
             },
             Some(&MachineTarget::from(dest)),
         )

@@ -15,8 +15,8 @@ use super::Error;
 ///
 /// Docker treats `127.0.0.0/8` as an insecure registry, so the pull is proxied
 /// through localhost instead of asking dockerd to speak HTTP to the WireGuard IP.
-/// An explicit `platform` makes Docker fetch that variant's manifest,
-/// configuration and layers; a source holding only the index fails the pull.
+/// `platform` makes Docker fetch that variant's manifest, configuration and
+/// layers; a source holding only the index fails the pull.
 ///
 /// # Errors
 ///
@@ -24,7 +24,7 @@ use super::Error;
 pub(crate) async fn pull_from_ingest(
     image: &str,
     source: ImageIngestDestination,
-    platform: Option<&str>,
+    platform: &str,
 ) -> Result<(), Error> {
     let retained = if image.contains('@') {
         ployz_build::remote::validate_remote_context(&format!("docker-image://{image}"))
@@ -55,16 +55,11 @@ async fn pull_and_tag(
     image: &str,
     pulled: &str,
     retained: Option<&str>,
-    platform: Option<&str>,
+    platform: &str,
     docker: &std::path::Path,
 ) -> Result<(), Error> {
     let result = async {
-        let mut pull = vec!["pull"];
-        if let Some(platform) = platform {
-            pull.extend(["--platform", platform]);
-        }
-        pull.push(pulled);
-        docker_cli(docker, &pull).await?;
+        docker_cli(docker, &["pull", "--platform", platform, pulled]).await?;
         if let Some((_, digest)) = image.split_once('@') {
             let descriptor = docker_cli(
                 docker,
@@ -203,14 +198,8 @@ esac
         for mode in ["inspect", "json", "digest", "tag", "pull", "success"] {
             fs::write(root.join("mode"), mode).unwrap();
             fs::write(root.join("calls"), "").unwrap();
-            let result = pull_and_tag(
-                &image,
-                &pulled,
-                Some(&retained),
-                Some("linux/arm64"),
-                &docker,
-            )
-            .await;
+            let result =
+                pull_and_tag(&image, &pulled, Some(&retained), "linux/arm64", &docker).await;
             assert_eq!(result.is_ok(), mode == "success", "{mode}: {result:?}");
             if let Err(error) = result {
                 assert!(!error.to_string().contains("cleanup-failed"), "{error}");

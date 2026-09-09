@@ -832,10 +832,10 @@ async fn railpack_deploy_derives_machine_platforms_and_partial_peers_never_serve
     super::command([
         "cp",
         archive.to_str().unwrap(),
-        &format!("{first_container}:/tmp/multi.tar"),
+        &format!("{first_container}:/multi.tar"),
     ]);
     cluster
-        .machine_shell(0, "docker load --input /tmp/multi.tar")
+        .machine_shell(0, "docker load --input /multi.tar")
         .unwrap();
     let lister = client.clone();
     let listed = |machine: MachineId| {
@@ -880,7 +880,7 @@ async fn railpack_deploy_derives_machine_platforms_and_partial_peers_never_serve
             ployz_core::PullImageFromMachineRequest {
                 image: built.built.repository_reference(&built.image).unwrap(),
                 source: opened.destination,
-                platform: Some(other.into()),
+                platform: other.into(),
             },
             Some(&MachineTarget::from(&second)),
         )
@@ -904,7 +904,7 @@ async fn railpack_deploy_derives_machine_platforms_and_partial_peers_never_serve
     .await
     .unwrap_err();
     assert!(
-        matches!(&refused, ployz::image::PushError::VariantUnavailable { platform, .. } if platform == native),
+        matches!(&refused, ployz::image::PushError::BuildIncomplete { missing, .. } if missing == &[native]),
         "{refused}"
     );
     // The complete Build host serves the peer's native variant with its platform named.

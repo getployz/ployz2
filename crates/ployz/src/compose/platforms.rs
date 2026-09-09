@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    MachineObservation, MembershipObservation, RequestedServiceSpec, ServicePlacementEligibility,
-    ServicePlacementIneligibleReason,
+    Machine, MachineObservation, MembershipObservation, RequestedServiceSpec,
+    ServicePlacementEligibility, ServicePlacementIneligibleReason,
 };
 
 use super::{CapturedBuild, ComposeError, invalid_build};
@@ -56,7 +56,11 @@ impl CapturedBuild {
                     "service '{}' builds for {} but {} runs {platform}; add it to build.platforms",
                     target.name,
                     target.platforms.join(", "),
-                    machines.join(", ")
+                    machines
+                        .iter()
+                        .map(|machine| named(machine))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )));
             }
         }
@@ -70,12 +74,12 @@ impl CapturedBuild {
 /// # Errors
 /// Names a Machine the Service may land on that no Railpack platform runs:
 /// no rerun can cover it, so the Build is refused before compilation.
-fn machine_platforms(
+fn machine_platforms<'observed>(
     service: &str,
     spec: &RequestedServiceSpec,
-    machines: &[MachineObservation],
-) -> Result<BTreeMap<String, Vec<String>>, ComposeError> {
-    let mut required = BTreeMap::<String, Vec<String>>::new();
+    machines: &'observed [MachineObservation],
+) -> Result<BTreeMap<String, Vec<&'observed Machine>>, ComposeError> {
+    let mut required = BTreeMap::<String, Vec<&Machine>>::new();
     for machine in machines
         .iter()
         .filter(|machine| machine.membership != MembershipObservation::Down)
@@ -94,19 +98,21 @@ fn machine_platforms(
             .find(|platform| crate::image::platform_compatible(platform, architecture))
         else {
             return Err(invalid_build(&format!(
-                "service '{service}' may run on {} ({}), which reports architecture {:?}; Railpack builds only {}. Pin x-machines to Machines it builds for",
-                machine.machine.name,
-                machine.machine.id,
-                architecture,
+                "service '{service}' may run on {}, which reports architecture {architecture:?}; Railpack builds only {}. Pin x-machines to Machines it builds for",
+                named(&machine.machine),
                 RAILPACK_PLATFORMS.join(" and ")
             )));
         };
         required
             .entry((*platform).to_owned())
             .or_default()
-            .push(format!("{} ({})", machine.machine.name, machine.machine.id));
+            .push(&machine.machine);
     }
     Ok(required)
+}
+
+fn named(machine: &Machine) -> String {
+    format!("{} ({})", machine.name, machine.id)
 }
 
 #[cfg(test)]

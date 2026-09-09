@@ -57,9 +57,8 @@ pub(crate) async fn push_from_machine_using_machines(
         return Ok(result);
     }
     let mut cancellation = Cancellation::new(cancellation);
-    let store = observe_store(client, source, &mut cancellation).await?;
-    require_complete(&store, image, source)?;
-    let source = Source::open(client, source, store, &mut cancellation).await?;
+    let source = Source::open(client, source, &mut cancellation).await?;
+    source.require_complete(image)?;
     let reference =
         image
             .repository_reference(repository)
@@ -101,44 +100,26 @@ pub(crate) async fn push_from_machine_using_machines(
 }
 
 /// Open the actual complete Build source for either delivery or a later Build.
+///
+/// # Errors
+/// Reports an unusable store, a partial Build host, and a failed ingest start.
 pub(crate) async fn serve_build_image(
     client: &mut Client,
     image: &BuiltImage,
     source: MachineId,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<ImageIngestDestination, PushError> {
-    let mut cancellation = Cancellation::new(cancellation);
-    let store = observe_store(client, source, &mut cancellation).await?;
-    require_complete(&store, image, source)?;
-    Ok(Source::open(client, source, store, &mut cancellation)
-        .await?
-        .destination)
-}
-
-/// Read one Machine's actual image store. Only the containerd store reports
-/// which variants are present, so any other store cannot serve images.
-pub(super) async fn observe_store(
-    client: &mut Client,
-    machine_id: MachineId,
-    cancellation: &mut Cancellation<'_>,
-) -> Result<MachineImages, PushError> {
-    // Docker's reference filter does not match repository@digest; read the
-    // whole store and compare identities.
-    let store = cancellation
-        .race(client.call::<op::ListImages>(
-            ListImagesRequest { reference: None },
-            Some(&MachineTarget::from(&machine_id)),
-        ))
-        .await??;
-    if store.containerd_store {
-        Ok(store)
-    } else {
-        Err(PushError::UnsupportedImageStore)
-    }
+    Ok(
+        Source::open(client, source, &mut Cancellation::new(cancellation))
+            .await?
+            .require_complete(image)?
+            .destination,
+    )
 }
 
 /// A Machine whose actual image store was read and whose image server is open.
 /// It serves a destination only a variant that store demonstrably holds.
+#[derive(Debug)]
 pub(super) struct Source {
     pub machine_id: MachineId,
     pub destination: ImageIngestDestination,
@@ -146,19 +127,30 @@ pub(super) struct Source {
 }
 
 impl Source {
-    /// Open the image server of a Machine whose store was already read with
-    /// [`observe_store`] and judged fit to serve.
+    /// Read the Machine's store and open its image server. Only the containerd
+    /// store reports which variants are present, so any other store cannot serve.
+    ///
+    /// # Errors
+    /// Reports cancellation, a store without variant evidence, and a failed
+    /// ingest start.
     pub(super) async fn open(
         client: &mut Client,
         machine_id: MachineId,
-        store: MachineImages,
         cancellation: &mut Cancellation<'_>,
     ) -> Result<Self, PushError> {
+        let target = MachineTarget::from(&machine_id);
+        // Docker's reference filter does not match repository@digest; read the
+        // whole store and compare identities.
+        let store = cancellation
+            .race(
+                client.call::<op::ListImages>(ListImagesRequest { reference: None }, Some(&target)),
+            )
+            .await??;
+        if !store.containerd_store {
+            return Err(PushError::UnsupportedImageStore);
+        }
         let opened = cancellation
-            .race(client.call::<op::EnsureImageIngest>(
-                EnsureImageIngestRequest {},
-                Some(&MachineTarget::from(&machine_id)),
-            ))
+            .race(client.call::<op::EnsureImageIngest>(EnsureImageIngestRequest {}, Some(&target)))
             .await?
             .map_err(|error| ingest_error(rpc_error(error)))?;
         Ok(Self {
@@ -166,6 +158,29 @@ impl Source {
             destination: opened.destination,
             store,
         })
+    }
+
+    /// The Build host must hold every platform the attempt verified; anything
+    /// less is a partial peer, not the complete Build.
+    ///
+    /// # Errors
+    /// Names every verified platform this store lacks.
+    pub(super) fn require_complete(&self, image: &BuiltImage) -> Result<&Self, PushError> {
+        let missing = image
+            .platforms
+            .iter()
+            .filter(|platform| !holds_platform(&self.store, &image.reference, platform))
+            .cloned()
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            Ok(self)
+        } else {
+            Err(PushError::BuildIncomplete {
+                image: image.reference.clone(),
+                machine_id: self.machine_id,
+                missing,
+            })
+        }
     }
 
     /// The variant of `image` this source holds for `machine`: `platform` when
@@ -193,6 +208,9 @@ impl Source {
     /// Have `machine` pull `reference` from this source, naming the variant
     /// [`Self::variant`] selected for it. `image` identifies the content in
     /// this store; `reference` is what the destination pulls.
+    ///
+    /// # Errors
+    /// Reports a variant this source does not hold, cancellation, and a failed pull.
     pub(super) async fn deliver(
         &self,
         client: &mut Client,
@@ -208,34 +226,10 @@ impl Source {
             reference,
             machine,
             self.destination,
-            Some(variant),
+            variant,
             cancellation,
         )
         .await
-    }
-}
-
-/// The Build host must hold every platform the attempt verified; anything less
-/// is a partial peer, not the complete Build.
-pub(super) fn require_complete(
-    store: &MachineImages,
-    image: &BuiltImage,
-    machine_id: MachineId,
-) -> Result<(), PushError> {
-    let missing = image
-        .platforms
-        .iter()
-        .filter(|platform| !holds_platform(store, &image.reference, platform))
-        .cloned()
-        .collect::<Vec<_>>();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(PushError::VariantUnavailable {
-            image: image.reference.clone(),
-            machine_id,
-            platform: missing.join(", "),
-        })
     }
 }
 
@@ -422,13 +416,24 @@ mod tests {
             platforms: vec!["linux/amd64".into(), "linux/arm64".into()],
             location: "unix:///var/run/docker.sock".into(),
         };
-        let machine = MachineId::parse("a".repeat(32)).unwrap();
-        let complete = store(&digest, &[], &["linux/amd64", "linux/arm64/v8"]);
-        require_complete(&complete, &image, machine).unwrap();
-        let partial = store(&digest, &["registry.invalid/api:v1"], &["linux/amd64"]);
-        let error = require_complete(&partial, &image, machine).unwrap_err();
+        let source = |store| Source {
+            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+            destination: ImageIngestDestination {
+                management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
+                port: ployz_core::UNREGISTRY_PORT,
+            },
+            store,
+        };
+        let complete = source(store(&digest, &[], &["linux/amd64", "linux/arm64/v8"]));
+        complete.require_complete(&image).unwrap();
+        let partial = source(store(
+            &digest,
+            &["registry.invalid/api:v1"],
+            &["linux/amd64"],
+        ));
+        let error = partial.require_complete(&image).unwrap_err();
         assert!(
-            matches!(&error, PushError::VariantUnavailable { platform, .. } if platform == "linux/arm64"),
+            matches!(&error, PushError::BuildIncomplete { missing, .. } if missing == &["linux/arm64"]),
             "{error}"
         );
     }
