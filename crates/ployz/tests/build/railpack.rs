@@ -393,12 +393,43 @@ fn railpack_cancellation_stops_work_and_releases_private_inputs_and_admission() 
     const CHILD_ROOT: &str = "PLOYZ_TEST_CANCEL_BUILD_ROOT";
     if let Some(root) = std::env::var_os(CHILD_ROOT) {
         let root = std::path::PathBuf::from(root);
-        let mut project = parse_normalized("services:\n  api:\n    image: example.test/api:check\n    build: {context: ., x-recipe: railpack, platforms: [linux/amd64, linux/arm64]}\n", &root).unwrap();
-        let options = BuildOptions::default();
-        let plan = plan_build(&project, &options).unwrap();
-        let captured = capture_build(&plan, &options, &mut project).unwrap();
-        let cancellation = tokio_util::sync::CancellationToken::new();
-        let cancelled = cancellation.clone();
+        use ployz_build::{Admission, HostPolicy, Railpack, Request, Target};
+        use std::collections::BTreeMap;
+        use std::os::unix::fs::DirBuilderExt as _;
+        fs::create_dir_all(root.join("private")).unwrap();
+        fs::create_dir_all(root.join("source")).unwrap();
+        let state = root.join(format!("state-{}", std::process::id()));
+        fs::DirBuilder::new().mode(0o700).create(&state).unwrap();
+        let policy = HostPolicy {
+            state_directory: state,
+            configuration_file: root.join("build.yaml"),
+            docker: root.join("docker"),
+            ..HostPolicy::default()
+        };
+        let targets = [Target {
+            name: "api".into(),
+            platforms: vec!["linux/amd64".into(), "linux/arm64".into()],
+        }];
+        let recipes = [Railpack {
+            name: "api".into(),
+            context: "source".into(),
+            variables: BTreeMap::new(),
+            refresh_cache: false,
+        }];
+        let request = Request {
+            compose_file: &root.join("compose.yaml"),
+            working_dir: &root,
+            environment: &BTreeMap::from([("PATH".into(), std::env::var("PATH").unwrap())]),
+            docker: Some(&policy.docker),
+            targets: &targets,
+            railpack: &recipes,
+            build_args: &[],
+            output: ployz_build::Output::Load,
+            no_cache: false,
+            pull: false,
+        };
+        let admission = Admission::try_acquire_with(&policy).unwrap();
+        let cancelled = admission.cancellation();
         let marker = root.join("interrupt");
         std::thread::spawn(move || {
             while !marker.exists() {
@@ -406,8 +437,7 @@ fn railpack_cancellation_stops_work_and_releases_private_inputs_and_admission() 
             }
             cancelled.cancel();
         });
-        let error = captured
-            .execute(Some(&root.join("docker")), &cancellation)
+        let error = ployz_build::execute_admitted(&request, admission, &|_| {})
             .unwrap_err()
             .to_string();
         if root.join("cleanup-fails").exists() {
@@ -489,7 +519,11 @@ fn multi_platform_failures_preserve_output_stage_and_completed_image_evidence() 
     let capture = root.join("capture");
     fs::create_dir_all(capture.join("private")).unwrap();
     fs::create_dir(capture.join("source")).unwrap();
-    fs::create_dir(root.join("state")).unwrap();
+    use std::os::unix::fs::DirBuilderExt as _;
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(root.join("state"))
+        .unwrap();
     fs::write(capture.join("compose.yaml"), "services: {}\n").unwrap();
     let docker = write_multi_docker(&root);
     let targets = [Target {
