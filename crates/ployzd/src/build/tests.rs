@@ -21,8 +21,8 @@ struct Fixture {
     root: PathBuf,
     policy: HostPolicy,
     cluster: tokio::task::JoinHandle<()>,
-    machine: ployz_core::Machine,
     local: crate::machine::LocalMachine,
+    machine: ployz_core::Machine,
     address: String,
     server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 }
@@ -60,11 +60,6 @@ impl Fixture {
         let (replicated, cluster) = crate::corrosion::fake_cluster::store().await;
         replicated.publish_local_machine(&machine).await.unwrap();
         let store = Arc::new(Mutex::new(store));
-        let local =
-            crate::machine::LocalMachine::new(store.clone(), restart.clone()).with_cluster(Some((
-                replicated.clone(),
-                crate::corrosion::AdminClient::new("/no/admin"),
-            )));
         let mut service = MachineService::with_cluster(
             store,
             restart,
@@ -81,6 +76,7 @@ impl Fixture {
         update(&mut policy);
         let shutdown = tokio_util::sync::CancellationToken::new();
         service.builds = Runner::new(policy.clone(), shutdown.clone()).unwrap();
+        let local = service.local();
         write_docker(&policy.docker, &root);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
@@ -93,8 +89,8 @@ impl Fixture {
             root,
             policy,
             cluster,
-            machine,
             local,
+            machine,
             address,
             server,
         }
@@ -288,6 +284,126 @@ async fn running_build_finishes_after_build_acceptance_is_revoked() {
 }
 
 #[tokio::test]
+async fn active_build_refuses_an_upgrade_request() {
+    let fixture = Fixture::new().await;
+    let (sender, mut response) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
+
+    let updated = tokio::time::timeout(
+        Duration::from_secs(2),
+        fixture.local.update(
+            serde_json::from_value(serde_json::json!({
+                "update": {
+                    "label_add": {"pool": "build"},
+                    "accepts_builds": false,
+                    "accepts_services": false,
+                    "accepts_ingress": false
+                }
+            }))
+            .unwrap(),
+        ),
+    )
+    .await
+    .expect("policy update waited for active Build")
+    .unwrap();
+    assert!(!updated.machine.accepts_builds);
+    assert!(!updated.machine.accepts_services);
+    assert!(!updated.machine.accepts_ingress);
+    assert_eq!(
+        serde_json::to_value(&updated.machine.labels).unwrap(),
+        serde_json::json!({"pool": "build"})
+    );
+
+    let error = fixture
+        .local
+        .request_upgrade(ployz_core::RequestMachineUpgradeRequest {
+            attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
+            release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::machine::LocalMachineError::Admission(crate::mutation::Error::Busy)
+    ));
+
+    let mut rename = Box::pin(fixture.local.update(
+        serde_json::from_value(serde_json::json!({"update": {"name": "renamed"}})).unwrap(),
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), rename.as_mut())
+            .await
+            .is_err(),
+        "ordinary Machine update ran concurrently with active Build execution"
+    );
+    let mut ordinary = Box::pin(fixture.local.set_cloud_pairing(None));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), ordinary.as_mut())
+            .await
+            .is_err(),
+        "ordinary mutation ran concurrently with active Build execution"
+    );
+    drop(sender);
+    let _ = terminal(&mut response).await;
+    tokio::time::timeout(Duration::from_secs(2), rename)
+        .await
+        .expect("Machine rename stayed blocked after Build execution ended")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), ordinary)
+        .await
+        .expect("ordinary mutation stayed blocked after Build execution ended")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn durable_upgrade_marker_refuses_build_before_execution() {
+    let fixture = Fixture::new().await;
+    let marker = fixture.root.join("machine/.upgrade-active");
+    fs::write(&marker, "active-upgrade").unwrap();
+
+    let policy = serde_json::from_value(serde_json::json!({
+        "update": {"label_add": {"pool": "build"}, "accepts_builds": false, "accepts_services": false, "accepts_ingress": false}
+    }))
+    .unwrap();
+    assert!(matches!(
+        fixture.local.update(policy).await,
+        Err(crate::machine::LocalMachineError::Admission(
+            crate::mutation::Error::Busy
+        ))
+    ));
+
+    for input in [
+        Input::Start(Definition {
+            targets: vec![ployz_build::Target {
+                name: "api".into(),
+                platforms: vec!["linux/amd64".into()],
+            }],
+            output: Output::Load,
+            retained_tags: Vec::new(),
+            image_contexts: Default::default(),
+            no_cache: false,
+            pull: false,
+        }),
+        Input::Check(vec![ployz_build::Target {
+            name: "api".into(),
+            platforms: vec!["linux/amd64".into()],
+        }]),
+    ] {
+        let (_sender, mut rejected) = fixture.request_frame(input).await;
+        assert!(matches!(terminal(&mut rejected).await,
+            Outcome::Failed { stage: Stage::Admission, message, .. }
+                if message.contains("installation or upgrade is active")));
+        assert!(!fixture.root.join("executed").exists());
+    }
+
+    fs::remove_file(marker).unwrap();
+    let (sender, mut admitted) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut admitted).await, Event::Admitted { .. }));
+    drop(sender);
+    let _ = terminal(&mut admitted).await;
+}
+
+#[tokio::test]
 async fn captured_build_crosses_owned_rpc_and_returns_only_remote_image_evidence() {
     let fixture = Fixture::new().await;
     let capture = fixture.capture();
@@ -334,6 +450,50 @@ async fn captured_build_crosses_owned_rpc_and_returns_only_remote_image_evidence
             .any(|event| matches!(event, Progress::Stage(Stage::Building)))
     );
     assert!(Admission::try_acquire_with(&fixture.policy).is_ok());
+}
+
+#[tokio::test]
+async fn retained_build_images_do_not_block_same_machine_mutation() {
+    let fixture = Fixture::new().await;
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(&fixture.address.replace("http://", "tcp://")),
+        None,
+    )
+    .await
+    .unwrap();
+    let retained = fixture
+        .capture()
+        .execute_remote_images(
+            &client,
+            fixture.machine.id,
+            tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        fixture.local.set_cloud_pairing(None),
+    )
+    .await
+    .expect("retained Build stream held the local mutation mutex")
+    .unwrap();
+
+    let error = fixture
+        .local
+        .request_upgrade(ployz_core::RequestMachineUpgradeRequest {
+            attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
+            release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::machine::LocalMachineError::Admission(crate::mutation::Error::Busy)
+    ));
+    drop(retained);
 }
 
 #[tokio::test]

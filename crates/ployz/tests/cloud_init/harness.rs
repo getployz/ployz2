@@ -505,6 +505,20 @@ impl MachineRpc for JoinDaemon {
         rpc_ok(CloudPairingSet {})
     }
 
+    async fn request_machine_upgrade(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+
+    async fn inspect_machine_upgrade(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+
     async fn initialize(
         &self,
         request: Request<OpaquePayload>,

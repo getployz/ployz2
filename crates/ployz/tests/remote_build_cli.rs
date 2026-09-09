@@ -55,6 +55,7 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
     for args in [
         vec!["--remote=tower", "api"],
         vec!["--remote=tower", "--check", "api"],
+        // Plain --remote selects the only Machine that advertises Builds.
         vec!["--remote", "api"],
     ] {
         let output = tokio::time::timeout(Duration::from_secs(20), run(&args).output())
@@ -100,9 +101,10 @@ async fn standalone_remote_build_never_invokes_local_docker_and_keeps_the_servic
     for args in [
         vec!["--remote=tower", "--local", "api"],
         vec!["--remote=missing", "api"],
+        vec!["--remote", "--push", "api"],
     ] {
         let output = run(&args).output().await.unwrap();
-        assert!(!output.status.success());
+        assert!(!output.status.success(), "{args:?}");
     }
     assert_eq!(
         recorder.uploads.load(Ordering::SeqCst),
@@ -282,5 +284,152 @@ async fn remote_queue_outcomes_name_machine_and_unattempted_work() {
         );
         server.abort();
     }
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Automatic selection, an explicit pin, and the local override.
+#[tokio::test]
+async fn automatic_selection_uses_capable_machines_and_honors_explicit_flags() {
+    let root = std::env::temp_dir().join(format!("ployz-auto-cli-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("docker"),
+        format!(
+            "#!/bin/sh\nprintf called > '{}'\nexit 99\n",
+            root.join("docker-called").display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(root.join("docker"), fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
+    let mut builds = support::test_description();
+    builds.machine_id = support::machine_id('a');
+    builds
+        .capabilities
+        .insert(BUILD_CAPABILITY.parse().unwrap());
+    let mut idle = support::test_description();
+    idle.machine_id = support::machine_id('b');
+    let capable = |description: ployz_core::ContractDescription| {
+        let mut service = support::DiscoveryService::new(description);
+        service.machines = vec![
+            support::machine('a', "tower"),
+            support::machine('b', "forge"),
+        ];
+        service
+            .descriptions
+            .insert(support::machine_id('b'), idle.clone());
+        service.builds = Some(Arc::new(support::BuildRecorder::default()));
+        service
+    };
+    let compose = |preference: &str| {
+        fs::write(
+            root.join("compose.yaml"),
+            format!(
+                "name: demo\n{preference}services:\n  api:\n    image: example.test/api:built\n    build: .\n"
+            ),
+        )
+        .unwrap();
+    };
+    let run = |address: &std::net::SocketAddr, args: &[&str]| {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command
+            .current_dir(&root)
+            .env("PATH", &root)
+            .env("HOME", &root)
+            .env("PLOYZ_CONFIG", root.join("config.yaml"))
+            .env("DOCKER_HOST", "unix:///missing-local-docker.sock")
+            .args(["--connect", &format!("tcp://{address}"), "build"])
+            .args(args);
+        command
+    };
+    let (address, server) = support::serve_discovery(capable(builds.clone())).await;
+    // Automatic selection skips the Machine that does not advertise Builds, and
+    // an explicit pin reaches the same Machine.
+    compose("");
+    for args in [vec!["--remote", "api"], vec!["--remote=tower", "api"]] {
+        let output = tokio::time::timeout(Duration::from_secs(20), run(&address, &args).output())
+            .await
+            .unwrap()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("tower"), "{stdout}");
+        assert!(
+            stdout.contains(support::machine_id('a').as_str()),
+            "{stdout}"
+        );
+    }
+    // An ambiguous name refuses, naming every Machine it matched.
+    let (ambiguous_address, ambiguous_server) = {
+        let mut service = support::DiscoveryService::new(builds.clone());
+        service.machines = vec![
+            support::machine('a', "tower"),
+            support::machine_named(&support::machine_id('b'), "tower"),
+        ];
+        support::serve_discovery(service).await
+    };
+    {
+        let args = vec!["--remote=tower", "api"];
+        let output = run(&ambiguous_address, &args).output().await.unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(
+            stderr.contains("ambiguous")
+                && stderr.contains(support::machine_id('a').as_str())
+                && stderr.contains(support::machine_id('b').as_str()),
+            "{stderr}"
+        );
+    }
+    ambiguous_server.abort();
+
+    // Pinning the Machine that does not advertise Builds refuses with evidence.
+    let output = run(&address, &["--remote=forge", "api"])
+        .output()
+        .await
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("forge") && stderr.contains("--local"),
+        "{stderr}"
+    );
+    assert!(!root.join("docker-called").exists(), "{stderr}");
+    // --local runs here even with a Cluster available.
+    assert!(
+        !run(&address, &["--local", "api"])
+            .output()
+            .await
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(root.join("docker-called").exists());
+    server.abort();
+
+    // No visible Machine advertises Builds: every one of them answers without
+    // the capability, so the refusal names them all.
+    let mut refusing = capable(idle.clone());
+    let mut without_builds = support::test_description();
+    without_builds.machine_id = support::machine_id('a');
+    refusing
+        .descriptions
+        .insert(support::machine_id('a'), without_builds);
+    let (address, server) = support::serve_discovery(refusing).await;
+    compose("");
+    let output = run(&address, &["--remote", "api"]).output().await.unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("tower")
+            && stderr.contains("forge")
+            && stderr.contains("does not support remote Builds")
+            && stderr.contains("--remote="),
+        "{stderr}"
+    );
+    server.abort();
     fs::remove_dir_all(root).unwrap();
 }

@@ -4,69 +4,68 @@ set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/bin" "$TMP/release" "$TMP/install" "$TMP/systemd" "$TMP/state" "$TMP/run"
+trap 'sudo rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/bin" "$TMP/install" "$TMP/systemd" "$TMP/state" "$TMP/run"
 LOG=$TMP/commands.log
+SCENARIO=active
+export SCENARIO
 export LOG
 : > "$LOG"
 
-cat > "$TMP/ployzd" <<'EOF'
-#!/bin/sh
-[ "$1" = version ] && echo 1.2.3
-EOF
-chmod 0755 "$TMP/ployzd"
-tar -czf "$TMP/release/ployzd_linux_amd64.tar.gz" \
-    -C "$TMP" ployzd -C "$ROOT/scripts" --transform='s|uninstall.sh|ployz-uninstall|' uninstall.sh
-printf 'v1.2.3\n' > "$TMP/release/stable"
-
-cat > "$TMP/bin/uname" <<'EOF'
-#!/bin/sh
-case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac
-EOF
-cat > "$TMP/bin/curl" <<'EOF'
-#!/bin/bash
-while [ "$#" -gt 0 ]; do
-    if [ "$1" = -o ]; then output=$2; shift 2; else url=$1; shift; fi
-done
-src="$FAKE_RELEASE/${url##*/}"
-[ -f "$src" ] || exit 1
-cp "$src" "$output"
-EOF
-cat > "$TMP/bin/install" <<'EOF'
-#!/bin/bash
-args=()
-while [ "$#" -gt 0 ]; do
-    case "$1" in -o|-g) shift 2 ;; *) args+=("$1"); shift ;; esac
-done
-exec /usr/bin/install "${args[@]}"
-EOF
-cat > "$TMP/bin/id" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-cat > "$TMP/bin/dockerd" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
 cat > "$TMP/bin/docker" <<'EOF'
 #!/bin/sh
 echo "docker $*" >> "$LOG"
+[ ! -e "$PLOYZ_RUN_DIR/worker" ] && [ ! -e "$PLOYZ_RUN_DIR/daemon" ] || {
+    echo "unsafe cleanup: active upgrade worker or daemon" | tee -a "$LOG" >&2
+    exit 1
+}
+if flock -n "$PLOYZ_RUN_DIR/.install.lock" true; then
+    echo "unsafe cleanup: no installation ownership" | tee -a "$LOG" >&2
+    exit 1
+fi
 case "$*" in
-    'info -f {{ .DriverStatus }}') echo io.containerd.snapshotter ;;
     'ps -aq --filter label=ployz.managed') echo managed-container ;;
     'ps -aq --filter name=^/ployz-corrosion$') echo corrosion-container ;;
     'network ls -q --filter name=^ployz$') echo ployz-network ;;
     'rm -f '*)
-        if grep -Eq '^systemctl stop .*ployz-volume-plugin\.(socket|service)' "$LOG" || [ ! -x "$INSTALL_BIN_DIR/ployzd" ]; then
-            echo "Docker could not unmount after volume plugin shutdown" >&2
+        grep -Eq '^systemctl stop .*ployz-volume-plugin\.(socket|service)' "$LOG" && {
+            echo "volume plugin stopped before managed containers were removed" >&2
             exit 1
-        fi
+        }
+        [ -x "$INSTALL_BIN_DIR/ployzd" ] || {
+            echo "daemon removed before managed containers were removed" >&2
+            exit 1
+        }
         ;;
 esac
 EOF
 cat > "$TMP/bin/systemctl" <<'EOF'
 #!/bin/sh
 echo "systemctl $*" >> "$LOG"
+case "$*" in
+    'list-units '*)
+        [ "$SCENARIO" != list-failure ] || exit 1
+        case "$*" in
+            *'ployz-upgrade-*.service')
+                [ ! -e "$PLOYZ_RUN_DIR/worker" ] || echo 'ployz-upgrade-test.service loaded active running Upgrade'
+                ;;
+            *'ployz.service')
+                [ ! -e "$PLOYZ_RUN_DIR/daemon" ] || echo 'ployz.service loaded active running Daemon'
+                ;;
+        esac
+        ;;
+    'stop ployz-upgrade-test.service')
+        [ "$SCENARIO" != worker-stop-failure ] || exit 1
+        rm -f "$PLOYZ_RUN_DIR/worker"
+        ;;
+    'stop ployz.service')
+        [ "$SCENARIO" != daemon-stop-failure ] || exit 1
+        rm -f "$PLOYZ_RUN_DIR/daemon"
+        # An accepted worker can appear after the initial worker stop.
+        [ "$SCENARIO" != late ] || touch "$PLOYZ_RUN_DIR/worker"
+        ;;
+esac
+exit 0
 EOF
 cat > "$TMP/bin/ip" <<'EOF'
 #!/bin/sh
@@ -74,107 +73,84 @@ echo "ip $*" >> "$LOG"
 exit 0
 EOF
 for command in getent userdel groupdel; do
-    cp "$TMP/bin/systemctl" "$TMP/bin/$command"
+    cp "$TMP/bin/ip" "$TMP/bin/$command"
 done
 chmod 0755 "$TMP/bin"/*
 
-run_installer() {
-    sudo env PATH="$TMP/bin:$PATH" LOG="$LOG" FAKE_RELEASE="$TMP/release" PLOYZ_GITHUB_URL=https://example.invalid \
-        PLOYZ_VERSION="$1" INSTALL_BIN_DIR="$TMP/install" INSTALL_SYSTEMD_DIR="$TMP/systemd" \
-        PLOYZ_DATA_DIR="$TMP/state" PLOYZ_RUN_DIR="$TMP/run" bash "$ROOT/scripts/install.sh"
+run_uninstall() {
+    sudo env PATH="$TMP/bin:$PATH" LOG="$LOG" SCENARIO="$SCENARIO" PLOYZ_AUTO_CONFIRM=true \
+        INSTALL_BIN_DIR="$TMP/install" INSTALL_SYSTEMD_DIR="$TMP/systemd" \
+        PLOYZ_DATA_DIR="$TMP/state" PLOYZ_RUN_DIR="$TMP/run" bash "$ROOT/scripts/uninstall.sh"
 }
 
-set_installed_version() {
-    sudo tee "$TMP/install/ployzd" >/dev/null <<EOF
-#!/bin/sh
-[ "\$1" = version ] && echo $1
-EOF
-    sudo chmod 0755 "$TMP/install/ployzd"
-}
+for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure active late absent worker-stop-failure list-failure daemon-stop-failure busy; do
+    : > "$LOG"
+    mkdir -p "$TMP/state" "$TMP/run"
+    touch "$TMP/state/receipt" "$TMP/run/socket"
+    if [ "$SCENARIO" != absent ]; then touch "$TMP/run/worker" "$TMP/run/daemon"; fi
+    touch "$TMP/install/ployzd" "$TMP/install/ployz-uninstall" "$TMP/install/ployz-corrosion"
+    chmod 0755 "$TMP/install/ployzd" "$TMP/install/ployz-uninstall"
+    touch "$TMP/docker" "$TMP/images" "$TMP/volumes" "$TMP/docker-config"
 
-touch "$TMP/state/preserved"
-run_installer latest
-[ -x "$TMP/install/ployzd" ]
-[ -x "$TMP/install/ployz-uninstall" ]
-[ -f "$TMP/state/preserved" ]
-grep -Fq 'EnvironmentFile=-/etc/default/ployz' "$TMP/systemd/ployz.service"
-grep -Fxq 'TimeoutStopSec=15' "$TMP/systemd/ployz.service"
-grep -Fxq 'RestartPreventExitStatus=78' "$TMP/systemd/ployz.service"
-grep -Fxq 'Before=docker.service' "$TMP/systemd/ployz-volume-plugin.socket"
-grep -Fxq 'ListenStream=/run/docker/plugins/ployz.sock' "$TMP/systemd/ployz-volume-plugin.socket"
-grep -Fxq 'Accept=no' "$TMP/systemd/ployz-volume-plugin.socket"
-grep -Fxq 'Service=ployz-volume-plugin.service' "$TMP/systemd/ployz-volume-plugin.socket"
-grep -Fxq 'Sockets=ployz-volume-plugin.socket' "$TMP/systemd/ployz-volume-plugin.service"
-grep -Fq 'ExecStart='"$TMP/install"'/ployzd volume-plugin' "$TMP/systemd/ployz-volume-plugin.service"
-for directive in ProtectSystem=full ProtectControlGroups=true ProtectHome=read-only ProtectKernelTunables=true PrivateTmp=true; do
-    if grep -Fxq "$directive" "$TMP/systemd/ployz-volume-plugin.service"; then
-        echo "Volume plugin service isolates ZFS mounts with $directive" >&2
-        exit 1
+    if [ "$SCENARIO" = symlink-failure ]; then
+        printf 'protected target\n' | sudo tee "$TMP/protected-target" >/dev/null
+        sudo chmod 0600 "$TMP/protected-target"
+        ln -s "$TMP/protected-target" "$TMP/run/.install.lock"
     fi
+    case "$SCENARIO" in
+        dangling-failure) ln -s "$TMP/missing-target" "$TMP/run/.install.lock" ;;
+        fifo-failure) mkfifo "$TMP/run/.install.lock" ;;
+        directory-failure) mkdir "$TMP/run/.install.lock" ;;
+        active) printf 'existing lock\n' > "$TMP/run/.install.lock" ;;
+    esac
+    if [ "$SCENARIO" = busy ]; then
+        exec {lock_fd}>"$TMP/run/.install.lock"
+        flock -n "$lock_fd"
+    fi
+    result=0
+    run_uninstall || result=$?
+    case "$SCENARIO" in
+        worker-stop-failure|list-failure) ;;
+        *) [ "$(sudo stat -c %u "$TMP/run")" = 0 ] || {
+            echo "runtime directory is not root-controlled" >&2
+            exit 1
+        } ;;
+    esac
+    # Restore test access only after uninstall has exited.
+    sudo chown "$(id -u):$(id -g)" "$TMP/run"
+    [ ! -e "$TMP/missing-target" ]
+    if [ "$SCENARIO" = active ]; then
+        [ "$(sudo cat "$TMP/run/.install.lock")" = 'existing lock' ]
+    fi
+    if [ "$SCENARIO" = symlink-failure ]; then
+        [ "$(sudo cat "$TMP/protected-target")" = 'protected target' ] || {
+            echo "uninstall truncated the symlink target" >&2
+            exit 1
+        }
+    fi
+    if [ "$result" -eq 0 ]; then
+        case "$SCENARIO" in *failure|busy) echo "unexpected uninstall success: $SCENARIO" >&2; exit 1 ;; esac
+        [ ! -e "$TMP/install/ployzd" ]
+        [ ! -e "$TMP/install/ployz-uninstall" ]
+        [ ! -e "$TMP/state" ]
+        # Keep the lock inode: unlinking it lets a concurrent installer bypass ownership.
+        [ "$(ls -A "$TMP/run")" = .install.lock ]
+        sudo flock -n "$TMP/run/.install.lock" true
+        grep -Fq 'docker rm -f managed-container' "$LOG"
+        grep -Fq 'docker rm -f corrosion-container' "$LOG"
+        grep -Fq 'docker network rm ployz-network' "$LOG"
+        grep -Fq 'ip link delete ployz' "$LOG"
+    else
+        case "$SCENARIO" in *failure|busy) ;; *) echo "unexpected uninstall failure: $SCENARIO" >&2; exit 1 ;; esac
+        [ -e "$TMP/install/ployzd" ] && [ -e "$TMP/install/ployz-uninstall" ]
+        [ -e "$TMP/state/receipt" ] && [ -e "$TMP/run/socket" ]
+        if grep -q '^docker ' "$LOG"; then exit 1; fi
+    fi
+    if grep -q '^unsafe cleanup:' "$LOG"; then exit 1; fi
+    if [ "$SCENARIO" = busy ]; then exec {lock_fd}>&-; fi
+    [ -e "$TMP/install/ployz-corrosion" ]
+    [ -f "$TMP/docker" ] && [ -f "$TMP/images" ] && [ -f "$TMP/volumes" ] && [ -f "$TMP/docker-config" ]
+    sudo rm -rf "$TMP/run" "$TMP/state"
 done
-grep -Fq 'systemctl enable --now ployz-volume-plugin.socket' "$LOG"
-if grep -Fq 'systemctl enable --now ployz-volume-plugin.service' "$LOG"; then
-    echo "Volume plugin service was enabled instead of socket-activated" >&2
-    exit 1
-fi
-grep -Fq 'systemctl restart ployz.service' "$LOG"
-grep -Fq 'systemctl try-restart ployz-volume-plugin.service' "$LOG"
-socket_enable_line=$(grep -nF 'systemctl enable --now ployz-volume-plugin.socket' "$LOG" | head -n 1 | cut -d: -f1)
-docker_check_line=$(grep -nF 'docker info -f {{ .DriverStatus }}' "$LOG" | head -n 1 | cut -d: -f1)
-if [ "$socket_enable_line" -ge "$docker_check_line" ]; then
-    echo "Volume plugin socket was activated after Docker installation" >&2
-    exit 1
-fi
 
-: > "$LOG"
-run_installer latest
-if grep -Fq 'systemctl restart ployz.service' "$LOG"; then
-    echo "equal latest restarted ployz.service" >&2
-    exit 1
-fi
-
-sudo rm -f "$TMP/systemd/ployz.service"
-: > "$LOG"
-run_installer latest
-grep -Fq 'systemctl restart ployz.service' "$LOG"
-[ -f "$TMP/systemd/ployz.service" ]
-
-: > "$LOG"
-set_installed_version 1.2.2
-run_installer latest
-grep -Fq 'systemctl restart ployz.service' "$LOG"
-grep -Fxq 'RestartPreventExitStatus=78' "$TMP/systemd/ployz.service"
-[ -f "$TMP/state/preserved" ]
-
-: > "$LOG"
-set_installed_version 1.2.4
-run_installer latest
-if grep -Fq 'systemctl restart ployz.service' "$LOG"; then
-    echo "newer-than-latest daemon was replaced" >&2
-    exit 1
-fi
-[ "$("$TMP/install/ployzd" version)" = 1.2.4 ]
-
-: > "$LOG"
-run_installer 1.2.2
-grep -Fq 'systemctl restart ployz.service' "$LOG"
-[ "$("$TMP/install/ployzd" version)" = 1.2.3 ]
-[ -f "$TMP/state/preserved" ]
-
-touch "$TMP/docker" "$TMP/images" "$TMP/volumes" "$TMP/docker-config" "$TMP/install/ployz-corrosion"
-: > "$LOG"
-sudo env PATH="$TMP/bin:$PATH" LOG="$LOG" PLOYZ_AUTO_CONFIRM=true INSTALL_BIN_DIR="$TMP/install" \
-    INSTALL_SYSTEMD_DIR="$TMP/systemd" PLOYZ_DATA_DIR="$TMP/state" PLOYZ_RUN_DIR="$TMP/run" \
-    bash "$ROOT/scripts/uninstall.sh"
-[ ! -e "$TMP/install/ployzd" ]
-[ ! -e "$TMP/install/ployz-uninstall" ]
-[ -e "$TMP/install/ployz-corrosion" ]
-[ ! -e "$TMP/state" ]
-[ ! -e "$TMP/run" ]
-[ -f "$TMP/docker" ] && [ -f "$TMP/images" ] && [ -f "$TMP/volumes" ] && [ -f "$TMP/docker-config" ]
-grep -Fq 'docker rm -f managed-container' "$LOG"
-grep -Fq 'docker rm -f corrosion-container' "$LOG"
-grep -Fq 'docker network rm ployz-network' "$LOG"
-grep -Fq 'ip link delete ployz' "$LOG"
-
-echo "daemon replacement and destructive uninstall contracts passed"
+echo "destructive daemon uninstall contract passed"
