@@ -92,6 +92,8 @@ impl Cancellation {
 pub struct HostPolicy {
     /// Machine-local retained builder ownership.
     pub state_directory: PathBuf,
+    /// Host-owned settings file, read once at admission.
+    pub configuration_file: PathBuf,
     /// Host-installed Docker executable.
     pub docker: PathBuf,
     /// Total active budget beginning at admission.
@@ -105,6 +107,9 @@ impl Default for HostPolicy {
     fn default() -> Self {
         Self {
             state_directory: crate::builder::directory(),
+            configuration_file: std::env::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/"))
+                .join(".ployz/build.yaml"),
             docker: "docker".into(),
             active_timeout: EXECUTION_TIMEOUT,
             queue_capacity: 8,
@@ -172,6 +177,7 @@ pub struct Admission {
     pub(crate) lock: Lock,
     pub(crate) deadline: Deadline,
     pub(crate) cancellation: Cancellation,
+    pub(crate) resources: crate::policy::Resources,
 }
 impl Admission {
     /// Attempt abandoned-resource teardown once after daemon restart. Never
@@ -196,21 +202,23 @@ impl Admission {
     /// Refuses busy or quarantined state and reports filesystem failures.
     pub fn try_acquire_with(policy: &HostPolicy) -> Result<Self, BuildError> {
         policy.validate()?;
+        let resources = crate::policy::Resources::load(&policy.configuration_file)?;
         Ok(Self {
+            resources,
             lock: Lock::try_acquire_in(&policy.state_directory)?,
             deadline: Deadline::starting_now(policy.active_timeout),
             cancellation: Cancellation::default(),
         })
     }
     pub(crate) fn wait() -> Result<Self, BuildError> {
-        Ok(Self::new(Lock::acquire()?))
-    }
-    fn new(lock: Lock) -> Self {
-        Self {
+        let lock = Lock::acquire()?;
+        let resources = crate::policy::Resources::load(&HostPolicy::default().configuration_file)?;
+        Ok(Self {
+            resources,
             lock,
             deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
             cancellation: Cancellation::default(),
-        }
+        })
     }
     /// Handle for requesting this attempt to stop.
     #[must_use]
