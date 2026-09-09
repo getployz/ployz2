@@ -268,7 +268,7 @@ export PLOYZ_RELEASE_DIR=$ARTIFACT_DIR
 
 first=${HOST_LIST[0]}
 echo "machine init $first at $source_version"
-init_cmd=("$PLOYZ" machine init --version "$source_version" --storage zfs --name qualify-1 --context "$CONTEXT")
+init_cmd=("$PLOYZ" machine init --version "$source_version" --storage zfs --name qualify-1 --context "$CONTEXT" --no-dns --no-ingress)
 if [ "$RESET" != 0 ]; then
     init_cmd+=(--yes)
 fi
