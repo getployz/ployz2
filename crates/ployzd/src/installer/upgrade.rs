@@ -51,6 +51,9 @@ pub enum Error {
     /// The process-local qualification source was not a trusted absolute directory.
     #[error("invalid qualification release directory: {0}")]
     QualificationSource(String),
+    /// Global activation was requested from a daemon using unsupported Machine paths.
+    #[error("{0}")]
+    NonstandardPaths(String),
     /// The requested release could not be parsed or resolved.
     #[error("resolve Machine release: {0}")]
     Resolve(#[source] InstallError),
@@ -215,6 +218,8 @@ pub async fn run_worker(
     data_dir: &Path,
     run_dir: &Path,
 ) -> Result<(), Error> {
+    super::require_standard_machine_paths(data_dir, &run_dir.join("ployz.sock"))
+        .map_err(Error::NonstandardPaths)?;
     let admission = mutation::MutationGate::new(run_dir, data_dir);
     let guard = admission.lock_installation()?;
     let mut stored = read(data_dir)?;
@@ -475,6 +480,24 @@ mod tests {
 
     const CONTRACT_CASE: &str = "PLOYZ_UPGRADE_CONTRACT_CASE";
     const CONTRACT_ROOT: &str = "PLOYZ_UPGRADE_CONTRACT_ROOT";
+
+    #[tokio::test]
+    async fn worker_rejects_nonstandard_paths_before_reading_local_state() {
+        let root = tempfile::Builder::new()
+            .prefix("ployzd-upgrade-worker-paths-")
+            .tempdir()
+            .unwrap();
+        let data_dir = root.path().join("data");
+        let run_dir = root.path().join("run");
+
+        let error = run_worker(MachineUpgradeAttemptId::random(), &data_dir, &run_dir)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::NonstandardPaths(_)));
+        assert!(!data_dir.exists());
+        assert!(!run_dir.exists());
+    }
 
     #[test]
     fn stored_attempt_round_trips_without_exposing_local_source_in_response() {

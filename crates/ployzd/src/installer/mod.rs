@@ -96,10 +96,8 @@ pub enum Error {
     UnsupportedArchitecture(String),
     #[error("Ployz requires systemd")]
     SystemdRequired,
-    #[error(
-        "system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir {data_dir:?} and --socket {socket:?}"
-    )]
-    NonstandardPaths { data_dir: PathBuf, socket: PathBuf },
+    #[error("{0}")]
+    NonstandardPaths(String),
     #[error("release selection: {0}")]
     ReleaseSelection(String),
     #[error("artifact verification: {0}")]
@@ -149,6 +147,21 @@ impl InstallPaths {
     }
 }
 
+pub(crate) fn require_standard_machine_paths(data_dir: &Path, socket: &Path) -> Result<(), String> {
+    if data_dir == Path::new(crate::machine::DEFAULT_DATA_DIR)
+        && socket == Path::new(DEFAULT_SOCKET_PATH)
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "system installation requires --data-dir {} and --socket {}; received --data-dir {} and --socket {}",
+        crate::machine::DEFAULT_DATA_DIR,
+        DEFAULT_SOCKET_PATH,
+        data_dir.display(),
+        socket.display()
+    ))
+}
+
 /// Install into global host locations for the standard Machine data and socket paths.
 ///
 /// # Errors
@@ -161,11 +174,7 @@ pub async fn install(
 ) -> Result<InstallOutcome, Error> {
     let data_dir = data_dir.into();
     let socket = socket.into();
-    if data_dir != Path::new(crate::machine::DEFAULT_DATA_DIR)
-        || socket != Path::new(DEFAULT_SOCKET_PATH)
-    {
-        return Err(Error::NonstandardPaths { data_dir, socket });
-    }
+    require_standard_machine_paths(&data_dir, &socket).map_err(Error::NonstandardPaths)?;
     install_at(request, InstallPaths::system(data_dir, DEFAULT_RUN_DIR)).await
 }
 
@@ -399,7 +408,7 @@ mod tests {
             let error = install(request.clone(), data_dir, socket)
                 .await
                 .unwrap_err();
-            assert!(matches!(error, Error::NonstandardPaths { .. }));
+            assert!(matches!(error, Error::NonstandardPaths(_)));
         }
         assert!(fs::read_dir(fixture.path()).unwrap().next().is_none());
     }

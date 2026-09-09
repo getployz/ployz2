@@ -160,6 +160,41 @@ async fn upgrade_and_machine_mutations_refuse_each_other_at_the_rpc_boundary() {
     std::fs::remove_dir_all(data_dir).unwrap();
 }
 
+#[tokio::test]
+async fn upgrade_rpc_rejects_nonstandard_machine_paths_before_acceptance() {
+    let data_dir =
+        std::env::temp_dir().join(format!("ployzd-upgrade-rpc-paths-{}", MachineId::random()));
+    let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
+    let service = MachineService::with_cluster(store, watch::channel(false).0, None);
+
+    let response = service
+        .request_machine_upgrade(Request::new(
+            op::RequestMachineUpgrade::into_request(RequestMachineUpgradeRequest {
+                attempt_id: MachineUpgradeAttemptId::parse("b".repeat(32)).unwrap(),
+                release: MachineRelease::parse("1.2.3").unwrap(),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+
+    assert!(matches!(
+        response.body,
+        RpcResponseBody::Error(error)
+            if error.code == RpcErrorCode::InvalidArgument
+                && error.message.contains("system installation requires --data-dir")
+    ));
+    assert!(!data_dir.join("upgrade-attempt.json").exists());
+    assert!(!data_dir.join(".upgrade-active").exists());
+
+    drop(service);
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
 #[test]
 fn not_allocator_does_not_allocate() {
     let RpcResponseBody::Error(error) = local_error(LocalMachineError::NotAllocator)
