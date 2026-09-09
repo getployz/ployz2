@@ -31,7 +31,7 @@ Beta: `v0.2.0-beta.1` with Cargo version `0.2.0-beta.1`. Nightly, `-rc`, and oth
 
 Fast CI on `main` is the merge gate. The ignored cluster suite is informing. A red nightly there does not block a tag or Publish.
 
-Before Publish, run `scripts/qualify-release.sh` against real Linux Machines using the draft musl archives (`PLOYZ_ARTIFACT_DIR`). That script does not pick a cloud vendor. You pass SSH targets. Those hosts must be uninitialized Machines unless you set `PLOYZ_QUALIFY_RESET=1`, which accepts a reset and destroys managed containers. Pass a qualification key with `PLOYZ_QUALIFY_SSH_KEY` or `-i` in `PLOYZ_QUALIFY_SSH_OPTS` so `ssh` and `ployz machine init`/`add` use the same identity.
+Before Publish, run `scripts/qualify-release.sh` against real Linux Machines using the draft musl archives (`PLOYZ_ARTIFACT_DIR`). That script does not pick a cloud vendor. You pass SSH targets. Those hosts must be uninitialized Machines unless you set `PLOYZ_QUALIFY_RESET=1`, which accepts a reset and destroys managed containers. Pass a qualification key with `PLOYZ_QUALIFY_SSH_KEY`; the normal `ployz machine init`/`add` setup path verifies and installs the local release artifacts.
 
 When the informing cluster suite and that run disagree, the real Machines are the authority. Testkit bugs do not block a release.
 
@@ -81,7 +81,7 @@ Goreleaser does not touch the tap (`--skip=homebrew`); `scripts/promote-release.
 
 ## Machine daemon
 
-`ployzd install` on Linux installs or replaces a Machine daemon. It accepts `--version stable`, `--version beta`, or an exact version; use `--software-only` for ordinary replacement after the Machine has already been prepared. The bootstrap script remains available for the first executable during the migration.
+`ployzd install` on Linux installs or replaces a Machine daemon. It accepts `--version stable`, `--version beta`, or an exact version; use `--software-only` for ordinary replacement after the Machine has already been prepared. Setup downloads and verifies the CLI release's daemon as a temporary bootstrap, then that daemon installs the selected Machine release through this interface.
 
 ## Cloud Relay
 
