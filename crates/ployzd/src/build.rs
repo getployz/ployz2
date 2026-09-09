@@ -94,15 +94,7 @@ async fn attempt(
     let policy = runner.policy.clone();
     let admission = match tokio::task::spawn_blocking({
         let policy = policy.clone();
-        let first = runner
-            .first_admission
-            .swap(false, std::sync::atomic::Ordering::AcqRel);
-        move || {
-            if first {
-                Admission::cleanup_abandoned(&policy)?;
-            }
-            Admission::try_acquire_with(&policy)
-        }
+        move || Admission::try_acquire_with(&policy)
     })
     .await
     {

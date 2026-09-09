@@ -661,7 +661,7 @@ impl<'a> Docker<'a> {
             return Err(BuildError::Cancelled);
         }
         if self.deadline.remaining().is_zero() {
-            return Err(BuildError::TimedOut(EXECUTION_TIMEOUT.as_secs()));
+            return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
         }
         let mut command = Command::new(self.program);
         command

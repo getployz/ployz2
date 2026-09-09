@@ -18,7 +18,6 @@ pub(crate) struct Runner {
     active: Arc<Semaphore>,
     waiting: Arc<Semaphore>,
     pub(super) shutdown: CancellationToken,
-    pub(super) first_admission: std::sync::atomic::AtomicBool,
 }
 
 impl Runner {
@@ -32,7 +31,6 @@ impl Runner {
             active: Arc::new(Semaphore::new(1)),
             policy,
             shutdown,
-            first_admission: std::sync::atomic::AtomicBool::new(true),
         }))
     }
 

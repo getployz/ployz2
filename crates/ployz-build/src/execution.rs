@@ -229,7 +229,7 @@ impl Admission {
             return Err(BuildError::Cancelled);
         }
         if self.remaining().is_zero() {
-            return Err(BuildError::TimedOut(EXECUTION_TIMEOUT.as_secs()));
+            return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
         }
         Ok(())
     }
@@ -251,7 +251,10 @@ mod tests {
         };
         crate::tests::executable(
             &policy.docker,
-            &format!("#!/bin/sh\nprintf cleaned > '{}/cleaned'\n", root.display()),
+            &format!(
+                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nprintf cleaned > '{}/cleaned'\n",
+                root.display()
+            ),
         );
         std::fs::create_dir(root.join("build-upload")).unwrap();
         std::fs::write(root.join("build-upload/abandoned"), "private old capture").unwrap();
@@ -267,6 +270,16 @@ mod tests {
         let mut lock = Lock::try_acquire_in(&root).unwrap();
         lock.quarantine().unwrap();
         drop(lock);
+        assert!(
+            Admission::cleanup_abandoned(&policy)
+                .unwrap_err()
+                .is_unknown()
+        );
+        assert!(
+            root.join("cleaned").exists(),
+            "cleanup skipped absent upload staging"
+        );
+        std::fs::remove_file(root.join("cleaned")).unwrap();
         std::fs::create_dir(root.join("build-upload")).unwrap();
         std::fs::write(root.join("build-upload/uncertain"), "still in use").unwrap();
         assert!(
@@ -288,6 +301,35 @@ mod tests {
                 .unwrap()
                 .is_unknown()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expired_admission_and_docker_report_configured_budget() {
+        let root = std::env::temp_dir().join(format!("ployz-budget-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let policy = HostPolicy {
+            state_directory: root.clone(),
+            active_timeout: Duration::from_secs(5),
+            ..Default::default()
+        };
+        let mut admission = Admission::try_acquire_with(&policy).unwrap();
+        admission.deadline.expires = std::time::Instant::now();
+        assert!(matches!(admission.check(), Err(BuildError::TimedOut(5))));
+        let environment = std::collections::BTreeMap::new();
+        let docker = crate::Docker {
+            program: &policy.docker,
+            environment: &environment,
+            working_dir: &root,
+            deadline: admission.deadline,
+            cancellation: None,
+            progress: None,
+        };
+        assert!(matches!(
+            docker.run("build", &["build"], crate::Streams::Captured),
+            Err(BuildError::TimedOut(5))
+        ));
+        drop(admission);
         std::fs::remove_dir_all(root).unwrap();
     }
 

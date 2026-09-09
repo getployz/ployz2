@@ -283,23 +283,20 @@ impl Lock {
         if lock.file.0.metadata().map_err(lock_error)?.len() == 0 {
             return Ok(());
         }
-        let root = lock.directory.join("build-upload");
-        if root.is_dir() {
-            let environment = crate::upload::environment(&root);
-            let docker = Docker {
-                program: &policy.docker,
-                environment: &environment,
-                working_dir: &root,
-                deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
-                cancellation: None,
-                progress: None,
-            };
-            if let Err(error) = remove(&docker, &builder_name()) {
-                return Err(BuildError::UncertainTermination(format!(
-                    "{}; abandoned builder cleanup failed: {error}",
-                    lock.uncertain()
-                )));
-            }
+        let environment = crate::upload::environment(&lock.directory.join("build-upload"));
+        let docker = Docker {
+            program: &policy.docker,
+            environment: &environment,
+            working_dir: &lock.directory,
+            deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
+            cancellation: None,
+            progress: None,
+        };
+        if let Err(error) = remove(&docker, &builder_name()) {
+            return Err(BuildError::UncertainTermination(format!(
+                "{}; abandoned builder cleanup failed: {error}",
+                lock.uncertain()
+            )));
         }
         Err(lock.uncertain())
     }
