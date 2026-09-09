@@ -192,6 +192,7 @@ case "$*" in
   *'chmod 700 '*' version') printf '%s\n' '{}' ;;
   *" 'install' "*) ;;
   *'rm -rf -- '*) ;;
+  *' -O exit '*) ;;
   *' true') exit 23 ;;
   *) echo "unexpected ssh invocation: $*" >&2; exit 24 ;;
 esac
@@ -247,6 +248,9 @@ esac
     );
     assert!(setup_log.contains("'--release-dir' '/tmp/ployz-bootstrap-"));
     assert!(setup_log.contains("rm -rf --"), "{setup_log}");
+    let close = setup_log.find(" -O exit deploy@2001:db8::1").unwrap();
+    let reconnect = setup_log.rfind(" true").unwrap();
+    assert!(close < reconnect, "{setup_log}");
     assert!(!setup_log.contains("base64"), "{setup_log}");
 
     fs::write(&log, "").unwrap();
