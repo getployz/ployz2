@@ -250,13 +250,17 @@ export type LocalMachineRemoved = { reset_warning: string | null, };
 
 export type LogDriver = { name: string, options: { [key in string]: string }, };
 
-export type Machine = { labels: { [key in string]: string }, accepts_builds: boolean, accepts_services: boolean, accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubnet, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
+export type Machine = { labels: { [key in MachineLabelKey]: MachineLabelValue }, accepts_builds: boolean, accepts_services: boolean, accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubnet, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
 
 export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume";
 
 export type MachineFailure<E> = { machine_id: MachineId, error: E, };
 
 export type MachineId = string & { readonly __brand: "MachineId" };
+
+export type MachineLabelKey = string;
+
+export type MachineLabelValue = string;
 
 export type MachineName = string;
 
@@ -358,7 +362,7 @@ export type PidMode = string;
 
 export type Placement = {
 /**
- * AND predicates retained for future Machines. Empty adds no restriction.
+ * Empty adds no selector restriction.
  */
 constraints: Array<PlacementConstraint>, };
 

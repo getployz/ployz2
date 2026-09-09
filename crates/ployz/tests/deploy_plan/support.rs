@@ -117,7 +117,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
         Machine {
             id: machine_id(hex),
             name: MachineName::parse(name).unwrap(),
-            labels: BTreeMap::from([("fixture".into(), name.into())]),
+            labels: BTreeMap::from([("fixture".parse().unwrap(), name.parse().unwrap())]),
             accepts_builds: true,
             accepts_services: true,
             accepts_ingress: true,

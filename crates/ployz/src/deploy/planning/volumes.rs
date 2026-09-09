@@ -880,12 +880,10 @@ fn no_eligible_shared(
             .volumes
             .iter()
             .filter_map(|(name, uses)| {
-                let mut requested = Vec::new();
+                let mut requested = std::collections::BTreeSet::new();
                 for volume_use in uses.iter() {
                     for target in &volume_use.service.placement.constraints {
-                        if !requested.contains(target) {
-                            requested.push(target.clone());
-                        }
+                        requested.insert(target.clone());
                     }
                 }
                 if requested.is_empty() {
@@ -893,7 +891,7 @@ fn no_eligible_shared(
                 } else {
                     Some(EliminatingConstraint::SharedVolumeNoCommonMachine {
                         volume: (*name).clone(),
-                        requested,
+                        requested: requested.into_iter().collect(),
                     })
                 }
             })
@@ -905,7 +903,7 @@ fn volume_anchor(
     snapshot: &DeploySnapshot,
     plan: &VolumePlan<'_>,
     name: &DockerVolumeName,
-    requested: &[PlacementConstraint],
+    requested: &std::collections::BTreeSet<PlacementConstraint>,
 ) -> Option<EliminatingConstraint> {
     let mut located_on = Vec::new();
     for located in plan
@@ -936,7 +934,7 @@ fn volume_anchor(
         } else {
             Some(EliminatingConstraint::SharedVolumeNoCommonMachine {
                 volume: name.clone(),
-                requested: requested.to_vec(),
+                requested: requested.iter().cloned().collect(),
             })
         }
     } else if requested.is_empty() || hits_located {
@@ -948,7 +946,7 @@ fn volume_anchor(
         Some(EliminatingConstraint::VolumeConflictsWithPlacement {
             volume: name.clone(),
             located_on,
-            requested: requested.to_vec(),
+            requested: requested.iter().cloned().collect(),
         })
     }
 }

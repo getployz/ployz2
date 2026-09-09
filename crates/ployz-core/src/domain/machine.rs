@@ -12,9 +12,9 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 
 use super::{NameMatches, RelayEndpoint};
 use crate::{
-    AdvertisedEndpoint, FanoutSelector, MachineId, MachineName, MachineSubnet, MachineTarget,
-    ManagementAddress, PairingCredential, Placement, SelectedEndpoint, ValueError,
-    WireGuardPublicKey,
+    AdvertisedEndpoint, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue, MachineName,
+    MachineSubnet, MachineTarget, ManagementAddress, PairingCredential, Placement,
+    SelectedEndpoint, ValueError, WireGuardPublicKey,
 };
 
 pub(super) fn resolve_machine_text<'a>(
@@ -37,7 +37,7 @@ pub(super) fn resolve_machine_text<'a>(
 /// One Machine's durable advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Machine {
-    pub labels: BTreeMap<String, String>,
+    pub labels: BTreeMap<MachineLabelKey, MachineLabelValue>,
     pub accepts_builds: bool,
     pub accepts_services: bool,
     pub accepts_ingress: bool,
@@ -211,9 +211,9 @@ pub enum PublicIpUpdate {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineUpdate {
     #[serde(default)]
-    pub label_add: BTreeMap<String, String>,
+    pub label_add: BTreeMap<MachineLabelKey, MachineLabelValue>,
     #[serde(default)]
-    pub label_rm: Vec<String>,
+    pub label_rm: Vec<MachineLabelKey>,
     #[serde(default)]
     pub accepts_builds: Option<bool>,
     #[serde(default)]
@@ -231,19 +231,7 @@ pub struct MachineUpdate {
 impl MachineUpdate {
     /// Validate a metadata patch before changing any durable fields.
     pub fn validate(&self) -> Result<(), MachineUpdateError> {
-        for key in self.label_add.keys().chain(self.label_rm.iter()) {
-            if key.is_empty()
-                || key
-                    .chars()
-                    .any(|c| c.is_whitespace() || c.is_control() || c == '=')
-            {
-                return Err(MachineUpdateError::InvalidLabel(key.clone()));
-            }
-        }
-        for (key, value) in &self.label_add {
-            if value.chars().any(char::is_control) {
-                return Err(MachineUpdateError::InvalidLabel(key.clone()));
-            }
+        for key in self.label_add.keys() {
             if self.label_rm.contains(key) {
                 return Err(MachineUpdateError::ConflictingLabel(key.clone()));
             }
@@ -266,12 +254,8 @@ impl MachineUpdate {
 
 #[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
 pub enum MachineUpdateError {
-    #[error(
-        "invalid Machine Label {0:?}: keys must be nonempty without whitespace or '=', and keys and values must not contain control characters"
-    )]
-    InvalidLabel(String),
-    #[error("Machine Label {0:?} cannot be added and removed in the same patch")]
-    ConflictingLabel(String),
+    #[error("Machine Label {0} cannot be added and removed in the same patch")]
+    ConflictingLabel(MachineLabelKey),
     #[error("Machine name is already visible on another Machine")]
     DuplicateName,
     #[error("at least one Advertised Endpoint is required")]
@@ -814,7 +798,9 @@ mod placement_tests {
     #[test]
     fn placement_constraints_follow_swarm_matching() {
         let mut first = machine('a', "first");
-        first.labels.insert("Region".into(), "EU-West".into());
+        first
+            .labels
+            .insert("Region".parse().unwrap(), "EU-West".parse().unwrap());
         for (expressions, expected) in [
             (vec!["node.labels.Region==eu-WEST"], true),
             (vec!["node.labels.region==eu-west"], false),

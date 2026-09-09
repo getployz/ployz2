@@ -210,7 +210,7 @@ async fn enroll_founder(
     let ingress = if no_ingress {
         None
     } else {
-        Some(crate::ingress::service_spec(ingress_image, Vec::new(), None).await?)
+        Some(crate::ingress::service_spec(ingress_image, Default::default(), None).await?)
     };
     let (machine, mut ready) = match state {
         FounderLocalState::Resume { machine } => (*machine, client),

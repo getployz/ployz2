@@ -68,8 +68,14 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
         return runtime()?.block_on(async {
             let cancellation = super::cancellation_on_ctrl_c();
             let mut client = connect_client(matches, context.as_deref()).await?;
-            let machine = select_build_machine(&mut client, target.as_ref()).await?;
             let captured = capture_build(&plan, &options, &mut project)?;
+            let machine = select_build_machine(
+                &mut client,
+                target.as_ref(),
+                captured.targets(),
+                &cancellation,
+            )
+            .await?;
             let outcome = captured
                 .execute_remote(&client, machine.id, cancellation.clone(), progress)
                 .await;
@@ -143,8 +149,10 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
 pub(super) async fn select_build_machine(
     client: &mut crate::connect::Client,
     target: Option<&ployz_core::MachineTarget>,
+    targets: &[ployz_build::Target],
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<ployz_core::Machine, Error> {
-    let machine = client.build_machine(target).await?;
+    let machine = client.build_machine(target, targets, cancellation).await?;
     println!("Selected Build Machine {} ({})", machine.name, machine.id);
     eprintln!("Build Machine: {}", machine.id);
     Ok(machine)
@@ -237,6 +245,9 @@ fn push_failure(image: &str, error: crate::image::PushError) -> Result<String, E
 fn report_remote(outcome: ployz_build::remote::Outcome) -> Result<(), Error> {
     use ployz_build::remote::Outcome;
     match outcome {
+        Outcome::CapabilitiesChecked { .. } => Err(Error::usage(
+            "Build returned only a capability check; execution was not observed",
+        )),
         Outcome::Images { machine_id, images } => {
             for image in images {
                 println!(
@@ -290,7 +301,7 @@ mod tests {
                         name: ployz_core::MachineName::parse(format!("node-{id}")).unwrap(),
                         subnet: "10.210.1.0/24".parse().unwrap(),
                         public_key: ployz_core::WireGuardPublicKey([1; 32]),
-                        labels: [("region".into(), "eu".into())].into(),
+                        labels: [("region".parse().unwrap(), "eu".parse().unwrap())].into(),
                         accepts_builds: true,
                         accepts_services: true,
                         accepts_ingress: true,
@@ -308,7 +319,7 @@ mod tests {
             .unwrap()
             .machine
             .labels
-            .insert("region".into(), "us".into());
+            .insert("region".parse().unwrap(), "us".parse().unwrap());
         machines.get_mut(3).unwrap().membership = MembershipObservation::Down;
         let placement: Placement = serde_json::from_value(serde_json::json!({
             "constraints": ["node.labels.region == EU"]

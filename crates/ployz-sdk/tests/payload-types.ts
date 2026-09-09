@@ -88,7 +88,7 @@ const web: RequestedServiceSpec = {
   name: "web" as ServiceName,
   mode: { mode: "replicated", replicas: 1 },
   container,
-  placement: { machines: [] },
+  placement: { constraints: [] },
   ports: [],
   volumes: [],
   mounts: [],

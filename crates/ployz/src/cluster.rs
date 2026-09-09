@@ -280,6 +280,8 @@ impl Client {
     pub(crate) async fn build_machine(
         &mut self,
         target: Option<&MachineTarget>,
+        targets: &[ployz_build::Target],
+        cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<Machine, ConnectError> {
         let visible = self.machines().await?;
         // Resolve pins before filtering so policy cannot hide Name Ambiguity.
@@ -293,14 +295,16 @@ impl Client {
         }
         let mut reasons = Vec::new();
         for observed in candidates {
+            if cancellation.is_cancelled() {
+                reasons.push("Build selection cancelled".into());
+                break;
+            }
             let machine = &observed.machine;
             let reason = if !observed.membership.invites_rpc() {
                 format!("membership is {:?}", observed.membership)
             } else if !machine.accepts_builds {
                 "does not accept Builds".into()
             } else {
-                // This contract verifies remote Build support, not worker platforms.
-                // BuildKit checks every requested platform at target-local admission.
                 match self
                     .invoke::<op::DescribeContract>(
                         DescribeContractRequest {},
@@ -316,7 +320,13 @@ impl Client {
                     Ok(contract) if !contract.supports(ployz_core::BUILD_CAPABILITY) => {
                         "does not support remote Builds".into()
                     }
-                    Ok(_) => return Ok(machine.clone()),
+                    Ok(_) => match self
+                        .check_build_capabilities(machine.id, targets, cancellation)
+                        .await
+                    {
+                        Ok(()) => return Ok(machine.clone()),
+                        Err(error) => format!("Build capability could not be verified: {error}"),
+                    },
                     Err(error) => format!("Build capability could not be verified: {error}"),
                 }
             };

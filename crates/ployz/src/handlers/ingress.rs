@@ -51,7 +51,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let constraints = string_values(matches, "constraint")
         .into_iter()
         .map(ployz_core::PlacementConstraint::parse)
-        .collect::<Result<Vec<_>, _>>()
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()
         .map_err(|error| Error::usage(error.to_string()))?;
     let force_recreate = matches.get_flag("recreate");
     let skip_health_monitor = matches.get_flag("skip-health");

@@ -72,8 +72,13 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         let builds = match captured_build {
             Some(build) => {
                 if !matches.get_flag("local") {
-                    let machine =
-                        super::build::select_build_machine(&mut client, remote.as_ref()).await?;
+                    let machine = super::build::select_build_machine(
+                        &mut client,
+                        remote.as_ref(),
+                        build.targets(),
+                        &cancellation,
+                    )
+                    .await?;
                     let result = build
                         .execute_remote_images(
                             &client,

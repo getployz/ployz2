@@ -213,7 +213,7 @@ fn normalized_surface_reaches_requested_specs() {
         "node.labels.Region==eu-west"
     );
     assert_eq!(
-        api.placement.constraints.get(1).unwrap().as_str(),
+        api.placement.constraints.iter().nth(1).unwrap().as_str(),
         "node.labels.disk!=slow"
     );
     assert_eq!(api.update.order, Some(UpdateOrder::StopFirst));
@@ -662,22 +662,13 @@ fn compose_normalizes_an_omitted_ordinary_volume_driver_to_local() {
 
 #[test]
 fn singular_ployz_extensions_warn_and_remain_ignored() {
-    for (typo, correction) in [("x-port", "x-ports")] {
-        let project = parse_normalized(
-            &format!("services: {{app: {{image: app, {typo}: ignored}}}}"),
-            ".",
-        )
-        .unwrap();
-
-        assert_eq!(
-            project.warnings,
-            [format!(
-                "service 'app': unsupported feature '{typo}'; use {correction}"
-            )]
-        );
-        assert!(service(&project, "app").ports.is_empty());
-        assert!(service(&project, "app").placement.constraints.is_empty());
-    }
+    let project = parse_normalized("services: {app: {image: app, x-port: ignored}}", ".").unwrap();
+    assert_eq!(
+        project.warnings,
+        ["service 'app': unsupported feature 'x-port'; use x-ports"]
+    );
+    assert!(service(&project, "app").ports.is_empty());
+    assert!(service(&project, "app").placement.constraints.is_empty());
 }
 
 #[test]

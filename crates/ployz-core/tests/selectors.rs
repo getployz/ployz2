@@ -115,10 +115,9 @@ fn placement_constraints_are_validated_and_canonical_on_the_wire() {
     }))
     .unwrap();
     let mut programmatic = equivalent.clone();
-    programmatic.constraints.reverse();
     programmatic
         .constraints
-        .push(programmatic.constraints.first().unwrap().clone());
+        .insert(programmatic.constraints.first().unwrap().clone());
     assert_eq!(placement, programmatic);
     assert_eq!(
         serde_json::to_value(&placement).unwrap(),

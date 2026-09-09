@@ -165,7 +165,10 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
 
 pub(super) fn parse_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
     let mut update = MachineUpdate {
-        label_rm: string_values(matches, "label-rm"),
+        label_rm: string_values(matches, "label-rm")
+            .into_iter()
+            .map(ployz_core::MachineLabelKey::parse)
+            .collect::<Result<_, _>>()?,
         accepts_builds: matches.get_one::<bool>("accepts-builds").copied(),
         accepts_services: matches.get_one::<bool>("accepts-services").copied(),
         accepts_ingress: matches.get_one::<bool>("accepts-ingress").copied(),
@@ -177,7 +180,7 @@ pub(super) fn parse_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error>
             .ok_or_else(|| Error::usage(format!("invalid label {label:?}: expected KEY=VALUE")))?;
         if update
             .label_add
-            .insert(key.to_owned(), value.to_owned())
+            .insert(key.parse()?, value.parse()?)
             .is_some()
         {
             return Err(Error::usage(format!("duplicate label key {key:?}")));
@@ -294,10 +297,20 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(
-            patch.label_add.get("region").map(String::as_str),
+            patch
+                .label_add
+                .get("region")
+                .map(ployz_core::MachineLabelValue::as_str),
             Some("west")
         );
-        assert_eq!(patch.label_rm, ["old"]);
+        assert_eq!(
+            patch
+                .label_rm
+                .iter()
+                .map(ployz_core::MachineLabelKey::as_str)
+                .collect::<Vec<_>>(),
+            ["old"]
+        );
         assert_eq!(patch.accepts_builds, Some(true));
         assert_eq!(patch.accepts_services, Some(false));
         assert_eq!(patch.accepts_ingress, Some(true));

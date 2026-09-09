@@ -196,7 +196,7 @@ mod tests {
     fn whole_specs_assess_placement_and_only_mounted_provisioned_storage() {
         let machine = machine("storage");
         let other = Placement {
-            constraints: vec![crate::PlacementConstraint::parse("node.id==other").unwrap()],
+            constraints: [crate::PlacementConstraint::parse("node.id==other").unwrap()].into(),
         };
         let provisioned = volume_graph(
             crate::RawVolumeSource::Provisioned {
@@ -352,7 +352,7 @@ mod tests {
         machine.accepts_builds = true;
         let reserved = crate::QualifiedService::system_ingress().project;
         let app = crate::ProjectName::parse("app").unwrap();
-        let caddy = crate::caddy_service_spec("caddy:test".into(), Vec::new(), None);
+        let caddy = crate::caddy_service_spec("caddy:test".into(), Default::default(), None);
         let denied = ServicePlacementEligibility::Ineligible(
             ServicePlacementIneligibleReason::WorkNotAccepted,
         );

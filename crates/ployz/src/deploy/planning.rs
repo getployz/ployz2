@@ -811,7 +811,7 @@ fn placement_error(
         .collect::<Vec<_>>();
     if matched.is_empty() {
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::UnknownPlacement {
-            targets: spec.placement.constraints.clone(),
+            targets: spec.placement.constraints.iter().cloned().collect(),
         }]);
     }
     let mut down = Vec::new();

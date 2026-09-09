@@ -202,6 +202,23 @@ macro_rules! validated_string_newtype {
     };
 }
 
+validated_string_newtype!(
+    /// A Machine Label key, validated identically in records and patches.
+    MachineLabelKey, "Machine Label key", "nonempty without whitespace, control characters or '='",
+    |value| !value.is_empty() && !value.chars().any(|c| c.is_whitespace() || c.is_control() || c == '=')
+);
+validated_string_newtype!(
+    /// A Machine Label value, which may be empty but cannot contain control characters.
+    MachineLabelValue, "Machine Label value", "no control characters",
+    |value| !value.chars().any(char::is_control)
+);
+
+impl std::borrow::Borrow<str> for MachineLabelKey {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 hex_id_newtype!(
     MachineId,
     "Machine ID",

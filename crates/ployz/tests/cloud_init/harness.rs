@@ -573,25 +573,14 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::UpdateMachine(request) = decoded.body else {
             return Err(Status::invalid_argument("expected UpdateMachine"));
         };
-        request
-            .update
-            .validate()
-            .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let mut machine = self.inner.current_machine.lock().unwrap().clone();
-        machine.labels.extend(request.update.label_add);
-        for key in request.update.label_rm {
-            machine.labels.remove(&key);
-        }
-        if let Some(value) = request.update.accepts_builds {
-            machine.accepts_builds = value;
-        }
-        if let Some(value) = request.update.accepts_services {
-            machine.accepts_services = value;
-        }
-        if let Some(value) = request.update.accepts_ingress {
-            machine.accepts_ingress = value;
-        }
-        *self.inner.current_machine.lock().unwrap() = machine.clone();
+        let mut current = self.inner.current_machine.lock().unwrap();
+        let machine = ployz_core::apply_machine_update(
+            &current,
+            &self.inner.registration.visible_peers,
+            request.update,
+        )
+        .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        *current = machine.clone();
         rpc_ok(ployz_core::MachineUpdated { machine })
     }
     async fn register(
@@ -1064,7 +1053,7 @@ pub fn registration() -> Registered {
 }
 
 pub fn ingress_on(machine: &Machine) -> ContainerObservation {
-    let spec = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Vec::new(), None);
+    let spec = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Default::default(), None);
     let spec = spec
         .to_resolved(
             ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),

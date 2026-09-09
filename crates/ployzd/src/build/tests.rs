@@ -103,27 +103,28 @@ impl Fixture {
         &self,
         output: Output,
     ) -> (mpsc::Sender<OpaquePayload>, tonic::Streaming<OpaquePayload>) {
+        self.request_frame(Input::Start(Definition {
+            retained_tags: Vec::new(),
+            image_contexts: Default::default(),
+            targets: vec![ployz_build::Target {
+                name: "api".into(),
+                platforms: Vec::new(),
+            }],
+            output,
+            no_cache: false,
+            pull: false,
+        }))
+        .await
+    }
+    async fn request_frame(
+        &self,
+        frame: Input,
+    ) -> (mpsc::Sender<OpaquePayload>, tonic::Streaming<OpaquePayload>) {
         let mut client = MachineRpcClient::connect(self.address.clone())
             .await
             .unwrap();
         let (sender, receiver) = mpsc::channel(2);
-        sender
-            .send(
-                remote::encode(&Input::Start(Definition {
-                    retained_tags: Vec::new(),
-                    image_contexts: Default::default(),
-                    targets: vec![ployz_build::Target {
-                        name: "api".into(),
-                        platforms: Vec::new(),
-                    }],
-                    output,
-                    no_cache: false,
-                    pull: false,
-                }))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
+        sender.send(remote::encode(&frame).unwrap()).await.unwrap();
         let response = client
             .build(ReceiverStream::new(receiver))
             .await
@@ -384,8 +385,10 @@ case "$1 $2" in
   'context show') echo default ;;
   'info --format') printf '%s\n' '{{"OSType":"linux","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
   'buildx rm')
-    if [ -f "$root/fail-cleanup" ] && [ -f "$root/executed" ]; then exit 1; fi ;;
-  'buildx version'|'buildx create'|'buildx inspect') exit 0 ;;
+    if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
+  'buildx version'|'buildx create') exit 0 ;;
+  'buildx inspect')
+    if [ -f "$root/slow-check" ]; then : > "$root/checking"; exec sleep 30; fi ;;
   'buildx ls') printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake')
     : > "$root/executed"
@@ -551,7 +554,8 @@ async fn terminal_failures_preserve_completed_images_and_uncertain_targets() {
         let work = match result {
             Outcome::Unknown { work, .. } if failure == "fail-cleanup" => work,
             Outcome::Failed { work, .. } if failure != "fail-cleanup" => work,
-            other @ (Outcome::Images { .. }
+            other @ (Outcome::CapabilitiesChecked { .. }
+            | Outcome::Images { .. }
             | Outcome::Validated { .. }
             | Outcome::Published { .. }
             | Outcome::Failed { .. }
@@ -838,5 +842,127 @@ async fn dropping_completed_build_releases_only_its_temporary_tags() {
         let released = fs::read_to_string(fixture.root.join("released-tags")).unwrap();
         assert!(released.contains(":ployz-build-"), "{released}");
         assert!(!released.contains("example.test/api:built"), "{released}");
+    }
+}
+
+#[tokio::test]
+async fn capability_check_verifies_every_target_without_uploading_or_executing() {
+    let fixture = Fixture::new().await;
+    for (platforms, supported) in [
+        (vec!["linux/amd64"], true),
+        (vec!["linux/amd64", "linux/arm64"], false),
+    ] {
+        let targets = platforms
+            .into_iter()
+            .enumerate()
+            .map(|(i, platform)| ployz_build::Target {
+                name: format!("service{i}"),
+                platforms: vec![platform.into()],
+            })
+            .collect();
+        let (_sender, mut response) = fixture.request_frame(Input::Check(targets)).await;
+        let outcome = terminal(&mut response).await;
+        if supported {
+            assert!(
+                matches!(outcome, Outcome::CapabilitiesChecked { machine_id } if machine_id == fixture.machine.id)
+            );
+        } else {
+            assert!(
+                matches!(outcome, Outcome::Failed { message, .. } if message.contains("cannot build linux/arm64"))
+            );
+        }
+        assert!(!fixture.root.join("executed").exists());
+        assert!(Admission::try_acquire_with(&fixture.policy).is_ok());
+    }
+}
+
+#[tokio::test]
+async fn capability_check_waits_for_active_build_and_rechecks_acceptance() {
+    for revoke in [false, true] {
+        let fixture = Fixture::new().await;
+        let (first, mut running) = fixture.request(Output::Load).await;
+        assert!(matches!(event(&mut running).await, Event::Admitted { .. }));
+        let (_sender, mut response) = fixture
+            .request_frame(Input::Check(vec![ployz_build::Target {
+                name: "api".into(),
+                platforms: vec!["linux/amd64".into()],
+            }]))
+            .await;
+        assert!(matches!(
+            event(&mut response).await,
+            Event::Progress(Progress::Stage(Stage::Queued))
+        ));
+        assert!(Admission::try_acquire_with(&fixture.policy).is_err());
+        if revoke {
+            fixture
+                .local
+                .update(
+                    serde_json::from_value(
+                        serde_json::json!({"update": {"accepts_builds": false}}),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+        drop(first);
+        assert!(matches!(
+            terminal(&mut running).await,
+            Outcome::Failed {
+                stage: Stage::Upload,
+                ..
+            }
+        ));
+        let outcome = terminal(&mut response).await;
+        if revoke {
+            assert!(
+                matches!(outcome, Outcome::Failed { stage: Stage::Admission, message, .. } if message.contains("does not accept Builds"))
+            );
+        } else {
+            assert!(matches!(outcome, Outcome::CapabilitiesChecked { .. }));
+        }
+        assert!(!fixture.root.join("executed").exists());
+    }
+}
+
+#[tokio::test]
+async fn capability_check_cancellation_confirms_cleanup_or_retains_quarantine() {
+    for uncertain in [false, true] {
+        let fixture = Fixture::new().await;
+        fs::write(fixture.root.join("slow-check"), "").unwrap();
+        if uncertain {
+            fs::write(fixture.root.join("fail-cleanup"), "").unwrap();
+        }
+        let (sender, mut response) = fixture
+            .request_frame(Input::Check(vec![ployz_build::Target {
+                name: "api".into(),
+                platforms: vec!["linux/amd64".into()],
+            }]))
+            .await;
+        assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !fixture.root.join("checking").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        sender
+            .send(remote::encode(&Input::Cancel).unwrap())
+            .await
+            .unwrap();
+        let outcome = terminal(&mut response).await;
+        if uncertain {
+            assert!(matches!(outcome, Outcome::Unknown { .. }), "{outcome:?}");
+            assert!(
+                matches!(Admission::try_acquire_with(&fixture.policy), Err(error) if error.is_unknown())
+            );
+        } else {
+            assert!(
+                matches!(outcome, Outcome::Failed { message, .. } if message.contains("cancel"))
+            );
+            assert!(Admission::try_acquire_with(&fixture.policy).is_ok());
+        }
+        assert!(!fixture.root.join("executed").exists());
     }
 }

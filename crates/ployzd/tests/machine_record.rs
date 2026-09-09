@@ -357,7 +357,10 @@ fn machine_update_is_atomic_and_durable() {
     let updated = store
         .update(
             MachineUpdate {
-                label_add: std::collections::BTreeMap::from([("zone".into(), "west".into())]),
+                label_add: std::collections::BTreeMap::from([(
+                    "zone".parse().unwrap(),
+                    "west".parse().unwrap(),
+                )]),
                 accepts_services: Some(false),
                 name: Some(MachineName::parse("after").unwrap()),
                 public_ip: PublicIpUpdate::Set("203.0.113.7".parse().unwrap()),
@@ -373,7 +376,13 @@ fn machine_update_is_atomic_and_durable() {
     assert_eq!(updated.management_address(), original.management_address());
     assert_eq!(updated.public_key, original.public_key);
     assert_eq!(updated.advertised_endpoints, endpoints);
-    assert_eq!(updated.labels.get("zone").map(String::as_str), Some("west"));
+    assert_eq!(
+        updated
+            .labels
+            .get("zone")
+            .map(ployz_core::MachineLabelValue::as_str),
+        Some("west")
+    );
     assert!(!updated.accepts_services);
     assert!(updated.accepts_builds && updated.accepts_ingress);
     drop(store);

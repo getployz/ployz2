@@ -15,7 +15,7 @@ pub use caddy::IngressImageError;
 /// Returns when the Caddy image cannot be discovered.
 pub async fn service_spec(
     image: Option<String>,
-    constraints: Vec<PlacementConstraint>,
+    constraints: std::collections::BTreeSet<PlacementConstraint>,
     fragment: Option<IngressProxyFragment>,
 ) -> Result<RequestedServiceSpec, IngressImageError> {
     let image = match image {
@@ -39,7 +39,8 @@ mod tests {
 
     #[tokio::test]
     async fn builds_the_caddy_service_spec() {
-        let constraints = vec![PlacementConstraint::parse("node.labels.edge==true").unwrap()];
+        let constraints: std::collections::BTreeSet<_> =
+            [PlacementConstraint::parse("node.labels.edge==true").unwrap()].into();
         let caddy = service_spec(
             Some("registry.test/caddy@sha256:caddy".into()),
             constraints.clone(),

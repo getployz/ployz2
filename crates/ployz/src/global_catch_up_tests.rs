@@ -353,9 +353,10 @@ fn constraints_excluding_this_joiner_plans_no_slot() {
         qualified("app", "api"),
         'a',
         Placement {
-            constraints: vec![
+            constraints: [
                 PlacementConstraint::parse(format!("node.id == {}", founder.id)).unwrap(),
-            ],
+            ]
+            .into(),
         },
         running_on(&founder, 'a'),
     )];
@@ -370,10 +371,12 @@ fn constraints_including_this_joiner_plans_a_slot() {
         qualified("app", "api"),
         'a',
         Placement {
-            constraints: vec![
-                PlacementConstraint::parse(format!("node.id != {}", machine('2', "other").id))
-                    .unwrap(),
-            ],
+            constraints: [PlacementConstraint::parse(format!(
+                "node.id != {}",
+                machine('2', "other").id
+            ))
+            .unwrap()]
+            .into(),
         },
         running_on(&founder, 'a'),
     )];
@@ -574,7 +577,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
 }
 
 fn observed_caddy_ingress(machine: &Machine, id: char) -> ServiceObservation {
-    let spec = ployz_core::caddy_service_spec("caddy:test".into(), Vec::new(), None)
+    let spec = ployz_core::caddy_service_spec("caddy:test".into(), Default::default(), None)
         .to_resolved(service_id(id), ResolvedUpdateConfig::default())
         .expect("volume graph is scoped");
     let mut container = running_on(machine, id);
@@ -859,9 +862,8 @@ fn joiner_evaluates_stored_labels_and_independent_acceptance() {
             qualified("app", "api"),
             'a',
             Placement {
-                constraints: vec![
-                    PlacementConstraint::parse("node.labels.tier == runtime").unwrap(),
-                ],
+                constraints: [PlacementConstraint::parse("node.labels.tier == runtime").unwrap()]
+                    .into(),
             },
             running_on(&founder, 'a'),
         ),
@@ -870,7 +872,9 @@ fn joiner_evaluates_stored_labels_and_independent_acceptance() {
         identities(&plan_global_catch_up(&services, &joiner, None)),
         ["ployz-system/ingress"]
     );
-    joiner.labels.insert("tier".into(), "RUNTIME".into());
+    joiner
+        .labels
+        .insert("tier".parse().unwrap(), "RUNTIME".parse().unwrap());
     joiner.accepts_ingress = false;
     assert_eq!(
         identities(&plan_global_catch_up(&services, &joiner, None)),

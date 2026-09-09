@@ -74,6 +74,13 @@ pub struct CapturedBuild {
     retained_tags: BTreeMap<String, String>,
 }
 
+impl CapturedBuild {
+    /// Complete command requirements, including captured Build dependencies.
+    pub(crate) fn targets(&self) -> &[ployz_build::Target] {
+        &self.targets
+    }
+}
+
 /// Where a completed image is available; Machine identity is already resolved.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum BuildLocation {

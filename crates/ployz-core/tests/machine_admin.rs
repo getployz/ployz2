@@ -255,13 +255,13 @@ fn machine_management_address_is_derived_after_decode_and_key_update() {
 fn label_and_role_patch_preserves_unrelated_metadata_and_rejects_conflicts() {
     let mut original = machine('1', "first", 1);
     original.labels = BTreeMap::from([
-        ("zone".into(), "west".into()),
-        ("keep".into(), "yes".into()),
-        ("remove".into(), "old".into()),
+        ("zone".parse().unwrap(), "west".parse().unwrap()),
+        ("keep".parse().unwrap(), "yes".parse().unwrap()),
+        ("remove".parse().unwrap(), "old".parse().unwrap()),
     ]);
     let patch = MachineUpdate {
-        label_add: BTreeMap::from([("zone".into(), "east".into())]),
-        label_rm: vec!["remove".into(), "missing".into()],
+        label_add: BTreeMap::from([("zone".parse().unwrap(), "east".parse().unwrap())]),
+        label_rm: vec!["remove".parse().unwrap(), "missing".parse().unwrap()],
         accepts_services: Some(false),
         ..Default::default()
     };
@@ -270,28 +270,48 @@ fn label_and_role_patch_preserves_unrelated_metadata_and_rejects_conflicts() {
     assert_eq!(
         updated.labels,
         BTreeMap::from([
-            ("zone".into(), "east".into()),
-            ("keep".into(), "yes".into())
+            ("zone".parse().unwrap(), "east".parse().unwrap()),
+            ("keep".parse().unwrap(), "yes".parse().unwrap())
         ])
     );
     assert!(updated.accepts_builds && updated.accepts_ingress);
     assert!(!updated.accepts_services);
     assert_eq!(updated.name, original.name);
-    for patch in [
-        MachineUpdate {
-            label_add: BTreeMap::from([("zone".into(), "east".into())]),
-            label_rm: vec!["zone".into()],
-            ..Default::default()
-        },
-        MachineUpdate {
-            label_rm: vec![" ".into()],
-            ..Default::default()
-        },
-        MachineUpdate {
-            label_add: BTreeMap::from([("zone".into(), "bad\nvalue".into())]),
-            ..Default::default()
-        },
+    let patch = MachineUpdate {
+        label_add: BTreeMap::from([("zone".parse().unwrap(), "east".parse().unwrap())]),
+        label_rm: vec!["zone".parse().unwrap()],
+        ..Default::default()
+    };
+    assert!(apply_machine_update(&original, &[], patch).is_err());
+}
+
+#[test]
+fn malformed_machine_labels_are_rejected_at_the_wire_boundary() {
+    let valid: MachineUpdate =
+        serde_json::from_value(serde_json::json!({"label_add": {"Region": "", "region": "west"}}))
+            .unwrap();
+    let updated = apply_machine_update(&machine('1', "first", 1), &[], valid).unwrap();
+    assert_eq!(
+        serde_json::to_value(&updated)
+            .unwrap()
+            .get("labels")
+            .unwrap(),
+        &serde_json::json!({"Region": "", "region": "west"})
+    );
+    let wire = serde_json::to_value(machine('1', "first", 1)).unwrap();
+    for labels in [
+        serde_json::json!({"bad key": "value"}),
+        serde_json::json!({"key": "bad\nvalue"}),
     ] {
-        assert!(apply_machine_update(&original, &[], patch).is_err());
+        let mut wire = wire.clone();
+        *wire.get_mut("labels").unwrap() = labels.clone();
+        assert!(serde_json::from_value::<Machine>(wire).is_err());
+        assert!(
+            serde_json::from_value::<MachineUpdate>(serde_json::json!({"label_add": labels}))
+                .is_err()
+        );
     }
+    assert!(
+        serde_json::from_value::<MachineUpdate>(serde_json::json!({"label_rm": [" "]})).is_err()
+    );
 }

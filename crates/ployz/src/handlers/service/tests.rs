@@ -71,7 +71,8 @@ fn global_summary_counts_only_up_placement_eligible_machines() {
     observation
         .try_update(|parts| {
             parts.resolved_spec.placement = Placement {
-                constraints: vec![PlacementConstraint::parse("node.labels.group == edge").unwrap()],
+                constraints: [PlacementConstraint::parse("node.labels.group == edge").unwrap()]
+                    .into(),
             }
         })
         .unwrap();
@@ -83,7 +84,10 @@ fn global_summary_counts_only_up_placement_eligible_machines() {
         machine('d', "batch", MembershipObservation::Up),
     ];
     for machine in &mut machines[..3] {
-        machine.machine.labels.insert("group".into(), "edge".into());
+        machine
+            .machine
+            .labels
+            .insert("group".parse().unwrap(), "edge".parse().unwrap());
     }
 
     assert_eq!(
@@ -764,7 +768,7 @@ fn global_ingress_summary_uses_ingress_acceptance() {
     observation
         .try_update(|parts| {
             parts.resolved_spec =
-                ployz_core::caddy_service_spec("caddy:test".into(), Vec::new(), None)
+                ployz_core::caddy_service_spec("caddy:test".into(), Default::default(), None)
                     .to_resolved(
                         service.service_id,
                         ployz_core::ResolvedUpdateConfig::default(),

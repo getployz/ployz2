@@ -16,6 +16,64 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
+impl Client {
+    /// Check all command targets before selecting this Machine or sending source.
+    /// # Errors
+    /// Returns target-local refusals, transport failures, or cancellation.
+    pub(crate) async fn check_build_capabilities(
+        &self,
+        machine_id: MachineId,
+        targets: &[ployz_build::Target],
+        cancellation: &CancellationToken,
+    ) -> Result<(), remote::InputError> {
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .send(remote::encode(&Input::Check(targets.to_vec()))?)
+            .await
+            .expect("owned receiver");
+        // Keep the request open while queued: closing it withdraws the probe.
+        let mut responses = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.build_stream(
+                &MachineTarget::from(&machine_id),
+                ReceiverStream::new(receiver),
+            ),
+        )
+        .await
+        .map_err(|_| remote::InputError::from("capability request timed out"))?
+        .map_err(|error| remote::InputError::from(error.to_string()))?;
+        let waiting_since = tokio::time::Instant::now();
+        let mut deadline = waiting_since + Duration::from_secs(10);
+        let mut queued = false;
+        let mut admitted = false;
+        loop {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return Err("Build selection cancelled".into()),
+                () = tokio::time::sleep_until(deadline) => return Err("Build capability deadline expired".into()),
+                response = responses.message() => {
+                    let payload = response.map_err(|error| remote::InputError::from(error.to_string()))?
+                        .ok_or_else(|| remote::InputError::from("Build capability response ended early"))?;
+                    match remote::decode::<Event>(&payload)? {
+                        Event::Progress(Progress::Stage(Stage::Queued)) if !queued && !admitted => {
+                            queued = true;
+                            deadline = waiting_since + Duration::from_secs(86410);
+                        }
+                        Event::Admitted { machine_id: actual, active_timeout }
+                            if actual == machine_id && !admitted && !active_timeout.is_zero() && active_timeout <= Duration::from_secs(86400) => {
+                            admitted = true;
+                            deadline = tokio::time::Instant::now() + active_timeout + Duration::from_secs(70);
+                        }
+                        Event::Finished(Outcome::CapabilitiesChecked { machine_id: actual }) if admitted && actual == machine_id => return Ok(()),
+                        Event::Finished(Outcome::Failed { message, .. } | Outcome::Unknown { message, .. }) => return Err(message.into()),
+                        Event::Admitted { .. } | Event::Progress(_) | Event::Finished(_) => return Err("invalid Build capability response".into()),
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(super) enum Completion {
     Images {
         machine_id: MachineId,
@@ -228,7 +286,8 @@ async fn execute_attempt(
                 retained.expect("validated loaded images retain their response stream"),
             )),
         },
-        outcome @ (Outcome::Validated { .. }
+        outcome @ (Outcome::CapabilitiesChecked { .. }
+        | Outcome::Validated { .. }
         | Outcome::Published { .. }
         | Outcome::Failed { .. }
         | Outcome::Unknown { .. }) => Completion::Report(outcome),
@@ -284,7 +343,10 @@ fn validate_outcome(
         Outcome::Published { machine_id }
             if *machine_id == expected && output == ployz_build::Output::Registry => {}
         Outcome::Failed { .. } | Outcome::Unknown { .. } => {}
-        Outcome::Images { .. } | Outcome::Validated { .. } | Outcome::Published { .. } => {
+        Outcome::CapabilitiesChecked { .. }
+        | Outcome::Images { .. }
+        | Outcome::Validated { .. }
+        | Outcome::Published { .. } => {
             return unknown(
                 Stage::Output,
                 "Build result does not match the admitted request",
@@ -343,6 +405,7 @@ mod tests {
                 images: Vec::new(),
             },
             Outcome::Validated { machine_id },
+            Outcome::CapabilitiesChecked { machine_id },
             Outcome::Images {
                 machine_id,
                 images: vec![BuiltImage {

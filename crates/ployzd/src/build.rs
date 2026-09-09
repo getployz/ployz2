@@ -42,7 +42,10 @@ pub(crate) fn start(
                 work: Default::default(),
             },
             Outcome::Failed { stage, .. } => failed(*stage, message),
-            Outcome::Images { .. } | Outcome::Validated { .. } | Outcome::Published { .. } => {
+            Outcome::CapabilitiesChecked { .. }
+            | Outcome::Images { .. }
+            | Outcome::Validated { .. }
+            | Outcome::Published { .. } => {
                 failed(Stage::Output, format!("Build completed; {message}"))
             }
         };
@@ -65,13 +68,25 @@ pub(crate) fn start(
     ReceiverStream::new(receiver)
 }
 
-fn require_build_acceptance(local: &crate::machine::LocalMachine) -> Result<MachineId, String> {
-    let record = local.record().map_err(|error| error.to_string())?;
+#[derive(Debug, thiserror::Error)]
+enum BuildAdmissionError {
+    #[error(transparent)]
+    Local(#[from] crate::machine::LocalMachineError),
+    #[error("Machine is not participating; Build execution was not attempted")]
+    NotParticipating,
+    #[error("Machine does not accept Builds; execution was not attempted")]
+    Disabled,
+}
+
+fn require_build_acceptance(
+    local: &crate::machine::LocalMachine,
+) -> Result<MachineId, BuildAdmissionError> {
+    let record = local.record()?;
     let machine = record
         .machine()
-        .ok_or("Machine is not participating; Build execution was not attempted")?;
+        .ok_or(BuildAdmissionError::NotParticipating)?;
     if !machine.accepts_builds {
-        return Err("Machine does not accept Builds; execution was not attempted".into());
+        return Err(BuildAdmissionError::Disabled);
     }
     Ok(machine.id)
 }
@@ -84,25 +99,44 @@ async fn attempt(
     state: Arc<AttemptState>,
 ) -> Outcome {
     let start = tokio::time::timeout(Duration::from_secs(10), requests.next()).await;
-    let definition = match start {
+    let request = match start {
         Ok(Some(Ok(payload))) => match remote::decode(&payload) {
-            Ok(Input::Start(definition)) => definition,
+            Ok(request @ (Input::Start(_) | Input::Check(_))) => request,
             _ => return failed(Stage::Admission, "expected a valid Build start frame"),
         },
         _ => return failed(Stage::Admission, "Build request ended before admission"),
     };
-    if definition.targets.is_empty()
-        || definition.targets.len() > 128
-        || definition.image_contexts.len() > 128
-    {
+    let targets = match &request {
+        Input::Start(definition) if definition.image_contexts.len() <= 128 => &definition.targets,
+        Input::Check(targets)
+            if targets
+                .iter()
+                .flat_map(|target| &target.platforms)
+                .all(|platform| remote::linux_platform(platform)) =>
+        {
+            targets
+        }
+        Input::Check(_)
+        | Input::Start(_)
+        | Input::Entry { .. }
+        | Input::Data(_)
+        | Input::Finish
+        | Input::Cancel => {
+            return failed(
+                Stage::Admission,
+                "invalid Build capability request or too many image contexts",
+            );
+        }
+    };
+    if targets.is_empty() || targets.len() > 128 {
         return failed(
             Stage::Admission,
             "Build must name between one and 128 targets",
         );
     }
-    let work = ployz_build::WorkEvidence::new(&definition.targets);
+    let work = ployz_build::WorkEvidence::new(targets);
     if let Err(reason) = require_build_acceptance(&local) {
-        return failed(Stage::Admission, reason).with_work(work);
+        return failed(Stage::Admission, reason.to_string()).with_work(work);
     }
     let permit = match runner.enter() {
         Ok(queue::Entry::Active(permit)) => permit,
@@ -145,10 +179,9 @@ async fn attempt(
     };
     let machine_id = match require_build_acceptance(&local) {
         Ok(id) => id,
-        Err(reason) => return failed(Stage::Admission, reason).with_work(work),
+        Err(reason) => return failed(Stage::Admission, reason.to_string()).with_work(work),
     };
-    *state.evidence.lock().expect("Build evidence lock") =
-        ployz_build::WorkEvidence::new(&definition.targets);
+    *state.evidence.lock().expect("Build evidence lock") = work;
     let observed = state.clone();
     let cancellation = admission.cancellation();
     let remaining = admission.remaining();
@@ -165,9 +198,22 @@ async fn attempt(
     let output = events.clone();
     let mut execution = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        receive_and_execute(
-            machine_id, definition, source, admission, policy, &output, &observed,
-        )
+        match request {
+            Input::Start(definition) => receive_and_execute(
+                machine_id, definition, source, admission, policy, &output, &observed,
+            ),
+            Input::Check(targets) => {
+                // The input pump still handles cancellation; no upload is admitted.
+                drop(source);
+                match admission.check_capabilities(&policy.docker, &targets) {
+                    Ok(()) => Outcome::CapabilitiesChecked { machine_id },
+                    Err(error) => failure(Stage::Preparation, error),
+                }
+            }
+            Input::Entry { .. } | Input::Data(_) | Input::Finish | Input::Cancel => {
+                unreachable!("only Build starts and capability checks reach admission")
+            }
+        }
     });
     // Dropping the input pump closes the upload channel. A receiver blocked
     // waiting for another file then wakes and can release unused admission.
@@ -188,12 +234,13 @@ async fn attempt(
     let outcome = match tokio::time::timeout(Duration::from_secs(70), execution).await {
         Ok(result) => match joined(result) {
             outcome @ Outcome::Unknown { .. } => outcome,
-            Outcome::Images { .. } | Outcome::Validated { .. } | Outcome::Published { .. } => {
-                failed(
-                    Stage::Cleanup,
-                    format!("{reason}; output completed before cancellation was observed"),
-                )
-            }
+            Outcome::CapabilitiesChecked { .. }
+            | Outcome::Images { .. }
+            | Outcome::Validated { .. }
+            | Outcome::Published { .. } => failed(
+                Stage::Cleanup,
+                format!("{reason}; output completed before cancellation was observed"),
+            ),
             Outcome::Failed {
                 stage,
                 message,

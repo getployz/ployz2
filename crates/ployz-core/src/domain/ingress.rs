@@ -29,7 +29,7 @@ pub struct IngressProxyServiceSpecError;
 #[must_use]
 pub fn caddy_service_spec(
     image: String,
-    constraints: Vec<PlacementConstraint>,
+    constraints: std::collections::BTreeSet<PlacementConstraint>,
     fragment: Option<IngressProxyFragment>,
 ) -> RequestedServiceSpec {
     RequestedServiceSpec {
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn caddy_wiring_round_trips_through_both_validators() {
-        let machines = vec![PlacementConstraint::parse("node.labels.edge==true").unwrap()];
+        let machines = [PlacementConstraint::parse("node.labels.edge==true").unwrap()].into();
         let requested = caddy_service_spec("example.test/ingress:override".into(), machines, None);
 
         assert!(validate_requested_ingress_service_spec(&requested).is_ok());
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn validators_reject_noncanonical_whole_spec_fields() {
-        let requested = caddy_service_spec("caddy:test".into(), Vec::new(), None);
+        let requested = caddy_service_spec("caddy:test".into(), Default::default(), None);
 
         let mut wrong_mode = requested.clone();
         wrong_mode.mode = ServiceMode::Replicated {
