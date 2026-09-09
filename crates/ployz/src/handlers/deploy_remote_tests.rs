@@ -62,6 +62,7 @@ async fn deploy(root: &Path, service: DeployService) -> Result<(), crate::failur
 #[tokio::test]
 async fn remote_deploy_uses_each_services_completed_content_without_local_inspection() {
     let (root, service, builds) = fixture();
+    *builds.platforms.lock().unwrap() = Some(vec!["linux/arm64".into(), "linux/amd64".into()]);
     let created = service.created_specs();
     let yaml = fs::read_to_string(root.join("compose.yaml")).unwrap();
     fs::write(
@@ -144,7 +145,7 @@ async fn incompatible_application_platform_refuses_before_transfer_or_mutations(
     for (architecture, platform) in [("aarch64", "linux/amd64"), ("armv6l", "linux/arm/v7")] {
         let (root, service, builds) = fixture();
         let mutations = service.mutating_rpcs();
-        *builds.platform.lock().unwrap() = Some(platform.into());
+        *builds.platforms.lock().unwrap() = Some(vec![platform.into()]);
         let mut destination = machine('b', "application");
         destination.machine.runtime.architecture = architecture.into();
         let service = service.with_machines(vec![machine('a', "builder"), destination]);
@@ -170,9 +171,10 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
         MembershipObservation::Down,
     );
     let image = ployz_build::BuiltImage {
-        reference: format!("registry.invalid/shared@sha256:{}", "1".repeat(64)),
+        reference: format!("sha256:{}", "1".repeat(64)),
         tags: vec!["registry.invalid/shared:latest".into()],
-        platform: "linux/amd64".into(),
+        platforms: vec!["linux/amd64".into()],
+        location: "unix:///var/run/docker.sock".into(),
     };
     builds.stores.lock().unwrap().insert(
         source.machine.id,
@@ -204,9 +206,15 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
         missing.clone(),
     ]))
     .await;
-    let result = crate::image::push_from_machine(&mut client, &image, source.machine.id, &[])
-        .await
-        .unwrap();
+    let result = crate::image::push_from_machine(
+        &mut client,
+        &image,
+        source.machine.id,
+        &[],
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         result
             .successes
@@ -236,8 +244,10 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
             .lock()
             .unwrap()
             .iter()
-            .all(|(_, pull)| pull.image == image.reference
-                && pull.source.management_address == source.machine.management_address())
+            .all(
+                |(_, pull)| pull.image == image.repository_reference().unwrap()
+                    && pull.source.management_address == source.machine.management_address()
+            )
     );
     builds
         .stores
@@ -251,7 +261,8 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
             &mut client,
             &image,
             source.machine.id,
-            &[success.machine.id.to_string()]
+            &[success.machine.id.to_string()],
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await,
         Err(crate::image::PushError::UnsupportedImageStore)
@@ -371,7 +382,7 @@ async fn remote_deploy_accepts_matching_non_primary_architectures() {
     ] {
         let (root, service, builds) = fixture();
         let created = service.created_specs();
-        *builds.platform.lock().unwrap() = Some(platform.into());
+        *builds.platforms.lock().unwrap() = Some(vec![platform.into()]);
         let mut destination = machine('b', "application");
         destination.machine.runtime.architecture = architecture.into();
         let yaml = fs::read_to_string(root.join("compose.yaml")).unwrap();

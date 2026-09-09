@@ -63,16 +63,18 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let skip_health_monitor = matches.get_flag("skip-health");
     let mut options = plan_options(force_recreate, skip_health_monitor);
     options.selected = selected_attempts(&project, &string_values(matches, "service"))?;
+    let cancellation = crate::cancellation::listen()?;
     let (mut candidate, captured_build) =
         prepare_deploy(matches, &load, project, &resolved, options)?;
     runtime()?.block_on(async {
-        let mut client = connect_client(root, context.as_deref()).await?;
+        let mut client =
+            crate::cancellation::read(&cancellation, connect_client(root, context.as_deref()))
+                .await?;
         // Every required Build finishes before preparation or application changes.
         let builds = match captured_build {
             Some(build) => match remote {
                 Some(target) => {
                     let machine = super::build::select_build_machine(&mut client, &target).await?;
-                    let cancellation = super::cancellation_on_ctrl_c();
                     let result = build
                         .execute_remote_images(
                             &client,
@@ -82,7 +84,6 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                         )
                         .await;
                     let cancelled = cancellation.is_cancelled();
-                    cancellation.cancel();
                     if cancelled {
                         return Err(Error::usage(
                             "Build cancelled. No Service, hook, or volume change was attempted.",
@@ -91,16 +92,19 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                     result.map_err(crate::deploy::DeployError::from)?
                 }
                 None => build
-                    .execute(load.docker.as_deref())
+                    .execute(load.docker.as_deref(), &cancellation)
                     .map_err(crate::deploy::DeployError::from)?,
             },
             None => Vec::new(),
         };
-        candidate.bind_builds(&builds);
+        candidate
+            .bind_builds(&builds)
+            .map_err(crate::deploy::DeployError::from)?;
         deploy_project(
             &mut client,
             &candidate,
             &builds,
+            &cancellation,
             crate::deploy::ConfirmGate {
                 auto_confirm: yes,
                 context: context.as_deref().unwrap_or("default"),

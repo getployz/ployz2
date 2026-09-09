@@ -106,7 +106,7 @@ impl Fixture {
                     image_contexts: Default::default(),
                     targets: vec![ployz_build::Target {
                         name: "api".into(),
-                        platform: None,
+                        platforms: Vec::new(),
                     }],
                     output,
                     no_cache: false,
@@ -227,11 +227,8 @@ async fn captured_build_crosses_owned_rpc_and_returns_only_remote_image_evidence
     let [image] = images.as_slice() else {
         panic!("expected one image: {images:?}")
     };
-    assert_eq!(
-        image.reference,
-        format!("example.test/api@sha256:{}", "1".repeat(64))
-    );
-    assert_eq!(image.platform, "linux/amd64");
+    assert_eq!(image.reference, format!("sha256:{}", "1".repeat(64)));
+    assert_eq!(image.platforms, ["linux/amd64"]);
     assert_eq!(
         fs::read_to_string(fixture.root.join("received-payload")).unwrap(),
         "captured-before-edit"
@@ -391,7 +388,7 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
             image_contexts: Default::default(),
             targets: vec![ployz_build::Target {
                 name: "api".into(),
-                platform: None,
+                platforms: Vec::new(),
             }],
             output: Output::Load,
             no_cache: false,

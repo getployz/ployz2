@@ -17,7 +17,7 @@ use tonic::{Request, Response, Status};
 #[derive(Default)]
 pub struct BuildFixture {
     pub terminal: Mutex<Option<Outcome>>,
-    pub platform: Mutex<Option<String>>,
+    pub platforms: Mutex<Option<Vec<String>>>,
     pub definitions: Mutex<Vec<remote::Definition>>,
     pub stores: Mutex<BTreeMap<MachineId, MachineImages>>,
     pub opened: Mutex<Vec<MachineId>>,
@@ -119,16 +119,17 @@ impl BuildFixture {
                         .enumerate()
                         .map(|(index, _)| ployz_build::BuiltImage {
                             reference: format!(
-                                "registry.invalid/shared@sha256:{}",
+                                "sha256:{}",
                                 (offset + index + 1).to_string().repeat(64)
                             ),
                             tags: vec!["registry.invalid/shared:latest".into()],
-                            platform: self
-                                .platform
+                            platforms: self
+                                .platforms
                                 .lock()
                                 .unwrap()
                                 .clone()
-                                .unwrap_or_else(|| "linux/amd64".into()),
+                                .unwrap_or_else(|| vec!["linux/amd64".into()]),
+                            location: "unix:///var/run/docker.sock".into(),
                         })
                         .collect::<Vec<_>>();
                     let mut stores = self.stores.lock().unwrap();
@@ -143,12 +144,12 @@ impl BuildFixture {
                     store
                         .images
                         .extend(images.iter().map(|image| ployz_core::ImageSummary {
-                            id: image.reference.split_once('@').unwrap().1.into(),
+                            id: image.reference.clone(),
                             repo_tags: image.tags.clone(),
                             created: 0,
                             size: 1,
                             containers: 0,
-                            platforms: vec![image.platform.clone()],
+                            platforms: image.platforms.clone(),
                         }));
                     Outcome::Images { machine_id, images }
                 }

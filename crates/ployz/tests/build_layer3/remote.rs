@@ -78,7 +78,7 @@ async fn remote_dockerfile_runs_on_selected_machine_and_bounds_abandoned_attempt
     assert!(stdout.contains(selected.as_str()), "{stdout}");
     let exact = stdout
         .split_whitespace()
-        .find(|word| word.contains("@sha256:"))
+        .find(|word| word.starts_with("sha256:"))
         .expect("remote exact image identity");
     assert_eq!(
         cluster
@@ -228,7 +228,7 @@ async fn request(
                 image_contexts: Default::default(),
                 targets: vec![ployz_build::Target {
                     name: "app".into(),
-                    platform: None,
+                    platforms: Vec::new(),
                 }],
                 output: Output::Load,
                 no_cache: false,
@@ -367,7 +367,7 @@ async fn queue_upload_timeout_and_daemon_restart_discard_waiters_before_a_safe_b
     let stdout = String::from_utf8(output.stdout).unwrap();
     let exact = stdout
         .split_whitespace()
-        .find(|word| word.contains("@sha256:"))
+        .find(|word| word.starts_with("sha256:"))
         .unwrap();
     assert_eq!(
         cluster
@@ -508,6 +508,7 @@ async fn remote_build_delivers_dependency_content_and_deploys_without_a_registry
         &app.built,
         destination,
         &[selected.to_string()],
+        &CancellationToken::new(),
     )
     .await
     .unwrap();

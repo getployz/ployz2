@@ -148,9 +148,13 @@ impl CapturedBuild {
                 let BuildLocation::Machine(source) = image.location else {
                     unreachable!("remote steps return Machine images")
                 };
-                let serving =
-                    crate::image::serve_build_image(&mut client.clone(), &image.built, source)
-                        .await;
+                let serving = crate::image::serve_build_image(
+                    &mut client.clone(),
+                    &image.built,
+                    source,
+                    &cancellation,
+                )
+                .await;
                 let source = serving.map_err(|error| {
                     failed(
                         Stage::Preparation,
@@ -161,8 +165,10 @@ impl CapturedBuild {
                 contexts.insert(
                     dependency.to_owned(),
                     ployz_build::ImageContext {
-                        reference: image.built.reference.clone(),
-                        platform: image.built.platform.clone(),
+                        reference: image.built.repository_reference().map_err(|error| {
+                            failed(Stage::Preparation, error.to_string()).with_work(work.clone())
+                        })?,
+                        platforms: image.built.platforms.clone(),
                         source,
                     },
                 );

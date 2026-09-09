@@ -13,6 +13,7 @@
 mod builder;
 mod execution;
 mod image_contexts;
+mod index;
 mod policy;
 pub use policy::clear_cache;
 mod received_recipe;
@@ -92,9 +93,9 @@ pub struct Request<'a> {
 pub struct Target {
     /// Caller's name for this image, as the captured Compose file names it.
     pub name: String,
-    /// Platform the capture asks for, which the completed image must carry.
-    /// `None` accepts whichever platform the builder produces.
-    pub platform: Option<String>,
+    /// Platforms the capture asks for, which the completed image must carry.
+    /// Empty accepts the native platform.
+    pub platforms: Vec<String>,
 }
 
 /// What an attempt does with its result. These outcomes are exclusive: an
@@ -114,13 +115,36 @@ pub enum Output {
 /// the content this attempt observed there.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BuiltImage {
-    /// Digest-pinned reference. Binds later use to this attempt's content, so
-    /// a later Build moving a shared tag cannot substitute its image.
+    /// Docker content digest on the execution host. Unlike repository@digest,
+    /// this still resolves after the repository's last tag moves to another image.
     pub reference: String,
     /// Tags this attempt applied, as the execution host recorded them.
     pub tags: Vec<String>,
-    /// The platform actually present, not the one requested.
-    pub platform: String,
+    /// Platforms verified in the execution host’s image store.
+    pub platforms: Vec<String>,
+    /// Docker endpoint holding this content.
+    pub location: String,
+}
+
+impl BuiltImage {
+    /// Name this manifest in the repository used by its Build.
+    /// # Errors
+    /// Rejects missing or malformed repository evidence.
+    pub fn repository_reference(&self) -> Result<String, BuildError> {
+        let tag = self
+            .tags
+            .first()
+            .ok_or_else(|| BuildError::Result("Build image has no tags".into()))?;
+        let reference = tag
+            .parse::<oci_client::Reference>()
+            .map_err(|error| BuildError::Result(error.to_string()))?;
+        Ok(format!(
+            "{}/{}@{}",
+            reference.registry(),
+            reference.repository(),
+            self.reference
+        ))
+    }
 }
 
 /// An immutable named image context, delivered by the existing Machine image
@@ -129,8 +153,8 @@ pub struct BuiltImage {
 pub struct ImageContext {
     /// Repository reference pinned to the completed manifest’s SHA-256 digest.
     pub reference: String,
-    /// The single platform actually available in that completed image.
-    pub platform: String,
+    /// Platforms actually available in that completed image.
+    pub platforms: Vec<String>,
     /// Open serving endpoint of the Machine containing that exact content.
     pub source: ployz_core::ImageIngestDestination,
 }
@@ -166,7 +190,7 @@ pub enum BuildError {
     #[error("the build exceeded its {0}s execution timeout and was terminated")]
     TimedOut(u64),
     /// The attempt stopped, but its termination could not be observed.
-    #[error("the build was terminated but its builder did not stop: {0}")]
+    #[error("build resource cleanup could not be confirmed: {0}")]
     UncertainTermination(String),
     /// The build finished, but its result is not the image it claims.
     #[error("{0}")]
@@ -223,7 +247,8 @@ impl BuildError {
 /// [`EXECUTION_TIMEOUT`], with a separate bounded budget for cleanup.
 ///
 /// Returns the completed images in the order of `targets`. Validation and
-/// registry publication retain no local image, so they return none.
+/// registry publication retain no local image, so they return none. Cancellation
+/// is supplied by the caller; this function never installs process signal handlers.
 ///
 /// # Errors
 /// Returns a prerequisite error when Docker cannot serve the Build, a request
@@ -231,8 +256,11 @@ impl BuildError {
 /// diagnosis, a timeout, an uncertain outcome when termination could not be
 /// observed, or a result error when the completed image is not the content it
 /// claims.
-pub fn execute(request: &Request<'_>) -> Result<Vec<BuiltImage>, BuildError> {
-    execute_admitted(request, Admission::wait()?, &|event| {
+pub fn execute(
+    request: &Request<'_>,
+    cancellation: &Cancellation,
+) -> Result<Vec<BuiltImage>, BuildError> {
+    execute_admitted(request, Admission::wait(cancellation)?, &|event| {
         if let Progress::Output(bytes) = event {
             use std::io::Write as _;
             let _ = std::io::stderr().write_all(&bytes);
@@ -252,6 +280,18 @@ pub fn execute_admitted(
     progress: &(dyn Fn(Progress) + Sync),
 ) -> Result<Vec<BuiltImage>, BuildError> {
     let planned = plan(request.targets)?;
+    for target in request.targets {
+        if target.platforms.len() > 1 && !request.railpack.iter().any(|r| r.name == target.name) {
+            return Err(BuildError::Request(
+                "a Dockerfile Build produces one platform".into(),
+            ));
+        }
+    }
+    if request.output != Output::Load && request.targets.iter().any(|t| t.platforms.len() > 1) {
+        return Err(BuildError::Request(
+            "multi-platform Railpack builds require local image output".into(),
+        ));
+    }
     if planned.is_empty() {
         return Ok(Vec::new());
     }
@@ -287,42 +327,61 @@ pub fn execute_admitted(
         })?;
     let builder = Builder::acquire(&docker, admission.lock, &admission.resources)
         .map_err(|error| error.at(Stage::Preparation))?;
+    let mut preparation = None;
     let result = (|| {
         let native = builder
             .native_platform(request.targets, &admission.resources)
             .map_err(|error| error.at(Stage::Preparation))?;
-        let preparation = railpack::prepare(&docker, request, &admission.resources)
+        preparation = railpack::prepare(&docker, request, &native, &admission.resources)
             .map_err(|error| error.at(Stage::Preparation))?;
         for image in request.image_contexts.values() {
             for target in request.targets {
-                let platform = target.platform.as_deref().unwrap_or(&native);
-                if !covers(&image.platform, platform) {
-                    return Err(BuildError::Request(format!(
-                        "image context {} contains {}, but this Build requires {platform}",
-                        image.reference, image.platform
-                    ))
-                    .at(Stage::Preparation));
+                let platforms = if target.platforms.is_empty() {
+                    vec![native.clone()]
+                } else {
+                    target.platforms.clone()
+                };
+                for platform in platforms {
+                    if !image
+                        .platforms
+                        .iter()
+                        .any(|observed| covers(observed, &platform))
+                    {
+                        return Err(BuildError::Request(format!(
+                            "image context {} contains {:?}, but this Build requires {platform}",
+                            image.reference, image.platforms
+                        ))
+                        .at(Stage::Preparation));
+                    }
                 }
             }
         }
         let overrides = preparation
             .as_ref()
             .map(railpack::Preparation::override_file);
+        let (multi, ordinary): (Vec<_>, Vec<_>) = planned
+            .into_iter()
+            .partition(|target| target.target.platforms.len() > 1);
+        let mut images = Vec::new();
         // A successful per-target push is publication evidence. A failed batch
         // cannot tell us which of its registry exports completed.
         let batch_size = if request.output == Output::Registry {
             1
         } else {
-            planned.len()
+            ordinary.len().max(1)
         };
-        for batch in planned.chunks(batch_size) {
+        for batch in ordinary.chunks(batch_size) {
             let mut arguments = bake_arguments(request, batch, &metadata, overrides.as_deref());
-            for target in &planned {
+            for target in batch {
                 arguments.push("--set".into());
                 arguments.push(format!(
                     "{}.platform={}",
                     target.bake,
-                    target.target.platform.as_deref().unwrap_or(&native)
+                    target
+                        .target
+                        .platforms
+                        .first()
+                        .map_or(native.as_str(), String::as_str)
                 ));
             }
             progress(Progress::Stage(Stage::Building));
@@ -349,8 +408,10 @@ pub fn execute_admitted(
             progress(Progress::Stage(Stage::Output));
             match request.output {
                 Output::Load => {
-                    return built_images(&docker, &metadata, batch, progress)
-                        .map_err(|error| error.at(Stage::Output));
+                    images.extend(
+                        built_images(&docker, &metadata, batch, progress)
+                            .map_err(|error| error.at(Stage::Output))?,
+                    );
                 }
                 Output::Registry | Output::Validate => {
                     for target in batch {
@@ -366,7 +427,21 @@ pub fn execute_admitted(
                 }
             }
         }
-        Ok(Vec::new())
+        for target in &multi {
+            let image = index::build(&docker, &builder, request, target, overrides.as_deref())?;
+            images.push(image);
+        }
+        let mut by_name = ordinary
+            .iter()
+            .chain(&multi)
+            .map(|target| target.target.name.as_str())
+            .zip(images)
+            .collect::<BTreeMap<_, _>>();
+        Ok(request
+            .targets
+            .iter()
+            .filter_map(|target| by_name.remove(target.name.as_str()))
+            .collect())
     })();
     progress(Progress::Stage(Stage::Cleanup));
     // An ephemeral worker may exit before periodic GC runs. Use upstream
@@ -482,31 +557,23 @@ fn built_images(
                         ))
                     })
                 })?;
-            let tags = result
-                .name
-                .split(',')
-                .map(str::trim)
-                .filter(|tag| !tag.is_empty())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>();
-            let repository = tags
-                .first()
-                .map(|tag| repository(tag))
-                .ok_or_else(|| {
-                    BuildError::Result(format!("the build tagged no image for '{name}'"))
-                })?
-                .to_owned();
-            let reference = format!("{repository}@{}", result.digest);
+            let tags = result.tags();
+            if tags.is_empty() {
+                return Err(BuildError::Result(format!(
+                    "the build tagged no image for '{name}'"
+                )));
+            }
+            let reference = result.digest;
             let platform = verify(
                 docker,
                 &reference,
-                &result.digest,
-                planned.target.platform.as_deref(),
+                planned.target.platforms.first().map(String::as_str),
             )?;
             let image = BuiltImage {
                 reference,
                 tags,
-                platform,
+                platforms: vec![platform],
+                location: docker.location(),
             };
             progress(Progress::Target {
                 name: name.clone(),
@@ -533,7 +600,6 @@ fn built_images(
 fn verify(
     docker: &Docker<'_>,
     reference: &str,
-    digest: &str,
     requested: Option<&str>,
 ) -> Result<String, BuildError> {
     let inspected = docker
@@ -558,7 +624,7 @@ fn verify(
             "the local image store reports no content descriptor for {reference}; Ployz Builds require Docker's containerd image store"
         )));
     };
-    if descriptor.digest != digest {
+    if descriptor.digest != reference {
         return Err(BuildError::Result(format!(
             "the local image store holds {} for {reference} rather than the completed content",
             descriptor.digest
@@ -595,21 +661,23 @@ fn covers(observed: &str, requested: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// The repository part of a tag, keeping a registry port intact.
-fn repository(tag: &str) -> &str {
-    let start = tag.rfind('/').map_or(0, |slash| slash + 1);
-    match tag.get(start..).and_then(|name| name.find([':', '@'])) {
-        Some(offset) => tag.get(..start + offset).unwrap_or(tag),
-        None => tag,
-    }
-}
-
 #[derive(Deserialize)]
 struct TargetMetadata {
     #[serde(rename = "containerimage.digest")]
     digest: String,
     #[serde(rename = "image.name")]
     name: String,
+}
+
+impl TargetMetadata {
+    fn tags(&self) -> Vec<String> {
+        self.name
+            .split(',')
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
 }
 
 #[derive(Deserialize)]
@@ -658,6 +726,8 @@ pub(crate) enum Streams {
     Inherited,
     /// Evidence this crate reads.
     Captured,
+    /// Read failure diagnostics while discarding binary image content.
+    Discarded,
 }
 
 /// The Docker CLI this attempt drives, with the values captured for it.
@@ -674,6 +744,14 @@ pub(crate) struct Docker<'a> {
 }
 
 impl<'a> Docker<'a> {
+    fn location(&self) -> String {
+        self.environment
+            .get("DOCKER_HOST")
+            .filter(|host| !host.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "unix:///var/run/docker.sock".into())
+    }
+
     /// Host policy and builder ownership apply only to this Machine's Docker.
     fn require_local(&self) -> Result<(), BuildError> {
         if self
@@ -726,6 +804,48 @@ impl<'a> Docker<'a> {
         }
     }
 
+    /// Run work with a private helper container, confirming its absence afterwards.
+    ///
+    /// # Errors
+    /// Preserves the work's failure unless container removal cannot be confirmed.
+    pub(crate) fn with_container<T>(
+        &self,
+        name: &str,
+        arguments: &[&str],
+        work: impl FnOnce(&str) -> Result<T, BuildError>,
+    ) -> Result<T, BuildError> {
+        self.remove_container(name)?;
+        // A failed or interrupted create may still have reached Docker. Always
+        // confirm absence, including when no successful create was observed.
+        let mut create = vec!["create", "--name", name];
+        create.extend_from_slice(arguments);
+        let result = self
+            .run("create build helper", &create, Streams::Captured)
+            .map_err(|error| error.at(Stage::Preparation))
+            .and_then(|_| work(name));
+        match (result, self.remove_container(name)) {
+            (result, Ok(())) => result,
+            (Ok(_), Err(cleanup)) => Err(cleanup),
+            (Err(error), Err(cleanup)) => Err(error.with_later_failure(cleanup)),
+        }
+    }
+
+    fn remove_container(&self, name: &str) -> Result<(), BuildError> {
+        match self.releasing().run(
+            "remove build helper",
+            &["rm", "--force", name],
+            Streams::Captured,
+        ) {
+            Ok(_) => Ok(()),
+            Err(BuildError::Docker { diagnostic, .. })
+                if diagnostic.contains("No such container") =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(BuildError::UncertainTermination(error.to_string())),
+        }
+    }
+
     /// Run one Docker command to completion within the deadline.
     ///
     /// # Errors
@@ -764,9 +884,13 @@ impl<'a> Docker<'a> {
         // block until its deadline.
         let output = self.working_dir.join("docker-output");
         let diagnosis = self.working_dir.join("docker-diagnosis");
-        if streams == Streams::Captured {
+        if streams != Streams::Inherited {
             command
-                .stdout(self.create(action, &output)?)
+                .stdout(match streams {
+                    Streams::Captured => Stdio::from(self.create(action, &output)?),
+                    Streams::Discarded => Stdio::null(),
+                    Streams::Inherited => unreachable!(),
+                })
                 .stderr(self.create(action, &diagnosis)?);
         }
         let mut progress_reader = if streams == Streams::Inherited && self.progress.is_some() {
@@ -824,7 +948,9 @@ impl<'a> Docker<'a> {
             // Inherited output already reached the operator, and the file
             // still holds whatever the previous captured command wrote.
             let diagnostic = match streams {
-                Streams::Captured => std::fs::read_to_string(&diagnosis).unwrap_or_default(),
+                Streams::Captured | Streams::Discarded => {
+                    std::fs::read_to_string(&diagnosis).unwrap_or_default()
+                }
                 Streams::Inherited => String::new(),
             };
             let diagnostic = diagnostic.trim();
@@ -844,7 +970,7 @@ impl<'a> Docker<'a> {
                     diagnostic: error.to_string(),
                 })
             }
-            Streams::Inherited => Ok(String::new()),
+            Streams::Inherited | Streams::Discarded => Ok(String::new()),
         }
     }
 

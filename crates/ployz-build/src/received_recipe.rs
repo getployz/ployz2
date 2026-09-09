@@ -52,7 +52,13 @@ pub fn validate_capture(
     }
     for context in definition.image_contexts.values() {
         validate_remote_context(&format!("docker-image://{}", context.reference))?;
-        if context.source.port == 0 || !crate::remote::linux_platform(&context.platform) {
+        if context.source.port == 0
+            || (context.platforms.is_empty()
+                || context
+                    .platforms
+                    .iter()
+                    .any(|platform| !crate::remote::linux_platform(platform)))
+        {
             return Err("invalid completed Build image context".into());
         }
     }
@@ -186,9 +192,7 @@ pub fn validate_capture(
                 .iter()
                 .find(|target| target.name == name)
                 .expect("validated target");
-            if platforms.len() != usize::from(target.platform.is_some())
-                || platforms.first().map(text).transpose()? != target.platform.as_deref()
-            {
+            if platforms.iter().map(text).collect::<Result<Vec<_>, _>>()? != target.platforms {
                 return Err("Build recipe platforms differ from the admitted request".into());
             }
         }
@@ -492,7 +496,7 @@ mod tests {
             image_contexts: Default::default(),
             targets: vec![crate::Target {
                 name: "api".into(),
-                platform: None,
+                platforms: Vec::new(),
             }],
             output: crate::Output::Load,
             no_cache: false,
@@ -539,7 +543,7 @@ mod tests {
             image_contexts: Default::default(),
             targets: vec![crate::Target {
                 name: "api".into(),
-                platform: None,
+                platforms: Vec::new(),
             }],
             output: crate::Output::Load,
             no_cache: false,

@@ -148,6 +148,9 @@ services:
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 fn captured_build_preserves_sources_configuration_and_builder_flags() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
@@ -197,7 +200,9 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     fs::remove_file(root.join("Dockerfile")).unwrap();
     fs::remove_file(root.join("Dockerfile.dockerignore")).unwrap();
     project.builds.clear();
-    let outcome = build.execute(Some(&docker)).unwrap();
+    let outcome = build
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+        .unwrap();
     let calls = fs::read_to_string(calls).unwrap();
     let bake = calls
         .lines()
@@ -231,12 +236,9 @@ fn captured_build_preserves_sources_configuration_and_builder_flags() {
     );
     let service = one_built(outcome);
     assert_eq!(service.image, "example.test/api:version2");
-    assert_eq!(
-        service.built.reference,
-        format!("example.test/api@{FIRST_CONTENT}")
-    );
+    assert_eq!(service.built.reference, FIRST_CONTENT);
     assert_eq!(service.built.tags, ["example.test/api:version2"]);
-    assert_eq!(service.built.platform, "linux/amd64");
+    assert_eq!(service.built.platforms, ["linux/amd64"]);
     let override_yaml = fs::read_to_string(captured).unwrap();
     assert!(override_yaml.contains("api"));
     assert!(override_yaml.contains("example.test/api:version2"));
@@ -343,6 +345,9 @@ fn check_with_direct_push_stops_after_validation() {
 
 #[test]
 fn built_images_bind_to_exact_content_after_tag_reuse() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-binding-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -361,31 +366,26 @@ fn built_images_bind_to_exact_content_after_tag_reuse() {
 
     let first = capture_build(&plan, &options, &mut project)
         .unwrap()
-        .execute(Some(&docker))
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
         .unwrap();
     // A later Build moves the same requested tag onto different content.
     fs::write(root.join("digest"), SECOND_CONTENT).unwrap();
     let second = capture_build(&plan, &options, &mut project)
         .unwrap()
-        .execute(Some(&docker))
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
         .unwrap();
 
     let (first, second) = (one_built(first), one_built(second));
     assert_eq!(first.built.tags, second.built.tags);
-    assert_eq!(
-        first.built.reference,
-        format!("example.test/api@{FIRST_CONTENT}")
-    );
-    assert_eq!(
-        second.built.reference,
-        format!("example.test/api@{SECOND_CONTENT}")
-    );
+    assert_eq!(first.built.reference, FIRST_CONTENT);
+    assert_eq!(second.built.reference, SECOND_CONTENT);
     // Each attempt verified its own content instead of the shared tag.
     let calls = fs::read_to_string(root.join("calls")).unwrap();
     for content in [FIRST_CONTENT, SECOND_CONTENT] {
         assert!(
-            calls.lines().any(|call| call
-                == format!("image inspect example.test/api@{content} --format {{{{json .}}}}")),
+            calls
+                .lines()
+                .any(|call| call == format!("image inspect {content} --format {{{{json .}}}}")),
             "{calls}"
         );
     }
@@ -394,6 +394,9 @@ fn built_images_bind_to_exact_content_after_tag_reuse() {
 
 #[test]
 fn an_image_the_store_does_not_hold_is_refused_as_a_result() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-content-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -413,7 +416,7 @@ fn an_image_the_store_does_not_hold_is_refused_as_a_result() {
     let plan = plan_build(&project, &options).unwrap();
 
     let build = capture_build(&plan, &options, &mut project).unwrap();
-    let error = match build.execute(Some(&docker)) {
+    let error = match build.execute(Some(&docker), &tokio_util::sync::CancellationToken::new()) {
         Ok(outcome) => panic!("substituted content was reported as built: {outcome:?}"),
         Err(error) => error.to_string(),
     };
@@ -428,7 +431,7 @@ fn an_image_the_store_does_not_hold_is_refused_as_a_result() {
 #[test]
 fn several_requested_build_platforms_are_refused_with_the_service_named() {
     let mut project = parse_normalized(
-        "name: demo\nservices: {api: {build: {context: ., platforms: [linux/amd64, linux/arm64]}}}\n",
+        "name: demo\nservices: {api: {build: {context: ., dockerfile_inline: 'FROM scratch', platforms: [linux/amd64, linux/arm64]}}}\n",
         ".",
     )
     .unwrap();
@@ -444,6 +447,9 @@ fn several_requested_build_platforms_are_refused_with_the_service_named() {
 
 #[test]
 fn content_holding_several_platforms_is_refused_however_it_was_requested() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-index-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -467,7 +473,7 @@ fn content_holding_several_platforms_is_refused_however_it_was_requested() {
     let plan = plan_build(&project, &options).unwrap();
 
     let build = capture_build(&plan, &options, &mut project).unwrap();
-    let error = match build.execute(Some(&docker)) {
+    let error = match build.execute(Some(&docker), &tokio_util::sync::CancellationToken::new()) {
         Ok(built) => panic!("a multi-platform image was reported as built: {built:?}"),
         Err(error) => error.to_string(),
     };
@@ -520,6 +526,33 @@ fn settings_upstream_would_drop_are_named_before_execution() {
         assert!(error.contains(&format!("build.{setting}")), "{error}");
         assert!(error.contains("api"), "{error}");
     }
+}
+
+/// Fake Docker has no shared builder; give its production lock a private HOME too.
+/// Re-exec avoids changing process environment while other tests are running.
+fn isolated_build_test() -> bool {
+    const CHILD: &str = "PLOYZ_ISOLATED_BUILD_TEST";
+    let thread = std::thread::current();
+    let name = thread.name().expect("libtest names its test threads");
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return true;
+    }
+    let home = std::env::temp_dir().join(format!("ployz-build-home-{}", uuid::Uuid::new_v4()));
+    fs::create_dir(&home).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture"])
+        .env(CHILD, name)
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    fs::remove_dir_all(home).unwrap();
+    assert!(
+        output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "{name}:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    false
 }
 
 fn one_built(mut built: Vec<BuiltService>) -> BuiltService {
@@ -613,6 +646,9 @@ exit 1
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 fn build_and_runtime_share_one_captured_secret_resolution() {
+    if !isolated_build_test() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!("ployz-build-secret-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).unwrap();
@@ -640,7 +676,9 @@ secrets:
     };
     let plan = plan_build(&project, &options).unwrap();
     let build = capture_build(&plan, &options, &mut project).unwrap();
-    build.execute(Some(&docker)).unwrap();
+    build
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+        .unwrap();
     let config: serde_norway::Value =
         serde_norway::from_str(&fs::read_to_string(root.join("override.yaml")).unwrap()).unwrap();
     assert_eq!(

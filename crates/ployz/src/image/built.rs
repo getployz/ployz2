@@ -15,9 +15,13 @@ pub async fn push_from_machine(
     image: &BuiltImage,
     source: MachineId,
     selectors: &[String],
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<PartialResult<(), PushError>, PushError> {
-    let machines = client.machines().await?;
-    push_from_machine_using_machines(client, image, source, selectors, &machines).await
+    let machines = Cancellation::new(cancellation)
+        .race(client.machines())
+        .await??;
+    push_from_machine_using_machines(client, image, source, selectors, &machines, cancellation)
+        .await
 }
 
 pub(crate) async fn push_from_machine_using_machines(
@@ -26,6 +30,7 @@ pub(crate) async fn push_from_machine_using_machines(
     source: MachineId,
     selectors: &[String],
     machines: &[MachineObservation],
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<PartialResult<(), PushError>, PushError> {
     let selection = list_selection(machines, selectors)?;
     let mut result = PartialResult {
@@ -36,19 +41,17 @@ pub(crate) async fn push_from_machine_using_machines(
     if selection.targets.is_empty() {
         return Ok(result);
     }
-    let mut cancellation = Cancellation::new();
-    let source = serve_build_image(client, image, source).await?;
+    let source = serve_build_image(client, image, source, cancellation).await?;
+    let reference = image
+        .repository_reference()
+        .map_err(|error| PushError::InvalidReference {
+            reference: image.reference.clone(),
+            message: error.to_string(),
+        })?;
+    let mut cancellation = Cancellation::new(cancellation);
     let mut remaining = selection.targets.into_iter();
     while let Some(machine) = remaining.next() {
-        match pull_on_machine(
-            client,
-            &image.reference,
-            &machine,
-            source,
-            &mut cancellation,
-        )
-        .await
-        {
+        match pull_on_machine(client, &reference, &machine, source, &mut cancellation).await {
             Ok(()) => result.successes.push(MachineSuccess {
                 machine_id: machine.id,
                 value: (),
@@ -74,22 +77,10 @@ pub(crate) async fn serve_build_image(
     client: &mut Client,
     image: &BuiltImage,
     source: MachineId,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<ImageIngestDestination, PushError> {
-    let mut cancellation = Cancellation::new();
-    let reference =
-        image
-            .reference
-            .parse::<Reference>()
-            .map_err(|error| PushError::InvalidReference {
-                reference: image.reference.clone(),
-                message: error.to_string(),
-            })?;
-    let digest = reference
-        .digest()
-        .ok_or_else(|| PushError::InvalidReference {
-            reference: image.reference.clone(),
-            message: "a completed Build must have an immutable digest".into(),
-        })?;
+    let mut cancellation = Cancellation::new(cancellation);
+    let digest = &image.reference;
     let target = MachineTarget::from(&source);
     // Docker's reference filter does not match repository@digest. Compare the
     // manifest identity and available platforms in the source's actual store.
@@ -100,19 +91,21 @@ pub(crate) async fn serve_build_image(
         return Err(PushError::UnsupportedImageStore);
     }
     if !stored.images.iter().any(|stored| {
-        stored.id == digest
-            && stored.platforms.iter().any(|platform| {
-                platform == &image.platform
-                    || matches!(
-                        (platform.as_str(), image.platform.as_str()),
-                        ("linux/arm64", "linux/arm64/v8") | ("linux/arm64/v8", "linux/arm64")
-                    )
+        &stored.id == digest
+            && image.platforms.iter().all(|expected| {
+                stored.platforms.iter().any(|platform| {
+                    platform == expected
+                        || matches!(
+                            (platform.as_str(), expected.as_str()),
+                            ("linux/arm64", "linux/arm64/v8") | ("linux/arm64/v8", "linux/arm64")
+                        )
+                })
             })
     }) {
         return Err(PushError::BuildImageUnavailable {
             image: image.reference.clone(),
             machine_id: source,
-            platform: image.platform.clone(),
+            platform: image.platforms.join(", "),
         });
     }
     let opened = cancellation

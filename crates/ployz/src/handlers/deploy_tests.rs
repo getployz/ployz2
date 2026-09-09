@@ -418,7 +418,13 @@ fn a_failed_build_leaves_the_deployment_unattempted() {
     )
     .unwrap();
     let error = crate::deploy::DeployError::from(
-        build.unwrap().execute(load.docker.as_deref()).unwrap_err(),
+        build
+            .unwrap()
+            .execute(
+                load.docker.as_deref(),
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap_err(),
     )
     .to_string();
     assert!(

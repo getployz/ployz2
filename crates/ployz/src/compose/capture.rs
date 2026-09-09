@@ -32,16 +32,25 @@ pub struct CapturedCompose {
 impl CapturedCompose {
     /// Use each Service's completed content for Containers and hooks. A tag
     /// overwritten by another Service or client cannot substitute its image.
-    pub fn bind_builds(&mut self, builds: &[super::BuiltService]) {
+    pub fn bind_builds(
+        &mut self,
+        builds: &[super::BuiltService],
+    ) -> Result<(), super::ComposeError> {
         for service in &mut self.intent.target {
             if let Some(build) = builds
                 .iter()
                 .find(|build| build.name == service.name.as_str())
             {
-                service.container.image.clone_from(&build.built.reference);
+                service.container.image = build.built.repository_reference().map_err(|error| {
+                    super::ComposeError::Build {
+                        services: build.name.clone(),
+                        source: error,
+                    }
+                })?;
                 service.container.pull_policy = ployz_core::PullPolicy::Never;
             }
         }
+        Ok(())
     }
 
     /// Identity of this capture, unchanged by later edits to the source files.
@@ -130,12 +139,13 @@ fn deploy_binds_each_service_to_its_build_when_requested_tags_are_shared() {
         machines: vec![],
         location: BuildLocation::Machine(ployz_core::MachineId::parse("a".repeat(32)).unwrap()),
         built: ployz_build::BuiltImage {
-            reference: format!("example.test/shared@{digest}"),
+            reference: digest.into(),
             tags: vec!["example.test/shared:latest".into()],
-            platform: "linux/amd64".into(),
+            platforms: vec!["linux/amd64".into()],
+            location: "unix:///var/run/docker.sock".into(),
         },
     });
-    candidate.bind_builds(&builds);
+    candidate.bind_builds(&builds).unwrap();
     for (name, digest) in [
         ("one", first_content.as_str()),
         ("two", second_content.as_str()),
