@@ -258,3 +258,65 @@ fn a_command_that_outlasts_its_budget_is_terminated() {
     ));
     assert!(waited.elapsed() < Duration::from_secs(5));
 }
+
+#[test]
+fn executing_a_build_does_not_change_process_signal_handlers() {
+    const CHILD: &str = "PLOYZ_BUILD_SIGNAL_TEST";
+    if let Ok(signal) = std::env::var(CHILD) {
+        let directory =
+            std::env::temp_dir().join(format!("ployz-build-signal-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let program = directory.join("docker");
+        executable(
+            &program,
+            &format!(
+                r#"#!/bin/sh
+case "$1 $2" in
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
+  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
+esac
+"#,
+                builder_name()
+            ),
+        );
+        let environment = BTreeMap::new();
+        let targets = [target("api", None)];
+        let request = Request {
+            compose_file: Path::new("compose.yaml"),
+            working_dir: &directory,
+            environment: &environment,
+            docker: Some(&program),
+            targets: &targets,
+            railpack: &[],
+            build_args: &[],
+            output: Output::Validate,
+            no_cache: false,
+            pull: false,
+        };
+        execute(&request, &Cancellation::new()).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+        Command::new("kill")
+            .args([&signal, &std::process::id().to_string()])
+            .status()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        panic!("the build swallowed {signal} after returning");
+    }
+    use std::os::unix::process::ExitStatusExt as _;
+    for (signal, number) in [("-INT", 2), ("-TERM", 15)] {
+        let directory =
+            std::env::temp_dir().join(format!("ployz-signal-home-{}-{number}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::executing_a_build_does_not_change_process_signal_handlers",
+            ])
+            .env(CHILD, signal)
+            .env("HOME", &directory)
+            .status()
+            .unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+        assert_eq!(status.signal(), Some(number), "{signal}: {status}");
+    }
+}

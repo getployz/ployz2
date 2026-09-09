@@ -47,6 +47,9 @@ impl<'a> Builder<'a> {
     }
 
     /// Read the running worker, not the Machine's advertised architecture.
+    ///
+    /// # Errors
+    /// Refuses unsupported image stores, hosts, or requested worker platforms.
     pub(crate) fn native_platform(&self, targets: &[crate::Target]) -> Result<String, BuildError> {
         let info = self.docker.run(
             "inspect the image store",
@@ -173,7 +176,17 @@ impl<'a> Builder<'a> {
             });
         }
         match cleanup {
-            Ok(()) => result,
+            Ok(()) => result.and_then(|output| {
+                if self
+                    .docker
+                    .cancellation
+                    .is_some_and(crate::Cancellation::is_cancelled)
+                {
+                    Err(BuildError::Cancelled)
+                } else {
+                    Ok(output)
+                }
+            }),
             Err(error) => Err(BuildError::UncertainTermination(match result {
                 Ok(_) => format!("output handling completed; cleanup failed: {error}"),
                 Err(cause) => format!("{cause}; cleanup failed: {error}"),
@@ -244,13 +257,19 @@ impl Lock {
     ///
     /// # Errors
     /// Fails when the lock file cannot be opened or locked.
-    pub(crate) fn acquire() -> Result<Self, BuildError> {
-        Self::acquire_in(&directory())
+    pub(crate) fn acquire(cancellation: &crate::Cancellation) -> Result<Self, BuildError> {
+        Self::acquire_in(&directory(), cancellation)
     }
 
-    fn acquire_in(directory: &std::path::Path) -> Result<Self, BuildError> {
+    fn acquire_in(
+        directory: &std::path::Path,
+        cancellation: &crate::Cancellation,
+    ) -> Result<Self, BuildError> {
         let deadline = std::time::Instant::now() + QUEUE_TIMEOUT;
         loop {
+            if cancellation.is_cancelled() {
+                return Err(BuildError::Cancelled);
+            }
             match Self::try_acquire_in(directory) {
                 Err(BuildError::Busy) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -423,7 +442,7 @@ mod tests {
             progress: None,
         };
 
-        let lock = Lock::acquire_in(&directory).unwrap();
+        let lock = Lock::acquire_in(&directory, &crate::Cancellation::default()).unwrap();
         let builder = Builder::acquire(&docker, lock).unwrap();
         let name = builder_name();
         let acquired = fs::read_to_string(directory.join("calls")).unwrap();

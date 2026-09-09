@@ -24,185 +24,168 @@ pub(crate) fn build(
     overrides: Option<&Path>,
 ) -> Result<BuiltImage, BuildError> {
     let name = format!("{}-assemble", builder_name());
-    let _ = docker.releasing().run(
-        "remove stale image assembly",
-        &["rm", "--force", &name],
-        Streams::Captured,
-    );
-    let result = (|| {
-        docker.run(
-            "create image assembly",
-            &[
-                "create",
-                "--name",
-                &name,
-                "--network",
-                "none",
-                "--entrypoint",
-                "/bin/sleep",
-                REGCTL,
-                "infinity",
-            ],
-            Streams::Captured,
-        )?;
-        docker.run("start image assembly", &["start", &name], Streams::Captured)?;
-        let regctl = |action, args: &[&str]| {
-            let mut command = vec!["exec", &name, "regctl"];
-            command.extend_from_slice(args);
-            docker.run(action, &command, Streams::Captured)
-        };
-        let mut refs = Vec::new();
-        let mut tags = Vec::new();
-        for (number, platform) in target.target.platforms.iter().enumerate() {
-            let archive = request.working_dir.join("private/railpack/variant.tar");
-            let metadata = request.working_dir.join("private/railpack/variant.json");
-            let mut args =
-                bake_arguments(request, std::slice::from_ref(target), &metadata, overrides);
-            args.retain(|arg| arg != "--load");
-            for setting in [
-                format!("{}.platform={platform}", target.bake),
-                format!("{}.output=type=oci,dest={}", target.bake, archive.display()),
-                format!("{}.attest=type=provenance,disabled=true", target.bake),
-            ] {
-                args.extend(["--set".into(), setting]);
-            }
-            if let Some(progress) = docker.progress {
-                progress(crate::Progress::Stage(crate::Stage::Building));
-            }
-            builder.run(&args, || {
-                if let Some(progress) = docker.progress {
-                    progress(crate::Progress::Target {
-                        name: target.target.name.clone(),
-                        outcome: crate::TargetEvidence::Unknown,
-                    });
+    docker.with_container(
+        &name,
+        &[
+            "--network",
+            "none",
+            "--entrypoint",
+            "/bin/sleep",
+            REGCTL,
+            "infinity",
+        ],
+        |name| {
+            docker.run("start image assembly", &["start", name], Streams::Captured)?;
+            let regctl = |action, args: &[&str]| {
+                let mut command = vec!["exec", name, "regctl"];
+                command.extend_from_slice(args);
+                docker.run(action, &command, Streams::Captured)
+            };
+            let mut refs = Vec::new();
+            let mut tags = Vec::new();
+            for (number, platform) in target.target.platforms.iter().enumerate() {
+                let archive = request.working_dir.join("private/railpack/variant.tar");
+                let metadata = request.working_dir.join("private/railpack/variant.json");
+                let mut args =
+                    bake_arguments(request, std::slice::from_ref(target), &metadata, overrides);
+                args.retain(|arg| arg != "--load");
+                for setting in [
+                    format!("{}.platform={platform}", target.bake),
+                    format!("{}.output=type=oci,dest={}", target.bake, archive.display()),
+                    format!("{}.attest=type=provenance,disabled=true", target.bake),
+                ] {
+                    args.extend(["--set".into(), setting]);
                 }
-            })?;
-            if let Some(progress) = docker.progress {
-                progress(crate::Progress::Stage(crate::Stage::Output));
+                if let Some(progress) = docker.progress {
+                    progress(crate::Progress::Stage(crate::Stage::Building));
+                }
+                builder.run(&args, || {
+                    if let Some(progress) = docker.progress {
+                        progress(crate::Progress::Target {
+                            name: target.target.name.clone(),
+                            outcome: crate::TargetEvidence::Unknown,
+                        });
+                    }
+                })?;
+                if let Some(progress) = docker.progress {
+                    progress(crate::Progress::Stage(crate::Stage::Output));
+                }
+                let results: BTreeMap<String, TargetMetadata> =
+                    serde_json::from_slice(&std::fs::read(&metadata).map_err(result_error)?)
+                        .map_err(result_error)?;
+                let result = results.get(&target.bake).ok_or_else(|| {
+                    BuildError::Result("Railpack solve produced no image result".into())
+                })?;
+                let current_tags = result.tags();
+                if number == 0 {
+                    tags = current_tags;
+                } else if tags != current_tags {
+                    return Err(BuildError::Result(
+                        "Railpack solves reported different image tags".into(),
+                    ));
+                }
+                docker.run(
+                    "copy Railpack variant for assembly",
+                    &[
+                        "cp",
+                        &archive.to_string_lossy(),
+                        &format!("{name}:/tmp/variant.tar"),
+                    ],
+                    Streams::Captured,
+                )?;
+                let reference = format!("ocidir:///tmp/layout@{}", result.digest);
+                regctl(
+                    "import Railpack variant",
+                    &["image", "import", &reference, "/tmp/variant.tar"],
+                )?;
+                refs.push(reference);
             }
-            let results: BTreeMap<String, TargetMetadata> =
-                serde_json::from_slice(&std::fs::read(&metadata).map_err(result_error)?)
-                    .map_err(result_error)?;
-            let result = results.get(&target.bake).ok_or_else(|| {
-                BuildError::Result("Railpack solve produced no image result".into())
-            })?;
-            let current_tags = result.tags();
-            if number == 0 {
-                tags = current_tags;
-            } else if tags != current_tags {
+            let tag = tags
+                .first()
+                .ok_or_else(|| BuildError::Result("Railpack solve tagged no image".into()))?;
+            let mut args = vec!["index", "create", "ocidir:///tmp/layout:complete"];
+            for reference in &refs {
+                args.extend(["--ref", reference]);
+            }
+            regctl("assemble Railpack image index", &args)?;
+            let digest = regctl(
+                "read assembled image identity",
+                &["image", "digest", "ocidir:///tmp/layout:complete"],
+            )?;
+            let digest = digest.trim();
+            if !digest
+                .strip_prefix("sha256:")
+                .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+            {
                 return Err(BuildError::Result(
-                    "Railpack solves reported different image tags".into(),
+                    "assembly returned an invalid image digest".into(),
                 ));
             }
+            regctl(
+                "export assembled Railpack image",
+                &[
+                    "image",
+                    "export",
+                    "ocidir:///tmp/layout:complete",
+                    "/tmp/complete.tar",
+                    "--name",
+                    tag,
+                ],
+            )?;
+            let archive = request.working_dir.join("private/railpack/complete.tar");
             docker.run(
-                "copy Railpack variant for assembly",
+                "copy assembled Railpack image",
                 &[
                     "cp",
+                    &format!("{name}:/tmp/complete.tar"),
                     &archive.to_string_lossy(),
-                    &format!("{name}:/tmp/variant.tar"),
                 ],
                 Streams::Captured,
             )?;
-            let reference = format!("ocidir:///tmp/layout@{}", result.digest);
-            regctl(
-                "import Railpack variant",
-                &["image", "import", &reference, "/tmp/variant.tar"],
-            )?;
-            refs.push(reference);
-        }
-        let tag = tags
-            .first()
-            .ok_or_else(|| BuildError::Result("Railpack solve tagged no image".into()))?;
-        let mut args = vec!["index", "create", "ocidir:///tmp/layout:complete"];
-        for reference in &refs {
-            args.extend(["--ref", reference]);
-        }
-        regctl("assemble Railpack image index", &args)?;
-        let digest = regctl(
-            "read assembled image identity",
-            &["image", "digest", "ocidir:///tmp/layout:complete"],
-        )?;
-        let digest = digest.trim();
-        if !digest
-            .strip_prefix("sha256:")
-            .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
-        {
-            return Err(BuildError::Result(
-                "assembly returned an invalid image digest".into(),
-            ));
-        }
-        regctl(
-            "export assembled Railpack image",
-            &[
-                "image",
-                "export",
-                "ocidir:///tmp/layout:complete",
-                "/tmp/complete.tar",
-                "--name",
-                tag,
-            ],
-        )?;
-        let archive = request.working_dir.join("private/railpack/complete.tar");
-        docker.run(
-            "copy assembled Railpack image",
-            &[
-                "cp",
-                &format!("{name}:/tmp/complete.tar"),
-                &archive.to_string_lossy(),
-            ],
-            Streams::Captured,
-        )?;
-        docker.run(
-            "load assembled Railpack image",
-            &["image", "load", "--input", &archive.to_string_lossy()],
-            Streams::Captured,
-        )?;
-        let reference = digest.to_owned();
-        let inspected = docker.run(
-            "inspect assembled Railpack image",
-            &["image", "inspect", &reference, "--format", "{{json .}}"],
-            Streams::Captured,
-        )?;
-        let image: crate::ImageInspection =
-            serde_json::from_str(&inspected).map_err(result_error)?;
-        if !image.descriptor.is_some_and(|d| {
-            d.digest == digest && d.media_type == "application/vnd.oci.image.index.v1+json"
-        }) {
-            return Err(BuildError::Result(
-                "the local store does not hold the assembled Railpack index".into(),
-            ));
-        }
-        for platform in &target.target.platforms {
-            // Export forces Docker to read the manifest, config and every layer.
-            // Inspect alone can list an index variant whose content is absent.
             docker.run(
-                "verify Railpack platform content",
-                &["image", "save", "--platform", platform, &reference],
-                Streams::Discarded,
-            )?;
-        }
-        for tag in &tags {
-            docker.run(
-                "tag completed Railpack image",
-                &["image", "tag", &reference, tag],
+                "load assembled Railpack image",
+                &["image", "load", "--input", &archive.to_string_lossy()],
                 Streams::Captured,
             )?;
-        }
-        Ok(BuiltImage {
-            reference,
-            tags,
-            platforms: target.target.platforms.clone(),
-            location: docker.location(),
-        })
-    })();
-    match docker.releasing().run(
-        "remove image assembly",
-        &["rm", "--force", &name],
-        Streams::Captured,
-    ) {
-        Ok(_) => result,
-        Err(error) => Err(BuildError::UncertainTermination(error.to_string())),
-    }
+            let reference = digest.to_owned();
+            let inspected = docker.run(
+                "inspect assembled Railpack image",
+                &["image", "inspect", &reference, "--format", "{{json .}}"],
+                Streams::Captured,
+            )?;
+            let image: crate::ImageInspection =
+                serde_json::from_str(&inspected).map_err(result_error)?;
+            if !image.descriptor.is_some_and(|d| {
+                d.digest == digest && d.media_type == "application/vnd.oci.image.index.v1+json"
+            }) {
+                return Err(BuildError::Result(
+                    "the local store does not hold the assembled Railpack index".into(),
+                ));
+            }
+            for platform in &target.target.platforms {
+                // Export forces Docker to read the manifest, config and every layer.
+                // Inspect alone can list an index variant whose content is absent.
+                docker.run(
+                    "verify Railpack platform content",
+                    &["image", "save", "--platform", platform, &reference],
+                    Streams::Discarded,
+                )?;
+            }
+            for tag in &tags {
+                docker.run(
+                    "tag completed Railpack image",
+                    &["image", "tag", &reference, tag],
+                    Streams::Captured,
+                )?;
+            }
+            Ok(BuiltImage {
+                reference,
+                tags,
+                platforms: target.target.platforms.clone(),
+                location: docker.location(),
+            })
+        },
+    )
 }
 
 fn result_error(error: impl std::fmt::Display) -> BuildError {

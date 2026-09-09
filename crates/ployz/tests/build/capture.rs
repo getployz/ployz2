@@ -44,7 +44,9 @@ fn capture_rejects_links_outside_the_captured_source() {
     let plan = plan_build(&project, &options).unwrap();
     let build = capture_build(&plan, &options, &mut project).unwrap();
     fs::remove_dir_all(root.join("src")).unwrap();
-    build.execute(Some(&docker)).unwrap();
+    build
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+        .unwrap();
     let config: serde_norway::Value =
         serde_norway::from_str(&fs::read_to_string(root.join("override.yaml")).unwrap()).unwrap();
     let context = config
@@ -126,7 +128,9 @@ fn resolved_file_credentials_stay_private_across_captures() {
     let docker = root.join("docker");
     write_docker(&docker, &root);
     let build = capture_build(&plan, &options, &mut project).unwrap();
-    build.execute(Some(&docker)).unwrap();
+    build
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+        .unwrap();
     let config: serde_norway::Value =
         serde_norway::from_str(&fs::read_to_string(root.join("override.yaml")).unwrap()).unwrap();
     let staged = root.join("relocated");
@@ -147,7 +151,9 @@ fn resolved_file_credentials_stay_private_across_captures() {
     );
     fs::write(root.join("src/token"), "later-provider-value").unwrap();
     let second = capture_build(&plan, &options, &mut project).unwrap();
-    second.execute(Some(&docker)).unwrap();
+    second
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+        .unwrap();
     assert_eq!(
         project.services["api"].container.environment["TOKEN"],
         "private-file-token"
@@ -188,7 +194,9 @@ fn builds_use_captured_explicit_registry_credentials_and_proxies() {
     fs::write(root.join("auth/config.json"), "changed after capture").unwrap();
     let docker = root.join("docker");
     write_docker(&docker, &root);
-    build.execute(Some(&docker)).unwrap();
+    build
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+        .unwrap();
     let captured: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(root.join("docker-config.json")).unwrap())
             .unwrap();
@@ -251,7 +259,9 @@ secrets:
     fs::remove_dir_all(root.join("src")).unwrap();
     let docker = root.join("docker");
     write_docker(&docker, &root);
-    build.execute(Some(&docker)).unwrap();
+    build
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+        .unwrap();
     let config: serde_norway::Value =
         serde_norway::from_str(&fs::read_to_string(root.join("override.yaml")).unwrap()).unwrap();
     let context = |service: &str| {
@@ -345,7 +355,9 @@ fn authored_configuration_follows_dockerignore() {
     let build = capture_build(&plan, &options, &mut project).unwrap();
     let docker = root.join("docker");
     write_docker(&docker, &root);
-    build.execute(Some(&docker)).unwrap();
+    build
+        .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+        .unwrap();
     let config: serde_norway::Value =
         serde_norway::from_str(&fs::read_to_string(root.join("override.yaml")).unwrap()).unwrap();
     let context = root.join("relocated").join(
@@ -444,7 +456,7 @@ fn default_platform_is_captured_and_verified_unless_compose_overrides_it() {
         let build = capture_build(&plan, &options, &mut project).unwrap();
         fs::write(root.join(".env"), "DOCKER_DEFAULT_PLATFORM=linux/amd64\n").unwrap();
         // The recording executor reports AMD64: an ARM64 request must reject it.
-        let result = build.execute(Some(&docker));
+        let result = build.execute(Some(&docker), &tokio_util::sync::CancellationToken::new());
         let expected = if declared.is_empty() {
             assert!(
                 result
@@ -531,7 +543,9 @@ fn ssh_docker_hosts_and_git_contexts_keep_the_captured_agent_socket() {
         let plan = plan_build(&project, &options).unwrap();
         let build = capture_build(&plan, &options, &mut project).unwrap();
         fs::write(root.join(".env"), "SSH_AUTH_SOCK=/tmp/changed-agent.sock\n").unwrap();
-        build.execute(Some(&docker)).unwrap();
+        build
+            .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+            .unwrap();
         let environment = fs::read_to_string(root.join("docker-environment")).unwrap();
         assert_eq!(environment.lines().nth(2), Some(expected), "{host}");
     }

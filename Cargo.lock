@@ -2142,6 +2142,7 @@ dependencies = [
  "serde_norway",
  "sha2",
  "shell-words",
+ "signal-hook",
  "sigpipe",
  "thiserror 2.0.20",
  "tokio",
@@ -2166,8 +2167,8 @@ dependencies = [
  "serde_json",
  "serde_norway",
  "sha2",
- "signal-hook",
  "thiserror 2.0.20",
+ "tokio-util",
  "url",
  "uuid",
 ]

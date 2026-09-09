@@ -210,10 +210,7 @@ async fn captured_build_crosses_owned_rpc_and_returns_only_remote_image_evidence
     let [image] = images.as_slice() else {
         panic!("expected one image: {images:?}")
     };
-    assert_eq!(
-        image.reference,
-        format!("sha256:{}", "1".repeat(64))
-    );
+    assert_eq!(image.reference, format!("sha256:{}", "1".repeat(64)));
     assert_eq!(image.platforms, ["linux/amd64"]);
     assert_eq!(
         fs::read_to_string(fixture.root.join("received-payload")).unwrap(),

@@ -91,7 +91,14 @@ fn compose_build_basic_pushes_only_buildable_resolved_images() {
     );
     cleanup.images = plan.iter().map(|service| service.image.clone()).collect();
 
-    execute_build(&plan, &options, &load, &mut project).unwrap();
+    execute_build(
+        &plan,
+        &options,
+        &load,
+        &mut project,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .unwrap();
     for image in &cleanup.images {
         // Publication retains no local copy, so the registry is the only source.
         let _ = Command::new("docker").args(["image", "rm", image]).status();
@@ -163,7 +170,16 @@ fn local_dockerfile_build_loads_a_runnable_image_and_reuses_its_retained_cache()
     let options = BuildOptions::default();
     let plan = plan_build(&project, &options).unwrap();
 
-    let first = one_built(execute_build(&plan, &options, &load, &mut project).unwrap());
+    let first = one_built(
+        execute_build(
+            &plan,
+            &options,
+            &load,
+            &mut project,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap(),
+    );
     assert_eq!(first.image, image);
     assert!(first.built.tags.iter().any(|tag| tag.ends_with(&image)));
     assert_eq!(first.built.platforms, [host_platform()]);
@@ -184,7 +200,16 @@ fn local_dockerfile_build_loads_a_runnable_image_and_reuses_its_retained_cache()
     command(["volume", "inspect", &cache_volume()]);
 
     // A second Build recreates the builder and reuses that cache.
-    let rebuilt = one_built(execute_build(&plan, &options, &load, &mut project).unwrap());
+    let rebuilt = one_built(
+        execute_build(
+            &plan,
+            &options,
+            &load,
+            &mut project,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap(),
+    );
     assert_eq!(
         output(["run", "--rm", &rebuilt.built.reference, "cat", "/built-at"]),
         stamp,
@@ -313,7 +338,11 @@ RUN --mount=type=secret,id=token test ! -e /source/token && test ! -e /source/ig
         "runtime"
     );
     fs::remove_dir_all(&root).unwrap();
-    let built = one_built(captured.execute(None).unwrap());
+    let built = one_built(
+        captured
+            .execute(None, &tokio_util::sync::CancellationToken::new())
+            .unwrap(),
+    );
     assert_eq!(
         output(["run", "--rm", &built.built.reference, "cat", "/values"]),
         "cli\nservice\nprivate-$VALUE\n$LATER\nprivate-$VALUE\n"
@@ -423,7 +452,16 @@ async fn railpack_build_and_deploy_preserve_variables_cache_and_failure_boundari
             ..Default::default()
         };
         let plan = plan_build(&project, &options).unwrap();
-        let built = one_built(execute_build(&plan, &options, &load, &mut project).unwrap());
+        let built = one_built(
+            execute_build(
+                &plan,
+                &options,
+                &load,
+                &mut project,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap(),
+        );
         let result = output([
             "run",
             "--rm",
@@ -611,7 +649,16 @@ fn railpack_builds_complete_amd64_arm64_content_and_runs_without_registry_fallba
     let mut project = load_project(&load).unwrap();
     let options = BuildOptions::default();
     let plan = plan_build(&project, &options).unwrap();
-    let built = one_built(execute_build(&plan, &options, &load, &mut project).unwrap());
+    let built = one_built(
+        execute_build(
+            &plan,
+            &options,
+            &load,
+            &mut project,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap(),
+    );
     cleanup.images.push(built.built.reference.clone());
     assert_eq!(built.built.platforms, ["linux/amd64", "linux/arm64"]);
     assert!(built.built.tags.contains(&image));

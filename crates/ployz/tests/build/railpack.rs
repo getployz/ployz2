@@ -112,11 +112,25 @@ secrets:
     let mut hashes = Vec::new();
     for (value, capture) in captures {
         fs::write(root.join("preparation-fails"), "").unwrap();
-        let failed = capture.execute(Some(&docker)).unwrap_err().to_string();
+        let failed = capture
+            .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+            .unwrap_err()
+            .to_string();
         assert!(failed.contains("Railpack preparation"), "{failed}");
         fs::remove_file(root.join("preparation-fails")).unwrap();
-        let result = one_built(capture.execute(Some(&docker)).unwrap());
-        assert_eq!(one_built(capture.execute(Some(&docker)).unwrap()), result);
+        let result = one_built(
+            capture
+                .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+                .unwrap(),
+        );
+        assert_eq!(
+            one_built(
+                capture
+                    .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+                    .unwrap()
+            ),
+            result
+        );
         assert!(!format!("{result:?}").contains("private-token"));
         let received = root.join("received");
         assert_eq!(
@@ -236,15 +250,24 @@ fn multi_platform_build_requires_complete_content_and_cleans_up_failed_attempts(
     let plan = plan_build(&project, &options).unwrap();
     let captured = capture_build(&plan, &options, &mut project).unwrap();
     for (failure, diagnostic) in [
+        ("create-fails", "assembly image unavailable"),
+        (
+            "create-fails-after-creation",
+            "assembly create response lost",
+        ),
         ("assembly-fails", "assemble Railpack"),
         ("import-fails", "load assembled"),
         ("missing-content", "verify Railpack platform content"),
         ("solve-fails", "the build"),
-        ("worker-missing", "reported no capabilities"),
+        ("worker-missing", "reported no capability"),
     ] {
         fs::write(root.join(failure), "").unwrap();
-        let error = captured.execute(Some(&docker)).unwrap_err().to_string();
+        let error = captured
+            .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains(diagnostic), "{error}");
+        assert!(!error.contains("cleanup could not be confirmed"), "{error}");
         assert!(!root.join("assembly").exists());
         assert!(!root.join("builder").exists());
         let capture_root = fs::read_to_string(root.join("capture-root")).unwrap();
@@ -255,12 +278,20 @@ fn multi_platform_build_requires_complete_content_and_cleans_up_failed_attempts(
         );
         fs::remove_file(root.join(failure)).unwrap();
     }
-    let first = one_built(captured.execute(Some(&docker)).unwrap());
+    let first = one_built(
+        captured
+            .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+            .unwrap(),
+    );
     assert_eq!(first.built.platforms, ["linux/amd64", "linux/arm64"]);
     assert_eq!(first.built.reference, FIRST_CONTENT);
     assert_eq!(first.built.tags, ["example.test/api:check"]);
     fs::write(root.join("digest"), SECOND_CONTENT).unwrap();
-    let second = one_built(captured.execute(Some(&docker)).unwrap());
+    let second = one_built(
+        captured
+            .execute(Some(&docker), &tokio_util::sync::CancellationToken::new())
+            .unwrap(),
+    );
     assert_ne!(first.built.reference, second.built.reference);
     assert_eq!(first.built.tags, second.built.tags);
     fs::remove_dir_all(root).unwrap();
@@ -289,9 +320,16 @@ case "$*" in
     if [ -f "$root/solve-fails" ]; then pwd > "$root/capture-root"; exit 1; fi ;;
   'buildx ls '*)
     if [ -f "$root/worker-missing" ]; then printf '{{}}'; exit 0; fi ;;
-  'create --name '*-assemble*) touch "$root/assembly" ;;
+  'create --name '*-assemble*)
+    pwd > "$root/capture-root"
+    if [ -f "$root/cancel-create" ]; then touch "$root/active"; exec sleep 60; fi
+    if [ -f "$root/create-fails" ]; then printf 'assembly image unavailable' >&2; exit 1; fi
+    touch "$root/assembly"
+    if [ -f "$root/cancel-create-after-creation" ]; then touch "$root/active"; exec sleep 60; fi
+    if [ -f "$root/create-fails-after-creation" ]; then printf 'assembly create response lost' >&2; exit 1; fi ;;
   'rm --force '*-assemble)
     if [ -f "$root/cleanup-fails" ] && [ -f "$root/active" ]; then printf 'assembly still running' >&2; exit 1; fi
+    if [ ! -f "$root/assembly" ]; then printf "Error response from daemon: No such container: %s" "$3" >&2; exit 1; fi
     rm -f "$root/assembly" ;;
   'start '*-assemble) exit 0 ;;
   'exec '*-assemble' regctl index create '*)
@@ -323,8 +361,17 @@ fn railpack_cancellation_stops_work_and_releases_private_inputs_and_admission() 
         let options = BuildOptions::default();
         let plan = plan_build(&project, &options).unwrap();
         let captured = capture_build(&plan, &options, &mut project).unwrap();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let cancelled = cancellation.clone();
+        let marker = root.join("interrupt");
+        std::thread::spawn(move || {
+            while !marker.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            cancelled.cancel();
+        });
         let error = captured
-            .execute(Some(&root.join("docker")))
+            .execute(Some(&root.join("docker")), &cancellation)
             .unwrap_err()
             .to_string();
         if root.join("cleanup-fails").exists() {
@@ -350,7 +397,13 @@ fn railpack_cancellation_stops_work_and_releases_private_inputs_and_admission() 
     let root = std::env::temp_dir().join(format!("ployz-railpack-cancel-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     write_multi_docker(&root);
-    for (phase, cleanup_fails) in [("solve", false), ("assembly", false), ("assembly", true)] {
+    for (phase, cleanup_fails) in [
+        ("create", false),
+        ("create-after-creation", false),
+        ("solve", false),
+        ("assembly", false),
+        ("assembly", true),
+    ] {
         if cleanup_fails {
             fs::write(root.join("cleanup-fails"), "").unwrap();
         }
@@ -369,13 +422,7 @@ fn railpack_cancellation_stops_work_and_releases_private_inputs_and_admission() 
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        assert!(
-            Command::new("kill")
-                .args(["-INT", &child.id().to_string()])
-                .status()
-                .unwrap()
-                .success()
-        );
+        fs::write(root.join("interrupt"), "").unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             if let Some(status) = child.try_wait().unwrap() {
@@ -389,6 +436,7 @@ fn railpack_cancellation_stops_work_and_releases_private_inputs_and_admission() 
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+        fs::remove_file(root.join("interrupt")).unwrap();
         fs::remove_file(marker).unwrap();
         fs::remove_file(root.join("active")).unwrap();
     }

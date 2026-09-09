@@ -569,7 +569,11 @@ impl CapturedBuild {
     /// # Errors
     /// Fails if the runner cannot execute the build or the result cannot be
     /// bound to the content it produced.
-    pub fn execute(&self, docker: Option<&Path>) -> Result<Vec<BuiltService>, ComposeError> {
+    pub fn execute(
+        &self,
+        docker: Option<&Path>,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<BuiltService>, ComposeError> {
         let mut environment = self.environment.clone();
         environment.insert(
             "HOME".into(),
@@ -587,18 +591,21 @@ impl CapturedBuild {
                 .to_string_lossy()
                 .into_owned(),
         );
-        let images = ployz_build::execute(&ployz_build::Request {
-            compose_file: Path::new("compose.yaml"),
-            working_dir: self.inputs.root(),
-            environment: &environment,
-            docker,
-            targets: &self.targets,
-            railpack: &self.railpack,
-            build_args: &self.options.build_args,
-            output: self.options.output,
-            no_cache: self.options.no_cache,
-            pull: self.options.pull,
-        })
+        let images = ployz_build::execute(
+            &ployz_build::Request {
+                compose_file: Path::new("compose.yaml"),
+                working_dir: self.inputs.root(),
+                environment: &environment,
+                docker,
+                targets: &self.targets,
+                railpack: &self.railpack,
+                build_args: &self.options.build_args,
+                output: self.options.output,
+                no_cache: self.options.no_cache,
+                pull: self.options.pull,
+            },
+            cancellation,
+        )
         // BuildKit diagnoses its own failure; name the Builds it was running.
         .map_err(|source| ComposeError::Build {
             services: self
@@ -632,8 +639,9 @@ pub fn execute_build(
     options: &BuildOptions,
     load: &LoadOptions,
     project: &mut ComposeProject,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<BuiltService>, ComposeError> {
-    capture_build(plan, options, project)?.execute(load.docker.as_deref())
+    capture_build(plan, options, project)?.execute(load.docker.as_deref(), cancellation)
 }
 
 /// Refuse a setting Ployz cannot pass on, naming it rather than dropping it.

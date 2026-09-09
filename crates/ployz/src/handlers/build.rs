@@ -91,7 +91,8 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
             report_remote(outcome)
         });
     }
-    let built = execute_build(&plan, &options, &load, &mut project)?;
+    let cancellation = crate::cancellation::listen()?;
+    let built = execute_build(&plan, &options, &load, &mut project, &cancellation)?;
     match options.output {
         Output::Validate => {
             println!("Validated the selected builds. No image was produced.");
@@ -123,11 +124,20 @@ pub(super) fn run(matches: &ArgMatches) -> Result<(), Error> {
     );
     let runtime = runtime()?;
     let failures = runtime.block_on(async {
-        let mut client = connect_client(matches, context).await?;
+        let mut client =
+            crate::cancellation::read(&cancellation, connect_client(matches, context)).await?;
         let mut failures = Vec::new();
         for service in &built {
             let targets = push_targets(&explicit, &service.machines);
-            match crate::image::push(&mut client, service.content(), None, &targets).await {
+            match crate::image::push(
+                &mut client,
+                service.content(),
+                None,
+                &targets,
+                &cancellation,
+            )
+            .await
+            {
                 Ok(result) => failures.extend(report_push(&service.image, result)),
                 Err(error) => failures.push(push_failure(&service.image, error)?),
             }

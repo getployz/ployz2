@@ -207,7 +207,8 @@ impl BuildError {
 /// [`EXECUTION_TIMEOUT`], with a separate bounded budget for cleanup.
 ///
 /// Returns the completed images in the order of `targets`. Validation and
-/// registry publication retain no local image, so they return none.
+/// registry publication retain no local image, so they return none. Cancellation
+/// is supplied by the caller; this function never installs process signal handlers.
 ///
 /// # Errors
 /// Returns a prerequisite error when Docker cannot serve the Build, a request
@@ -215,8 +216,11 @@ impl BuildError {
 /// diagnosis, a timeout, an uncertain outcome when termination could not be
 /// observed, or a result error when the completed image is not the content it
 /// claims.
-pub fn execute(request: &Request<'_>) -> Result<Vec<BuiltImage>, BuildError> {
-    execute_admitted(request, Admission::wait()?, &|event| {
+pub fn execute(
+    request: &Request<'_>,
+    cancellation: &Cancellation,
+) -> Result<Vec<BuiltImage>, BuildError> {
+    execute_admitted(request, Admission::wait(cancellation)?, &|event| {
         if let Progress::Output(bytes) = event {
             use std::io::Write as _;
             let _ = std::io::stderr().write_all(&bytes);
@@ -272,8 +276,8 @@ pub fn execute_admitted(
         let native = builder
             .native_platform(request.targets)
             .map_err(|error| error.at(Stage::Preparation))?;
-        preparation =
-            railpack::prepare(&docker, request).map_err(|error| error.at(Stage::Preparation))?;
+        preparation = railpack::prepare(&docker, request, &native)
+            .map_err(|error| error.at(Stage::Preparation))?;
         let overrides = preparation
             .as_ref()
             .map(railpack::Preparation::override_file);
@@ -681,6 +685,48 @@ impl<'a> Docker<'a> {
             }),
             cancellation: None,
             progress: self.progress,
+        }
+    }
+
+    /// Run work with a private helper container, confirming its absence afterwards.
+    ///
+    /// # Errors
+    /// Preserves the work's failure unless container removal cannot be confirmed.
+    pub(crate) fn with_container<T>(
+        &self,
+        name: &str,
+        arguments: &[&str],
+        work: impl FnOnce(&str) -> Result<T, BuildError>,
+    ) -> Result<T, BuildError> {
+        self.remove_container(name)?;
+        // A failed or interrupted create may still have reached Docker. Always
+        // confirm absence, including when no successful create was observed.
+        let mut create = vec!["create", "--name", name];
+        create.extend_from_slice(arguments);
+        let result = self
+            .run("create build helper", &create, Streams::Captured)
+            .map_err(|error| error.at(Stage::Preparation))
+            .and_then(|_| work(name));
+        match (result, self.remove_container(name)) {
+            (result, Ok(())) => result,
+            (Ok(_), Err(cleanup)) => Err(cleanup),
+            (Err(error), Err(cleanup)) => Err(error.with_later_failure(cleanup)),
+        }
+    }
+
+    fn remove_container(&self, name: &str) -> Result<(), BuildError> {
+        match self.releasing().run(
+            "remove build helper",
+            &["rm", "--force", name],
+            Streams::Captured,
+        ) {
+            Ok(_) => Ok(()),
+            Err(BuildError::Docker { diagnostic, .. })
+                if diagnostic.contains("No such container") =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(BuildError::UncertainTermination(error.to_string())),
         }
     }
 
