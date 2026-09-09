@@ -6,6 +6,9 @@ use std::{
 };
 use ts_rs::TS;
 
+mod upgrade;
+pub use upgrade::*;
+
 use ipnet::Ipv4Net;
 use prost::Message;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
@@ -457,18 +460,6 @@ pub struct UpdateMachineRequest {
     pub update: MachineUpdate,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RequestMachineUpgradeRequest {
-    pub attempt_id: crate::MachineUpgradeAttemptId,
-    pub release: crate::MachineRelease,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct InspectMachineUpgradeRequest {
-    #[serde(default)]
-    pub attempt_id: Option<crate::MachineUpgradeAttemptId>,
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RemoveLocalMachineRequest {
     #[serde(default)]
@@ -729,79 +720,6 @@ pub struct DomainRecords {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineUpdated {
     pub machine: Machine,
-}
-
-crate::value::open_string_enum!(MachineUpgradeStage, Unknown {
-    Launching => "launching",
-    Preparing => "preparing",
-    Acquiring => "acquiring",
-    Verifying => "verifying",
-    Activating => "activating",
-    Restarting => "restarting",
-    Readiness => "readiness",
-});
-
-/// Durable local evidence for one bounded Machine upgrade attempt.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum MachineUpgradeAttempt {
-    Accepted {
-        attempt_id: crate::MachineUpgradeAttemptId,
-        target: crate::MachineVersion,
-    },
-    Running {
-        attempt_id: crate::MachineUpgradeAttemptId,
-        target: crate::MachineVersion,
-        stage: MachineUpgradeStage,
-    },
-    Succeeded {
-        attempt_id: crate::MachineUpgradeAttemptId,
-        /// The requested version observed running and locally ready.
-        version: crate::MachineVersion,
-    },
-    Failed {
-        attempt_id: crate::MachineUpgradeAttemptId,
-        target: crate::MachineVersion,
-        stage: MachineUpgradeStage,
-        error: String,
-    },
-    Interrupted {
-        attempt_id: crate::MachineUpgradeAttemptId,
-        target: crate::MachineVersion,
-        stage: MachineUpgradeStage,
-    },
-}
-
-impl MachineUpgradeAttempt {
-    #[must_use]
-    pub fn attempt_id(&self) -> crate::MachineUpgradeAttemptId {
-        match self {
-            Self::Accepted { attempt_id, .. }
-            | Self::Running { attempt_id, .. }
-            | Self::Succeeded { attempt_id, .. }
-            | Self::Failed { attempt_id, .. }
-            | Self::Interrupted { attempt_id, .. } => *attempt_id,
-        }
-    }
-
-    #[must_use]
-    pub fn target(&self) -> &crate::MachineVersion {
-        match self {
-            Self::Accepted { target, .. }
-            | Self::Running { target, .. }
-            | Self::Failed { target, .. }
-            | Self::Interrupted { target, .. } => target,
-            Self::Succeeded { version, .. } => version,
-        }
-    }
-
-    #[must_use]
-    pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Succeeded { .. } | Self::Failed { .. } | Self::Interrupted { .. }
-        )
-    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]

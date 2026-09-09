@@ -7,8 +7,8 @@ use std::{
 };
 
 use ployz_core::{
-    MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeStage,
-    MachineVersion, RequestMachineUpgradeRequest,
+    MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
+    MachineUpgradeStage, MachineVersion, RequestMachineUpgradeRequest,
 };
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -16,9 +16,9 @@ use thiserror::Error;
 use tokio::{process::Command, time::timeout};
 
 use super::{
-    Error as InstallError, InstallPaths, InstallRequest, InstallStage, Preparation, ReleaseRequest,
-    ReleaseSource, admission,
+    Error as InstallError, InstallPaths, InstallRequest, Preparation, ReleaseRequest, ReleaseSource,
 };
+use crate::mutation;
 
 const RECEIPT_FILE: &str = "upgrade-attempt.json";
 const QUALIFICATION_RELEASE_DIR: &str = "PLOYZ_UPGRADE_RELEASE_DIR";
@@ -27,82 +27,83 @@ const LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Error)]
 pub enum Error {
+    /// No receipt exists for the requested attempt.
     #[error("no Machine upgrade attempt was found")]
     NotFound,
+    /// A retry identity was reused with another release selector.
     #[error("Machine upgrade attempt {0} was reused with a different release")]
     AttemptConflict(MachineUpgradeAttemptId),
+    /// Another installation or local mutation currently owns the Machine.
     #[error("a Machine upgrade or mutation is active")]
     Busy,
+    /// The durable receipt could not be read.
     #[error("read Machine upgrade receipt: {0}")]
     Read(#[source] io::Error),
+    /// The durable receipt was not valid JSON for the current contract.
     #[error("decode Machine upgrade receipt: {0}")]
     Decode(#[source] serde_json::Error),
+    /// The durable receipt could not be atomically written.
     #[error("write Machine upgrade receipt: {0}")]
     Write(#[source] io::Error),
+    /// The current receipt could not be encoded.
     #[error("encode Machine upgrade receipt: {0}")]
     Encode(#[source] serde_json::Error),
+    /// The process-local qualification source was not a trusted absolute directory.
     #[error("invalid qualification release directory: {0}")]
     QualificationSource(String),
+    /// The requested release could not be parsed or resolved.
     #[error("resolve Machine release: {0}")]
     Resolve(#[source] InstallError),
+    /// The system manager rejected or did not confirm worker launch.
     #[error("launch Machine upgrade worker: {0}")]
     Launch(String),
+    /// The worker process or unit could not be queried.
     #[error("inspect Machine upgrade worker: {0}")]
     InspectWorker(#[source] io::Error),
+    /// `systemctl` returned evidence that did not prove either a running or stopped worker.
+    #[error("inspect Machine upgrade worker: {0}")]
+    WorkerEvidence(String),
+    /// The worker identity does not match the current nonterminal receipt.
     #[error("Machine upgrade worker does not own active attempt {0}")]
     NotActive(MachineUpgradeAttemptId),
+    /// The shared installer recorded a terminal failure.
     #[error("Machine upgrade failed: {0}")]
     Installation(#[source] InstallError),
+    /// Machine mutation ownership could not be claimed or inspected.
     #[error(transparent)]
-    Admission(#[from] admission::Error),
+    Admission(#[from] mutation::Error),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct StoredAttempt {
     requested: MachineRelease,
-    source: StoredReleaseSource,
+    source: ReleaseSource,
     attempt: MachineUpgradeAttempt,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum StoredReleaseSource {
-    Published,
-    Local { directory: PathBuf },
-}
-
-impl StoredReleaseSource {
-    fn current() -> Result<Self, Error> {
-        let Some(directory) = env::var_os(QUALIFICATION_RELEASE_DIR) else {
-            return Ok(Self::Published);
-        };
-        let directory = PathBuf::from(directory);
-        if !directory.is_absolute() {
-            return Err(Error::QualificationSource(format!(
-                "{QUALIFICATION_RELEASE_DIR} must be an absolute path"
-            )));
-        }
-        Ok(Self::Local { directory })
+fn current_source() -> Result<ReleaseSource, Error> {
+    let Some(directory) = env::var_os(QUALIFICATION_RELEASE_DIR) else {
+        return Ok(ReleaseSource::Published);
+    };
+    let directory = PathBuf::from(directory);
+    if !directory.is_absolute() {
+        return Err(Error::QualificationSource(format!(
+            "{QUALIFICATION_RELEASE_DIR} must be an absolute path"
+        )));
     }
-
-    fn installer(&self) -> ReleaseSource {
-        match self {
-            Self::Published => ReleaseSource::Published,
-            Self::Local { directory } => ReleaseSource::Local(directory.clone()),
-        }
-    }
+    Ok(ReleaseSource::Local(directory))
 }
 
 /// Return the durable result of retrying the same request without requiring installation
 /// ownership. The receipt is atomically replaced, so an active worker can be observed safely.
-pub fn existing_request(
+pub(crate) fn existing_request(
     request: &RequestMachineUpgradeRequest,
     data_dir: &Path,
 ) -> Result<Option<MachineUpgradeAttempt>, Error> {
     let Some(stored) = read_optional(data_dir)? else {
         return Ok(None);
     };
-    if stored.attempt.attempt_id() != request.attempt_id {
+    if stored.attempt.attempt_id != request.attempt_id {
         return Ok(None);
     }
     if stored.requested != request.release {
@@ -113,15 +114,15 @@ pub fn existing_request(
 
 /// Persist an accepted attempt and launch its old-daemon worker while installation admission is
 /// held. Reusing the same attempt ID returns the same attempt.
-pub async fn request_locked(
+pub(crate) async fn request_locked(
     request: RequestMachineUpgradeRequest,
     data_dir: &Path,
     run_dir: &Path,
-    _guard: &admission::InstallGuard,
+    _guard: &mutation::InstallationGuard,
 ) -> Result<MachineUpgradeAttempt, Error> {
-    let admission = admission::Admission::new(run_dir, data_dir);
+    let admission = mutation::MutationGate::new(run_dir, data_dir);
     if let Some(mut stored) = read_optional(data_dir)? {
-        if stored.attempt.attempt_id() == request.attempt_id {
+        if stored.attempt.attempt_id == request.attempt_id {
             if stored.requested != request.release {
                 return Err(Error::AttemptConflict(request.attempt_id));
             }
@@ -134,13 +135,16 @@ pub async fn request_locked(
         }
     }
 
-    let source = StoredReleaseSource::current()?;
+    if admission.active()? {
+        return Err(Error::Busy);
+    }
+    let source = current_source()?;
     let release = request
         .release
         .as_str()
         .parse::<ReleaseRequest>()
         .map_err(Error::Resolve)?;
-    let target = super::release::resolve_release(&release, &source.installer())
+    let target = super::release::resolve_release(&release, &source)
         .await
         .map_err(Error::Resolve)?;
     let target = MachineVersion::parse(target.to_string())
@@ -148,18 +152,17 @@ pub async fn request_locked(
     let mut stored = StoredAttempt {
         requested: request.release,
         source,
-        attempt: MachineUpgradeAttempt::Accepted {
+        attempt: MachineUpgradeAttempt {
             attempt_id: request.attempt_id,
             target,
+            outcome: MachineUpgradeOutcome::Accepted,
         },
     };
     write(data_dir, &stored)?;
     admission.mark_active(request.attempt_id.as_str())?;
 
     if let Err(error) = launch_worker(request.attempt_id, data_dir, run_dir).await {
-        stored.attempt = MachineUpgradeAttempt::Failed {
-            attempt_id: request.attempt_id,
-            target: stored.attempt.target().clone(),
+        stored.attempt.outcome = MachineUpgradeOutcome::Failed {
             stage: MachineUpgradeStage::Launching,
             error: error.to_string(),
         };
@@ -170,27 +173,31 @@ pub async fn request_locked(
 }
 
 /// Read an attempt, turning a stopped worker without terminal evidence into interruption.
-pub async fn inspect(
+pub(crate) async fn inspect(
     attempt_id: Option<MachineUpgradeAttemptId>,
     data_dir: &Path,
     run_dir: &Path,
 ) -> Result<MachineUpgradeAttempt, Error> {
-    let admission = admission::Admission::new(run_dir, data_dir);
+    let admission = mutation::MutationGate::new(run_dir, data_dir);
     let mut stored = read(data_dir)?;
-    if attempt_id.is_some_and(|attempt_id| attempt_id != stored.attempt.attempt_id()) {
+    if attempt_id.is_some_and(|attempt_id| attempt_id != stored.attempt.attempt_id) {
         return Err(Error::NotFound);
     }
     if stored.attempt.is_terminal() {
-        if let Ok(_guard) = admission.try_install() {
-            admission.clear_active(stored.attempt.attempt_id().as_str())?;
+        match admission.try_installation() {
+            Ok(_guard) => admission.clear_active(stored.attempt.attempt_id.as_str())?,
+            Err(mutation::Error::Busy) => {}
+            Err(error) => return Err(error.into()),
         }
         return Ok(stored.attempt);
     }
-    if worker_active(stored.attempt.attempt_id()).await? {
+    if worker_state(stored.attempt.attempt_id).await? == WorkerState::Active {
         return Ok(stored.attempt);
     }
-    let Ok(_guard) = admission.try_install() else {
-        return Ok(stored.attempt);
+    let _guard = match admission.try_installation() {
+        Ok(guard) => guard,
+        Err(mutation::Error::Busy) => return Ok(stored.attempt),
+        Err(error) => return Err(error.into()),
     };
     stored = read(data_dir)?;
     reconcile_locked(&admission, data_dir, &mut stored).await?;
@@ -198,24 +205,27 @@ pub async fn inspect(
 }
 
 /// Run the accepted attempt from the transient systemd service.
+///
+/// # Errors
+///
+/// Returns an ownership, receipt, installation, or durable result error when the worker cannot
+/// complete and record the accepted attempt.
 pub async fn run_worker(
     attempt_id: MachineUpgradeAttemptId,
     data_dir: &Path,
     run_dir: &Path,
 ) -> Result<(), Error> {
-    let admission = admission::Admission::new(run_dir, data_dir);
-    let guard = admission.lock_install()?;
+    let admission = mutation::MutationGate::new(run_dir, data_dir);
+    let guard = admission.lock_installation()?;
     let mut stored = read(data_dir)?;
-    if stored.attempt.attempt_id() != attempt_id || stored.attempt.is_terminal() {
+    if stored.attempt.attempt_id != attempt_id || stored.attempt.is_terminal() {
         return Err(Error::NotActive(attempt_id));
     }
-    let target = stored.attempt.target().clone();
+    let target = stored.attempt.target.clone();
     let target_version = Version::parse(target.as_str())
         .expect("a MachineVersion contains a supported semantic version");
     let mut stage = MachineUpgradeStage::Preparing;
-    stored.attempt = MachineUpgradeAttempt::Running {
-        attempt_id,
-        target: target.clone(),
+    stored.attempt.outcome = MachineUpgradeOutcome::Running {
         stage: stage.clone(),
     };
     write(data_dir, &stored)?;
@@ -223,17 +233,15 @@ pub async fn run_worker(
     let result = super::install_locked(
         InstallRequest {
             release: ReleaseRequest::Exact(target_version),
-            source: stored.source.installer(),
+            source: stored.source.clone(),
             preparation: Preparation::SoftwareOnly,
             install_only: false,
         },
         InstallPaths::system(data_dir, run_dir),
         guard,
         |install_stage| {
-            stage = upgrade_stage(install_stage);
-            stored.attempt = MachineUpgradeAttempt::Running {
-                attempt_id,
-                target: target.clone(),
+            stage = install_stage;
+            stored.attempt.outcome = MachineUpgradeOutcome::Running {
                 stage: stage.clone(),
             };
             write(data_dir, &stored).map_err(|error| InstallError::Io {
@@ -246,18 +254,15 @@ pub async fn run_worker(
 
     match result {
         Ok(_) => {
-            stored.attempt = MachineUpgradeAttempt::Succeeded {
-                attempt_id,
-                version: target,
+            stored.attempt.outcome = MachineUpgradeOutcome::Succeeded {
+                version: target.clone(),
             };
             write(data_dir, &stored)?;
             admission.clear_active(attempt_id.as_str())?;
             Ok(())
         }
         Err(error) => {
-            stored.attempt = MachineUpgradeAttempt::Failed {
-                attempt_id,
-                target,
+            stored.attempt.outcome = MachineUpgradeOutcome::Failed {
                 stage,
                 error: error.to_string(),
             };
@@ -269,29 +274,23 @@ pub async fn run_worker(
 }
 
 /// Reconcile a retained receipt before serving requests after daemon restart.
-pub async fn reconcile(data_dir: &Path, run_dir: &Path) -> Result<(), Error> {
-    let admission = admission::Admission::new(run_dir, data_dir);
-    let Some(mut stored) = read_optional(data_dir)? else {
-        return Ok(());
-    };
-    if stored.attempt.is_terminal() {
-        if let Ok(_guard) = admission.try_install() {
-            admission.clear_active(stored.attempt.attempt_id().as_str())?;
-        }
-        return Ok(());
+pub(crate) async fn reconcile(data_dir: &Path, run_dir: &Path) -> Result<(), Error> {
+    match inspect(None, data_dir, run_dir).await {
+        Ok(_) | Err(Error::NotFound) => Ok(()),
+        Err(error) => Err(error),
     }
-    let Ok(_guard) = admission.try_install() else {
-        return Ok(());
-    };
-    reconcile_locked(&admission, data_dir, &mut stored).await
 }
 
 pub(super) async fn reconcile_for_install(
-    admission: &admission::Admission,
+    admission: &mutation::MutationGate,
     data_dir: &Path,
 ) -> Result<(), Error> {
     let Some(mut stored) = read_optional(data_dir)? else {
-        return Ok(());
+        return if admission.active()? {
+            Err(Error::Busy)
+        } else {
+            Ok(())
+        };
     };
     reconcile_locked(admission, data_dir, &mut stored).await?;
     if stored.attempt.is_terminal() {
@@ -302,31 +301,27 @@ pub(super) async fn reconcile_for_install(
 }
 
 async fn reconcile_locked(
-    admission: &admission::Admission,
+    admission: &mutation::MutationGate,
     data_dir: &Path,
     stored: &mut StoredAttempt,
 ) -> Result<(), Error> {
     if stored.attempt.is_terminal() {
-        admission.clear_active(stored.attempt.attempt_id().as_str())?;
+        admission.clear_active(stored.attempt.attempt_id.as_str())?;
         return Ok(());
     }
-    if worker_active(stored.attempt.attempt_id()).await? {
+    if worker_state(stored.attempt.attempt_id).await? == WorkerState::Active {
         return Ok(());
     }
-    let stage = match &stored.attempt {
-        MachineUpgradeAttempt::Accepted { .. } => MachineUpgradeStage::Launching,
-        MachineUpgradeAttempt::Running { stage, .. } => stage.clone(),
-        MachineUpgradeAttempt::Succeeded { .. }
-        | MachineUpgradeAttempt::Failed { .. }
-        | MachineUpgradeAttempt::Interrupted { .. } => return Ok(()),
+    let stage = match &stored.attempt.outcome {
+        MachineUpgradeOutcome::Accepted => MachineUpgradeStage::Launching,
+        MachineUpgradeOutcome::Running { stage } => stage.clone(),
+        MachineUpgradeOutcome::Succeeded { .. }
+        | MachineUpgradeOutcome::Failed { .. }
+        | MachineUpgradeOutcome::Interrupted { .. } => return Ok(()),
     };
-    stored.attempt = MachineUpgradeAttempt::Interrupted {
-        attempt_id: stored.attempt.attempt_id(),
-        target: stored.attempt.target().clone(),
-        stage,
-    };
+    stored.attempt.outcome = MachineUpgradeOutcome::Interrupted { stage };
     write(data_dir, stored)?;
-    admission.clear_active(stored.attempt.attempt_id().as_str())?;
+    admission.clear_active(stored.attempt.attempt_id.as_str())?;
     Ok(())
 }
 
@@ -389,28 +384,67 @@ async fn launch_worker(
     }
 }
 
-async fn worker_active(attempt_id: MachineUpgradeAttemptId) -> Result<bool, Error> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerState {
+    Active,
+    Stopped,
+}
+
+async fn worker_state(attempt_id: MachineUpgradeAttemptId) -> Result<WorkerState, Error> {
     let output = Command::new("systemctl")
-        .args(["is-active", "--quiet", &unit_name(attempt_id)])
+        .args([
+            "show",
+            "--property=LoadState",
+            "--property=ActiveState",
+            &unit_name(attempt_id),
+        ])
         .output()
         .await
         .map_err(Error::InspectWorker)?;
-    Ok(output.status.success())
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(Error::WorkerEvidence(if detail.is_empty() {
+            format!("systemctl show exited with {}", output.status)
+        } else {
+            format!("systemctl show exited with {}: {detail}", output.status)
+        }));
+    }
+    let properties = String::from_utf8(output.stdout)
+        .map_err(|_| Error::WorkerEvidence("systemctl show returned non-UTF-8 output".into()))?;
+    let mut load = None;
+    let mut active = None;
+    for line in properties.lines() {
+        if let Some(value) = line.strip_prefix("LoadState=") {
+            if load.replace(value).is_some() {
+                return Err(Error::WorkerEvidence(
+                    "systemctl show repeated LoadState".into(),
+                ));
+            }
+        } else if let Some(value) = line.strip_prefix("ActiveState=")
+            && active.replace(value).is_some()
+        {
+            return Err(Error::WorkerEvidence(
+                "systemctl show repeated ActiveState".into(),
+            ));
+        }
+    }
+    if load == Some("not-found") {
+        return Ok(WorkerState::Stopped);
+    }
+    match active {
+        Some(
+            "active" | "activating" | "reloading" | "deactivating" | "maintenance" | "refreshing",
+        ) => Ok(WorkerState::Active),
+        Some("inactive" | "failed") => Ok(WorkerState::Stopped),
+        _ => Err(Error::WorkerEvidence(format!(
+            "systemctl show returned no recognized state: {}",
+            properties.trim().escape_debug()
+        ))),
+    }
 }
 
 fn unit_name(attempt_id: MachineUpgradeAttemptId) -> String {
     format!("ployz-upgrade-{attempt_id}.service")
-}
-
-fn upgrade_stage(stage: InstallStage) -> MachineUpgradeStage {
-    match stage {
-        InstallStage::Preparing => MachineUpgradeStage::Preparing,
-        InstallStage::Acquiring => MachineUpgradeStage::Acquiring,
-        InstallStage::Verifying => MachineUpgradeStage::Verifying,
-        InstallStage::Activating => MachineUpgradeStage::Activating,
-        InstallStage::Restarting => MachineUpgradeStage::Restarting,
-        InstallStage::Readiness => MachineUpgradeStage::Readiness,
-    }
 }
 
 fn read(data_dir: &Path) -> Result<StoredAttempt, Error> {
@@ -447,12 +481,11 @@ mod tests {
         let attempt_id = MachineUpgradeAttemptId::random();
         let stored = StoredAttempt {
             requested: MachineRelease::parse("beta").unwrap(),
-            source: StoredReleaseSource::Local {
-                directory: "/root/qualification".into(),
-            },
-            attempt: MachineUpgradeAttempt::Accepted {
+            source: ReleaseSource::Local("/root/qualification".into()),
+            attempt: MachineUpgradeAttempt {
                 attempt_id,
                 target: MachineVersion::parse("1.2.3-beta.4").unwrap(),
+                outcome: MachineUpgradeOutcome::Accepted,
             },
         };
         let encoded = serde_json::to_string(&stored).unwrap();
@@ -481,7 +514,12 @@ mod tests {
             return;
         }
 
-        for case in ["retry-active", "interrupted", "launch-failed"] {
+        for case in [
+            "retry-active",
+            "interrupted",
+            "inspection-unknown",
+            "launch-failed",
+        ] {
             let root = tempfile::Builder::new()
                 .prefix(&format!("ployzd-upgrade-{case}-"))
                 .tempdir()
@@ -498,10 +536,10 @@ mod tests {
             );
             write_script(
                 &commands.join("systemctl"),
-                if case == "interrupted" {
-                    "exit 3"
-                } else {
-                    "exit 0"
+                match case {
+                    "interrupted" => "printf 'LoadState=loaded\\nActiveState=inactive\\n'",
+                    "inspection-unknown" => "echo manager unavailable >&2; exit 1",
+                    _ => "printf 'LoadState=loaded\\nActiveState=active\\n'",
                 },
             );
             fs::create_dir(root.path().join("release")).unwrap();
@@ -538,13 +576,13 @@ mod tests {
         let root = PathBuf::from(env::var_os(CONTRACT_ROOT).unwrap());
         let data = root.join("data");
         let run = root.join("run");
-        let admission = admission::Admission::new(&run, &data);
+        let admission = mutation::MutationGate::new(&run, &data);
         let attempt_id = MachineUpgradeAttemptId::parse("a".repeat(32)).unwrap();
         let request = RequestMachineUpgradeRequest {
             attempt_id,
             release: MachineRelease::parse("1.2.3").unwrap(),
         };
-        let guard = admission.try_install().unwrap();
+        let guard = admission.try_installation().unwrap();
         let accepted = request_locked(request.clone(), &data, &run, &guard)
             .await
             .unwrap();
@@ -552,14 +590,14 @@ mod tests {
 
         match case {
             "retry-active" => {
-                assert!(matches!(accepted, MachineUpgradeAttempt::Accepted { .. }));
+                assert!(matches!(accepted.outcome, MachineUpgradeOutcome::Accepted));
                 assert_eq!(
                     existing_request(&request, &data).unwrap(),
                     Some(accepted.clone())
                 );
                 assert!(matches!(
                     admission.try_mutation(),
-                    Err(admission::Error::Busy)
+                    Err(mutation::Error::Busy)
                 ));
                 let conflict = RequestMachineUpgradeRequest {
                     attempt_id,
@@ -570,7 +608,7 @@ mod tests {
                     Err(Error::AttemptConflict(id)) if id == attempt_id
                 ));
 
-                let guard = admission.try_install().unwrap();
+                let guard = admission.try_installation().unwrap();
                 assert_eq!(
                     request_locked(request, &data, &run, &guard).await.unwrap(),
                     accepted
@@ -601,25 +639,35 @@ mod tests {
             "interrupted" => {
                 let observed = inspect(Some(attempt_id), &data, &run).await.unwrap();
                 assert!(matches!(
-                    observed,
-                    MachineUpgradeAttempt::Interrupted {
+                    observed.outcome,
+                    MachineUpgradeOutcome::Interrupted {
                         stage: MachineUpgradeStage::Launching,
-                        ..
                     }
                 ));
-                assert!(!admission.active());
+                assert!(!admission.active().unwrap());
                 assert!(admission.try_mutation().is_ok());
+            }
+            "inspection-unknown" => {
+                assert!(matches!(
+                    inspect(Some(attempt_id), &data, &run).await,
+                    Err(Error::WorkerEvidence(ref message))
+                        if message.contains("manager unavailable")
+                ));
+                assert!(admission.active().unwrap());
+                assert!(matches!(
+                    admission.try_mutation(),
+                    Err(mutation::Error::Busy)
+                ));
             }
             "launch-failed" => {
                 assert!(matches!(
-                    accepted,
-                    MachineUpgradeAttempt::Failed {
+                    accepted.outcome,
+                    MachineUpgradeOutcome::Failed {
                         stage: MachineUpgradeStage::Launching,
                         ref error,
-                        ..
                     } if error == "launch Machine upgrade worker: worker launch refused"
                 ));
-                assert!(!admission.active());
+                assert!(!admission.active().unwrap());
                 assert_eq!(
                     inspect(Some(attempt_id), &data, &run).await.unwrap(),
                     accepted

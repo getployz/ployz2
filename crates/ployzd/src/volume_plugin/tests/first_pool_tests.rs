@@ -2,8 +2,11 @@
 
 use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
+    sync::Arc,
     time::Duration,
 };
+
+use tokio::sync::Mutex;
 
 use super::super::pool::{POOL_BACKING_FILE, PoolStorage};
 use super::*;
@@ -958,7 +961,7 @@ esac
         ),
         zfs: program("zfs"),
         mutation: Arc::new(Mutex::new(())),
-        installation: ployzd::installer::admission::Admission::new(
+        installation: ployzd::mutation::MutationGate::new(
             directory.join("admission-run"),
             directory.join("admission-data"),
         ),

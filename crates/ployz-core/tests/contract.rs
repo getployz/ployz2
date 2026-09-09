@@ -17,10 +17,10 @@ use ployz_core::{
     InspectMachineUpgradeRequest, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
     ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
     MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate,
-    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeStage, MachineVersion,
-    ManagementAddress, NameMatches, OpaquePayload, PROJECT_NAME_LABEL, PROTOCOL_MAJOR,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, ProjectName,
-    PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, QualifiedService,
+    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
+    MachineVersion, ManagementAddress, NameMatches, OpaquePayload, PROJECT_NAME_LABEL,
+    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
+    ProjectName, PublicIpDiscovery, PublicIpUpdate, PullImageFromMachineRequest, QualifiedService,
     RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest, RemoveMachineRequest,
     RequestMachineUpgradeRequest, RequestedServiceSpec, ReserveDomainRequest, ResetAccepted,
     ResetRequest, ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody,
@@ -1505,11 +1505,13 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         RpcRequestBody::InspectMachineUpgrade(inspect)
     );
 
-    let attempt = MachineUpgradeAttempt::Failed {
+    let attempt = MachineUpgradeAttempt {
         attempt_id,
         target: MachineVersion::parse("1.2.3-beta.4").unwrap(),
-        stage: MachineUpgradeStage::Verifying,
-        error: "checksum mismatch".into(),
+        outcome: MachineUpgradeOutcome::Failed {
+            stage: MachineUpgradeStage::Verifying,
+            error: "checksum mismatch".into(),
+        },
     };
     let response = RpcResponse::from(attempt.clone());
     assert_eq!(

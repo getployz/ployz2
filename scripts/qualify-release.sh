@@ -29,6 +29,8 @@ TRAFFIC_STOP=/var/lib/ployz/qualification/traffic.stop
 REMOTE_RELEASE_ROOT=/var/lib/ployz/qualification/releases
 APP_URL=http://127.0.0.1:18082/identity
 APP_VALUE=qualify-persistent-data
+APP_VOLUME=qualify-release_qualify-data
+APP_VOLUME_MOUNT=/var/lib/ployz-volumes/$APP_VOLUME
 
 error() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -160,6 +162,18 @@ wait_for_application() {
         sleep 1
     done
     error "qualification application did not serve its persistent value"
+}
+
+assert_provisioned_volume() {
+    local volumes
+    volumes=$("$PLOYZ" volume ls --context "$CONTEXT")
+    printf '%s\n' "$volumes"
+    printf '%s\n' "$volumes" | awk -F '\t' -v volume="$APP_VOLUME" '
+        $2 == volume && $3 == "PROVISIONED" && $6 == "ployz" { found = 1 }
+        END { exit !found }
+    ' || error "$APP_VOLUME is not a provisioned Ployz Volume"
+    ssh_host "$first" "test \"\$(sudo docker volume inspect '$APP_VOLUME' --format '{{.Driver}}')\" = ployz" || error "$APP_VOLUME is not backed by the Ployz Docker driver"
+    ssh_host "$first" "sudo zfs list -H -o mountpoint | grep -Fqx '$APP_VOLUME_MOUNT'" || error "$APP_VOLUME has no mounted ZFS dataset"
 }
 
 start_traffic() {
@@ -309,9 +323,7 @@ ssh_host "$first" "sudo install -d -m 0755 /etc/systemd/system/ployz.service.d &
 
 echo "deploy persistent ZFS-backed application"
 "$PLOYZ" deploy --yes --context "$CONTEXT" -f "$COMPOSE_DIR/compose.yaml"
-volumes=$("$PLOYZ" volume ls --context "$CONTEXT")
-printf '%s\n' "$volumes"
-printf '%s\n' "$volumes" | grep -Eq 'qualify-data' || error "named volume qualify-data did not appear in volume ls"
+assert_provisioned_volume
 wait_for_application
 state_before=$(machine_state_signature)
 start_traffic
@@ -387,6 +399,5 @@ traffic_successes=$(grep -c '^ok$' "$work/traffic.log" || true)
 [ "$traffic_successes" -ge 5 ] || error "continuous traffic collected only $traffic_successes successful probes"
 printf 'continuous application traffic: %s successful probes, 0 failures\n' "$traffic_successes"
 
-volumes=$("$PLOYZ" volume ls --context "$CONTEXT")
-printf '%s\n' "$volumes" | grep -Eq 'qualify-data' || error "named volume disappeared after upgrade"
+assert_provisioned_volume
 echo "qualify-release passed on ${HOST_LIST[*]}: $source_version -> $target_version"

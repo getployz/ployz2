@@ -116,15 +116,7 @@ async fn upgrade_and_machine_mutations_refuse_each_other_at_the_rpc_boundary() {
         let local = service.local();
         let started = Arc::clone(&started);
         let release = Arc::clone(&release);
-        async move {
-            local
-                .run_mutation(async move {
-                    started.notify_one();
-                    release.notified().await;
-                    Ok(())
-                })
-                .await
-        }
+        async move { local.hold_mutation_for_test(started, release).await }
     });
     started.notified().await;
 

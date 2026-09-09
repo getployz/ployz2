@@ -65,11 +65,37 @@ impl VolumeStorage {
         })
     }
 
+    async fn inspect_capacity(&self) -> Result<StorageCapacity, ployz_core::RpcError> {
+        let admission = self.admit_mutation().await.map_err(unknown)?;
+        let storage = self.clone();
+        tokio::spawn(async move {
+            let _admission = admission;
+            let _pool_guard = storage.pool.lock_mutation().await.map_err(unknown)?;
+            storage.capacity().await.map_err(unknown)
+        })
+        .await
+        .unwrap_or_else(|error| Err(unknown(error)))
+    }
+
     async fn prepare(
         &self,
         requested: &Volumes,
     ) -> Result<Vec<ployz_core::DockerVolumeName>, ployz_core::RpcError> {
-        let _guard = self.admit_mutation().await.map_err(storage_error)?;
+        let admission = self.admit_mutation().await.map_err(storage_error)?;
+        let storage = self.clone();
+        let requested = requested.clone();
+        tokio::spawn(async move {
+            let _admission = admission;
+            storage.prepare_admitted(&requested).await
+        })
+        .await
+        .unwrap_or_else(|error| Err(unknown(error)))
+    }
+
+    async fn prepare_admitted(
+        &self,
+        requested: &Volumes,
+    ) -> Result<Vec<ployz_core::DockerVolumeName>, ployz_core::RpcError> {
         let _pool_guard = self.pool.lock_mutation().await.map_err(storage_error)?;
         let capacity = self.capacity().await.map_err(unknown)?;
         let budget = capacity
@@ -130,26 +156,12 @@ impl VolumeStorage {
 pub(super) async fn inspect(
     State(storage): State<VolumeStorage>,
 ) -> Json<Result<StorageCapacity, ployz_core::RpcError>> {
-    // Finish import recovery under the locks even if the observer disconnects.
-    Json(
-        tokio::spawn(async move {
-            let _guard = storage.admit_mutation().await.map_err(unknown)?;
-            let _pool_guard = storage.pool.lock_mutation().await.map_err(unknown)?;
-            storage.capacity().await.map_err(unknown)
-        })
-        .await
-        .unwrap_or_else(|error| Err(unknown(error))),
-    )
+    Json(storage.inspect_capacity().await)
 }
 
 pub(super) async fn prepare(
     State(storage): State<VolumeStorage>,
     Json(requested): Json<Volumes>,
 ) -> Json<Result<Vec<ployz_core::DockerVolumeName>, ployz_core::RpcError>> {
-    // Finish admitted allocation even if the requesting connection disappears.
-    Json(
-        tokio::spawn(async move { storage.prepare(&requested).await })
-            .await
-            .unwrap_or_else(|error| Err(unknown(error))),
-    )
+    Json(storage.prepare(&requested).await)
 }

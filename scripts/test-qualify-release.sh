@@ -16,6 +16,8 @@ if grep -qi vultr "$ROOT/scripts/qualify-release.sh" "$ROOT/docs/RELEASE.md"; th
 fi
 
 grep -Fq 'qualify-data' "$ROOT/scripts/qualify-release/compose.yaml" || fail "compose fixture has no named volume"
+grep -Fq 'x-volumes:' "$ROOT/scripts/qualify-release/compose.yaml" || fail "compose fixture volume is not provisioned"
+grep -Fq 'busybox:1.37.0' "$ROOT/scripts/qualify-release/compose.yaml" || fail "compose fixture has no verified HTTP server image"
 grep -Fq '18082:8080/tcp@host' "$ROOT/scripts/qualify-release/compose.yaml" || fail "compose fixture has no traffic endpoint"
 grep -Fq '/data/identity' "$ROOT/scripts/qualify-release/compose.yaml" || fail "compose fixture does not serve persistent data"
 
@@ -56,7 +58,7 @@ case "$1" in
             shift
         done
         printf '%s context=%s file=%s yes=%s\n' "$action" "$context" "$file" "$yes" >>"$LOG"
-        [ "$action" != volume ] || printf 'qualify-data\n'
+        [ "$action" != volume ] || printf 'MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER\nqualify-1\tqualify-release_qualify-data\tPROVISIONED\t268435456\t4096\tployz\n'
         ;;
     machine)
         action=$2
@@ -98,7 +100,7 @@ case "$1" in
                     current=$(cat "$QUALIFY_STATE")
                     printf 'upgrade-inspect machine=%s attempt=%s context=%s output=%s current=%s\n' "$machine" "$attempt" "$context" "$output" "$current" >>"$LOG"
                     case "$current" in
-                        target) printf '{"outcome":"succeeded","attempt_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","version":"1.2.4"}\n' ;;
+                        target) printf '{"outcome":"succeeded","attempt_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target":"1.2.4","version":"1.2.4"}\n' ;;
                         failure) printf '{"outcome":"failed","attempt_id":"cccccccccccccccccccccccccccccccc","target":"1.2.4","stage":"restarting","error":"restart daemon failed"}\n' ;;
                         *) exit 1 ;;
                     esac
@@ -188,7 +190,7 @@ case "$command" in
     *'ln -sfn'*'/failure'*'/current'*) printf 'failure\n' >"$QUALIFY_STATE" ;;
     *'upgrade-attempt.json'*)
         case "$(cat "$QUALIFY_STATE")" in
-            target) printf '{"requested":"1.2.4","attempt":{"outcome":"succeeded","attempt_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","version":"1.2.4"}}\n' ;;
+            target) printf '{"requested":"1.2.4","attempt":{"outcome":"succeeded","attempt_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target":"1.2.4","version":"1.2.4"}}\n' ;;
             corrupt) printf '{"requested":"1.2.4","attempt":{"outcome":"failed","attempt_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","target":"1.2.4","stage":"verifying","error":"checksum mismatch"}}\n' ;;
             failure) printf '{"requested":"1.2.4","attempt":{"outcome":"failed","attempt_id":"cccccccccccccccccccccccccccccccc","target":"1.2.4","stage":"restarting","error":"restart daemon failed"}}\n' ;;
         esac
@@ -236,6 +238,8 @@ for reset in 0 1; do
     grep -Fxq 'upgrade-inspect machine=qualify-1 attempt=cccccccccccccccccccccccccccccccc context=qualify output=json current=failure' "$LOG" || fail "failed attempt was not inspected after repair"
 done
 grep -Fq 'ssh host=root@192.0.2.10 command=' "$SSH_LOG" || fail "SSH evidence path was not exercised"
+grep -Fq 'docker volume inspect' "$SSH_LOG" || fail "qualification did not verify the Docker Volume driver"
+grep -Fq 'zfs list -H -o mountpoint' "$SSH_LOG" || fail "qualification did not verify the ZFS dataset mount"
 grep -Fq 'scp ' "$SSH_LOG" || fail "target release was not staged with SCP"
 
 cat >"$TMP/bin/cargo" <<'CARGO'

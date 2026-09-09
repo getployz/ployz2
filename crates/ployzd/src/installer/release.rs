@@ -18,7 +18,8 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::{process::Command, time::timeout};
 
-use super::{Error, InstallPaths, InstallStage, daemon_archive, run_command};
+use super::{Error, InstallPaths, daemon_archive, run_command};
+use ployz_core::MachineUpgradeStage;
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
 const CHANNEL_URL: &str = "https://ployz.sh";
@@ -54,7 +55,8 @@ impl FromStr for ReleaseRequest {
 }
 
 /// A release source that is fixed by the local installer invocation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReleaseSource {
     /// Ployz's fixed, trusted published release and channel endpoints.
     Published,
@@ -157,7 +159,7 @@ pub(super) async fn install_binaries(
     source: &ReleaseSource,
     paths: &InstallPaths,
     target: &Version,
-    progress: &mut impl FnMut(InstallStage) -> Result<(), Error>,
+    progress: &mut impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
 ) -> Result<bool, Error> {
     let installed = installed_release(&paths.bin_dir.join("ployzd")).await?;
     let replace = replacement_required(source, installed.as_ref(), target);
@@ -169,7 +171,7 @@ pub(super) async fn install_binaries(
         return Ok(false);
     }
 
-    progress(InstallStage::Acquiring)?;
+    progress(MachineUpgradeStage::Acquiring)?;
     let archive = daemon_archive()?;
     let stage = staging_directory(&paths.bin_dir)?;
     let archive_path = stage.path().join(archive);
@@ -177,7 +179,7 @@ pub(super) async fn install_binaries(
     let archive_bytes = source
         .release_file(target, archive, "download daemon archive")
         .await?;
-    progress(InstallStage::Verifying)?;
+    progress(MachineUpgradeStage::Verifying)?;
     verify_checksum(&archive_bytes, archive, &checksum)?;
     write_private(&archive_path, &archive_bytes, "stage daemon archive")?;
     extract_archive(&archive_path, stage.path())?;
@@ -186,7 +188,7 @@ pub(super) async fn install_binaries(
     verify_executable(&daemon, target).await?;
     verify_uninstall(&uninstall)?;
     sync_staged_files(&daemon, &uninstall, stage.path())?;
-    progress(InstallStage::Activating)?;
+    progress(MachineUpgradeStage::Activating)?;
     activate(&daemon, &uninstall, paths)?;
     Ok(true)
 }

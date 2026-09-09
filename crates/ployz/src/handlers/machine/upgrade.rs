@@ -5,7 +5,7 @@ use std::{collections::BTreeSet, time::Duration};
 use clap::ArgMatches;
 use ployz_core::{
     InspectMachineUpgradeRequest, Machine, MachineRelease, MachineTarget, MachineUpgradeAttempt,
-    MachineUpgradeAttemptId, NameMatches, RequestMachineUpgradeRequest, op,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, op,
 };
 use tokio::time::Instant;
 
@@ -15,6 +15,44 @@ use super::super::{Error, leaf_matches, string_values, with_client};
 
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(16 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+trait UpgradeRequests {
+    async fn request_upgrade(
+        &mut self,
+        request: RequestMachineUpgradeRequest,
+        target: &MachineTarget,
+        wait: Duration,
+    ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>>;
+
+    async fn inspect_upgrade(
+        &mut self,
+        request: InspectMachineUpgradeRequest,
+        target: &MachineTarget,
+        wait: Duration,
+    ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>>;
+}
+
+impl UpgradeRequests for Client {
+    async fn request_upgrade(
+        &mut self,
+        request: RequestMachineUpgradeRequest,
+        target: &MachineTarget,
+        wait: Duration,
+    ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+        self.call_repeatable_for::<op::RequestMachineUpgrade>(request, Some(target), wait)
+            .await
+    }
+
+    async fn inspect_upgrade(
+        &mut self,
+        request: InspectMachineUpgradeRequest,
+        target: &MachineTarget,
+        wait: Duration,
+    ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+        self.call_repeatable_for::<op::InspectMachineUpgrade>(request, Some(target), wait)
+            .await
+    }
+}
 
 pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -26,24 +64,31 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let machines = selected_machines(client, &selectors).await?;
-            for machine in machines {
+            for (index, machine) in machines.iter().enumerate() {
                 let attempt_id = MachineUpgradeAttemptId::random();
-                let attempt = run_one(client, &machine, release.clone(), attempt_id).await?;
-                print_attempt(&machine, &attempt);
-                match attempt {
-                    MachineUpgradeAttempt::Succeeded { .. } => {}
-                    MachineUpgradeAttempt::Failed { error, .. } => {
+                let attempt = match run_one(client, machine, release.clone(), attempt_id).await {
+                    Ok(attempt) => attempt,
+                    Err(error) => {
+                        print_unattempted(&machines[index + 1..], machine);
+                        return Err(error);
+                    }
+                };
+                print_attempt(machine, &attempt);
+                match attempt.outcome {
+                    MachineUpgradeOutcome::Succeeded { .. } => {}
+                    MachineUpgradeOutcome::Failed { error, .. } => {
+                        print_unattempted(&machines[index + 1..], machine);
                         return Err(Error::usage(error));
                     }
-                    MachineUpgradeAttempt::Interrupted { .. } => {
+                    MachineUpgradeOutcome::Interrupted { .. } => {
+                        print_unattempted(&machines[index + 1..], machine);
                         return Err(Error::usage(format!(
                             "Machine {} upgrade was interrupted; {}",
                             machine.name,
                             journal_hint(attempt_id)
                         )));
                     }
-                    MachineUpgradeAttempt::Accepted { .. }
-                    | MachineUpgradeAttempt::Running { .. } => {
+                    MachineUpgradeOutcome::Accepted | MachineUpgradeOutcome::Running { .. } => {
                         unreachable!("run_one returns only terminal evidence")
                     }
                 }
@@ -90,40 +135,20 @@ async fn selected_machines(
     let mut selected = Vec::with_capacity(selectors.len());
     let mut ids = BTreeSet::new();
     for selector in selectors {
-        let target = MachineTarget::parse(selector)?;
-        let machine = match target.resolve(visible.iter().map(|entry| &entry.machine)) {
-            NameMatches::None => {
-                return Err(Error::usage(format!(
-                    "Machine {} was not found",
-                    selector.escape_debug()
-                )));
-            }
-            NameMatches::One(machine) => machine,
-            matches @ NameMatches::Ambiguous { .. } => {
-                return Err(Error::usage(format!(
-                    "Machine name {} is ambiguous: {}",
-                    selector.escape_debug(),
-                    matches
-                        .iter()
-                        .map(|machine| machine.id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
-            }
-        };
+        let machine = super::remove::select_machine(&visible, selector)?;
         if !ids.insert(machine.id) {
             return Err(Error::usage(format!(
                 "Machine {} was selected more than once",
                 machine.name
             )));
         }
-        selected.push(machine.clone());
+        selected.push(machine);
     }
     Ok(selected)
 }
 
 async fn run_one(
-    client: &mut Client,
+    client: &mut impl UpgradeRequests,
     machine: &Machine,
     release: MachineRelease,
     attempt_id: MachineUpgradeAttemptId,
@@ -134,9 +159,13 @@ async fn run_one(
         attempt_id,
         release,
     };
-    let accepted = request_until(deadline, client, &target, request)
-        .await
-        .map_err(|error| uncertain(machine, attempt_id, error))?;
+    let accepted = match request_until(deadline, client, &target, request).await {
+        Ok(accepted) => accepted,
+        Err(crate::setup_retry::Error::Permanent(error)) => return Err(error.into()),
+        Err(crate::setup_retry::Error::Exhausted(error)) => {
+            return Err(uncertain(machine, attempt_id, error));
+        }
+    };
     print_attempt(machine, &accepted);
     if accepted.is_terminal() {
         return Ok(accepted);
@@ -151,7 +180,12 @@ async fn run_one(
         }
         let observed = inspect_until(deadline, client, &target, attempt_id)
             .await
-            .map_err(|error| uncertain(machine, attempt_id, error))?;
+            .map_err(|error| match error {
+                crate::setup_retry::Error::Permanent(error) => error.into(),
+                crate::setup_retry::Error::Exhausted(error) => {
+                    uncertain(machine, attempt_id, error)
+                }
+            })?;
         if observed.is_terminal() {
             return Ok(observed);
         }
@@ -160,57 +194,34 @@ async fn run_one(
 
 async fn request_until(
     deadline: Instant,
-    client: &mut Client,
+    client: &mut impl UpgradeRequests,
     target: &MachineTarget,
     request: RequestMachineUpgradeRequest,
-) -> Result<MachineUpgradeAttempt, ConnectError> {
-    loop {
-        let outcome = tokio::time::timeout_at(
-            deadline,
-            client.call_repeatable::<op::RequestMachineUpgrade>(request.clone(), Some(target)),
+) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+    client
+        .request_upgrade(
+            request,
+            target,
+            deadline.saturating_duration_since(Instant::now()),
         )
-        .await;
-        match outcome {
-            Ok(Ok(value)) => return Ok(value),
-            Ok(Err(error)) if !error.is_setup_retryable() => return Err(error),
-            Ok(Err(_)) => {}
-            Err(_) => {
-                return Err(
-                    tonic::Status::deadline_exceeded("upgrade observation timed out").into(),
-                );
-            }
-        }
-    }
+        .await
 }
 
 async fn inspect_until(
     deadline: Instant,
-    client: &mut Client,
+    client: &mut impl UpgradeRequests,
     target: &MachineTarget,
     attempt_id: MachineUpgradeAttemptId,
-) -> Result<MachineUpgradeAttempt, ConnectError> {
-    loop {
-        let outcome = tokio::time::timeout_at(
-            deadline,
-            client.call_repeatable::<op::InspectMachineUpgrade>(
-                InspectMachineUpgradeRequest {
-                    attempt_id: Some(attempt_id),
-                },
-                Some(target),
-            ),
+) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+    client
+        .inspect_upgrade(
+            InspectMachineUpgradeRequest {
+                attempt_id: Some(attempt_id),
+            },
+            target,
+            deadline.saturating_duration_since(Instant::now()),
         )
-        .await;
-        match outcome {
-            Ok(Ok(value)) => return Ok(value),
-            Ok(Err(error)) if !error.is_setup_retryable() => return Err(error),
-            Ok(Err(_)) => {}
-            Err(_) => {
-                return Err(
-                    tonic::Status::deadline_exceeded("upgrade observation timed out").into(),
-                );
-            }
-        }
-    }
+        .await
 }
 
 fn print_attempt(machine: &Machine, attempt: &MachineUpgradeAttempt) {
@@ -218,41 +229,30 @@ fn print_attempt(machine: &Machine, attempt: &MachineUpgradeAttempt) {
 }
 
 fn print_attempt_target(machine: &str, attempt: &MachineUpgradeAttempt) {
-    match attempt {
-        MachineUpgradeAttempt::Accepted { attempt_id, target } => println!(
+    let MachineUpgradeAttempt {
+        attempt_id,
+        target,
+        outcome,
+    } = attempt;
+    match outcome {
+        MachineUpgradeOutcome::Accepted => println!(
             "Machine {machine}: upgrade {attempt_id} accepted for {target}; {}",
             journal_hint(*attempt_id)
         ),
-        MachineUpgradeAttempt::Running {
-            attempt_id,
-            target,
-            stage,
-        } => println!(
+        MachineUpgradeOutcome::Running { stage } => println!(
             "Machine {machine}: upgrade {attempt_id} is {} for {target}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
         ),
-        MachineUpgradeAttempt::Succeeded {
-            attempt_id,
-            version,
-        } => {
+        MachineUpgradeOutcome::Succeeded { version } => {
             println!("Machine {machine}: upgrade {attempt_id} succeeded; running version {version}")
         }
-        MachineUpgradeAttempt::Failed {
-            attempt_id,
-            target,
-            stage,
-            error,
-        } => println!(
+        MachineUpgradeOutcome::Failed { stage, error } => println!(
             "Machine {machine}: upgrade {attempt_id} failed at {} for {target}: {error}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
         ),
-        MachineUpgradeAttempt::Interrupted {
-            attempt_id,
-            target,
-            stage,
-        } => println!(
+        MachineUpgradeOutcome::Interrupted { stage } => println!(
             "Machine {machine}: upgrade {attempt_id} was interrupted at {} for {target}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
@@ -260,11 +260,33 @@ fn print_attempt_target(machine: &str, attempt: &MachineUpgradeAttempt) {
     }
 }
 
+fn print_unattempted(machines: &[Machine], after: &Machine) {
+    for line in unattempted_lines(machines, after) {
+        println!("{line}");
+    }
+}
+
+fn unattempted_lines(machines: &[Machine], after: &Machine) -> Vec<String> {
+    machines
+        .iter()
+        .map(|machine| {
+            format!(
+                "Machine {} ({}): upgrade unattempted after {} ({})",
+                machine.name, machine.id, after.name, after.id
+            )
+        })
+        .collect()
+}
+
 fn journal_hint(attempt_id: MachineUpgradeAttemptId) -> String {
     format!("inspect locally with `journalctl -u ployz-upgrade-{attempt_id}.service`")
 }
 
-fn uncertain(machine: &Machine, attempt_id: MachineUpgradeAttemptId, error: ConnectError) -> Error {
+fn uncertain(
+    machine: &Machine,
+    attempt_id: MachineUpgradeAttemptId,
+    error: impl std::fmt::Display,
+) -> Error {
     Error::usage(format!(
         "Machine {} ({}) upgrade {attempt_id} outcome is uncertain: {error}; reconnect and run `ployz machine upgrade inspect {} --attempt {attempt_id}`; {}",
         machine.name,
@@ -283,4 +305,133 @@ fn uncertain_timeout(machine: &Machine, attempt_id: MachineUpgradeAttemptId) -> 
         machine.id,
         journal_hint(attempt_id)
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::{
+        AdvertisedEndpoint, MachineId, MachineName, MachineRuntime, RpcError, RpcErrorCode,
+        WireGuardPublicKey,
+    };
+    use serde_json::Value;
+
+    use super::*;
+
+    struct FakeRequests {
+        request: Option<Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>>>,
+        seen: Vec<(MachineUpgradeAttemptId, String)>,
+    }
+
+    impl UpgradeRequests for FakeRequests {
+        async fn request_upgrade(
+            &mut self,
+            request: RequestMachineUpgradeRequest,
+            target: &MachineTarget,
+            _wait: Duration,
+        ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+            self.seen
+                .push((request.attempt_id, target.as_str().to_owned()));
+            self.request.take().expect("one request result")
+        }
+
+        async fn inspect_upgrade(
+            &mut self,
+            _request: InspectMachineUpgradeRequest,
+            _target: &MachineTarget,
+            _wait: Duration,
+        ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+            panic!("an unaccepted request is not inspected")
+        }
+    }
+
+    #[tokio::test]
+    async fn definitive_busy_rejection_is_not_reported_as_uncertain() {
+        let machine = machine('a', 1);
+        let attempt_id = MachineUpgradeAttemptId::parse("1".repeat(32)).unwrap();
+        let mut client = FakeRequests {
+            request: Some(Err(crate::setup_retry::Error::Permanent(
+                ConnectError::Remote(RpcError {
+                    code: RpcErrorCode::Conflict,
+                    message: "a Machine upgrade or mutation is active".into(),
+                    details: Value::Null,
+                }),
+            ))),
+            seen: Vec::new(),
+        };
+
+        let error = run_one(
+            &mut client,
+            &machine,
+            MachineRelease::parse("beta").unwrap(),
+            attempt_id,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("upgrade or mutation is active"));
+        assert!(!error.to_string().contains("outcome is uncertain"));
+        assert_eq!(client.seen, [(attempt_id, machine.id.as_str().to_owned())]);
+    }
+
+    #[tokio::test]
+    async fn lost_request_reply_is_uncertain_and_keeps_the_dispatched_attempt_id() {
+        let machine = machine('b', 2);
+        let attempt_id = MachineUpgradeAttemptId::parse("2".repeat(32)).unwrap();
+        let mut client = FakeRequests {
+            request: Some(Err(crate::setup_retry::Error::Exhausted(
+                "request reply was lost".into(),
+            ))),
+            seen: Vec::new(),
+        };
+
+        let error = run_one(
+            &mut client,
+            &machine,
+            MachineRelease::parse("1.2.3").unwrap(),
+            attempt_id,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("outcome is uncertain"), "{error}");
+        assert!(error.contains(attempt_id.as_str()), "{error}");
+        assert!(error.contains("machine upgrade inspect"), "{error}");
+        assert_eq!(client.seen, [(attempt_id, machine.id.as_str().to_owned())]);
+    }
+
+    #[test]
+    fn first_and_middle_failures_report_the_complete_ordered_suffix() {
+        let machines = [
+            machine('a', 1),
+            machine('b', 2),
+            machine('c', 3),
+            machine('d', 4),
+        ];
+
+        let first = unattempted_lines(&machines[1..], &machines[0]);
+        assert_eq!(first.len(), 3);
+        assert!(first[0].contains("Machine b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)"));
+        assert!(first[0].contains("after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"));
+        assert!(first[1].contains("Machine c (cccccccccccccccccccccccccccccccc)"));
+        assert!(first[2].contains("Machine d (dddddddddddddddddddddddddddddddd)"));
+
+        let middle = unattempted_lines(&machines[2..], &machines[1]);
+        assert_eq!(middle.len(), 2);
+        assert!(middle[0].contains("Machine c (cccccccccccccccccccccccccccccccc)"));
+        assert!(middle[0].contains("after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)"));
+        assert!(middle[1].contains("Machine d (dddddddddddddddddddddddddddddddd)"));
+    }
+
+    fn machine(id: char, subnet: u8) -> Machine {
+        Machine {
+            id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
+            name: MachineName::parse(id.to_string()).unwrap(),
+            subnet: format!("10.210.{subnet}.0/24").parse().unwrap(),
+            public_key: WireGuardPublicKey([subnet; 32]),
+            public_ip: None,
+            advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
+            runtime: MachineRuntime::default(),
+        }
+    }
 }

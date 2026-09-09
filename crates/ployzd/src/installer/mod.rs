@@ -1,6 +1,5 @@
 //! Bounded local installation of a Ployz Machine release.
 
-pub mod admission;
 mod host;
 mod release;
 mod storage;
@@ -13,8 +12,10 @@ use std::{
     process::{Command, Output},
 };
 
-use ployz_core::StorageChoice;
+use ployz_core::{MachineUpgradeStage, StorageChoice};
 use thiserror::Error;
+
+use crate::mutation;
 
 use self::{
     host::{
@@ -30,20 +31,6 @@ pub use self::release::{ReleaseRequest, ReleaseSource};
 const PLOYZ_USER: &str = "ployz";
 const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
 const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
-const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
-const DEFAULT_RUN_DIR: &str = "/run/ployz";
-
-/// Observable stage of the shared installation implementation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InstallStage {
-    Preparing,
-    Acquiring,
-    Verifying,
-    Activating,
-    Restarting,
-    Readiness,
-}
-
 /// Explicit host work associated with one Machine installation attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Preparation {
@@ -155,22 +142,12 @@ impl InstallPaths {
     }
 }
 
-/// Install the selected release through the one Machine-local installation seam.
-///
-/// # Errors
-///
-/// Returns the observed first failed installation stage. Acquisition and preflight failures
-/// happen before activation, so the installed daemon remains untouched.
-pub async fn install(request: InstallRequest) -> Result<InstallOutcome, Error> {
-    install_in(request, DEFAULT_DATA_DIR, DEFAULT_RUN_DIR).await
-}
-
 /// Install using the daemon's configured data and runtime directories.
 ///
 /// # Errors
 ///
 /// Returns the observed first failed installation stage.
-pub async fn install_in(
+pub async fn install(
     request: InstallRequest,
     data_dir: impl Into<PathBuf>,
     run_dir: impl Into<PathBuf>,
@@ -180,8 +157,8 @@ pub async fn install_in(
 
 async fn install_at(request: InstallRequest, paths: InstallPaths) -> Result<InstallOutcome, Error> {
     require_root()?;
-    let admission = admission::Admission::new(&paths.run_dir, &paths.data_dir);
-    let lock = admission.try_install().map_err(map_admission_error)?;
+    let admission = mutation::MutationGate::new(&paths.run_dir, &paths.data_dir);
+    let lock = admission.try_installation().map_err(map_admission_error)?;
     upgrade::reconcile_for_install(&admission, &paths.data_dir)
         .await
         .map_err(map_upgrade_reconciliation)?;
@@ -191,13 +168,13 @@ async fn install_at(request: InstallRequest, paths: InstallPaths) -> Result<Inst
 async fn install_locked(
     request: InstallRequest,
     paths: InstallPaths,
-    _lock: admission::InstallGuard,
-    mut progress: impl FnMut(InstallStage) -> Result<(), Error>,
+    _lock: mutation::InstallationGuard,
+    mut progress: impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
 ) -> Result<InstallOutcome, Error> {
     verify_system(request.install_only)?;
     let target = resolve_release(&request.release, &request.source).await?;
 
-    progress(InstallStage::Preparing)?;
+    progress(MachineUpgradeStage::Preparing)?;
     if !request.install_only {
         match &request.preparation {
             Preparation::SoftwareOnly => verify_software_prerequisites(&paths)?,
@@ -227,14 +204,14 @@ async fn install_locked(
         Readiness::InstallationOnly
     } else {
         if restart_required {
-            progress(InstallStage::Restarting)?;
+            progress(MachineUpgradeStage::Restarting)?;
             systemctl("restart daemon", ["restart", "ployz.service"])?;
             systemctl(
                 "restart volume plugin",
                 ["try-restart", "ployz-volume-plugin.service"],
             )?;
         }
-        progress(InstallStage::Readiness)?;
+        progress(MachineUpgradeStage::Readiness)?;
         verify_running_daemon(&paths, &target).await?;
         Readiness::Running
     };
@@ -244,10 +221,10 @@ async fn install_locked(
     })
 }
 
-fn map_admission_error(error: admission::Error) -> Error {
+fn map_admission_error(error: mutation::Error) -> Error {
     match error {
-        admission::Error::Busy => Error::Busy,
-        admission::Error::Io(source) => Error::Io {
+        mutation::Error::Busy => Error::Busy,
+        mutation::Error::Io(source) => Error::Io {
             stage: "claim Machine installation admission",
             source,
         },
@@ -518,8 +495,8 @@ mod tests {
             install_only: true,
         };
         let result = if case == "busy" {
-            let admission = admission::Admission::new(&paths.run_dir, &paths.data_dir);
-            let _held = admission.try_install().unwrap();
+            let admission = mutation::MutationGate::new(&paths.run_dir, &paths.data_dir);
+            let _held = admission.try_installation().unwrap();
             install_at(request, paths.clone()).await
         } else {
             install_at(request, paths.clone()).await

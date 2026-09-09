@@ -40,6 +40,7 @@ pub struct LocalMachine {
 }
 
 mod container;
+mod upgrade;
 
 #[derive(Clone)]
 struct ClusterContext {
@@ -121,19 +122,14 @@ pub enum Error {
     #[error("this Machine is isolation-locked")]
     IsolationLocked,
     #[error(transparent)]
-    Admission(#[from] crate::installer::admission::Error),
-}
-
-pub(crate) struct UpgradeAdmission {
-    pub(crate) data_dir: std::path::PathBuf,
-    pub(crate) run_dir: std::path::PathBuf,
-    pub(crate) install: crate::installer::admission::InstallGuard,
-    _local: OwnedMutexGuard<()>,
+    Admission(#[from] crate::mutation::Error),
+    #[error(transparent)]
+    Upgrade(#[from] crate::installer::upgrade::Error),
 }
 
 struct MutationAdmission {
     _local: OwnedMutexGuard<()>,
-    _installation: crate::installer::admission::MutationGuard,
+    _installation: crate::mutation::MutationGuard,
 }
 
 impl LocalMachine {
@@ -197,10 +193,7 @@ impl LocalMachine {
     async fn admit_mutation(&self) -> Result<MutationAdmission, Error> {
         let (local, installation) = {
             let store = self.lock_store()?;
-            (
-                store.admission_lock.clone(),
-                store.installation_admission.clone(),
-            )
+            (store.admission_lock.clone(), store.mutation_gate.clone())
         };
         let local = local.lock_owned().await;
         let installation = installation.try_mutation()?;
@@ -210,7 +203,7 @@ impl LocalMachine {
         })
     }
 
-    pub(crate) async fn run_mutation<T, F>(&self, work: F) -> Result<T, Error>
+    async fn finish_mutation<T, F>(&self, work: F) -> Result<T, Error>
     where
         T: Send + 'static,
         F: std::future::Future<Output = Result<T, Error>> + Send + 'static,
@@ -223,34 +216,18 @@ impl LocalMachine {
         .await?
     }
 
-    pub(crate) fn try_upgrade_admission(&self) -> Result<UpgradeAdmission, Error> {
-        let (data_dir, run_dir, local, installation) = {
-            let store = self.lock_store()?;
-            (
-                store.data_dir.clone(),
-                store.installation_admission.lock_dir().to_owned(),
-                store.admission_lock.clone(),
-                store.installation_admission.clone(),
-            )
-        };
-        let local = local
-            .try_lock_owned()
-            .map_err(|_| crate::installer::admission::Error::Busy)?;
-        let install = installation.try_install()?;
-        Ok(UpgradeAdmission {
-            data_dir,
-            run_dir,
-            install,
-            _local: local,
+    #[cfg(test)]
+    pub(crate) async fn hold_mutation_for_test(
+        &self,
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    ) -> Result<(), Error> {
+        self.finish_mutation(async move {
+            started.notify_one();
+            release.notified().await;
+            Ok(())
         })
-    }
-
-    pub(crate) fn upgrade_paths(&self) -> Result<(std::path::PathBuf, std::path::PathBuf), Error> {
-        let store = self.lock_store()?;
-        Ok((
-            store.data_dir.clone(),
-            store.installation_admission.lock_dir().to_owned(),
-        ))
+        .await
     }
 
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {
@@ -420,7 +397,7 @@ impl LocalMachine {
     ///
     /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned
     /// and [`Error::Store`] when initialize is not legal in the current phase.
-    pub fn initialize(&self, request: InitializeRequest) -> Result<Initialized, Error> {
+    fn initialize_admitted(&self, request: InitializeRequest) -> Result<Initialized, Error> {
         let machine = self.lock_store()?.initialize(
             request.name,
             FoundingCluster {
@@ -440,12 +417,15 @@ impl LocalMachine {
         Ok(Initialized { machine })
     }
 
-    pub(crate) async fn initialize_mutation(
-        &self,
-        request: InitializeRequest,
-    ) -> Result<Initialized, Error> {
+    /// Initialize this Machine under local mutation admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns when mutation admission is busy, the local task fails, or initialization is not
+    /// legal in the current persisted phase.
+    pub async fn initialize(&self, request: InitializeRequest) -> Result<Initialized, Error> {
         let local = self.clone();
-        self.run_mutation(async move { local.initialize(request) })
+        self.finish_mutation(async move { local.initialize_admitted(request) })
             .await
     }
 
@@ -470,7 +450,7 @@ impl LocalMachine {
     /// fails, and [`Error::Cluster`] when replicated I/O fails.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let local = self.clone();
-        self.run_mutation(async move { local.register_admitted(request).await })
+        self.finish_mutation(async move { local.register_admitted(request).await })
             .await
     }
 
@@ -589,7 +569,7 @@ impl LocalMachine {
     ///
     /// Returns [`Error::LockPoisoned`] when the local record lock is poisoned
     /// and [`Error::Store`] when join is not legal in the current phase.
-    pub fn join(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
+    fn join_admitted(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
         let mut store = self.lock_store()?;
         store.join(
             request.registration.assigned_machine,
@@ -612,9 +592,16 @@ impl LocalMachine {
         Ok(JoinAccepted {})
     }
 
-    pub(crate) async fn join_mutation(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
+    /// Persist a join assignment under local mutation admission and request restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns when mutation admission is busy, the local task fails, or join is not legal in
+    /// the current persisted phase.
+    pub async fn join(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
         let local = self.clone();
-        self.run_mutation(async move { local.join(request) }).await
+        self.finish_mutation(async move { local.join_admitted(request) })
+            .await
     }
 
     /// Persist Cloud Pairing so this Machine can hold Relay Register, or clear
@@ -625,7 +612,7 @@ impl LocalMachine {
     /// Returns [`Error::NotParticipating`] when this Machine is not
     /// participating, [`Error::LockPoisoned`] when the local record lock is
     /// poisoned, and [`Error::Store`] when the record cannot be written.
-    pub fn set_cloud_pairing(&self, pairing: Option<CloudPairing>) -> Result<(), Error> {
+    fn set_cloud_pairing_admitted(&self, pairing: Option<CloudPairing>) -> Result<(), Error> {
         let mut store = self.lock_store()?;
         if store.record().phase() != LocalMachinePhase::Participating {
             return Err(Error::NotParticipating);
@@ -634,12 +621,15 @@ impl LocalMachine {
         Ok(())
     }
 
-    pub(crate) async fn set_cloud_pairing_mutation(
-        &self,
-        pairing: Option<CloudPairing>,
-    ) -> Result<(), Error> {
+    /// Persist or clear Cloud Pairing under local mutation admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns when mutation admission is busy, the local task fails, this Machine is not
+    /// participating, or the local record cannot be persisted.
+    pub async fn set_cloud_pairing(&self, pairing: Option<CloudPairing>) -> Result<(), Error> {
         let local = self.clone();
-        self.run_mutation(async move { local.set_cloud_pairing(pairing) })
+        self.finish_mutation(async move { local.set_cloud_pairing_admitted(pairing) })
             .await
     }
 
@@ -685,7 +675,7 @@ impl LocalMachine {
     /// when listing visible Machines fails.
     pub async fn update(&self, request: UpdateMachineRequest) -> Result<MachineUpdated, Error> {
         let local = self.clone();
-        self.run_mutation(async move { local.update_admitted(request).await })
+        self.finish_mutation(async move { local.update_admitted(request).await })
             .await
     }
 
@@ -719,7 +709,7 @@ impl LocalMachine {
         request: RemoveMachineRequest,
     ) -> Result<MachineRemoved, Error> {
         let local = self.clone();
-        self.run_mutation(async move { local.remove_peer_admitted(request).await })
+        self.finish_mutation(async move { local.remove_peer_admitted(request).await })
             .await
     }
 
@@ -754,7 +744,7 @@ impl LocalMachine {
         request: RemoveLocalMachineRequest,
     ) -> Result<LocalMachineRemoved, Error> {
         let local = self.clone();
-        self.run_mutation(async move { local.remove_local_admitted(request).await })
+        self.finish_mutation(async move { local.remove_local_admitted(request).await })
             .await
     }
 
@@ -805,7 +795,7 @@ impl LocalMachine {
     /// [`Error::OperationTask`] if the admitted operation task fails.
     pub async fn reset(&self) -> Result<ResetAccepted, Error> {
         let local = self.clone();
-        self.run_mutation(async move { local.reset_admitted().await })
+        self.finish_mutation(async move { local.reset_admitted().await })
             .await
     }
 

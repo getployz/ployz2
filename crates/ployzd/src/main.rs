@@ -154,7 +154,7 @@ async fn run(args: Args) -> Result<(), Error> {
             release_dir,
         )
         .map_err(Error::from)?;
-        let outcome = ployzd::installer::install_in(request, &args.data_dir, &run_dir)
+        let outcome = ployzd::installer::install(request, &args.data_dir, &run_dir)
             .await
             .map_err(io::Error::other)?;
         match outcome.readiness {

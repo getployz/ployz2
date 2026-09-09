@@ -1,6 +1,6 @@
 services:
   data:
-    image: alpine:3.23.3
+    image: busybox:1.37.0
     command:
       - sh
       - -c
@@ -9,5 +9,5 @@ services:
       - qualify-data:/data
     x-machines: [qualify-1]
     x-ports: [18082:8080/tcp@host]
-volumes:
-  qualify-data:
+x-volumes:
+  qualify-data: 256M

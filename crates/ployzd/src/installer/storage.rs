@@ -309,10 +309,11 @@ fn set_and_verify_zfs_arc_max(cap: u64) -> Result<(), Error> {
             stage: "apply ZFS ARC limit",
             source,
         })?;
-    writeln!(file, "{cap}").map_err(|source| Error::Io {
-        stage: "apply ZFS ARC limit",
-        source,
-    })?;
+    file.write_all(cap.to_string().as_bytes())
+        .map_err(|source| Error::Io {
+            stage: "apply ZFS ARC limit",
+            source,
+        })?;
     let observed = fs::read_to_string(path).map_err(|source| Error::Io {
         stage: "verify ZFS ARC limit",
         source,
