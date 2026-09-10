@@ -15,8 +15,10 @@ import {
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import {
   useMutation,
+  useQuery,
   useQueryClient,
   useSuspenseQuery,
+  skipToken,
 } from "@tanstack/react-query";
 import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
@@ -38,7 +40,7 @@ import {
   githubRepoAccessQueryOptions,
   githubKeys,
 } from "#/modules/github/github.queries";
-import { getGithubReposCollection, getRawGithubReposCollection } from "#/modules/github/github.collection";
+import { getGithubReposCollection, getRawGithubReposCollection, githubReposQueryKey } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { toErrorMessage } from "#/lib/error-message";
 import { getGitRepoSelectorState } from "#/components/service-source-selector-state";
@@ -256,6 +258,10 @@ function GitRepoSelectorResults({
   if (!session) throw new Error("Authentication is required.");
   const scope = { queryClient, userId: session.user.id, sessionId: session.session.id };
   const raw = getRawGithubReposCollection(scope);
+  // Query errors must repaint even when the collection retains identical rows.
+  const { isError, dataUpdatedAt } = useQuery({
+    queryKey: githubReposQueryKey(scope), queryFn: skipToken, gcTime: 1,
+  });
   const { isReady: rawReady } = useLiveQuery(raw);
   const githubRepos = rawReady ? getGithubReposCollection(scope) : undefined;
   const { data: accessState } = useSuspenseQuery(
@@ -294,6 +300,7 @@ function GitRepoSelectorResults({
     filteredRepoCount: repos.length,
   });
 
+  if (isError && dataUpdatedAt === 0) return <GithubRepositoryRefreshNotice initial />;
   if (!rawReady || isLoading) return <SelectorEmpty><Spinner /></SelectorEmpty>;
 
   if (selectorState === "not-configured") {
@@ -314,7 +321,7 @@ function GitRepoSelectorResults({
 
   return (
     <>
-      <GithubRepositoryRefreshNotice scope={scope} />
+      {isError && <GithubRepositoryRefreshNotice />}
       <CommandSeparator />
 
       {selectorState === "empty" ? (
