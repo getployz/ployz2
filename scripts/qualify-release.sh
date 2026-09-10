@@ -35,7 +35,7 @@ APP_VALUE=qualify-persistent-data
 APP_VOLUME=qualify-release_qualify-data
 APP_VOLUME_MOUNT=/var/lib/ployz-volumes/$APP_VOLUME
 CLOUD_URL=${PLOYZ_QUALIFY_CLOUD_URL:-}
-CLOUD_DRIVER=${PLOYZ_QUALIFY_CLOUD_DRIVER:-$COMPOSE_DIR/cloud-live-driver.sh}
+CLOUD_DRIVER=${PLOYZ_QUALIFY_CLOUD_DRIVER:-}
 CLOUD_STATE=${PLOYZ_QUALIFY_CLOUD_STATE:-}
 RESUME_ENROLLMENT=${PLOYZ_QUALIFY_RESUME_ENROLLMENT:-0}
 
@@ -318,6 +318,7 @@ fi
 work=$(mktemp -d)
 trap cleanup EXIT
 [ -n "$CLOUD_URL" ] || error "set PLOYZ_QUALIFY_CLOUD_URL to the isolated Cloud HTTPS origin"
+[ -n "$CLOUD_DRIVER" ] || error "PLOYZ_QUALIFY_CLOUD_DRIVER is required"
 [ -x "$CLOUD_DRIVER" ] || error "Cloud qualification driver is not executable: $CLOUD_DRIVER"
 if [ -z "$CLOUD_STATE" ]; then
     CLOUD_STATE=$work/cloud-state.json

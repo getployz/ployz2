@@ -480,8 +480,10 @@ pub async fn connect_selected_with(
             Ok(client) => return Ok(client),
             Err(error)
                 if matches!(error, ConnectError::SshClientMissing(_))
-                    && selected.connections[index + 1..]
+                    && selected
+                        .connections
                         .iter()
+                        .skip(index + 1)
                         .all(|next| matches!(next.transport(), Transport::Ssh { .. })) =>
             {
                 return Err(error);
