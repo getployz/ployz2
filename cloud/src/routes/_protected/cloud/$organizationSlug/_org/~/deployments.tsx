@@ -29,8 +29,8 @@ export const Route = createFileRoute(
     const baseUrl = context.tableSyncBaseUrl;
     const deploymentsReady = Promise.all([
       getEnvironmentDeploymentsCollection(organizationSlug, baseUrl).preload(),
-      getEnvironmentsCollection(organizationSlug, baseUrl).preload(),
-      getProjectsCollection(organizationSlug, baseUrl).preload(),
+      getEnvironmentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id }).preload(),
+      getProjectsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id }).preload(),
       getEnvironmentNodeConfigSnapshotsCollection(
         organizationSlug,
         baseUrl,

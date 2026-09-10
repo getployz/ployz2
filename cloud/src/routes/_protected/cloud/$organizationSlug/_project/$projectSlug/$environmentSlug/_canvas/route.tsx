@@ -28,10 +28,10 @@ export const Route = createFileRoute(
     const organizationSlug = params.organizationSlug;
     const baseUrl = context.tableSyncBaseUrl;
     const canvasReady = Promise.all([
-      getProjectsCollection(organizationSlug, baseUrl).preload(),
+      getProjectsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id }).preload(),
       getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, baseUrl).preload(),
       getVolumeRemoveAttemptsCollection(organizationSlug, baseUrl).preload(),
-      getEnvironmentsCollection(organizationSlug, baseUrl).preload(),
+      getEnvironmentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id }).preload(),
       getRawServicesCollection(organizationSlug, baseUrl).preload(),
       getCanvasPositionsCollection(organizationSlug, baseUrl).preload(),
       getRawEnvironmentResourcesCollection(

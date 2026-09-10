@@ -1,4 +1,5 @@
-import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db";
+import { QueryClient } from "@tanstack/react-query";
+import { createApiCollection, reconcileCollection } from "#/collections/query-collection";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { expect, it, vi } from "vitest";
 import type { EnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
@@ -27,7 +28,13 @@ it.each(["variableGroupAttachments", "source.credentials", "source"])(
         config, variables: [], variableGroupAttachments, volumeAttachments: [], encryptedRegistryUsername: null, encryptedRegistrySecret: null }],
         variableGroups: [], volumes: [] },
     };
-    const environments = createCollection(localOnlyCollectionOptions({ getKey: (row: EnvironmentDocument) => row.id, initialData: [original] }));
+    const client = new QueryClient();
+    let rows = [original];
+    const read = vi.fn(async () => rows);
+    const environments = createApiCollection({ queryClient: client, queryKey: ["restore", path],
+      getKey: (row: EnvironmentDocument) => row.id, queryFn: read });
+    const subscription = environments.subscribeChanges(() => {});
+    await environments.preload();
 
     const node = { type: "service" as const, id: id(5) };
     const before = { token: "before", nodes: [{ node, config: baseline }] };
@@ -46,7 +53,7 @@ it.each(["variableGroupAttachments", "source.credentials", "source"])(
     let reject: (error: Error) => void = () => { throw new Error("Restore has not started."); };
     restore.mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
     const action = createWorkingSettingRestoreAction({ environments, environmentId: id(1), organizationSlug: "acme",
-      restore, awaitTxId: async () => {},
+      restore, reconcile: () => reconcileCollection(environments),
     });
     const setting = group.projectedChange.settings.find((setting) => setting.owner.setting === path);
     if (!setting?.discardPlan) throw new Error("Expected a discard plan.");
@@ -60,6 +67,10 @@ it.each(["variableGroupAttachments", "source.credentials", "source"])(
     expect(path === "variableGroupAttachments" ? optimistic?.variableGroupAttachments : optimistic?.config.source)
       .toEqual(path === "variableGroupAttachments" ? baseline.variableGroupAttachments : baseline.source);
     expect(optimistic?.config.replicas).toBe(3);
+    // A stale background snapshot must not remove a pending optimistic command.
+    await environments.utils.refetch({ throwOnError: true });
+    expect(environments.get(id(1))?.intent.services[0]).toEqual(optimistic);
+    expect(environments.get(id(1))?.revision).toBe(original.revision);
     expect(restore).toHaveBeenCalledWith({ data: { organizationSlug: "acme", environmentId: id(1), revision: id(4),
       snapshotSource: intro ? { kind: "introduction" } : { kind: "saved", environmentSavedStateSnapshotId: id(8) },
       command: { kind: "node", nodeType: "service", nodeId: id(5), path } } });
@@ -68,6 +79,22 @@ it.each(["variableGroupAttachments", "source.credentials", "source"])(
     expect(await failed).toMatchObject({ message: "Working State changed" });
     expect(environments.get(id(1))?.intent).toEqual(original.intent);
     expect(environments.get(id(1))?.revision).toBe(original.revision);
+    restore.mockImplementation(async () => {
+      rows = [{ ...original, revision: id(9), intent: {
+        ...original.intent, services: original.intent.services.map((service) => service.id === id(5) && optimistic ? optimistic : service),
+      } }];
+      return { txid: 1 };
+    });
+    const readsBeforeSave = read.mock.calls.length;
+    await action({ serviceId: id(5), revision: id(4), path,
+      baseline: parseServiceConfig(setting.discardPlan.config),
+      snapshotSource: { kind: "introduction" },
+    }).isPersisted.promise;
+    expect(read.mock.calls.length).toBeGreaterThan(readsBeforeSave);
+    expect(environments.get(id(1))?.revision).toBe(id(9));
+    expect(environments.get(id(1))?.intent.services[0]).toEqual(optimistic);
+    subscription.unsubscribe();
     await environments.cleanup();
+    client.clear();
   },
 );

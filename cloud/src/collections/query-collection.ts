@@ -1,4 +1,4 @@
-import { queryCollectionOptions } from "@tanstack/query-db-collection";
+import { queryCollectionOptions, type QueryCollectionUtils } from "@tanstack/query-db-collection";
 import { BasicIndex, createCollection } from "@tanstack/react-db";
 import type { QueryClient } from "@tanstack/react-query";
 
@@ -25,4 +25,13 @@ export function createApiCollection<T extends object>(input: {
     // This is DB's separate GC timer; zero disables it. Release unused scopes.
     gcTime: 1,
   });
+}
+
+/** A write may happen before a collection has any observer (for example creation). */
+export async function reconcileCollection(collection: {
+  preload: () => Promise<void>;
+  utils: Pick<QueryCollectionUtils, "refetch">;
+}) {
+  await collection.preload();
+  await collection.utils.refetch({ throwOnError: true });
 }

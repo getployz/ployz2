@@ -1,3 +1,5 @@
+import { reconcileCollection } from "#/collections/query-collection";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useState } from "react";
 import { ArrowLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -160,6 +162,7 @@ function useServiceCreateActions({
   setPanel: (panel: Panel) => void;
   setQuery: (query: string) => void;
 }) {
+  const collectionScope = useCollectionScope();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const createEmptyProject = useServerFn(createEmptyProjectServerFn);
@@ -178,8 +181,8 @@ function useServiceCreateActions({
       }),
     onSuccess: async (receipt) => {
       await Promise.all([
-        getProjectsCollection(props.organizationSlug).utils.awaitTxId(receipt.txid),
-        getEnvironmentsCollection(props.organizationSlug).utils.awaitTxId(receipt.txid),
+        reconcileCollection(getProjectsCollection(props.organizationSlug, collectionScope)),
+        reconcileCollection(getEnvironmentsCollection(props.organizationSlug, collectionScope)),
       ]);
       if (props.mode !== "service") {
         await props.onCreated?.(receipt.data);

@@ -1,3 +1,5 @@
+import { reconcileCollection } from "#/collections/query-collection";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useState } from "react";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
@@ -79,11 +81,10 @@ export function ServiceVariableGroupAttachmentsPanel({
 }: {
   state: ServiceDrawerState;
 }) {
+  const collectionScope = useCollectionScope();
   const attachVariableGroup = useServerFn(attachServiceVariableGroupServerFn);
   const detachVariableGroup = useServerFn(detachServiceVariableGroupServerFn);
-  const rawAttachments = getEnvironmentsCollection(
-    state.organizationSlug,
-  );
+  const rawAttachments = getEnvironmentsCollection(state.organizationSlug, collectionScope);
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
     state.organizationSlug,
   );
@@ -128,11 +129,11 @@ export function ServiceVariableGroupAttachmentsPanel({
       };
 
       if (attachment.action === "attach") {
-        const receipt = await attachVariableGroup({ data });
-        await rawAttachments.utils.awaitTxId(receipt.txid);
+        await attachVariableGroup({ data });
+        await reconcileCollection(rawAttachments);
       } else {
-        const receipt = await detachVariableGroup({ data });
-        await rawAttachments.utils.awaitTxId(receipt.txid);
+        await detachVariableGroup({ data });
+        await reconcileCollection(rawAttachments);
       }
     } catch (error) {
       toast.error(

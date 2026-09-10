@@ -4,12 +4,12 @@ import { projectServiceDeploymentConfig, type ServiceDeploymentConfig } from "./
 import type { EnvironmentDocument } from "./working-state-repository.server";
 import type { RestoreWorkingDocumentInput } from "./working-document-restore";
 
-export function createWorkingSettingRestoreAction({ environments, environmentId, organizationSlug, restore, awaitTxId }: {
+export function createWorkingSettingRestoreAction({ environments, environmentId, organizationSlug, restore, reconcile }: {
   environments: Pick<Collection<EnvironmentDocument>, "get" | "update">;
   environmentId: string;
   organizationSlug: string;
   restore: (input: { data: RestoreWorkingDocumentInput }) => Promise<{ txid: number }>;
-  awaitTxId: (txid: number) => Promise<void>;
+  reconcile: () => Promise<void>;
 }) {
   return createOptimisticAction<{
     serviceId: string;
@@ -32,12 +32,12 @@ export function createWorkingSettingRestoreAction({ environments, environmentId,
       });
     },
     mutationFn: async ({ serviceId, revision, path, snapshotSource }) => {
-      const receipt = await restore({ data: {
+      await restore({ data: {
         organizationSlug: organizationSlug, environmentId, revision,
         snapshotSource,
         command: { kind: "node", nodeType: "service", nodeId: serviceId, path },
       } });
-      await awaitTxId(receipt.txid);
+      await reconcile();
     },
   });
 }

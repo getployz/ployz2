@@ -4,7 +4,7 @@ import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { readCollection, CollectionReadInvalid } from "./read.server";
 import { githubRepositoryCache } from "#/modules/github/tables";
-import { project } from "#/modules/project/tables";
+import { project, environment } from "#/modules/project/tables";
 import { member } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Polar } from "#/modules/billing/polar-provider.server";
@@ -147,11 +147,30 @@ it.live(
           ...base, userId: otherSession.user.id,
         });
         assert.deepStrictEqual((yield* Effect.promise(() => otherResponse.json())).map((row: { name: string }) => row.name), ["private-other"]);
-        yield* database.drizzle.insert(project).values({
-          organizationId, name: "Visible", slug: "visible",
-        });
-        const projects = yield* execute(request, { table: "project", userId, organizationSlug: "acme-table-sync" });
-        assert.strictEqual((yield* Effect.promise(() => projects.json())).length, 1);
+        const otherOrganizationId = crypto.randomUUID();
+        yield* database.drizzle.insert(organization).values({ id: otherOrganizationId, name: "Other", slug: "other-org" });
+        const projects = yield* database.drizzle.insert(project).values([
+          { organizationId, name: "Visible", slug: "visible" },
+          { organizationId: otherOrganizationId, name: "Private", slug: "private" },
+        ]).returning();
+        for (const row of projects) {
+          yield* database.drizzle.insert(environment).values({ organizationId: row.organizationId, projectId: row.id,
+            name: row.name, namespace: "production",
+            intent: { version: 1, environmentSlug: "production", services: [], volumes: [], variableGroups: [] },
+          });
+        }
+        for (const table of ["project", "environment"]) {
+          const response = yield* execute(request, { table, userId, organizationSlug: "acme-table-sync" });
+          const rows = yield* Effect.promise(() => response.json());
+          assert.strictEqual(response.status, 200);
+          assert.strictEqual(rows.length, 1);
+          assert.strictEqual(rows[0].organizationId, organizationId);
+          assert.strictEqual(rows[0].name, "Visible");
+          assert.strictEqual(yield* Schema.decodeUnknownEffect(Schema.String)(rows[0].createdAt), rows[0].createdAt);
+          assert.strictEqual((yield* execute(request, { table, userId, organizationSlug: "other-org" })).status, 404);
+          assert.strictEqual((yield* execute(new Request("http://app.test", { headers: { cookie: otherCookie ?? "" } }),
+            { table, userId: otherSession.user.id, organizationSlug: "acme-table-sync" })).status, 404);
+        }
       }).pipe(Effect.provide(layer));
     }),
   60_000,

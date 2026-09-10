@@ -1,3 +1,5 @@
+import { reconcileCollection } from "#/collections/query-collection";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
 import { useState } from "react";
@@ -70,6 +72,7 @@ export function ServiceVariablesTab({
 }: {
   state: ServiceDrawerState;
 }) {
+  const collectionScope = useCollectionScope();
   const ployzManagedVariables = getManagedServiceExports(state.service);
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
     state.organizationSlug,
@@ -167,7 +170,7 @@ export function ServiceVariablesTab({
     patch: VariableMetadataPatch,
   ) {
     if (!document) throw new Error("Environment is not loaded.");
-    const receipt = await updateExport({
+    await updateExport({
       data: {
         organizationSlug: state.organizationSlug,
         revision: document.revision,
@@ -177,9 +180,7 @@ export function ServiceVariablesTab({
         exported: patch.exported ?? variable.exported,
       },
     });
-    await getEnvironmentsCollection(state.organizationSlug).utils.awaitTxId(
-      receipt.txid,
-    );
+    await reconcileCollection(getEnvironmentsCollection(state.organizationSlug, collectionScope));
   }
 
   return (

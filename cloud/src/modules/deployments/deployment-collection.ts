@@ -1,3 +1,4 @@
+import { cachedByCollectionScope } from "#/collections/scope";
 import {
   createLiveQueryCollection,
   eq,
@@ -19,22 +20,17 @@ import {
 } from "#/modules/deployments/deployment-contract";
 import { parseSdkDeployPreview } from "#/modules/deployments/runtime-preview";
 
-const cache = new Map<string, Collection<EnvironmentDeploymentSummary>>();
-
-export function getOrganizationDeploymentsCollection(organizationSlug: string) {
-  const existing = cache.get(organizationSlug);
-  if (existing) return existing;
-
+export const getOrganizationDeploymentsCollection = cachedByCollectionScope((organizationSlug, scope) => {
   const deployments = getEnvironmentDeploymentsCollection(organizationSlug);
-  const environments = getEnvironmentsCollection(organizationSlug);
-  const projects = getProjectsCollection(organizationSlug);
+  const environments = getEnvironmentsCollection(organizationSlug, scope);
+  const projects = getProjectsCollection(organizationSlug, scope);
   const nodeSnapshots =
     getEnvironmentNodeConfigSnapshotsCollection(organizationSlug);
   const volumeRemoveAttempts = getVolumeRemoveAttemptsCollection(organizationSlug);
 
   const rows = createLiveQueryCollection({
     id: `electric:${organizationSlug}:deployment-relationships`,
-    startSync: true,
+    gcTime: 1,
     query: (q) => q
       .from({ deployment: deployments })
       .innerJoin({ environment: environments }, ({ deployment, environment }) =>
@@ -68,7 +64,7 @@ export function getOrganizationDeploymentsCollection(organizationSlug: string) {
     plainRowCollection(
       createLiveQueryCollection({
         id: `electric:${organizationSlug}:deployment-summaries`,
-    startSync: true,
+    gcTime: 1,
     query: (q) =>
       q.from({ deploymentRelationships: rows }).fn.select(({ deploymentRelationships }) => {
         const deployment = deploymentRelationships.deployment;
@@ -126,6 +122,5 @@ export function getOrganizationDeploymentsCollection(organizationSlug: string) {
       }),
     );
 
-  cache.set(organizationSlug, collection);
   return collection;
-}
+});

@@ -1,3 +1,6 @@
+import { createApiCollection } from "#/collections/query-collection";
+import { readCollectionServerFn } from "#/collections/read.functions";
+import { cachedByCollectionScope } from "#/collections/scope";
 import { snakeCamelMapper, type Row } from "@electric-sql/client";
 import {
   electricCollectionOptions,
@@ -95,24 +98,30 @@ function cachedByOrganization<T>(
   };
 }
 
-export const getProjectsCollection = cachedByOrganization(
-  (organizationSlug, baseUrl) =>
-    makeOrganizationCollection<ProjectRow>({
-      table: "project",
-      organizationSlug,
-      baseUrl,
-      getKey: (row) => row.id,
-    }),
+export const getProjectsCollection = cachedByCollectionScope(
+  (organizationSlug, scope) => createApiCollection<ProjectRow>({
+    queryClient: scope.queryClient,
+    queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "project"],
+    queryFn: async ({ signal }) => {
+      const rows = await readCollectionServerFn({ data: { table: "project", organizationSlug, userId: scope.userId }, signal });
+      // SAFETY: the literal table selects project in the authenticated allowlisted read.
+      return rows as ProjectRow[];
+    },
+    getKey: (row) => row.id,
+  }),
 );
 
-export const getEnvironmentsCollection = cachedByOrganization(
-  (organizationSlug, baseUrl) =>
-    makeOrganizationCollection<EnvironmentRow>({
-      table: "environment",
-      organizationSlug,
-      baseUrl,
-      getKey: (row) => row.id,
-    }),
+export const getEnvironmentsCollection = cachedByCollectionScope(
+  (organizationSlug, scope) => createApiCollection<EnvironmentRow>({
+    queryClient: scope.queryClient,
+    queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "environment"],
+    queryFn: async ({ signal }) => {
+      const rows = await readCollectionServerFn({ data: { table: "environment", organizationSlug, userId: scope.userId }, signal });
+      // SAFETY: the literal table selects environment in the authenticated allowlisted read.
+      return rows as EnvironmentRow[];
+    },
+    getKey: (row) => row.id,
+  }),
 );
 
 export const getRawServicesCollection = cachedByOrganization(
