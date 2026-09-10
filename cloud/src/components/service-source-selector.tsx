@@ -1,3 +1,4 @@
+import { GithubRepositoryRefreshNotice } from "./github-repository-refresh-notice";
 import { useLoaderData } from "@tanstack/react-router";
 import {
   type ReactNode,
@@ -293,8 +294,6 @@ function GitRepoSelectorResults({
     filteredRepoCount: repos.length,
   });
 
-  if (raw.utils.isError && repoCount === 0) return <SelectorEmpty>Could not load repositories. Retrying automatically.</SelectorEmpty>;
-
   if (!rawReady || isLoading) return <SelectorEmpty><Spinner /></SelectorEmpty>;
 
   if (selectorState === "not-configured") {
@@ -315,6 +314,7 @@ function GitRepoSelectorResults({
 
   return (
     <>
+      <GithubRepositoryRefreshNotice scope={scope} />
       <CommandSeparator />
 
       {selectorState === "empty" ? (

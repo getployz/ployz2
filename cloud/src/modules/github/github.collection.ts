@@ -26,10 +26,14 @@ const scopes = new WeakMap<QueryClient, Map<string, {
   view?: Collection<GithubRepositoryView>;
 }>>();
 
+export function githubReposQueryKey(scope: GithubCollectionScope) {
+  return ["collections", scope.sessionId, scope.userId, "github_repository_cache"];
+}
+
 function createRawGithubReposCollection(scope: GithubCollectionScope) {
   return createApiCollection<GithubRepositoryRow>({
     queryClient: scope.queryClient,
-    queryKey: ["collections", scope.sessionId, scope.userId, "github_repository_cache"],
+    queryKey: githubReposQueryKey(scope),
     queryFn: async ({ signal }) => {
       const rows = await readCollectionServerFn({
         data: { table: "github_repository_cache", userId: scope.userId },
