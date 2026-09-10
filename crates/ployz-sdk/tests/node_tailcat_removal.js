@@ -7,14 +7,15 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
-const { randomBytes } = require("node:crypto");
+const { randomBytes, createHash } = require("node:crypto");
 const { Duplex } = require("node:stream");
 const http2 = require("node:http2");
 const { setTimeout: delay } = require("node:timers/promises");
 const packageDir = path.resolve(process.env.PLOYZ_SDK_PACKAGE || path.join(__dirname, ".."));
 const sdk = require(packageDir);
 let stage = "input";
-const receipt = { rung: 4 };
+const receipt = { rung: 4, sdkSha256: createHash("sha256").update(fs.readFileSync(path.join(packageDir, "ployz-sdk.node"))).digest("hex"),
+  clientHelperSha256: createHash("sha256").update(fs.readFileSync(path.join(packageDir, "ployz-tailcat"))).digest("hex") };
 const sessions = [];
 const children = [];
 let config;
