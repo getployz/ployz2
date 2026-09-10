@@ -48,4 +48,3 @@ export const loadOrganizationConnections = Effect.fn("MachineConnections.load")(
     return { kind: "ready" as const, generation, connections };
   },
 );
-
