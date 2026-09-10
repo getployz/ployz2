@@ -1,2 +1,2 @@
 cloud/drizzle/**/snapshot.json linguist-generated=true
-native/tailcat/lifecycle.patch whitespace=-space-before-tab
+native/tailcat/lifecycle.patch whitespace=-space-before-tab,-blank-at-eol
