@@ -281,7 +281,14 @@ impl ContainerRuntime {
         {
             return Err(Error::SlotNameOccupied(name.into()));
         }
-        let existing = self.inspect_managed_by_name(&machine.id, name).await?;
+        let container_id = ContainerId::parse(
+            inspected.id.ok_or(Error::MissingField("container ID"))?,
+        )
+        .map_err(|source| Error::InvalidValue {
+            field: "container ID",
+            source,
+        })?;
+        let existing = self.inspect_managed(&container_id, &machine.id).await?;
         if existing.project_name != *project
             || existing.kind != kind
             || existing.resolved_spec != *spec
@@ -311,22 +318,6 @@ impl ContainerRuntime {
             self.ensure_mounted_volumes(&machine.id, spec).await?;
         }
         Ok(eligibility)
-    }
-
-    async fn inspect_managed_by_name(
-        &self,
-        machine_id: &MachineId,
-        name: &str,
-    ) -> Result<ployz_core::ContainerObservation, Error> {
-        let inspected = self.docker.client.inspect_container(name, None).await?;
-        let container_id = ContainerId::parse(
-            inspected.id.ok_or(Error::MissingField("container ID"))?,
-        )
-        .map_err(|source| Error::InvalidValue {
-            field: "container ID",
-            source,
-        })?;
-        self.inspect_managed(&container_id, machine_id).await
     }
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {

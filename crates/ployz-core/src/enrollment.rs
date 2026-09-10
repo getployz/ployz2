@@ -5,30 +5,43 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use ts_rs::TS;
 
+/// One Entry Machine’s observation used for operator-scoped allocation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnrollmentSnapshot {
+    /// IPv4 pool from the observed Cluster configuration.
     #[ts(type = "string")]
     pub network: Ipv4Net,
+    /// Observed Machines; absence does not prove an assignment is free.
     pub machines: Vec<Machine>,
+    /// Entry Machine store versions to carry into publication and Join.
     pub target_versions: BTreeMap<String, i64>,
 }
 
+/// Durable operator claim retained across failed publication and Join attempts.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnrollmentAssignment {
+    /// Retry identity inputs, excluding assigned subnet and runtime observations.
     pub request: RegisterRequest,
+    /// IPv4 pool from the observed Cluster configuration.
     #[ts(type = "string")]
     pub network: Ipv4Net,
+    /// Durable Machine identity and selected subnet to publish.
     pub machine: Machine,
 }
 
+/// Reasons an observed or saved allocation cannot be used safely.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum EnrollmentError {
+    /// The joining Machine has no advertised endpoint.
     #[error("enrollment requires the joining Machine's durable ID and endpoints")]
     InvalidIdentity,
+    /// Retry inputs, identity claims, or subnet claims disagree.
     #[error("enrollment identity or allocation conflicts with a saved or observed assignment")]
     Conflict,
+    /// The pool is smaller than one Machine Subnet.
     #[error("cluster IPv4 pool must contain /24 subnets")]
     InvalidNetwork,
+    /// Every Machine Subnet is occupied by an observed or saved claim.
     #[error("cluster IPv4 pool has no free /24 in this observation and allocation history")]
     Exhausted,
 }

@@ -11,6 +11,23 @@ use std::{
     path::Path,
 };
 
+/// Failure to read or durably save operator-local enrollment history.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// The history directory, lock, or assignment file could not be accessed.
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    /// Saved history could not be decoded or encoded.
+    #[error(transparent)]
+    Serialization(#[from] serde_json::Error),
+    /// The request conflicts with history or cannot be allocated.
+    #[error(transparent)]
+    Allocation(#[from] ployz_core::EnrollmentError),
+    /// No observed durable Machine identity connects the enrollment scope.
+    #[error("enrollment scope requires an observed Entry Machine")]
+    MissingScope,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Scope {
     peers: Vec<(MachineId, WireGuardPublicKey)>,
@@ -28,7 +45,7 @@ pub fn save_assignment(
     directory: &Path,
     request: &RegisterRequest,
     snapshot: &EnrollmentSnapshot,
-) -> Result<EnrollmentAssignment, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<EnrollmentAssignment, Error> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -41,11 +58,11 @@ pub fn save_assignment(
         .truncate(false)
         .mode(0o600)
         .open(directory.join("lock"))?;
-    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).map_err(io::Error::from)?;
     let path = directory.join("assignments.json");
     let mut scopes = load_scopes(&path)?;
     if snapshot.machines.is_empty() {
-        return Err("enrollment scope requires an observed Entry Machine".into());
+        return Err(Error::MissingScope);
     }
     let mut merged = Scope::default();
     for scope in std::mem::take(&mut scopes) {
@@ -87,12 +104,12 @@ pub fn save_assignment(
     let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
     temporary.write_all(&serde_json::to_vec(&scopes)?)?;
     temporary.as_file().sync_all()?;
-    temporary.persist(&path)?;
+    temporary.persist(&path).map_err(|error| error.error)?;
     File::open(directory)?.sync_all()?;
     Ok(assignment)
 }
 
-fn load_scopes(path: &Path) -> Result<Vec<Scope>, Box<dyn std::error::Error + Send + Sync>> {
+fn load_scopes(path: &Path) -> Result<Vec<Scope>, Error> {
     match fs::read(path) {
         Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -110,7 +127,7 @@ pub fn has_assignment(
     directory: &Path,
     snapshot: &EnrollmentSnapshot,
     id: MachineId,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<bool, Error> {
     Ok(load_scopes(&directory.join("assignments.json"))?
         .iter()
         .any(|scope| {

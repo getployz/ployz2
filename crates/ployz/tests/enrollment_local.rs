@@ -267,3 +267,33 @@ fn moving_a_reset_machine_transfers_scope_witness_without_merging_history() {
         );
     }
 }
+
+#[test]
+fn corrupt_history_is_an_error_when_checking_saved_work() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("assignments.json"), b"invalid JSON").unwrap();
+    assert!(matches!(
+        has_assignment(temp.path(), &snapshot(1), request(2).machine_id),
+        Err(ployz::enrollment::local::Error::Serialization(_))
+    ));
+}
+
+#[test]
+fn connection_save_rejects_a_context_removed_during_enrollment() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.yaml");
+    let stale = Config::new(
+        &path,
+        Some("prod".into()),
+        std::collections::BTreeMap::from([("prod".into(), Context::default())]),
+    );
+    stale.save().unwrap();
+    Config::new(&path, None, Default::default()).save().unwrap();
+    let error = stale
+        .save_connection("prod", Connection::unix("/tmp/joiner.sock").unwrap())
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ployz::context::ConfigError::Context(ployz::context::ContextError::ContextNotFound { .. })
+    ));
+}

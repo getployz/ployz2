@@ -506,6 +506,9 @@ fn rpc_to_napi(error: RpcError) -> Error {
 }
 
 /// Run the shared allocation policy inside the caller's storage transaction.
+///
+/// # Errors
+/// Rejects invalid JSON, conflicting retry inputs or claims, invalid pools, and exhaustion.
 #[napi]
 pub fn allocate_enrollment(
     request: serde_json::Value,
@@ -528,6 +531,9 @@ pub fn allocate_enrollment(
 }
 
 /// Read an observer-relative enrollment snapshot.
+///
+/// # Errors
+/// Returns invalid connection inputs, transport failures, or a nonparticipating Entry Machine.
 #[napi]
 pub async fn observe_enrollment(
     relay_url: String,
@@ -543,6 +549,9 @@ pub async fn observe_enrollment(
 }
 
 /// Publish the caller's durably saved assignment.
+///
+/// # Errors
+/// Rejects invalid JSON or connection inputs, conflicting assignments, and RPC failures.
 #[napi]
 pub async fn publish_enrollment(
     relay_url: String,
