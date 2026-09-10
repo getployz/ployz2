@@ -4,7 +4,7 @@ use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
     AdvertisedEndpoint, CloudEnrollToken, CloudPairing, MachineId, MachineName, MachineToken,
-    PairingCredential, Registered, StorageChoice, WireGuardPublicKey,
+    PairingCredential, Registered, StorageChoice, TailcatCapability, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
@@ -188,7 +188,7 @@ struct EnrollCallback<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     stage: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tailcat: Option<&'a str>,
+    tailcat: Option<&'a TailcatCapability>,
     machine_id: MachineId,
     pairing_credential: &'a PairingCredential,
 }
@@ -257,7 +257,7 @@ pub(crate) async fn publish(
     url: &str,
     machine_id: MachineId,
     pairing_credential: &PairingCredential,
-    tailcat: &str,
+    tailcat: &TailcatCapability,
 ) -> Result<(), Error> {
     post_callback(url, machine_id, pairing_credential, Some(tailcat)).await
 }
@@ -266,7 +266,7 @@ async fn post_callback(
     url: &str,
     machine_id: MachineId,
     pairing_credential: &PairingCredential,
-    tailcat: Option<&str>,
+    tailcat: Option<&TailcatCapability>,
 ) -> Result<(), Error> {
     let http = http_client()?;
     let body = EnrollCallback {
@@ -752,7 +752,7 @@ mod tests {
                         &url,
                         MachineId::random(),
                         &PairingCredential::parse("pairing-secret").unwrap(),
-                        "fixture-tailcat-capability",
+                        &TailcatCapability::parse("fixture-tailcat-capability").unwrap(),
                     )
                     .await
                     .unwrap();
@@ -791,7 +791,13 @@ mod tests {
             let credential = PairingCredential::parse(pairing).unwrap();
             let (result, operation) = if publishing {
                 (
-                    publish(&url, MachineId::random(), &credential, secret).await,
+                    publish(
+                        &url,
+                        MachineId::random(),
+                        &credential,
+                        &TailcatCapability::parse(secret).unwrap(),
+                    )
+                    .await,
                     "candidate publication",
                 )
             } else {

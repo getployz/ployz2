@@ -182,7 +182,7 @@ impl Connector for SystemConnector {
 }
 
 async fn connect_tailcat(
-    capability: &crate::context::TailcatCapability,
+    capability: &ployz_core::TailcatCapability,
     program: &Path,
 ) -> Result<Channel, ConnectError> {
     let mut stream = spawn_child(program, &["connect".into()])?;

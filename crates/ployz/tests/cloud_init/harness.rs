@@ -485,12 +485,13 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::SetCloudPairing(set) = decoded.body else {
             return Err(Status::invalid_argument("expected SetCloudPairing"));
         };
-        match set.cloud_pairing {
-            Some(_) => {
+        match set {
+            ployz_core::SetCloudPairingRequest::Set { .. } => {
                 self.inner.cloud_paired.store(true, Ordering::SeqCst);
                 self.record("set_cloud_pairing");
             }
-            None => {
+            ployz_core::SetCloudPairingRequest::Clear {}
+            | ployz_core::SetCloudPairingRequest::Remove { .. } => {
                 self.inner.cloud_paired.store(false, Ordering::SeqCst);
             }
         }

@@ -10,7 +10,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ployz_core::MachineId;
+use ployz_core::{MachineId, TailcatCapability};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
@@ -430,28 +430,6 @@ pub enum Transport {
     Unix(PathBuf),
 }
 
-/// Administrative capability. Only serialization and protected helper input expose it.
-#[derive(Clone, Eq, PartialEq)]
-pub struct TailcatCapability(String);
-
-impl TailcatCapability {
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for TailcatCapability {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("[redacted]")
-    }
-}
-
-impl fmt::Display for TailcatCapability {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("[redacted]")
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConnectionFile {
@@ -466,7 +444,7 @@ struct ConnectionFile {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum TransportFile {
-    Tailcat(String),
+    Tailcat(TailcatCapability),
     Ssh(String),
     Tcp(SocketAddr),
     Unix(PathBuf),
@@ -474,17 +452,11 @@ enum TransportFile {
 
 impl Connection {
     pub fn tailcat(capability: impl Into<String>) -> Result<Self, ConnectionError> {
-        let capability = capability.into();
-        if capability.is_empty()
-            || capability.len() > 16 * 1024
-            || capability
-                .chars()
-                .any(|c| c.is_whitespace() || c.is_control())
-        {
-            return Err(ConnectionError::TailcatCapability);
-        }
         Ok(Self {
-            transport: Transport::Tailcat(TailcatCapability(capability)),
+            transport: Transport::Tailcat(
+                TailcatCapability::parse(capability)
+                    .map_err(|_| ConnectionError::TailcatCapability)?,
+            ),
             machine_id: None,
         })
     }
@@ -604,7 +576,7 @@ impl Serialize for Connection {
         S: Serializer,
     {
         let transport = match &self.transport {
-            Transport::Tailcat(capability) => TransportFile::Tailcat(capability.0.clone()),
+            Transport::Tailcat(capability) => TransportFile::Tailcat(capability.clone()),
             Transport::Ssh { destination, .. } => TransportFile::Ssh(destination.to_string()),
             Transport::Tcp(address) => TransportFile::Tcp(*address),
             Transport::Unix(path) => TransportFile::Unix(path.clone()),
@@ -629,11 +601,7 @@ impl<'de> Deserialize<'de> for Connection {
                 destination: SshDestination::parse(destination).map_err(de::Error::custom)?,
                 key_file,
             },
-            (TransportFile::Tailcat(capability), None) => {
-                Self::tailcat(capability)
-                    .map_err(de::Error::custom)?
-                    .transport
-            }
+            (TransportFile::Tailcat(capability), None) => Transport::Tailcat(capability),
             (TransportFile::Tcp(address), None) => Transport::Tcp(address),
             (TransportFile::Unix(path), None) if path.is_absolute() => Transport::Unix(path),
             (TransportFile::Unix(path), None) => {

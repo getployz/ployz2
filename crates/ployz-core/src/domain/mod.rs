@@ -13,6 +13,7 @@ mod runtime_watch;
 mod selector;
 mod service_graph;
 mod spec;
+mod tailcat_capability;
 mod volume;
 
 pub use certificate_policy::*;
@@ -30,6 +31,7 @@ pub use runtime_watch::*;
 pub use selector::*;
 pub use service_graph::*;
 pub use spec::*;
+pub use tailcat_capability::*;
 pub use volume::*;
 
 use serde::{Deserialize, Serialize};

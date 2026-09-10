@@ -223,11 +223,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetCloudPairing>(request)?;
-        if let Err(error) = self
-            .local
-            .set_cloud_pairing_with_removal(request.cloud_pairing, request.tailcat_removal)
-            .await
-        {
+        if let Err(error) = self.local.set_cloud_pairing(request).await {
             return local_error(error);
         }
         respond(CloudPairingSet {})

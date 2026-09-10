@@ -559,9 +559,7 @@ pub async fn prepare_tailcat_removal(expected: String, helper: String) -> Result
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
     let failure = || Error::from_reason("Tailcat successor preparation failed");
-    if expected.is_empty() || expected.len() > 16 * 1024 - 1 || expected.contains(['\n', '\r']) {
-        return Err(failure());
-    }
+    let expected = ployz_core::TailcatCapability::parse(expected).map_err(|_| failure())?;
     let mut child = tokio::process::Command::new(helper)
         .arg("successor")
         .stdin(Stdio::piped())
@@ -572,18 +570,16 @@ pub async fn prepare_tailcat_removal(expected: String, helper: String) -> Result
         .map_err(|_| failure())?;
     let mut input = child.stdin.take().ok_or_else(failure)?;
     input
-        .write_all(format!("{expected}\n").as_bytes())
+        .write_all(format!("{}\n", expected.as_str()).as_bytes())
         .await
         .map_err(|_| failure())?;
     drop(input);
     let output = child.wait_with_output().await.map_err(|_| failure())?;
-    if !output.status.success() || output.stdout.len() > 16 * 1024 {
+    if !output.status.success() {
         return Err(failure());
     }
     let successor = String::from_utf8(output.stdout).map_err(|_| failure())?;
     let successor = successor.strip_suffix('\n').ok_or_else(failure)?;
-    if successor.is_empty() || successor.contains(['\n', '\r']) {
-        return Err(failure());
-    }
-    Ok(successor.to_owned())
+    let successor = ployz_core::TailcatCapability::parse(successor).map_err(|_| failure())?;
+    Ok(successor.into())
 }
