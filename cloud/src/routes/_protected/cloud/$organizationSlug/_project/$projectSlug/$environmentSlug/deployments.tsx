@@ -36,7 +36,7 @@ export const Route = createFileRoute(
         organizationSlug,
         baseUrl,
       ).preload(),
-      getRawEnvironmentResourcesCollection(organizationSlug, baseUrl).preload(),
+      preloadCollection(getRawEnvironmentResourcesCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       getVolumeRemoveAttemptsCollection(
         organizationSlug,
         baseUrl,

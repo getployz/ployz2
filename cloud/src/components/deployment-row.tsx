@@ -1,3 +1,4 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useState } from "react";
 import { Link, useParams, useRouter } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
@@ -237,8 +238,9 @@ export function DeploymentRow({
   const [isDispatching, setIsDispatching] = useState(false);
   const router = useRouter();
   const { organizationSlug } = useParams({ strict: false });
+  const collectionScope = useCollectionScope();
   const rawResources = getRawEnvironmentResourcesCollection(
-    organizationSlug ?? "",
+    organizationSlug ?? "", collectionScope,
   );
   const { data: resourceRows = [] } = useLiveQuery({
     query: (q) =>

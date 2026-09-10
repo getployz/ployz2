@@ -33,13 +33,10 @@ export const Route = createFileRoute(
       getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, baseUrl).preload(),
       getVolumeRemoveAttemptsCollection(organizationSlug, baseUrl).preload(),
       preloadCollection(getEnvironmentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
-      getRawServicesCollection(organizationSlug, baseUrl).preload(),
-      getCanvasPositionsCollection(organizationSlug, baseUrl).preload(),
-      getRawEnvironmentResourcesCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
-      getResourceLineagesCollection(organizationSlug, baseUrl).preload(),
+      preloadCollection(getRawServicesCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
+      preloadCollection(getCanvasPositionsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
+      preloadCollection(getRawEnvironmentResourcesCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
+      preloadCollection(getResourceLineagesCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       getEnvironmentNodeIntroductionsCollection(
         organizationSlug,
         baseUrl,

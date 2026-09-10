@@ -1,3 +1,4 @@
+import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -95,7 +96,7 @@ export function VolumeDrawer({
           resourceId,
         },
       });
-      await reconcileCollection(getEnvironmentsCollection(state.organizationSlug, collectionScope));
+      await reconcileNodeCollections(state.organizationSlug, collectionScope);
       await navigate({
         to: ENVIRONMENT_INDEX_ROUTE_TO,
         params: {

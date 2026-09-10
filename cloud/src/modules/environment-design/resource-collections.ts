@@ -87,11 +87,12 @@ export function createVolumeResourcesCollection(input: { organizationSlug: strin
   const withHistory = createLiveQueryCollection({
     id: `electric:${input.organizationSlug}:volume-document-history`, gcTime: 1,
     query: (q) => q.from({ history: rows }).fn.select(({ history }) => {
-      const dates = history.removals.flatMap((removal) =>
+      // Correlated arrays can be null while a refreshed parent row is removed.
+      const dates = (history.removals ?? []).flatMap((removal) =>
         removal.terminalAt ? [removal.terminalAt] : [],
       );
       return { resourceId: history.resourceId, history: {
-        snapshot: history.snapshots[0] ?? null,
+        snapshot: history.snapshots?.[0] ?? null,
         removedAt: dates.length ? new Date(Math.max(...dates.map((date) => date.getTime()))) : null,
       } satisfies VolumeHistory };
     }),
