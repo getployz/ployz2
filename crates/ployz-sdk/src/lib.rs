@@ -443,10 +443,10 @@ impl RunningDeployHandle {
     ///
     /// # Errors
     ///
-    /// Returns when the outcome cannot be encoded as JSON.
+    /// Returns a typed error if session closure interrupts execution, or if JSON encoding fails.
     #[napi]
     pub async fn finished(&self) -> Result<serde_json::Value> {
-        let outcome = self.inner.finished().await;
+        let outcome = self.inner.finished().await.map_err(rpc_to_napi)?;
         to_json(&outcome)
     }
 }

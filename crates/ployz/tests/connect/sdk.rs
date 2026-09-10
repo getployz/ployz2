@@ -505,7 +505,7 @@ async fn preview_then_confirm_executes_the_shown_plan() {
     ));
 
     let running = preview.confirm().unwrap();
-    let outcome = running.finished().await;
+    let outcome = running.finished().await.unwrap();
     let DeployOutcome::Success { completed } = outcome else {
         panic!("expected success: {outcome:?}");
     };
@@ -755,4 +755,73 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
     );
     assert!(preview.volumes_to_create.is_empty());
     assert!(created.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn sdk_close_interrupts_blocked_data_loss_read() {
+    let description = advertised_description();
+    let relay = RelaySession::start().await;
+    let received = std::sync::Arc::new(tokio::sync::Notify::new());
+    let mut service = DiscoveryService::new(description.clone());
+    service.list_machines_blocked = Some(received.clone());
+    let _machine = relay.spawn_machine(description.machine_id, service).await;
+    let client = sdk::connect(
+        &relay.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
+    let pending = {
+        let client = client.clone();
+        tokio::spawn(async move { client.data_loss_if_cluster_destroyed().await })
+    };
+    timeout(Duration::from_secs(2), received.notified())
+        .await
+        .unwrap();
+    client.close().await;
+    let error = timeout(Duration::from_millis(500), pending)
+        .await
+        .expect("close must release blocked read")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+}
+
+#[tokio::test]
+async fn sdk_close_interrupts_running_deploy_with_uncertain_error() {
+    let description = advertised_description();
+    let relay = RelaySession::start().await;
+    let received = std::sync::Arc::new(tokio::sync::Notify::new());
+    let mut service = DiscoveryService::new(description.clone());
+    service.create_container_blocked = Some(received.clone());
+    let _machine = relay.spawn_machine(description.machine_id, service).await;
+    let client = sdk::connect(
+        &relay.url,
+        relay::DIAL,
+        relay::PAIRING,
+        description.machine_id.as_str(),
+    )
+    .await
+    .unwrap();
+    let preview = client
+        .preview(DeployIntent::apply_one(
+            ProjectName::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
+        .await
+        .unwrap();
+    let running = preview.confirm().unwrap();
+    timeout(Duration::from_secs(2), received.notified())
+        .await
+        .unwrap();
+    client.close().await;
+    let error = timeout(Duration::from_millis(500), running.finished())
+        .await
+        .expect("close must release blocked mutation")
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert!(error.message.contains("uncertain"));
 }

@@ -48,7 +48,7 @@ impl From<RuntimeWatchFrame> for RuntimeWatchView {
 }
 
 struct SessionInner {
-    client: Mutex<Option<Client>>,
+    client: std::sync::Mutex<Option<Client>>,
     cancel: CancellationToken,
 }
 
@@ -70,16 +70,17 @@ pub struct Watch {
 /// A planned Deploy that has not executed. [`Self::confirm`] runs these operations.
 pub struct PreparedDeploy {
     preview: DeployPlan,
-    client: Client,
-    session_cancel: CancellationToken,
+    session: std::sync::Weak<SessionInner>,
     confirmed: AtomicBool,
 }
+
+type DeployTask = tokio::task::JoinHandle<Result<DeployOutcome<ExecutionError>, RpcError>>;
 
 /// In-flight execution of one Deploy Preview.
 pub struct RunningDeploy {
     cancel: CancellationToken,
     events: Mutex<Option<mpsc::UnboundedReceiver<DeployEvent>>>,
-    join: Mutex<Option<tokio::task::JoinHandle<DeployOutcome<ExecutionError>>>>,
+    join: Mutex<Option<DeployTask>>,
 }
 
 /// Open a Machine RPC channel through Cloud Relay.
@@ -108,7 +109,7 @@ pub async fn connect(
     let client = connect_relay(relay_url, credential, pairing, machine_id).await?;
     Ok(Session {
         inner: Arc::new(SessionInner {
-            client: Mutex::new(Some(client)),
+            client: std::sync::Mutex::new(Some(client)),
             cancel: CancellationToken::new(),
         }),
     })
@@ -135,7 +136,7 @@ pub async fn connect_connections(
     .await?;
     Ok(Session {
         inner: Arc::new(SessionInner {
-            client: Mutex::new(Some(client)),
+            client: std::sync::Mutex::new(Some(client)),
             cancel: CancellationToken::new(),
         }),
     })
@@ -212,14 +213,25 @@ fn parse_pairing(pairing: &str) -> Result<PairingCredential, RpcError> {
 }
 
 impl Session {
-    async fn client(&self) -> Result<Client, RpcError> {
+    fn client(&self) -> Result<Client, RpcError> {
         self.inner
             .client
             .lock()
-            .await
+            .expect("session client lock")
             .as_ref()
             .ok_or_else(closed)
             .cloned()
+    }
+
+    async fn until_closed<T>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, RpcError>>,
+    ) -> Result<T, RpcError> {
+        tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => Err(closed()),
+            result = work => result,
+        }
     }
 
     /// Register on the already selected Entry Machine, without replay on lost replies.
@@ -227,7 +239,7 @@ impl Session {
     /// # Errors
     /// Returns cancellation, transport or Register errors, including uncertain outcomes.
     pub async fn register(&self, identity: RegisterRequest) -> Result<Registered, RpcError> {
-        let client = self.client().await?;
+        let client = self.client()?;
         tokio::select! {
             biased;
             () = self.inner.cancel.cancelled() => Err(closed()),
@@ -242,12 +254,14 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed or
     /// `DescribeContract` fails.
     pub async fn about(&self) -> Result<ContractDescription, RpcError> {
-        let client = self.client().await?;
-        tokio::select! {
-            biased;
-            () = self.inner.cancel.cancelled() => Err(closed()),
-            result = client.call_unretried::<op::DescribeContract>(DescribeContractRequest {}, None) => result.map_err(RpcError::from),
-        }
+        let mut client = self.client()?;
+        self.until_closed(async {
+            client
+                .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+                .await
+                .map_err(RpcError::from)
+        })
+        .await
     }
 
     /// Open a Runtime Watch stream of complete frames.
@@ -260,8 +274,15 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, Watch is not
     /// advertised, or the stream cannot be opened.
     pub async fn watch(&self) -> Result<Watch, RpcError> {
-        let client = self.client().await?;
-        let description = self.about().await?;
+        let mut client = self.client()?;
+        let description = self
+            .until_closed(async {
+                client
+                    .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+                    .await
+                    .map_err(RpcError::from)
+            })
+            .await?;
         if !description.supports(RUNTIME_WATCH_CAPABILITY) {
             return Err(RpcError {
                 code: RpcErrorCode::Unsupported,
@@ -302,7 +323,7 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, snapshot
     /// gathering fails, or planning fails.
     pub async fn preview(&self, intent: DeployIntent) -> Result<PreparedDeploy, RpcError> {
-        let mut client = self.client().await?;
+        let mut client = self.client()?;
         let preview = tokio::select! {
             biased;
             () = self.inner.cancel.cancelled() => return Err(closed()),
@@ -310,8 +331,7 @@ impl Session {
         };
         Ok(PreparedDeploy {
             preview,
-            client,
-            session_cancel: self.inner.cancel.clone(),
+            session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
         })
     }
@@ -327,7 +347,7 @@ impl Session {
         project_name: ProjectName,
         volumes: VolumeFate,
     ) -> Result<PreparedDeploy, RpcError> {
-        let mut client = self.client().await?;
+        let mut client = self.client()?;
         let preview = tokio::select! {
             biased;
             () = self.inner.cancel.cancelled() => return Err(closed()),
@@ -335,8 +355,7 @@ impl Session {
         };
         Ok(PreparedDeploy {
             preview,
-            client,
-            session_cancel: self.inner.cancel.clone(),
+            session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
         })
     }
@@ -365,7 +384,7 @@ impl Session {
                 abort.cancel();
             });
         }
-        Ok(running.finished().await)
+        running.finished().await
     }
 
     /// Destroy named Docker Volumes. The list is the confirmation.
@@ -379,8 +398,8 @@ impl Session {
         &self,
         request: RemoveVolumesRequest,
     ) -> Result<Vec<VolumeRemoval>, RpcError> {
-        let mut client = self.client().await?;
-        client.remove_volumes(request).await
+        let mut client = self.client()?;
+        self.until_closed(client.remove_volumes(request)).await
     }
 
     /// Live Observation of Data Loss that removing `machine` would cause.
@@ -399,8 +418,9 @@ impl Session {
     ) -> Result<ObservedDataLoss, RpcError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
-        let mut client = self.client().await?;
-        client.data_loss_if_machine_removed(&target).await
+        let mut client = self.client()?;
+        self.until_closed(client.data_loss_if_machine_removed(&target))
+            .await
     }
 
     /// Remove `machine` after an exact Data Loss confirmation.
@@ -424,8 +444,9 @@ impl Session {
     ) -> Result<LocalMachineRemoved, RpcError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
-        let mut client = self.client().await?;
-        client.remove_machine(&target, confirm_data_loss).await
+        let mut client = self.client()?;
+        self.until_closed(client.remove_machine(&target, confirm_data_loss))
+            .await
     }
 
     /// Live Observation of Data Loss that destroying `project` would cause.
@@ -444,9 +465,8 @@ impl Session {
     ) -> Result<ObservedDataLoss, RpcError> {
         let project_name =
             ProjectName::parse(project).map_err(|error| invalid_argument(error.to_string()))?;
-        let mut client = self.client().await?;
-        client
-            .data_loss_if_project_destroyed(&project_name, volumes)
+        let mut client = self.client()?;
+        self.until_closed(client.data_loss_if_project_destroyed(&project_name, volumes))
             .await
     }
 
@@ -472,16 +492,15 @@ impl Session {
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
         let project_name =
             ProjectName::parse(project).map_err(|error| invalid_argument(error.to_string()))?;
-        let mut client = self.client().await?;
-        client
-            .destroy_project(
-                &project_name,
-                confirm_data_loss,
-                volumes,
-                &self.inner.cancel,
-                None,
-            )
-            .await
+        let mut client = self.client()?;
+        self.until_closed(client.destroy_project(
+            &project_name,
+            confirm_data_loss,
+            volumes,
+            &self.inner.cancel,
+            None,
+        ))
+        .await
     }
 
     /// Live Observation of Data Loss that destroying this Cluster would cause.
@@ -494,8 +513,9 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed or listing
     /// Machines fails.
     pub async fn data_loss_if_cluster_destroyed(&self) -> Result<ObservedDataLoss, RpcError> {
-        let mut client = self.client().await?;
-        client.data_loss_if_cluster_destroyed().await
+        let mut client = self.client()?;
+        self.until_closed(client.data_loss_if_cluster_destroyed())
+            .await
     }
 
     /// Destroy this Cluster after an exact Data Loss confirmation.
@@ -514,9 +534,8 @@ impl Session {
         &self,
         confirm_data_loss: &DataLossConfirmation,
     ) -> Result<ClusterTeardown, RpcError> {
-        let mut client = self.client().await?;
-        client
-            .destroy_cluster(confirm_data_loss, &self.inner.cancel)
+        let mut client = self.client()?;
+        self.until_closed(client.destroy_cluster(confirm_data_loss, &self.inner.cancel))
             .await
     }
 
@@ -525,7 +544,11 @@ impl Session {
     /// Repeated calls are a no-op.
     pub async fn close(&self) {
         self.inner.cancel.cancel();
-        self.inner.client.lock().await.take();
+        self.inner
+            .client
+            .lock()
+            .expect("session client lock")
+            .take();
     }
 }
 
@@ -557,7 +580,10 @@ impl PreparedDeploy {
     ///
     /// Returns when this preview already confirmed, or when the session is closed.
     pub fn confirm(&self) -> Result<RunningDeploy, RpcError> {
-        if self.session_cancel.is_cancelled() {
+        let session = Session {
+            inner: self.session.upgrade().ok_or_else(closed)?,
+        };
+        if session.inner.cancel.is_cancelled() {
             return Err(closed());
         }
         if self.confirmed.swap(true, Ordering::SeqCst) {
@@ -565,12 +591,23 @@ impl PreparedDeploy {
                 "this Deploy Preview already confirmed".into(),
             ));
         }
-        let cancel = self.session_cancel.child_token();
+        let cancel = session.inner.cancel.child_token();
         let (tx, rx) = mpsc::unbounded_channel();
-        let client = self.client.clone();
+        let client = session.client()?;
         let preview = self.preview.clone();
         let token = cancel.clone();
-        let join = tokio::spawn(async move { client.confirm(&preview, &token, Some(tx)).await });
+        let session_cancel = session.inner.cancel.clone();
+        let join = tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                () = session_cancel.cancelled() => Err(RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "session closed; in-flight Deploy outcome may be uncertain".into(),
+                    details: Value::Null,
+                }),
+                outcome = client.confirm(&preview, &token, Some(tx)) => Ok(outcome),
+            }
+        });
         Ok(RunningDeploy {
             cancel,
             events: Mutex::new(Some(rx)),
@@ -605,7 +642,10 @@ impl RunningDeploy {
     }
 
     /// Wait for the Deploy Outcome. Progress events are still produced.
-    pub async fn finished(&self) -> DeployOutcome<ExecutionError> {
+    ///
+    /// # Errors
+    /// Returns unavailable when session closure interrupts execution; mutations may have completed.
+    pub async fn finished(&self) -> Result<DeployOutcome<ExecutionError>, RpcError> {
         let handle = self
             .join
             .lock()
@@ -673,7 +713,7 @@ impl Watch {
                     let Some(inner) = self.session.upgrade() else {
                         return Ok(None);
                     };
-                    let client = Session { inner }.client().await?;
+                    let client = Session { inner }.client()?;
                     tokio::select! {
                         () = self.cancel.cancelled() => {
                             *guard = None;
@@ -743,7 +783,7 @@ pub async fn observe_enrollment(
 ) -> Result<ployz_core::EnrollmentSnapshot, RpcError> {
     let session = connect(relay_url, bearer, pairing, machine_id).await?;
     let result =
-        async { crate::enrollment::observe_enrollment(&mut session.client().await?).await }.await;
+        async { crate::enrollment::observe_enrollment(&mut session.client()?).await }.await;
     session.close().await;
     result
 }
@@ -760,10 +800,9 @@ pub async fn publish_enrollment(
     assignment: &ployz_core::EnrollmentAssignment,
 ) -> Result<Registered, RpcError> {
     let session = connect(relay_url, bearer, pairing, machine_id).await?;
-    let result = async {
-        crate::enrollment::publish_enrollment(&mut session.client().await?, assignment).await
-    }
-    .await;
+    let result =
+        async { crate::enrollment::publish_enrollment(&mut session.client()?, assignment).await }
+            .await;
     session.close().await;
     result
 }

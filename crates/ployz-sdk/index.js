@@ -146,7 +146,7 @@ function wrapRunning(running, signal) {
   return {
     abort: stop,
     get finished() {
-      finished ??= running.finished();
+      finished ??= withRpcError(running.finished());
       return finished;
     },
     async *[Symbol.asyncIterator]() {

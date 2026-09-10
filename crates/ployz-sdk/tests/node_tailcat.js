@@ -76,6 +76,67 @@ async function main() {
       await assert.rejects(deadline.about());
       await reaped(1);
       receipt.connectionAndSessionDeadlineReaped = true;
+      if (!process.argv.includes("--uninitialized")) {
+        stage = "retained preview deadline";
+        const previewClient = await sdk.connect({ connections, timeoutMs: 3000 });
+        const intent = {
+          project_name: "tailcat-878-readonly",
+          target: [{ name: "web", mode: { mode: "replicated", replicas: 1 }, container: { image: "nginx", pull_policy: "always" } }],
+          options: { force_recreate: false, skip_health_monitor: true, placement_seed: 0, selected: [{ name: "web" }] },
+        };
+        const retainedPreview = await previewClient.preview(intent);
+        await reaped(2);
+        await delay(3100);
+        await reaped(1);
+        assert.throws(() => retainedPreview.confirm(), (error) => error.code === "unavailable");
+        receipt.retainedPreviewDeadlineReaped = true;
+
+        stage = "blocked read deadline";
+        const existing = new Set(ownHelpers());
+        const blockedClient = await sdk.connect({ connections, timeoutMs: 2000 });
+        const blockedHelper = ownHelpers().find((pid) => !existing.has(pid));
+        assert.ok(blockedHelper);
+        process.kill(Number(blockedHelper), "SIGSTOP");
+        try {
+          const blocked = blockedClient.dataLossIfClusterDestroyed();
+          await assert.rejects(blocked, (error) => error.code === "unavailable");
+          await reaped(1);
+          receipt.blockedReadDeadlineReaped = true;
+        } finally { await blockedClient.close(); }
+
+        stage = "running deploy deadline";
+        const beforeDeploy = new Set(ownHelpers());
+        const deployClient = await sdk.connect({ connections, timeoutMs: 3000 });
+        try {
+          const prepared = await deployClient.preview(intent);
+          const helper = ownHelpers().find((pid) => !beforeDeploy.has(pid));
+          assert.ok(helper);
+          // Stop the transport before confirmation: no mutation reaches the fixture.
+          process.kill(Number(helper), "SIGSTOP");
+          const running = prepared.confirm();
+          await assert.rejects(running.finished, (error) => error instanceof sdk.RpcError && error.code === "unavailable" && error.message.includes("uncertain"));
+          await reaped(1);
+          receipt.runningDeployDeadlineReaped = true;
+        } finally { await deployClient.close(); }
+
+        stage = "read and watch reconnect";
+        const prior = new Set(ownHelpers());
+        const reconnectClient = await sdk.connect({ connections, timeoutMs: 15000 });
+        try {
+          const helper = ownHelpers().find((pid) => !prior.has(pid));
+          assert.ok(helper);
+          process.kill(Number(helper), "SIGKILL");
+          await delay(100);
+          assert.equal((await reconnectClient.about()).machine_id, about.machine_id);
+          const watch = reconnectClient.runtime.watch()[Symbol.asyncIterator]();
+          assert.equal((await watch.next()).done, false);
+          await reconnectClient.close();
+          assert.equal((await watch.next()).done, true);
+          await reaped(1);
+          assert.equal((await second.about()).machine_id, about.machine_id);
+          receipt.sameConnectionReadAndWatchReconnect = true;
+        } finally { await reconnectClient.close(); }
+      }
     } finally { await second.close(); }
   } finally { await first.close(); }
   await reaped(0);

@@ -175,6 +175,8 @@ pub(super) struct DiscoveryService {
     pub(super) existing_created_volume: Option<DockerVolume>,
     pub(super) created_volume_verification_error: Option<RpcError>,
     pub(super) create_container_error: Option<RpcError>,
+    pub(super) create_container_blocked: Option<Arc<tokio::sync::Notify>>,
+    pub(super) list_machines_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) created_volumes: Arc<Mutex<Vec<(MachineId, CreateVolumeRequest)>>>,
     pub(super) removed_volumes: Arc<Mutex<Vec<DockerVolumeId>>>,
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
@@ -215,6 +217,8 @@ impl DiscoveryService {
             existing_created_volume: None,
             created_volume_verification_error: None,
             create_container_error: None,
+            create_container_blocked: None,
+            list_machines_blocked: None,
             created_volumes: Arc::new(Mutex::new(Vec::new())),
             removed_volumes: Arc::new(Mutex::new(Vec::new())),
             reset_warning: Arc::new(Mutex::new(None)),
@@ -601,6 +605,10 @@ impl MachineRpc for DiscoveryService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(received) = &self.list_machines_blocked {
+            received.notify_one();
+            std::future::pending::<()>().await;
+        }
         let removed = self.removed_machines.lock().unwrap().clone();
         let machines: Vec<_> = self
             .machines
@@ -841,6 +849,10 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(received) = &self.create_container_blocked {
+            received.notify_one();
+            std::future::pending::<()>().await;
+        }
         if let Some(error) = &self.create_container_error {
             return Ok(Response::new(
                 RpcResponse::from(error.clone()).encode().unwrap(),

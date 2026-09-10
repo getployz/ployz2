@@ -70,6 +70,7 @@ export type PreparedDeploy = DeployPreview & {
 
 export type RunningDeploy = AsyncIterable<DeployEvent> & {
   abort(): void;
+  /** Rejects with RpcError on session closure; an in-flight mutation may have completed. */
   readonly finished: Promise<DeployOutcome<ExecutionError>>;
 };
 
