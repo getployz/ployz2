@@ -586,7 +586,10 @@ impl Connection {
 impl fmt::Display for Connection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.transport {
-            Transport::Tailcat(_) => formatter.write_str("tailcat:[redacted]"),
+            Transport::Tailcat(_) => match self.machine_id {
+                Some(machine_id) => write!(formatter, "tailcat:{machine_id}"),
+                None => formatter.write_str("tailcat:[redacted]"),
+            },
             Transport::Ssh { destination, .. } => write!(formatter, "ssh://{destination}"),
             Transport::Tcp(address) => write!(formatter, "tcp://{address}"),
             Transport::Unix(path) => write!(formatter, "unix://{}", path.display()),
@@ -595,11 +598,17 @@ impl fmt::Display for Connection {
     }
 }
 
+// Tailcat capabilities are opaque, `tc`-prefixed base64url, not SSH destinations.
+// Recognize even malformed pastes here so parse errors never echo their secret.
+pub(crate) fn is_tailcat_address(value: &str) -> bool {
+    value.trim().starts_with("tc") && !value.contains('@') && !value.contains("://")
+}
+
 impl FromStr for Connection {
     type Err = ConnectionError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.starts_with("tailcat:") {
+        if value.starts_with("tailcat:") || is_tailcat_address(value) {
             return Err(ConnectionError::TailcatConfigOnly);
         }
         if let Some(address) = value.strip_prefix("tcp://") {
@@ -692,6 +701,9 @@ pub struct SshDestination {
 impl SshDestination {
     pub fn parse(value: impl Into<String>) -> Result<Self, ConnectionError> {
         let value = value.into();
+        if is_tailcat_address(&value) {
+            return Err(ConnectionError::TailcatConfigOnly);
+        }
         let Some((user, destination)) = value.split_once('@') else {
             return Err(ConnectionError::SshDestination(value));
         };

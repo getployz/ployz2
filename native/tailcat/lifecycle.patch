@@ -1,9 +1,9 @@
 diff --git a/lifecycle_test.go b/lifecycle_test.go
 new file mode 100644
-index 000000000..e4d5cf408
+index 000000000..5d0ad4e6f
 --- /dev/null
 +++ b/lifecycle_test.go
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,249 @@
 +package tailcat
 +
 +import (
@@ -38,7 +38,7 @@ index 000000000..e4d5cf408
 +		t.Fatal(err)
 +	}
 +	defer s.Close()
-+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 +	defer cancel()
 +	c := &Client{Server: s.TailcatAddr()}
 +	defer c.Close()
@@ -47,7 +47,7 @@ index 000000000..e4d5cf408
 +		t.Fatal(err)
 +	}
 +	defer conn.Close()
-+	conn.SetDeadline(time.Now().Add(15 * time.Second))
++	conn.SetDeadline(time.Now().Add(25 * time.Second))
 +	select {
 +	case <-started:
 +	case <-ctx.Done():
@@ -170,6 +170,41 @@ index 000000000..e4d5cf408
 +		}
 +		echo()
 +	}
++	// Destroy a client network stack with its TCP connection still open, like
++	// a killed helper. The survivor stays silent and must ACK keepalive probes.
++	vanished := &Client{Server: s.TailcatAddr()}
++	abandoned, err := vanished.DialTCPPort(ctx, 80)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer abandoned.Close()
++	select {
++	case <-started:
++	case <-ctx.Done():
++		t.Fatal(ctx.Err())
++	}
++	vanished.Close()
++	select {
++	case <-finished:
++	case <-ctx.Done():
++		t.Fatal("vanished client pinned handler")
++	}
++	sweep := time.NewTicker(10 * time.Millisecond)
++	for {
++		s.lb.mu.Lock()
++		retained := len(s.lb.clients)
++		s.lb.mu.Unlock()
++		if retained == 1 && enginePeers(s) == 1 {
++			break
++		}
++		select {
++		case <-sweep.C:
++		case <-ctx.Done():
++			t.Fatal("vanished client retained peer")
++		}
++	}
++	sweep.Stop()
++	echo()
 +	conn.Close()
 +	select {
 +	case <-finished:
@@ -219,10 +254,18 @@ index 000000000..e4d5cf408
 +	return len(sb.Status().Peer)
 +}
 diff --git a/tailcat.go b/tailcat.go
-index 41cd966fe..4e7144c4b 100644
+index 41cd966fe..46dc3bb53 100644
 --- a/tailcat.go
 +++ b/tailcat.go
-@@ -353,12 +353,18 @@ type locoBackend struct {
+@@ -64,6 +64,7 @@
+ 	"github.com/tailscale/wireguard-go/device"
+ 	go4mem "go4.org/mem"
+ 	"go4.org/netipx"
++	"gvisor.dev/gvisor/pkg/tcpip"
+ 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+ 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+ 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
+@@ -353,12 +354,18 @@ type locoBackend struct {
  	// peer map lookup. Set before createEngine.
  	onDERPRecv func(regionID tailcfg.DERPRegionID, src key.NodePublic, pkt []byte) bool
  
@@ -247,7 +290,7 @@ index 41cd966fe..4e7144c4b 100644
  }
  
  func (b *locoBackend) derpRegionID() tailcfg.DERPRegionID {
-@@ -373,6 +379,10 @@ func (b *locoBackend) derpRegionID() tailcfg.DERPRegionID {
+@@ -373,6 +380,10 @@ func (b *locoBackend) derpRegionID() tailcfg.DERPRegionID {
  
  func (b *locoBackend) Close() error {
  	b.closeOnce.Do(func() {
@@ -258,7 +301,7 @@ index 41cd966fe..4e7144c4b 100644
  		if b.ns != nil {
  			b.ns.Close()
  		}
-@@ -401,6 +411,13 @@ func (b *locoBackend) Close() error {
+@@ -401,6 +412,13 @@ func (b *locoBackend) Close() error {
  // configuration fields, then call [Server.Start], which picks
  // defaults for anything unset.
  type Server struct {
@@ -272,7 +315,7 @@ index 41cd966fe..4e7144c4b 100644
  	// Key is the server's node identity.
  	// If zero, Start generates a new ephemeral key.
  	Key key.NodePrivate
-@@ -580,7 +597,15 @@ func (s *Server) Start() error {
+@@ -580,7 +598,15 @@ func (s *Server) Start() error {
  		return fmt.Errorf("missing RegionID in %v", logger.AsJSON(reg))
  	}
  
@@ -288,7 +331,7 @@ index 41cd966fe..4e7144c4b 100644
  	lb.logf = logf
  	lb.dm = &tailcfg.DERPMap{}
  	mak.Set(&lb.dm.Regions, reg.RegionID, reg)
-@@ -609,6 +634,7 @@ func (s *Server) Start() error {
+@@ -609,6 +635,7 @@ func (s *Server) Start() error {
  	sys.Set(store)
  
  	lb.isServer = true
@@ -296,7 +339,7 @@ index 41cd966fe..4e7144c4b 100644
  	lb.onDERPRecv = func(regionID tailcfg.DERPRegionID, src key.NodePublic, pkt []byte) bool {
  		if !IsMeowPacket(pkt) {
  			return false
-@@ -618,7 +644,13 @@ func (s *Server) Start() error {
+@@ -618,7 +645,13 @@ func (s *Server) Start() error {
  		}
  		if _, discoPub, ok := ParseMeowPing(pkt); ok {
  			mc := lb.sys.MagicSock.Get()
@@ -310,7 +353,7 @@ index 41cd966fe..4e7144c4b 100644
  				// Only reply once the client is fully added as a peer:
  				// "meowed" is the ack that tells the client it can
  				// start dialing. Disallowed clients get no reply.
-@@ -647,7 +679,7 @@ func (s *Server) Start() error {
+@@ -647,7 +680,7 @@ func (s *Server) Start() error {
  			if s.OnTCP == nil {
  				return nil, true // send RST
  			}
@@ -319,7 +362,7 @@ index 41cd966fe..4e7144c4b 100644
  		}
  		if s.OnTCPForward == nil {
  			return nil, true // send RST
-@@ -658,7 +690,7 @@ func (s *Server) Start() error {
+@@ -658,7 +691,7 @@ func (s *Server) Start() error {
  			copy(a4[:], d6[12:16])
  			dst = netip.AddrPortFrom(netip.AddrFrom4(a4), dst.Port())
  		}
@@ -328,7 +371,7 @@ index 41cd966fe..4e7144c4b 100644
  	}
  	ns.GetUDPHandlerForFlow = func(src, dst netip.AddrPort) (handler func(nettype.ConnPacketConn), intercept bool) {
  		var h func(ConnPacketConn)
-@@ -703,6 +735,23 @@ func (s *Server) Start() error {
+@@ -703,6 +736,23 @@ func (s *Server) Start() error {
  		lb.Close()
  		return err
  	}
@@ -352,7 +395,7 @@ index 41cd966fe..4e7144c4b 100644
  	return nil
  }
  
-@@ -1600,7 +1649,14 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) bool
+@@ -1600,7 +1650,14 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) bool
  	if _, ok := b.clients[src]; ok {
  		return true
  	}
@@ -368,7 +411,16 @@ index 41cd966fe..4e7144c4b 100644
  	derpRegion := b.derpRegionID()
  	mak.Set(&b.clients, src, &tailcfg.Node{
  		ID:         tailcfg.NodeID(id),
-@@ -2441,3 +2497,64 @@ func discoPrivateForNode(k key.NodePrivate) key.DiscoPrivate {
+@@ -1653,7 +1710,7 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) bool
+ func (b *locoBackend) Status() *ipnstate.Status {
+ 	mc := b.sys.MagicSock.Get()
+ 	eng := b.sys.Engine.Get()
+-	var sb ipnstate.StatusBuilder
++	sb := ipnstate.StatusBuilder{WantPeers: true}
+ 	mc.UpdateStatus(&sb)
+ 	eng.UpdateStatus(&sb)
+ 	return sb.Status()
+@@ -2441,3 +2498,87 @@ func discoPrivateForNode(k key.NodePrivate) key.DiscoPrivate {
  func DiscoPublicForNode(k key.NodePrivate) DiscoPublic {
  	return DiscoPublic{discoPrivateForNode(k).Public()}
  }
@@ -384,6 +436,29 @@ index 41cd966fe..4e7144c4b 100644
 +		return handler
 +	}
 +	return func(c net.Conn) {
++		// Keep live quiet streams, but let the stack terminate vanished clients.
++		// User timeout also bounds connections with unacknowledged payloads.
++		gc, ok := c.(*gonet.TCPConn)
++		if !ok {
++			c.Close()
++			return
++		}
++		raw, _ := gonetTCPConnInternals(gc)
++		ep := raw.(tcpip.Endpoint)
++		idle := tcpip.KeepaliveIdleOption(b.clientIdleTimeout)
++		interval := tcpip.KeepaliveIntervalOption(b.clientIdleTimeout)
++		timeout := tcpip.TCPUserTimeoutOption(b.clientIdleTimeout)
++		for _, option := range []tcpip.SettableSocketOption{&idle, &interval, &timeout} {
++			if err := ep.SetSockOpt(option); err != nil {
++				c.Close()
++				return
++			}
++		}
++		if err := ep.SetSockOptInt(tcpip.KeepaliveCountOption, 2); err != nil {
++			c.Close()
++			return
++		}
++		ep.SocketOptions().SetKeepAlive(true)
 +		b.mu.Lock()
 +		var lifetime *clientLifetime
 +		for k := range b.clients {

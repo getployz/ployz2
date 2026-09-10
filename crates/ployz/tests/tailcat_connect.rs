@@ -2,14 +2,24 @@
 //! Requires Go; builds the pinned native prerequisites before exercising RPC.
 #![cfg(unix)]
 
-use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeSet, os::unix::fs::PermissionsExt, path::PathBuf, process::Stdio, sync::Arc,
+    time::Duration,
+};
 
 use ployz::{
-    connect::{SystemConnector, connect_selected_with},
+    connect::{Connector, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
 };
-use ployz_core::MachineRpcServer;
-use tokio::{io::AsyncBufReadExt, net::UnixListener, process::Command};
+use ployz_core::{
+    MachineRpcClient, MachineRpcServer, OpaquePayload, RuntimeWatchFrame, RuntimeWatchRequest,
+    encode_runtime_watch_frame, op,
+};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt},
+    net::UnixListener,
+    process::Command,
+};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
@@ -26,6 +36,7 @@ async fn native_tailcat_confirms_machine_identity_and_performs_read_only_rpc() {
     assert!(
         Command::new("bash")
             .arg("build.sh")
+            .arg("--test")
             .arg(&helper)
             .current_dir(&native)
             .status()
@@ -50,7 +61,7 @@ async fn native_tailcat_confirms_machine_identity_and_performs_read_only_rpc() {
     let service = support::DiscoveryService::new(description.clone());
     let rpc = tokio::spawn(
         Server::builder()
-            .add_service(MachineRpcServer::new(service))
+            .add_service(MachineRpcServer::new(service.clone()))
             .serve_with_incoming(UnixListenerStream::new(listener)),
     );
     let mut endpoint = Command::new(fixture)
@@ -70,7 +81,26 @@ async fn native_tailcat_confirms_machine_identity_and_performs_read_only_rpc() {
         .expect("private DERP fixture startup timed out")
         .unwrap()
         .expect("private DERP fixture exited before publishing its capability");
-    let connector = Arc::new(SystemConnector::default().with_tailcat_program(helper));
+    assert!(
+        capability.starts_with("tc"),
+        "fixture must generate the real capability format"
+    );
+    let parse_error = capability.parse::<Connection>().unwrap_err();
+    assert!(!format!("{parse_error:?}").contains(&capability));
+    let cli = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["--connect", &capability, "machine", "ls"])
+        .output()
+        .await
+        .unwrap();
+    assert!(!cli.status.success());
+    assert!(!String::from_utf8_lossy(&cli.stdout).contains(&capability));
+    let stderr = String::from_utf8_lossy(&cli.stderr);
+    assert!(!stderr.contains(&capability));
+    assert!(
+        stderr.contains("Tailcat"),
+        "CLI must report the fixed Tailcat configuration error"
+    );
+    let connector = Arc::new(SystemConnector::default().with_tailcat_program(&helper));
     let selected = |connection| SelectedConnections {
         source: ConnectionSource::Direct,
         connections: vec![connection],
@@ -109,7 +139,150 @@ async fn native_tailcat_confirms_machine_identity_and_performs_read_only_rpc() {
     assert!(rejected.is_err(), "invalid capability must fail closed");
     assert!(!rejected.err().unwrap().to_string().contains(invalid));
     drop(client);
+    let input = endpoint.stdin.as_mut().unwrap();
+    input.write_all(b"reset-clients\n").await.unwrap();
+    assert_eq!(
+        output.next_line().await.unwrap().as_deref(),
+        Some("reset-ok")
+    );
+
+    let connection = Connection::tailcat(capability).unwrap();
+    let frame: RuntimeWatchFrame = serde_json::from_str(include_str!(
+        "../../ployz-core/tests/fixtures/runtime_watch_frame.json"
+    ))
+    .unwrap();
+    service.emit_watch_frame_on_open(frame.clone());
+    let expected = encode_runtime_watch_frame(&frame).unwrap();
+    let mut clients = Vec::new();
+    let mut streams = Vec::new();
+    let mut pids = BTreeSet::new();
+    for index in 0..10 {
+        // exec preserves the recorded PID; each connector owns a distinct real helper.
+        let wrapper = dir.path().join(format!("client-{index}"));
+        std::fs::write(&wrapper, "#!/bin/sh\nprintf '%s' \"$$\" > \"$0.pid\"\nexec \"$(dirname \"$0\")/ployz-tailcat\" \"$@\"\n").unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let channel = SystemConnector::default()
+            .with_tailcat_program(wrapper.clone())
+            .connect(&connection)
+            .await
+            .unwrap();
+        let mut client = MachineRpcClient::new(channel);
+        let mut siblings = Vec::new();
+        for _ in 0..5 {
+            let request = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
+                .encode()
+                .unwrap();
+            siblings.push(client.runtime_watch(request).await.unwrap().into_inner());
+        }
+        let pid = std::fs::read_to_string(wrapper.with_extension("pid")).unwrap();
+        assert!(
+            pids.insert(pid),
+            "clients must use independent helper processes"
+        );
+        clients.push(client);
+        streams.push(siblings);
+    }
+    assert_frames(&mut streams, &expected).await;
+    assert_eq!(service.live_watch_senders(), 50);
+    input.write_all(b"clients\n").await.unwrap();
+    let count: usize = output.next_line().await.unwrap().unwrap().parse().unwrap();
+    assert_eq!(
+        count, 10,
+        "each helper must have its own key-derived remote address"
+    );
+    input.write_all(b"churn\n").await.unwrap();
+
+    // Cancel one HTTP/2 stream, leaving its four siblings and other processes live.
+    drop(streams.first_mut().unwrap().remove(0));
+    wait_for_watch_count(&service, 49).await;
+    service.push_watch_frame(frame.clone());
+    assert_frames(&mut streams, &expected).await;
+
+    let killed_pid = std::fs::read_to_string(dir.path().join("client-1.pid")).unwrap();
+    assert!(
+        Command::new("kill")
+            .args(["-KILL", killed_pid.trim()])
+            .status()
+            .await
+            .unwrap()
+            .success()
+    );
+    let dead_streams = streams.remove(1);
+    for mut stream in dead_streams {
+        let end = tokio::time::timeout(Duration::from_secs(5), stream.message())
+            .await
+            .expect("terminated helper streams must end promptly");
+        assert!(
+            !matches!(end, Ok(Some(_))),
+            "terminated helper cannot deliver another frame"
+        );
+    }
+    clients.remove(1);
+    // Successful and wrong-PSK churn runs while these 44 streams remain open.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(30), output.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .as_deref(),
+        Some("churn-ok")
+    );
+    wait_for_endpoint_state(input, &mut output, 9).await;
+    service.push_watch_frame(frame);
+    assert_frames(&mut streams, &expected).await;
+    drop(streams);
+    drop(clients);
+    wait_for_endpoint_state(input, &mut output, 0).await;
     endpoint.start_kill().unwrap();
     endpoint.wait().await.unwrap();
     rpc.abort();
+}
+
+async fn wait_for_endpoint_state(
+    input: &mut tokio::process::ChildStdin,
+    output: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    expected: usize,
+) {
+    let mut last = String::new();
+    let complete = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            input.write_all(b"state\n").await.unwrap();
+            last = output.next_line().await.unwrap().expect("fixture exited");
+            if last == format!("{expected} {expected}") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        complete.is_ok(),
+        "server must retain exactly {expected} active TCP connections and peers; last state: {last}"
+    );
+}
+
+async fn assert_frames(
+    streams: &mut [Vec<tonic::Streaming<OpaquePayload>>],
+    expected: &OpaquePayload,
+) {
+    for siblings in streams {
+        for stream in siblings {
+            let frame = tokio::time::timeout(Duration::from_secs(5), stream.message())
+                .await
+                .expect("live sibling stream stalled")
+                .unwrap()
+                .expect("live sibling stream ended");
+            assert_eq!(&frame, expected);
+        }
+    }
+}
+
+async fn wait_for_watch_count(service: &support::DiscoveryService, expected: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.live_watch_senders() != expected {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("stream cancellation must reach the RPC server");
 }

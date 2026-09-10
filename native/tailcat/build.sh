@@ -16,6 +16,9 @@ git -C upstream apply ../lifecycle.patch
 if [[ "${1:-}" == --test ]]; then
   (cd upstream && go test -run '^TestBoundedClientLifecycle$' -count=1 .)
   go test ./...
+  if [[ -n "${2:-}" ]]; then
+    go build -trimpath -o "$2" .
+  fi
 else
   go build -trimpath -o "${1:-ployz-tailcat}" .
 fi
