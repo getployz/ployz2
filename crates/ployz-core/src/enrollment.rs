@@ -61,7 +61,7 @@ pub fn allocate_enrollment(
     snapshot: &EnrollmentSnapshot,
     saved: &[EnrollmentAssignment],
 ) -> Result<EnrollmentAssignment, EnrollmentError> {
-    let id = request.machine_id.ok_or(EnrollmentError::InvalidIdentity)?;
+    let id = request.machine_id;
     if request.advertised_endpoints.is_empty() {
         return Err(EnrollmentError::InvalidIdentity);
     }
@@ -155,7 +155,7 @@ mod tests {
 
     fn request(seed: u8) -> RegisterRequest {
         RegisterRequest {
-            machine_id: Some(MachineId::parse(format!("{seed:032x}")).unwrap()),
+            machine_id: MachineId::parse(format!("{seed:032x}")).unwrap(),
             assigned_subnet: None,
             initial_policy: Default::default(),
             name: MachineName::parse("same-name").unwrap(),
@@ -175,7 +175,7 @@ mod tests {
             target_versions: BTreeMap::new(),
         };
         let first = allocate_enrollment(&request(1), &snapshot, &[]).unwrap();
-        assert_eq!(first.machine.id, request(1).machine_id.unwrap());
+        assert_eq!(first.machine.id, request(1).machine_id);
         let second =
             allocate_enrollment(&request(2), &snapshot, std::slice::from_ref(&first)).unwrap();
         assert_ne!(first.machine.subnet, second.machine.subnet);
@@ -225,7 +225,7 @@ mod tests {
         );
         let mut claimed = snapshot;
         let mut collision = first.machine.clone();
-        collision.id = request(2).machine_id.unwrap();
+        collision.id = request(2).machine_id;
         collision.public_key = request(2).public_key;
         claimed.machines.push(collision);
         assert_eq!(
@@ -246,13 +246,10 @@ mod tests {
             allocate_enrollment(&request(2), &snapshot, &[first]),
             Err(EnrollmentError::Exhausted)
         );
+        let mut wire = serde_json::to_value(request(1)).unwrap();
+        wire.as_object_mut().unwrap().remove("machine_id");
+        assert!(serde_json::from_value::<RegisterRequest>(wire).is_err());
         let mut invalid = request(1);
-        invalid.machine_id = None;
-        assert_eq!(
-            allocate_enrollment(&invalid, &snapshot, &[]),
-            Err(EnrollmentError::InvalidIdentity)
-        );
-        invalid.machine_id = request(1).machine_id;
         invalid.advertised_endpoints.clear();
         assert_eq!(
             allocate_enrollment(&invalid, &snapshot, &[]),

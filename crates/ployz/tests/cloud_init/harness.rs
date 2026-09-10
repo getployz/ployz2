@@ -629,8 +629,21 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::Register(request) = decoded.body else {
             return Err(Status::invalid_argument("expected Register"));
         };
+        let assignment = ployz_core::allocate_enrollment(
+            &request,
+            &ployz_core::EnrollmentSnapshot {
+                network: "10.210.0.0/16".parse().unwrap(),
+                machines: self.inner.registration.visible_peers.clone(),
+                target_versions: self.inner.registration.target_versions.clone(),
+            },
+            &[],
+        )
+        .map_err(|error| Status::invalid_argument(error.to_string()))?;
         *self.inner.register_request.lock().unwrap() = Some(request);
-        rpc_ok(self.inner.registration.clone())
+        rpc_ok(Registered {
+            assigned_machine: assignment.machine,
+            ..self.inner.registration.clone()
+        })
     }
     async fn list_machines(
         &self,
@@ -650,7 +663,11 @@ impl MachineRpc for JoinDaemon {
                 .map(up_machine),
         );
         rpc_ok(MachineList {
-            enrollment: None,
+            enrollment: Some(ployz_core::EnrollmentSnapshot {
+                network: "10.210.0.0/16".parse().unwrap(),
+                machines: self.inner.registration.visible_peers.clone(),
+                target_versions: self.inner.registration.target_versions.clone(),
+            }),
             machines,
         })
     }

@@ -1,8 +1,8 @@
 //! Tests for the Machine RPC boundary.
 
-use super::{MachineService, hosted_dns_error, ingress_config_missing, local_error, store_error};
+use super::{MachineService, hosted_dns_error, ingress_config_missing, store_error};
 use crate::corrosion::{AdminClient, fake_cluster};
-use crate::machine::{LocalMachineError, LocalMachineStore, StoreError};
+use crate::machine::{LocalMachineStore, StoreError};
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
@@ -85,21 +85,6 @@ fn missing_ingress_config_names_its_path_in_details() {
     let error = ingress_config_missing(std::path::Path::new(path));
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert_eq!(error.details.get("path"), Some(&serde_json::json!(path)));
-}
-
-#[test]
-fn allocator_not_quiet_is_retryable_unavailable() {
-    let RpcResponseBody::Error(error) = local_error(LocalMachineError::AllocatorNotQuiet)
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .body
-    else {
-        panic!("expected error payload");
-    };
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, "Allocator is not quiet");
 }
 
 #[tokio::test]
@@ -193,21 +178,6 @@ async fn upgrade_rpc_rejects_nonstandard_machine_paths_before_acceptance() {
 
     drop(service);
     std::fs::remove_dir_all(data_dir).unwrap();
-}
-
-#[test]
-fn not_allocator_does_not_allocate() {
-    let RpcResponseBody::Error(error) = local_error(LocalMachineError::NotAllocator)
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .body
-    else {
-        panic!("expected error payload");
-    };
-    assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, "this Machine is not the Allocator");
 }
 
 #[tokio::test]

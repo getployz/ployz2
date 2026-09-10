@@ -521,13 +521,9 @@ impl MachineRpc for DiscoveryService {
             accepts_builds: true,
             accepts_services: true,
             accepts_ingress: true,
-            id: body
-                .machine_id
-                .unwrap_or_else(|| MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap()),
+            id: body.machine_id,
             name: body.name,
-            subnet: body
-                .assigned_subnet
-                .unwrap_or_else(|| "10.210.1.0/24".parse().unwrap()),
+            subnet: body.assigned_subnet.expect("client supplies subnet"),
             public_key: body.public_key,
             public_ip: body.public_ip,
             advertised_endpoints: body.advertised_endpoints,
