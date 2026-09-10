@@ -2,7 +2,6 @@ import "@tanstack/react-start/server-only";
 import { eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { CollectionReadInput } from "./read.contract";
-import { getPloyzTable } from "#/collections/tables.server";
 import * as tables from "#/db/schema";
 import type { Actor } from "#/modules/identity/actor";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
@@ -31,10 +30,8 @@ export const readCollection = Effect.fn("Collections.read")(function* (
   if (actor.userId !== data.userId) {
     return yield* new CollectionReadDenied({ message: "Collection not found." });
   }
-  const scope = getPloyzTable(data.table);
-  if (!scope) return yield* new CollectionReadInvalid({ message: "Invalid collection read." });
   let scopeId = actor.userId;
-  if (scope.scope === "organization") {
+  if (data.table !== "github_repository_cache") {
     if (!data.organizationSlug) {
       return yield* new CollectionReadInvalid({ message: "organizationSlug is required." });
     }

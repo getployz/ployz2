@@ -27,13 +27,14 @@ export const Route = createFileRoute(
 )({
   loader: ({ params, context }) => {
     const organizationSlug = params.organizationSlug;
+    const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
     const deploymentsReady = Promise.all([
-      preloadCollection(getEnvironmentDeploymentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
-      preloadCollection(getEnvironmentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
-      preloadCollection(getProjectsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
-      preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
-      preloadCollection(getRawEnvironmentResourcesCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
-      preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
+      preloadCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
+      preloadCollection(getEnvironmentsCollection(organizationSlug, scope)),
+      preloadCollection(getProjectsCollection(organizationSlug, scope)),
+      preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
+      preloadCollection(getRawEnvironmentResourcesCollection(organizationSlug, scope)),
+      preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
     ]);
 
     return { deploymentsReady };
