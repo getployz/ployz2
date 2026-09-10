@@ -186,6 +186,8 @@ pub(super) fn unreachable_allocator(id: MachineId) -> Machine {
 
 pub(super) fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterRequest {
     RegisterRequest {
+        machine_id: None,
+        assigned_subnet: None,
         initial_policy: Default::default(),
         name: MachineName::parse(name).unwrap(),
         storage: ployz_core::StorageChoice::None,

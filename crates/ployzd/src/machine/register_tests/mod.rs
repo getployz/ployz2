@@ -38,6 +38,8 @@ async fn register_rejects_an_uninitialized_machine() {
     );
     let empty = local
         .register(RegisterRequest {
+            machine_id: None,
+            assigned_subnet: None,
             advertised_endpoints: Vec::new(),
             ..request("peer", WireGuardPublicKey([1; 32]))
         })
@@ -58,6 +60,8 @@ async fn register_assigns_a_free_subnet_publishes_and_rejects_duplicates() {
     let (local, replicated, founder, data_dir, server) = participating().await;
     let missing = local
         .register(RegisterRequest {
+            machine_id: None,
+            assigned_subnet: None,
             advertised_endpoints: Vec::new(),
             ..request("peer", WireGuardPublicKey([1; 32]))
         })
@@ -75,6 +79,9 @@ async fn register_assigns_a_free_subnet_publishes_and_rejects_duplicates() {
         registered.assigned_machine.subnet,
         "10.210.1.0/24".parse().unwrap()
     );
+    let mut reused_id = request("different-peer", WireGuardPublicKey([3; 32]));
+    reused_id.machine_id = Some(founder.id);
+    assert!(local.register(reused_id).await.is_err());
     assert_eq!(registered.visible_peers, vec![founder]);
     assert_eq!(
         replicated
@@ -123,7 +130,8 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
         .record()
         .wireguard_private_key
         .public_key();
-    let identity = request("joiner", public_key);
+    let mut identity = request("joiner", public_key);
+    identity.machine_id = Some(target_store.lock().unwrap().record().id());
 
     let first = rpc_register(&service, identity.clone(), false)
         .await
@@ -172,10 +180,9 @@ async fn register_does_not_reconstruct_membership_while_joining() {
         .record()
         .wireguard_private_key
         .public_key();
-    let registered = allocator
-        .register(request("peer", public_key))
-        .await
-        .unwrap();
+    let mut identity = request("peer", public_key);
+    identity.machine_id = Some(joiner_store.lock().unwrap().record().id());
+    let registered = allocator.register(identity).await.unwrap();
     let joiner = LocalMachine::new(joiner_store, watch::channel(false).0).with_cluster(Some((
         replicated.clone(),
         AdminClient::new("/no/such/ployz-admin.sock"),
@@ -943,6 +950,37 @@ async fn isolation_lock_does_not_fire_when_a_peer_is_still_up() {
     admin_server.abort();
     let _ = std::fs::remove_dir_all(admin_root);
     cluster.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn client_assignment_publishes_without_allocator_and_replays_without_overwriting() {
+    let (local, replicated, founder, data_dir, server) = participating_without_allocator().await;
+    let id = MachineId::random();
+    let mut identity = request("edge", WireGuardPublicKey([21; 32]));
+    identity.machine_id = Some(id);
+    identity.assigned_subnet = Some("10.210.1.0/24".parse().unwrap());
+    let first = local.register(identity.clone()).await.unwrap();
+    assert_eq!(first.assigned_machine.id, id);
+    assert_eq!(first.visible_peers, vec![founder]);
+    assert_eq!(
+        replicated.machine(id.as_str()).await.unwrap(),
+        Some(first.assigned_machine.clone())
+    );
+    assert_eq!(local.register(identity.clone()).await.unwrap(), first);
+    let mut wrong_key = identity.clone();
+    wrong_key.public_key = WireGuardPublicKey([22; 32]);
+    assert!(local.register(wrong_key).await.is_err());
+    let mut occupied = identity;
+    occupied.machine_id = Some(MachineId::random());
+    occupied.public_key = WireGuardPublicKey([23; 32]);
+    assert!(local.register(occupied).await.is_err());
+    assert_eq!(
+        replicated.machine(id.as_str()).await.unwrap(),
+        Some(first.assigned_machine)
+    );
+    server.abort();
     drop(local);
     let _ = std::fs::remove_dir_all(data_dir);
 }

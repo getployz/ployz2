@@ -36,7 +36,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
     let mut local = LocalMachineStore::open(&data_dir).unwrap();
     let public_key = local.record().private_key().public_key();
     let machine: Machine = serde_json::from_value(json!({
-        "id": "b".repeat(32),
+        "id": local.record().id(),
         "name": "joining",
         "subnet": "10.210.1.0/24",
         "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,

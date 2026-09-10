@@ -297,6 +297,7 @@ impl MachineRpc for DeployService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         encoded(RpcResponse::from(MachineList {
+            enrollment: None,
             machines: self.machines.clone(),
         }))
     }

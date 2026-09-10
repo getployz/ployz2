@@ -1,4 +1,5 @@
-import { ConfigProvider, Effect, Exit, Layer, Result } from "effect";
+import { rustMachineIdSchema } from "./enrollment";
+import { ConfigProvider, Effect, Exit, Layer, Result, Schema } from "effect";
 import { Inngest } from "inngest";
 import {
   afterAll,
@@ -53,6 +54,7 @@ const enrollmentSettings = {
 function identity(index: number) {
   return {
     protocolVersion: 2 as const,
+    machineId: Schema.decodeUnknownSync(rustMachineIdSchema)((index + 1).toString(16).padStart(32, "0")),
     initialPolicy: {
       labels: {},
       accepts_builds: true,

@@ -241,6 +241,12 @@ pub struct InitializeRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RegisterRequest {
+    /// Durable identity of the joining Machine; required for client allocation.
+    #[serde(default)]
+    pub machine_id: Option<MachineId>,
+    /// Client-selected subnet. Omitted only by the temporary legacy path.
+    #[serde(default)]
+    pub assigned_subnet: Option<crate::MachineSubnet>,
     /// Complete policy committed in the first Machine assignment, before participation.
     pub initial_policy: crate::InitialMachinePolicy,
     pub name: MachineName,
@@ -660,10 +666,17 @@ pub struct Registered {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct JoinAccepted {}
+pub struct JoinAccepted {
+    /// The matching assignment was already durably accepted; no restart requested.
+    #[serde(default)]
+    pub already_accepted: bool,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineList {
+    /// Enrollment facts observed by this Entry Machine.
+    #[serde(default)]
+    pub enrollment: Option<crate::EnrollmentSnapshot>,
     pub machines: Vec<MachineObservation>,
 }
 

@@ -229,6 +229,8 @@ async fn wait_held(url: &str, machine_id: MachineId) -> MachineId {
 
 fn joiner_identity() -> RegisterRequest {
     RegisterRequest {
+        machine_id: None,
+        assigned_subnet: None,
         initial_policy: Default::default(),
         name: MachineName::parse("joiner").unwrap(),
         storage: StorageChoice::Zfs,

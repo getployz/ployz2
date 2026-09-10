@@ -82,6 +82,8 @@ impl RuntimeWatchTelemetry {
 /// Failures from Local Machine operations. The RPC adapter maps these once.
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error(transparent)]
+    Enrollment(#[from] ployz_core::EnrollmentError),
     /// Machine-local storage admission or preparation failed with structured details.
     #[error(transparent)]
     StoragePreparation(#[from] ployz_core::RpcError),
@@ -352,10 +354,12 @@ impl LocalMachine {
     /// and [`Error::Network`] when endpoint discovery fails.
     pub async fn machine_token(&self, request: MachineTokenRequest) -> Result<MachineToken, Error> {
         let record = self.record()?;
+        let id = record.id();
         let private_key = record.wireguard_private_key;
         let discovered = discover_network(request.wireguard_port, request.public_ip).await?;
         let capacity = host_capacity::observe();
         Ok(MachineToken {
+            id,
             public_key: private_key.public_key(),
             public_ip: discovered.public_ip,
             advertised_endpoints: if request.advertised_endpoints.is_empty() {
@@ -469,6 +473,9 @@ impl LocalMachine {
             }
             record.id()
         };
+        if request.assigned_subnet.is_some() {
+            return self.publish_assignment(request).await;
+        }
         if let Some(registered) = self.committed_registration(&request).await? {
             return Ok(registered);
         }
@@ -484,6 +491,33 @@ impl LocalMachine {
         }
     }
 
+    async fn publish_assignment(&self, request: RegisterRequest) -> Result<Registered, Error> {
+        let replicated = self.replicated()?;
+        let publication = replicated.machine_publication().await;
+        let machines = replicated.machines().await?.observations;
+        let snapshot = ployz_core::EnrollmentSnapshot {
+            network: replicated.cluster_network().await?,
+            machines,
+            target_versions: replicated.version().await?,
+        };
+        let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])?;
+        if !snapshot
+            .machines
+            .iter()
+            .any(|m| m.id == assignment.machine.id)
+        {
+            if self.isolation_locked().await? {
+                return Err(Error::IsolationLocked);
+            }
+            publication.publish(&assignment.machine).await?;
+        }
+        Ok(registered(
+            assignment.machine,
+            replicated.machines().await?.observations,
+            replicated.version().await?,
+        ))
+    }
+
     async fn committed_registration(
         &self,
         request: &RegisterRequest,
@@ -495,6 +529,9 @@ impl LocalMachine {
         let Some(machine) = recognize(request.public_key, &request.name, &machines)? else {
             return Ok(None);
         };
+        if request.machine_id.is_some_and(|id| id != machine.id) {
+            return Err(ployz_core::EnrollmentError::Conflict.into());
+        }
         if !request.initial_policy.matches(machine) {
             return Err(Error::InitialPolicyMismatch);
         }
@@ -536,6 +573,14 @@ impl LocalMachine {
         let assigned_machine = {
             let publication = replicated.machine_publication().await;
             let snapshot = replicated.machines().await?;
+            if request.machine_id.is_some_and(|id| {
+                snapshot
+                    .observations
+                    .iter()
+                    .any(|machine| machine.id == id && machine.public_key != request.public_key)
+            }) {
+                return Err(ployz_core::EnrollmentError::Conflict.into());
+            }
             if let Some(machine) =
                 recognize(request.public_key, &request.name, &snapshot.observations)?
             {
@@ -558,7 +603,7 @@ impl LocalMachine {
                     accepts_builds: request.initial_policy.accepts_builds,
                     accepts_services: request.initial_policy.accepts_services,
                     accepts_ingress: request.initial_policy.accepts_ingress,
-                    id: MachineId::random(),
+                    id: request.machine_id.unwrap_or_else(MachineId::random),
                     name: request.name,
                     subnet: allocate_machine_subnet(
                         network,
@@ -588,7 +633,7 @@ impl LocalMachine {
     /// and [`Error::Store`] when join is not legal in the current phase.
     fn join_admitted(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
         let mut store = self.lock_store()?;
-        store.join(
+        let already_accepted = store.join(
             request.registration.assigned_machine,
             request.registration.visible_peers,
             request.registration.target_versions,
@@ -605,8 +650,10 @@ impl LocalMachine {
             "join accepted"
         );
         drop(store);
-        self.restart.send_replace(true);
-        Ok(JoinAccepted {})
+        if !already_accepted {
+            self.restart.send_replace(true);
+        }
+        Ok(JoinAccepted { already_accepted })
     }
 
     /// Persist a join assignment under local mutation admission and request restart.
@@ -672,6 +719,11 @@ impl LocalMachine {
         let states = membership_states_by_address(states);
         let entry_id = local.id();
         Ok(MachineList {
+            enrollment: Some(ployz_core::EnrollmentSnapshot {
+                network: replicated.cluster_network().await?,
+                machines: machines.clone(),
+                target_versions: replicated.version().await?,
+            }),
             machines: RuntimeWatchTelemetry {
                 states,
                 selected_endpoints: local.selected_endpoints,
