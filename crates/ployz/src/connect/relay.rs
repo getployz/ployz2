@@ -9,7 +9,7 @@ use std::{
 use http::StatusCode;
 use hyper_util::rt::TokioIo;
 use ployz_core::{MachineId, RelayEndpoint};
-use ployz_relay::{ClientError, DialCredential, HeldRegister, PairingCredential, RelayClient};
+use ployz_relay::{ClientError, DialCredential, PairingCredential, RelayClient};
 use tonic::transport::{Channel, Endpoint};
 
 use super::ConnectError;
@@ -39,22 +39,6 @@ pub(super) async fn connect_channel(
         }))
         .await
         .map_err(ConnectError::from)
-}
-
-/// List Machines currently holding Register for this pairing.
-///
-/// # Errors
-/// Returns [`ConnectError::InvalidDialCredential`] when the bearer is rejected,
-/// or another [`ConnectError`] when the Relay call fails.
-pub(crate) async fn list_held(
-    url: &str,
-    credential: &DialCredential,
-    pairing: &PairingCredential,
-) -> Result<Vec<HeldRegister>, ConnectError> {
-    let url = RelayEndpoint::parse(url)?;
-    Ok(RelayClient::new(&url)?
-        .list(credential.as_str(), pairing.as_str())
-        .await?)
 }
 
 /// Revoke the Cloud Pairing so Register with that Pairing Credential fails afterwards.
@@ -111,10 +95,11 @@ mod tests {
                 assert!(socket.read(&mut request).await.unwrap() > 0);
                 socket.write_all(format!("HTTP/1.1 {status} Rejected\r\nContent-Length: 8\r\nConnection: close\r\n\r\nrejected").as_bytes()).await.unwrap();
             });
-            let error = list_held(
-                &url,
+            let error = connect_channel(
+                &RelayEndpoint::parse(&url).unwrap(),
                 &DialCredential::parse("dial-secret").unwrap(),
                 &PairingCredential::parse("pairing-secret").unwrap(),
+                &MachineId::parse("11111111111111111111111111111111").unwrap(),
             )
             .await
             .unwrap_err();

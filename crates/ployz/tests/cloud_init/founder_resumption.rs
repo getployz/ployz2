@@ -535,6 +535,6 @@ async fn publication_failure_does_not_complete_and_resumes_the_same_founder() {
     assert_eq!(daemon.initialize_requests().len(), 1);
     assert_eq!(daemon.reset_count(), 0);
     assert_eq!(enroll.publications().len(), 2);
-    assert_eq!(enroll.publications()[0], enroll.publications()[1]);
+    assert_eq!(enroll.publications().first(), enroll.publications().get(1));
     assert_eq!(enroll.callbacks().len(), 1);
 }

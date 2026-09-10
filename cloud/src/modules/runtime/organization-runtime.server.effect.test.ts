@@ -26,7 +26,6 @@ it.effect("passes ordered candidates to one SDK connection and finalizes the ses
           close: async () => { closed += 1; },
         });
       },
-      listHeld: async () => { throw new Error("Relay List must not run"); },
     });
     const runtime = makeOrganizationRuntimeLayer(() =>
       Effect.succeed({ kind: "ready", connections }),

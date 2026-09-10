@@ -206,9 +206,9 @@ struct EnrollCallback<'a> {
 
 /// POST identity until Cloud returns `initialize` or `join`.
 ///
-/// Transport errors and `not_yet` are retried with backoff. A timed-out enroll
-/// is safe to repeat: the Organization claim keeps the same founder and joins
-/// are idempotent.
+/// Only pre-dispatch connection failures and explicit `not_yet` responses retry.
+/// A lost response may follow Register dispatch; the caller must explicitly
+/// resume the same saved enrollment attempt instead of replaying it here.
 ///
 /// # Errors
 ///
@@ -221,7 +221,7 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
             &mut (),
             &format!("Cloud enrollment at {}", diagnostic_origin(url)),
             crate::setup_retry::WAIT,
-            Error::is_transport,
+            |error| matches!(error, Error::Connect(_)),
             async |_| post_json(&http, url, identity).await,
         )
         .await
@@ -300,13 +300,16 @@ async fn post_callback(
             post_json(&http, url, &body)
                 .await
                 .map(|_| ())
-                .map_err(|error| match error {
+                .map_err(|error| {
                     // Both stages carry credentials; a server may echo them in any encoding.
-                    Error::Status { status, .. } => Error::Status {
-                        status,
-                        body: format!("{operation} rejected"),
-                    },
-                    error => error,
+                    if let Error::Status { status, .. } = error {
+                        Error::Status {
+                            status,
+                            body: format!("{operation} rejected"),
+                        }
+                    } else {
+                        error
+                    }
                 })
         },
     )
@@ -319,7 +322,16 @@ async fn post_callback(
 
 fn retry_error(operation: &'static str, error: crate::setup_retry::Error<Error>) -> Error {
     match error {
-        crate::setup_retry::Error::Permanent(error) => error,
+        crate::setup_retry::Error::Permanent(error) => {
+            if matches!(error, Error::Timeout(_) | Error::Http(_)) {
+                Error::RetrySameCommand {
+                    operation,
+                    detail: format!("response lost; enrollment outcome may be uncertain: {error}"),
+                }
+            } else {
+                error
+            }
+        }
         crate::setup_retry::Error::Exhausted(detail) => {
             Error::RetrySameCommand { operation, detail }
         }
@@ -721,30 +733,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enroll_retries_transport_error_then_joins() {
-        let (listener, url) = listen().await;
-        let body = join_body();
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            read_http(&mut stream).await;
-            drop(stream);
-            let (mut stream, _) = listener.accept().await.unwrap();
-            read_http(&mut stream).await;
-            let response = http_response(200, "OK", &body);
-            tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
+    async fn enrollment_never_reposts_after_losing_a_dispatched_response() {
+        for timeout in [false, true] {
+            let (listener, url) = listen().await;
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http(&mut stream).await;
+                if timeout {
+                    tokio::time::pause();
+                    tokio::time::advance(REQUEST_TIMEOUT).await;
+                    tokio::time::resume();
+                }
+                drop(stream);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                        .await
+                        .is_err()
+                );
+            });
+            let error = tokio::time::timeout(Duration::from_secs(25), enroll(&url, &identity()))
                 .await
-                .unwrap();
-        });
-        let Outcome::Join(join) = enroll(&url, &identity()).await.unwrap() else {
-            panic!("expected join");
-        };
-        assert_eq!(join.pairing, pairing());
-        assert_eq!(join.registration, registration());
+                .expect("lost response must return without retrying")
+                .unwrap_err();
+            assert!(error.to_string().contains("uncertain"), "{error}");
+            assert!(error.to_string().contains("without --reset"), "{error}");
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]
     async fn enrollment_publication_and_completion_retry_within_stage_budget() {
-        for stage in ["enroll", "publish", "complete"] {
+        for stage in ["publish", "complete"] {
             let (listener, url) = listen().await;
             let server = tokio::spawn(async move {
                 let (mut held, _) = listener.accept().await.unwrap();
@@ -757,11 +776,7 @@ mod tests {
                 // Keep the first response open until the retry has succeeded.
                 let (mut retry, _) = listener.accept().await.unwrap();
                 read_http(&mut retry).await;
-                let body = if stage != "enroll" {
-                    b"{}".to_vec()
-                } else {
-                    join_body()
-                };
+                let body = b"{}".to_vec();
                 tokio::io::AsyncWriteExt::write_all(&mut retry, &http_response(200, "OK", &body))
                     .await
                     .unwrap();
@@ -777,7 +792,7 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                } else if stage == "complete" {
+                } else {
                     callback(
                         &url,
                         MachineId::random(),
@@ -785,11 +800,6 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                } else {
-                    assert!(matches!(
-                        enroll(&url, &identity()).await.unwrap(),
-                        Outcome::Join(_)
-                    ));
                 }
                 server.await.unwrap();
             })

@@ -44,15 +44,11 @@ import {
   applyOne,
   Client,
   connect,
-  listHeld,
   packageName,
-  register,
   allocateEnrollment,
-  observeEnrollment,
-  publishEnrollment,
   RpcError,
 } from "../index";
-import type { HeldRegister, PreparedDeploy } from "../index";
+import type { PreparedDeploy } from "../index";
 
 // Every field serde always writes is present in the type; `Option` is `T | null`.
 const container: ServiceContainerSpec = {
@@ -212,7 +208,6 @@ const connectOptions = {
   machineId: "machine" as MachineId,
 };
 connect(connectOptions) satisfies Promise<Client>;
-listHeld("https://relay.example", "bearer", "pairing") satisfies Promise<HeldRegister[]>;
 const identity: RegisterRequest = {
   machine_id: "machine" as MachineId,
   assigned_subnet: null,
@@ -236,7 +231,6 @@ const identity: RegisterRequest = {
     kernel_version: "1",
   },
 };
-register("https://relay.example", "bearer", "pairing", "machine" as MachineId, identity) satisfies Promise<Registered>;
 applyAll("app" as ProjectName, [web]) satisfies DeployIntent;
 applyOne("app" as ProjectName, web) satisfies DeployIntent;
 client.preview(intent) satisfies Promise<PreparedDeploy>;
@@ -263,5 +257,5 @@ packageName() satisfies "@ployz/sdk";
 
 declare const enrollmentSnapshot: EnrollmentSnapshot;
 const assignment = allocateEnrollment(identity, enrollmentSnapshot, []) satisfies EnrollmentAssignment;
-observeEnrollment("https://relay.example", "bearer", "pairing", "machine" as MachineId) satisfies Promise<EnrollmentSnapshot>;
-publishEnrollment("https://relay.example", "bearer", "pairing", "machine" as MachineId, assignment) satisfies Promise<Registered>;
+client.observeEnrollment() satisfies Promise<EnrollmentSnapshot>;
+client.register(assignment) satisfies Promise<Registered>;
