@@ -88,6 +88,7 @@ export function parseTeardownTargets<Input>(targets: Input): TeardownTargets {
 }
 
 export type TeardownRuntimeEvidence = {
+  pairingRemovals?: Array<{ machineId: string; status: "confirmed" | "unconfirmed" }>;
   projectTeardowns?: Array<{
     projectName: string;
     outcome: DeployOutcome<ExecutionError>;
@@ -197,7 +198,7 @@ export function teardownCompletedDescription(
   switch (membership) {
     case "unknown":
       return outcome.rustMustRevokePairing
-        ? "Cloud management was dropped. Runtime membership remains unknown, and pairing must still be revoked in Rust."
+        ? "Cloud access is disabled. Endpoint revocation is unconfirmed; removal credentials and the founding claim are retained."
         : "Cloud management was dropped. Runtime membership remains unknown.";
     case "verified_zero":
       return "The cluster was removed. Cloud recorded verified zero.";

@@ -7,18 +7,19 @@ import {
 import { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PgTransactionConfig } from "drizzle-orm/pg-core";
-import { Cause, Context, Data, Effect, Layer, Option } from "effect";
+import { Cause, Context, Data, Effect, Layer, Option, Queue, Scope, Stream } from "effect";
 import * as Reactivity from "effect/unstable/reactivity/Reactivity";
 import {
   isSqlError,
   isSqlErrorReason,
   SqlError,
 } from "effect/unstable/sql/SqlError";
-import { Pool } from "pg";
+import { Pool, type Notification } from "pg";
 import { AppConfig } from "#/server/config.server";
 
 export interface DatabaseService {
   readonly drizzle: EffectPgDatabase;
+  readonly pairingRemovals: Effect.Effect<Stream.Stream<string, Error>, Error, Scope.Scope>;
   readonly transaction: <A, E, R>(
     program: Effect.Effect<A, E, R>,
     config?: PgTransactionConfig,
@@ -64,20 +65,52 @@ export class DatabasePoolCloseFailure extends Data.TaggedError(
 
 export function makeDatabaseService(
   drizzle: EffectPgDatabase,
+  pairingRemovals: DatabaseService["pairingRemovals"] = Effect.succeed(Stream.never),
 ): DatabaseService {
   return {
     drizzle,
+    pairingRemovals,
     transaction: (program, config) =>
       drizzle.transaction(
         (transaction) =>
           Effect.provideService(
             program,
             Database,
-            makeDatabaseService(transaction),
+            makeDatabaseService(transaction, pairingRemovals),
           ),
         config,
       ),
   };
+}
+
+export function subscribePairingRemovals(pool: Pool): DatabaseService["pairingRemovals"] {
+  return Effect.gen(function* () {
+    const queue = yield* Queue.make<string, Error>();
+    const client = yield* Effect.acquireRelease(
+      Effect.tryPromise({ try: () => pool.connect(), catch: (cause) => new Error("Could not subscribe to pairing removals", { cause }) }),
+      (client) => Effect.sync(() => client.release(true)),
+    );
+    const onNotification = (message: Notification) => {
+      if (message.channel === "ployz_pairing_removed" && message.payload) {
+        Queue.offerUnsafe(queue, message.payload);
+      }
+    };
+    const onError = (cause: Error) => { Queue.failCauseUnsafe(queue, Cause.fail(cause)); };
+    const onEnd = () => onError(new Error("Pairing removal connection ended"));
+    client.on("notification", onNotification);
+    client.on("error", onError);
+    client.on("end", onEnd);
+    yield* Effect.addFinalizer(() => Effect.sync(() => {
+      client.off("notification", onNotification);
+      client.off("error", onError);
+      client.off("end", onEnd);
+    }));
+    yield* Effect.tryPromise({
+      try: () => client.query("LISTEN ployz_pairing_removed"),
+      catch: (cause) => new Error("Could not listen for pairing removals", { cause }),
+    });
+    return Stream.fromQueue(queue);
+  });
 }
 
 function reportIdlePoolError(cause: Error) {
@@ -114,7 +147,7 @@ const makeDatabaseViews = Effect.gen(function* () {
   );
   const betterAuthDatabase = drizzle({ client: pool });
 
-  return Context.make(Database, makeDatabaseService(applicationDatabase)).pipe(
+  return Context.make(Database, makeDatabaseService(applicationDatabase, subscribePairingRemovals(pool))).pipe(
     Context.add(BetterAuthDatabase, { drizzle: betterAuthDatabase }),
   );
 });

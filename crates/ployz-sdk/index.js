@@ -71,6 +71,14 @@ class Client {
     return withRpcError(this._inner.register(assignment));
   }
 
+  removeCloudPairing(removal) {
+    return withRpcError(this._inner.removeCloudPairing(removal));
+  }
+
+  inspect() {
+    return withRpcError(this._inner.inspect());
+  }
+
   about() {
     return withRpcError(this._inner.about());
   }
@@ -262,6 +270,7 @@ async function connect(options) {
 }
 
 module.exports = {
+  prepareTailcatRemoval: (expected) => withRpcError(native.prepareTailcatRemoval(expected, helper)),
   configRequest: native.configRequest,
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }

@@ -336,6 +336,7 @@ _Avoid_: Tailcat Capability, Machine identity, presence proof
 
 **Tailcat Capability**:
 A protected bearer granting administrative Machine RPC access to one Tailcat endpoint. Possession does not prove the intended Machine identity or Cloud Organization authorization.
+It is shared administrative authority, not per-user access; Cloud logout does not revoke a separately held capability.
 _Avoid_: per-user permission, read-only grant, Pairing Credential
 
 **Connection Candidate**:

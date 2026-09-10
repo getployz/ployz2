@@ -39,6 +39,7 @@ pub struct LocalMachine {
 }
 
 mod container;
+mod tailcat_removal;
 mod upgrade;
 
 #[derive(Clone)]

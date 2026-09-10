@@ -66,7 +66,7 @@ function context(deployPreview: typeof preview | null = null) {
 
 function runtimeLayer(client: Client, finalized: () => void) {
   return makeOrganizationRuntimeLayer(() =>
-    Effect.succeed({ kind: "ready", connections }),
+    Effect.succeed({ kind: "ready", generation: "grant-1", connections }),
   ).pipe(
     Layer.provide(
       makePloyzLayer({

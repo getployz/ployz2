@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -200,5 +201,135 @@ func TestExportCapabilityRequiresProtectedReadyState(t *testing.T) {
 	}
 	if err := exportCapability(path, &output); err == nil || output.Len() != 0 {
 		t.Fatal("public state exported a capability")
+	}
+}
+
+func TestRemovalRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "private", "state.json")
+	key := tailcat.NewPrivateKey()
+	key.Public.RegionID = 1
+	expected := key.Public.Addr()
+	state := &endpointState{Key: key, Capability: expected}
+	if err := writeState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() == 0 {
+		if err := os.Chown(path, 65534, 65534); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, _ := os.Stat(path)
+	var prepared bytes.Buffer
+	if err := successorCapability(strings.NewReader(string(expected)+"\n"), &prepared); err != nil {
+		t.Fatal(err)
+	}
+	successor := strings.TrimSpace(prepared.String())
+	pair := string(expected) + "\n" + successor + "\n"
+	if err := rotateCapability(path, strings.NewReader(pair), false); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, _ := readState(path)
+	if unchanged.Capability != expected {
+		t.Fatal("validation changed endpoint")
+	}
+	for range 2 {
+		if err := rotateCapability(path, strings.NewReader(pair), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rotated, err := readState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rotated.Key.Private.Equal(key.Private) || string(rotated.Capability) != successor || rotated.Key.Public.PresharedKey == key.Public.PresharedKey {
+		t.Fatal("rotation changed identity or failed to replace PSK")
+	}
+	after, _ := os.Stat(path)
+	oldOwner, newOwner := before.Sys().(*syscall.Stat_t), after.Sys().(*syscall.Stat_t)
+	if oldOwner.Uid != newOwner.Uid || oldOwner.Gid != newOwner.Gid {
+		t.Fatal("rotation changed owner")
+	}
+	if err := rotateCapability(path, strings.NewReader(string(expected)+"\n"+string(expected)+"\n"), true); err == nil {
+		t.Fatal("unchanged PSK accepted")
+	}
+	ci, _ := tailcat.ParseAddr(tailcat.Addr(successor))
+	ci.RegionID++
+	if err := rotateCapability(path, strings.NewReader(string(expected)+"\n"+string(ci.Addr())+"\n"), true); err == nil {
+		t.Fatal("changed relay accepted")
+	}
+	ci.RegionID--
+	ci.PresharedKey = tailcat.PresharedKey{}
+	if err := rotateCapability(path, strings.NewReader(string(expected)+"\n"+string(ci.Addr())+"\n"), true); err == nil {
+		t.Fatal("zero PSK accepted")
+	}
+	var later bytes.Buffer
+	if err := successorCapability(strings.NewReader(successor+"\n"), &later); err != nil {
+		t.Fatal(err)
+	}
+	if err := rotateCapability(path, strings.NewReader(successor+"\n"+later.String()), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := rotateCapability(path, strings.NewReader(pair), true); err == nil {
+		t.Fatal("stale attempt restored access")
+	}
+}
+
+func TestRotationWaitsForStartupWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "private", "state.json")
+	unlock, err := lockState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	done := make(chan error, 1)
+	go func() {
+		release, err := lockState(path)
+		if err == nil {
+			release()
+		}
+		done <- err
+	}()
+	select {
+	case <-done:
+		t.Fatal("concurrent startup writer admitted")
+	case <-time.After(20 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("startup lock not released")
+	}
+}
+
+func TestProxyCancellationClosesBothPeers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote, client := net.Pipe()
+	local, daemon := net.Pipe()
+	defer client.Close()
+	defer daemon.Close()
+	done := make(chan struct{})
+	go func() { proxyUntilCanceled(ctx, remote, local); close(done) }()
+	payload := []byte("active watch")
+	go func() { _, _ = daemon.Write(payload) }()
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, got); err != nil || !bytes.Equal(got, payload) {
+		t.Fatal("proxy did not forward active stream")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("proxy survived cancellation")
+	}
+	for _, peer := range []net.Conn{client, daemon} {
+		_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+		if _, err := peer.Read(make([]byte, 1)); err != io.EOF {
+			t.Fatalf("peer did not close: %v", err)
+		}
 	}
 }

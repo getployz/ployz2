@@ -30,6 +30,8 @@ pub use self::release::{ReleaseRequest, ReleaseSource};
 
 const PLOYZ_USER: &str = "ployz";
 const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
+/// Machine-owned helper, independent of the separately installed CLI helper.
+pub(crate) const TAILCAT_HELPER_PROGRAM: &str = "/usr/local/bin/ployzd-tailcat";
 const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
 const DEFAULT_RUN_DIR: &str = "/run/ployz";
 /// Unix socket installed systemd services use for the local Machine API.
@@ -562,7 +564,12 @@ mod tests {
                 assert_eq!(outcome.readiness, Readiness::InstallationOnly);
                 assert!(paths.bin_dir.join("ployzd").is_file());
                 assert!(paths.systemd_dir.join("ployz.service").is_file());
-                assert!(paths.bin_dir.join("ployzd-tailcat").is_file());
+                let helper_name = Path::new(TAILCAT_HELPER_PROGRAM).file_name().unwrap();
+                assert_eq!(
+                    Path::new(TAILCAT_HELPER_PROGRAM).parent(),
+                    Some(Path::new(DEFAULT_BIN_DIR))
+                );
+                assert!(paths.bin_dir.join(helper_name).is_file());
                 let unit =
                     fs::read_to_string(paths.systemd_dir.join("ployz-tailcat.service")).unwrap();
                 assert!(unit.contains("Type=notify"));
@@ -576,7 +583,10 @@ mod tests {
                     unit.contains("RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\n")
                 );
                 assert!(!unit.contains("Requires=ployz.service"));
-                assert!(unit.contains("/ployzd-tailcat serve --state "));
+                assert!(unit.contains(&format!(
+                    "ExecStart={} serve --state ",
+                    paths.bin_dir.join(helper_name).display()
+                )));
                 assert!(unit.contains(&format!(
                     "ReadWritePaths={}/tailcat\n",
                     paths.data_dir.display()

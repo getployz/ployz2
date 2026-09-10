@@ -95,4 +95,9 @@ if [[ -n "${PLOYZ_DISPOSABLE_SYSTEMD_RELEASE_DIR:-}" ]]; then
         "$PLOYZ_DISPOSABLE_SYSTEMD_RELEASE_DIR" "${PLOYZ_SYSTEMD_TEST_VERSION:?}"
 fi
 
+if [ -n "${PLOYZ_TAILCAT_REMOVAL_INPUT:-}" ]; then
+    run_suite tailcat_removal node crates/ployz-sdk/tests/node_tailcat_removal.js \
+        < "$PLOYZ_TAILCAT_REMOVAL_INPUT"
+fi
+
 exit "$failed"

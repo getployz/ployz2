@@ -971,6 +971,7 @@ async fn initialize_without_pairing_stays_off_list_until_set_cloud_pairing() {
     client
         .call::<op::SetCloudPairing>(
             SetCloudPairingRequest {
+                tailcat_removal: None,
                 cloud_pairing: Some(pairing),
             },
             None,
@@ -1013,6 +1014,7 @@ async fn set_cloud_pairing_none_leaves_relay_list() {
     client
         .call::<op::SetCloudPairing>(
             SetCloudPairingRequest {
+                tailcat_removal: None,
                 cloud_pairing: Some(pairing),
             },
             None,
@@ -1024,6 +1026,7 @@ async fn set_cloud_pairing_none_leaves_relay_list() {
     client
         .call::<op::SetCloudPairing>(
             SetCloudPairingRequest {
+                tailcat_removal: None,
                 cloud_pairing: None,
             },
             None,
