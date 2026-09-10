@@ -224,6 +224,10 @@ async fn install_locked(
         install_docker(&paths).await?;
     }
 
+    if !installation_only && !restart_required {
+        // A prior attempt may have activated these files without starting them.
+        restart_required = verify_running_daemon(&paths, &target).await.is_err();
+    }
     let readiness = if installation_only {
         Readiness::InstallationOnly
     } else {
@@ -235,12 +239,13 @@ async fn install_locked(
                 ["try-restart", "ployz-volume-plugin.service"],
             )?;
         }
+        verify_running_daemon(&paths, &target).await?;
+        host::create_tailcat_state_directory(&paths)?;
+        // Reapply the installed unit and executable even when a previous attempt
+        // activated files but failed before restarting this service.
         systemctl(
-            "start Tailcat endpoint",
-            [
-                if restart_required { "restart" } else { "start" },
-                "ployz-tailcat.service",
-            ],
+            "restart Tailcat endpoint",
+            ["restart", "ployz-tailcat.service"],
         )?;
         progress(MachineUpgradeStage::Readiness)?;
         host::verify_running_tailcat(&paths, &target).await?;
@@ -523,6 +528,8 @@ mod tests {
     async fn run_installation_case(case: &str) {
         let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
         let paths = InstallPaths::at(&root);
+        fs::create_dir_all(&paths.bin_dir).unwrap();
+        fs::write(paths.bin_dir.join("ployz-tailcat"), "retained CLI helper").unwrap();
         let existing = match case {
             "success" | "install-only" => None,
             "same-target" => Some(write_existing_daemon(&paths, "1.2.3")),
@@ -555,7 +562,7 @@ mod tests {
                 assert_eq!(outcome.readiness, Readiness::InstallationOnly);
                 assert!(paths.bin_dir.join("ployzd").is_file());
                 assert!(paths.systemd_dir.join("ployz.service").is_file());
-                assert!(paths.bin_dir.join("ployz-tailcat").is_file());
+                assert!(paths.bin_dir.join("ployzd-tailcat").is_file());
                 let unit =
                     fs::read_to_string(paths.systemd_dir.join("ployz-tailcat.service")).unwrap();
                 assert!(unit.contains("Type=notify"));
@@ -569,7 +576,11 @@ mod tests {
                     unit.contains("RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\n")
                 );
                 assert!(!unit.contains("Requires=ployz.service"));
-                assert!(unit.contains("/ployz-tailcat serve --state "));
+                assert!(unit.contains("/ployzd-tailcat serve --state "));
+                assert!(unit.contains(&format!(
+                    "ReadWritePaths={}/tailcat\n",
+                    paths.data_dir.display()
+                )));
                 if case == "install-only" {
                     assert!(!root.join("forbidden-invocation").exists());
                     assert!(!paths.data_dir.exists());
@@ -617,6 +628,10 @@ mod tests {
             }
             other => panic!("unknown contract case {other}"),
         }
+        assert_eq!(
+            fs::read_to_string(paths.bin_dir.join("ployz-tailcat")).unwrap(),
+            "retained CLI helper"
+        );
         if let Some(existing) = existing.filter(|_| case != "same-target") {
             assert_eq!(fs::read(paths.bin_dir.join("ployzd")).unwrap(), existing);
         }

@@ -6,7 +6,7 @@ set -euo pipefail
 release_dir=$(realpath "${1:?local release directory}")
 version=${2:?release version}
 [[ $EUID == 0 && -d /run/systemd/system ]]
-[[ -x /usr/local/bin/ployzd && -x /usr/local/bin/ployz-tailcat ]]
+[[ -x /usr/local/bin/ployzd && -x /usr/local/bin/ployzd-tailcat ]]
 state=/var/lib/ployz/tailcat/state.json
 systemctl is-active --quiet ployz.service ployz-tailcat.service
 helper_pid=$(systemctl show --property=MainPID --value ployz-tailcat.service)
@@ -16,8 +16,30 @@ listeners=$(ss -H -ltnp)
 # A separate Docker workload must survive endpoint failure and software replacement.
 workload=$(docker run -d --label tailcat-qualification alpine:3.22 sleep 600)
 trap 'docker rm -f "$workload" >/dev/null 2>&1 || true' EXIT
+# Test write confinement from the actual helper's mount namespace and service UID.
+# Unix DAC alone is insufficient because the service user owns the data parent.
+helper_pid=$(systemctl show --property=MainPID --value ployz-tailcat.service)
+nsenter --target "$helper_pid" --mount -- setpriv --reuid=ployz --regid=ployz --init-groups \
+    python3 - <<'PYTHON'
+from pathlib import Path
+private = Path('/var/lib/ployz/tailcat/qualification-write')
+private.write_text('allowed')
+private.unlink()
+try:
+    Path('/var/lib/ployz/qualification-write').write_text('forbidden')
+except OSError:
+    pass
+else:
+    raise AssertionError('helper can replace entries in Machine data root')
+PYTHON
 identity=$(sha256sum "$state" | cut -d' ' -f1)
 links=$(ip -j link show type wireguard)
+# Reproduce an interrupted activation: disk has the exact version, but the active
+# process still runs the replaced inode. Published retry must not download or stall.
+cp -p /usr/local/bin/ployzd-tailcat /usr/local/bin/ployzd-tailcat.replacement
+mv /usr/local/bin/ployzd-tailcat.replacement /usr/local/bin/ployzd-tailcat
+/usr/local/bin/ployzd install --software-only --version "$version"
+[[ $(sha256sum "$state" | cut -d' ' -f1) == "$identity" ]]
 systemctl kill --kill-whom=main --signal=SIGKILL ployz-tailcat.service
 timeout 40 bash -c 'until systemctl is-active --quiet ployz-tailcat.service; do sleep 1; done'
 [[ $(sha256sum "$state" | cut -d' ' -f1) == "$identity" ]]
@@ -51,7 +73,7 @@ for turn in range(2):
         except Exception as e: errors.append(e)
     worker = threading.Thread(target=echo)
     worker.start()
-    result = subprocess.run(['/usr/local/bin/ployz-tailcat', 'connect'],
+    result = subprocess.run(['/usr/local/bin/ployzd-tailcat', 'connect'],
         input=capability+b'\n'+b'endpoint-socket-recreation', capture_output=True, timeout=30)
     worker.join(30)
     listener.close()
@@ -80,6 +102,6 @@ systemctl start ployz-tailcat.service
 [[ $(sha256sum "$state" | cut -d' ' -f1) == "$identity" ]]
 # Removal uses the shipped uninstaller, never an alternate lifecycle owner.
 PLOYZ_AUTO_CONFIRM=true /usr/local/bin/ployz-uninstall
-[[ ! -e /usr/local/bin/ployz-tailcat && ! -e /etc/systemd/system/ployz-tailcat.service && ! -e "$state" ]]
+[[ ! -e /usr/local/bin/ployzd-tailcat && ! -e /etc/systemd/system/ployz-tailcat.service && ! -e "$state" ]]
 if systemctl is-active --quiet ployz-tailcat.service; then exit 1; fi
 printf 'Tailcat systemd lifecycle passed (Rung 4)\n'
