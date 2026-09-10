@@ -10,6 +10,7 @@ import {
 } from "#/modules/machines/machine-removal";
 import { Database, sqlErrorFrom } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
+import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { machineRemoveAttempt as schemaMachineRemoveAttempt, organizationMachine } from "#/modules/machines/tables";
 
@@ -135,6 +136,9 @@ export const requestMachineRemoveAttempt = Effect.fn(
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    // Match first-enrollment admission even when there is no pairing row to lock.
+    yield* drizzle.select({ id: organization.id }).from(organization)
+      .where(eq(organization.id, input.organizationId)).for("no key update");
     const [pairing] = yield* drizzle.select({ enrolling: organizationPairing.enrollingMachineIds }).from(organizationPairing)
       .where(eq(organizationPairing.organizationId, input.organizationId)).for("update");
     if (pairing?.enrolling.includes(input.machineId)) {

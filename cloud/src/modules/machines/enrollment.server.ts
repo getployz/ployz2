@@ -11,6 +11,7 @@ import {
   machineRemoveAttempt,
   machineEnrollmentToken as schemaMachineEnrollmentToken,
 } from "#/modules/machines/tables";
+import { organization } from "#/modules/organization/tables";
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
@@ -244,6 +245,9 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
     return yield* database.transaction(
       Effect.gen(function* () {
         const { drizzle } = yield* Database;
+        // The pairing may not exist yet; serialize admission on its stable parent.
+        yield* drizzle.select({ id: organization.id }).from(organization)
+          .where(eq(organization.id, input.organizationId)).for("no key update");
         const [claimed] = yield* drizzle
           .insert(schemaOrganizationPairing)
           .values({

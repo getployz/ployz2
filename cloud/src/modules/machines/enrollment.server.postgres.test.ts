@@ -848,6 +848,35 @@ describe("organization enrollment coordinator", () => {
     } finally { release(); await pending; }
   });
 
+  it("serializes first founder enrollment with an uncommitted removal when no pairing exists", async () => {
+    const fake = fakeSession(harness.database);
+    let entered = () => {};
+    let release = () => {};
+    const admitted = new Promise<void>((resolve) => { entered = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const removing = harness.runEffect(harness.database.transaction(Effect.gen(function* () {
+      const attempt = yield* requestMachineRemoveAttempt({ organizationId, requestedByUserId: userId, machineId: founderMachineId, confirmDataLoss: [] });
+      entered();
+      yield* Effect.promise(() => released);
+      return attempt;
+    })));
+    await admitted;
+    let settled = false;
+    const enrolling = fake.coordinator.enroll({ token: tokens[0] ?? "", identity: identity(0) })
+      .then((result) => { settled = true; return result; });
+    try {
+      // Wait for actual contention or an incorrectly completed enrollment, not a timing guess.
+      await expect.poll(async () => settled || (await harness.pool.query(
+        "select exists(select 1 from pg_stat_activity where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0) as blocked",
+      )).rows[0].blocked).toBe(true);
+      expect(settled).toBe(false);
+      release();
+      expect(await removing).toMatchObject({ state: "pending" });
+      expect(await enrolling).toMatchObject({ failure: { _tag: "Conflict" } });
+      expect((await harness.pool.query("select * from organization_pairing")).rows).toEqual([]);
+    } finally { release(); await Promise.all([removing, enrolling]); }
+  });
+
   it("keeps pairing decrypt failures in the typed Effect channel", async () => {
     const stale = makeSecretEncryption("stale-app-encryption-secret-1234567890");
     await harness.pool.query(
