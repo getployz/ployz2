@@ -87,11 +87,13 @@ it.live(
       );
 
       yield* Effect.gen(function* () {
-        const unknown = yield* execute(
-          new Request("http://app.test/api/shapes/not_a_table"),
-          "not_a_table",
-        );
-        assert.strictEqual(unknown.status, 404);
+        for (const table of ["not_a_table", "organization_machine", "organization_pairing"]) {
+          const unknown = yield* execute(
+            new Request(`http://app.test/api/shapes/${table}`),
+            table,
+          );
+          assert.strictEqual(unknown.status, 404);
+        }
 
         const anonymous = yield* execute(
           new Request(

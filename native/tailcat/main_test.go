@@ -168,3 +168,37 @@ func TestRelayOnlyStartup(t *testing.T) {
 		t.Fatalf("helper startup: %v: %s", err, output)
 	}
 }
+
+func TestExportCapabilityRequiresProtectedReadyState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "private", "state.json")
+	var output bytes.Buffer
+	if err := exportCapability(path, &output); err == nil || output.Len() != 0 {
+		t.Fatal("missing state must not generate or export identity")
+	}
+	key := tailcat.NewPrivateKey()
+	key.Public.RegionID = 1
+	state := &endpointState{Key: key}
+	if err := writeState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := exportCapability(path, &output); err == nil || output.Len() != 0 {
+		t.Fatal("unready state exported a capability")
+	}
+	state.Capability = key.Public.Addr()
+	if err := writeState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := exportCapability(path, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != string(state.Capability)+"\n" {
+		t.Fatal("export did not contain only the capability")
+	}
+	output.Reset()
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := exportCapability(path, &output); err == nil || output.Len() != 0 {
+		t.Fatal("public state exported a capability")
+	}
+}

@@ -140,10 +140,21 @@ export function registerRequestFromEnrollmentIdentity(
 
 }
 
-export const enrollmentCallbackBodySchema = Schema.Struct({
+const enrollmentCallbackIdentity = {
   machineId: rustMachineIdSchema,
   pairingCredential: NonEmptyString,
-});
+};
+
+export const enrollmentCallbackBodySchema = Schema.Union([
+  Schema.Struct(enrollmentCallbackIdentity),
+  Schema.Struct({
+    ...enrollmentCallbackIdentity,
+    stage: Schema.Literal("publish"),
+    tailcat: NonEmptyString.check(Schema.isMaxLength(16 * 1024)),
+  }),
+]);
+
+export type EnrollmentCallback = typeof enrollmentCallbackBodySchema.Type;
 
 export type CloudPairing = {
   relayUrl: string;

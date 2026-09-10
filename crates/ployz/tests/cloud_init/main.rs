@@ -34,10 +34,10 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
     let daemon = JoinDaemon::new(registration.clone()).lose_lifecycle_reply();
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -112,7 +112,7 @@ async fn cloud_zfs_rejects_a_remote_machine_before_join() {
     let machine_addr = serve_machine(daemon).await;
 
     let output = init_cloud(
-        &format!("tcp://{machine_addr}"),
+        &format!("ssh://root@{machine_addr}"),
         &enroll.url,
         "joiner",
         false,
@@ -162,10 +162,10 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     .with_events(events.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -231,8 +231,20 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
         [
             format!("/api/enroll/{TOKEN}"),
             format!("/api/enroll/{TOKEN}/callback"),
+            format!("/api/enroll/{TOKEN}/callback"),
         ]
     );
+    assert_eq!(
+        enroll.publications(),
+        [json!({
+            "stage": "publish",
+            "machineId": machine_id.as_str(),
+            "pairingCredential": PAIRING,
+            "tailcat": "fixture-tailcat-capability",
+        })]
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("fixture-tailcat-capability"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("fixture-tailcat-capability"));
     assert_eq!(
         enroll.callbacks(),
         [json!({
@@ -247,7 +259,7 @@ async fn cloud_init_initialize_participates_and_appears_on_list_held() {
     );
     assert_eq!(
         events.entries(),
-        ["initialize", "set_cloud_pairing", "callback"]
+        ["initialize", "set_cloud_pairing", "publish", "callback"]
     );
 
     wait_for_held(&relay.url, PAIRING, machine_id).await;
@@ -302,10 +314,10 @@ async fn caddy_lookup_failure_happens_before_initialize() {
         }
     });
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -363,10 +375,10 @@ async fn cloud_init_initialize_reserves_hosted_dns() {
     .with_events(events.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -416,6 +428,7 @@ async fn cloud_init_initialize_reserves_hosted_dns() {
             "initialize",
             "reserve_domain",
             "set_cloud_pairing",
+            "publish",
             "callback"
         ]
     );
@@ -441,10 +454,10 @@ async fn cloud_init_retries_not_yet_then_joins() {
     let daemon = JoinDaemon::new(registration.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -514,10 +527,10 @@ async fn cloud_init_retries_not_yet_then_initializes() {
     });
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -567,7 +580,7 @@ async fn init_cloud(
     reset: bool,
     yes: bool,
 ) -> std::process::Output {
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+    let mut command = harness::cli();
     command.args([
         "--connect",
         connect,
@@ -610,7 +623,7 @@ async fn revoked_pairing_does_not_release_or_transfer_founding() {
         target_versions: Default::default(),
     });
     let machine_addr = serve_machine(daemon.clone()).await;
-    let connect = format!("tcp://{machine_addr}");
+    let connect = format!("ssh://root@{machine_addr}");
 
     let output = init_cloud(&connect, &enroll.url, "founder", false, true).await;
     assert!(!output.status.success());
@@ -662,7 +675,7 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
         .unwrap();
 
     let output = init_cloud(
-        &format!("tcp://{machine_addr}"),
+        &format!("ssh://root@{machine_addr}"),
         &enroll.url,
         "founder",
         false,
@@ -717,10 +730,10 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
         .await
         .unwrap();
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -787,7 +800,7 @@ async fn reset_enroll_posts_the_rotated_public_key() {
     let before = daemon.public_key();
 
     let output = init_cloud(
-        &format!("tcp://{machine_addr}"),
+        &format!("ssh://root@{machine_addr}"),
         &enroll.url,
         "rejoined",
         true,
@@ -857,7 +870,7 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(4),
         init_cloud(
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             &enroll.url,
             "rejoined",
             true,
@@ -1008,10 +1021,10 @@ async fn join_places_observed_ingress_on_this_machine() {
     let daemon = JoinDaemon::new(registration.clone()).with_containers(vec![ingress_on(&founder)]);
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -1059,10 +1072,10 @@ async fn partial_peer_observation_reports_incomplete_catch_up_before_placement()
         .fail_list_on(unreachable.id);
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -1106,10 +1119,10 @@ async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
     ]);
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -1162,10 +1175,10 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
         .fail_ensure();
     let machine_addr = serve_machine(daemon).await;
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -1224,10 +1237,10 @@ async fn join_starts_created_ingress_before_success() {
     let daemon = JoinDaemon::new(registration).with_containers(vec![ingress_on(&founder), created]);
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -1296,10 +1309,10 @@ async fn join_against_founder(
     .await;
     let daemon = JoinDaemon::new(registration.clone()).with_containers(vec![ingress_on(founder)]);
     let machine_addr = serve_machine(daemon.clone()).await;
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{machine_addr}"),
+            &format!("ssh://root@{machine_addr}"),
             "cloud",
             "enroll",
             TOKEN,

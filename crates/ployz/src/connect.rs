@@ -277,7 +277,7 @@ fn ssh_args(
     args
 }
 
-fn ssh_base_args(
+pub(crate) fn ssh_base_args(
     destination: &crate::context::SshDestination,
     key_file: Option<&Path>,
     control_path: Option<&Path>,

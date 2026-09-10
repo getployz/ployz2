@@ -14,7 +14,6 @@ import {
   InngestClient,
   InngestEventSendError,
 } from "#/modules/inngest/client";
-import type { DialTenant } from "#/modules/runtime/dial-entry";
 import {
   makeOrganizationRuntimeLayer,
 } from "#/modules/runtime/organization-runtime.server";
@@ -50,13 +49,7 @@ describe("teardown provider outcomes", () => {
         },
         unexecuted: [],
       };
-      const tenant = {
-        relayUrl: "wss://relay.example.test",
-        bearer: "tenant-token",
-        pairing: "ppair_test",
-        preferredMachineId: "machine-a",
-        enrolledMachineIds: ["machine-a"],
-      } satisfies DialTenant;
+      const connections = [{ tailcat: "tailcat://candidate" }];
       const client = asTestDouble<Client>()({
         destroyProject: async (
           ...args: Parameters<Client["destroyProject"]>
@@ -75,7 +68,7 @@ describe("teardown provider outcomes", () => {
         connect: async () => client,
       });
       const runtime = makeOrganizationRuntimeLayer(() =>
-        Effect.succeed({ kind: "ready", tenant }),
+        Effect.succeed({ kind: "ready", connections }),
       ).pipe(Layer.provide(ployz));
 
       const result = yield* Effect.scoped(
@@ -118,13 +111,7 @@ describe("teardown provider outcomes", () => {
         pairing_revoked: false,
       };
       const calls: unknown[] = [];
-      const tenant = {
-        relayUrl: "wss://relay.example.test",
-        bearer: "tenant-token",
-        pairing: "ppair_test",
-        preferredMachineId: "machine-a",
-        enrolledMachineIds: ["machine-a"],
-      } satisfies DialTenant;
+      const connections = [{ tailcat: "tailcat://candidate" }];
       const client = asTestDouble<Client>()({
         destroyCluster: async (
           ...args: Parameters<Client["destroyCluster"]>
@@ -135,7 +122,7 @@ describe("teardown provider outcomes", () => {
         close: async () => undefined,
       });
       const runtime = makeOrganizationRuntimeLayer(() =>
-        Effect.succeed({ kind: "ready", tenant }),
+        Effect.succeed({ kind: "ready", connections }),
       ).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
 
       const result = yield* Effect.scoped(
