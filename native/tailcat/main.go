@@ -27,6 +27,8 @@ const (
 	capabilityLimit = 16 * 1024
 )
 
+var version = "dev"
+
 var errCapability = errors.New("invalid Tailcat capability")
 
 type endpointState struct {
@@ -46,6 +48,10 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
+	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
+		fmt.Fprintln(os.Stdout, version)
+		return nil
+	}
 	if len(args) == 1 && args[0] == "connect" {
 		return connect(ctx)
 	}
@@ -260,6 +266,17 @@ func serve(ctx context.Context, path string) error {
 	}
 	if err := writeState(path, state); err != nil {
 		return errors.New("cannot persist Tailcat endpoint")
+	}
+	if socket := os.Getenv("NOTIFY_SOCKET"); socket != "" {
+		conn, err := net.Dial("unixgram", socket)
+		if err != nil {
+			return errors.New("cannot notify endpoint readiness")
+		}
+		_, err = conn.Write([]byte("READY=1"))
+		conn.Close()
+		if err != nil {
+			return errors.New("cannot notify endpoint readiness")
+		}
 	}
 	<-ctx.Done()
 	return nil

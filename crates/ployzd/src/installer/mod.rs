@@ -216,7 +216,8 @@ async fn install_locked(
         }
     }
 
-    let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
+    let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file()
+        || !paths.systemd_dir.join("ployz-tailcat.service").is_file();
     restart_required |= install_binaries(&request.source, &paths, &target, &mut progress).await?;
     install_systemd(&paths, installation_only)?;
     if matches!(request.mode, InstallMode::PrepareHost { .. }) {
@@ -234,7 +235,15 @@ async fn install_locked(
                 ["try-restart", "ployz-volume-plugin.service"],
             )?;
         }
+        systemctl(
+            "start Tailcat endpoint",
+            [
+                if restart_required { "restart" } else { "start" },
+                "ployz-tailcat.service",
+            ],
+        )?;
         progress(MachineUpgradeStage::Readiness)?;
+        host::verify_running_tailcat(&paths, &target).await?;
         verify_running_daemon(&paths, &target).await?;
         Readiness::Running
     };
@@ -431,6 +440,7 @@ mod tests {
             "corrupt",
             "rejected-executable",
             "hung-executable",
+            "bad-helper",
             "busy",
         ] {
             let fixture = fixture(case);
@@ -545,6 +555,21 @@ mod tests {
                 assert_eq!(outcome.readiness, Readiness::InstallationOnly);
                 assert!(paths.bin_dir.join("ployzd").is_file());
                 assert!(paths.systemd_dir.join("ployz.service").is_file());
+                assert!(paths.bin_dir.join("ployz-tailcat").is_file());
+                let unit =
+                    fs::read_to_string(paths.systemd_dir.join("ployz-tailcat.service")).unwrap();
+                assert!(unit.contains("Type=notify"));
+                assert!(unit.contains(&format!(
+                    "ConditionPathExists={}/machine.json",
+                    paths.data_dir.display()
+                )));
+                assert!(unit.contains("User=ployz"));
+                assert!(unit.contains("CapabilityBoundingSet=\n"));
+                assert!(
+                    unit.contains("RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\n")
+                );
+                assert!(!unit.contains("Requires=ployz.service"));
+                assert!(unit.contains("/ployz-tailcat serve --state "));
                 if case == "install-only" {
                     assert!(!root.join("forbidden-invocation").exists());
                     assert!(!paths.data_dir.exists());
@@ -587,7 +612,7 @@ mod tests {
                         && message.contains("checksum was")
                         && message.contains("expected")
             )),
-            "missing" | "rejected-executable" => {
+            "missing" | "rejected-executable" | "bad-helper" => {
                 assert!(result.is_err(), "{case} artifact was accepted");
             }
             other => panic!("unknown contract case {other}"),
@@ -617,6 +642,14 @@ mod tests {
         };
         write_script(&payload.join("ployzd"), daemon);
         write_script(&payload.join("ployz-uninstall"), "exit 0");
+        write_script(
+            &payload.join("ployz-tailcat"),
+            if case == "bad-helper" {
+                "echo 9.9.9"
+            } else {
+                "echo 1.2.3"
+            },
+        );
         if case == "install-only" {
             write_script(
                 &commands.join("id"),
@@ -645,7 +678,7 @@ mod tests {
                 .arg(&archive)
                 .args(["-C"])
                 .arg(&payload)
-                .args(["ployzd", "ployz-uninstall"])
+                .args(["ployzd", "ployz-uninstall", "ployz-tailcat"])
                 .status()
                 .unwrap();
             assert!(status.success());

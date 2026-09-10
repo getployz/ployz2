@@ -183,9 +183,23 @@ pub(super) fn install_systemd(paths: &InstallPaths, install_only: bool) -> Resul
         ),
         "write systemd unit",
     )?;
+    write_file_atomically(
+        &paths.systemd_dir.join("ployz-tailcat.service"),
+        &format!(
+            "[Unit]\nDescription=Ployz Tailcat management endpoint\nConditionPathExists={}/machine.json\nAfter=network-online.target ployz.service\nWants=network-online.target\n\n[Service]\nType=notify\nNotifyAccess=main\nTimeoutStartSec=30\nUser=ployz\nGroup=ployz\nExecStart={bin}/ployz-tailcat serve --state {}/tailcat/state.json\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=15\nUMask=0077\nNoNewPrivileges=true\nCapabilityBoundingSet=\nProtectSystem=strict\nReadWritePaths={}\nProtectHome=true\nProtectControlGroups=true\nProtectKernelTunables=true\nPrivateTmp=true\nPrivateDevices=true\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\nRestrictNamespaces=true\n\n[Install]\nWantedBy=multi-user.target\n",
+            paths.data_dir.display(),
+            paths.data_dir.display(),
+            paths.data_dir.display()
+        ),
+        "write Tailcat systemd unit",
+    )?;
     if !install_only {
         systemctl("reload systemd units", ["daemon-reload"])?;
         systemctl("enable daemon", ["enable", "ployz.service"])?;
+        systemctl(
+            "enable Tailcat endpoint",
+            ["enable", "ployz-tailcat.service"],
+        )?;
         systemctl(
             "enable volume plugin socket",
             ["enable", "--now", "ployz-volume-plugin.socket"],
@@ -308,6 +322,51 @@ pub(super) async fn verify_running_daemon(
         }
     }
     verify_daemon_contract(&paths.run_dir.join("ployz.sock"), target).await
+}
+
+pub(super) async fn verify_running_tailcat(
+    paths: &InstallPaths,
+    target: &MachineVersion,
+) -> Result<(), Error> {
+    systemctl(
+        "check Tailcat readiness",
+        ["is-active", "--quiet", "ployz-tailcat.service"],
+    )?;
+    let output = systemctl(
+        "inspect Tailcat endpoint",
+        [
+            "show",
+            "--property=MainPID",
+            "--value",
+            "ployz-tailcat.service",
+        ],
+    )?;
+    let pid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if pid.is_empty() || pid == "0" || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Error::Verification(
+            "Tailcat endpoint has no running process".into(),
+        ));
+    }
+    let running = fs::metadata(format!("/proc/{pid}/exe")).map_err(|source| Error::Io {
+        stage: "inspect running Tailcat executable",
+        source,
+    })?;
+    let installed =
+        fs::metadata(paths.bin_dir.join("ployz-tailcat")).map_err(|source| Error::Io {
+            stage: "inspect installed Tailcat executable",
+            source,
+        })?;
+    if (running.dev(), running.ino()) != (installed.dev(), installed.ino())
+        || installed_release(&paths.bin_dir.join("ployz-tailcat"))
+            .await?
+            .as_ref()
+            != Some(target)
+    {
+        return Err(Error::Verification(
+            "Tailcat endpoint does not run the activated helper version".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn verify_daemon_contract(socket: &Path, target: &MachineVersion) -> Result<(), Error> {
