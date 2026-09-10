@@ -454,11 +454,12 @@ export type QualifiedService = string;
 
 export type RegisterRequest = {
 /**
- * Durable identity of the joining Machine; required for client allocation.
+ * Durable identity of the joining Machine.
  */
-machine_id: MachineId | null,
+machine_id: MachineId,
 /**
- * Client-selected subnet. Omitted only by the temporary legacy path.
+ * Client-selected subnet, required for Register publication.
+ * Allocation policy callers omit it before selecting an assignment.
  */
 assigned_subnet: MachineSubnet | null,
 /**

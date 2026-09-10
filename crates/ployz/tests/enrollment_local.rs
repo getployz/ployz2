@@ -13,7 +13,7 @@ use std::{
 
 fn request(seed: u8) -> RegisterRequest {
     RegisterRequest {
-        machine_id: Some(MachineId::parse(format!("{seed:032x}")).unwrap()),
+        machine_id: MachineId::parse(format!("{seed:032x}")).unwrap(),
         assigned_subnet: None,
         initial_policy: Default::default(),
         name: MachineName::parse("same-name").unwrap(),
@@ -192,7 +192,7 @@ fn independent_processes_serialize_stale_snapshots_and_resume_after_exit() {
     let resumed = concurrent(temp.path(), &[2, 2]);
     assert_eq!(resumed.first().unwrap(), assignments.first().unwrap());
     assert_eq!(resumed.first().unwrap(), resumed.get(1).unwrap());
-    assert!(has_assignment(temp.path(), &snapshot(1), request(2).machine_id.unwrap()).unwrap());
+    assert!(has_assignment(temp.path(), &snapshot(1), request(2).machine_id).unwrap());
 }
 
 #[test]

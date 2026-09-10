@@ -71,7 +71,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let assignment = crate::enrollment::local::save_assignment(
             &history,
             &RegisterRequest {
-                machine_id: Some(token.id),
+                machine_id: token.id,
                 assigned_subnet: None,
                 initial_policy: policy,
                 name,

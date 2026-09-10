@@ -241,10 +241,10 @@ pub struct InitializeRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RegisterRequest {
-    /// Durable identity of the joining Machine; required for client allocation.
-    #[serde(default)]
-    pub machine_id: Option<MachineId>,
-    /// Client-selected subnet. Omitted only by the temporary legacy path.
+    /// Durable identity of the joining Machine.
+    pub machine_id: MachineId,
+    /// Client-selected subnet, required for Register publication.
+    /// Allocation policy callers omit it before selecting an assignment.
     #[serde(default)]
     pub assigned_subnet: Option<crate::MachineSubnet>,
     /// Complete policy committed in the first Machine assignment, before participation.

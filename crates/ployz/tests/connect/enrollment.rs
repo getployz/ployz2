@@ -18,7 +18,7 @@ async fn saved_assignment_is_published_before_join_and_retried_after_lost_respon
     let (mut joining, joining_server, _) = connected_client(joining_service).await;
     let snapshot = observe_enrollment(&mut entry).await.unwrap();
     let request = RegisterRequest {
-        machine_id: Some(joining_id),
+        machine_id: joining_id,
         assigned_subnet: None,
         initial_policy: Default::default(),
         name: "joiner".parse().unwrap(),
