@@ -3183,6 +3183,19 @@
       "table": "organization_pairing"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "[]",
+      "generated": null,
+      "identity": null,
+      "name": "enrolling_machine_ids",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_pairing"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": false,
@@ -3932,19 +3945,6 @@
       "generated": null,
       "identity": null,
       "name": "failure_message",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "machine_remove_attempt"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "reenrolled_at",
       "entityType": "columns",
       "schema": "public",
       "table": "machine_remove_attempt"

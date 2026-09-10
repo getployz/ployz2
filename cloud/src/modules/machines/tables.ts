@@ -39,7 +39,6 @@ export const machineRemoveAttempt = pgTable(
     >(),
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),
-    reenrolledAt: timestamp("reenrolled_at", { mode: "date", withTimezone: true }),
     startedAt: timestamp("started_at", {
       mode: "date",
       withTimezone: true,

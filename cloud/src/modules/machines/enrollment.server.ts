@@ -179,14 +179,20 @@ const { allocateEnrollment } = createRequire(import.meta.url)("@ployz/sdk") as P
 >;
 
 /** Called under the pairing lock before issuing credentials or publishing a candidate. */
-const admitMachineEnrollment = Effect.fn("MachineEnrollment.admit")(function* (organizationId: string, machineId: MachineId) {
+const admitMachineEnrollment = Effect.fn("MachineEnrollment.admit")(function* (organizationId: string, machineId: MachineId, phase: "enrolling" | "published") {
   const { drizzle } = yield* Database;
   const scope = and(eq(machineRemoveAttempt.organizationId, organizationId), eq(machineRemoveAttempt.machineId, machineId));
   const [active] = yield* drizzle.select({ id: machineRemoveAttempt.id }).from(machineRemoveAttempt)
     .where(and(scope, inArray(machineRemoveAttempt.state, ["pending", "running"]))).limit(1);
   if (active) return yield* new Conflict({ message: "Machine removal must finish before enrolling again." });
-  yield* drizzle.update(machineRemoveAttempt).set({ reenrolledAt: new Date() })
-    .where(and(scope, eq(machineRemoveAttempt.state, "succeeded")));
+  const [pairing] = yield* drizzle.select({ enrolling: schemaOrganizationPairing.enrollingMachineIds }).from(schemaOrganizationPairing)
+    .where(eq(schemaOrganizationPairing.organizationId, organizationId));
+  if (pairing) {
+    const enrolling = pairing.enrolling.filter((id) => id !== machineId);
+    if (phase === "enrolling") enrolling.push(machineId);
+    yield* drizzle.update(schemaOrganizationPairing).set({ enrollingMachineIds: enrolling })
+      .where(eq(schemaOrganizationPairing.organizationId, organizationId));
+  }
 });
 
 export const reserveEnrollmentAssignment = Effect.fn(
@@ -213,7 +219,7 @@ export const reserveEnrollmentAssignment = Effect.fn(
     const [history] = yield* drizzle.select().from(enrollmentAllocation)
       .where(scope).for("update");
     if (!history) return yield* Effect.die("Enrollment allocation history disappeared");
-    yield* admitMachineEnrollment(input.organizationId, input.identity.machine_id);
+    yield* admitMachineEnrollment(input.organizationId, input.identity.machine_id, "enrolling");
     const assignment = yield* Effect.try({
       try: () => allocateEnrollment(input.identity, input.snapshot, history.assignments),
       catch: () => new Conflict({
@@ -251,7 +257,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
             organizationId: schemaOrganizationPairing.organizationId,
           });
         if (claimed) {
-          yield* admitMachineEnrollment(input.organizationId, input.machineId);
+          yield* admitMachineEnrollment(input.organizationId, input.machineId, "enrolling");
           return {
             kind: "initialize" as const,
             resumed: false,
@@ -277,7 +283,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
           secret: yield* decryptPairingSecret(current.encryptedPairingSecret),
         };
         if (current.founderPublicKey === input.publicKey && current.founderClaimMachineId === input.machineId) {
-          yield* admitMachineEnrollment(input.organizationId, input.machineId);
+          yield* admitMachineEnrollment(input.organizationId, input.machineId, "enrolling");
           return { kind: "initialize" as const, resumed: true, pairing };
         }
         if (current.founderMachineId) {
@@ -380,7 +386,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         return yield* new Conflict({ message: "The founding attempt is no longer current." });
       }
       yield* requireEnrollmentMachine(token.organizationId, pairing, secret, input.machineId);
-      yield* admitMachineEnrollment(token.organizationId, input.machineId);
+      yield* admitMachineEnrollment(token.organizationId, input.machineId, "published");
       const scope = and(
         eq(organizationMachine.organizationId, token.organizationId),
         eq(organizationMachine.machineId, input.machineId),

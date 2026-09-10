@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 
 import { createHash } from "node:crypto";
 import type { Connection, MachineId } from "@ployz/sdk";
-import { and, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, eq, gte, sql } from "drizzle-orm";
 import { Data, Effect, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
@@ -72,7 +72,6 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         const removed = yield* drizzle.select({ machineId: machineRemoveAttempt.machineId }).from(machineRemoveAttempt).where(and(
           eq(machineRemoveAttempt.organizationId, organizationId),
           eq(machineRemoveAttempt.state, "succeeded"),
-          isNull(machineRemoveAttempt.reenrolledAt),
           gte(machineRemoveAttempt.createdAt, pairing.createdAt),
         ));
         const removalEndpoints = [...(yield* decodeEndpoints(candidates.map((candidate) => ({
@@ -81,9 +80,10 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
           status: "pending",
         }))))];
         // A claim or reserved Join may have reached a Machine before publication was acknowledged.
-        const intendedMachines = [pairing.founderClaimMachineId, ...allocations.flatMap((allocation) => allocation.assignments.map((assignment) => assignment.machine.id))];
+        const intendedMachines = [pairing.founderClaimMachineId, ...pairing.enrollingMachineIds, ...allocations.flatMap((allocation) => allocation.assignments.map((assignment) => assignment.machine.id))];
         for (const machineId of intendedMachines) {
-          if (!removed.some((entry) => entry.machineId === machineId) && !removalEndpoints.some((endpoint) => endpoint.machineId === machineId)) {
+          const stillEnrolling = pairing.enrollingMachineIds.includes(machineId);
+          if ((stillEnrolling || !removed.some((entry) => entry.machineId === machineId)) && !removalEndpoints.some((endpoint) => endpoint.machineId === machineId)) {
             removalEndpoints.push({ machineId: yield* Schema.decodeUnknownEffect(rustMachineIdSchema)(machineId), status: "unknown" });
           }
         }

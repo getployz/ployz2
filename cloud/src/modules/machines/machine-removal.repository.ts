@@ -135,8 +135,11 @@ export const requestMachineRemoveAttempt = Effect.fn(
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    yield* drizzle.select({ id: organizationPairing.organizationId }).from(organizationPairing)
+    const [pairing] = yield* drizzle.select({ enrolling: organizationPairing.enrollingMachineIds }).from(organizationPairing)
       .where(eq(organizationPairing.organizationId, input.organizationId)).for("update");
+    if (pairing?.enrolling.includes(input.machineId)) {
+      return yield* new Conflict({ message: "Machine enrollment must publish its candidate before removal." });
+    }
     const [attempt] = yield* drizzle
       .insert(schemaMachineRemoveAttempt)
       .values({

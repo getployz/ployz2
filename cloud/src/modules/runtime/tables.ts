@@ -384,6 +384,7 @@ export const organizationPairing = pgTable(
       .$type<EncryptedSecretValue>(),
     removalStartedAt: timestamp("removal_started_at", { mode: "date", withTimezone: true }),
     removalEndpoints: jsonb("removal_endpoints").$type<readonly RemovalEndpoint[] | null>(),
+    enrollingMachineIds: jsonb("enrolling_machine_ids").notNull().default([]).$type<MachineId[]>(),
     founderPublicKey: text("founder_public_key"),
     founderClaimMachineId: text("founder_claim_machine_id").notNull().$type<MachineId>(),
     founderMachineId: text("founder_machine_id").$type<MachineId>(),
