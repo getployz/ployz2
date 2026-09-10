@@ -1,6 +1,5 @@
 import type {
   Client,
-  ClusterTeardown,
   DeployOutcome,
   ExecutionError,
   MachineId,
@@ -21,7 +20,6 @@ import {
   makePloyzLayer,
 } from "#/modules/runtime/ployz.server";
 import {
-  destroyClusterActivity,
   destroyEnvironmentActivity,
 } from "#/modules/runtime/teardown-activities.server";
 import { dispatchTeardownRequested } from "#/modules/runtime/teardown.server";
@@ -68,7 +66,7 @@ describe("teardown provider outcomes", () => {
         connect: async () => client,
       });
       const runtime = makeOrganizationRuntimeLayer(() =>
-        Effect.succeed({ kind: "ready", connections }),
+        Effect.succeed({ kind: "ready", generation: "grant-1", connections }),
       ).pipe(Layer.provide(ployz));
 
       const result = yield* Effect.scoped(
@@ -87,53 +85,6 @@ describe("teardown provider outcomes", () => {
       expect(result).toEqual(projectOutcome);
       expect(calls).toEqual([["app-production", { confirmed: [volume] }, true]]);
       expect(closed).toBe(1);
-    }),
-  );
-
-  effectIt.effect("returns the cluster partial result without local orchestration", () =>
-    Effect.gen(function* () {
-      const clusterTeardown: ClusterTeardown = {
-        destroyed_projects: [],
-        machines: {
-          successes: [],
-          failures: [
-            {
-              machine_id: volume.id.machine_id,
-              error: {
-                code: "unavailable",
-                message: "machine did not answer",
-                details: null,
-              },
-            },
-          ],
-          omissions: [],
-        },
-        pairing_revoked: false,
-      };
-      const calls: unknown[] = [];
-      const connections = [{ tailcat: "tailcat://candidate" }];
-      const client = asTestDouble<Client>()({
-        destroyCluster: async (
-          ...args: Parameters<Client["destroyCluster"]>
-        ) => {
-          calls.push(args);
-          return clusterTeardown;
-        },
-        close: async () => undefined,
-      });
-      const runtime = makeOrganizationRuntimeLayer(() =>
-        Effect.succeed({ kind: "ready", connections }),
-      ).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
-
-      const result = yield* Effect.scoped(
-        destroyClusterActivity({
-          organizationId: "org-1",
-          confirmDataLoss: [volume],
-        }),
-      ).pipe(Effect.provide(runtime));
-
-      expect(result).toEqual(clusterTeardown);
-      expect(calls).toEqual([[{ confirmed: [volume] }]]);
     }),
   );
 

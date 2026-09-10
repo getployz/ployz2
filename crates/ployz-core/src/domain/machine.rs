@@ -232,7 +232,7 @@ mod machine_token_tests {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineIdentity {
     pub id: MachineId,
     pub name: MachineName,
@@ -518,7 +518,7 @@ pub struct RttStatistics {
 }
 
 /// One directed Corrosion RTT observation, retaining the peer's native identity.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RttObservation {
     pub peer_id: String,
     pub address: SocketAddr,

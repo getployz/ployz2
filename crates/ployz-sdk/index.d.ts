@@ -7,6 +7,8 @@ import type {
   VolumeRemoval,
   ExecutionError,
   MachineId,
+  MachineDetails,
+  TailcatRemoval,
   MachineTarget,
   ObservedDataLoss,
   LocalMachineRemoved,
@@ -74,6 +76,9 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
   readonly finished: Promise<DeployOutcome<ExecutionError>>;
 };
 
+/** Backend-only ephemeral successor; never save as an ordinary connection candidate. */
+export declare function prepareTailcatRemoval(expected: string): Promise<string>;
+
 export declare function packageName(): "@ployz/sdk";
 export declare function connect(options: ConnectOptions): Promise<Client>;
 export declare function listHeld(
@@ -107,6 +112,8 @@ export declare function applyOne(
 ): DeployIntent;
 
 export declare class Client {
+  removeCloudPairing(removal: TailcatRemoval): Promise<void>;
+  inspect(): Promise<MachineDetails>;
   register(identity: RegisterRequest): Promise<Registered>;
   about(): Promise<ContractDescription>;
   readonly runtime: {

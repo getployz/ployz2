@@ -247,6 +247,46 @@ impl Session {
         }
     }
 
+    /// Clear pairing and request bounded Tailcat rotation. A reply is not revocation evidence.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport, or endpoint errors, including uncertain outcomes.
+    pub async fn remove_cloud_pairing(
+        &self,
+        removal: ployz_core::TailcatRemoval,
+    ) -> Result<(), RpcError> {
+        let client = self.client()?;
+        self.until_closed(async {
+            client
+                .call_unretried::<op::SetCloudPairing>(
+                    ployz_core::SetCloudPairingRequest {
+                        cloud_pairing: None,
+                        tailcat_removal: Some(removal),
+                    },
+                    None,
+                )
+                .await
+                .map(|_| ())
+                .map_err(RpcError::from)
+        })
+        .await
+    }
+
+    /// Inspect the selected Machine, including its Cloud Pairing presence.
+    ///
+    /// # Errors
+    /// Returns cancellation or Inspect errors.
+    pub async fn inspect(&self) -> Result<ployz_core::MachineDetails, RpcError> {
+        let mut client = self.client()?;
+        self.until_closed(async {
+            client
+                .call::<op::Inspect>(ployz_core::InspectRequest::default(), None)
+                .await
+                .map_err(RpcError::from)
+        })
+        .await
+    }
+
     /// Describe the entry Machine contract.
     ///
     /// # Errors

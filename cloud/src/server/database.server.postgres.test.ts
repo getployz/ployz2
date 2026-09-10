@@ -6,6 +6,8 @@ import {
   Effect,
   Exit,
   Layer,
+  Option,
+  Stream,
 } from "effect";
 import { AppConfig } from "#/server/config.server";
 import {
@@ -77,7 +79,19 @@ it.live(
           ),
         );
         assert.strictEqual(count.rows[0]?.count, 0);
-      }).pipe(Effect.provide(layer));
+
+        // Subscription acquisition completes only after LISTEN; delivery may precede consumption.
+        const removals = yield* database.pairingRemovals;
+        const payload = JSON.stringify({ organizationId: "org-1", generation: "removed" });
+        yield* database.drizzle.execute(sql`select pg_notify('ployz_pairing_removed', ${payload})`);
+        assert.deepStrictEqual(yield* Stream.runHead(removals), Option.some(payload));
+        yield* database.drizzle.execute(sql`
+          select pg_terminate_backend(pid) from pg_stat_activity
+          where datname = current_database() and query = 'LISTEN ployz_pairing_removed'
+        `);
+        const disconnected = yield* Effect.exit(Stream.runDrain(removals));
+        assert.strictEqual(disconnected._tag, "Failure");
+      }).pipe(Effect.scoped, Effect.provide(layer));
     }),
   60_000,
 );

@@ -39,6 +39,7 @@ import { Database } from "#/server/database.server";
 import { commitFirstConnectAdmission } from "#/modules/deployments/first-connect.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.server";
 import { Conflict, Unauthorized, Validation } from "#/server/public-error";
+import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 
 const TOKEN_PREFIX = "pmet_";
 
@@ -184,7 +185,7 @@ const verifyEnrollmentToken = Effect.fn("MachineEnrollment.verifyToken")(
 
 type PairingRow = Pick<
   typeof schemaOrganizationPairing.$inferSelect,
-  "encryptedPairingSecret" | "founderPublicKey" | "founderMachineId" | "founderClaimMachineId"
+  "encryptedPairingSecret" | "founderPublicKey" | "founderMachineId" | "founderClaimMachineId" | "removalStartedAt"
 >;
 
 const organizationPairingProjection = {
@@ -192,6 +193,7 @@ const organizationPairingProjection = {
   founderPublicKey: schemaOrganizationPairing.founderPublicKey,
   founderClaimMachineId: schemaOrganizationPairing.founderClaimMachineId,
   founderMachineId: schemaOrganizationPairing.founderMachineId,
+  removalStartedAt: schemaOrganizationPairing.removalStartedAt,
 };
 
 const loadPairingRow = Effect.fn("MachineEnrollment.loadPairing")(
@@ -444,14 +446,7 @@ const observePairingRelayList = Effect.fn("MachineEnrollment.observeRelayList")(
 /** Absence disables Cloud access; an existing endpoint still needs confirmed revocation. */
 export const tryRevokeOrganizationRelayPairing = Effect.fn(
   "MachineEnrollment.tryRevokeOrganizationRelayPairing",
-)(function* (organizationId: string) {
-  const [pairing] = yield* loadPairingRow(organizationId);
-  if (pairing) return false;
-  const { drizzle } = yield* Database;
-  const [candidate] = yield* drizzle.select({ machineId: organizationMachine.machineId })
-    .from(organizationMachine).where(eq(organizationMachine.organizationId, organizationId)).limit(1);
-  return candidate === undefined;
-});
+)((organizationId: string) => revokeOrganizationPairing(organizationId).pipe(Effect.map((outcome) => outcome.confirmed)));
 
 const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
   function* (input: { organizationId: string; publicKey: string; machineId: MachineId }) {
@@ -491,6 +486,9 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
           .limit(1);
         if (!current) {
           return yield* Effect.die("Organization enrollment disappeared");
+        }
+        if (current.removalStartedAt !== null) {
+          return yield* new Conflict({ message: "Cloud access removal is pending. Confirm endpoint revocation before enrolling again." });
         }
         const pairing = {
           relayUrl: settings.publicRelayUrl,
@@ -579,7 +577,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       const [pairing] = yield* drizzle.select(organizationPairingProjection)
         .from(schemaOrganizationPairing)
         .where(eq(schemaOrganizationPairing.organizationId, token.organizationId)).for("update");
-      if (!pairing || pairing.founderClaimMachineId !== input.machineId) {
+      if (!pairing || pairing.removalStartedAt !== null || pairing.founderClaimMachineId !== input.machineId) {
         return yield* new Conflict({ message: "The Machine does not own this founding attempt." });
       }
       const secret = yield* decryptPairingSecret(pairing.encryptedPairingSecret);
@@ -614,7 +612,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
 export const loadOrganizationConnections = Effect.fn("MachineEnrollment.loadConnections")(
   function* (organizationId: string) {
     const [pairing] = yield* loadPairingRow(organizationId);
-    if (!pairing) return { kind: "missing" as const };
+    if (!pairing || pairing.removalStartedAt !== null) return { kind: "missing" as const };
     const secret = yield* decryptPairingSecret(pairing.encryptedPairingSecret);
     const { drizzle } = yield* Database;
     const candidates = yield* drizzle.select().from(organizationMachine).where(and(
@@ -626,7 +624,7 @@ export const loadOrganizationConnections = Effect.fn("MachineEnrollment.loadConn
       // SAFETY: the table constraint enforces the SDK Machine ID representation.
       return { tailcat, machine_id: candidate.machineId as MachineId };
     }));
-    return { kind: "ready" as const, connections };
+    return { kind: "ready" as const, connections, generation: hashEnrollmentToken(secret) };
   },
 );
 
@@ -645,7 +643,7 @@ export const completeMachineEnrollment = Effect.fn(
     const token = yield* verifyEnrollmentToken(input.token);
     const loaded = yield* loadPairingRow(token.organizationId);
     const row = loaded[0];
-    if (!row) {
+    if (!row || row.removalStartedAt !== null) {
       return yield* new Conflict({
         message: "No founding attempt is pending.",
       });
@@ -699,10 +697,14 @@ export const completeMachineEnrollment = Effect.fn(
 );
 
 const resetPendingEnrollment = Effect.fn("MachineEnrollment.resetPendingState")(
-  function* (_organizationId: string) {
-    // Endpoint revocation must precede claim release; absence is not revocation evidence.
-    return yield* new Conflict({
-      message: "Resume the founding attempt. Reset requires confirmed endpoint revocation.",
-    });
+  function* (organizationId: string) {
+    const [pairing] = yield* loadPairingRow(organizationId);
+    if (pairing?.founderMachineId !== null && pairing?.founderMachineId !== undefined) {
+      return yield* new Conflict({ message: "A completed enrollment cannot be reset as a pending founder." });
+    }
+    if (!(yield* revokeOrganizationPairing(organizationId)).confirmed) {
+      return yield* new Conflict({ message: "Cloud access is disabled. Endpoint revocation is unconfirmed; the founding claim is retained." });
+    }
+    return { reset: true as const };
   },
 );

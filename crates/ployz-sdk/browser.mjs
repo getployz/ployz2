@@ -19,3 +19,5 @@ export const RpcError = fail;
 export const allocateEnrollment = fail;
 export const observeEnrollment = fail;
 export const publishEnrollment = fail;
+
+export const prepareTailcatRemoval = fail;

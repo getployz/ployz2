@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"time"
@@ -56,6 +57,12 @@ func run(ctx context.Context, args []string) error {
 		fmt.Fprintln(os.Stdout, version)
 		return nil
 	}
+	if len(args) == 1 && args[0] == "successor" {
+		return successorCapability(os.Stdin, os.Stdout)
+	}
+	if len(args) == 1 && (args[0] == "rotate" || args[0] == "validate-rotation") {
+		return rotateCapability(defaultState, os.Stdin, args[0] == "rotate")
+	}
 	if len(args) == 1 && args[0] == "connect" {
 		return connect(ctx)
 	}
@@ -68,7 +75,7 @@ func run(ctx context.Context, args []string) error {
 	if len(args) == 3 && args[0] == "serve" && args[1] == "--state" {
 		return serve(ctx, args[2])
 	}
-	return errors.New("usage: ployz-tailcat connect | export | serve [--state PATH]")
+	return errors.New("usage: ployz-tailcat connect | export | successor | validate-rotation | rotate | serve [--state PATH]")
 }
 
 // Export only the ready capability; never generate or replace endpoint identity.
@@ -218,6 +225,17 @@ func writeState(path string, state *endpointState) error {
 		return err
 	}
 	defer os.Remove(f.Name())
+	// A root-run rotation must retain the service account's ownership.
+	if existing, err := os.Stat(path); err == nil {
+		owner := existing.Sys().(*syscall.Stat_t)
+		if err := f.Chown(int(owner.Uid), int(owner.Gid)); err != nil {
+			f.Close()
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		f.Close()
+		return err
+	}
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err
@@ -241,6 +259,11 @@ func writeState(path string, state *endpointState) error {
 }
 
 func serve(ctx context.Context, path string) error {
+	unlock, err := lockState(path)
+	if err != nil {
+		return errors.New("cannot lock Tailcat state")
+	}
+	defer unlock()
 	state, err := readState(path)
 	if errors.Is(err, os.ErrNotExist) {
 		state = &endpointState{Key: tailcat.NewPrivateKey()}
@@ -298,6 +321,87 @@ func serve(ctx context.Context, path string) error {
 			return errors.New("cannot notify endpoint readiness")
 		}
 	}
+	unlock()
 	<-ctx.Done()
+	return nil
+}
+
+// Lock the directory inode, avoiding lock-file ownership changes across root and
+// the service account. Startup holds it until its last state write and READY.
+func lockState(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(dir.Fd()), syscall.LOCK_EX); err != nil {
+		dir.Close()
+		return nil, err
+	}
+	closed := false
+	return func() {
+		if !closed {
+			closed = true
+			dir.Close()
+		}
+	}, nil
+}
+
+func successorCapability(input io.Reader, output io.Writer) error {
+	addr, err := readCapability(bufio.NewReaderSize(input, capabilityLimit+1))
+	if err != nil {
+		return err
+	}
+	ci, _ := tailcat.ParseAddr(addr)
+	previous := ci.PresharedKey
+	for ci.PresharedKey == previous || ci.PresharedKey.IsZero() {
+		ci.PresharedKey = tailcat.NewPresharedKey()
+	}
+	_, err = fmt.Fprintln(output, ci.Addr())
+	return err
+}
+
+func rotateCapability(path string, input io.Reader, persist bool) error {
+	reader := bufio.NewReaderSize(input, capabilityLimit+1)
+	expected, err := readCapability(reader)
+	if err != nil {
+		return err
+	}
+	successor, err := readCapability(reader)
+	if err != nil {
+		return err
+	}
+	oldInfo, _ := tailcat.ParseAddr(expected)
+	nextInfo, _ := tailcat.ParseAddr(successor)
+	immutable := nextInfo
+	immutable.PresharedKey = oldInfo.PresharedKey
+	if nextInfo.PresharedKey == oldInfo.PresharedKey || !reflect.DeepEqual(oldInfo, immutable) {
+		return errors.New("invalid Tailcat removal successor")
+	}
+	unlock, err := lockState(path)
+	if err != nil {
+		return errors.New("cannot lock Tailcat state")
+	}
+	defer unlock()
+	state, err := readState(path)
+	if err != nil {
+		return errors.New("cannot read Tailcat identity")
+	}
+	current, err := tailcat.ParseAddr(state.Capability)
+	if err != nil || (!reflect.DeepEqual(current, oldInfo) && !reflect.DeepEqual(current, nextInfo)) {
+		return errors.New("stale Tailcat removal")
+	}
+	if !reflect.DeepEqual(state.Key.Public, current) {
+		return errors.New("inconsistent Tailcat state")
+	}
+	if persist {
+		state.Capability = successor
+		state.Key.Public = nextInfo
+		if err := writeState(path, state); err != nil {
+			return errors.New("cannot persist Tailcat successor")
+		}
+	}
 	return nil
 }

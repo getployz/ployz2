@@ -330,7 +330,7 @@ where
         }
     }
     // Setting the same pairing is idempotent.
-    ready.call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest { cloud_pairing: Some(pairing.clone()) }, None)
+    ready.call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest { tailcat_removal: None, cloud_pairing: Some(pairing.clone()) }, None)
         .await.map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
     let tailcat = founder_capability(matches, ready.connection(), install).await?;
     cloud_enroll::publish(

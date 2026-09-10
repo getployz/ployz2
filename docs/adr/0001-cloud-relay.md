@@ -1,4 +1,4 @@
-Superseded by [0005 — Tailcat connection candidates](0005-tailcat-connection-candidates.md).
+Superseded by [0005 — Tailcat connection candidates](0005-tailcat-connection-candidates.md) and [0006 — confirmable Tailcat removal](0006-confirmable-tailcat-removal.md).
 
 # Cloud Relay is HTTP/1.1 WebSocket behind a TLS terminator
 

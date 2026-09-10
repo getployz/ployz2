@@ -381,6 +381,13 @@ export const organizationPairing = pgTable(
     encryptedPairingSecret: jsonb("encrypted_pairing_secret")
       .notNull()
       .$type<EncryptedSecretValue>(),
+    removalStartedAt: timestamp("removal_started_at", { mode: "date", withTimezone: true }),
+    removalEndpoints: jsonb("removal_endpoints").$type<Array<{
+      machineId: MachineId;
+      encryptedExpected: EncryptedSecretValue | null;
+      encryptedSuccessor: EncryptedSecretValue | null;
+      confirmed: boolean;
+    }> | null>(),
     founderPublicKey: text("founder_public_key"),
     founderClaimMachineId: text("founder_claim_machine_id").notNull().$type<MachineId>(),
     founderMachineId: text("founder_machine_id").$type<MachineId>(),
@@ -392,6 +399,10 @@ export const organizationPairing = pgTable(
     updatedAt,
   },
   (table) => [
+    check("organization_pairing_removal_shape_check", sql`
+      (${table.removalStartedAt} is null and ${table.removalEndpoints} is null)
+      or (${table.removalStartedAt} is not null and ${table.removalEndpoints} is not null and jsonb_typeof(${table.removalEndpoints}) = 'array')
+    `),
     check(
       "organization_pairing_state_check",
       sql`${table.founderPublicKey} is not null or ${table.founderMachineId} is not null`,

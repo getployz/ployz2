@@ -201,7 +201,7 @@ describe("teardown Data Loss", () => {
         runtimeMembership: "unknown",
       }),
     ).toBe(
-      "Cloud management was dropped. Runtime membership remains unknown, and pairing must still be revoked in Rust.",
+      "Cloud access is disabled. Endpoint revocation is unconfirmed; removal credentials and the founding claim are retained.",
     );
   });
 

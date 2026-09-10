@@ -147,6 +147,11 @@ the current Cluster pairing. A saved candidate is neither membership nor presenc
 only a successful connection confirms reachability and the intended Machine.
 The Cluster remains independently operable without Cloud.
 
+Removing Cloud access disables that pairing's connections immediately. Endpoint
+revocation is confirmed separately; an offline Machine remains unconfirmed.
+Tailcat capabilities grant shared administrative access: rotation affects every
+old holder, while Cloud logout does not revoke direct capabilities or SSH keys.
+
 **Red flags:** Cloud-held runtime truth, a connection catalog treated as membership,
 absence or transport failure used to reset a founder, Cluster operations whose
 correctness depends on Cloud reachability.

@@ -302,12 +302,29 @@ pub struct CreateContainerRequest {
     pub resolved_spec: ResolvedServiceSpec,
 }
 
-/// Set or clear this Machine's Cloud Pairing. `None` unlinks Cloud.
+/// Protected credentials for one bounded Tailcat revocation attempt.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct TailcatRemoval {
+    #[ts(type = "string")]
+    pub expected_pairing: crate::PairingCredential,
+    pub expected: String,
+    pub successor: String,
+}
+
+impl std::fmt::Debug for TailcatRemoval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TailcatRemoval([redacted])")
+    }
+}
+
+/// Optional endpoint rotation is accepted only while clearing Cloud Pairing.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SetCloudPairingRequest {
     /// `Some` holds Relay Register with this pairing. `None` unlinks Cloud.
     #[serde(default)]
     pub cloud_pairing: Option<CloudPairing>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailcat_removal: Option<TailcatRemoval>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1038,6 +1055,27 @@ mod set_cloud_pairing_wire {
     }
 
     #[test]
+    fn removal_credentials_round_trip_without_debug_disclosure() {
+        let request: SetCloudPairingRequest = serde_json::from_value(json!({
+            "cloud_pairing": null,
+            "tailcat_removal": {
+                "expected_pairing": "private-pairing",
+                "expected": "private-old",
+                "successor": "private-next"
+            }
+        }))
+        .unwrap();
+        assert!(!format!("{request:?}").contains("private-"));
+        assert_eq!(
+            serde_json::from_value::<SetCloudPairingRequest>(
+                serde_json::to_value(&request).unwrap()
+            )
+            .unwrap(),
+            request
+        );
+    }
+
+    #[test]
     fn set_pairing_rejects_invalid_relay_endpoint() {
         assert!(
             serde_json::from_value::<SetCloudPairingRequest>(json!({
@@ -1055,6 +1093,7 @@ mod set_cloud_pairing_wire {
         )
         .unwrap();
         let request = SetCloudPairingRequest {
+            tailcat_removal: None,
             cloud_pairing: Some(pairing.clone()),
         };
         let value = serde_json::to_value(&request).unwrap();

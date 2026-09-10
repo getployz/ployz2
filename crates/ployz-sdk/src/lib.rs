@@ -141,6 +141,29 @@ pub struct RunningDeployHandle {
 
 #[napi]
 impl Client {
+    /// Request endpoint revocation. Confirm separately through the successor.
+    ///
+    /// # Errors
+    /// Returns invalid input or uncertain mutation failures.
+    #[napi]
+    pub async fn remove_cloud_pairing(&self, removal: serde_json::Value) -> Result<()> {
+        let removal = serde_json::from_value(removal)
+            .map_err(|_| Error::from_reason("invalid Tailcat removal"))?;
+        self.inner
+            .remove_cloud_pairing(removal)
+            .await
+            .map_err(rpc_to_napi)
+    }
+
+    /// Inspect identity and Cloud Pairing presence on this session.
+    ///
+    /// # Errors
+    /// Returns transport or inspection errors.
+    #[napi]
+    pub async fn inspect(&self) -> Result<serde_json::Value> {
+        serde_json::to_value(self.inner.inspect().await.map_err(rpc_to_napi)?).map_err(invalid_json)
+    }
+
     /// Send Register on this confirmed session without mutation replay.
     ///
     /// # Errors
@@ -646,4 +669,42 @@ pub async fn publish_enrollment(
             .await
             .map_err(rpc_to_napi)?,
     )
+}
+
+/// Prepare an offline removal successor without exposing capabilities in argv.
+///
+/// # Errors
+/// Returns a redacted error for invalid input or helper failure.
+#[napi]
+pub async fn prepare_tailcat_removal(expected: String, helper: String) -> Result<String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    let failure = || Error::from_reason("Tailcat successor preparation failed");
+    if expected.is_empty() || expected.len() > 16 * 1024 - 1 || expected.contains(['\n', '\r']) {
+        return Err(failure());
+    }
+    let mut child = tokio::process::Command::new(helper)
+        .arg("successor")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| failure())?;
+    let mut input = child.stdin.take().ok_or_else(failure)?;
+    input
+        .write_all(format!("{expected}\n").as_bytes())
+        .await
+        .map_err(|_| failure())?;
+    drop(input);
+    let output = child.wait_with_output().await.map_err(|_| failure())?;
+    if !output.status.success() || output.stdout.len() > 16 * 1024 {
+        return Err(failure());
+    }
+    let successor = String::from_utf8(output.stdout).map_err(|_| failure())?;
+    let successor = successor.strip_suffix('\n').ok_or_else(failure)?;
+    if successor.is_empty() || successor.contains(['\n', '\r']) {
+        return Err(failure());
+    }
+    Ok(successor.to_owned())
 }
