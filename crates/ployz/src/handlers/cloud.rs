@@ -77,7 +77,16 @@ where
         .await?;
         match outcome {
             Outcome::Join(join) => {
-                enroll_join(matches, client, details, *join, &initial_policy, install).await
+                enroll_join(
+                    matches,
+                    client,
+                    details,
+                    *join,
+                    &initial_policy,
+                    &cloud_enroll::callback_url(cloud_url, &token),
+                    install,
+                )
+                .await
             }
             Outcome::Initialize {
                 mode,
@@ -143,6 +152,7 @@ async fn enroll_join<Install, InstallFuture>(
     details: MachineDetails,
     join: Join,
     initial_policy: &ployz_core::InitialMachinePolicy,
+    callback_url: &str,
     install: &Install,
 ) -> Result<(), Error>
 where
@@ -163,34 +173,37 @@ where
             "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
         ));
     }
-    if already_assigned(&details, &assigned) {
-        println!("Initialised Machine {} ({})", assigned.name, assigned.id);
-        return Ok(());
-    }
-
-    client = ensure_uninitialized(
-        matches,
-        matches.get_flag("yes"),
-        matches.get_flag("reset"),
-        client,
-    )
-    .await?;
-    client = provision_storage(matches, client, join.storage, install).await?;
-    crate::handlers::machine::join(
-        &mut client,
-        JoinRequest {
-            registration: join.registration,
-            wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
-            cloud_pairing: Some(join.pairing),
-        },
-    )
-    .await?;
-    let mut ready = wait_phase(
-        matches,
-        LocalMachinePhase::Participating,
-        "joined Machine did not become ready",
-    )
-    .await?;
+    let pairing = join.pairing.clone();
+    let mut ready = if already_assigned(&details, &assigned) {
+        client
+    } else {
+        client = ensure_uninitialized(
+            matches,
+            matches.get_flag("yes"),
+            matches.get_flag("reset"),
+            client,
+        )
+        .await?;
+        client = provision_storage(matches, client, join.storage, install).await?;
+        crate::handlers::machine::join(
+            &mut client,
+            JoinRequest {
+                registration: join.registration,
+                wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
+                cloud_pairing: Some(join.pairing),
+            },
+        )
+        .await?;
+        wait_phase(
+            matches,
+            LocalMachinePhase::Participating,
+            "joined Machine did not become ready",
+        )
+        .await?
+    };
+    let tailcat = machine_capability(matches, ready.connection(), install).await?;
+    cloud_enroll::publish(callback_url, assigned.id, pairing.secret(), &tailcat).await?;
+    cloud_enroll::callback(callback_url, assigned.id, pairing.secret()).await?;
     if let Err(error) = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await {
         return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
             error,
@@ -332,7 +345,7 @@ where
     // Setting the same pairing is idempotent.
     ready.call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest { cloud_pairing: Some(pairing.clone()) }, None)
         .await.map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
-    let tailcat = founder_capability(matches, ready.connection(), install).await?;
+    let tailcat = machine_capability(matches, ready.connection(), install).await?;
     cloud_enroll::publish(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,
@@ -350,7 +363,7 @@ where
     Ok(())
 }
 
-async fn founder_capability<Install, InstallFuture>(
+async fn machine_capability<Install, InstallFuture>(
     matches: &ArgMatches,
     connection: &crate::context::Connection,
     install: &Install,
@@ -385,9 +398,9 @@ where
             ));
             command
         }
-        _ => {
+        Transport::Tcp(_) | Transport::Relay { .. } => {
             return Err(Error::usage(
-                "Cloud founder enrollment requires local Unix, SSH, or Tailcat access to publish its capability",
+                "Cloud enrollment requires local Unix, SSH, or Tailcat access to publish its capability",
             ));
         }
     };

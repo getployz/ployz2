@@ -30,10 +30,10 @@ use crate::context::{
 };
 
 mod relay;
-pub(crate) use relay::{list_held, revoke_pairing as revoke_cloud_pairing};
+pub(crate) use relay::revoke_pairing as revoke_cloud_pairing;
 
 pub use crate::cluster::{Client, MachineImagesObservation};
-pub use ployz_relay::{DialCredential, HeldRegister, PairingCredential};
+pub use ployz_relay::{DialCredential, PairingCredential};
 
 pub const DEFAULT_LOCAL_SOCKET: &str = "/run/ployz/ployz.sock";
 

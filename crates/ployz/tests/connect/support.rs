@@ -186,6 +186,7 @@ pub(super) struct DiscoveryService {
     register_error: Arc<Mutex<Option<RpcError>>>,
     pub(super) register_calls: Arc<AtomicUsize>,
     pub(super) lose_register_reply: bool,
+    pub(super) register_blocked: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl DiscoveryService {
@@ -228,6 +229,7 @@ impl DiscoveryService {
             register_error: Arc::new(Mutex::new(None)),
             register_calls: Arc::new(AtomicUsize::new(0)),
             lose_register_reply: false,
+            register_blocked: None,
         }
     }
 
@@ -515,6 +517,10 @@ impl MachineRpc for DiscoveryService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.register_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(received) = &self.register_blocked {
+            received.notify_one();
+            std::future::pending::<()>().await;
+        }
         if self.lose_register_reply {
             return Err(Status::unavailable("reply lost after dispatch"));
         }

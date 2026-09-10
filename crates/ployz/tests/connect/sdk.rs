@@ -48,52 +48,6 @@ async fn connect_about_returns_contract_and_branches_on_capability_names() {
 }
 
 #[tokio::test]
-async fn list_held_then_connect_dials_the_echoed_machine() {
-    let description = advertised_description();
-    let session = RelaySession::start().await;
-    let _machine = session
-        .spawn_machine(
-            description.machine_id,
-            DiscoveryService::new(description.clone()),
-        )
-        .await;
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    let held = loop {
-        let listed = sdk::list_held(&session.url, relay::DIAL, relay::PAIRING)
-            .await
-            .unwrap();
-        if let [row] = listed.as_slice()
-            && row.machine_id().ok() == Some(description.machine_id)
-            && row.register_rtt_ns.is_some()
-        {
-            break listed;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("List did not return the echoed Machine with path RTT");
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    };
-
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        held.first()
-            .expect("List returned the echoed Machine")
-            .machine_id()
-            .unwrap()
-            .as_str(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        client.about().await.unwrap().machine_id,
-        description.machine_id
-    );
-}
-
-#[tokio::test]
 async fn bad_credentials_and_unknown_machines_reject_with_typed_errors() {
     let description = advertised_description();
     let session = RelaySession::start().await;
@@ -174,48 +128,6 @@ async fn bad_credentials_and_unknown_machines_reject_with_typed_errors() {
         Err(error) => error,
     };
     assert_eq!(invalid.code, RpcErrorCode::InvalidArgument);
-}
-
-#[tokio::test]
-async fn list_held_and_revoke_pairing_reject_bad_dial_and_empty_pairing() {
-    let session = RelaySession::start().await;
-
-    let empty_dial = match sdk::list_held(&session.url, "", relay::PAIRING).await {
-        Ok(_) => panic!("expected empty Dial Credential to fail"),
-        Err(error) => error,
-    };
-    assert_eq!(empty_dial.code, RpcErrorCode::Unauthenticated);
-
-    let wrong_dial = match sdk::list_held(&session.url, "wrong-secret", relay::PAIRING).await {
-        Ok(_) => panic!("expected invalid Dial Credential to fail"),
-        Err(error) => error,
-    };
-    assert_eq!(wrong_dial.code, RpcErrorCode::Unauthenticated);
-
-    let empty_pairing = match sdk::list_held(&session.url, relay::DIAL, "").await {
-        Ok(_) => panic!("expected empty pairing to fail"),
-        Err(error) => error,
-    };
-    assert_eq!(empty_pairing.code, RpcErrorCode::InvalidArgument);
-
-    let empty_revoke = match sdk::revoke_pairing(&session.url, "", relay::PAIRING).await {
-        Ok(()) => panic!("expected empty Dial Credential to fail"),
-        Err(error) => error,
-    };
-    assert_eq!(empty_revoke.code, RpcErrorCode::Unauthenticated);
-
-    let wrong_revoke = match sdk::revoke_pairing(&session.url, "wrong-secret", relay::PAIRING).await
-    {
-        Ok(()) => panic!("expected invalid Dial Credential to fail"),
-        Err(error) => error,
-    };
-    assert_eq!(wrong_revoke.code, RpcErrorCode::Unauthenticated);
-
-    let empty_revoke_pairing = match sdk::revoke_pairing(&session.url, relay::DIAL, "").await {
-        Ok(()) => panic!("expected empty pairing to fail"),
-        Err(error) => error,
-    };
-    assert_eq!(empty_revoke_pairing.code, RpcErrorCode::InvalidArgument);
 }
 
 #[tokio::test]

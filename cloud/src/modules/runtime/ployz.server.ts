@@ -11,8 +11,6 @@ import type {
   DeployOutcome,
   DeployIntent,
   ExecutionError,
-  HeldRegister,
-  MachineId,
   MachineTarget,
   ObservedDataLoss,
   PreparedDeploy,
@@ -31,16 +29,7 @@ import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
-const {
-  connect: connectSdk,
-  listHeld,
-  revokePairing,
-  observeEnrollment,
-  publishEnrollment,
-} = createRequire(import.meta.url)("@ployz/sdk") as Pick<
-  typeof PloyzSdk,
-  "connect" | "listHeld" | "revokePairing" | "observeEnrollment" | "publishEnrollment"
->;
+const { connect: connectSdk } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "connect">;
 
 export class PloyzProviderError extends Data.TaggedError(
   "PloyzProviderError",
@@ -58,6 +47,8 @@ export type PloyzPreparedDeploy = Omit<PreparedDeploy, "confirm"> & {
 };
 
 export interface PloyzSession {
+  readonly observeEnrollment: () => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
+  readonly register: (assignment: EnrollmentAssignment) => Effect.Effect<JsonValue, PloyzProviderError>;
   readonly removeMachine: (
     machine: MachineTarget,
     confirmDataLoss: DataLossConfirmation,
@@ -101,43 +92,13 @@ type SharedConnectOptions = Omit<
 >;
 
 type PloyzBindings = {
-  readonly observeEnrollment?: typeof PloyzSdk.observeEnrollment;
-  readonly publishEnrollment?: typeof PloyzSdk.publishEnrollment;
   readonly connect: (options: ConnectOptions) => Promise<Client>;
-  readonly listHeld?: (
-    relayUrl: string,
-    bearer: string,
-    pairing: string,
-  ) => Promise<HeldRegister[]>;
-  readonly revokePairing?: (
-    relayUrl: string,
-    bearer: string,
-    pairing: string,
-  ) => Promise<void>;
 };
 
 export interface PloyzService {
-  readonly observeEnrollment: (
-    relayUrl: string, bearer: string, pairing: string, machineId: MachineId,
-  ) => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
-  readonly publishEnrollment: (
-    relayUrl: string, bearer: string, pairing: string,
-    machineId: MachineId, assignment: EnrollmentAssignment,
-  ) => Effect.Effect<JsonValue, PloyzProviderError>;
-
   readonly connect: (
     options: SharedConnectOptions,
   ) => Effect.Effect<PloyzSession, PloyzProviderError, Scope.Scope>;
-  readonly listHeldRegisters: (
-    relayUrl: string,
-    bearer: string,
-    pairing: string,
-  ) => Effect.Effect<HeldRegister[], PloyzProviderError>;
-  readonly revokeRelayPairing: (
-    relayUrl: string,
-    bearer: string,
-    pairing: string,
-  ) => Effect.Effect<void, PloyzProviderError>;
 }
 
 export class Ployz extends Context.Service<Ployz, PloyzService>()(
@@ -205,6 +166,18 @@ function wrapClient(client: Client): PloyzSession {
       catch: (cause) => new RuntimeConnectionFailure({ cause }),
     });
   return {
+    observeEnrollment: () => Effect.tryPromise({
+      try: () => client.observeEnrollment(),
+      catch: (cause) => new PloyzProviderError({ operation: "observe enrollment", cause }),
+    }),
+    register: (assignment) => Effect.tryPromise({
+      try: async () => {
+        const json = projectJsonValue(await client.register(assignment));
+        if (json === undefined) throw new Error("Invalid registration response");
+        return json;
+      },
+      catch: (cause) => new PloyzProviderError({ operation: "register", cause }),
+    }),
     removeMachine: (machine, confirmDataLoss) =>
       sdkPromise("remove machine", () =>
         client.removeMachine(machine, confirmDataLoss).then(() => undefined),
@@ -271,23 +244,7 @@ function closeSession(session: Client) {
 }
 
 export function makePloyzLayer(bindings: PloyzBindings) {
-  const held = bindings.listHeld ?? listHeld;
-  const revoke = bindings.revokePairing ?? revokePairing;
   return Layer.succeed(Ployz, {
-    observeEnrollment: (relayUrl, bearer, pairing, machineId) => Effect.tryPromise({
-      try: () => (bindings.observeEnrollment ?? observeEnrollment)(relayUrl, bearer, pairing, machineId),
-      catch: (cause) => new PloyzProviderError({ operation: "observe enrollment", cause }),
-    }),
-    publishEnrollment: (relayUrl, bearer, pairing, machineId, assignment) => Effect.tryPromise({
-      try: async () => {
-        const registered = await (bindings.publishEnrollment ?? publishEnrollment)(relayUrl, bearer, pairing, machineId, assignment);
-        const json = projectJsonValue(registered);
-        if (json === undefined) throw new Error("Invalid registration response");
-        return json;
-      },
-      catch: (cause) => new PloyzProviderError({ operation: "publish enrollment", cause }),
-    }),
-
     connect: (options) =>
       Effect.gen(function* () {
         const controller = yield* Effect.acquireRelease(
@@ -307,23 +264,10 @@ export function makePloyzLayer(bindings: PloyzBindings) {
           { interruptible: true },
         ).pipe(Effect.map(wrapClient));
       }),
-    listHeldRegisters: (relayUrl, bearer, pairing) =>
-      Effect.tryPromise({
-        try: () => held(relayUrl, bearer, pairing),
-        catch: (cause) =>
-          new PloyzProviderError({ operation: "list held registers", cause }),
-      }),
-    revokeRelayPairing: (relayUrl, bearer, pairing) =>
-      Effect.tryPromise({
-        try: () => revoke(relayUrl, bearer, pairing),
-        catch: (cause) =>
-          new PloyzProviderError({ operation: "revoke relay pairing", cause }),
-      }),
+
   });
 }
 
 export const PloyzLive = makePloyzLayer({
   connect: connectSdk,
-  listHeld,
-  revokePairing,
 });

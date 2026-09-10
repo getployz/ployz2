@@ -1,4 +1,4 @@
-//! Native Cloud session: connect, list_held, register, revoke_pairing,
+//! Native Cloud session: connect, observe_enrollment, register,
 //! about, runtime.watch, preview, run, preview_project_removal, remove_volumes,
 //! Data Loss for Machine, Project, and Cluster destroy, remove_machine,
 //! destroy_project, destroy_cluster, and close.
@@ -13,18 +13,18 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use crate::connect::{
-    Client, ConnectError, Connector, DialCredential, HeldRegister, PairingCredential,
-    TransportError, connect_relay, connect_selected_with, list_held as list_held_relay,
-    revoke_cloud_pairing,
+    Client, ConnectError, Connector, DialCredential, PairingCredential, TransportError,
+    connect_relay, connect_selected_with,
 };
 use crate::context::{Connection, ConnectionSource, SelectedConnections};
 use crate::deploy::{DeployIntent, DeployPlan, DeployPreview, VolumeFate};
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployOutcome,
-    DescribeContractRequest, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
-    ObservedDataLoss, OpaquePayload, ProjectName, RUNTIME_WATCH_CAPABILITY, RegisterRequest,
-    Registered, RemoveVolumesRequest, RpcError, RpcErrorCode, RuntimeWatchFrame,
-    RuntimeWatchRequest, ServiceObservation, VolumeRemoval, decode_runtime_watch_frame, op,
+    DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot, ExecutionError,
+    LocalMachineRemoved, MachineId, MachineTarget, ObservedDataLoss, OpaquePayload, ProjectName,
+    RUNTIME_WATCH_CAPABILITY, Registered, RemoveVolumesRequest, RpcError, RpcErrorCode,
+    RuntimeWatchFrame, RuntimeWatchRequest, ServiceObservation, VolumeRemoval,
+    decode_runtime_watch_frame, op,
 };
 
 pub use payloads::typescript_declarations;
@@ -142,60 +142,6 @@ pub async fn connect_connections(
     })
 }
 
-/// Dial a held Machine, send Machine RPC Register, then close.
-///
-/// Same Dial tuple as [`connect`]. Callers never see the session.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] when the bearer, pairing, or Machine ID is
-/// rejected, when the Relay or inner RPC channel fails, or when Machine RPC
-/// Register fails.
-pub async fn register(
-    relay_url: &str,
-    bearer: &str,
-    pairing: &str,
-    machine_id: &str,
-    identity: RegisterRequest,
-) -> Result<Registered, RpcError> {
-    let session = connect(relay_url, bearer, pairing, machine_id).await?;
-    let result = session.register(identity).await;
-    session.close().await;
-    result
-}
-
-/// List Machines currently holding Register for this pairing.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] when the bearer or pairing is rejected, or
-/// when the Relay call fails.
-pub async fn list_held(
-    relay_url: &str,
-    bearer: &str,
-    pairing: &str,
-) -> Result<Vec<HeldRegister>, RpcError> {
-    let credential = parse_dial(bearer)?;
-    let pairing = parse_pairing(pairing)?;
-    list_held_relay(relay_url, &credential, &pairing)
-        .await
-        .map_err(RpcError::from)
-}
-
-/// Revoke a Pairing Credential so later Register with that bearer fails.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] when the bearer or pairing is rejected, or
-/// when the Relay call fails.
-pub async fn revoke_pairing(relay_url: &str, bearer: &str, pairing: &str) -> Result<(), RpcError> {
-    let credential = parse_dial(bearer)?;
-    let pairing = parse_pairing(pairing)?;
-    revoke_cloud_pairing(relay_url, &credential, &pairing)
-        .await
-        .map_err(RpcError::from)
-}
-
 fn parse_dial(bearer: &str) -> Result<DialCredential, RpcError> {
     DialCredential::parse(bearer).map_err(|error| RpcError {
         code: RpcErrorCode::Unauthenticated,
@@ -234,16 +180,33 @@ impl Session {
         }
     }
 
-    /// Register on the already selected Entry Machine, without replay on lost replies.
+    /// Observe enrollment facts on this confirmed Entry Machine.
     ///
     /// # Errors
-    /// Returns cancellation, transport or Register errors, including uncertain outcomes.
-    pub async fn register(&self, identity: RegisterRequest) -> Result<Registered, RpcError> {
-        let client = self.client()?;
+    /// Returns cancellation, transport errors, or missing enrollment facts.
+    pub async fn observe_enrollment(&self) -> Result<EnrollmentSnapshot, RpcError> {
+        let mut client = self.client()?;
+        self.until_closed(crate::enrollment::observe_enrollment(&mut client))
+            .await
+    }
+
+    /// Publish a durably saved assignment on this Entry Machine without mutation replay.
+    ///
+    /// # Errors
+    /// Returns cancellation, allocation conflicts, or publication errors.
+    pub async fn register(
+        &self,
+        assignment: &EnrollmentAssignment,
+    ) -> Result<Registered, RpcError> {
+        let mut client = self.client()?;
         tokio::select! {
             biased;
-            () = self.inner.cancel.cancelled() => Err(closed()),
-            result = client.call_unretried::<op::Register>(identity, None) => result.map_err(RpcError::from),
+            () = self.inner.cancel.cancelled() => Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "session closed; in-flight Register outcome may be uncertain".into(),
+                details: Value::Null,
+            }),
+            result = crate::enrollment::publish_enrollment(&mut client, assignment) => result,
         }
     }
 
@@ -769,40 +732,4 @@ fn invalid_argument(message: String) -> RpcError {
         message,
         details: Value::Null,
     }
-}
-
-/// Observe enrollment facts through a short-lived Relay session.
-///
-/// # Errors
-/// Returns Relay, RPC, or unavailable snapshot errors.
-pub async fn observe_enrollment(
-    relay_url: &str,
-    bearer: &str,
-    pairing: &str,
-    machine_id: &str,
-) -> Result<ployz_core::EnrollmentSnapshot, RpcError> {
-    let session = connect(relay_url, bearer, pairing, machine_id).await?;
-    let result =
-        async { crate::enrollment::observe_enrollment(&mut session.client()?).await }.await;
-    session.close().await;
-    result
-}
-
-/// Publish a saved assignment through a short-lived Relay session.
-///
-/// # Errors
-/// Returns allocation conflicts, Relay or publication errors.
-pub async fn publish_enrollment(
-    relay_url: &str,
-    bearer: &str,
-    pairing: &str,
-    machine_id: &str,
-    assignment: &ployz_core::EnrollmentAssignment,
-) -> Result<Registered, RpcError> {
-    let session = connect(relay_url, bearer, pairing, machine_id).await?;
-    let result =
-        async { crate::enrollment::publish_enrollment(&mut session.client()?, assignment).await }
-            .await;
-    session.close().await;
-    result
 }

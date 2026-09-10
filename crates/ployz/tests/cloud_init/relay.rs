@@ -2,8 +2,7 @@
 
 use std::{sync::Mutex, time::Duration};
 
-use ployz::sdk;
-use ployz_core::{MachineId, PairingCredential};
+use ployz_core::{MachineId, PairingCredential, RelayEndpoint};
 use ployz_relay::{ClientError, DialCredential, Open, RegisterRequest, Relay, RelayClient};
 use tokio::task::JoinHandle;
 use tonic::Status;
@@ -29,7 +28,9 @@ impl RelayListen {
     }
 
     pub async fn revoke(&self, pairing: &str) {
-        sdk::revoke_pairing(&self.url, DIAL, pairing)
+        RelayClient::new(&RelayEndpoint::parse(&self.url).unwrap())
+            .unwrap()
+            .revoke(DIAL, pairing)
             .await
             .expect("test Relay accepts Dial revoke");
     }
@@ -72,7 +73,11 @@ fn status_from_client(error: ClientError) -> Status {
 pub async fn wait_for_held(url: &str, pairing: &str, machine_id: MachineId) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
-        let listed = sdk::list_held(url, DIAL, pairing).await.unwrap();
+        let listed = RelayClient::new(&RelayEndpoint::parse(url).unwrap())
+            .unwrap()
+            .list(DIAL, pairing)
+            .await
+            .unwrap();
         if listed
             .iter()
             .any(|row| row.machine_id().ok() == Some(machine_id) && row.register_rtt_ns.is_some())
@@ -89,7 +94,11 @@ pub async fn wait_for_held(url: &str, pairing: &str, machine_id: MachineId) {
 
 pub async fn assert_not_held(url: &str, pairing: &str, machine_id: MachineId) {
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let listed = sdk::list_held(url, DIAL, pairing).await.unwrap();
+    let listed = RelayClient::new(&RelayEndpoint::parse(url).unwrap())
+        .unwrap()
+        .list(DIAL, pairing)
+        .await
+        .unwrap();
     assert!(
         listed
             .iter()
