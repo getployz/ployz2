@@ -1,4 +1,3 @@
-import { reconcileCollection } from "#/collections/query-collection";
 import type { CollectionScope } from "#/collections/scope";
 import { createOptimisticAction } from "@tanstack/react-db";
 import { type SavedEnvironmentIntent, type SavedVariableIntent } from "@ployz/sdk/config";
@@ -49,7 +48,7 @@ export function createVariableWriter(organizationSlug: string, scope: Collection
       if (kind !== "delete" && value.type !== "plain") throw new Error("Use the sealed-variable action to edit a secret.");
       const data = { ...scope, key: variable.key, description: variable.description, exported: variable.exported,
         value: { type: "plain" as const, value: value.type === "plain" ? value.value : "" } };
-      await (variable.serviceId
+      const result = await (variable.serviceId
         ? kind === "delete" ? deleteServiceVariableServerFn({ data: { ...scope, serviceId: variable.serviceId, variableId: variable.id } })
           : kind === "insert" ? createServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, id: variable.id } })
           : updateServiceVariableServerFn({ data: { ...data, serviceId: variable.serviceId, variableId: variable.id } })
@@ -58,7 +57,7 @@ export function createVariableWriter(organizationSlug: string, scope: Collection
             : kind === "insert" ? createVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, id: variable.id } })
             : updateVariableGroupVariableServerFn({ data: { ...data, variableGroupId: variable.variableGroupId, variableId: variable.id } })
           : (() => { throw new Error("Variable has no owner."); })());
-      await reconcileCollection(environments);
+      await environments.writeCommitted(result.data);
     },
   });
 

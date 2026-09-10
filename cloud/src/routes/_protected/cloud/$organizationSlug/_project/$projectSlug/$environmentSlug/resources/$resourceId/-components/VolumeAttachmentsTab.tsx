@@ -1,4 +1,3 @@
-import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useReducer } from "react";
@@ -177,7 +176,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
 
     dispatchMountState({ type: "patch", patch: { pending: true } });
     try {
-      await attachVolume({
+      const result = await attachVolume({
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
@@ -187,7 +186,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
           mountPath: parsed.success,
         },
       });
-      await reconcileCollection(attachmentsCollection);
+      await attachmentsCollection.writeCommitted(result.data);
       dispatchMountState({ type: "resetAddForm" });
     } catch (error) {
       dispatchMountState({
@@ -234,7 +233,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
 
     dispatchMountState({ type: "patch", patch: { pending: true } });
     try {
-      await updateMountPath({
+      const result = await updateMountPath({
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
@@ -244,7 +243,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
           mountPath: parsed.success,
         },
       });
-      await reconcileCollection(attachmentsCollection);
+      await attachmentsCollection.writeCommitted(result.data);
       dispatchMountState({ type: "cancelEdit" });
     } catch (error) {
       dispatchMountState({
@@ -264,7 +263,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
   async function handleDetach(serviceId: string) {
     dispatchMountState({ type: "patch", patch: { pending: true } });
     try {
-      await detachVolume({
+      const result = await detachVolume({
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
@@ -273,7 +272,7 @@ export function VolumeAttachmentsTab({ state }: { state: VolumeDrawerState }) {
           volumeResourceId,
         },
       });
-      await reconcileCollection(attachmentsCollection);
+      await attachmentsCollection.writeCommitted(result.data);
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to remove the mount.",

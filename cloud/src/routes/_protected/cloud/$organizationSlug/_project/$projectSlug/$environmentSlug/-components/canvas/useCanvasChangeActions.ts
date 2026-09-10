@@ -1,6 +1,4 @@
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
-import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
-import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { restoreWorkingDocumentServerFn } from "#/modules/environment-design/working-document-restore.functions";
@@ -89,7 +87,7 @@ export function useCanvasChangeActions({
   const environments = getEnvironmentsCollection(params.organizationSlug, collectionScope);
   const restoreWorkingSetting = createWorkingSettingRestoreAction({
     environments, environmentId, organizationSlug: params.organizationSlug,
-    restore: restoreWorkingDocumentServerFn, reconcile: async () => { await reconcileCollection(environments); },
+    restore: restoreWorkingDocumentServerFn,
   });
   const runtime = useRuntimeLens(params.organizationSlug);
   const deployTargetPreflight = getDeployTargetPreflight({
@@ -203,11 +201,11 @@ export function useCanvasChangeActions({
     }
     const document = environments.get(environmentId);
     if (!document) throw new Error("Environment is not loaded.");
-    await restoreWorkingDocumentServerFn({ data: {
+    const result = await restoreWorkingDocumentServerFn({ data: {
       organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
       snapshotSource: workingSnapshotSource, command: { kind: "all" },
     } });
-    await reconcileNodeCollections(params.organizationSlug, collectionScope);
+    await environments.writeCommitted(result.data);
   }
 
   async function discardServiceChanges(serviceId: string) {
@@ -237,12 +235,12 @@ export function useCanvasChangeActions({
   ) {
     const document = environments.get(environmentId);
     if (!document) throw new Error("Environment is not loaded.");
-    await restoreWorkingDocumentServerFn({ data: {
+    const result = await restoreWorkingDocumentServerFn({ data: {
       organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
       snapshotSource: plan.kind === "delete" ? null : snapshotSource,
       command: { kind: "node", nodeType: plan.node.type, nodeId: plan.node.id },
     } });
-    await reconcileNodeCollections(params.organizationSlug, collectionScope);
+    await environments.writeCommitted(result.data);
   }
 
   async function discardVolumeChanges(group: CanvasEnvironmentChangeGroup) {

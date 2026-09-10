@@ -10,17 +10,31 @@ export function createApiCollection<T extends object>(input: {
   getKey: (row: T) => string | number;
 }) {
   // Default snapshot retention lets a loader hand data to its consumer after releasing its observer.
-  return createCollection(queryCollectionOptions({
+  const options = queryCollectionOptions({
     ...input,
     id: input.queryKey.join(":"),
     startSync: false,
     refetchInterval: 15_000,
+    staleTime: 15_000,
     refetchOnWindowFocus: "always",
     refetchOnReconnect: "always",
     retry: false,
     autoIndex: "eager",
     defaultIndexType: BasicIndex,
-  }));
+  });
+  const collection = createCollection(options);
+  return Object.assign(collection, {
+    async writeCommitted(rows: T | T[]): Promise<void> {
+      const subscription = collection.subscribeChanges(() => {});
+      try {
+        // A read started before the POST must not overwrite its committed response.
+        await input.queryClient.cancelQueries({ queryKey: input.queryKey, exact: true });
+        options.utils.writeUpsert(rows);
+      } finally {
+        subscription.unsubscribe();
+      }
+    },
+  });
 }
 
 type ApiCollectionReadiness = {
@@ -44,12 +58,12 @@ export async function preloadCollection(collection: ApiCollectionReadiness) {
   }
 }
 
-/** Reconciliation also works before any live view has subscribed to the collection. */
+/** Secondary freshness: Query owns read errors after the command has committed. */
 export async function reconcileCollection(collection: ApiCollectionReadiness) {
   const subscription = collection.subscribeChanges(() => {});
   try {
     await collection.preload();
-    await collection.utils.refetch({ throwOnError: true });
+    await collection.utils.refetch();
   } finally {
     subscription.unsubscribe();
   }

@@ -1,4 +1,3 @@
-import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useState } from "react";
@@ -129,11 +128,11 @@ export function ServiceVariableGroupAttachmentsPanel({
       };
 
       if (attachment.action === "attach") {
-        await attachVariableGroup({ data });
-        await reconcileCollection(rawAttachments);
+        const result = await attachVariableGroup({ data });
+        await rawAttachments.writeCommitted(result.data);
       } else {
-        await detachVariableGroup({ data });
-        await reconcileCollection(rawAttachments);
+        const result = await detachVariableGroup({ data });
+        await rawAttachments.writeCommitted(result.data);
       }
     } catch (error) {
       toast.error(

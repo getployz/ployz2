@@ -1,4 +1,3 @@
-import { reconcileCollection } from "#/collections/query-collection";
 import { useServerFn } from "@tanstack/react-start";
 import { usePacedMutations, throttleStrategy } from "@tanstack/react-db";
 import { type OnNodeDrag } from "@xyflow/react";
@@ -96,13 +95,12 @@ export function useCanvasPositionMutation(params: {
           };
 
           if (modified.resourceType === "service") {
-            await updateServicePosition({
+            return updateServicePosition({
               data: { ...data, serviceId: modified.resourceId },
             });
-            return;
           }
 
-          await updateResourcePosition({
+          return updateResourcePosition({
             data: {
               ...data,
               resourceId: modified.resourceId,
@@ -131,16 +129,12 @@ export function useCanvasPositionMutation(params: {
 }
 
 export async function persistCanvasPositionBatch(
-  writes: readonly Promise<void>[],
+  writes: readonly Promise<Awaited<ReturnType<typeof updateServiceCanvasPositionServerFn>>>[],
   collection: ReturnType<typeof useCanvasPositionsCollection>,
 ) {
   const results = await Promise.allSettled(writes);
+  const committed = results.flatMap((result) => result.status === "fulfilled" ? [result.value.data] : []);
+  if (committed.length) await collection.writeCommitted(committed);
   const failure = results.find((result) => result.status === "rejected");
-  try {
-    await reconcileCollection(collection);
-  } catch (error) {
-    // Preserve the write failure when reconciliation also fails.
-    if (!failure) throw error;
-  }
   if (failure) throw failure.reason;
 }

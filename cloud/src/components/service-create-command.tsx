@@ -1,5 +1,4 @@
-import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
-import { reconcileCollection } from "#/collections/query-collection";
+import { applyCreatedService, applyCreatedResource } from "#/modules/environment-design/apply-created-node";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useState } from "react";
 import { ArrowLeftIcon, ChevronRightIcon } from "lucide-react";
@@ -180,8 +179,8 @@ function useServiceCreateActions({
       }),
     onSuccess: async (receipt) => {
       await Promise.all([
-        reconcileCollection(getProjectsCollection(props.organizationSlug, collectionScope)),
-        reconcileCollection(getEnvironmentsCollection(props.organizationSlug, collectionScope)),
+        getProjectsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.project),
+        getEnvironmentsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.environment),
       ]);
       if (props.mode !== "service") {
         await props.onCreated?.(receipt.data);
@@ -206,7 +205,7 @@ function useServiceCreateActions({
       });
     },
     onSuccess: async (result) => {
-      await reconcileNodeCollections(props.organizationSlug, collectionScope);
+      await applyCreatedService(props.organizationSlug, collectionScope, result.data);
       if (props.mode === "service") {
         await props.onCreated?.(result.data);
       }
@@ -223,8 +222,8 @@ function useServiceCreateActions({
           y: 0,
         },
       }),
-    onSuccess: async () => {
-      await reconcileNodeCollections(props.organizationSlug, collectionScope);
+    onSuccess: async (result) => {
+      await applyCreatedResource(props.organizationSlug, collectionScope, result);
     },
   });
   const createVolumeMutation = useMutation({
@@ -238,8 +237,8 @@ function useServiceCreateActions({
           y: 0,
         },
       }),
-    onSuccess: async () => {
-      await reconcileNodeCollections(props.organizationSlug, collectionScope);
+    onSuccess: async (result) => {
+      await applyCreatedResource(props.organizationSlug, collectionScope, result);
     },
   });
 

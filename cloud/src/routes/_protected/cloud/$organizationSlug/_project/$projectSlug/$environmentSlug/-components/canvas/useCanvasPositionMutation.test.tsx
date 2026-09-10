@@ -6,7 +6,7 @@ import { createApiCollection, preloadCollection } from "#/collections/query-coll
 import type { environmentCanvasNodePosition } from "#/modules/environment-design/tables";
 import { persistCanvasPositionBatch } from "./useCanvasPositionMutation";
 
-it.each([false, true])("reconciles after sibling writes and preserves the batch failure (refresh fails: %s)", async (refreshFails) => {
+it.each([false, true])("applies committed sibling writes and preserves the batch failure (refresh fails: %s)", async (refreshFails) => {
   const queryClient = new QueryClient();
   let saved: (typeof environmentCanvasNodePosition.$inferSelect)[] = ["service", "volume"].map((resourceType) => ({
     id: resourceType, resourceType, resourceId: resourceType, organizationId: "org", environmentId: "env",
@@ -22,7 +22,11 @@ it.each([false, true])("reconciles after sibling writes and preserves the batch 
   const transaction = createTransaction({ autoCommit: false, mutationFn: () => persistCanvasPositionBatch([
     Promise.reject(writeFailure),
     sibling.then(() => {
-      saved = saved.map((row) => row.resourceType === "volume" ? { ...row, x: 20, y: 20 } : row);
+      const original = saved.find((row) => row.resourceType === "volume");
+      if (!original) throw new Error("Missing volume fixture");
+      const data = { ...original, x: 20, y: 20 };
+      saved = saved.map((row) => row.resourceType === "volume" ? data : row);
+      return { data };
     }),
   ], collection) });
   transaction.mutate(() => {
@@ -37,9 +41,9 @@ it.each([false, true])("reconciles after sibling writes and preserves the batch 
     if (refreshFails) read.mockRejectedValue(new Error("refresh failed"));
     finishSibling();
     expect(await outcome).toBe(writeFailure);
-    expect(read.mock.calls.length).toBeGreaterThan(readsBeforeSibling);
+    expect(read.mock.calls.length).toBeLessThanOrEqual(readsBeforeSibling + 1);
     expect(collection.get("service:service")).toMatchObject({ x: 0, y: 0 });
-    expect(collection.get("volume:volume")).toMatchObject({ x: refreshFails ? 0 : 20, y: refreshFails ? 0 : 20 });
+    expect(collection.get("volume:volume")).toMatchObject({ x: 20, y: 20 });
   } finally {
     finishSibling();
     await collection.cleanup();

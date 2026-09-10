@@ -1,4 +1,3 @@
-import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
@@ -170,7 +169,7 @@ export function ServiceVariablesTab({
     patch: VariableMetadataPatch,
   ) {
     if (!document) throw new Error("Environment is not loaded.");
-    await updateExport({
+    const result = await updateExport({
       data: {
         organizationSlug: state.organizationSlug,
         revision: document.revision,
@@ -180,7 +179,7 @@ export function ServiceVariablesTab({
         exported: patch.exported ?? variable.exported,
       },
     });
-    await reconcileCollection(getEnvironmentsCollection(state.organizationSlug, collectionScope));
+    await getEnvironmentsCollection(state.organizationSlug, collectionScope).writeCommitted(result.data);
   }
 
   return (

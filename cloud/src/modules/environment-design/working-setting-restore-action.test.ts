@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import { createApiCollection, reconcileCollection } from "#/collections/query-collection";
+import { createApiCollection } from "#/collections/query-collection";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { expect, it, vi } from "vitest";
 import type { EnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
@@ -53,7 +53,7 @@ it.each(["variableGroupAttachments", "source.credentials", "source"])(
     let reject: (error: Error) => void = () => { throw new Error("Restore has not started."); };
     restore.mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
     const action = createWorkingSettingRestoreAction({ environments, environmentId: id(1), organizationSlug: "acme",
-      restore, reconcile: () => reconcileCollection(environments),
+      restore,
     });
     const setting = group.projectedChange.settings.find((setting) => setting.owner.setting === path);
     if (!setting?.discardPlan) throw new Error("Expected a discard plan.");
@@ -80,17 +80,19 @@ it.each(["variableGroupAttachments", "source.credentials", "source"])(
     expect(environments.get(id(1))?.intent).toEqual(original.intent);
     expect(environments.get(id(1))?.revision).toBe(original.revision);
     restore.mockImplementation(async () => {
-      rows = [{ ...original, revision: id(9), intent: {
+      const committed = { ...original, revision: id(9), intent: {
         ...original.intent, services: original.intent.services.map((service) => service.id === id(5) && optimistic ? optimistic : service),
-      } }];
-      return { data: original };
+      } };
+      rows = [committed];
+      return { data: committed };
     });
+    read.mockRejectedValue(new Error("Collection GET unavailable after commit"));
     const readsBeforeSave = read.mock.calls.length;
     await action({ serviceId: id(5), revision: id(4), path,
       baseline: parseServiceConfig(setting.discardPlan.config),
       snapshotSource: { kind: "introduction" },
     }).isPersisted.promise;
-    expect(read.mock.calls.length).toBeGreaterThan(readsBeforeSave);
+    expect(read.mock.calls.length).toBe(readsBeforeSave);
     expect(environments.get(id(1))?.revision).toBe(id(9));
     expect(environments.get(id(1))?.intent.services[0]).toEqual(optimistic);
     subscription.unsubscribe();

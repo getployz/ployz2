@@ -184,10 +184,10 @@ export const createService = Effect.fn("EnvironmentDesign.createService")(
         healthcheck: input.healthcheck, restartPolicy: input.restartPolicy, privateDns: slug });
       const node = { id: identity.id, lineageId: lineage.id, slug, config, variables: [], variableGroupAttachments: [], volumeAttachments: [], encryptedRegistryUsername: null, encryptedRegistrySecret: null };
       document.intent.services.push(node);
-      yield* writeEnvironmentDocument(document, document.intent);
-      yield* captureEnvironmentNodeIntroduction({ environmentId: input.environmentId, nodeType: "service", nodeId: identity.id });
+      const environment = yield* writeEnvironmentDocument(document, document.intent);
+      const introduction = yield* captureEnvironmentNodeIntroduction({ environmentId: input.environmentId, nodeType: "service", nodeId: identity.id });
       const canvasPosition = yield* insertCanvasPosition({ environmentId: input.environmentId, resourceId: identity.id, x: input.x, y: input.y });
-      return { service: { ...serviceDocumentRecord(identity, node), projectSlug: context.project.slug, environmentSlug: context.environment.namespace }, canvasPosition };
+      return { service: { ...serviceDocumentRecord(identity, node), projectSlug: context.project.slug, environmentSlug: context.environment.namespace }, canvasPosition, environment, identity, introduction };
     }));
   },
 );

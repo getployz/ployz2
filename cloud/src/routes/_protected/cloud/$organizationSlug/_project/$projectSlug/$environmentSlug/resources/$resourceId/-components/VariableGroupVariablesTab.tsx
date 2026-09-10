@@ -1,4 +1,3 @@
-import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useServerFn } from "@tanstack/react-start";
@@ -57,7 +56,7 @@ export function VariableGroupVariablesTab({
     if (input.sealed) {
       // Sealed values can't round-trip through the optimistic collection, so
       // the create goes through the server function directly.
-      await createVariable({
+      const result = await createVariable({
         data: {
           organizationSlug,
           revision: revision(),
@@ -69,7 +68,7 @@ export function VariableGroupVariablesTab({
           value: { type: "sealed", value: input.value },
         },
       });
-      await reconcileCollection(getEnvironmentsCollection(organizationSlug, collectionScope));
+      await getEnvironmentsCollection(organizationSlug, collectionScope).writeCommitted(result.data);
     } else {
       await insertPlainVariableGroupVariable(variableWriter, {
         variableGroupId,
@@ -81,7 +80,7 @@ export function VariableGroupVariablesTab({
   }
 
   async function handleSealVariable(variable: PlainVariableRecord) {
-    await updateVariable({
+    const result = await updateVariable({
       data: {
         organizationSlug,
         revision: revision(),
@@ -94,14 +93,14 @@ export function VariableGroupVariablesTab({
         value: { type: "sealed", value: variable.value.value },
       },
     });
-    await reconcileCollection(getEnvironmentsCollection(organizationSlug, collectionScope));
+    await getEnvironmentsCollection(organizationSlug, collectionScope).writeCommitted(result.data);
   }
 
   async function handleUpdateMetadata(
     variable: VariableRecord,
     patch: VariableMetadataPatch,
   ) {
-    await updateVariableMetadata({
+    const result = await updateVariableMetadata({
       data: {
         organizationSlug,
         revision: revision(),
@@ -112,7 +111,7 @@ export function VariableGroupVariablesTab({
         exported: patch.exported ?? variable.exported,
       },
     });
-    await reconcileCollection(getEnvironmentsCollection(organizationSlug, collectionScope));
+    await getEnvironmentsCollection(organizationSlug, collectionScope).writeCommitted(result.data);
   }
 
   return (

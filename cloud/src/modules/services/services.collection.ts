@@ -1,5 +1,3 @@
-import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
-import { reconcileCollection } from "#/collections/query-collection";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { parseServiceConfig } from "@ployz/sdk/config";
@@ -101,11 +99,10 @@ function createServiceWriter(
     },
     mutationFn: async ({ serviceId, environmentId, revision, settings }) => {
       try {
-        await updateServiceServerFn({
+        const result = await updateServiceServerFn({
           data: { organizationSlug, environmentId, serviceId, revision, ...settings },
         });
-        if (settings.deletedAt) await reconcileNodeCollections(organizationSlug, scope);
-        else await reconcileCollection(environments);
+        await environments.writeCommitted(result.data);
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Something went wrong while saving this field.");
         throw error;

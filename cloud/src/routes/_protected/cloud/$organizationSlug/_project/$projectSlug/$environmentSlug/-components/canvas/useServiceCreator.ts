@@ -1,4 +1,4 @@
-import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
+import { applyCreatedService } from "#/modules/environment-design/apply-created-node";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
@@ -63,7 +63,7 @@ export function useServiceCreator(
         y: placement.y,
       },
     });
-    await reconcileNodeCollections(params.organizationSlug, collectionScope);
+    await applyCreatedService(params.organizationSlug, collectionScope, receipt.data);
     await navigate({
       to: ENVIRONMENT_SERVICE_ROUTE_TO,
       params: {

@@ -1,4 +1,3 @@
-import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { plainVariableIntent, variableDocumentRecord } from "./variable-document";
 import type { SavedVariableIntent } from "./saved-intent";
@@ -74,7 +73,7 @@ export function useSealServiceVariableAction({
   return async (variable: PlainVariableRecord) => {
     const document = environments.get(environmentId);
     if (!document) throw new Error("Environment is not loaded.");
-    await updateVariable({
+    const result = await updateVariable({
       data: buildSealServiceVariableUpdateInput({
         organizationSlug,
         environmentId,
@@ -82,7 +81,7 @@ export function useSealServiceVariableAction({
         variable, revision: document.revision,
       }),
     });
-    await reconcileCollection(environments);
+    await environments.writeCommitted(result.data);
   };
 }
 
@@ -104,7 +103,7 @@ export function useApplyRawVariablesAction({
       });
     },
     mutationFn: async ({ diff, revision }) => {
-      await bulkUpdate({
+      const result = await bulkUpdate({
         data: {
           organizationSlug, revision,
           environmentId,
@@ -124,7 +123,7 @@ export function useApplyRawVariablesAction({
           deletes: diff.deletes,
         },
       });
-      await reconcileCollection(environments);
+      await environments.writeCommitted(result.data);
     },
   });
   return (diff: RawEditorDiff) => ({ isPersisted: { promise: (async () => {

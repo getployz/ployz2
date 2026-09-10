@@ -1,4 +1,3 @@
-import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { createOptimisticAction } from "@tanstack/react-db";
 import {
@@ -32,11 +31,11 @@ export function useServiceRegistryCredentialActions({
     },
     mutationFn: async ({ action, revision }) => {
       const data = { organizationSlug, environmentId, serviceId, revision };
-      await (action.kind === "set"
+      const result = await (action.kind === "set"
         ? setServiceRegistryCredentialServerFn({ data: { ...data, username: action.username ?? undefined, secret: action.secret } })
         : action.kind === "clear" ? clearServiceRegistryCredentialServerFn({ data })
           : restoreServiceRegistryCredentialServerFn({ data }));
-      await reconcileCollection(environments);
+      await environments.writeCommitted(result.data);
       onSuccess?.();
     },
   });

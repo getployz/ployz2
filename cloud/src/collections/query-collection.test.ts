@@ -110,3 +110,29 @@ it("releases preload-only and reconciliation observers while keeping mounted con
   client.unmount();
   client.clear();
 });
+
+it.each([false, true])("applies committed rows without an observer and cancels older reads (preloaded: %s)", async (preloaded) => {
+  const client = new QueryClient();
+  const stale = { id: "row", revision: "old" };
+  const committed = { id: "row", revision: "committed" };
+  const read = vi.fn<() => Promise<typeof stale[]>>().mockResolvedValue([stale]);
+  const collection = createApiCollection({ queryClient: client, queryKey: ["committed", String(preloaded)],
+    queryFn: read, getKey: (row: typeof stale) => row.id });
+  if (preloaded) await preloadCollection(collection);
+  let finishRead = (_rows: typeof stale[]) => {};
+  read.mockImplementation(() => new Promise((resolve) => { finishRead = resolve; }));
+  const active = collection.subscribeChanges(() => {});
+  const pendingRead = collection.utils.refetch();
+  await collection.writeCommitted(committed);
+  finishRead([stale]);
+  await pendingRead;
+  expect(collection.get("row")).toMatchObject(committed);
+  active.unsubscribe();
+  read.mockRejectedValue(new Error("GET unavailable"));
+  await reconcileCollection(collection);
+  expect(collection.get("row")).toMatchObject(committed);
+  expect(collection.utils.isError).toBe(true);
+  expect(collection.subscriberCount).toBe(0);
+  await collection.cleanup();
+  client.clear();
+});

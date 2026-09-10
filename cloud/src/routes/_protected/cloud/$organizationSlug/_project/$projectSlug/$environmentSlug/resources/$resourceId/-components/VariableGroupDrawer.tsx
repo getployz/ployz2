@@ -1,4 +1,4 @@
-import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useServerFn } from "@tanstack/react-start";
@@ -55,14 +55,14 @@ export function VariableGroupDrawer({
           editDescription="Rename this Variable Group."
           placeholder="Variable Group name"
           onRename={async (value) => {
-            await updateVariableGroup({ data: {
+            const result = await updateVariableGroup({ data: {
               organizationSlug: state.organizationSlug,
               environmentId: state.resource.resource.environmentId,
               revision: revision(),
               resourceId,
               name: value,
             } });
-            await reconcileNodeCollections(state.organizationSlug, collectionScope);
+            await getEnvironmentsCollection(state.organizationSlug, collectionScope).writeCommitted(result.data);
           }}
         />
         <p className="truncate text-sm text-muted-foreground">Variable Group</p>

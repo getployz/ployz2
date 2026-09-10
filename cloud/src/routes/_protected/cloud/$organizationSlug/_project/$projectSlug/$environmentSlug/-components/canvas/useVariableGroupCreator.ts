@@ -1,4 +1,4 @@
-import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
+import { applyCreatedResource } from "#/modules/environment-design/apply-created-node";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
@@ -71,7 +71,7 @@ export function useVariableGroupCreator(
       },
     });
 
-    await reconcileNodeCollections(params.organizationSlug, collectionScope);
+    await applyCreatedResource(params.organizationSlug, collectionScope, result);
 
     return result.data;
   }
