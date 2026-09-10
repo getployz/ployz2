@@ -1,5 +1,8 @@
 //! Rung 2: real native Tailcat helper, private DERP, and Machine RPC contracts.
 //! Requires Go; builds the pinned native prerequisites before exercising RPC.
+//! Sustained retention: PLOYZ_TAILCAT_CHURN_SECONDS=120 cargo test -p ployz
+//! --test tailcat_connect -- --nocapture (1–180 seconds; default eight pairs).
+//! Reports successful/invalid dials, sampled peak TCP/peers, and settled retention.
 #![cfg(unix)]
 
 use std::{
@@ -29,6 +32,13 @@ mod support;
 
 #[tokio::test]
 async fn native_tailcat_confirms_machine_identity_and_performs_read_only_rpc() {
+    let churn_seconds = std::env::var("PLOYZ_TAILCAT_CHURN_SECONDS")
+        .map(|value| {
+            let seconds: u64 = value.parse().expect("churn seconds must be an integer");
+            assert!((1..=180).contains(&seconds), "churn seconds must be 1–180");
+            seconds
+        })
+        .unwrap_or(0);
     let dir = tempfile::tempdir().unwrap();
     let native = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../native/tailcat");
     let helper = dir.path().join("ployz-tailcat");
@@ -219,14 +229,28 @@ async fn native_tailcat_confirms_machine_identity_and_performs_read_only_rpc() {
     }
     clients.remove(1);
     // Successful and wrong-PSK churn runs while these 44 streams remain open.
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(30), output.next_line())
-            .await
-            .unwrap()
-            .unwrap()
-            .as_deref(),
-        Some("churn-ok")
+    let report = tokio::time::timeout(Duration::from_secs(churn_seconds + 30), output.next_line())
+        .await
+        .expect("bounded churn timed out")
+        .unwrap()
+        .expect("fixture exited during churn");
+    let counts: Vec<usize> = report
+        .strip_prefix("churn-ok ")
+        .expect("fixture must finish churn")
+        .split_whitespace()
+        .map(|value| value.parse().unwrap())
+        .collect();
+    assert_eq!(counts.len(), 6);
+    assert!(counts[0] >= 8);
+    assert_eq!(counts[0], counts[1]);
+    eprintln!(
+        "Tailcat churn: successful={} invalid={} sampled_peak_tcp={} sampled_peak_peers={} settled_tcp={} settled_peers={}",
+        counts[0], counts[1], counts[2], counts[3], counts[4], counts[5]
     );
+    assert!(counts[2] <= 12, "transient TCP overlap exceeded one dial plus cleanup");
+    assert!(counts[3] <= 16, "peer admission exceeded limit");
+    assert_eq!(counts[4], 9, "TCP churn connections were retained after DrainTCP");
+    assert_eq!(counts[5], 9, "peer churn connections were retained after DrainTCP");
     wait_for_endpoint_state(input, &mut output, 9).await;
     service.push_watch_frame(frame);
     assert_frames(&mut streams, &expected).await;
@@ -259,6 +283,7 @@ async fn wait_for_endpoint_state(
         complete.is_ok(),
         "server must retain exactly {expected} active TCP connections and peers; last state: {last}"
     );
+    eprintln!("Tailcat settled retention: tcp={expected} peers={expected}");
 }
 
 async fn assert_frames(

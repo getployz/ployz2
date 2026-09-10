@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -22,6 +23,14 @@ import (
 
 func main() {
 	log.SetOutput(io.Discard)
+	seconds := 0
+	if value := os.Getenv("PLOYZ_TAILCAT_CHURN_SECONDS"); value != "" {
+		var err error
+		seconds, err = strconv.Atoi(value)
+		if err != nil || seconds < 1 || seconds > 180 {
+			panic("PLOYZ_TAILCAT_CHURN_SECONDS must be between 1 and 180")
+		}
+	}
 	derp := derpserver.New(key.NewNode(), logger.Discard)
 	defer derp.Close()
 	https := httptest.NewTLSServer(derpserver.Handler(derp))
@@ -84,18 +93,40 @@ func main() {
 			fmt.Fprintln(os.Stdout, len(seen))
 			mu.Unlock()
 		case "churn":
-			for range 8 {
-				churn(server.TailcatAddr(), false)
-				churn(server.TailcatAddr(), true)
+			started := time.Now()
+			rounds, peakTCP, peakPeers := 0, 0, 0
+			// Sample at each completed dial, before closing its client.
+			sample := func() {
+				mu.Lock()
+				peakTCP = max(peakTCP, active)
+				mu.Unlock()
+				peakPeers = max(peakPeers, len(server.Status().Peer))
 			}
-			fmt.Fprintln(os.Stdout, "churn-ok")
+			for rounds < 8 || time.Since(started) < time.Duration(seconds)*time.Second {
+				churn(server.TailcatAddr(), false, sample)
+				churn(server.TailcatAddr(), true, sample)
+				rounds++
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			settledTCP, settledPeers := 0, 0
+			for {
+				mu.Lock()
+				settledTCP = active
+				mu.Unlock()
+				settledPeers = len(server.Status().Peer)
+				if settledTCP == 9 && settledPeers == 9 || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(25 * time.Millisecond)
+			}
+			fmt.Fprintf(os.Stdout, "churn-ok %d %d %d %d %d %d\n", rounds, rounds, peakTCP, peakPeers, settledTCP, settledPeers)
 		default:
 			panic("unknown fixture command")
 		}
 	}
 }
 
-func churn(addr tailcat.Addr, invalid bool) {
+func churn(addr tailcat.Addr, invalid bool, sample func()) {
 	budget := 5 * time.Second
 	if invalid {
 		ci, err := tailcat.ParseAddr(addr)
@@ -111,6 +142,7 @@ func churn(addr tailcat.Addr, invalid bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	conn, err := client.DialTCPPort(ctx, 7443)
+	sample()
 	if invalid {
 		if err == nil {
 			conn.Close()
