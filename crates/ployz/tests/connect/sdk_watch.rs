@@ -14,9 +14,9 @@ use serde_json::Value;
 use tokio::time::timeout;
 use tonic::{Request, Status, codec::CompressionEncoding};
 
-use super::relay::{self, FakeMachine, RelaySession};
 use super::sdk::advertised_description;
 use super::support::{DescribeOutcome, DiscoveryService, serve_discovery};
+use super::unix_session::{self, FakeMachine, UnixSession};
 
 const FROZEN_FRAME: &str =
     include_str!("../../../ployz-core/tests/fixtures/runtime_watch_frame.json");
@@ -24,12 +24,12 @@ const FROZEN_FRAME: &str =
 #[tokio::test]
 async fn missing_watch_capability_is_unsupported_and_never_polls_list_rpcs() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let service = DiscoveryService::new(description.clone());
     let _machine = session
         .spawn_machine(description.machine_id, service.clone())
         .await;
-    let client = connect(&session.url, description.machine_id.as_str()).await;
+    let client = connect(&session.directory, description.machine_id.as_str()).await;
 
     let error = match client.watch().await {
         Ok(_) => panic!("Watch must fail when the capability is absent"),
@@ -143,11 +143,11 @@ async fn watch_enriches_machine_storage_only_when_the_target_advertises_it() {
             watch_description()
         };
         let machine_id = description.machine_id;
-        let session = RelaySession::start().await;
+        let session = UnixSession::start().await;
         let service = DiscoveryService::new(description);
         service.push_watch_frame(frozen_frame());
         let _machine = session.spawn_machine(machine_id, service).await;
-        let client = connect(&session.url, machine_id.as_str()).await;
+        let client = connect(&session.directory, machine_id.as_str()).await;
         let watch = client.watch().await.unwrap();
 
         let frame = next_frame(&watch).await;
@@ -162,13 +162,13 @@ async fn watch_enriches_machine_storage_only_when_the_target_advertises_it() {
 #[tokio::test]
 async fn cancel_interrupts_storage_enrichment() {
     let description = storage_watch_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let service = DiscoveryService::new(description.clone());
     service.push_watch_frame(frozen_frame());
     let _machine = session
         .spawn_machine(description.machine_id, service.clone())
         .await;
-    let client = connect(&session.url, description.machine_id.as_str()).await;
+    let client = connect(&session.directory, description.machine_id.as_str()).await;
     let watch = client.watch().await.unwrap();
     let (received, held) = tokio::sync::oneshot::channel();
     service
@@ -199,13 +199,13 @@ async fn cancel_interrupts_storage_enrichment() {
 #[tokio::test]
 async fn storage_enrichment_has_a_short_overall_budget() {
     let description = storage_watch_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let service = DiscoveryService::new(description.clone());
     service.push_watch_frame(frozen_frame());
     let _machine = session
         .spawn_machine(description.machine_id, service.clone())
         .await;
-    let client = connect(&session.url, description.machine_id.as_str()).await;
+    let client = connect(&session.directory, description.machine_id.as_str()).await;
     let watch = client.watch().await.unwrap();
     let (received, held) = tokio::sync::oneshot::channel();
     service
@@ -347,7 +347,7 @@ async fn unexpected_stream_end_asks_the_caller_to_reconnect() {
 }
 
 #[tokio::test]
-async fn lost_relay_tunnel_asks_the_caller_to_reconnect() {
+async fn lost_connection_asks_the_caller_to_reconnect() {
     let (client, service, _session, machine) = watching_session().await;
     service.push_watch_frame(frozen_frame());
     let watch = client.watch().await.unwrap();
@@ -411,7 +411,7 @@ async fn reconnect_starts_with_a_fresh_complete_frame_and_no_cursor() {
 #[tokio::test]
 async fn node_watch_decodes_frames_above_tonics_default() {
     let description = storage_watch_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let service = DiscoveryService::new(description.clone());
     let mut frame = frozen_frame();
     frame.observed_at = "x".repeat(4 * 1024 * 1024);
@@ -467,21 +467,21 @@ async fn frame_above_ceiling_errors_without_closing_session() {
     );
 }
 
-async fn watching_session() -> (sdk::Session, DiscoveryService, RelaySession, FakeMachine) {
+async fn watching_session() -> (sdk::Session, DiscoveryService, UnixSession, FakeMachine) {
     let description = watch_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let service = DiscoveryService::new(description.clone());
     let machine = session
         .spawn_machine(description.machine_id, service.clone())
         .await;
-    let client = connect(&session.url, description.machine_id.as_str()).await;
+    let client = connect(&session.directory, description.machine_id.as_str()).await;
     (client, service, session, machine)
 }
 
 async fn connect(url: &str, machine_id: &str) -> sdk::Session {
     timeout(
         Duration::from_secs(5),
-        sdk::connect(url, relay::DIAL, relay::PAIRING, machine_id),
+        unix_session::connect(url, machine_id),
     )
     .await
     .expect("connect must not hang")

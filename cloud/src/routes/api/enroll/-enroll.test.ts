@@ -66,13 +66,12 @@ function callback(body: JsonValue, extra?: RequestInit) {
 describe("machine enrollment routes", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("returns initialize pairing for the first machine without leaking the token or Dial credential", async () => {
+  it("returns initialize pairing for the first machine without leaking the token", async () => {
     mocks.enroll.mockReturnValue(
       Effect.succeed({
         kind: "initialize",
         resumed: false,
         pairing: {
-          relayUrl: "https://relay.example.test",
           secret: "ppair_secret",
         },
         storage: "zfs",
@@ -92,14 +91,11 @@ describe("machine enrollment routes", () => {
       kind: "initialize",
       resumed: false,
       pairing: {
-        relayUrl: "https://relay.example.test",
         secret: "ppair_secret",
       },
       storage: "zfs",
     });
-    expect(body).not.toHaveProperty("dial");
     expect(JSON.stringify(body)).not.toContain(token);
-    expect(JSON.stringify(body)).not.toContain("pdial_");
   });
 
   it("returns not_yet for a concurrent public key without leaking the token", async () => {
@@ -121,7 +117,7 @@ describe("machine enrollment routes", () => {
     expect(JSON.stringify(body)).not.toContain(token);
   });
 
-  it("returns join pairing and Register payload when Relay List is live without leaking the token or Dial credential", async () => {
+  it("returns join pairing and Register payload when a connection candidate is available without leaking the token", async () => {
     const registration = {
       assigned_machine: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       visible_peers: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
@@ -131,7 +127,6 @@ describe("machine enrollment routes", () => {
       Effect.succeed({
         kind: "join",
         pairing: {
-          relayUrl: "https://relay.example.test",
           secret: "ppair_secret",
         },
         storage: "zfs",
@@ -150,15 +145,12 @@ describe("machine enrollment routes", () => {
     expect(body).toEqual({
       kind: "join",
       pairing: {
-        relayUrl: "https://relay.example.test",
         secret: "ppair_secret",
       },
       storage: "zfs",
       registration,
     });
-    expect(body).not.toHaveProperty("dial");
     expect(JSON.stringify(body)).not.toContain(token);
-    expect(JSON.stringify(body)).not.toContain("pdial_");
     expect(JSON.stringify(body)).not.toMatch(/10\.\d+\.\d+\.\d+\/24/u);
   });
 
@@ -269,7 +261,6 @@ describe("machine enrollment routes", () => {
         kind: "initialize",
         resumed: false,
         pairing: {
-          relayUrl: "https://relay.example.test",
           secret: "ppair_secret",
         },
         storage: "none",

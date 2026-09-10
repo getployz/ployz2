@@ -32,7 +32,6 @@ use tonic::{
 
 mod enrollment;
 mod machine_storage;
-mod relay;
 mod removal_cli;
 mod sdk;
 mod sdk_data_loss;
@@ -43,6 +42,7 @@ mod sdk_remove_machine;
 mod sdk_volumes;
 mod sdk_watch;
 mod support;
+mod unix_session;
 use support::*;
 
 struct FakeConnector {

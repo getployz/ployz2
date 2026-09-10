@@ -7,13 +7,12 @@ const expectRpcError = require("./expect-rpc-error");
 
 const addon = process.env.PLOYZ_SDK_ADDON;
 const pkg = process.env.PLOYZ_SDK_PACKAGE;
-const relayUrl = process.env.PLOYZ_RELAY_URL;
-const bearer = process.env.PLOYZ_BEARER;
-const pairing = process.env.PLOYZ_PAIRING;
+const socketDirectory = process.env.PLOYZ_SOCKET_DIRECTORY;
+const connectionsFor = (id) => [{ unix: path.join(socketDirectory, `${id}.sock`) }];
 const machineId = process.env.PLOYZ_MACHINE_ID;
 const unknownMachineId = process.env.PLOYZ_UNKNOWN_MACHINE_ID;
 
-if (!addon || !pkg || !relayUrl || !bearer || !pairing || !machineId || !unknownMachineId) {
+if (!addon || !pkg || !socketDirectory || !machineId || !unknownMachineId) {
   throw new Error("Node smoke is missing environment");
 }
 
@@ -35,7 +34,7 @@ async function expectRpc(fn, code) {
 }
 
 (async () => {
-  const client = await sdk.connect({ relayUrl, bearer, pairing, machineId });
+  const client = await sdk.connect({ connections: connectionsFor(machineId) });
   const about = await client.about();
   if (!Array.isArray(about.capabilities)) {
     throw new Error("about() must return capabilities");
@@ -103,17 +102,13 @@ async function expectRpc(fn, code) {
   await expectRpc(() => client.run(intent), "unavailable");
   await client.close();
 
-  const again = await sdk.connect({ relayUrl, bearer, pairing, machineId });
+  const again = await sdk.connect({ connections: connectionsFor(machineId) });
   await again.about();
   await again.close();
 
   await expectRpc(
-    () => sdk.connect({ relayUrl, bearer: "wrong-secret", pairing, machineId }),
-    "unauthenticated",
-  );
-  await expectRpc(
-    () => sdk.connect({ relayUrl, bearer, pairing, machineId: unknownMachineId }),
-    "not_found",
+    () => sdk.connect({ connections: connectionsFor(unknownMachineId) }),
+    "internal",
   );
 
   const forbidden = [

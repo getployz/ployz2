@@ -10,8 +10,7 @@ use ployz_core::{CloudPairing, PairingCredential};
 use serde_json::json;
 
 use super::harness::{
-    EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, registration, serve_local_machine,
-    serve_machine,
+    EnrollListen, JoinDaemon, PAIRING, TOKEN, registration, serve_local_machine, serve_machine,
 };
 
 // Run successful local enrollment with an isolated PATH for capability export.
@@ -122,9 +121,7 @@ async fn enroll_locally_with_storage(
 ) {
     let mut registration = registration();
     registration.assigned_machine.accepts_ingress = false;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": storage,

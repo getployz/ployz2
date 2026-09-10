@@ -244,7 +244,7 @@ case "$command" in
         ;;
     *'sudo cat /var/lib/ployz/machine.json'*)
         if [ -f "$QUALIFY_PAIRED" ]; then
-            pairing='{"relayUrl":"http://127.0.0.1:1/","secret":"qualification-synthetic-pairing-secret-v1"}'
+            pairing='{"secret":"qualification-synthetic-pairing-secret-v1"}'
         else
             pairing=null
         fi

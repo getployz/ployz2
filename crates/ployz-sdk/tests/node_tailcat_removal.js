@@ -75,7 +75,7 @@ function rpcStream(child, route, command, payload) {
 async function setPairing(secret) {
   const child = start("ssh", ssh(["ployzd", "dial-stdio"]));
   const { request, session } = rpcStream(child, "SetCloudPairing", "set_cloud_pairing", {
-    cloud_pairing: secret === null ? null : { relayUrl: "https://relay.example.invalid", secret },
+    cloud_pairing: secret === null ? null : { secret },
   });
   try {
     const chunks = [];

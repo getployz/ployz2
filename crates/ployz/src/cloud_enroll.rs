@@ -27,8 +27,6 @@ pub(crate) enum Error {
     Json(#[from] serde_json::Error),
     #[error("enroll HTTP {status}: {body}")]
     Status { status: u16, body: String },
-    #[error("Cloud response must not carry a Dial Credential")]
-    DialOffered,
     #[error(
         "Cloud {operation} failed: {detail}; rerun the same ployz cloud enroll command without --reset (keep all other options)"
     )]
@@ -44,10 +42,7 @@ impl Error {
             Self::Timeout(error) | Self::Connect(error) | Self::Http(error) => {
                 crate::setup_retry::transient_http(error)
             }
-            Self::Json(_)
-            | Self::Status { .. }
-            | Self::DialOffered
-            | Self::RetrySameCommand { .. } => false,
+            Self::Json(_) | Self::Status { .. } | Self::RetrySameCommand { .. } => false,
         }
     }
 }
@@ -144,19 +139,15 @@ pub(crate) enum Response {
     },
 }
 
-/// Enrollment protocol 2 is a coordinated compatibility break. Unknown fields
-/// remain harmless, while state-shaping fields are required. `dial` remains a
-/// deliberate rejection: a Machine must never hold Dial.
+/// Enrollment responses admit only the declared wire fields.
 #[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum EnrollWire {
     Join {
         pairing: CloudPairing,
         #[serde(default)]
         storage: StorageChoice,
         registration: Box<Registered>,
-        #[serde(default)]
-        dial: Option<serde::de::IgnoredAny>,
     },
     NotYet {
         #[serde(default, rename = "retryAfter")]
@@ -167,8 +158,6 @@ enum EnrollWire {
         pairing: CloudPairing,
         #[serde(default)]
         storage: StorageChoice,
-        #[serde(default)]
-        dial: Option<serde::de::IgnoredAny>,
     },
 }
 
@@ -389,14 +378,10 @@ async fn post_json(
 
 fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
     match serde_json::from_slice::<EnrollWire>(bytes)? {
-        EnrollWire::Join { dial: Some(_), .. } | EnrollWire::Initialize { dial: Some(_), .. } => {
-            Err(Error::DialOffered)
-        }
         EnrollWire::Join {
             pairing,
             storage,
             registration,
-            dial: None,
         } => Ok(Response::Join(Box::new(Join {
             pairing,
             storage,
@@ -409,7 +394,6 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
             resumed,
             pairing,
             storage,
-            dial: None,
         } => Ok(Response::Initialize {
             mode: if resumed {
                 InitializeMode::Resume
@@ -429,11 +413,7 @@ mod tests {
     use super::*;
 
     fn pairing() -> CloudPairing {
-        CloudPairing::parse(
-            "https://relay.example.invalid",
-            PairingCredential::parse("pairing-secret").unwrap(),
-        )
-        .unwrap()
+        CloudPairing::new(PairingCredential::parse("pairing-secret").unwrap())
     }
 
     fn registration() -> Registered {
@@ -482,7 +462,6 @@ mod tests {
             "kind": "join",
             "storage": "zfs",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
             },
             "registration": registration(),
@@ -498,41 +477,42 @@ mod tests {
     }
 
     #[test]
-    fn pairing_with_a_dial_field_is_rejected() {
+    fn pairing_with_an_unknown_field_is_rejected() {
         let value = serde_json::json!({
             "kind": "join",
             "storage": "none",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
-                "dial": "dial-credential",
+                "unexpectedCredential": "unexpected-value",
             },
             "registration": registration(),
         });
         let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("Dial Credential"), "{error}");
+        assert!(error.to_string().contains("unknown field"), "{error}");
     }
 
     #[test]
-    fn top_level_dial_is_rejected() {
+    fn top_level_unknown_field_is_rejected() {
         let value = serde_json::json!({
             "kind": "join",
             "storage": "none",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
             },
             "registration": registration(),
-            "dial": "dial-credential",
+            "unexpectedCredential": "unexpected-value",
         });
         let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("Dial Credential"), "{error}");
+        assert!(error.to_string().contains("unknown field"), "{error}");
     }
 
     #[test]
-    fn enrollment_rejects_invalid_relay_endpoint() {
-        let error = parse_enroll(br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"relayUrl":"not-a-url","secret":"pairing-secret"}}"#).unwrap_err();
-        assert!(error.to_string().contains("Relay endpoint"), "{error}");
+    fn enrollment_rejects_empty_pairing_credential() {
+        let error = parse_enroll(
+            br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":""}}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Pairing Credential"), "{error}");
     }
 
     #[test]
@@ -542,7 +522,6 @@ mod tests {
             "resumed": false,
             "storage": "none",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
             },
         });
@@ -558,33 +537,30 @@ mod tests {
 
     #[test]
     fn initialize_requires_the_protocol_two_resume_directive() {
-        let error = parse_enroll(
-            br#"{"kind":"initialize","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret"}}"#,
-        )
-        .unwrap_err();
+        let error = parse_enroll(br#"{"kind":"initialize","pairing":{"secret":"pairing-secret"}}"#)
+            .unwrap_err();
         assert!(error.to_string().contains("resumed"), "{error}");
     }
 
     #[test]
-    fn initialize_pairing_with_a_dial_field_is_rejected() {
+    fn initialize_pairing_with_an_unknown_field_is_rejected() {
         let value = serde_json::json!({
             "kind": "initialize",
             "resumed": false,
             "storage": "none",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
-                "dial": "dial-credential",
+                "unexpectedCredential": "unexpected-value",
             },
         });
         let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("Dial Credential"), "{error}");
+        assert!(error.to_string().contains("unknown field"), "{error}");
     }
 
     #[test]
     fn enrollment_defaults_missing_storage_to_none() {
         let Response::Initialize { storage, .. } = parse_enroll(
-            br#"{"kind":"initialize","resumed":false,"pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret"}}"#,
+            br#"{"kind":"initialize","resumed":false,"pairing":{"secret":"pairing-secret"}}"#,
         )
         .unwrap() else {
             panic!("expected initialize");
@@ -612,25 +588,14 @@ mod tests {
     }
 
     #[test]
-    fn enroll_ignores_fields_the_cloud_adds_later() {
-        let Response::NotYet { retry_after } =
-            parse_enroll(br#"{"kind":"not_yet","retryAfter":5,"futureHint":"cloud-defined"}"#)
-                .unwrap()
-        else {
-            panic!("expected not_yet");
-        };
-        assert_eq!(retry_after, Duration::from_secs(5));
-    }
-
-    #[test]
-    fn initialize_ignores_fields_the_cloud_adds_later() {
-        let Response::Initialize { pairing: parsed, .. } = parse_enroll(
-            br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"relayUrl":"https://relay.example.invalid","secret":"pairing-secret","privateRelayUrl":"http://relay.internal"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#,
-        )
-        .unwrap() else {
-            panic!("expected initialize");
-        };
-        assert_eq!(parsed, pairing());
+    fn enrollment_rejects_unknown_fields() {
+        for payload in [
+            br#"{"kind":"not_yet","retryAfter":5,"futureHint":"cloud-defined"}"#.as_slice(),
+            br#"{"kind":"initialize","resumed":false,"storage":"none","pairing":{"secret":"pairing-secret"},"issuedAt":"2026-08-19T22:58:13.733Z"}"#.as_slice(),
+        ] {
+            let error = parse_enroll(payload).unwrap_err();
+            assert!(error.to_string().contains("unknown field"), "{error}");
+        }
     }
 
     fn identity() -> EnrollIdentity {
@@ -656,7 +621,6 @@ mod tests {
             "kind": "join",
             "storage": "none",
             "pairing": {
-                "relayUrl": "https://relay.example.invalid",
                 "secret": "pairing-secret",
             },
             "registration": registration(),

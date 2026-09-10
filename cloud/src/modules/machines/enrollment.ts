@@ -150,7 +150,6 @@ export const enrollmentCallbackBodySchema = Schema.Union([
 export type EnrollmentCallback = typeof enrollmentCallbackBodySchema.Type;
 
 export type CloudPairing = {
-  relayUrl: string;
   secret: string;
 };
 

@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use ployz::deploy::{DeployIntent, PlanOptions};
-use ployz::sdk;
 use ployz_core::{
     CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployOperation,
     DeployOutcome, ExecutionError, FailedOperation, MachineAction, MachineId, PROTOCOL_MAJOR,
@@ -11,13 +10,13 @@ use ployz_core::{
 };
 use tokio::time::timeout;
 
-use super::relay::{self, RelaySession};
 use super::support::DiscoveryService;
+use super::unix_session::{self, UnixSession};
 
 #[tokio::test]
 async fn connect_about_returns_contract_and_branches_on_capability_names() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session
         .spawn_machine(
             description.machine_id,
@@ -27,12 +26,7 @@ async fn connect_about_returns_contract_and_branches_on_capability_names() {
 
     let client = timeout(
         Duration::from_secs(5),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            description.machine_id.as_str(),
-        ),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
     )
     .await
     .expect("connect must not hang")
@@ -48,92 +42,9 @@ async fn connect_about_returns_contract_and_branches_on_capability_names() {
 }
 
 #[tokio::test]
-async fn bad_credentials_and_unknown_machines_reject_with_typed_errors() {
-    let description = advertised_description();
-    let session = RelaySession::start().await;
-    let _machine = session
-        .spawn_machine(
-            description.machine_id,
-            DiscoveryService::new(description.clone()),
-        )
-        .await;
-    let machine_id = description.machine_id.as_str();
-
-    let empty = timeout(
-        Duration::from_secs(2),
-        sdk::connect(&session.url, "", relay::PAIRING, machine_id),
-    )
-    .await
-    .expect("empty Dial Credential must not hang");
-    let empty = match empty {
-        Ok(_) => panic!("expected empty Dial Credential to fail"),
-        Err(error) => error,
-    };
-    assert_eq!(empty.code, RpcErrorCode::Unauthenticated);
-
-    let empty_pairing = timeout(
-        Duration::from_secs(2),
-        sdk::connect(&session.url, relay::DIAL, "", machine_id),
-    )
-    .await
-    .expect("empty pairing must not hang");
-    let empty_pairing = match empty_pairing {
-        Ok(_) => panic!("expected empty pairing to fail"),
-        Err(error) => error,
-    };
-    assert_eq!(empty_pairing.code, RpcErrorCode::InvalidArgument);
-
-    let bad = timeout(
-        Duration::from_secs(2),
-        sdk::connect(&session.url, "wrong-secret", relay::PAIRING, machine_id),
-    )
-    .await
-    .expect("bad Dial Credential must not hang");
-    let bad = match bad {
-        Ok(_) => panic!("expected invalid Dial Credential to fail"),
-        Err(error) => error,
-    };
-    assert_eq!(bad.code, RpcErrorCode::Unauthenticated);
-
-    let unknown = timeout(
-        Duration::from_secs(2),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            MachineId::random().as_str(),
-        ),
-    )
-    .await
-    .expect("unknown Machine ID must not hang");
-    let unknown = match unknown {
-        Ok(_) => panic!("expected unknown Machine ID to fail"),
-        Err(error) => error,
-    };
-    assert_eq!(unknown.code, RpcErrorCode::NotFound);
-
-    let invalid = timeout(
-        Duration::from_secs(2),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            "not-a-machine-id",
-        ),
-    )
-    .await
-    .expect("invalid Machine ID must not hang");
-    let invalid = match invalid {
-        Ok(_) => panic!("expected invalid Machine ID to fail"),
-        Err(error) => error,
-    };
-    assert_eq!(invalid.code, RpcErrorCode::InvalidArgument);
-}
-
-#[tokio::test]
 async fn close_drops_the_session_and_repeated_lifecycle_works() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session
         .spawn_machine(
             description.machine_id,
@@ -143,7 +54,7 @@ async fn close_drops_the_session_and_repeated_lifecycle_works() {
     let machine_id = description.machine_id.as_str();
 
     for _ in 0..3 {
-        let client = sdk::connect(&session.url, relay::DIAL, relay::PAIRING, machine_id)
+        let client = unix_session::connect(&session.directory, machine_id)
             .await
             .unwrap();
         assert!(
@@ -166,21 +77,16 @@ async fn close_drops_the_session_and_repeated_lifecycle_works() {
 #[tokio::test]
 async fn deploy_returns_success_for_a_completed_run() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session
         .spawn_machine(
             description.machine_id,
             DiscoveryService::new(description.clone()),
         )
         .await;
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
 
     let outcome = client
         .run(
@@ -215,7 +121,7 @@ async fn deploy_returns_success_for_a_completed_run() {
 #[tokio::test]
 async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.create_container_error = Some(RpcError {
         code: RpcErrorCode::Unavailable,
@@ -223,14 +129,9 @@ async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
         details: serde_json::Value::Null,
     });
     let _machine = session.spawn_machine(description.machine_id, service).await;
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
     let outcome = client
         .run(
             DeployIntent::apply_one(
@@ -275,7 +176,7 @@ async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
 #[tokio::test]
 async fn deploy_planning_error_is_a_typed_rpc_error() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session
         .spawn_machine(description.machine_id, {
             let mut service = DiscoveryService::new(description.clone());
@@ -283,14 +184,9 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
             service
         })
         .await;
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
 
     let error = client
         .run(
@@ -317,7 +213,7 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
 #[tokio::test]
 async fn preview_planning_error_is_a_typed_rpc_error() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session
         .spawn_machine(description.machine_id, {
             let mut service = DiscoveryService::new(description.clone());
@@ -325,14 +221,9 @@ async fn preview_planning_error_is_a_typed_rpc_error() {
             service
         })
         .await;
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
 
     let error = client
         .preview(DeployIntent::apply_one(
@@ -356,21 +247,16 @@ async fn preview_planning_error_is_a_typed_rpc_error() {
 #[tokio::test]
 async fn preview_project_removal_reserved_is_a_typed_rpc_error() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session
         .spawn_machine(
             description.machine_id,
             DiscoveryService::new(description.clone()),
         )
         .await;
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
 
     let error = client
         .preview_project_removal(ProjectName::system(), ployz::deploy::VolumeFate::Preserve)
@@ -387,21 +273,16 @@ async fn preview_project_removal_reserved_is_a_typed_rpc_error() {
 #[tokio::test]
 async fn preview_then_confirm_executes_the_shown_plan() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session
         .spawn_machine(
             description.machine_id,
             DiscoveryService::new(description.clone()),
         )
         .await;
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
     let intent = DeployIntent::apply_one(
         ProjectName::parse("app").unwrap(),
         spec("web"),
@@ -435,21 +316,16 @@ async fn preview_then_confirm_executes_the_shown_plan() {
 #[tokio::test]
 async fn confirm_after_close_fails_closed() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session
         .spawn_machine(
             description.machine_id,
             DiscoveryService::new(description.clone()),
         )
         .await;
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
     let preview = client
         .preview(DeployIntent::apply_one(
             ProjectName::parse("app").unwrap(),
@@ -468,7 +344,7 @@ async fn confirm_after_close_fails_closed() {
 #[tokio::test]
 async fn node_smoke_covers_connect_about_preview_run_and_close() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session
         .spawn_machine(
             description.machine_id,
@@ -534,7 +410,7 @@ async fn sdk_storage_shortage_preserves_numbers_and_actions_without_mutating() {
     description
         .capabilities
         .insert(CapabilityName::parse(ployz_core::MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap());
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.storage_capacity = Some(ployz_core::StorageCapacity {
         backing: ployz_core::StorageBacking::Unallocated {
@@ -547,14 +423,9 @@ async fn sdk_storage_shortage_preserves_numbers_and_actions_without_mutating() {
     let created = service.created_volumes.clone();
     let target_id = service.machines.first().unwrap().machine.id;
     let _machine = session.spawn_machine(description.machine_id, service).await;
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
     let services = ["data", "server"].map(|name| {
         let mut value = serde_json::to_value(spec_with_volume(name, name)).unwrap();
         *value.pointer_mut("/volumes/0/source").unwrap() = serde_json::json!({ "kind":"provisioned", "name":name, "maximum_bytes":30 * ployz_core::STORAGE_GIB });
@@ -594,7 +465,7 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
     description
         .capabilities
         .insert(CapabilityName::parse(ployz_core::MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap());
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     let target = service.machines.first().unwrap().machine.id;
     let project = ProjectName::parse("app").unwrap();
@@ -644,14 +515,9 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
     service.recover_volume_on_storage_inspect = Some(volume);
     let created = service.created_volumes.clone();
     let _machine = session.spawn_machine(description.machine_id, service).await;
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
     let preview = client
         .preview(DeployIntent::apply_one(project, requested, skip_health()))
         .await
@@ -672,19 +538,14 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
 #[tokio::test]
 async fn sdk_close_interrupts_blocked_data_loss_read() {
     let description = advertised_description();
-    let relay = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let received = std::sync::Arc::new(tokio::sync::Notify::new());
     let mut service = DiscoveryService::new(description.clone());
     service.list_machines_blocked = Some(received.clone());
-    let _machine = relay.spawn_machine(description.machine_id, service).await;
-    let client = sdk::connect(
-        &relay.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
     let pending = {
         let client = client.clone();
         tokio::spawn(async move { client.data_loss_if_cluster_destroyed().await })
@@ -704,19 +565,14 @@ async fn sdk_close_interrupts_blocked_data_loss_read() {
 #[tokio::test]
 async fn sdk_close_interrupts_running_deploy_with_uncertain_error() {
     let description = advertised_description();
-    let relay = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let received = std::sync::Arc::new(tokio::sync::Notify::new());
     let mut service = DiscoveryService::new(description.clone());
     service.create_container_blocked = Some(received.clone());
-    let _machine = relay.spawn_machine(description.machine_id, service).await;
-    let client = sdk::connect(
-        &relay.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
     let preview = client
         .preview(DeployIntent::apply_one(
             ProjectName::parse("app").unwrap(),

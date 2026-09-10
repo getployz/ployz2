@@ -5,11 +5,9 @@ use super::*;
 #[tokio::test]
 async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
     let mut founder = founder_machine();
-    founder.accepts_ingress = false;
     let machine_id = founder.id;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    founder.accepts_ingress = false;
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let registration = Registered {
         assigned_machine: founder,
         visible_peers: Vec::new(),
@@ -52,7 +50,6 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
         enroll.callbacks(),
         vec![json!({ "machineId": machine_id.as_str(), "pairingCredential": PAIRING }); 1]
     );
-    wait_for_held(&relay.url, PAIRING, machine_id).await;
 
     enroll.set_callback_status(200);
     let output = init_cloud(
@@ -79,9 +76,7 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
 async fn new_founding_claim_with_reset_resets_then_initializes() {
     let founder = founder_machine();
     let machine_id = founder.id;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::start(json!({
         "kind": "initialize",
         "resumed": false,
@@ -137,16 +132,13 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
             "pairingCredential": PAIRING,
         })]
     );
-    wait_for_held(&relay.url, PAIRING, machine_id).await;
 }
 
 #[tokio::test]
 async fn resumed_founder_uses_the_matching_participating_machine() {
     let founder = founder_machine();
     let machine_id = founder.id;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::start(json!({
         "kind": "initialize",
         "resumed": true,
@@ -209,7 +201,6 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
 async fn resumed_founder_converges_before_pairing_and_final_completion() {
     let mut founder = founder_machine();
     founder.public_ip = Some("192.0.2.1".parse().unwrap());
-    let machine_id = founder.id;
     let requested = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Default::default(), None);
     let ingress = container_on(
         &founder,
@@ -251,9 +242,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         .unwrap();
     let events = EventLog::default();
     let daemon = daemon.with_events(events.clone());
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::script_recording(
         [json!({
             "kind": "initialize",
@@ -304,18 +293,15 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         events.entries(),
         ["set_cloud_pairing", "publish", "callback"]
     );
-    wait_for_held(&relay.url, PAIRING, machine_id).await;
 }
 
 #[tokio::test]
 async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let mut founder = founder_machine();
-    founder.public_ip = Some("127.0.0.1".parse().unwrap());
     let machine_id = founder.id;
+    founder.public_ip = Some("127.0.0.1".parse().unwrap());
     let events = EventLog::default();
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::script_recording(
         [
             json!({
@@ -426,15 +412,12 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     assert_eq!(daemon.reset_count(), 0);
     assert_eq!(enroll.posts().len(), 2);
     assert_eq!(enroll.callbacks().len(), 1);
-    wait_for_held(&relay.url, PAIRING, machine_id).await;
 }
 
 #[tokio::test]
 async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservation() {
     for replaced in [true, false] {
-        let relay = RelayListen::start().await;
-        let pairing =
-            CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+        let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
         let enroll = EnrollListen::start(json!({
             "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
         }))
@@ -489,9 +472,7 @@ async fn founder_recovery_rejects_replaced_identity_and_guides_failed_reservatio
 async fn publication_failure_does_not_complete_and_resumes_the_same_founder() {
     let mut founder = founder_machine();
     founder.accepts_ingress = false;
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::script([
         json!({ "kind": "initialize", "resumed": false, "pairing": pairing }),
         json!({ "kind": "initialize", "resumed": true, "pairing": pairing }),

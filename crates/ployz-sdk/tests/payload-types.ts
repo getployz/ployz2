@@ -202,10 +202,7 @@ const bind = { kind: "bind", machine_path: "/srv" as MachinePath, create_machine
 // The façade accepts generated payloads and keeps destructive actions explicit.
 declare const client: Client;
 const connectOptions = {
-  relayUrl: "https://relay.example",
-  bearer: "bearer",
-  pairing: "pairing",
-  machineId: "machine" as MachineId,
+  connections: [{ unix: "/tmp/machine.sock", machine_id: "machine" as MachineId }],
 };
 connect(connectOptions) satisfies Promise<Client>;
 const identity: RegisterRequest = {
@@ -240,7 +237,7 @@ client.destroyCluster({ confirmed: [] }) satisfies Promise<ClusterTeardown>;
 // @ts-expect-error destructive methods require an explicit confirmation object
 client.removeMachine("machine", []);
 // @ts-expect-error MachineId is branded; a plain string cannot cross the façade
-connect({ ...connectOptions, machineId: "machine" });
+connect({ connections: [{ unix: "/tmp/machine.sock", machine_id: "machine" }] });
 
 declare const watchFrame: RuntimeWatchView;
 watchFrame.services satisfies ServiceObservation[];

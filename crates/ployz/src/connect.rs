@@ -29,11 +29,7 @@ use crate::context::{
     SelectedConnections, Transport, expand_home, select_connections,
 };
 
-mod relay;
-pub(crate) use relay::revoke_pairing as revoke_cloud_pairing;
-
 pub use crate::cluster::{Client, MachineImagesObservation};
-pub use ployz_relay::{DialCredential, PairingCredential};
 
 pub const DEFAULT_LOCAL_SOCKET: &str = "/run/ployz/ployz.sock";
 
@@ -146,16 +142,6 @@ impl Connector for SystemConnector {
                     ),
                 )
             })?,
-            Transport::Relay {
-                url,
-                credential,
-                pairing,
-            } => {
-                let machine_id = connection
-                    .machine_id()
-                    .expect("Relay connections carry an entry Machine ID");
-                relay::connect_channel(url, credential, pairing, machine_id).await
-            }
         }
     }
 
@@ -191,7 +177,6 @@ impl Connector for SystemConnector {
                     .map(|stream| Box::new(stream) as BoxProxyStream)
                     .map_err(ConnectError::from_ssh_spawn)
             }
-            Transport::Relay { .. } => Err(ConnectError::ProxyUnsupported(connection.to_string())),
         }
     }
 }
@@ -415,20 +400,9 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             message: error.to_string(),
             details: Value::Null,
         },
-        ConnectError::InvalidDialCredential => RpcError {
-            code: RpcErrorCode::Unauthenticated,
-            message: ConnectError::InvalidDialCredential.to_string(),
-            details: Value::Null,
-        },
-        ConnectError::UnknownMachine => RpcError {
-            code: RpcErrorCode::NotFound,
-            message: ConnectError::UnknownMachine.to_string(),
-            details: Value::Null,
-        },
         error @ (ConnectError::Attempt(_)
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
-        | ConnectError::Relay(_)
         | ConnectError::MissingMachineDetails
         | ConnectError::SshClientMissing(_)
         | ConnectError::SshProbe { .. }
@@ -609,37 +583,6 @@ pub(crate) async fn connect_with_ssh_timeout(
     .await
 }
 
-/// Open a Machine RPC channel through Cloud Relay.
-///
-/// Succeeds only after Relay Dial and Machine Attach produce a usable RPC
-/// channel. Does not mint Attach credentials, perform Cloud Pairing, or choose
-/// an entry Machine.
-///
-/// # Errors
-///
-/// Returns [`ConnectError::InvalidDialCredential`] when the bearer is rejected,
-/// [`ConnectError::UnknownMachine`] when the Machine ID is not registered, or
-/// another [`ConnectError`] when the Relay or inner RPC channel fails.
-pub async fn connect_relay(
-    url: impl AsRef<str>,
-    credential: DialCredential,
-    pairing: PairingCredential,
-    machine_id: MachineId,
-) -> Result<Client, ConnectError> {
-    let connector: Arc<dyn Connector> = Arc::new(SystemConnector::default());
-    connect_one(
-        &Connection::relay(
-            ployz_core::RelayEndpoint::parse(url.as_ref())?,
-            credential,
-            pairing,
-            machine_id,
-        ),
-        &ConnectionSource::Direct,
-        &connector,
-    )
-    .await
-}
-
 #[derive(Debug, Error)]
 pub enum ConnectError {
     #[error("entry Machine identity mismatch: expected {expected}, received {actual}")]
@@ -647,10 +590,6 @@ pub enum ConnectError {
         expected: MachineId,
         actual: MachineId,
     },
-    #[error("invalid Dial Credential")]
-    InvalidDialCredential,
-    #[error("unknown Machine ID")]
-    UnknownMachine,
     #[error("connection attempt failed: {0}")]
     Attempt(Cow<'static, str>),
     #[error("connection attempt failed: {0}")]
@@ -691,8 +630,6 @@ pub enum ConnectError {
         #[source]
         last: Option<Box<ConnectError>>,
     },
-    #[error(transparent)]
-    Relay(ployz_relay::ClientError),
     #[error("Machine RPC failed: {0}")]
     Rpc(TransportError),
     #[error("Machine RPC payload failed: {0}")]
@@ -727,14 +664,9 @@ impl ConnectError {
             | Self::Dial(_)
             | Self::SshProbe { .. }
             | Self::Join(_) => true,
-            Self::Relay(error) => error
-                .status()
-                .is_none_or(|status| matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)),
             Self::Rpc(error) => error.is_retryable(),
             Self::Remote(_)
             | Self::IdentityMismatch { .. }
-            | Self::InvalidDialCredential
-            | Self::UnknownMachine
             | Self::MissingMachineDetails
             | Self::SshClientMissing(_)
             | Self::Routing(_)
@@ -796,7 +728,6 @@ impl ConnectError {
             self,
             Self::Attempt(_) | Self::Io(_) | Self::Dial(_) | Self::AllFailed { .. }
         ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
-            || matches!(self, Self::Relay(_) if self.is_retryable())
     }
 }
 

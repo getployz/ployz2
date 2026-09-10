@@ -40,12 +40,6 @@ export type ConnectOptions = {
   readonly signal?: AbortSignal;
   /** Total connection/session lifetime budget; close cancels this timer. */
   readonly timeoutMs?: number;
-} | {
-  /** HTTP(S) base URL without credentials, query or fragment; validated before dialing. */
-  readonly relayUrl: string;
-  readonly bearer: string;
-  readonly pairing: string;
-  readonly machineId: MachineId;
 };
 
 export type WatchOptions = {

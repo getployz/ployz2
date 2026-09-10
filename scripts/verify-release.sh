@@ -31,7 +31,6 @@ require_archives() {
     for archive in "$@"; do
         case $archive in
             ployzd_*) check_archive "$archive" $'ployz-tailcat\nployz-uninstall\nployzd' ;;
-            ployz-relay_*) check_archive "$archive" ployz-relay ;;
             *) check_archive "$archive" $'ployz\nployz-tailcat' ;;
         esac
     done
@@ -72,10 +71,8 @@ run_archive() {
     else
         output=$("$directory/installed" version)
     fi
-    if [ "$binary" != ployz-relay ]; then
-        helper_output=$($runner "$directory/ployz-tailcat" version)
-        [ "$helper_output" = "$EXPECTED_VERSION" ] || fail "$archive helper returned version '$helper_output'"
-    fi
+    helper_output=$($runner "$directory/ployz-tailcat" version)
+    [ "$helper_output" = "$EXPECTED_VERSION" ] || fail "$archive helper returned version '$helper_output'"
     rm -rf "$directory"
     [ "$output" = "$EXPECTED_VERSION" ] || fail "$archive returned version '$output'"
 }
@@ -87,13 +84,11 @@ case "${1:-}" in
         run_archive ployz_macos_amd64.tar.gz ployz "arch -x86_64"
         ;;
     linux)
-        require_archives ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz ployz-relay_linux_amd64.tar.gz ployz-relay_linux_arm64.tar.gz
+        require_archives ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz
         run_archive ployz_linux_amd64.tar.gz ployz
         run_archive ployzd_linux_amd64.tar.gz ployzd
-        run_archive ployz-relay_linux_amd64.tar.gz ployz-relay
         run_archive ployz_linux_arm64.tar.gz ployz qemu-aarch64
         run_archive ployzd_linux_arm64.tar.gz ployzd qemu-aarch64
-        run_archive ployz-relay_linux_arm64.tar.gz ployz-relay qemu-aarch64
         for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
             probe="$ROOT/target/$target/release/sqlite-probe"
             chmod +x "$probe"
@@ -103,23 +98,20 @@ case "${1:-}" in
                 "$probe" "$(mktemp)"
             fi
         done
-        for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz ployz-relay_linux_amd64.tar.gz ployz-relay_linux_arm64.tar.gz; do
+        for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz; do
             directory=$(mktemp -d)
             tar -xzf "$DIST/$archive" -C "$directory"
             binary=ployz
             case "$archive" in
                 ployzd_*) binary=ployzd ;;
-                ployz-relay_*) binary=ployz-relay ;;
             esac
             file "$directory/$binary" | grep -Fq 'statically linked' || fail "$archive is dynamically linked"
-            if [ "$binary" != ployz-relay ]; then
-                file "$directory/ployz-tailcat" | grep -Fq 'statically linked' || fail "$archive helper is dynamically linked"
-            fi
+            file "$directory/ployz-tailcat" | grep -Fq 'statically linked' || fail "$archive helper is dynamically linked"
             rm -rf "$directory"
         done
         ;;
     artifacts)
-        require_archives ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz ployz-relay_linux_amd64.tar.gz ployz-relay_linux_arm64.tar.gz
+        require_archives ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz
         check_checksums_and_formula
         ;;
     *) fail "usage: $0 macos|linux|artifacts" ;;

@@ -10,8 +10,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ployz_core::{MachineId, RelayEndpoint};
-use ployz_relay::{DialCredential, PairingCredential};
+use ployz_core::MachineId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
@@ -429,13 +428,6 @@ pub enum Transport {
     },
     Tcp(SocketAddr),
     Unix(PathBuf),
-    /// Cloud Relay Dial. Not persisted. The entry Machine ID lives on
-    /// [`Connection::machine_id`].
-    Relay {
-        url: RelayEndpoint,
-        credential: DialCredential,
-        pairing: PairingCredential,
-    },
 }
 
 /// Administrative capability. Only serialization and protected helper input expose it.
@@ -527,26 +519,6 @@ impl Connection {
         })
     }
 
-    /// Connect through Cloud Relay with a caller-supplied Dial Credential,
-    /// Pairing Credential, and entry Machine ID. Does not mint credentials or
-    /// choose a Machine.
-    #[must_use]
-    pub fn relay(
-        url: RelayEndpoint,
-        credential: DialCredential,
-        pairing: PairingCredential,
-        machine_id: MachineId,
-    ) -> Self {
-        Self {
-            transport: Transport::Relay {
-                url,
-                credential,
-                pairing,
-            },
-            machine_id: Some(machine_id),
-        }
-    }
-
     #[must_use]
     pub fn with_machine_id(mut self, machine_id: MachineId) -> Self {
         self.machine_id = Some(machine_id);
@@ -570,10 +542,7 @@ impl Connection {
     pub fn ssh_key_file(&self) -> Option<&Path> {
         match &self.transport {
             Transport::Ssh { key_file, .. } => key_file.as_deref(),
-            Transport::Tailcat(_)
-            | Transport::Tcp(_)
-            | Transport::Unix(_)
-            | Transport::Relay { .. } => None,
+            Transport::Tailcat(_) | Transport::Tcp(_) | Transport::Unix(_) => None,
         }
     }
 
@@ -593,7 +562,6 @@ impl fmt::Display for Connection {
             Transport::Ssh { destination, .. } => write!(formatter, "ssh://{destination}"),
             Transport::Tcp(address) => write!(formatter, "tcp://{address}"),
             Transport::Unix(path) => write!(formatter, "unix://{}", path.display()),
-            Transport::Relay { url, .. } => write!(formatter, "{url}"),
         }
     }
 }
@@ -640,11 +608,6 @@ impl Serialize for Connection {
             Transport::Ssh { destination, .. } => TransportFile::Ssh(destination.to_string()),
             Transport::Tcp(address) => TransportFile::Tcp(*address),
             Transport::Unix(path) => TransportFile::Unix(path.clone()),
-            Transport::Relay { .. } => {
-                return Err(serde::ser::Error::custom(
-                    "Cloud Relay connections are not persisted",
-                ));
-            }
         };
         ConnectionFile {
             transport,

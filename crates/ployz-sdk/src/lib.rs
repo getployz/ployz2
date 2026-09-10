@@ -28,16 +28,6 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value> {
     ployz_core::config::config_request(input).map_err(|error| Error::from_reason(error.to_string()))
 }
 
-/// Dial Credential, Pairing Credential, and selected entry Machine for a
-/// Relay-only session.
-#[napi(object)]
-pub struct ConnectOptions {
-    pub relay_url: String,
-    pub bearer: String,
-    pub pairing: String,
-    pub machine_id: String,
-}
-
 /// One cancellable connection attempt. Owns no shared helper manager.
 #[napi]
 pub struct PendingConnection {
@@ -417,7 +407,7 @@ impl Client {
         to_json(&teardown)
     }
 
-    /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.
+    /// Drop the Client and transport session. Aborts in-flight Watch and Deploy.
     #[napi]
     pub async fn close(&self) {
         self.inner.close().await;
@@ -504,26 +494,6 @@ impl WatchStream {
     pub fn cancel(&self) {
         self.inner.cancel();
     }
-}
-
-/// Connect to one selected Machine through Cloud Relay.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] JSON payload when the Dial Credential,
-/// pairing, or Machine ID is rejected, or when the Relay or inner RPC channel
-/// fails.
-#[napi]
-pub async fn connect(options: ConnectOptions) -> Result<Client> {
-    let inner = sdk::connect(
-        &options.relay_url,
-        &options.bearer,
-        &options.pairing,
-        &options.machine_id,
-    )
-    .await
-    .map_err(rpc_to_napi)?;
-    Ok(Client { inner })
 }
 
 fn volume_fate(destroy_volumes: bool) -> ployz::deploy::VolumeFate {

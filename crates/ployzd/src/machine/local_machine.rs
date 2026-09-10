@@ -475,7 +475,7 @@ impl LocalMachine {
     }
 
     /// Isolation lock: replica larger than three and every other Machine
-    /// uncontactable on Membership Observation. Mesh membership, not Relay.
+    /// uncontactable on Membership Observation.
     ///
     /// # Errors
     ///
@@ -542,8 +542,7 @@ impl LocalMachine {
             .await
     }
 
-    /// Persist Cloud Pairing so this Machine can hold Relay Register, or clear
-    /// it so Register is dropped.
+    /// Persist or clear the current Cloud Pairing credential.
     ///
     /// # Errors
     ///

@@ -34,7 +34,7 @@ use crate::{
         BoxProxyStream, ConnectError, Connector, TARGET_RPC_TIMEOUT, TransportError,
         UNARY_RETRY_DELAYS, apply_timeout, rpc_error, stop_rpc_timeout, target_request,
     },
-    context::{Connection, ConnectionSource, Transport},
+    context::{Connection, ConnectionSource},
     deploy::{DeploySnapshot, VolumeSnapshot},
     service::ContainerOperationFailure,
 };
@@ -865,21 +865,16 @@ async fn refuse_last_cloud_paired(
     if machines.len() != 1 {
         return Ok(());
     }
-    let paired = match client.connection.transport() {
-        Transport::Relay { .. } => true,
-        Transport::Tailcat(_) | Transport::Ssh { .. } | Transport::Tcp(_) | Transport::Unix(_) => {
-            // Inspect errors must not block unpaired last-Machine removal.
-            client
-                .invoke::<op::Inspect>(
-                    InspectRequest::default(),
-                    &MachineTarget::from(&selected),
-                    Some(TARGET_RPC_TIMEOUT),
-                )
-                .await
-                .map(|details| details.cloud_paired)
-                .unwrap_or(false)
-        }
-    };
+    // Inspect errors must not block unpaired last-Machine removal.
+    let paired = client
+        .invoke::<op::Inspect>(
+            InspectRequest::default(),
+            &MachineTarget::from(&selected),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+        .map(|details| details.cloud_paired)
+        .unwrap_or(false);
     if !paired {
         return Ok(());
     }

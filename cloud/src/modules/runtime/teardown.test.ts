@@ -178,12 +178,12 @@ describe("teardown Data Loss", () => {
     expect(
       incompleteTeardownOutcome("verified", { clusterTeardown }),
     ).toEqual({
-      rustMustRevokePairing: false,
+      pairingRevocationUnconfirmed: false,
       runtimeMembership: "unknown",
       clusterTeardown,
     });
     expect(teardownOutcome("verified", false)).toEqual({
-      rustMustRevokePairing: false,
+      pairingRevocationUnconfirmed: false,
       runtimeMembership: "verified_zero",
     });
   });
@@ -191,13 +191,13 @@ describe("teardown Data Loss", () => {
   it("describes verified zero separately from unknown runtime membership", () => {
     expect(
       teardownCompletedDescription({
-        rustMustRevokePairing: false,
+        pairingRevocationUnconfirmed: false,
         runtimeMembership: "verified_zero",
       }),
     ).toBe("The cluster was removed. Cloud recorded verified zero.");
     expect(
       teardownCompletedDescription({
-        rustMustRevokePairing: true,
+        pairingRevocationUnconfirmed: true,
         runtimeMembership: "unknown",
       }),
     ).toBe(

@@ -9,9 +9,9 @@ use ployz_core::{
 };
 use tokio::time::timeout;
 
-use super::relay::{self, RelaySession};
 use super::sdk::advertised_description;
 use super::support::DiscoveryService;
+use super::unix_session::{self, UnixSession};
 
 fn enrollment_service(description: ployz_core::ContractDescription) -> DiscoveryService {
     let mut service = DiscoveryService::new(description);
@@ -22,17 +22,16 @@ fn enrollment_service(description: ployz_core::ContractDescription) -> Discovery
 #[tokio::test]
 async fn session_observes_and_registers_saved_assignment_until_closed() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _machine = session
         .spawn_machine(
             description.machine_id,
             enrollment_service(description.clone()),
         )
         .await;
-    let held = wait_held(&session.url, description.machine_id).await;
     let identity = joiner_identity();
 
-    let client = sdk::connect(&session.url, relay::DIAL, relay::PAIRING, held.as_str())
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
         .await
         .unwrap();
     let snapshot = client.observe_enrollment().await.unwrap();
@@ -54,75 +53,9 @@ async fn session_observes_and_registers_saved_assignment_until_closed() {
 }
 
 #[tokio::test]
-async fn connect_rejects_bad_dial_pairing_and_unknown_machine() {
-    let description = advertised_description();
-    let session = RelaySession::start().await;
-    let _machine = session
-        .spawn_machine(
-            description.machine_id,
-            enrollment_service(description.clone()),
-        )
-        .await;
-    let machine_id = description.machine_id.as_str();
-
-    let empty = timeout(
-        Duration::from_secs(2),
-        sdk::connect(&session.url, "", relay::PAIRING, machine_id),
-    )
-    .await
-    .expect("empty Dial Credential must not hang");
-    assert_eq!(unwrap_rpc(empty).code, RpcErrorCode::Unauthenticated);
-
-    let empty_pairing = timeout(
-        Duration::from_secs(2),
-        sdk::connect(&session.url, relay::DIAL, "", machine_id),
-    )
-    .await
-    .expect("empty pairing must not hang");
-    assert_eq!(
-        unwrap_rpc(empty_pairing).code,
-        RpcErrorCode::InvalidArgument
-    );
-
-    let bad = timeout(
-        Duration::from_secs(2),
-        sdk::connect(&session.url, "wrong-secret", relay::PAIRING, machine_id),
-    )
-    .await
-    .expect("bad Dial Credential must not hang");
-    assert_eq!(unwrap_rpc(bad).code, RpcErrorCode::Unauthenticated);
-
-    let unknown = timeout(
-        Duration::from_secs(2),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            MachineId::random().as_str(),
-        ),
-    )
-    .await
-    .expect("unknown Machine ID must not hang");
-    assert_eq!(unwrap_rpc(unknown).code, RpcErrorCode::NotFound);
-
-    let invalid = timeout(
-        Duration::from_secs(2),
-        sdk::connect(
-            &session.url,
-            relay::DIAL,
-            relay::PAIRING,
-            "not-a-machine-id",
-        ),
-    )
-    .await
-    .expect("invalid Machine ID must not hang");
-    assert_eq!(unwrap_rpc(invalid).code, RpcErrorCode::InvalidArgument);
-}
-
-#[tokio::test]
 async fn register_isolation_locked_is_rpc_error() {
     let description = advertised_description();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let service = enrollment_service(description.clone());
     service.set_register_error(RpcError {
         code: RpcErrorCode::Unavailable,
@@ -130,16 +63,10 @@ async fn register_isolation_locked_is_rpc_error() {
         details: serde_json::Value::Null,
     });
     let _machine = session.spawn_machine(description.machine_id, service).await;
-    wait_held(&session.url, description.machine_id).await;
 
-    let client = sdk::connect(
-        &session.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
     let snapshot = client.observe_enrollment().await.unwrap();
     let assignment = ployz_core::allocate_enrollment(&joiner_identity(), &snapshot, &[]).unwrap();
     let error = client
@@ -156,7 +83,7 @@ async fn register_isolation_locked_is_rpc_error() {
 async fn node_smoke_covers_session_register() {
     let description = advertised_description();
     let isolated_id = MachineId::parse("ffffffffffffffffffffffffffffffff").unwrap();
-    let session = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let _entry = session
         .spawn_machine(
             description.machine_id,
@@ -173,8 +100,6 @@ async fn node_smoke_covers_session_register() {
         details: serde_json::Value::Null,
     });
     let _isolated = session.spawn_machine(isolated_id, isolated).await;
-    wait_held(&session.url, description.machine_id).await;
-    wait_held(&session.url, isolated_id).await;
 
     session
         .assert_sdk_script(
@@ -188,27 +113,6 @@ async fn node_smoke_covers_session_register() {
         .await;
 }
 
-async fn wait_held(url: &str, machine_id: MachineId) -> MachineId {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        let listed = ployz_relay::RelayClient::new(&ployz_core::RelayEndpoint::parse(url).unwrap())
-            .unwrap()
-            .list(relay::DIAL, relay::PAIRING)
-            .await
-            .unwrap();
-        if let Some(row) = listed
-            .iter()
-            .find(|row| row.machine_id().ok() == Some(machine_id))
-        {
-            return row.machine_id().unwrap();
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("List did not return the echoed Machine");
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 fn joiner_identity() -> RegisterRequest {
     RegisterRequest {
         machine_id: MachineId::random(),
@@ -220,13 +124,6 @@ fn joiner_identity() -> RegisterRequest {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],
         runtime: Default::default(),
-    }
-}
-
-fn unwrap_rpc<T>(result: Result<T, RpcError>) -> RpcError {
-    match result {
-        Ok(_) => panic!("expected RpcError"),
-        Err(error) => error,
     }
 }
 
@@ -274,19 +171,14 @@ async fn ordered_connections_confirm_before_register_and_never_replay() {
 #[tokio::test]
 async fn close_interrupts_register_with_uncertain_outcome() {
     let description = advertised_description();
-    let relay = RelaySession::start().await;
+    let session = UnixSession::start().await;
     let received = std::sync::Arc::new(tokio::sync::Notify::new());
     let mut service = enrollment_service(description.clone());
     service.register_blocked = Some(received.clone());
-    let _machine = relay.spawn_machine(description.machine_id, service).await;
-    let client = sdk::connect(
-        &relay.url,
-        relay::DIAL,
-        relay::PAIRING,
-        description.machine_id.as_str(),
-    )
-    .await
-    .unwrap();
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
     let snapshot = client.observe_enrollment().await.unwrap();
     let assignment = ployz_core::allocate_enrollment(&joiner_identity(), &snapshot, &[]).unwrap();
     let pending = {
