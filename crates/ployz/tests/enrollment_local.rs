@@ -1,3 +1,4 @@
+use ployz::context::{Config, Connection, Context};
 use ployz::enrollment::local::{has_assignment, save_assignment};
 use ployz_core::{
     AdvertisedEndpoint, EnrollmentAssignment, EnrollmentSnapshot, MachineId, MachineName,
@@ -49,13 +50,38 @@ fn enrollment_process_worker() {
         .unwrap();
     let result_path = std::env::var("PLOYZ_TEST_ENROLLMENT_RESULT").unwrap();
     let snapshot = snapshot(1); // every independent command holds the same stale observation
+    let stale_config = Config::load(Path::new(&directory).join("config.yaml")).unwrap();
     fs::write(format!("{result_path}.ready"), []).unwrap();
     let assignment = save_assignment(Path::new(&directory), &request(seed), &snapshot).unwrap();
+    fs::write(format!("{result_path}.committed"), []).unwrap();
+    stale_config
+        .save_connection(
+            "prod",
+            Connection::unix(format!("/tmp/machine-{seed}.sock"))
+                .unwrap()
+                .with_machine_id(assignment.machine.id),
+        )
+        .unwrap();
     fs::write(result_path, serde_json::to_vec(&assignment).unwrap()).unwrap();
 }
 
 fn concurrent(directory: &Path, seeds: &[u8]) -> Vec<EnrollmentAssignment> {
     fs::create_dir_all(directory).unwrap();
+    let config_path = directory.join("config.yaml");
+    if !config_path.exists() {
+        Config::new(
+            &config_path,
+            Some("prod".into()),
+            std::collections::BTreeMap::from([(
+                "prod".into(),
+                Context {
+                    connections: vec![],
+                },
+            )]),
+        )
+        .save()
+        .unwrap();
+    }
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -64,10 +90,19 @@ fn concurrent(directory: &Path, seeds: &[u8]) -> Vec<EnrollmentAssignment> {
         .open(directory.join("lock"))
         .unwrap();
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    let config_lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(config_path.with_added_extension("lock"))
+        .unwrap();
+    rustix::fs::flock(&config_lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
     let mut children = Vec::new();
     for (index, seed) in seeds.iter().enumerate() {
         let output = directory.join(format!("result-{index}"));
         let _ = fs::remove_file(output.with_extension("ready"));
+        let _ = fs::remove_file(output.with_extension("committed"));
         children.push((
             Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "enrollment_process_worker"])
@@ -98,6 +133,22 @@ fn concurrent(directory: &Path, seeds: &[u8]) -> Vec<EnrollmentAssignment> {
             .all(|(child, _)| child.try_wait().unwrap().is_none())
     );
     drop(lock);
+    while children
+        .iter()
+        .any(|(_, output)| !output.with_extension("committed").exists())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "children did not commit assignments"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        children
+            .iter_mut()
+            .all(|(child, _)| child.try_wait().unwrap().is_none())
+    );
+    drop(config_lock);
     children
         .into_iter()
         .map(|(mut child, output)| {
@@ -117,6 +168,16 @@ fn independent_processes_serialize_stale_snapshots_and_resume_after_exit() {
     let subnets: std::collections::HashSet<_> =
         assignments.iter().map(|a| a.machine.subnet).collect();
     assert_eq!(subnets.len(), 3);
+    let config = Config::load(temp.path().join("config.yaml")).unwrap();
+    let connections = &config.contexts.get("prod").unwrap().connections;
+    assert_eq!(connections.len(), 3);
+    for assignment in &assignments {
+        assert!(
+            connections
+                .iter()
+                .any(|connection| connection.machine_id() == Some(&assignment.machine.id))
+        );
+    }
     assert!(
         assignments
             .iter()
@@ -164,4 +225,45 @@ fn aliases_share_history_unrelated_scopes_do_not_and_inputs_conflict() {
         save_assignment(temp.path(), &request(2), &original).unwrap(),
         saved
     );
+}
+
+#[test]
+fn moving_a_reset_machine_transfers_scope_witness_without_merging_history() {
+    for different_network in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let original = snapshot(1);
+        let previous = save_assignment(temp.path(), &request(2), &original).unwrap();
+        let pending = save_assignment(temp.path(), &request(5), &original).unwrap();
+        let mut destination = snapshot(9);
+        if different_network {
+            destination.network = "10.211.0.0/22".parse().unwrap();
+            destination.machines.first_mut().unwrap().subnet = "10.211.0.0/24".parse().unwrap();
+        }
+        // Reset preserves both durable ID and key; the operator enrolls X elsewhere.
+        let moved = save_assignment(temp.path(), &request(2), &destination).unwrap();
+        destination.machines.push(moved.machine.clone());
+        let next = save_assignment(temp.path(), &request(3), &destination).unwrap();
+        assert!(
+            destination
+                .network
+                .contains(&ipnet::Ipv4Net::from(next.machine.subnet))
+        );
+        assert_ne!(next.machine.subnet, moved.machine.subnet);
+        assert_eq!(
+            next.machine.subnet.to_string(),
+            if different_network {
+                "10.211.2.0/24"
+            } else {
+                "10.210.2.0/24"
+            }
+        );
+        // A retains the former assignment as occupied history, even after X moves.
+        let remaining = save_assignment(temp.path(), &request(4), &original).unwrap();
+        assert_ne!(remaining.machine.subnet, previous.machine.subnet);
+        assert_ne!(remaining.machine.subnet, pending.machine.subnet);
+        assert_eq!(
+            save_assignment(temp.path(), &request(3), &destination).unwrap(),
+            next
+        );
+    }
 }

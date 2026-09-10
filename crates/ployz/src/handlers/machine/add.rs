@@ -11,7 +11,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let policy = super::enrollment_policy(matches)?;
     let options = ConnectionOptions::from_matches(root)?;
-    let (mut config, context_name) = options.active_config()?;
+    let (config, context_name) = options.active_config()?;
     let destination = target(matches, "destination")?;
     let connection = destination.parse()?;
     let mut connection = helpers::configure_ssh_key(
@@ -100,13 +100,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     })?;
 
     connection = connection.with_machine_id(assigned.id);
-    config
-        .contexts
-        .get_mut(&context_name)
-        .expect("active context was validated")
-        .connections
-        .push(connection.clone());
-    config.save()?;
+    config.save_connection(&context_name, connection.clone())?;
     println!("{}", added_machine_line(&assigned));
 
     runtime.block_on(helpers::wait_direct_participating(

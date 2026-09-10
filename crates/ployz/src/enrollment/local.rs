@@ -68,6 +68,11 @@ pub fn save_assignment(
     {
         merged.assignments.push(assignment.clone());
     }
+    // Reset preserves Machine identity. A new scope owns its witness, while the
+    // previous scope keeps its allocation history for occupancy and explicit retries.
+    for scope in &mut scopes {
+        scope.peers.retain(|(id, _)| *id != assignment.machine.id);
+    }
     for machine in snapshot
         .machines
         .iter()
