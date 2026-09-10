@@ -84,7 +84,7 @@ export function useCanvasPositionMutation(params: {
       });
     },
     mutationFn: async ({ transaction }) => {
-      await Promise.all(
+      await persistCanvasPositionBatch(
         transaction.mutations.map(async (m) => {
           // SAFETY: this paced mutation only writes canvas position rows; TanStack DB types `modified` as a generic mutation payload.
           const modified = m.modified as ServiceCanvasPositionRecord;
@@ -109,8 +109,8 @@ export function useCanvasPositionMutation(params: {
             },
           });
         }),
+        collection,
       );
-      await reconcileCollection(collection);
     },
     strategy: throttleStrategy({ wait: 250, leading: false, trailing: true }),
   });
@@ -128,4 +128,19 @@ export function useCanvasPositionMutation(params: {
   return {
     onNodeDrag,
   };
+}
+
+export async function persistCanvasPositionBatch(
+  writes: readonly Promise<void>[],
+  collection: ReturnType<typeof useCanvasPositionsCollection>,
+) {
+  const results = await Promise.allSettled(writes);
+  const failure = results.find((result) => result.status === "rejected");
+  try {
+    await reconcileCollection(collection);
+  } catch (error) {
+    // Preserve the write failure when reconciliation also fails.
+    if (!failure) throw error;
+  }
+  if (failure) throw failure.reason;
 }
