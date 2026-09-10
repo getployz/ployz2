@@ -33,7 +33,7 @@ APP_URL=http://127.0.0.1:18082/identity
 APP_VALUE=qualify-persistent-data
 APP_VOLUME=qualify-release_qualify-data
 APP_VOLUME_MOUNT=/var/lib/ployz-volumes/$APP_VOLUME
-PAIRING='{"relayUrl":"http://127.0.0.1:1/","secret":"qualification-synthetic-pairing-secret-v1"}'
+PAIRING='{"secret":"qualification-synthetic-pairing-secret-v1"}'
 
 error() { echo "ERROR: $*" >&2; exit 1; }
 

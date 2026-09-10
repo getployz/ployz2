@@ -398,7 +398,7 @@ where
             ));
             command
         }
-        Transport::Tcp(_) | Transport::Relay { .. } => {
+        Transport::Tcp(_) => {
             return Err(Error::usage(
                 "Cloud enrollment requires local Unix, SSH, or Tailcat access to publish its capability",
             ));
@@ -639,7 +639,6 @@ mod tests {
         assert!(!retry_local_connect(&ConnectError::Context(
             ContextError::NoCurrentContext(PathBuf::from("config.yaml"))
         )));
-        assert!(!retry_local_connect(&ConnectError::InvalidDialCredential));
     }
 
     #[test]

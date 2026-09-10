@@ -243,9 +243,6 @@ function applyOne(project_name, spec, options = defaultPlanOptions()) {
 }
 
 async function connect(options) {
-  if (!("connections" in options)) {
-    return new Client(await withRpcError(native.connect(options)));
-  }
   const { signal, timeoutMs } = options;
   if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2147483647)) {
     throw new TypeError("timeoutMs must be a positive 32-bit integer");

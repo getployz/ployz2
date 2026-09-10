@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf, str::FromStr};
 
 use ployz::{
-    connect::{DialCredential, PairingCredential, resolve_connections},
+    connect::resolve_connections,
     context::{
         Config, ConfigError, Connection, ConnectionSource, Context, ContextError, SshDestination,
         select_connections,
@@ -167,23 +167,6 @@ fn connection_sources_follow_direct_context_and_local_precedence() {
 }
 
 #[test]
-fn relay_connections_are_not_persisted() {
-    let error = serde_norway::to_string(&Connection::relay(
-        ployz_core::RelayEndpoint::parse("http://127.0.0.1:1").unwrap(),
-        DialCredential::parse("dial-secret").unwrap(),
-        PairingCredential::parse("pairing-secret").unwrap(),
-        machine_id('a'),
-    ))
-    .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("Cloud Relay connections are not persisted"),
-        "{error}"
-    );
-}
-
-#[test]
 fn stored_connections_reject_missing_multiple_malformed_and_removed_transports() {
     for yaml in [
         "{}".into(),
@@ -191,6 +174,7 @@ fn stored_connections_reject_missing_multiple_malformed_and_removed_transports()
         "tcp: localhost".into(),
         "unix: relative.sock".into(),
         format!("tcp: 127.0.0.1:{MACHINE_API_PORT}\nssh_key_file: /tmp/key"),
+        "relay: https://obsolete.invalid".into(),
         "ssh_go: root@example.com".into(),
         "ssh_cli: root@example.com".into(),
     ] {

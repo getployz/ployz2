@@ -121,7 +121,7 @@ export const revokeTeardownPairingActivity = Effect.fn(
   readonly organizationId: string;
 }) {
   const revoked = yield* revokeOrganizationPairing(input.organizationId);
-  return { rustMustRevokePairing: !revoked.confirmed, pairingRemovals: revoked.endpoints };
+  return { pairingRevocationUnconfirmed: !revoked.confirmed, pairingRemovals: revoked.endpoints };
 });
 
 export const dropTeardownCloudRowsActivity = Effect.fn(

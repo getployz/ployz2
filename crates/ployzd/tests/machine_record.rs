@@ -159,15 +159,11 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
 }
 
 fn sample_cloud_pairing() -> CloudPairing {
-    CloudPairing::parse(
-        "https://relay.example.invalid",
-        PairingCredential::parse("pairing-secret").unwrap(),
-    )
-    .unwrap()
+    CloudPairing::new(PairingCredential::parse("pairing-secret").unwrap())
 }
 
 #[tokio::test]
-async fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential() {
+async fn initialize_with_cloud_pairing_stores_pairing_credential() {
     let dir = TestDir::new("ployzd-initialize-cloud-pairing");
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let (reset, _) = tokio::sync::watch::channel(false);
@@ -201,7 +197,6 @@ async fn initialize_with_cloud_pairing_stores_relay_url_and_pairing_credential()
     assert_eq!(
         pairing_json,
         &serde_json::json!({
-            "relayUrl": "https://relay.example.invalid/",
             "secret": "pairing-secret",
         })
     );
@@ -283,7 +278,7 @@ async fn set_cloud_pairing_before_initialize_is_not_participating() {
 }
 
 #[tokio::test]
-async fn join_with_cloud_pairing_stores_the_same_two_fields() {
+async fn join_with_cloud_pairing_stores_the_pairing_credential() {
     let first_dir = TestDir::new("ployzd-join-cloud-pairing-first");
     let mut first = LocalMachineStore::open(&first_dir.0).unwrap();
     let initialized = first
@@ -1019,12 +1014,12 @@ async fn tailcat_removal_rejects_repairing_and_stale_pairing_before_clearing() {
         expected_pairing: ployz_core::PairingCredential::parse("stale-pairing").unwrap(),
     };
     let error = local
-        .set_cloud_pairing_with_removal(Some(pairing.clone()), Some(removal.clone()), None)
+        .set_cloud_pairing_with_removal(Some(pairing.clone()), Some(removal.clone()))
         .await
         .unwrap_err();
     assert!(error.to_string().contains("requires pairing removal"));
     let error = local
-        .set_cloud_pairing_with_removal(None, Some(removal.clone()), None)
+        .set_cloud_pairing_with_removal(None, Some(removal.clone()))
         .await
         .unwrap_err();
     assert!(error.to_string().contains("stale Cloud Pairing"));
@@ -1032,7 +1027,7 @@ async fn tailcat_removal_rejects_repairing_and_stale_pairing_before_clearing() {
     removal.expected_pairing = pairing.secret().clone();
     removal.expected = "private-old\nextra-command".into();
     let error = local
-        .set_cloud_pairing_with_removal(None, Some(removal), None)
+        .set_cloud_pairing_with_removal(None, Some(removal))
         .await
         .unwrap_err();
     assert!(!error.to_string().contains("private-old"));

@@ -12,16 +12,13 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
-use crate::connect::{
-    Client, ConnectError, Connector, DialCredential, PairingCredential, TransportError,
-    connect_relay, connect_selected_with,
-};
+use crate::connect::{Client, ConnectError, Connector, TransportError, connect_selected_with};
 use crate::context::{Connection, ConnectionSource, SelectedConnections};
 use crate::deploy::{DeployIntent, DeployPlan, DeployPreview, VolumeFate};
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployOutcome,
     DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot, ExecutionError,
-    LocalMachineRemoved, MachineId, MachineTarget, ObservedDataLoss, OpaquePayload, ProjectName,
+    LocalMachineRemoved, MachineTarget, ObservedDataLoss, OpaquePayload, ProjectName,
     RUNTIME_WATCH_CAPABILITY, Registered, RemoveVolumesRequest, RpcError, RpcErrorCode,
     RuntimeWatchFrame, RuntimeWatchRequest, ServiceObservation, VolumeRemoval,
     decode_runtime_watch_frame, op,
@@ -83,38 +80,6 @@ pub struct RunningDeploy {
     join: Mutex<Option<DeployTask>>,
 }
 
-/// Open a Machine RPC channel through Cloud Relay.
-///
-/// Succeeds only after Relay Dial and Machine Attach produce a usable RPC
-/// channel. Does not mint Attach credentials, perform Cloud Pairing, or choose
-/// an entry Machine.
-///
-/// # Errors
-///
-/// Returns a generated [`RpcError`] when the bearer, pairing, or Machine ID is
-/// rejected, or when the Relay or inner RPC channel fails.
-pub async fn connect(
-    relay_url: &str,
-    bearer: &str,
-    pairing: &str,
-    machine_id: &str,
-) -> Result<Session, RpcError> {
-    let credential = parse_dial(bearer)?;
-    let pairing = parse_pairing(pairing)?;
-    let machine_id = MachineId::parse(machine_id).map_err(|error| RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: error.to_string(),
-        details: Value::Null,
-    })?;
-    let client = connect_relay(relay_url, credential, pairing, machine_id).await?;
-    Ok(Session {
-        inner: Arc::new(SessionInner {
-            client: std::sync::Mutex::new(Some(client)),
-            cancel: CancellationToken::new(),
-        }),
-    })
-}
-
 /// Select the first confirmed connection before any operation is dispatched.
 ///
 /// # Errors
@@ -139,22 +104,6 @@ pub async fn connect_connections(
             client: std::sync::Mutex::new(Some(client)),
             cancel: CancellationToken::new(),
         }),
-    })
-}
-
-fn parse_dial(bearer: &str) -> Result<DialCredential, RpcError> {
-    DialCredential::parse(bearer).map_err(|error| RpcError {
-        code: RpcErrorCode::Unauthenticated,
-        message: error.to_string(),
-        details: Value::Null,
-    })
-}
-
-fn parse_pairing(pairing: &str) -> Result<PairingCredential, RpcError> {
-    PairingCredential::parse(pairing).map_err(|error| RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: error.to_string(),
-        details: Value::Null,
     })
 }
 
@@ -542,7 +491,7 @@ impl Session {
             .await
     }
 
-    /// Drop the Client and Relay tunnel. Aborts in-flight Watch and Deploy.
+    /// Drop the Client and transport session. Aborts in-flight Watch and Deploy.
     ///
     /// Repeated calls are a no-op.
     pub async fn close(&self) {

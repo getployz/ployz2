@@ -320,7 +320,7 @@ impl std::fmt::Debug for TailcatRemoval {
 /// Optional endpoint rotation is accepted only while clearing Cloud Pairing.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SetCloudPairingRequest {
-    /// `Some` holds Relay Register with this pairing. `None` unlinks Cloud.
+    /// `Some` sets the current Cloud pairing. `None` unlinks Cloud.
     #[serde(default)]
     pub cloud_pairing: Option<CloudPairing>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1076,10 +1076,10 @@ mod set_cloud_pairing_wire {
     }
 
     #[test]
-    fn set_pairing_rejects_invalid_relay_endpoint() {
+    fn set_pairing_rejects_empty_credential() {
         assert!(
             serde_json::from_value::<SetCloudPairingRequest>(json!({
-                "cloud_pairing": {"relayUrl": "not-a-url", "secret": "pairing-secret"}
+                "cloud_pairing": {"secret": ""}
             }))
             .is_err()
         );
@@ -1087,11 +1087,7 @@ mod set_cloud_pairing_wire {
 
     #[test]
     fn some_pairing_sets() {
-        let pairing = CloudPairing::parse(
-            "https://relay.example.invalid",
-            crate::PairingCredential::parse("pairing-secret").unwrap(),
-        )
-        .unwrap();
+        let pairing = CloudPairing::new(crate::PairingCredential::parse("pairing-secret").unwrap());
         let request = SetCloudPairingRequest {
             tailcat_removal: None,
             cloud_pairing: Some(pairing.clone()),
@@ -1101,7 +1097,6 @@ mod set_cloud_pairing_wire {
             value,
             json!({
                 "cloud_pairing": {
-                    "relayUrl": "https://relay.example.invalid/",
                     "secret": "pairing-secret",
                 }
             })

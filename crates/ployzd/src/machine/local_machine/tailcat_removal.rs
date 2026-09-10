@@ -17,7 +17,6 @@ impl LocalMachine {
         &self,
         pairing: Option<CloudPairing>,
         removal: Option<TailcatRemoval>,
-        pairing_changed: Option<tokio::sync::watch::Sender<Option<CloudPairing>>>,
     ) -> Result<(), Error> {
         let Some(removal) = removal else {
             return self.set_cloud_pairing(pairing).await;
@@ -33,7 +32,6 @@ impl LocalMachine {
                 complete_removal(
                     &local,
                     &removal,
-                    pairing_changed,
                     crate::installer::TAILCAT_HELPER_PROGRAM,
                     "systemctl",
                 )
@@ -47,7 +45,6 @@ impl LocalMachine {
 fn complete_removal(
     local: &LocalMachine,
     removal: &TailcatRemoval,
-    pairing_changed: Option<tokio::sync::watch::Sender<Option<CloudPairing>>>,
     helper: &str,
     systemctl: &str,
 ) -> Result<(), Error> {
@@ -62,9 +59,6 @@ fn complete_removal(
     // Validate before clearing pairing; rotate rechecks under the startup lock.
     endpoint_command(helper, "validate-rotation", removal)?;
     local.lock_store()?.persist_cloud_pairing(None)?;
-    if let Some(sender) = pairing_changed {
-        sender.send_replace(None);
-    }
     endpoint_command(helper, "rotate", removal)?;
     // Always restart, including when disk already held successor. Disk equality
     // does not establish which PSK the running helper currently accepts.
@@ -129,11 +123,7 @@ mod tests {
         let store = LocalMachineStore::open(dir.path()).unwrap();
         let (restart, _) = tokio::sync::watch::channel(false);
         let local = LocalMachine::new(Arc::new(Mutex::new(store)), restart);
-        let pairing = CloudPairing::parse(
-            "https://relay.example.invalid",
-            ployz_core::PairingCredential::parse("pairing").unwrap(),
-        )
-        .unwrap();
+        let pairing = CloudPairing::new(ployz_core::PairingCredential::parse("pairing").unwrap());
         local
             .lock_store()
             .unwrap()
@@ -161,23 +151,18 @@ fi
         )
         .unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-        let (changed, receiver) = tokio::sync::watch::channel(Some(pairing));
         for _ in 0..2 {
             complete_removal(
                 &local,
                 &removal,
-                Some(changed.clone()),
                 program.to_str().unwrap(),
                 program.to_str().unwrap(),
             )
             .unwrap();
         }
-        assert!(receiver.borrow().is_none());
-        let new_pairing = CloudPairing::parse(
-            "https://relay.example.invalid",
-            ployz_core::PairingCredential::parse("new-pairing").unwrap(),
-        )
-        .unwrap();
+        assert!(local.record().unwrap().cloud_pairing.is_none());
+        let new_pairing =
+            CloudPairing::new(ployz_core::PairingCredential::parse("new-pairing").unwrap());
         local
             .lock_store()
             .unwrap()
@@ -187,7 +172,6 @@ fi
             complete_removal(
                 &local,
                 &removal,
-                Some(changed),
                 program.to_str().unwrap(),
                 program.to_str().unwrap()
             )

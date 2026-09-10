@@ -26,9 +26,8 @@ import {
   loadOrganizationEnrollmentStatus,
   mintMachineEnrollment,
   resetPendingOrganizationEnrollment,
-  tryRevokeOrganizationRelayPairing,
 } from "#/modules/machines/enrollment.server";
-import { disableOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { asTestDouble } from "#/lib/test-double";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
@@ -48,8 +47,6 @@ const founderMachineId = Schema.decodeUnknownSync(rustMachineIdSchema)("00000000
 const tailcat = "tailcat://protected-founder";
 const snapshot: EnrollmentSnapshot = { network: "10.42.0.0/16", machines: [], target_versions: {} };
 const enrollmentSettings = {
-  publicRelayUrl: "https://relay.example.test/",
-  deploymentDialBearer: "pdial_test",
   encryption: makeSecretEncryption("test-app-encryption-secret-1234567890"),
 };
 
@@ -121,9 +118,6 @@ function enrollmentTestClient(
       BETTER_AUTH_SECRET: "better-auth-secret",
       GITHUB_CLIENT_ID: "github-client-id",
       GITHUB_CLIENT_SECRET: "github-client-secret",
-      PLOYZ_RELAY_URL: enrollmentSettings.publicRelayUrl,
-      PLOYZ_RELAY_DIAL_CREDENTIAL:
-        enrollmentSettings.deploymentDialBearer ?? "",
       APP_ENCRYPTION_SECRET:
         "app-encryption-secret-at-least-32-characters",
     },
@@ -174,7 +168,8 @@ function enrollmentTestClient(
       ),
     tryRevokePairing: (organizationId: string) =>
       runtime.runPromise(
-        tryRevokeOrganizationRelayPairing(organizationId).pipe(
+        revokeOrganizationPairing(organizationId).pipe(
+          Effect.map((outcome) => outcome.confirmed),
           Effect.provide(layer),
         ),
       ),
@@ -224,7 +219,6 @@ describe("organization enrollment coordinator", () => {
         BETTER_AUTH_SECRET: "better-auth-secret",
         GITHUB_CLIENT_ID: "github-client-id",
         GITHUB_CLIENT_SECRET: "github-client-secret",
-        PLOYZ_RELAY_URL: "https://relay.example.test",
         APP_ENCRYPTION_SECRET:
           "app-encryption-secret-at-least-32-characters",
       },

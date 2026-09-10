@@ -7,9 +7,8 @@ const expectRpcError = require("./expect-rpc-error");
 
 const addon = process.env.PLOYZ_SDK_ADDON;
 const pkg = process.env.PLOYZ_SDK_PACKAGE;
-const relayUrl = process.env.PLOYZ_RELAY_URL;
-const bearer = process.env.PLOYZ_BEARER;
-const pairing = process.env.PLOYZ_PAIRING;
+const socketDirectory = process.env.PLOYZ_SOCKET_DIRECTORY;
+const connectionsFor = (id) => [{ unix: path.join(socketDirectory, `${id}.sock`) }];
 const machineId = process.env.PLOYZ_MACHINE_ID;
 const isolatedMachineId = process.env.PLOYZ_ISOLATED_MACHINE_ID;
 const unknownMachineId = process.env.PLOYZ_UNKNOWN_MACHINE_ID;
@@ -17,9 +16,7 @@ const unknownMachineId = process.env.PLOYZ_UNKNOWN_MACHINE_ID;
 if (
   !addon ||
   !pkg ||
-  !relayUrl ||
-  !bearer ||
-  !pairing ||
+  !socketDirectory ||
   !machineId ||
   !isolatedMachineId ||
   !unknownMachineId
@@ -63,7 +60,7 @@ function joinerIdentity() {
 }
 
 (async () => {
-  const client = await sdk.connect({ relayUrl, bearer, pairing, machineId });
+  const client = await sdk.connect({ connections: connectionsFor(machineId) });
   const assignment = sdk.allocateEnrollment(joinerIdentity(), await client.observeEnrollment(), []);
   const registered = await client.register(assignment);
   if (!registered || !registered.assigned_machine) {
@@ -83,7 +80,7 @@ function joinerIdentity() {
     throw new Error("second register must reuse the saved assignment");
   }
 
-  const isolatedClient = await sdk.connect({ relayUrl, bearer, pairing, machineId: isolatedMachineId });
+  const isolatedClient = await sdk.connect({ connections: connectionsFor(isolatedMachineId) });
   const isolated = await expectRpc(() => isolatedClient.register(assignment), "unavailable");
   await isolatedClient.close();
   if (isolated.message !== "this Machine is isolation-locked") {
@@ -91,17 +88,9 @@ function joinerIdentity() {
   }
 
   await expectRpc(
-    () => sdk.connect({ relayUrl, bearer: "wrong-secret", pairing, machineId }),
-    "unauthenticated",
-  );
-  await expectRpc(
-    () => sdk.connect({ relayUrl, bearer, pairing: "", machineId }),
-    "invalid_argument",
-  );
-  await expectRpc(
     () =>
-      sdk.connect({ relayUrl, bearer, pairing, machineId: unknownMachineId }),
-    "not_found",
+      sdk.connect({ connections: connectionsFor(unknownMachineId) }),
+    "internal",
   );
   await expectRpc(
     () => client.register({ not: "EnrollmentAssignment" }),

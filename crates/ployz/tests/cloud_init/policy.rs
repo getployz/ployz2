@@ -13,9 +13,7 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
             visible_peers: Vec::new(),
             target_versions: Default::default(),
         };
-        let relay = RelayListen::start().await;
-        let pairing =
-            CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+        let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
         let response = if resume_founder {
             json!({"kind": "initialize", "resumed": true, "storage": "none", "pairing": pairing})
         } else {

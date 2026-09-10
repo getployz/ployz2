@@ -5,8 +5,8 @@
 use std::{collections::BTreeMap, fs, process::Output};
 
 use super::harness::{
-    EnrollListen, JoinDaemon, PAIRING, RelayListen, TOKEN, founder_machine, ingress_on,
-    registration, serve_machine,
+    EnrollListen, JoinDaemon, PAIRING, TOKEN, founder_machine, ingress_on, registration,
+    serve_machine,
 };
 use ployz::context::{Config, Connection, Context};
 use ployz_core::{
@@ -113,9 +113,7 @@ async fn cloud_join(target_failures: Fault, ensure_failures: Fault) -> (Output, 
     let founder = founder_machine();
     let mut registration = registration();
     registration.visible_peers = vec![founder.clone()];
-    let relay = RelayListen::start().await;
-    let pairing =
-        CloudPairing::parse(&relay.url, PairingCredential::parse(PAIRING).unwrap()).unwrap();
+    let pairing = CloudPairing::new(PairingCredential::parse(PAIRING).unwrap());
     let enroll = EnrollListen::start(json!({
         "kind": "join",
         "storage": "none",

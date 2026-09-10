@@ -58,11 +58,6 @@ function credentialsMatch(expected: string, actual: string) {
   return crypto.timingSafeEqual(digest(expected), digest(actual));
 }
 
-const loadEnrollmentSettings = Effect.fn("MachineEnrollment.loadSettings")(function* () {
-  const config = yield* AppConfig;
-  return { publicRelayUrl: config.ployz.relayUrl.href };
-});
-
 const authorizeEnrollmentOrganization = Effect.fn(
   "MachineEnrollment.authorizeOrganization",
 )(function* (actor: Actor, organizationSlug: string) {
@@ -195,10 +190,8 @@ const decryptPairingSecret = Effect.fn("MachineEnrollment.decryptPairingSecret")
 
 const pairingFromRow = Effect.fn("MachineEnrollment.decodePairing")(
   function* (row: PairingRow) {
-    const settings = yield* loadEnrollmentSettings();
     const secret = yield* decryptPairingSecret(row.encryptedPairingSecret);
     return {
-      relayUrl: settings.publicRelayUrl,
       secret,
     };
   },
@@ -248,15 +241,9 @@ export const reserveEnrollmentAssignment = Effect.fn(
   }));
 });
 
-/** Absence disables Cloud access; an existing endpoint still needs confirmed revocation. */
-export const tryRevokeOrganizationRelayPairing = Effect.fn(
-  "MachineEnrollment.tryRevokeOrganizationRelayPairing",
-)((organizationId: string) => revokeOrganizationPairing(organizationId).pipe(Effect.map((outcome) => outcome.confirmed)));
-
 const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
   function* (input: { organizationId: string; publicKey: string; machineId: MachineId }) {
     const database = yield* Database;
-    const settings = yield* loadEnrollmentSettings();
     const encryption = yield* SecretEncryption;
     const secret = randomSecret("ppair_");
     return yield* database.transaction(
@@ -278,7 +265,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
           return {
             kind: "initialize" as const,
             resumed: false,
-            pairing: { relayUrl: settings.publicRelayUrl, secret },
+            pairing: { secret },
           };
         }
 
@@ -296,7 +283,6 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
           return yield* new Conflict({ message: "Cloud access removal is pending. Confirm endpoint revocation before enrolling again." });
         }
         const pairing = {
-          relayUrl: settings.publicRelayUrl,
           secret: yield* decryptPairingSecret(current.encryptedPairingSecret),
         };
         if (current.founderPublicKey === input.publicKey && current.founderClaimMachineId === input.machineId) {

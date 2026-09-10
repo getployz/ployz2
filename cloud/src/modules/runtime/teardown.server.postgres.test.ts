@@ -221,7 +221,7 @@ describe("teardown durable state", () => {
         inngestRunId: "run-1",
         status: "completed",
         outcome: {
-          rustMustRevokePairing: false,
+          pairingRevocationUnconfirmed: false,
           runtimeMembership: "untouched",
         },
         now: new Date("2026-09-04T05:03:00Z"),
@@ -283,7 +283,7 @@ describe("teardown durable state", () => {
       }),
     );
     const failedEvidence = {
-      rustMustRevokePairing: false,
+      pairingRevocationUnconfirmed: false,
       runtimeMembership: "untouched" as const,
       projectTeardowns: [
         {
@@ -336,7 +336,7 @@ describe("teardown durable state", () => {
       }),
     );
     const cancelledEvidence = {
-      rustMustRevokePairing: false,
+      pairingRevocationUnconfirmed: false,
       runtimeMembership: "untouched" as const,
       projectTeardowns: [
         {
