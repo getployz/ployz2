@@ -1,3 +1,4 @@
+import { getVolumeRemoveAttemptsCollection } from "#/electric/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -225,6 +226,7 @@ type VolumeRemoveAttemptSummary = {
 
 function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
   const resourceId = state.resource.resource.id;
+  const collectionScope = useCollectionScope();
   const loadDataLoss = useServerFn(loadVolumeRemoveDataLossServerFn);
   const confirmRemove = useServerFn(confirmVolumeRemoveServerFn);
   const retryRemove = useServerFn(retryVolumeRemoveServerFn);
@@ -259,6 +261,7 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
             },
           }),
       );
+      await reconcileCollection(getVolumeRemoveAttemptsCollection(state.organizationSlug, collectionScope));
       toast.success("Volume remove retry started.");
     } catch (error) {
       toast.error(
@@ -330,6 +333,7 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
                   data: { ...input, identities },
                 }),
             );
+            await reconcileCollection(getVolumeRemoveAttemptsCollection(state.organizationSlug, collectionScope));
             toast.success("Volume remove started.");
           },
         }}

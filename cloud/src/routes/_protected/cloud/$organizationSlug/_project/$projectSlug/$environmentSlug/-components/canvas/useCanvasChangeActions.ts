@@ -1,3 +1,4 @@
+import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -9,7 +10,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
-  getEnvironmentDeploymentsCollection, getEnvironmentsCollection,
+  getEnvironmentsCollection,
 } from "#/electric/collections";
 import type {
   CanvasEnvironmentChangeGroup,
@@ -141,12 +142,7 @@ export function useCanvasChangeActions({
           },
         });
 
-      if (result.state === "deployment_queued") {
-        await getEnvironmentDeploymentsCollection(
-          params.organizationSlug,
-        ).utils.awaitTxId(result.txid);
-      }
-
+      await reconcileDeploymentCollections(params.organizationSlug, collectionScope);
       await queryClient.invalidateQueries({
         queryKey: serviceDeploymentKeys.environmentChangeStatesOrg(
           params.organizationSlug,
@@ -187,6 +183,7 @@ export function useCanvasChangeActions({
           command,
         },
       });
+    await reconcileDeploymentCollections(params.organizationSlug, collectionScope);
     await refreshExplicitChangeState();
     return receipt;
   }

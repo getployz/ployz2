@@ -83,7 +83,7 @@ export function useServiceDrawerState(
   const canvasPositions = useCanvasPositionsCollection(params.organizationSlug);
   const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
   const nodeIntroductions = getEnvironmentNodeIntroductionsCollection(
-    params.organizationSlug,
+    params.organizationSlug, collectionScope,
   );
   const environmentMatch = useMatch({
     from: ENVIRONMENT_ROUTE_FROM,

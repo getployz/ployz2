@@ -1,4 +1,5 @@
-import { cachedByCollectionScope } from "#/collections/scope";
+import { reconcileCollection } from "#/collections/query-collection";
+import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import {
   createLiveQueryCollection,
   eq,
@@ -7,6 +8,7 @@ import {
 } from "@tanstack/react-db";
 import {
   getEnvironmentDeploymentsCollection,
+  getEnvironmentSavedStateRevisionsCollection,
   getEnvironmentNodeConfigSnapshotsCollection,
   getEnvironmentsCollection,
   getProjectsCollection,
@@ -21,12 +23,12 @@ import {
 import { parseSdkDeployPreview } from "#/modules/deployments/runtime-preview";
 
 export const getOrganizationDeploymentsCollection = cachedByCollectionScope((organizationSlug, scope) => {
-  const deployments = getEnvironmentDeploymentsCollection(organizationSlug);
+  const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
   const environments = getEnvironmentsCollection(organizationSlug, scope);
   const projects = getProjectsCollection(organizationSlug, scope);
   const nodeSnapshots =
-    getEnvironmentNodeConfigSnapshotsCollection(organizationSlug);
-  const volumeRemoveAttempts = getVolumeRemoveAttemptsCollection(organizationSlug);
+    getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope);
+  const volumeRemoveAttempts = getVolumeRemoveAttemptsCollection(organizationSlug, scope);
 
   const rows = createLiveQueryCollection({
     id: `electric:${organizationSlug}:deployment-relationships`,
@@ -124,3 +126,13 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
 
   return collection;
 });
+
+/** Admission and Saved State commands can also replace a queued attempt's history. */
+export async function reconcileDeploymentCollections(organizationSlug: string, scope: CollectionScope) {
+  await Promise.all([
+    reconcileCollection(getEnvironmentDeploymentsCollection(organizationSlug, scope)),
+    reconcileCollection(getEnvironmentSavedStateRevisionsCollection(organizationSlug, scope)),
+    reconcileCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope)),
+    reconcileCollection(getVolumeRemoveAttemptsCollection(organizationSlug, scope)),
+  ]);
+}

@@ -173,8 +173,8 @@ const getVolumeResourcesCollection = cachedByCollectionScope(
       organizationSlug,
       sources: {
         ...resourceSources(organizationSlug, scope),
-        snapshots: getEnvironmentNodeConfigSnapshotsCollection(organizationSlug),
-        removals: getVolumeRemoveAttemptsCollection(organizationSlug),
+        snapshots: getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope),
+        removals: getVolumeRemoveAttemptsCollection(organizationSlug, scope),
       },
     }),
 );
