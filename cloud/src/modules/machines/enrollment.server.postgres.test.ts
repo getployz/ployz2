@@ -143,9 +143,9 @@ function enrollmentTestClient(
     open: (id = organizationId) => runtime.runPromise(Effect.scoped(
       Effect.gen(function* () { return yield* (yield* OrganizationRuntime).open(id); }),
     )),
-    enroll: (input: Parameters<typeof enrollMachine>[0]) =>
+    enroll: (input: Parameters<typeof enrollMachine>[0], signal?: AbortSignal) =>
       runtime.runPromise(
-        Effect.result(enrollMachine(input)),
+        Effect.result(enrollMachine(input)), { signal },
       ),
     completeFounding: (input: Parameters<typeof completeMachineEnrollment>[0]) =>
       runtime.runPromise(
@@ -799,6 +799,52 @@ describe("organization enrollment coordinator", () => {
       await expect(requestRemoval()).rejects.toMatchObject({ _tag: "Conflict" });
       await fake.coordinator.publish({ ...founder, machineId: machine.machineId, tailcat: "tailcat://joined" });
       expect(await requestRemoval()).toMatchObject({ state: "pending" });
+    } finally { release(); await pending; }
+  });
+
+  it.each(["complete", "disable", "interrupt"])("retains admission across concurrent same-Machine retries (%s)", async (outcome) => {
+    const fake = fakeSession(harness.database);
+    const other = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, tailcat });
+    await fake.coordinator.completeFounding(founder);
+    const machine = identity(1);
+    const publication = { ...founder, machineId: machine.machineId, tailcat: "tailcat://joined" };
+    let entered = () => {};
+    let release = () => {};
+    const registering = new Promise<void>((resolve) => { entered = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    fake.connection.beforeRegister = async () => { entered(); await released; };
+    const controller = new AbortController();
+    const pending = fake.coordinator.enroll({ token: founder.token, identity: machine }, controller.signal)
+      .then((value) => ({ value }), () => ({ interrupted: true }));
+    const requestRemoval = () => harness.runEffect(requestMachineRemoveAttempt({ organizationId, requestedByUserId: userId, machineId: machine.machineId, confirmDataLoss: [] }));
+    try {
+      await registering;
+      expect(await other.coordinator.enroll({ token: founder.token, identity: machine })).toMatchObject({ success: {} });
+      // Both an initial publication and its replay must preserve the paused retry's admission.
+      for (let retry = 0; retry < 2; retry += 1) {
+        expect(await other.coordinator.publish(publication)).toMatchObject({ success: {} });
+        await expect(requestRemoval()).rejects.toMatchObject({ _tag: "Conflict" });
+      }
+      if (outcome === "interrupt") {
+        controller.abort();
+        expect(await pending).toEqual({ interrupted: true });
+        await other.coordinator.publish(publication);
+        await expect(requestRemoval()).rejects.toMatchObject({ _tag: "Conflict" });
+      }
+      if (outcome !== "complete") {
+        await other.coordinator.disable();
+        const saved = await harness.pool.query("select removal_endpoints from organization_pairing");
+        expect(saved.rows[0].removal_endpoints).toContainEqual({ machineId: machine.machineId, status: "unknown" });
+      }
+      release();
+      if (outcome !== "interrupt") expect(await pending).toMatchObject({ value: { success: {} } });
+      if (outcome === "complete") {
+        await expect(requestRemoval()).rejects.toMatchObject({ _tag: "Conflict" });
+        expect(await fake.coordinator.publish(publication)).toMatchObject({ success: {} });
+        expect(await requestRemoval()).toMatchObject({ state: "pending" });
+      }
     } finally { release(); await pending; }
   });
 

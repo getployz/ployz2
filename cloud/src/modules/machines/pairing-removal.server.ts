@@ -74,11 +74,13 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
           eq(machineRemoveAttempt.state, "succeeded"),
           gte(machineRemoveAttempt.createdAt, pairing.createdAt),
         ));
-        const removalEndpoints = [...(yield* decodeEndpoints(candidates.map((candidate) => ({
-          machineId: candidate.machineId,
-          encryptedExpected: candidate.encryptedTailcat,
-          status: "pending",
-        }))))];
+        const removalEndpoints = [...(yield* decodeEndpoints(candidates.map((candidate) => pairing.enrollmentRegistrations.some((registration) => registration.machineId === candidate.machineId)
+          ? { machineId: candidate.machineId, status: "unknown" }
+          : {
+            machineId: candidate.machineId,
+            encryptedExpected: candidate.encryptedTailcat,
+            status: "pending",
+          })))];
         // A claim or reserved Join may have reached a Machine before publication was acknowledged.
         const intendedMachines = [pairing.founderClaimMachineId, ...pairing.enrollingMachineIds, ...allocations.flatMap((allocation) => allocation.assignments.map((assignment) => assignment.machine.id))];
         for (const machineId of intendedMachines) {

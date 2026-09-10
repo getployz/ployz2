@@ -3196,6 +3196,19 @@
       "table": "organization_pairing"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "[]",
+      "generated": null,
+      "identity": null,
+      "name": "enrollment_registrations",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_pairing"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": false,

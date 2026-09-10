@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
 import type { EnrollmentSnapshot, MachineId, RegisterRequest } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Exit, Option, Schema } from "effect";
 import {
   enrollmentAllocation,
   organizationMachine,
@@ -185,11 +185,11 @@ const admitMachineEnrollment = Effect.fn("MachineEnrollment.admit")(function* (o
   const [active] = yield* drizzle.select({ id: machineRemoveAttempt.id }).from(machineRemoveAttempt)
     .where(and(scope, inArray(machineRemoveAttempt.state, ["pending", "running"]))).limit(1);
   if (active) return yield* new Conflict({ message: "Machine removal must finish before enrolling again." });
-  const [pairing] = yield* drizzle.select({ enrolling: schemaOrganizationPairing.enrollingMachineIds }).from(schemaOrganizationPairing)
+  const [pairing] = yield* drizzle.select({ enrolling: schemaOrganizationPairing.enrollingMachineIds, registrations: schemaOrganizationPairing.enrollmentRegistrations }).from(schemaOrganizationPairing)
     .where(eq(schemaOrganizationPairing.organizationId, organizationId));
   if (pairing) {
     const enrolling = pairing.enrolling.filter((id) => id !== machineId);
-    if (phase === "enrolling") enrolling.push(machineId);
+    if (phase === "enrolling" || pairing.registrations.some((registration) => registration.machineId === machineId)) enrolling.push(machineId);
     yield* drizzle.update(schemaOrganizationPairing).set({ enrollingMachineIds: enrolling })
       .where(eq(schemaOrganizationPairing.organizationId, organizationId));
   }
@@ -295,6 +295,21 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
   },
 );
 
+// A publication cannot retire another retry's in-flight registration. No expiry: after a
+// process loss or interruption, keep admission unconfirmed rather than assume the RPC stopped.
+const finishEnrollmentRegistration = Effect.fn("MachineEnrollment.finishRegistration")(function* (organizationId: string, registrationId: string) {
+  const database = yield* Database;
+  yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [pairing] = yield* drizzle.select({ registrations: schemaOrganizationPairing.enrollmentRegistrations })
+      .from(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, organizationId)).for("update");
+    if (!pairing) return;
+    yield* drizzle.update(schemaOrganizationPairing).set({
+      enrollmentRegistrations: pairing.registrations.filter((registration) => registration.id !== registrationId),
+    }).where(eq(schemaOrganizationPairing.organizationId, organizationId));
+  }));
+});
+
 export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
   function* (input: { token: string; identity: EnrollmentIdentity }) {
     const request = registerRequestFromEnrollmentIdentity(input.identity);
@@ -326,25 +341,32 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       const session = opened.connected;
       const snapshot = yield* session.observeEnrollment();
       const database = yield* Database;
-      const assignment = yield* database.transaction(Effect.gen(function* () {
+      const registrationId = crypto.randomUUID();
+      const registration = yield* Effect.acquireUseRelease(database.transaction(Effect.gen(function* () {
         const { drizzle } = yield* Database;
-        const [current] = yield* drizzle.select(organizationPairingProjection).from(schemaOrganizationPairing)
+        const [current] = yield* drizzle.select().from(schemaOrganizationPairing)
           .where(eq(schemaOrganizationPairing.organizationId, token.organizationId)).for("update");
         if (!current || current.removalStartedAt !== null || !credentialsMatch(yield* decryptPairingSecret(current.encryptedPairingSecret), state.pairing.secret)) {
           return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
         }
+        yield* drizzle.update(schemaOrganizationPairing).set({
+          enrollmentRegistrations: [...current.enrollmentRegistrations, { id: registrationId, machineId: input.identity.machineId }],
+        }).where(eq(schemaOrganizationPairing.organizationId, token.organizationId));
         return yield* reserveEnrollmentAssignment({
           organizationId: token.organizationId, pairing: state.pairing.secret,
           identity: request, snapshot,
         });
-      }));
+      })),
       // The assignment commits before dispatch; a lost response is never replayed.
-      const registration = yield* session.register(assignment).pipe(Effect.catch((error): Effect.Effect<never, Conflict | PloyzProviderError> => {
+      (assignment) => session.register(assignment).pipe(Effect.catch((error): Effect.Effect<never, Conflict | PloyzProviderError> => {
         const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))(error.cause);
         return Option.isSome(rpc) && rpc.value.code === "conflict"
           ? Effect.fail(new Conflict({ message: "The saved enrollment assignment conflicts with the Entry Machine's current observation." }))
           : Effect.fail(error);
-      }));
+      })),
+      (_, exit) => Exit.hasInterrupts(exit)
+        ? Effect.void
+        : finishEnrollmentRegistration(token.organizationId, registrationId).pipe(Effect.orDie));
       return { kind: "join" as const, pairing: state.pairing, storage: request.storage, registration };
     }));
   },

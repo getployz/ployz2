@@ -385,6 +385,7 @@ export const organizationPairing = pgTable(
     removalStartedAt: timestamp("removal_started_at", { mode: "date", withTimezone: true }),
     removalEndpoints: jsonb("removal_endpoints").$type<readonly RemovalEndpoint[] | null>(),
     enrollingMachineIds: jsonb("enrolling_machine_ids").notNull().default([]).$type<MachineId[]>(),
+    enrollmentRegistrations: jsonb("enrollment_registrations").notNull().default([]).$type<Array<{ id: string; machineId: MachineId }>>(),
     founderPublicKey: text("founder_public_key"),
     founderClaimMachineId: text("founder_claim_machine_id").notNull().$type<MachineId>(),
     founderMachineId: text("founder_machine_id").$type<MachineId>(),
