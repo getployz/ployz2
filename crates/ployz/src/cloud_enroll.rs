@@ -1,4 +1,4 @@
-//! Cloud enroll HTTP: POST identity, consume `initialize` / `join`, founder callback.
+//! Cloud enroll HTTP: POST identity, consume `initialize` / `join`, enrollment callback.
 
 use std::{net::IpAddr, time::Duration};
 
@@ -178,7 +178,7 @@ pub(crate) fn enroll_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
     format!("{}/api/enroll/{}", cloud_origin(cloud_url), token.as_str())
 }
 
-/// Final founder commit: `POST /api/enroll/<token>/callback`.
+/// Final enrollment completion: `POST /api/enroll/<token>/callback`.
 #[must_use]
 pub(crate) fn callback_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
     format!("{}/callback", enroll_url(cloud_url, token))
@@ -250,7 +250,7 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
     }
 }
 
-/// Request founder completion after publishing its protected connection candidate.
+/// Request enrollment completion after publishing its protected connection candidate.
 ///
 /// # Errors
 ///
@@ -289,7 +289,7 @@ async fn post_callback(
     let operation = if tailcat.is_some() {
         "candidate publication"
     } else {
-        "founder completion"
+        "enrollment completion"
     };
     crate::setup_retry::run(
         &mut (),
@@ -833,7 +833,7 @@ mod tests {
             } else {
                 (
                     callback(&url, MachineId::random(), &credential).await,
-                    "founder completion",
+                    "enrollment completion",
                 )
             };
             let error = result.unwrap_err();

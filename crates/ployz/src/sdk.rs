@@ -1,4 +1,4 @@
-//! Native Cloud session: connect, list_held, observe_enrollment, register, revoke_pairing,
+//! Native Cloud session: connect, observe_enrollment, register,
 //! about, runtime.watch, preview, run, preview_project_removal, remove_volumes,
 //! Data Loss for Machine, Project, and Cluster destroy, remove_machine,
 //! destroy_project, destroy_cluster, and close.
