@@ -4,7 +4,7 @@ import { plainVariableIntent, variableDocumentRecord } from "./variable-document
 import type { SavedVariableIntent } from "./saved-intent";
 import { createOptimisticAction } from "@tanstack/react-db";
 import { useServerFn } from "@tanstack/react-start";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import {
   bulkUpdateServiceVariablesServerFn,
   updateServiceVariableServerFn,

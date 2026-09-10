@@ -44,8 +44,6 @@ it.live(
         env: {
           NODE_ENV: "test",
           DATABASE_URL: container.url.href,
-          ELECTRIC_URL: "https://electric.internal:3000",
-          ELECTRIC_SECRET: "server-secret",
           APP_URL: "http://localhost:3000",
           BETTER_AUTH_SECRET: "better-auth-secret",
           GITHUB_CLIENT_ID: "github-client-id",
@@ -81,8 +79,8 @@ it.live(
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              email: "electric@example.test",
-              name: "Electric",
+              email: "reader@example.test",
+              name: "Reader",
               password: "correct-horse-battery-staple",
             }),
           }),

@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
 import { captureEnvironmentNodeIntroduction } from "./environment-node-introduction.repository.server";
 import type { Actor } from "#/modules/identity/actor";
-import { withMutationReceipt } from "#/server/mutation-receipt.server";
+import { withMutationResult } from "#/server/mutation-result.server";
 import { slugifySegment } from "#/utils/slug";
 import { getDuplicateEnvironmentNodeNameMessage, isEnvironmentNodeNameTaken, resolveUniqueEnvironmentNodeName } from "./environment-node-names";
 import { environmentDesignFields } from "./fields";
@@ -15,7 +15,7 @@ import { Conflict, NotFound } from "#/server/public-error";
 const createResource = Effect.fn("EnvironmentDesign.createResource")(
   function* (actor: Actor, input: CreateVolumeResourceInput, type: "variable_group" | "volume") {
     const context = yield* requireEnvironmentForActorById(actor, input);
-    return yield* withMutationReceipt(Effect.gen(function* () {
+    return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);
       const name = resolveUniqueEnvironmentNodeName({ name: input.name, nodes: yield* listEnvironmentNodeNameIdentities(input.environmentId), schema: environmentDesignFields.resource.name, maxLength: 64 });
       const slug = slugifySegment(name) || (type === "volume" ? "volume" : "variable-group");
@@ -49,7 +49,7 @@ export const createVolumeResource = Effect.fn("EnvironmentDesign.createVolumeRes
 const editResource = Effect.fn("EnvironmentDesign.editResource")(
   function* (actor: Actor, input: DeleteVolumeResourceInput & { name?: string }, type: "variable_group" | "volume") {
     yield* requireEnvironmentForActorById(actor, input);
-    return yield* withMutationReceipt(Effect.gen(function* () {
+    return yield* withMutationResult(Effect.gen(function* () {
       const document = yield* loadEnvironmentDocument(input.environmentId, true);
       yield* requireDocumentRevision(document, input.revision);
       const node = (type === "volume" ? document.intent.volumes : document.intent.variableGroups).find((node) => node.resourceId === input.resourceId);
@@ -97,7 +97,7 @@ export const updateEnvironmentResourceCanvasPosition = Effect.fn(
   if (resource === null) {
     return yield* new NotFound({ message: "Resource not found." });
   }
-  return yield* withMutationReceipt(
+  return yield* withMutationResult(
     upsertResourceCanvasPosition({
       ...input,
       resourceType: resource.implementationType,

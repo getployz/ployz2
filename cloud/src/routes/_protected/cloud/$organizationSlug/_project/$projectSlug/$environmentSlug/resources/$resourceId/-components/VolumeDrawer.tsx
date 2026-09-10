@@ -1,4 +1,4 @@
-import { getVolumeRemoveAttemptsCollection } from "#/electric/collections";
+import { getVolumeRemoveAttemptsCollection } from "#/collections/collections";
 import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import { VolumeRemoveDataLossDialog } from "#/components/data-loss/data-loss-confirm-dialog";
 import {
   AlertDialog,

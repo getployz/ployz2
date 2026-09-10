@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient } from "@tanstack/react-query";
 import { expect, it } from "vitest";
-import { getEnvironmentsCollection, getProjectsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection, getProjectsCollection } from "#/collections/collections";
 import { createApiCollection, reconcileCollection } from "#/collections/query-collection";
 import { createEnvironmentDocumentsCollection, getEnvironmentDocumentsCollection } from "./environment-document.collection";
 import type { project as projectTable } from "#/modules/project/tables";

@@ -10,7 +10,7 @@ import { Button } from "#/components/ui/button";
 import { Empty, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Separator } from "#/components/ui/separator";
 import { Spinner } from "#/components/ui/spinner";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import {
   attachServiceVariableGroupServerFn,

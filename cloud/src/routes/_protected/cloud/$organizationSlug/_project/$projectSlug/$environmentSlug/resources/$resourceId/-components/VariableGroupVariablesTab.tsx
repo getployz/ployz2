@@ -2,7 +2,7 @@ import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useServerFn } from "@tanstack/react-start";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import {
   VariablesPanel,
   type VariableAddInput,

@@ -15,9 +15,9 @@ type UserTable = {
 export type PloyzTable = OrganizationTable | UserTable;
 
 /**
- * The complete set of browser-safe tables Electric may expose. Most tables
+ * The complete set of browser-safe tables collection reads may expose. Most tables
  * are safe in full; sensitive tables must declare the exact metadata columns
- * that the proxy is allowed to reveal.
+ * that the API is allowed to reveal.
  */
 export const PLOYZ_TABLES = {
   project: { scope: "organization", whereColumn: "organization_id" },

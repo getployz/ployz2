@@ -19,7 +19,7 @@ import {
   getProjectsCollection,
   getRawEnvironmentResourcesCollection,
   getVolumeRemoveAttemptsCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import { useDeploymentsCollection } from "#/modules/services/services.collection";
 
 export const Route = createFileRoute(

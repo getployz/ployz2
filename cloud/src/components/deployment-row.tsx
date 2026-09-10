@@ -39,7 +39,7 @@ import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import { asString } from "#/lib/json";
 import {
   getRawEnvironmentResourcesCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import { cn } from "#/lib/utils";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
 import {

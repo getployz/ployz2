@@ -6,7 +6,7 @@ import {
   restoreServiceRegistryCredentialServerFn,
   setServiceRegistryCredentialServerFn,
 } from "#/modules/environment-design/service-functions";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 
 type UseServiceRegistryCredentialActionsInput = {
   organizationSlug: string;

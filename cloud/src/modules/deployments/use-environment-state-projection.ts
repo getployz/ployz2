@@ -11,7 +11,7 @@ import {
 import {
   getEnvironmentDeploymentsCollection,
   getEnvironmentSavedStateRevisionsCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
 import { listLatestOrganizationEnvironmentChangeStatesServerFn } from "#/modules/deployments/deployment.functions";
 import { serviceDeploymentKeys } from "#/modules/deployments/deployment-queries";

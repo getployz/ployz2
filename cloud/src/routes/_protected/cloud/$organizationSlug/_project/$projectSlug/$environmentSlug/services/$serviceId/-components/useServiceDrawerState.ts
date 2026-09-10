@@ -24,7 +24,7 @@ import {
 } from "#/modules/services/services.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/use-environment-state-projection";
 import type { EnvironmentNodeNameIdentity } from "#/modules/environment-design/environment-node-names";
-import { getEnvironmentNodeIntroductionsCollection } from "#/electric/collections";
+import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";

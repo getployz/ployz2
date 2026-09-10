@@ -12,7 +12,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
   getEnvironmentsCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import type {
   CanvasEnvironmentChangeGroup,
   CanvasEnvironmentChangeState,
@@ -174,7 +174,6 @@ export function useCanvasChangeActions({
     command: EnvironmentSavedStateDiscardCommand,
   ) {
     const receipt: {
-      txid: number;
       data: { savedStateSnapshotId: string };
     } = await discardSavedChange({
         data: {
