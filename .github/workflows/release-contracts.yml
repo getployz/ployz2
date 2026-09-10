@@ -73,8 +73,10 @@ jobs:
           fetch-tags: true
       - uses: actions/setup-go@v5
         with:
-          go-version-file: crates/ployz/compose-helper/go.mod
-          cache-dependency-path: crates/ployz/compose-helper/go.sum
+          go-version-file: native/tailcat/go.mod
+          cache-dependency-path: |
+            crates/ployz/compose-helper/go.sum
+            native/tailcat/go.sum
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -110,6 +112,16 @@ jobs:
           sync: false
           save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected }}
           pr-comment: false
+      - name: Build Tailcat helper
+        if: matrix.binary != 'ployz-relay'
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          PLOYZ_VERSION=$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n1)
+          export PLOYZ_VERSION
+          bash native/tailcat/build.sh "$PWD/target/tailcat/linux_${{ matrix.arch }}/ployz-tailcat"
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -143,8 +155,10 @@ jobs:
           fetch-tags: true
       - uses: actions/setup-go@v5
         with:
-          go-version-file: crates/ployz/compose-helper/go.mod
-          cache-dependency-path: crates/ployz/compose-helper/go.sum
+          go-version-file: native/tailcat/go.mod
+          cache-dependency-path: |
+            crates/ployz/compose-helper/go.sum
+            native/tailcat/go.sum
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -174,6 +188,15 @@ jobs:
           sync: false
           save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected }}
           pr-comment: false
+      - name: Build Tailcat helper
+        env:
+          CGO_ENABLED: '0'
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          PLOYZ_VERSION=$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n1)
+          export PLOYZ_VERSION
+          bash native/tailcat/build.sh "$PWD/target/tailcat/darwin_${{ matrix.arch }}/ployz-tailcat"
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
