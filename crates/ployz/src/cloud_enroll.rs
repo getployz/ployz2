@@ -12,7 +12,6 @@ use thiserror::Error;
 const DEFAULT_RETRY_AFTER: u64 = 2;
 const PROTOCOL_VERSION: u8 = 2;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-// Healthy production enroll measured 8.15s for Relay List + registerHeld.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Failures talking to Cloud enroll.
@@ -197,6 +196,10 @@ fn cloud_origin(cloud_url: &str) -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EnrollCallback<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tailcat: Option<&'a str>,
     machine_id: MachineId,
     pairing_credential: &'a PairingCredential,
 }
@@ -247,7 +250,7 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
     }
 }
 
-/// POST the founder Machine ID and Pairing Credential after Relay Register is held.
+/// Request founder completion after publishing its protected connection candidate.
 ///
 /// # Errors
 ///
@@ -257,21 +260,59 @@ pub(crate) async fn callback(
     machine_id: MachineId,
     pairing_credential: &PairingCredential,
 ) -> Result<(), Error> {
+    post_callback(url, machine_id, pairing_credential, None).await
+}
+
+/// Publish a candidate against the authenticated enrollment attempt before completion.
+pub(crate) async fn publish(
+    url: &str,
+    machine_id: MachineId,
+    pairing_credential: &PairingCredential,
+    tailcat: &str,
+) -> Result<(), Error> {
+    post_callback(url, machine_id, pairing_credential, Some(tailcat)).await
+}
+
+async fn post_callback(
+    url: &str,
+    machine_id: MachineId,
+    pairing_credential: &PairingCredential,
+    tailcat: Option<&str>,
+) -> Result<(), Error> {
     let http = http_client()?;
     let body = EnrollCallback {
+        stage: tailcat.map(|_| "publish"),
+        tailcat,
         machine_id,
         pairing_credential,
     };
+    let operation = if tailcat.is_some() {
+        "candidate publication"
+    } else {
+        "founder completion"
+    };
     crate::setup_retry::run(
         &mut (),
-        &format!("Cloud founder completion at {}", diagnostic_origin(url)),
+        &format!("Cloud {operation} at {}", diagnostic_origin(url)),
         crate::setup_retry::WAIT,
         Error::is_transport,
-        async |_| post_json(&http, url, &body).await.map(|_| ()),
+        async |_| {
+            post_json(&http, url, &body)
+                .await
+                .map(|_| ())
+                .map_err(|error| match error {
+                    // Both stages carry credentials; a server may echo them in any encoding.
+                    Error::Status { status, .. } => Error::Status {
+                        status,
+                        body: format!("{operation} rejected"),
+                    },
+                    error => error,
+                })
+        },
     )
     .await
     .map_err(|error| Error::RetrySameCommand {
-        operation: "founder completion",
+        operation,
         detail: error.to_string(),
     })
 }
@@ -702,8 +743,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn held_enrollment_and_callback_requests_retry_within_stage_budget() {
-        for completing in [false, true] {
+    async fn enrollment_publication_and_completion_retry_within_stage_budget() {
+        for stage in ["enroll", "publish", "complete"] {
             let (listener, url) = listen().await;
             let server = tokio::spawn(async move {
                 let (mut held, _) = listener.accept().await.unwrap();
@@ -716,7 +757,7 @@ mod tests {
                 // Keep the first response open until the retry has succeeded.
                 let (mut retry, _) = listener.accept().await.unwrap();
                 read_http(&mut retry).await;
-                let body = if completing {
+                let body = if stage != "enroll" {
                     b"{}".to_vec()
                 } else {
                     join_body()
@@ -727,7 +768,16 @@ mod tests {
                 drop(held);
             });
             tokio::time::timeout(Duration::from_secs(25), async {
-                if completing {
+                if stage == "publish" {
+                    publish(
+                        &url,
+                        MachineId::random(),
+                        &PairingCredential::parse("pairing-secret").unwrap(),
+                        "fixture-tailcat-capability",
+                    )
+                    .await
+                    .unwrap();
+                } else if stage == "complete" {
                     callback(
                         &url,
                         MachineId::random(),
@@ -745,6 +795,48 @@ mod tests {
             })
             .await
             .expect("held request must retry before the stage deadline");
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_errors_redact_capability_and_pairing_credentials() {
+        for publishing in [true, false] {
+            let (listener, url) = listen().await;
+            let secret = "secret-tailcat-capability";
+            let pairing = "pairing-secret";
+            tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http(&mut stream).await;
+                tokio::io::AsyncWriteExt::write_all(
+                    &mut stream,
+                    &http_response(400, "Error", format!("{secret} {pairing}").as_bytes()),
+                )
+                .await
+                .unwrap();
+            });
+            let credential = PairingCredential::parse(pairing).unwrap();
+            let (result, operation) = if publishing {
+                (
+                    publish(&url, MachineId::random(), &credential, secret).await,
+                    "candidate publication",
+                )
+            } else {
+                (
+                    callback(&url, MachineId::random(), &credential).await,
+                    "founder completion",
+                )
+            };
+            let error = result.unwrap_err();
+            for rendered in [error.to_string(), format!("{error:?}")] {
+                assert!(!rendered.contains(secret));
+                assert!(!rendered.contains(pairing));
+            }
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("HTTP 400: {operation} rejected"))
+            );
+            assert!(error.to_string().contains("without --reset"));
         }
     }
 

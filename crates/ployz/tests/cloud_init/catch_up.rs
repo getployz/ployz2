@@ -129,10 +129,10 @@ async fn cloud_join(target_failures: Fault, ensure_failures: Fault) -> (Output, 
         ensure_failures,
     );
     let address = serve_machine(daemon.clone()).await;
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = super::harness::cli()
         .args([
             "--connect",
-            &format!("tcp://{address}"),
+            &format!("ssh://root@{address}"),
             "cloud",
             "enroll",
             TOKEN,
@@ -190,13 +190,13 @@ async fn machine_add_with_membership(
     )
     .save()
     .unwrap();
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let output = super::harness::cli()
         .args([
             "--ployz-config",
             config.to_str().unwrap(),
             "machine",
             "add",
-            &format!("tcp://{target_address}"),
+            &format!("ssh://root@{target_address}"),
             "--no-install",
             "--name",
             "joiner",

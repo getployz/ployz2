@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,13 +59,29 @@ func run(ctx context.Context, args []string) error {
 	if len(args) == 1 && args[0] == "connect" {
 		return connect(ctx)
 	}
+	if len(args) == 1 && args[0] == "export" {
+		return exportCapability(defaultState, os.Stdout)
+	}
 	if len(args) == 1 && args[0] == "serve" {
 		return serve(ctx, defaultState)
 	}
 	if len(args) == 3 && args[0] == "serve" && args[1] == "--state" {
 		return serve(ctx, args[2])
 	}
-	return errors.New("usage: ployz-tailcat connect | serve [--state PATH]")
+	return errors.New("usage: ployz-tailcat connect | export | serve [--state PATH]")
+}
+
+// Export only the ready capability; never generate or replace endpoint identity.
+func exportCapability(path string, output io.Writer) error {
+	state, err := readState(path)
+	if err != nil {
+		return err
+	}
+	if _, err := readCapability(bufio.NewReader(strings.NewReader(string(state.Capability) + "\n"))); err != nil {
+		return errors.New("Tailcat endpoint has no ready capability")
+	}
+	_, err = fmt.Fprintln(output, state.Capability)
+	return err
 }
 
 func readCapability(r *bufio.Reader) (tailcat.Addr, error) {

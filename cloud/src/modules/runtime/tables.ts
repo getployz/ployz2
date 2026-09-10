@@ -382,6 +382,7 @@ export const organizationPairing = pgTable(
       .notNull()
       .$type<EncryptedSecretValue>(),
     founderPublicKey: text("founder_public_key"),
+    founderClaimMachineId: text("founder_claim_machine_id").$type<MachineId>(),
     founderMachineId: text("founder_machine_id").$type<MachineId>(),
     firstConnectDeploymentEvaluatedAt: timestamp(
       "first_connect_deployment_evaluated_at",

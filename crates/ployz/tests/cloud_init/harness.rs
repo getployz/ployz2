@@ -31,7 +31,7 @@ mod servers;
 pub use enroll_http::{EnrollListen, EventLog};
 use relay::hold_register;
 pub use relay::{RelayListen, assert_not_held, wait_for_held};
-pub use servers::{serve_ingress_probe, serve_local_machine, serve_machine};
+pub use servers::{cli, serve_ingress_probe, serve_local_machine, serve_machine};
 
 pub const TOKEN: &str = "pmet_test";
 pub const PAIRING: &str = "pairing-secret";

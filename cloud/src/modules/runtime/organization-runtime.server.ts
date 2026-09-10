@@ -1,24 +1,20 @@
 import "@tanstack/react-start/server-only";
-import type { MachineId } from "@ployz/sdk";
+import type { Connection } from "@ployz/sdk";
 import {
   Context,
   Effect,
   Layer,
   type Scope,
 } from "effect";
-import { orderDialEntries } from "#/modules/runtime/dial-entry";
 import {
   Ployz,
   type PloyzProviderError,
   type PloyzSession,
 } from "#/modules/runtime/ployz.server";
 import {
-  EnrollmentRelay,
-  loadOrganizationDialTenant,
+  loadOrganizationConnections,
 } from "#/modules/machines/enrollment.server";
-import type { OrganizationDialAccess } from "#/modules/machines/enrollment";
 import { Database } from "#/server/database.server";
-import { AppConfig } from "#/server/config.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 export type ConnectedRuntimeClient = PloyzSession;
@@ -42,11 +38,14 @@ export class OrganizationRuntime extends Context.Service<
   OrganizationRuntimeService
 >()("ployz/OrganizationRuntime") {}
 
-type LoadDialTenant = (
+type LoadConnections = (
   organizationId: string,
-) => Effect.Effect<OrganizationDialAccess, Error>;
+) => Effect.Effect<
+  { readonly kind: "missing" } | { readonly kind: "ready"; readonly connections: readonly Connection[] },
+  Error
+>;
 
-export function makeOrganizationRuntimeLayer(loadDialTenant: LoadDialTenant) {
+export function makeOrganizationRuntimeLayer(loadConnections: LoadConnections) {
   return Layer.effect(
     OrganizationRuntime,
     Effect.gen(function* () {
@@ -55,40 +54,18 @@ export function makeOrganizationRuntimeLayer(loadDialTenant: LoadDialTenant) {
         open: Effect.fn("OrganizationRuntime.open")(function* (
           organizationId: string,
         ) {
-          const access = yield* loadDialTenant(organizationId);
-          switch (access.kind) {
-            case "missing":
-              return { status: "no_connection" as const };
-            case "unreachable":
-              return { status: "unreachable" as const, error: null };
-            case "ready":
-              break;
-            default: {
-              const exhaustive: never = access;
-              return exhaustive;
-            }
+          const access = yield* loadConnections(organizationId);
+          if (access.kind === "missing") {
+            return { status: "no_connection" as const };
           }
-
-          const attempts = orderDialEntries(access.tenant).map((machineId) =>
-            ployz
-              .connect({
-                relayUrl: access.tenant.relayUrl,
-                bearer: access.tenant.bearer,
-                pairing: access.tenant.pairing,
-                // SAFETY: Cloud and the SDK use the same machine identifier bytes.
-                machineId: machineId as MachineId,
-              })
-              .pipe(
-                Effect.map((connected) => ({
-                  status: "connected" as const,
-                  connected,
-                })),
-              ),
-          );
-          if (attempts.length === 0) {
+          if (access.connections.length === 0) {
             return { status: "unreachable" as const, error: null };
           }
-          return yield* Effect.firstSuccessOf(attempts).pipe(
+          return yield* ployz.connect({ connections: access.connections }).pipe(
+            Effect.map((connected) => ({
+              status: "connected" as const,
+              connected,
+            })),
             Effect.catch((error) =>
               Effect.succeed({
                 status: "unreachable" as const,
@@ -105,14 +82,10 @@ export function makeOrganizationRuntimeLayer(loadDialTenant: LoadDialTenant) {
 export const OrganizationRuntimeLive = Layer.unwrap(
   Effect.gen(function* () {
     const database = yield* Database;
-    const enrollmentRelay = yield* EnrollmentRelay;
-    const config = yield* AppConfig;
     const encryption = yield* SecretEncryption;
     return makeOrganizationRuntimeLayer((organizationId) =>
-      loadOrganizationDialTenant(organizationId).pipe(
+      loadOrganizationConnections(organizationId).pipe(
         Effect.provideService(Database, database),
-        Effect.provideService(EnrollmentRelay, enrollmentRelay),
-        Effect.provideService(AppConfig, config),
         Effect.provideService(SecretEncryption, encryption),
       ),
     );

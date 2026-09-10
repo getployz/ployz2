@@ -6,6 +6,7 @@ import type {
   EnrollmentSnapshot,
   ClusterTeardown,
   ConnectOptions,
+  Connection,
   DataLossConfirmation,
   DeployOutcome,
   DeployIntent,
@@ -94,6 +95,11 @@ export interface PloyzSession {
   ) => Effect.Effect<RuntimeWatchView, RuntimeConnectionFailure>;
 }
 
+type SharedConnectOptions = Omit<
+  Extract<ConnectOptions, { readonly connections: readonly Connection[] }>,
+  "signal"
+>;
+
 type PloyzBindings = {
   readonly observeEnrollment?: typeof PloyzSdk.observeEnrollment;
   readonly publishEnrollment?: typeof PloyzSdk.publishEnrollment;
@@ -120,7 +126,7 @@ export interface PloyzService {
   ) => Effect.Effect<JsonValue, PloyzProviderError>;
 
   readonly connect: (
-    options: ConnectOptions,
+    options: SharedConnectOptions,
   ) => Effect.Effect<PloyzSession, PloyzProviderError, Scope.Scope>;
   readonly listHeldRegisters: (
     relayUrl: string,
@@ -283,14 +289,24 @@ export function makePloyzLayer(bindings: PloyzBindings) {
     }),
 
     connect: (options) =>
-      Effect.acquireRelease(
-        Effect.tryPromise({
-          try: () => bindings.connect(options),
-          catch: (cause) =>
-            new PloyzProviderError({ operation: "connect", cause }),
-        }),
-        closeSession,
-      ).pipe(Effect.map(wrapClient)),
+      Effect.gen(function* () {
+        const controller = yield* Effect.acquireRelease(
+          Effect.sync(() => new AbortController()),
+          (controller) => Effect.sync(() => controller.abort()),
+        );
+        return yield* Effect.acquireRelease(
+          Effect.tryPromise({
+            try: (signal) => bindings.connect({
+              ...options,
+              signal: AbortSignal.any([signal, controller.signal]),
+            }),
+            catch: (cause) =>
+              new PloyzProviderError({ operation: "connect", cause }),
+          }),
+          closeSession,
+          { interruptible: true },
+        ).pipe(Effect.map(wrapClient));
+      }),
     listHeldRegisters: (relayUrl, bearer, pairing) =>
       Effect.tryPromise({
         try: () => held(relayUrl, bearer, pairing),

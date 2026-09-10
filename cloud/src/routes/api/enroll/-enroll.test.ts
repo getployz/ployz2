@@ -332,6 +332,22 @@ describe("machine enrollment routes", () => {
     expect(JSON.stringify(body)).not.toContain(token);
   });
 
+  it("accepts a bounded protected candidate without reflecting capabilities", async () => {
+    mocks.completeFounding.mockReturnValue(Effect.succeed({ machineId }));
+    const published = { stage: "publish", machineId, pairingCredential: "ppair_secret", tailcat: "private-capability" };
+    const accepted = await callback(published);
+    expect(accepted.status).toBe(200);
+    expect(mocks.completeFounding).toHaveBeenCalledWith({ token, ...published });
+    expect(await accepted.json()).toEqual({ machineId });
+    mocks.completeFounding.mockClear();
+    for (const tailcat of ["", "x".repeat(16 * 1024 + 1)]) {
+      const rejected = await callback({ ...published, tailcat });
+      expect(rejected.status).toBe(422);
+      expect(await rejected.text()).not.toContain("private-capability");
+    }
+    expect(mocks.completeFounding).not.toHaveBeenCalled();
+  });
+
   it("rejects prefixed or extra callback bodies", async () => {
     for (const response of [
       await callback({
