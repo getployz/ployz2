@@ -17,9 +17,11 @@ import {
 } from "#/modules/runtime/ployz.server";
 import {
   loadOrganizationConnections,
-} from "#/modules/machines/enrollment.server";
+} from "#/modules/machines/connections.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
+
+export const PAIRING_REMOVAL_CHANNEL = "ployz_pairing_removed";
 
 export type ConnectedRuntimeClient = PloyzSession;
 
@@ -163,7 +165,7 @@ export const OrganizationRuntimeLive = Layer.unwrap(
         Effect.provideService(Database, database),
         Effect.provideService(SecretEncryption, encryption),
       ),
-      database.pairingRemovals,
+      database.subscribe(PAIRING_REMOVAL_CHANNEL),
     );
   }),
 );

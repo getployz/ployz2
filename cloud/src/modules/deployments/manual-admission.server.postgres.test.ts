@@ -486,7 +486,7 @@ describe("manual environment saved-state persistence", () => {
     let attempt = 0;
     const retryingDb: DatabaseService = {
       drizzle: harness.database.drizzle,
-      pairingRemovals: harness.database.pairingRemovals,
+      subscribe: harness.database.subscribe,
       transaction: ((program, config) =>
         Effect.suspend(() => {
           attempt += 1;

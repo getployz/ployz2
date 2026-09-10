@@ -1,9 +1,10 @@
+import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import type { Client, ConnectOptions, TailcatRemoval } from "@ployz/sdk";
 import { Layer, ManagedRuntime } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { startGithubPostgresTestHarness, type GithubPostgresTestHarness } from "#/modules/github/github-ingestion.postgres-test-harness";
-import { hashEnrollmentToken, loadOrganizationConnections } from "#/modules/machines/enrollment.server";
+import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, loadTeardownConnections, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
@@ -72,6 +73,32 @@ describe("protected pairing removal", () => {
     const makeRuntime = () => ManagedRuntime.make(OrganizationRuntimeLive.pipe(Layer.provideMerge(layer)));
     return { endpoint, mutations, dialed, prepared: () => prepared, makeRuntime };
   }
+
+  it.each([
+    { status: "prepared", machineId, encryptedSuccessor: encryption.encrypt("successor-only") },
+    { status: "confirmed", machineId, encryptedExpected: encryption.encrypt("retained-secret") },
+    { status: "pending", machineId, encryptedExpected: encryption.encrypt(capability), encryptedSuccessor: encryption.encrypt("unexpected") },
+    { status: "unknown", machineId, encryptedExpected: encryption.encrypt(capability) },
+    { status: "pending", machineId: "invalid-id", encryptedExpected: encryption.encrypt(capability) },
+    { status: "pending", machineId, encryptedExpected: { version: 2, iv: "", tag: "", ciphertext: "" } },
+  ])("rejects malformed persisted removal state before dialing: %j", async (endpoint) => {
+    await harness.pool.query("delete from organization_machine where organization_id=$1", [organizationId]);
+    await harness.pool.query("update organization_pairing set removal_started_at=now(), removal_endpoints=$2 where organization_id=$1",
+      [organizationId, JSON.stringify([endpoint])]);
+    const fake = fixture();
+    const runtime = fake.makeRuntime();
+    try {
+      await expect(runtime.runPromise(revokeOrganizationPairing(organizationId)))
+        .rejects.toMatchObject({ _tag: "PairingRemovalStateInvalid" });
+      await expect(runtime.runPromise(loadTeardownConnections(organizationId)))
+        .rejects.toMatchObject({ _tag: "PairingRemovalStateInvalid" });
+      expect(fake.dialed).toEqual([]);
+      expect(fake.prepared()).toBe(0);
+      expect(fake.mutations).toEqual([]);
+      const saved = await harness.pool.query("select removal_endpoints from organization_pairing where organization_id=$1", [organizationId]);
+      expect(saved.rows[0].removal_endpoints).toEqual([endpoint]);
+    } finally { await runtime.dispose(); }
+  });
 
   it("disables ordinary access, moves encrypted credentials, and retains the founding claim offline", async () => {
     await expect(harness.pool.query("update organization_pairing set removal_started_at=now() where organization_id=$1", [organizationId]))
@@ -162,7 +189,7 @@ describe("protected pairing removal", () => {
       expect(fake.mutations).toHaveLength(1);
       const saved = await harness.pool.query("select removal_endpoints from organization_pairing");
       expect(saved.rows[0].removal_endpoints.find((entry: { machineId: string }) => entry.machineId === machineId)).toEqual({
-        machineId, encryptedExpected: null, encryptedSuccessor: null, confirmed: true,
+        machineId, status: "confirmed",
       });
     } finally { await runtime.dispose(); }
   });

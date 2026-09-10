@@ -2,16 +2,15 @@ import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
-import type { Connection, EnrollmentSnapshot, MachineId, RegisterRequest } from "@ployz/sdk";
-import { and, asc, desc, eq } from "drizzle-orm";
-import { Data, Effect, Option, Schema } from "effect";
+import type { EnrollmentSnapshot, MachineId, RegisterRequest } from "@ployz/sdk";
+import { and, eq } from "drizzle-orm";
+import { Effect, Option, Schema } from "effect";
 import {
   enrollmentAllocation,
   organizationMachine,
   machineEnrollmentToken as schemaMachineEnrollmentToken,
 } from "#/modules/machines/tables";
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
-import type { EncryptedSecretValue } from "#/db/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
@@ -35,14 +34,9 @@ import { commitFirstConnectAdmission } from "#/modules/deployments/first-connect
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.server";
 import { Conflict, Unauthorized, Validation } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
 
 const TOKEN_PREFIX = "pmet_";
-
-export class PairingSecretDecryptFailure extends Data.TaggedError(
-  "PairingSecretDecryptFailure",
-)<{ readonly cause: unknown }> {
-  readonly publicErrorCategory = "internal" as const;
-}
 
 export function hashEnrollmentToken(token: string) {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -177,26 +171,6 @@ const loadPairingRow = Effect.fn("MachineEnrollment.loadPairing")(
       .limit(1);
   },
 );
-
-const decryptPairingSecret = Effect.fn("MachineEnrollment.decryptPairingSecret")(
-  function* (value: EncryptedSecretValue) {
-    const encryption = yield* SecretEncryption;
-    return yield* Effect.try({
-      try: () => encryption.decrypt(value),
-      catch: (cause) => new PairingSecretDecryptFailure({ cause }),
-    });
-  },
-);
-
-const pairingFromRow = Effect.fn("MachineEnrollment.decodePairing")(
-  function* (row: PairingRow) {
-    const secret = yield* decryptPairingSecret(row.encryptedPairingSecret);
-    return {
-      secret,
-    };
-  },
-);
-
 
 // SAFETY: the SDK exports this synchronous Rust policy through CommonJS.
 const { allocateEnrollment } = createRequire(import.meta.url)("@ployz/sdk") as Pick<
@@ -412,26 +386,6 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
   },
 );
 
-/** Protected candidates are scoped to the current pairing and never browser projections. */
-export const loadOrganizationConnections = Effect.fn("MachineEnrollment.loadConnections")(
-  function* (organizationId: string) {
-    const [pairing] = yield* loadPairingRow(organizationId);
-    if (!pairing || pairing.removalStartedAt !== null) return { kind: "missing" as const };
-    const secret = yield* decryptPairingSecret(pairing.encryptedPairingSecret);
-    const { drizzle } = yield* Database;
-    const candidates = yield* drizzle.select().from(organizationMachine).where(and(
-      eq(organizationMachine.organizationId, organizationId),
-      eq(organizationMachine.clusterKey, hashEnrollmentToken(secret)),
-    )).orderBy(desc(organizationMachine.isDialEntry), asc(organizationMachine.createdAt), asc(organizationMachine.machineId));
-    const connections: Connection[] = yield* Effect.forEach(candidates, (candidate) => Effect.gen(function* () {
-      const tailcat = yield* decryptPairingSecret(candidate.encryptedTailcat);
-      // SAFETY: the table constraint enforces the SDK Machine ID representation.
-      return { tailcat, machine_id: candidate.machineId as MachineId };
-    }));
-    return { kind: "ready" as const, generation: hashEnrollmentToken(secret), connections };
-  },
-);
-
 export const completeMachineEnrollment = Effect.fn(
   "MachineEnrollment.completeMachineEnrollment",
 )(
@@ -452,7 +406,7 @@ export const completeMachineEnrollment = Effect.fn(
         message: "No founding attempt is pending.",
       });
     }
-    const pairing = yield* pairingFromRow(row);
+    const pairing = { secret: yield* decryptPairingSecret(row.encryptedPairingSecret) };
     if (!credentialsMatch(pairing.secret, input.pairingCredential)) {
       return yield* new Conflict({
         message: "The founding attempt is no longer current.",

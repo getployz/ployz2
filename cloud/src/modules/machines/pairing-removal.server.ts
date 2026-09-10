@@ -3,26 +3,36 @@ import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { Connection, MachineId } from "@ployz/sdk";
 import { and, eq, sql } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { Data, Effect, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
   enrollmentAllocation,
   machineEnrollmentToken,
   organizationMachine,
 } from "#/modules/machines/tables";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, PAIRING_REMOVAL_CHANNEL } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
+import { RemovalEndpoints, type RemovalEndpoint } from "#/modules/machines/pairing-removal";
+
 type Pairing = typeof organizationPairing.$inferSelect;
-type RemovalEndpoint = NonNullable<Pairing["removalEndpoints"]>[number];
 type RemovalAttempt = Pairing & {
   removalStartedAt: Date;
-  removalEndpoints: RemovalEndpoint[];
+  removalEndpoints: readonly RemovalEndpoint[];
 };
+
+export class PairingRemovalStateInvalid extends Data.TaggedError("PairingRemovalStateInvalid") {
+  readonly publicErrorCategory = "internal" as const;
+}
+
+const decodeEndpoints = Effect.fn("PairingRemoval.decodeEndpoints")(
+  Schema.decodeUnknownEffect(RemovalEndpoints, { onExcessProperty: "error" }),
+  Effect.mapError(() => new PairingRemovalStateInvalid()),
+);
 
 const decrypt = Effect.fn("PairingRemoval.decrypt")(function* (
   value: Parameters<SecretEncryption["Service"]["decrypt"]>[0],
@@ -47,7 +57,7 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
       const generation = createHash("sha256").update(secret).digest("hex");
       let attempt: RemovalAttempt;
       if (pairing.removalStartedAt !== null && pairing.removalEndpoints !== null) {
-        attempt = { ...pairing, removalStartedAt: pairing.removalStartedAt, removalEndpoints: pairing.removalEndpoints };
+        attempt = { ...pairing, removalStartedAt: pairing.removalStartedAt, removalEndpoints: yield* decodeEndpoints(pairing.removalEndpoints) };
       } else {
         const candidates = yield* drizzle.select().from(organizationMachine)
           .where(eq(organizationMachine.organizationId, organizationId));
@@ -55,17 +65,16 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
           eq(enrollmentAllocation.organizationId, organizationId),
           eq(enrollmentAllocation.clusterKey, generation),
         ));
-        const removalEndpoints: RemovalEndpoint[] = candidates.map((candidate) => ({
+        const removalEndpoints = [...(yield* decodeEndpoints(candidates.map((candidate) => ({
           machineId: candidate.machineId,
           encryptedExpected: candidate.encryptedTailcat,
-          encryptedSuccessor: null,
-          confirmed: false,
-        }));
+          status: "pending",
+        }))))];
         // A claim or reserved Join may have reached a Machine before publication was acknowledged.
         const intendedMachines = [pairing.founderClaimMachineId, ...(allocation?.assignments.map((assignment) => assignment.machine.id) ?? [])];
         for (const machineId of intendedMachines) {
           if (!removalEndpoints.some((endpoint) => endpoint.machineId === machineId)) {
-            removalEndpoints.push({ machineId, encryptedExpected: null, encryptedSuccessor: null, confirmed: false });
+            removalEndpoints.push({ machineId: yield* Schema.decodeUnknownEffect(rustMachineIdSchema)(machineId), status: "unknown" });
           }
         }
         const removalStartedAt = new Date();
@@ -76,7 +85,7 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
         attempt = { ...pairing, removalStartedAt, removalEndpoints };
       }
-      yield* drizzle.execute(sql`select pg_notify('ployz_pairing_removed', ${JSON.stringify({ organizationId, generation })})`);
+      yield* drizzle.execute(sql`select pg_notify(${PAIRING_REMOVAL_CHANNEL}, ${JSON.stringify({ organizationId, generation })})`);
       return { attempt, generation };
     }));
     if (disabled !== null) {
@@ -97,12 +106,12 @@ const loadCurrentAttempt = Effect.fn("PairingRemoval.loadCurrent")(
     if (current?.removalEndpoints === null || current?.removalEndpoints === undefined) {
       return yield* new Conflict({ message: "The pairing removal attempt is no longer current." });
     }
-    return { ...current, removalEndpoints: current.removalEndpoints };
+    return { ...current, removalEndpoints: yield* decodeEndpoints(current.removalEndpoints) };
   },
 );
 
 const prepareEndpointRemoval = Effect.fn("PairingRemoval.prepareEndpoint")(
-  function* (attempt: RemovalAttempt, machineId: string) {
+  function* (attempt: RemovalAttempt, machineId: MachineId) {
     const database = yield* Database;
     const ployz = yield* Ployz;
     const encryption = yield* SecretEncryption;
@@ -110,16 +119,16 @@ const prepareEndpointRemoval = Effect.fn("PairingRemoval.prepareEndpoint")(
       const { drizzle } = yield* Database;
       const current = yield* loadCurrentAttempt(attempt);
       const endpoint = current.removalEndpoints.find((entry) => entry.machineId === machineId);
-      if (!endpoint || endpoint.confirmed || endpoint.encryptedExpected === null) return null;
+      if (!endpoint || endpoint.status === "unknown" || endpoint.status === "confirmed") return null;
       const expected = yield* decrypt(endpoint.encryptedExpected);
-      const preparedNow = endpoint.encryptedSuccessor === null;
-      const successor = endpoint.encryptedSuccessor === null
+      const preparedNow = endpoint.status === "pending";
+      const successor = endpoint.status === "pending"
         ? yield* ployz.prepareTailcatRemoval(expected)
         : yield* decrypt(endpoint.encryptedSuccessor);
       if (preparedNow) {
         yield* drizzle.update(organizationPairing).set({
           removalEndpoints: current.removalEndpoints.map((entry) => entry.machineId === machineId
-            ? { ...entry, encryptedSuccessor: encryption.encrypt(successor) } : entry),
+            ? { status: "prepared", machineId: endpoint.machineId, encryptedExpected: endpoint.encryptedExpected, encryptedSuccessor: encryption.encrypt(successor) } : entry),
         }).where(eq(organizationPairing.organizationId, attempt.organizationId));
       }
       return { expected, successor, preparedNow };
@@ -150,7 +159,7 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
     const ployz = yield* Ployz;
     const expectedPairing = yield* decrypt(attempt.encryptedPairingSecret);
     yield* Effect.forEach(attempt.removalEndpoints, (endpoint) => Effect.gen(function* () {
-      const machineId = yield* Schema.decodeUnknownEffect(rustMachineIdSchema)(endpoint.machineId);
+      const machineId = endpoint.machineId;
       const removal = yield* prepareEndpointRemoval(attempt, endpoint.machineId);
       if (removal === null) return;
       let confirmed = !removal.preparedNow && (yield* confirmEndpointRemoval(machineId, removal.successor));
@@ -171,18 +180,18 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
         const current = yield* loadCurrentAttempt(attempt);
         yield* drizzle.update(organizationPairing).set({
           removalEndpoints: current.removalEndpoints.map((entry) => entry.machineId === endpoint.machineId
-            ? { ...entry, encryptedExpected: null, encryptedSuccessor: null, confirmed: true } : entry),
+            ? { status: "confirmed", machineId: entry.machineId } : entry),
         }).where(eq(organizationPairing.organizationId, organizationId));
       }));
     }).pipe(Effect.ignore), { concurrency: 4, discard: true });
     return yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       const current = yield* loadCurrentAttempt(attempt);
-      const confirmed = current.removalEndpoints.every((endpoint) => endpoint.confirmed);
+      const confirmed = current.removalEndpoints.every((endpoint) => endpoint.status === "confirmed");
       if (confirmed) yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
       return { confirmed, endpoints: current.removalEndpoints.map((endpoint) => ({
         machineId: endpoint.machineId,
-        status: endpoint.confirmed ? "confirmed" as const : "unconfirmed" as const,
+        status: endpoint.status === "confirmed" ? "confirmed" as const : "unconfirmed" as const,
       })) };
     }));
   },
@@ -195,9 +204,10 @@ export const loadTeardownConnections = Effect.fn("PairingRemoval.teardownConnect
     const [pairing] = yield* drizzle.select().from(organizationPairing)
       .where(eq(organizationPairing.organizationId, organizationId));
     const connections: Connection[] = [];
-    for (const endpoint of pairing?.removalEndpoints ?? []) {
-      if (endpoint.encryptedExpected !== null) connections.push({
-        machine_id: yield* Schema.decodeUnknownEffect(rustMachineIdSchema)(endpoint.machineId),
+    const endpoints = yield* decodeEndpoints(pairing?.removalEndpoints ?? []);
+    for (const endpoint of endpoints) {
+      if (endpoint.status === "pending" || endpoint.status === "prepared") connections.push({
+        machine_id: endpoint.machineId,
         tailcat: yield* decrypt(endpoint.encryptedExpected),
       });
     }

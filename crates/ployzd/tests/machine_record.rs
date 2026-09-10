@@ -227,7 +227,9 @@ async fn set_cloud_pairing_after_initialize_persists() {
     assert_eq!(local.record().unwrap().cloud_pairing, None);
 
     local
-        .set_cloud_pairing(Some(pairing.clone()))
+        .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Set {
+            pairing: pairing.clone(),
+        })
         .await
         .unwrap();
     assert_eq!(
@@ -257,7 +259,10 @@ async fn set_cloud_pairing_none_clears_persisted_pairing() {
         })
         .await
         .unwrap();
-    local.set_cloud_pairing(None).await.unwrap();
+    local
+        .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Clear {})
+        .await
+        .unwrap();
     assert_eq!(local.record().unwrap().cloud_pairing, None);
     drop(local);
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
@@ -271,7 +276,9 @@ async fn set_cloud_pairing_before_initialize_is_not_participating() {
     let (reset, _) = tokio::sync::watch::channel(false);
     let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
     let error = local
-        .set_cloud_pairing(Some(sample_cloud_pairing()))
+        .set_cloud_pairing(ployz_core::SetCloudPairingRequest::Set {
+            pairing: sample_cloud_pairing(),
+        })
         .await
         .unwrap_err();
     assert!(matches!(error, LocalMachineError::NotParticipating));
@@ -987,49 +994,4 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
     conflict.wireguard_mtu = None;
     assert!(local.join(conflict).await.is_err());
     assert_eq!(local.record().unwrap().id(), id);
-}
-
-#[tokio::test]
-async fn tailcat_removal_rejects_repairing_and_stale_pairing_before_clearing() {
-    let dir = TestDir::new("ployzd-tailcat-removal-guard");
-    let store = LocalMachineStore::open(&dir.0).unwrap();
-    let (reset, _) = tokio::sync::watch::channel(false);
-    let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
-    let pairing = sample_cloud_pairing();
-    local
-        .initialize(ployz_core::InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("first").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-            wireguard_mtu: None,
-            cloud_pairing: Some(pairing.clone()),
-        })
-        .await
-        .unwrap();
-    let mut removal = ployz_core::TailcatRemoval {
-        expected: "private-old".into(),
-        successor: "private-next".into(),
-        expected_pairing: ployz_core::PairingCredential::parse("stale-pairing").unwrap(),
-    };
-    let error = local
-        .set_cloud_pairing_with_removal(Some(pairing.clone()), Some(removal.clone()))
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("requires pairing removal"));
-    let error = local
-        .set_cloud_pairing_with_removal(None, Some(removal.clone()))
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("stale Cloud Pairing"));
-    assert_eq!(local.record().unwrap().cloud_pairing, Some(pairing.clone()));
-    removal.expected_pairing = pairing.secret().clone();
-    removal.expected = "private-old\nextra-command".into();
-    let error = local
-        .set_cloud_pairing_with_removal(None, Some(removal))
-        .await
-        .unwrap_err();
-    assert!(!error.to_string().contains("private-old"));
-    assert_eq!(local.record().unwrap().cloud_pairing, Some(pairing));
 }

@@ -4,39 +4,35 @@ use std::{
     process::{Command, Stdio},
 };
 
-use ployz_core::{CloudPairing, TailcatRemoval};
+use ployz_core::{SetCloudPairingRequest, TailcatRemoval};
 
 use super::{Error, LocalMachine};
 
 impl LocalMachine {
-    /// Clear pairing and rotate its Tailcat endpoint, or perform an ordinary pairing update.
+    /// Set or clear Cloud Pairing, or clear it and rotate its endpoint under mutation admission.
     ///
     /// # Errors
     /// Returns admission, persistence, validation, or endpoint lifecycle failures.
-    pub async fn set_cloud_pairing_with_removal(
-        &self,
-        pairing: Option<CloudPairing>,
-        removal: Option<TailcatRemoval>,
-    ) -> Result<(), Error> {
-        let Some(removal) = removal else {
-            return self.set_cloud_pairing(pairing).await;
-        };
-        if pairing.is_some() {
-            return Err(Error::Cleanup(
-                "Tailcat rotation requires pairing removal".into(),
-            ));
-        }
+    pub async fn set_cloud_pairing(&self, request: SetCloudPairingRequest) -> Result<(), Error> {
         let local = self.clone();
         self.finish_mutation(async move {
-            tokio::task::spawn_blocking(move || {
-                complete_removal(
-                    &local,
-                    &removal,
-                    crate::installer::TAILCAT_HELPER_PROGRAM,
-                    "systemctl",
-                )
-            })
-            .await?
+            match request {
+                SetCloudPairingRequest::Set { pairing } => {
+                    local.set_cloud_pairing_admitted(Some(pairing))
+                }
+                SetCloudPairingRequest::Clear {} => local.set_cloud_pairing_admitted(None),
+                SetCloudPairingRequest::Remove { removal } => {
+                    tokio::task::spawn_blocking(move || {
+                        complete_removal(
+                            &local,
+                            &removal,
+                            crate::installer::TAILCAT_HELPER_PROGRAM,
+                            "systemctl",
+                        )
+                    })
+                    .await?
+                }
+            }
         })
         .await
     }
@@ -80,14 +76,6 @@ fn endpoint_error() -> Error {
 }
 
 fn endpoint_command(helper: &str, operation: &str, removal: &TailcatRemoval) -> Result<(), Error> {
-    for capability in [&removal.expected, &removal.successor] {
-        if capability.is_empty()
-            || capability.len() > 16 * 1024 - 1
-            || capability.contains(['\n', '\r'])
-        {
-            return Err(endpoint_error());
-        }
-    }
     let mut child = Command::new(helper)
         .arg(operation)
         .stdin(Stdio::piped())
@@ -97,7 +85,13 @@ fn endpoint_command(helper: &str, operation: &str, removal: &TailcatRemoval) -> 
         .map_err(|_| endpoint_error())?;
     let write = (|| {
         let mut input = child.stdin.take().ok_or_else(endpoint_error)?;
-        writeln!(input, "{}\n{}", removal.expected, removal.successor).map_err(|_| endpoint_error())
+        writeln!(
+            input,
+            "{}\n{}",
+            removal.expected.as_str(),
+            removal.successor.as_str()
+        )
+        .map_err(|_| endpoint_error())
     })();
     let status = child.wait().map_err(|_| endpoint_error())?;
     write?;
@@ -111,6 +105,7 @@ fn endpoint_command(helper: &str, operation: &str, removal: &TailcatRemoval) -> 
 mod tests {
     use super::*;
     use crate::machine::LocalMachineStore;
+    use ployz_core::{CloudPairing, TailcatCapability};
     use std::{
         fs,
         os::unix::fs::PermissionsExt,
@@ -130,8 +125,8 @@ mod tests {
             .persist_cloud_pairing(Some(pairing.clone()))
             .unwrap();
         let removal = TailcatRemoval {
-            expected: "old-secret".into(),
-            successor: "new-secret".into(),
+            expected: TailcatCapability::parse("old-secret").unwrap(),
+            successor: TailcatCapability::parse("new-secret").unwrap(),
             expected_pairing: pairing.secret().clone(),
         };
         // Trace persisted pairing at each process boundary, without logging stdin.
@@ -182,5 +177,52 @@ fi
             fs::read_to_string(dir.path().join("trace")).unwrap(),
             "validate-rotation paired\nrotate cleared\nrestart cleared\nvalidate-rotation cleared\nrotate cleared\nrestart cleared\n"
         );
+    }
+    #[tokio::test]
+    async fn removal_rejects_repairing_and_stale_pairing_before_clearing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalMachineStore::open(dir.path()).unwrap();
+        let (reset, _) = tokio::sync::watch::channel(false);
+        let local = LocalMachine::new(Arc::new(Mutex::new(store)), reset);
+        let pairing = CloudPairing::new(ployz_core::PairingCredential::parse("pairing").unwrap());
+        local
+            .initialize(ployz_core::InitializeRequest {
+                initial_policy: Default::default(),
+                name: ployz_core::MachineName::parse("first").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.1:51820".parse().unwrap(),
+                )],
+                wireguard_mtu: None,
+                cloud_pairing: Some(pairing.clone()),
+            })
+            .await
+            .unwrap();
+        let removal = TailcatRemoval {
+            expected: TailcatCapability::parse("private-old").unwrap(),
+            successor: TailcatCapability::parse("private-next").unwrap(),
+            expected_pairing: ployz_core::PairingCredential::parse("stale-pairing").unwrap(),
+        };
+        assert!(
+            serde_json::from_value::<SetCloudPairingRequest>(serde_json::json!({
+                "kind": "set", "pairing": pairing, "removal": removal,
+            }))
+            .is_err()
+        );
+        assert_eq!(local.record().unwrap().cloud_pairing, Some(pairing.clone()));
+        let error = local
+            .set_cloud_pairing(SetCloudPairingRequest::Remove { removal })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("stale Cloud Pairing"));
+        assert_eq!(local.record().unwrap().cloud_pairing, Some(pairing.clone()));
+        let error = serde_json::from_value::<SetCloudPairingRequest>(serde_json::json!({
+            "kind": "remove", "removal": {
+                "expected_pairing": pairing.secret(), "expected": "private-old\nextra-command", "successor": "private-next",
+            },
+        })).unwrap_err();
+        assert!(!error.to_string().contains("private-old"));
+        assert_eq!(local.record().unwrap().cloud_pairing, Some(pairing));
     }
 }

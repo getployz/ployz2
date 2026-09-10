@@ -140,7 +140,7 @@ describe("teardown durable state", () => {
         founder_machine_id, removal_started_at, removal_endpoints)
       values ($1,$2,$3,$3,now(),$4)
     `, [organizationId, encryption.encrypt("pairing-secret"), machineId, JSON.stringify([
-      { machineId, encryptedExpected: encryption.encrypt(retained), encryptedSuccessor: null, confirmed: false },
+      { machineId, status: "pending", encryptedExpected: encryption.encrypt(retained) },
     ])]);
     const calls: unknown[] = [];
     let closed = 0;

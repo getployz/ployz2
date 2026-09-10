@@ -74,9 +74,8 @@ function rpcStream(child, route, command, payload) {
 }
 async function setPairing(secret) {
   const child = start("ssh", ssh(["ployzd", "dial-stdio"]));
-  const { request, session } = rpcStream(child, "SetCloudPairing", "set_cloud_pairing", {
-    cloud_pairing: secret === null ? null : { secret },
-  });
+  const { request, session } = rpcStream(child, "SetCloudPairing", "set_cloud_pairing",
+    secret === null ? { kind: "clear" } : { kind: "set", pairing: { secret } });
   try {
     const chunks = [];
     request.on("data", data => chunks.push(data));
