@@ -45,9 +45,7 @@ use tokio::sync::Mutex;
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
-pub(crate) use lifecycle::{
-    ContainerRequest, GlobalSlotConvergence, GlobalSlotRequest, require_eligible,
-};
+pub(crate) use lifecycle::{ContainerRequest, require_eligible};
 pub(crate) use managed_service::ManagedService;
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};

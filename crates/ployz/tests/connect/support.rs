@@ -852,13 +852,6 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
-    async fn ensure_global_slot(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
     async fn remove_volume(
         &self,
         request: Request<OpaquePayload>,

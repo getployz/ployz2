@@ -391,19 +391,6 @@ pub(super) fn container_request<'spec, Storage>(
     }
 }
 
-pub(super) fn global_slot_request<'spec, Storage>(
-    project_name: &'spec ProjectName,
-    spec: &'spec ResolvedServiceSpec,
-    storage: Storage,
-) -> GlobalSlotRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
-    GlobalSlotRequest {
-        project_name,
-        spec,
-        admission: std::future::ready(Ok(())),
-        storage,
-    }
-}
-
 pub(crate) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource {
     let mut source = ployz_core::RawVolumeSource::Provisioned {
         name: DockerVolumeName::parse(name).unwrap(),

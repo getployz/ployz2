@@ -302,12 +302,6 @@ pub struct CreateContainerRequest {
     pub resolved_spec: ResolvedServiceSpec,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct EnsureGlobalSlotRequest {
-    pub project_name: ProjectName,
-    pub resolved_spec: ResolvedServiceSpec,
-}
-
 /// Set or clear this Machine's Cloud Pairing. `None` unlinks Cloud.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SetCloudPairingRequest {

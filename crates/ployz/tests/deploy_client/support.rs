@@ -430,14 +430,6 @@ impl MachineRpc for DeployService {
         }))
     }
 
-    async fn ensure_global_slot(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        unused()
-    }
-
     async fn start_container(
         &self,
         request: Request<OpaquePayload>,
