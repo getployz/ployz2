@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { focusManager, onlineManager, QueryClient } from "@tanstack/react-query";
-import { createApiCollection } from "./query-collection";
+import { createApiCollection, preloadCollection, reconcileCollection } from "./query-collection";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -49,6 +49,63 @@ it("refreshes active snapshots, retains failed reads, and stops unused scopes", 
   const inactiveReads = read.mock.calls.length;
   await vi.advanceTimersByTimeAsync(30_000);
   expect(read).toHaveBeenCalledTimes(inactiveReads);
+  await collection.cleanup();
+  client.unmount();
+  client.clear();
+});
+
+it("rejects failed initial loader readiness, retries later, and retains successful snapshots on refresh failure", async () => {
+  const client = new QueryClient();
+  const failure = new Error("API unavailable");
+  const read = vi.fn<() => Promise<{ id: string }[]>>().mockRejectedValue(failure);
+  const collection = createApiCollection({ queryClient: client, queryKey: ["failed-preload"], queryFn: read,
+    getKey: (row: { id: string }) => row.id });
+  await expect(preloadCollection(collection)).rejects.toBe(failure);
+  expect(collection.subscriberCount).toBe(0);
+  read.mockResolvedValue([{ id: "retained" }]);
+  await preloadCollection(collection);
+  expect(collection.get("retained")).toMatchObject({ id: "retained" });
+  const active = collection.subscribeChanges(() => {});
+  read.mockRejectedValue(failure);
+  await expect(collection.utils.refetch({ throwOnError: true })).rejects.toBe(failure);
+  await expect(preloadCollection(collection)).resolves.toBeUndefined();
+  expect(collection.get("retained")).toMatchObject({ id: "retained" });
+  active.unsubscribe();
+  await collection.cleanup();
+  client.clear();
+});
+
+it("releases preload-only and reconciliation observers while keeping mounted consumers active", async () => {
+  vi.useFakeTimers();
+  focusManager.setFocused(true);
+  const client = new QueryClient();
+  client.mount();
+  const read = vi.fn(async () => [{ id: "loaded" }]);
+  const collection = createApiCollection({ queryClient: client, queryKey: ["preload-only"], queryFn: read,
+    getKey: (row: { id: string }) => row.id });
+  await preloadCollection(collection);
+  expect(collection.subscriberCount).toBe(0);
+  const preloadedReads = read.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(read).toHaveBeenCalledTimes(preloadedReads);
+  // An abandoned prefetch keeps its snapshot ready without running an active observer.
+  expect(collection.get("loaded")).toMatchObject({ id: "loaded" });
+  await reconcileCollection(collection);
+  expect(read.mock.calls.length).toBeGreaterThan(preloadedReads);
+  const reconciledReads = read.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(read).toHaveBeenCalledTimes(reconciledReads);
+  const active = collection.subscribeChanges(() => {});
+  await vi.advanceTimersByTimeAsync(10);
+  await preloadCollection(collection);
+  await reconcileCollection(collection);
+  const activeReads = read.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(15_000);
+  expect(read.mock.calls.length).toBeGreaterThan(activeReads);
+  active.unsubscribe();
+  const unusedReads = read.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(read).toHaveBeenCalledTimes(unusedReads);
   await collection.cleanup();
   client.unmount();
   client.clear();

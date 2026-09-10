@@ -1,3 +1,4 @@
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { redirect, useMatch } from "@tanstack/react-router";
@@ -73,13 +74,14 @@ function serviceConfig(
 export function useServiceDrawerState(
   params: ServiceRouteParams,
 ): ServiceDrawerState | null {
+  const collectionScope = useCollectionScope();
   const collection = useServicesCollection(params.organizationSlug);
   const serviceWriter = useServiceWriter(params.organizationSlug);
   const environmentResourcesCollection = useEnvironmentResourcesCollection(
     params.organizationSlug,
   );
   const canvasPositions = useCanvasPositionsCollection(params.organizationSlug);
-  const documents = getEnvironmentDocumentsCollection(params.organizationSlug);
+  const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
   const nodeIntroductions = getEnvironmentNodeIntroductionsCollection(
     params.organizationSlug,
   );

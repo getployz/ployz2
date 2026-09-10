@@ -1,3 +1,5 @@
+import { reconcileCollection } from "#/collections/query-collection";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { restoreWorkingDocumentServerFn } from "#/modules/environment-design/working-document-restore.functions";
 import { createWorkingSettingRestoreAction } from "#/modules/environment-design/working-setting-restore-action";
@@ -73,6 +75,7 @@ export function useCanvasChangeActions({
   setCommitMessage,
   setDestructiveConfirmationOpen,
 }: UseCanvasChangeActionsInput) {
+  const collectionScope = useCollectionScope();
   const document = useEnvironmentDocument(params.organizationSlug, environmentId);
   function workingReview() {
     if (!document) throw new Error("Environment is not loaded.");
@@ -81,10 +84,10 @@ export function useCanvasChangeActions({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const serviceWriter = useServiceWriter(params.organizationSlug);
-  const environments = getEnvironmentsCollection(params.organizationSlug);
+  const environments = getEnvironmentsCollection(params.organizationSlug, collectionScope);
   const restoreWorkingSetting = createWorkingSettingRestoreAction({
     environments, environmentId, organizationSlug: params.organizationSlug,
-    restore: restoreWorkingDocumentServerFn, awaitTxId: async (txid) => { await environments.utils.awaitTxId(txid); },
+    restore: restoreWorkingDocumentServerFn, reconcile: async () => { await reconcileCollection(environments); },
   });
   const runtime = useRuntimeLens(params.organizationSlug);
   const deployTargetPreflight = getDeployTargetPreflight({
@@ -203,11 +206,11 @@ export function useCanvasChangeActions({
     }
     const document = environments.get(environmentId);
     if (!document) throw new Error("Environment is not loaded.");
-    const receipt = await restoreWorkingDocumentServerFn({ data: {
+    await restoreWorkingDocumentServerFn({ data: {
       organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
       snapshotSource: workingSnapshotSource, command: { kind: "all" },
     } });
-    await environments.utils.awaitTxId(receipt.txid);
+    await reconcileCollection(environments);
   }
 
   async function discardServiceChanges(serviceId: string) {
@@ -237,12 +240,12 @@ export function useCanvasChangeActions({
   ) {
     const document = environments.get(environmentId);
     if (!document) throw new Error("Environment is not loaded.");
-    const receipt = await restoreWorkingDocumentServerFn({ data: {
+    await restoreWorkingDocumentServerFn({ data: {
       organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
       snapshotSource: plan.kind === "delete" ? null : snapshotSource,
       command: { kind: "node", nodeType: plan.node.type, nodeId: plan.node.id },
     } });
-    await environments.utils.awaitTxId(receipt.txid);
+    await reconcileCollection(environments);
   }
 
   async function discardVolumeChanges(group: CanvasEnvironmentChangeGroup) {

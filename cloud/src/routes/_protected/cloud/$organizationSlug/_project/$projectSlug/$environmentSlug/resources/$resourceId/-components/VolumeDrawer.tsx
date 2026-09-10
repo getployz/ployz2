@@ -1,3 +1,5 @@
+import { reconcileCollection } from "#/collections/query-collection";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useState } from "react";
 import { Trash2Icon } from "lucide-react";
@@ -61,6 +63,7 @@ export function VolumeDrawer({
   params: VolumeResourceRouteParams;
   state: VolumeDrawerState;
 }) {
+  const collectionScope = useCollectionScope();
   const navigate = useNavigate();
   const deleteVolume = useServerFn(deleteVolumeResourceServerFn);
   const updateVolume = useServerFn(updateVolumeResourceServerFn);
@@ -84,7 +87,7 @@ export function VolumeDrawer({
   async function handleDelete() {
     setIsDeleting(true);
     try {
-      const receipt = await deleteVolume({
+      await deleteVolume({
         data: {
           organizationSlug: state.organizationSlug,
           environmentId: state.environmentId,
@@ -92,9 +95,7 @@ export function VolumeDrawer({
           resourceId,
         },
       });
-      await getEnvironmentsCollection(
-        state.organizationSlug,
-      ).utils.awaitTxId(receipt.txid);
+      await reconcileCollection(getEnvironmentsCollection(state.organizationSlug, collectionScope));
       await navigate({
         to: ENVIRONMENT_INDEX_ROUTE_TO,
         params: {
@@ -125,16 +126,14 @@ export function VolumeDrawer({
           editDescription="Rename this volume."
           placeholder="Volume name"
           onRename={async (value) => {
-            const receipt = await updateVolume({ data: {
+            await updateVolume({ data: {
               organizationSlug: state.organizationSlug,
               environmentId: state.environmentId,
               revision: revision(),
               resourceId,
               name: value,
             } });
-            await getEnvironmentsCollection(
-              state.organizationSlug,
-            ).utils.awaitTxId(receipt.txid);
+            await reconcileCollection(getEnvironmentsCollection(state.organizationSlug, collectionScope));
           }}
         />
         <p className="truncate text-sm text-muted-foreground">Named volume</p>

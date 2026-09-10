@@ -1,3 +1,4 @@
+import { preloadCollection } from "#/collections/query-collection";
 import {
   Await,
   createFileRoute,
@@ -28,10 +29,10 @@ export const Route = createFileRoute(
     const organizationSlug = params.organizationSlug;
     const baseUrl = context.tableSyncBaseUrl;
     const canvasReady = Promise.all([
-      getProjectsCollection(organizationSlug, baseUrl).preload(),
+      preloadCollection(getProjectsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, baseUrl).preload(),
       getVolumeRemoveAttemptsCollection(organizationSlug, baseUrl).preload(),
-      getEnvironmentsCollection(organizationSlug, baseUrl).preload(),
+      preloadCollection(getEnvironmentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       getRawServicesCollection(organizationSlug, baseUrl).preload(),
       getCanvasPositionsCollection(organizationSlug, baseUrl).preload(),
       getRawEnvironmentResourcesCollection(

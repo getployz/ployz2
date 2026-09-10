@@ -1,3 +1,5 @@
+import { reconcileCollection } from "#/collections/query-collection";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { plainVariableIntent, variableDocumentRecord } from "./variable-document";
 import type { SavedVariableIntent } from "./saved-intent";
 import { createOptimisticAction } from "@tanstack/react-db";
@@ -65,13 +67,14 @@ export function useSealServiceVariableAction({
   environmentId,
   serviceId,
 }: SealServiceVariableActionInput) {
-  const environments = getEnvironmentsCollection(organizationSlug);
+  const collectionScope = useCollectionScope();
+  const environments = getEnvironmentsCollection(organizationSlug, collectionScope);
   const updateVariable = useServerFn(updateServiceVariableServerFn);
 
   return async (variable: PlainVariableRecord) => {
     const document = environments.get(environmentId);
     if (!document) throw new Error("Environment is not loaded.");
-    const receipt = await updateVariable({
+    await updateVariable({
       data: buildSealServiceVariableUpdateInput({
         organizationSlug,
         environmentId,
@@ -79,7 +82,7 @@ export function useSealServiceVariableAction({
         variable, revision: document.revision,
       }),
     });
-    await environments.utils.awaitTxId(receipt.txid);
+    await reconcileCollection(environments);
   };
 }
 
@@ -88,7 +91,8 @@ export function useApplyRawVariablesAction({
   environmentId,
   serviceId,
 }: UseApplyRawVariablesActionInput) {
-  const environments = getEnvironmentsCollection(organizationSlug);
+  const collectionScope = useCollectionScope();
+  const environments = getEnvironmentsCollection(organizationSlug, collectionScope);
   const bulkUpdate = useServerFn(bulkUpdateServiceVariablesServerFn);
 
   const persist = createOptimisticAction<{ diff: RawEditorDiff; revision: string; variables: SavedVariableIntent[] }>({
@@ -100,7 +104,7 @@ export function useApplyRawVariablesAction({
       });
     },
     mutationFn: async ({ diff, revision }) => {
-      const receipt = await bulkUpdate({
+      await bulkUpdate({
         data: {
           organizationSlug, revision,
           environmentId,
@@ -120,7 +124,7 @@ export function useApplyRawVariablesAction({
           deletes: diff.deletes,
         },
       });
-      await environments.utils.awaitTxId(receipt.txid);
+      await reconcileCollection(environments);
     },
   });
   return (diff: RawEditorDiff) => ({ isPersisted: { promise: (async () => {

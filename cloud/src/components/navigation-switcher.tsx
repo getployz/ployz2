@@ -1,3 +1,5 @@
+import { reconcileCollection } from "#/collections/query-collection";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { type ReactElement, type ReactNode, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -251,6 +253,7 @@ function CreateEnvironmentDialog({
   projectSlug: string;
   section: DashboardSection;
 }) {
+  const collectionScope = useCollectionScope();
   const [name, setName] = useState("");
   const navigate = useNavigate();
   const createEnvironment = useServerFn(createEnvironmentServerFn);
@@ -260,9 +263,7 @@ function CreateEnvironmentDialog({
         data: { organizationSlug, projectSlug, name },
       }),
     onSuccess: async (receipt) => {
-      await getEnvironmentsCollection(organizationSlug).utils.awaitTxId(
-        receipt.txid,
-      );
+      await reconcileCollection(getEnvironmentsCollection(organizationSlug, collectionScope));
       onOpenChange(false);
       setName("");
       const destination = getDashboardProjectDestination(
