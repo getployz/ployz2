@@ -143,6 +143,12 @@ describe("machine removal durable ownership", () => {
   });
 
   it("binds replay, completion, failure, and cancellation to the exact run", async () => {
+    const insertCandidate = (machineId: string) => harness.pool.query(
+      "insert into organization_machine (organization_id,machine_id,cluster_key,encrypted_tailcat) values ($1,$2,$3,'{}'::jsonb)",
+      [organizationId, machineId, "a".repeat(64)],
+    );
+    await insertCandidate("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await insertCandidate("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     const attempt = await request(harness, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     const prepared = await runEffect(
       prepareMachineRemoveAttemptActivity({
@@ -183,6 +189,10 @@ describe("machine removal durable ownership", () => {
         now: new Date("2026-09-04T01:03:00Z"),
       }),
     );
+    expect((await harness.pool.query("select machine_id from organization_machine")).rows)
+      .toEqual([{ machine_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }]);
+    // Replaying an old completion must not delete a subsequently published candidate.
+    await insertCandidate("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     await runEffect(
       completeMachineRemoveAttemptActivity({
         attemptId: attempt.id,
@@ -231,5 +241,7 @@ describe("machine removal durable ownership", () => {
         inngest_run_id: "run-cancel",
       },
     ]);
+    expect((await harness.pool.query("select machine_id from organization_machine order by machine_id")).rows)
+      .toEqual([{ machine_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, { machine_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }]);
   });
 });

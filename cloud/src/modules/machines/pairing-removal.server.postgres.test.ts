@@ -1,12 +1,13 @@
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import type { Client, ConnectOptions, TailcatRemoval } from "@ployz/sdk";
-import { Layer, ManagedRuntime } from "effect";
+import { Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { startGithubPostgresTestHarness, type GithubPostgresTestHarness } from "#/modules/github/github-ingestion.postgres-test-harness";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
+import { requestMachineRemoveAttempt, claimMachineRemoveAttempt, completeMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { disableOrganizationPairing, loadTeardownConnections, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
-import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -42,6 +43,7 @@ describe("protected pairing removal", () => {
     const mutations: TailcatRemoval[] = [];
     const dialed: ConnectOptions[] = [];
     let prepared = 0;
+    let closed = 0;
     const ployz = makePloyzLayer({
       prepareTailcatRemoval: async (expected) => { prepared += 1; return `${expected}-successor`; },
       connect: async (options) => {
@@ -64,15 +66,59 @@ describe("protected pairing removal", () => {
             endpoint.current = removal.successor;
             if (endpoint.loseAck) throw new Error("Rotation closed the old stream");
           },
-          close: async () => undefined,
+          close: async () => { closed += 1; },
         });
         return client;
       },
     });
     const layer = Layer.mergeAll(ployz, Layer.succeed(Database, harness.database), Layer.succeed(SecretEncryption, encryption));
     const makeRuntime = () => ManagedRuntime.make(OrganizationRuntimeLive.pipe(Layer.provideMerge(layer)));
-    return { endpoint, mutations, dialed, prepared: () => prepared, makeRuntime };
+    return { endpoint, mutations, dialed, prepared: () => prepared, closed: () => closed, makeRuntime };
   }
+
+  it("retires a successfully removed founder without retaining an impossible revocation endpoint", async () => {
+    const userId = "00000000-0000-4000-8000-000000008813";
+    await harness.pool.query('insert into "user" (id,email,name) values ($1,$2,$3)', [userId, "remove-founder@example.test", "Owner"]);
+    await harness.pool.query("insert into enrollment_allocation (organization_id,cluster_key,assignments) values ($1,$2,$3)",
+      [organizationId, hashEnrollmentToken(pairing), JSON.stringify([{ machine: { id: machineId } }])]);
+    const attempt = await harness.runEffect(requestMachineRemoveAttempt({ organizationId, machineId, requestedByUserId: userId, confirmDataLoss: [] }));
+    await harness.runEffect(claimMachineRemoveAttempt({ attemptId: attempt.id, inngestRunId: "remove-founder", now: new Date() }));
+    await harness.runEffect(completeMachineRemoveAttempt({ attemptId: attempt.id, inngestRunId: "remove-founder", completion: { state: "succeeded" } }));
+    expect((await harness.pool.query("select * from organization_machine")).rows).toEqual([]);
+    const fake = fixture();
+    fake.endpoint.online = false;
+    const runtime = fake.makeRuntime();
+    try {
+      expect(await runtime.runPromise(revokeOrganizationPairing(organizationId))).toEqual({ confirmed: true, endpoints: [] });
+      expect(fake.dialed).toEqual([]);
+    } finally { await runtime.dispose(); }
+  });
+
+  it("disables and cancels local and remote sessions even when pairing decryption fails", async () => {
+    const fake = fixture();
+    const local = fake.makeRuntime();
+    const remote = fake.makeRuntime();
+    const scope = Effect.runSync(Scope.make());
+    try {
+      for (const runtime of [local, remote]) {
+        expect(await runtime.runPromise(Effect.flatMap(OrganizationRuntime, (service) => service.open(organizationId)).pipe(
+          Effect.provideService(Scope.Scope, scope),
+        ))).toMatchObject({ status: "connected" });
+      }
+      const stale = makeSecretEncryption("stale-removal-encryption-1234567890");
+      await harness.pool.query("update organization_pairing set encrypted_pairing_secret=$2 where organization_id=$1",
+        [organizationId, stale.encrypt(pairing)]);
+      await expect(local.runPromise(revokeOrganizationPairing(organizationId))).rejects.toMatchObject({ _tag: "Conflict" });
+      expect((await harness.pool.query("select removal_started_at from organization_pairing")).rows[0].removal_started_at).toBeInstanceOf(Date);
+      await expect.poll(fake.closed).toBe(2);
+      expect(await local.runPromise(loadOrganizationConnections(organizationId))).toEqual({ kind: "missing" });
+      expect(fake.mutations).toEqual([]);
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+      await local.dispose();
+      await remote.dispose();
+    }
+  });
 
   it.each([
     { status: "prepared", machineId, encryptedSuccessor: encryption.encrypt("successor-only") },

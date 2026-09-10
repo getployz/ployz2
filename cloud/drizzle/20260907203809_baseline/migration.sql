@@ -355,6 +355,8 @@ CREATE TABLE "organization_pairing" (
 	"encrypted_pairing_secret" jsonb NOT NULL,
 	"removal_started_at" timestamp with time zone,
 	"removal_endpoints" jsonb,
+	"enrolling_machine_ids" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"enrollment_registrations" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"founder_public_key" text,
 	"founder_claim_machine_id" text NOT NULL,
 	"founder_machine_id" text,

@@ -2,12 +2,13 @@ import "@tanstack/react-start/server-only";
 
 import { createHash } from "node:crypto";
 import type { Connection, MachineId } from "@ployz/sdk";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gte, sql } from "drizzle-orm";
 import { Data, Effect, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
   enrollmentAllocation,
   machineEnrollmentToken,
+  machineRemoveAttempt,
   organizationMachine,
 } from "#/modules/machines/tables";
 import { OrganizationRuntime, PAIRING_REMOVAL_CHANNEL } from "#/modules/runtime/organization-runtime.server";
@@ -53,27 +54,38 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
       const [pairing] = yield* drizzle.select().from(organizationPairing)
         .where(eq(organizationPairing.organizationId, organizationId)).for("update");
       if (!pairing) return null;
-      const secret = yield* decrypt(pairing.encryptedPairingSecret);
-      const generation = createHash("sha256").update(secret).digest("hex");
+      // Unreadable credentials must not prevent durable disablement or session cancellation.
+      const generation = yield* decrypt(pairing.encryptedPairingSecret).pipe(Effect.match({
+        onSuccess: (secret) => createHash("sha256").update(secret).digest("hex"),
+        onFailure: () => null,
+      }));
       let attempt: RemovalAttempt;
       if (pairing.removalStartedAt !== null && pairing.removalEndpoints !== null) {
         attempt = { ...pairing, removalStartedAt: pairing.removalStartedAt, removalEndpoints: yield* decodeEndpoints(pairing.removalEndpoints) };
       } else {
         const candidates = yield* drizzle.select().from(organizationMachine)
           .where(eq(organizationMachine.organizationId, organizationId));
-        const [allocation] = yield* drizzle.select().from(enrollmentAllocation).where(and(
+        const allocations = yield* drizzle.select().from(enrollmentAllocation).where(and(
           eq(enrollmentAllocation.organizationId, organizationId),
-          eq(enrollmentAllocation.clusterKey, generation),
+          generation === null ? undefined : eq(enrollmentAllocation.clusterKey, generation),
         ));
-        const removalEndpoints = [...(yield* decodeEndpoints(candidates.map((candidate) => ({
-          machineId: candidate.machineId,
-          encryptedExpected: candidate.encryptedTailcat,
-          status: "pending",
-        }))))];
+        const removed = yield* drizzle.select({ machineId: machineRemoveAttempt.machineId }).from(machineRemoveAttempt).where(and(
+          eq(machineRemoveAttempt.organizationId, organizationId),
+          eq(machineRemoveAttempt.state, "succeeded"),
+          gte(machineRemoveAttempt.createdAt, pairing.createdAt),
+        ));
+        const removalEndpoints = [...(yield* decodeEndpoints(candidates.map((candidate) => pairing.enrollmentRegistrations.some((registration) => registration.machineId === candidate.machineId)
+          ? { machineId: candidate.machineId, status: "unknown" }
+          : {
+            machineId: candidate.machineId,
+            encryptedExpected: candidate.encryptedTailcat,
+            status: "pending",
+          })))];
         // A claim or reserved Join may have reached a Machine before publication was acknowledged.
-        const intendedMachines = [pairing.founderClaimMachineId, ...(allocation?.assignments.map((assignment) => assignment.machine.id) ?? [])];
+        const intendedMachines = [pairing.founderClaimMachineId, ...pairing.enrollingMachineIds, ...allocations.flatMap((allocation) => allocation.assignments.map((assignment) => assignment.machine.id))];
         for (const machineId of intendedMachines) {
-          if (!removalEndpoints.some((endpoint) => endpoint.machineId === machineId)) {
+          const stillEnrolling = pairing.enrollingMachineIds.includes(machineId);
+          if ((stillEnrolling || !removed.some((entry) => entry.machineId === machineId)) && !removalEndpoints.some((endpoint) => endpoint.machineId === machineId)) {
             removalEndpoints.push({ machineId: yield* Schema.decodeUnknownEffect(rustMachineIdSchema)(machineId), status: "unknown" });
           }
         }

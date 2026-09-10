@@ -34,7 +34,7 @@ export type ScopedRuntimeClientSession =
     };
 
 export interface OrganizationRuntimeService {
-  readonly cancel: (organizationId: string, generation: string) => Effect.Effect<void>;
+  readonly cancel: (organizationId: string, generation: string | null) => Effect.Effect<void>;
   readonly open: (
     organizationId: string,
     machineId?: MachineId,
@@ -75,17 +75,18 @@ export function makeOrganizationRuntimeLayer(
         session.closed = true;
         return Scope.close(session.scope, Exit.void);
       });
-      const cancel = Effect.fn("OrganizationRuntime.cancel")(function* (organizationId: string, generation: string) {
+      const cancel = Effect.fn("OrganizationRuntime.cancel")(function* (organizationId: string, generation: string | null) {
         const active = sessions.get(organizationId);
         if (!active) return;
         yield* Effect.forEach([...active], (session) => {
+          if (generation === null) return close(session);
           session.removed.add(generation);
           return session.generation === generation ? close(session) : Effect.void;
         }, { concurrency: "unbounded", discard: true });
       });
       const removalSchema = Schema.fromJsonString(Schema.Struct({
         organizationId: Schema.String,
-        generation: Schema.String,
+        generation: Schema.NullOr(Schema.String),
       }));
       yield* Stream.runForEach(removals, (payload) => Schema.decodeUnknownEffect(removalSchema)(payload).pipe(
         Effect.flatMap(({ organizationId, generation }) => cancel(organizationId, generation)),

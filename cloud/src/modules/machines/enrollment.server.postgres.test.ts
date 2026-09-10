@@ -27,6 +27,7 @@ import {
   resetPendingOrganizationEnrollment,
 } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { requestMachineRemoveAttempt, claimMachineRemoveAttempt, completeMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { asTestDouble } from "#/lib/test-double";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
@@ -142,9 +143,9 @@ function enrollmentTestClient(
     open: (id = organizationId) => runtime.runPromise(Effect.scoped(
       Effect.gen(function* () { return yield* (yield* OrganizationRuntime).open(id); }),
     )),
-    enroll: (input: Parameters<typeof enrollMachine>[0]) =>
+    enroll: (input: Parameters<typeof enrollMachine>[0], signal?: AbortSignal) =>
       runtime.runPromise(
-        Effect.result(enrollMachine(input)),
+        Effect.result(enrollMachine(input)), { signal },
       ),
     completeFounding: (input: Parameters<typeof completeMachineEnrollment>[0]) =>
       runtime.runPromise(
@@ -738,6 +739,144 @@ describe("organization enrollment coordinator", () => {
     expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: null }]);
   });
 
+  it.each([0, 1])("retains an unknown endpoint when Machine %i re-enrolls after removal", async (index) => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, tailcat });
+    await fake.coordinator.completeFounding(founder);
+    const machine = identity(index);
+    if (index !== 0) {
+      await fake.coordinator.enroll({ token: founder.token, identity: machine });
+      await fake.coordinator.publish({ ...founder, machineId: machine.machineId, tailcat: "tailcat://joined" });
+    }
+    const removal = await harness.runEffect(requestMachineRemoveAttempt({ organizationId, requestedByUserId: userId, machineId: machine.machineId, confirmDataLoss: [] }));
+    await harness.runEffect(claimMachineRemoveAttempt({ attemptId: removal.id, inngestRunId: "remove-rejoin", now: new Date() }));
+    await harness.runEffect(completeMachineRemoveAttempt({ attemptId: removal.id, inngestRunId: "remove-rejoin", completion: { state: "succeeded" } }));
+    expect(await fake.coordinator.enroll({ token: founder.token, identity: machine })).toMatchObject({ success: {} });
+    await fake.coordinator.disable();
+    const saved = await harness.pool.query("select removal_endpoints from organization_pairing");
+    expect(saved.rows[0].removal_endpoints).toContainEqual({ machineId: machine.machineId, status: "unknown" });
+  });
+
+  it("blocks delayed candidate publication until the first removal completion commits", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, tailcat });
+    await fake.coordinator.completeFounding(founder);
+    const machine = identity(1);
+    await fake.coordinator.enroll({ token: founder.token, identity: machine });
+    await fake.coordinator.publish({ ...founder, machineId: machine.machineId, tailcat: "tailcat://original" });
+    const publication = { ...founder, machineId: machine.machineId, tailcat: "tailcat://replacement" };
+    const removal = await harness.runEffect(requestMachineRemoveAttempt({ organizationId, requestedByUserId: userId, machineId: machine.machineId, confirmDataLoss: [] }));
+    expect(await fake.coordinator.publish(publication)).toMatchObject({ failure: { _tag: "Conflict" } });
+    await harness.runEffect(claimMachineRemoveAttempt({ attemptId: removal.id, inngestRunId: "remove-publish", now: new Date() }));
+    expect(await fake.coordinator.publish(publication)).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(await fake.coordinator.enroll({ token: founder.token, identity: machine })).toMatchObject({ failure: { _tag: "Conflict" } });
+    await harness.runEffect(completeMachineRemoveAttempt({ attemptId: removal.id, inngestRunId: "remove-publish", completion: { state: "succeeded" } }));
+    expect(await fake.coordinator.publish(publication)).toMatchObject({ success: { machineId: machine.machineId } });
+    expect(await fake.coordinator.connections()).toMatchObject({ connections: expect.arrayContaining([{ machine_id: machine.machineId, tailcat: publication.tailcat }]) });
+  });
+
+  it("keeps enrollment admission active while registration is paused and until candidate publication", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, tailcat });
+    await fake.coordinator.completeFounding(founder);
+    const machine = identity(1);
+    let entered = () => {};
+    let release = () => {};
+    const registering = new Promise<void>((resolve) => { entered = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    fake.connection.beforeRegister = async () => { entered(); await released; };
+    const pending = fake.coordinator.enroll({ token: founder.token, identity: machine });
+    const requestRemoval = () => harness.runEffect(requestMachineRemoveAttempt({ organizationId, requestedByUserId: userId, machineId: machine.machineId, confirmDataLoss: [] }));
+    try {
+      await registering;
+      await expect(requestRemoval()).rejects.toMatchObject({ _tag: "Conflict" });
+      expect((await harness.pool.query("select * from machine_remove_attempt")).rows).toEqual([]);
+      release();
+      expect(await pending).toMatchObject({ success: {} });
+      await expect(requestRemoval()).rejects.toMatchObject({ _tag: "Conflict" });
+      await fake.coordinator.publish({ ...founder, machineId: machine.machineId, tailcat: "tailcat://joined" });
+      expect(await requestRemoval()).toMatchObject({ state: "pending" });
+    } finally { release(); await pending; }
+  });
+
+  it.each(["complete", "disable", "interrupt"])("retains admission across concurrent same-Machine retries (%s)", async (outcome) => {
+    const fake = fakeSession(harness.database);
+    const other = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, tailcat });
+    await fake.coordinator.completeFounding(founder);
+    const machine = identity(1);
+    const publication = { ...founder, machineId: machine.machineId, tailcat: "tailcat://joined" };
+    let entered = () => {};
+    let release = () => {};
+    const registering = new Promise<void>((resolve) => { entered = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    fake.connection.beforeRegister = async () => { entered(); await released; };
+    const controller = new AbortController();
+    const pending = fake.coordinator.enroll({ token: founder.token, identity: machine }, controller.signal)
+      .then((value) => ({ value }), () => ({ interrupted: true }));
+    const requestRemoval = () => harness.runEffect(requestMachineRemoveAttempt({ organizationId, requestedByUserId: userId, machineId: machine.machineId, confirmDataLoss: [] }));
+    try {
+      await registering;
+      expect(await other.coordinator.enroll({ token: founder.token, identity: machine })).toMatchObject({ success: {} });
+      // Both an initial publication and its replay must preserve the paused retry's admission.
+      for (let retry = 0; retry < 2; retry += 1) {
+        expect(await other.coordinator.publish(publication)).toMatchObject({ success: {} });
+        await expect(requestRemoval()).rejects.toMatchObject({ _tag: "Conflict" });
+      }
+      if (outcome === "interrupt") {
+        controller.abort();
+        expect(await pending).toEqual({ interrupted: true });
+        await other.coordinator.publish(publication);
+        await expect(requestRemoval()).rejects.toMatchObject({ _tag: "Conflict" });
+      }
+      if (outcome !== "complete") {
+        await other.coordinator.disable();
+        const saved = await harness.pool.query("select removal_endpoints from organization_pairing");
+        expect(saved.rows[0].removal_endpoints).toContainEqual({ machineId: machine.machineId, status: "unknown" });
+      }
+      release();
+      if (outcome !== "interrupt") expect(await pending).toMatchObject({ value: { success: {} } });
+      if (outcome === "complete") {
+        await expect(requestRemoval()).rejects.toMatchObject({ _tag: "Conflict" });
+        expect(await fake.coordinator.publish(publication)).toMatchObject({ success: {} });
+        expect(await requestRemoval()).toMatchObject({ state: "pending" });
+      }
+    } finally { release(); await pending; }
+  });
+
+  it("serializes first founder enrollment with an uncommitted removal when no pairing exists", async () => {
+    const fake = fakeSession(harness.database);
+    let entered = () => {};
+    let release = () => {};
+    const admitted = new Promise<void>((resolve) => { entered = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const removing = harness.runEffect(harness.database.transaction(Effect.gen(function* () {
+      const attempt = yield* requestMachineRemoveAttempt({ organizationId, requestedByUserId: userId, machineId: founderMachineId, confirmDataLoss: [] });
+      entered();
+      yield* Effect.promise(() => released);
+      return attempt;
+    })));
+    await admitted;
+    let settled = false;
+    const enrolling = fake.coordinator.enroll({ token: tokens[0] ?? "", identity: identity(0) })
+      .then((result) => { settled = true; return result; });
+    try {
+      // Wait for actual contention or an incorrectly completed enrollment, not a timing guess.
+      await expect.poll(async () => settled || (await harness.pool.query(
+        "select exists(select 1 from pg_stat_activity where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0) as blocked",
+      )).rows[0].blocked).toBe(true);
+      expect(settled).toBe(false);
+      release();
+      expect(await removing).toMatchObject({ state: "pending" });
+      expect(await enrolling).toMatchObject({ failure: { _tag: "Conflict" } });
+      expect((await harness.pool.query("select * from organization_pairing")).rows).toEqual([]);
+    } finally { release(); await Promise.all([removing, enrolling]); }
+  });
+
   it("keeps pairing decrypt failures in the typed Effect channel", async () => {
     const stale = makeSecretEncryption("stale-app-encryption-secret-1234567890");
     await harness.pool.query(
@@ -763,7 +902,8 @@ describe("organization enrollment coordinator", () => {
 
     await expect(fake.coordinator.tryRevokePairing(organizationId)).rejects.toMatchObject({ _tag: "Conflict" });
     expect((await harness.pool.query("select removal_started_at from organization_pairing")).rows)
-      .toEqual([{ removal_started_at: null }]);
+      .toEqual([{ removal_started_at: expect.any(Date) }]);
+    expect(await fake.coordinator.connections()).toEqual({ kind: "missing" });
   });
 
   it("requires a valid Machine owner for pending and ready claims", async () => {
