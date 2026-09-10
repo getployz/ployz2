@@ -27,6 +27,7 @@ import {
   resetPendingOrganizationEnrollment,
 } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { requestMachineRemoveAttempt, claimMachineRemoveAttempt, completeMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { asTestDouble } from "#/lib/test-double";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
@@ -736,6 +737,43 @@ describe("organization enrollment coordinator", () => {
     expect(await fake.coordinator.open()).toMatchObject({ status: "unreachable", error: { _tag: "PloyzProviderError" } });
     expect(fake.observations()).toBe(0);
     expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: null }]);
+  });
+
+  it.each([0, 1])("retains an unknown endpoint when Machine %i re-enrolls after removal", async (index) => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, tailcat });
+    await fake.coordinator.completeFounding(founder);
+    const machine = identity(index);
+    if (index !== 0) {
+      await fake.coordinator.enroll({ token: founder.token, identity: machine });
+      await fake.coordinator.publish({ ...founder, machineId: machine.machineId, tailcat: "tailcat://joined" });
+    }
+    const removal = await harness.runEffect(requestMachineRemoveAttempt({ organizationId, requestedByUserId: userId, machineId: machine.machineId, confirmDataLoss: [] }));
+    await harness.runEffect(claimMachineRemoveAttempt({ attemptId: removal.id, inngestRunId: "remove-rejoin", now: new Date() }));
+    await harness.runEffect(completeMachineRemoveAttempt({ attemptId: removal.id, inngestRunId: "remove-rejoin", completion: { state: "succeeded" } }));
+    expect(await fake.coordinator.enroll({ token: founder.token, identity: machine })).toMatchObject({ success: {} });
+    await fake.coordinator.disable();
+    const saved = await harness.pool.query("select removal_endpoints from organization_pairing");
+    expect(saved.rows[0].removal_endpoints).toContainEqual({ machineId: machine.machineId, status: "unknown" });
+  });
+
+  it("blocks delayed candidate publication until the first removal completion commits", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, tailcat });
+    await fake.coordinator.completeFounding(founder);
+    const machine = identity(1);
+    await fake.coordinator.enroll({ token: founder.token, identity: machine });
+    const publication = { ...founder, machineId: machine.machineId, tailcat: "tailcat://replacement" };
+    const removal = await harness.runEffect(requestMachineRemoveAttempt({ organizationId, requestedByUserId: userId, machineId: machine.machineId, confirmDataLoss: [] }));
+    expect(await fake.coordinator.publish(publication)).toMatchObject({ failure: { _tag: "Conflict" } });
+    await harness.runEffect(claimMachineRemoveAttempt({ attemptId: removal.id, inngestRunId: "remove-publish", now: new Date() }));
+    expect(await fake.coordinator.publish(publication)).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(await fake.coordinator.enroll({ token: founder.token, identity: machine })).toMatchObject({ failure: { _tag: "Conflict" } });
+    await harness.runEffect(completeMachineRemoveAttempt({ attemptId: removal.id, inngestRunId: "remove-publish", completion: { state: "succeeded" } }));
+    expect(await fake.coordinator.publish(publication)).toMatchObject({ success: { machineId: machine.machineId } });
+    expect(await fake.coordinator.connections()).toMatchObject({ connections: expect.arrayContaining([{ machine_id: machine.machineId, tailcat: publication.tailcat }]) });
   });
 
   it("keeps pairing decrypt failures in the typed Effect channel", async () => {

@@ -10,6 +10,7 @@ import {
 } from "#/modules/machines/machine-removal";
 import { Database, sqlErrorFrom } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
+import { organizationPairing } from "#/modules/runtime/tables";
 import { machineRemoveAttempt as schemaMachineRemoveAttempt, organizationMachine } from "#/modules/machines/tables";
 
 type Attempt = typeof schemaMachineRemoveAttempt.$inferSelect;
@@ -131,28 +132,33 @@ export const requestMachineRemoveAttempt = Effect.fn(
   machineId: string;
   confirmDataLoss: DataLossIdentity[];
 }) {
-  const { drizzle } = yield* Database;
-  const [attempt] = yield* drizzle
-    .insert(schemaMachineRemoveAttempt)
-    .values({
-      organizationId: input.organizationId,
-      requestedByUserId: input.requestedByUserId,
-      machineId: input.machineId,
-      confirmDataLoss: input.confirmDataLoss,
-      state: "pending",
-    })
-    .returning()
-    .pipe(
-      Effect.catchIf(isMachineRemoveUniqueViolation, () =>
-        alreadyInProgress(),
-      ),
-    );
-  if (!attempt) {
-    return yield* Effect.die(
-      new Error("Machine remove insert returned no row."),
-    );
-  }
-  return toMachineRemoveAttemptView(attempt);
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.select({ id: organizationPairing.organizationId }).from(organizationPairing)
+      .where(eq(organizationPairing.organizationId, input.organizationId)).for("update");
+    const [attempt] = yield* drizzle
+      .insert(schemaMachineRemoveAttempt)
+      .values({
+        organizationId: input.organizationId,
+        requestedByUserId: input.requestedByUserId,
+        machineId: input.machineId,
+        confirmDataLoss: input.confirmDataLoss,
+        state: "pending",
+      })
+      .returning()
+      .pipe(
+        Effect.catchIf(isMachineRemoveUniqueViolation, () =>
+          alreadyInProgress(),
+        ),
+      );
+    if (!attempt) {
+      return yield* Effect.die(
+        new Error("Machine remove insert returned no row."),
+      );
+    }
+    return toMachineRemoveAttemptView(attempt);
+  }));
 });
 
 export const abandonPendingMachineRemoveAttempt = Effect.fn(
@@ -232,6 +238,12 @@ export const completeMachineRemoveAttempt = Effect.fn(
   return yield* transaction(
     Effect.gen(function* () {
       const { drizzle } = yield* Database;
+      const [attempt] = yield* drizzle.select({ organizationId: schemaMachineRemoveAttempt.organizationId })
+        .from(schemaMachineRemoveAttempt).where(eq(schemaMachineRemoveAttempt.id, input.attemptId));
+      if (attempt) {
+        yield* drizzle.select({ id: organizationPairing.organizationId }).from(organizationPairing)
+          .where(eq(organizationPairing.organizationId, attempt.organizationId)).for("update");
+      }
       const [updated] = yield* drizzle
         .update(schemaMachineRemoveAttempt)
         .set(completionValues(input.completion, now))

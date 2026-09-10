@@ -509,6 +509,7 @@ CREATE TABLE "machine_remove_attempt" (
 	"missing_identities" jsonb,
 	"failure_code" text,
 	"failure_message" text,
+	"reenrolled_at" timestamp with time zone,
 	"started_at" timestamp with time zone,
 	"terminal_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
