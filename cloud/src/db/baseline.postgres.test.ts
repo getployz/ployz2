@@ -1,7 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { PLOYZ_TABLES } from "#/collections/tables.server";
+import { collectionReadInput } from "#/collections/read.contract";
 import {
   type GithubPostgresTestHarness,
   startGithubPostgresTestHarness,
@@ -19,7 +19,7 @@ afterAll(async () => {
 });
 
 it("creates collection tables with default replication identity without the retired notification triggers", async () => {
-  const tables = Object.keys(PLOYZ_TABLES).sort();
+  const tables = [...collectionReadInput.fields.table.literals].sort();
   const replication = await harness.pool.query<{
     relname: string;
     relreplident: string;
