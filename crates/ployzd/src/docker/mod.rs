@@ -690,7 +690,7 @@ pub enum Error {
     SpecNotFound(ContainerId),
     #[error("container {0} was not found")]
     ContainerNotFound(ContainerId),
-    #[error("Docker name '{0}' is occupied by a different Serving Shape")]
+    #[error("Docker name '{0}' is occupied by incompatible creation inputs")]
     SlotNameOccupied(String),
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,

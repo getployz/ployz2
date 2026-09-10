@@ -288,6 +288,9 @@ pub struct GetContainerObservationsRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CreateContainerRequest {
+    /// Retry identity for a currently existing creation, scoped to Machine, Project, and kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_key: Option<String>,
     pub kind: ContainerKind,
     pub project_name: ProjectName,
     pub resolved_spec: ResolvedServiceSpec,

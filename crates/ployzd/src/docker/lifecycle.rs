@@ -23,9 +23,12 @@ use super::{
 };
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
+const LABEL_CREATION_KEY: &str = "ployz.creation.key";
 
 /// Resolved container inputs shared by every Machine-local creation entry path.
 pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
+    /// Optional identity of this currently existing creation.
+    pub(crate) creation_key: Option<&'spec str>,
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
     pub(crate) kind: ContainerKind,
     /// Project that owns the resulting container.
@@ -90,6 +93,7 @@ impl ContainerRuntime {
         self.create_with_admission(
             &machine,
             ContainerRequest {
+                creation_key: None,
                 kind,
                 project_name,
                 spec,
@@ -116,12 +120,26 @@ impl ContainerRuntime {
         E: From<Error>,
     {
         let ContainerRequest {
+            creation_key,
             kind,
             project_name,
             spec,
             admission,
             storage,
         } = request;
+        let reserved_name =
+            creation_key.map(|key| creation_name(&machine.id, project_name, kind, key));
+        if let (Some(name), Some(key)) = (&reserved_name, creation_key) {
+            // Wait for an in-flight create to persist its spec before comparing a retry.
+            let _operation = self.specs.config_operation().await;
+            if let Some(existing) = self
+                .matching_creation(machine, project_name, kind, spec, name, key)
+                .await
+                .map_err(E::from)?
+            {
+                return Ok(existing);
+            }
+        }
         // TODO: direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
         tracing::info!(
@@ -140,9 +158,16 @@ impl ContainerRuntime {
         )
         .map_err(E::from)?;
         admission.await?;
-        self.prepare_and_create(machine, kind, project_name, spec, None)
-            .await
-            .map_err(E::from)
+        self.prepare_and_create(
+            machine,
+            kind,
+            project_name,
+            spec,
+            reserved_name,
+            creation_key,
+        )
+        .await
+        .map_err(E::from)
     }
 
     /// Converge one Global Service against fresh target-Machine eligibility evidence.
@@ -212,6 +237,7 @@ impl ContainerRuntime {
                 project_name,
                 spec,
                 Some(global_slot_name(spec)),
+                None,
             )
             .await
             .map_err(E::from)?;
@@ -226,33 +252,35 @@ impl ContainerRuntime {
         project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
         reserved_name: Option<String>,
+        creation_key: Option<&str>,
     ) -> Result<ContainerCreated, Error> {
-        let body = create::container_create_body(
+        let mut body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),
             kind,
             project_name,
             spec,
         )?;
+        if let Some(key) = creation_key {
+            body.labels
+                .get_or_insert_default()
+                .insert(LABEL_CREATION_KEY.into(), key.into());
+        }
         prepare_image(
             &self.docker.client,
             &spec.container.image,
             spec.container.pull_policy,
         )
         .await?;
-        self.finish_create(machine, kind, spec, body, reserved_name)
-            .await
-    }
-
-    async fn finish_create(
-        &self,
-        machine: &Machine,
-        kind: ContainerKind,
-        spec: &ResolvedServiceSpec,
-        mut body: bollard::models::ContainerCreateBody,
-        reserved_name: Option<String>,
-    ) -> Result<ContainerCreated, Error> {
         let mut config_operation = self.specs.config_operation().await;
+        // Another request may have won while admission and image preparation ran.
+        if let (Some(name), Some(key)) = (&reserved_name, creation_key)
+            && let Some(existing) = self
+                .matching_creation(machine, project_name, kind, spec, name, key)
+                .await?
+        {
+            return Ok(existing);
+        }
         let mounts = body
             .host_config
             .get_or_insert_default()
@@ -271,6 +299,19 @@ impl ContainerRuntime {
                             status_code: 409,
                             ..
                         })) => {
+                            if let Some(key) = creation_key {
+                                return self
+                                    .matching_creation(
+                                        machine,
+                                        project_name,
+                                        kind,
+                                        spec,
+                                        &display_name,
+                                        key,
+                                    )
+                                    .await?
+                                    .ok_or(Error::SlotNameOccupied(display_name));
+                            }
                             let existing = self
                                 .inspect_managed_by_name(&machine.id, &display_name)
                                 .await?;
@@ -334,6 +375,45 @@ impl ContainerRuntime {
             eprintln!("failed to reclaim materialized configs: {error}");
         }
         result
+    }
+
+    async fn matching_creation(
+        &self,
+        machine: &Machine,
+        project: &ProjectName,
+        kind: ContainerKind,
+        spec: &ResolvedServiceSpec,
+        name: &str,
+        key: &str,
+    ) -> Result<Option<ContainerCreated>, Error> {
+        let inspected = match self.docker.client.inspect_container(name, None).await {
+            Ok(inspected) => inspected,
+            Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if inspected
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref())
+            .and_then(|labels| labels.get(LABEL_CREATION_KEY))
+            .map(String::as_str)
+            != Some(key)
+        {
+            return Err(Error::SlotNameOccupied(name.into()));
+        }
+        let existing = self.inspect_managed_by_name(&machine.id, name).await?;
+        if existing.project_name != *project
+            || existing.kind != kind
+            || existing.resolved_spec != *spec
+        {
+            return Err(Error::SlotNameOccupied(name.into()));
+        }
+        Ok(Some(ContainerCreated {
+            container_id: existing.container_id,
+            display_name: existing.into_parts().display_name,
+        }))
     }
 
     async fn retire_global_slots(
@@ -576,6 +656,18 @@ fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
                 ..
             }
         )
+}
+
+fn creation_name(
+    machine: &MachineId,
+    project: &ProjectName,
+    kind: ContainerKind,
+    key: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let scope =
+        serde_json::to_vec(&(machine, project, kind, key)).expect("creation scope serializes");
+    format!("ployz-create-{}", hex::encode(Sha256::digest(scope)))
 }
 
 fn global_slot_name(spec: &ResolvedServiceSpec) -> String {

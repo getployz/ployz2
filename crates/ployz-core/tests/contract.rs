@@ -1397,6 +1397,7 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
     }))
     .unwrap();
     let request = op::CreateContainer::into_request(CreateContainerRequest {
+        creation_key: Some("deploy/slot-1".into()),
         kind: ContainerKind::ServiceContainer,
         project_name: ProjectName::parse("shop").unwrap(),
         resolved_spec: spec.clone(),

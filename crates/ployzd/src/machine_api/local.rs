@@ -435,7 +435,12 @@ impl MachineRpc for MachineService {
         let request = expect::<op::CreateContainer>(request)?;
         finish(
             self.local
-                .create_container(request.kind, &request.project_name, &request.resolved_spec)
+                .create_container(
+                    request.kind,
+                    &request.project_name,
+                    &request.resolved_spec,
+                    request.creation_key,
+                )
                 .await,
         )
     }
