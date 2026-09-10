@@ -91,6 +91,7 @@ pub(super) trait MachineOperations {
         kind: ContainerKind,
         project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
+        replacing: Option<ContainerId>,
     ) -> Result<ContainerCreated, RpcError>;
     async fn start_container(
         &self,
@@ -186,6 +187,7 @@ impl MachineOperations for Client {
         kind: ContainerKind,
         project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
+        replacing: Option<ContainerId>,
     ) -> Result<ContainerCreated, RpcError> {
         crate::image::ensure_cluster_image(
             self,
@@ -196,7 +198,16 @@ impl MachineOperations for Client {
         .await?;
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
-                creation_key: None,
+                creation_key: (kind == ContainerKind::ServiceContainer
+                    && spec.mode == ployz_core::ServiceMode::Global)
+                    .then(|| {
+                        let key = crate::cluster::global_creation_key(spec);
+                        // Explicit replacement can overlap even an identical spec.
+                        match replacing {
+                            Some(old) => format!("{key}:replace:{old}"),
+                            None => key,
+                        }
+                    }),
                 kind,
                 project_name: project_name.clone(),
                 resolved_spec: spec.clone(),
@@ -354,9 +365,10 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
         kind: ContainerKind,
         project_name: &ProjectName,
         spec: &ResolvedServiceSpec,
+        replacing: Option<ContainerId>,
     ) -> Result<ContainerCreated, RpcError> {
         self.inner
-            .create_container(machine_id, kind, project_name, spec)
+            .create_container(machine_id, kind, project_name, spec, replacing)
             .await
     }
 
@@ -651,11 +663,12 @@ async fn create_and_start<C: MachineOperations>(
     kind: ContainerKind,
     project_name: &ProjectName,
     spec: &ResolvedServiceSpec,
+    replacing: Option<ContainerId>,
     cancellation: &CancellationToken,
 ) -> Result<ContainerCreated, ExecutionError> {
     progress.set_running(index, OperationPhase::CreatingContainer);
     let created = match client
-        .create_container(machine_id, kind, project_name, spec)
+        .create_container(machine_id, kind, project_name, spec, replacing)
         .await
     {
         Ok(created) => created,
@@ -665,9 +678,12 @@ async fn create_and_start<C: MachineOperations>(
         }
     };
     if cancellation.is_cancelled() {
-        let _ = client
-            .remove_container(machine_id, &created.container_id)
-            .await;
+        // A keyed create can return a Container owned by an earlier attempt.
+        if kind != ContainerKind::ServiceContainer || spec.mode != ployz_core::ServiceMode::Global {
+            let _ = client
+                .remove_container(machine_id, &created.container_id)
+                .await;
+        }
         return Err(ExecutionError::Cancelled);
     }
     progress.set_display_name(index, created.display_name.clone());
@@ -676,9 +692,12 @@ async fn create_and_start<C: MachineOperations>(
         .start_container(machine_id, &created.container_id)
         .await
     {
-        let _ = client
-            .remove_container(machine_id, &created.container_id)
-            .await;
+        // A keyed create can return a Container owned by an earlier attempt.
+        if kind != ContainerKind::ServiceContainer || spec.mode != ployz_core::ServiceMode::Global {
+            let _ = client
+                .remove_container(machine_id, &created.container_id)
+                .await;
+        }
         return Err(machine_error(MachineAction::StartContainer, error));
     }
     Ok(created)
@@ -706,6 +725,7 @@ async fn run_container<C: MachineOperations>(
         ContainerKind::ServiceContainer,
         project_name,
         spec,
+        None,
         cancellation,
     )
     .await?;
@@ -780,6 +800,7 @@ async fn replace_container<C: MachineOperations>(
         ContainerKind::ServiceContainer,
         project_name,
         &operation.spec,
+        Some(operation.old_container_id),
         cancellation,
     )
     .await?;
@@ -903,6 +924,7 @@ async fn run_hook<C: MachineOperations>(
         ContainerKind::PreDeployHook,
         project_name,
         spec,
+        None,
         cancellation,
     )
     .await?;

@@ -11,7 +11,7 @@ use ployz_core::{
 
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
-use crate::docker::{ContainerRequest, GlobalSlotConvergence, GlobalSlotRequest, ImageIngest};
+use crate::docker::{ContainerRequest, ImageIngest};
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 impl LocalMachine {
@@ -299,57 +299,13 @@ impl LocalMachine {
             )
             .await
     }
-
-    /// Converge this Machine's Global slot from one fresh target-side eligibility decision.
-    ///
-    /// # Errors
-    ///
-    /// Returns when local state is unavailable, Docker is unavailable, this Machine
-    /// is not participating, or Docker cannot converge the slot.
-    pub(crate) async fn converge_global_slot(
-        &self,
-        project: &ProjectName,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<GlobalSlotConvergence, Error> {
-        let (local, project, spec) = (self.clone(), project.clone(), spec.clone());
-        self.finish_mutation(
-            async move { local.converge_global_slot_admitted(&project, &spec).await },
-        )
-        .await
-    }
-
-    async fn converge_global_slot_admitted(
-        &self,
-        project: &ProjectName,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<GlobalSlotConvergence, Error> {
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-        let record = self.record()?;
-        if record.phase() != LocalMachinePhase::Participating {
-            return Err(Error::NotParticipating);
-        }
-        let machine = record.machine().ok_or(Error::NotParticipating)?;
-        containers
-            .converge_global_slot(
-                machine,
-                GlobalSlotRequest {
-                    project_name: project,
-                    spec,
-                    admission: async { admit_ingress_service(project, spec) },
-                    storage: self.observe_storage(),
-                },
-            )
-            .await
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use ployz_core::{
-        MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceMode, ServiceName,
-    };
+    use ployz_core::{MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceMode};
     use serde_json::json;
 
     use crate::machine::{LocalMachine, LocalMachineError, LocalMachineStore};
@@ -539,16 +495,12 @@ mod tests {
                     .await,
                 Err(LocalMachineError::NotParticipating)
             ));
-            assert!(matches!(
-                local.converge_global_slot(&project, &spec).await,
-                Err(LocalMachineError::NotParticipating)
-            ));
             std::fs::remove_dir_all(data_dir).unwrap();
         }
     }
 
     #[tokio::test]
-    async fn joining_admits_direct_create_but_not_global_convergence() {
+    async fn joining_admits_direct_create() {
         use crate::docker::test_support::{FakeDocker, fake_runtime_with};
         use ployz_core::{AdvertisedEndpoint, ContainerKind, Machine, MachineName};
         let data_dir =
@@ -594,10 +546,6 @@ mod tests {
                 .join(machine, vec![peer], Default::default(), None, None)
                 .unwrap();
         }
-        assert!(matches!(
-            local.converge_global_slot(&project, &spec).await,
-            Err(LocalMachineError::NotParticipating)
-        ));
         let release = tokio::spawn(async move {
             barrier.wait().await;
             barrier.wait().await;
@@ -667,34 +615,6 @@ mod tests {
                 .await,
             Err(LocalMachineError::NotParticipating)
         ));
-        assert!(matches!(
-            local.converge_global_slot(&project, &spec).await,
-            Err(LocalMachineError::NotParticipating)
-        ));
-        std::fs::remove_dir_all(data_dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn converge_global_slot_reports_missing_docker_at_local_machine_seam() {
-        let data_dir =
-            std::env::temp_dir().join(format!("ployzd-local-global-slot-{}", MachineId::random()));
-        let store = Arc::new(Mutex::new(LocalMachineStore::open(&data_dir).unwrap()));
-        let (restart, _) = tokio::sync::watch::channel(false);
-        let local = LocalMachine::new(store, restart);
-        let spec: ResolvedServiceSpec = serde_json::from_value(json!({
-            "service_id": ServiceId::random(),
-            "name": ServiceName::parse("api").unwrap(),
-            "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
-            "container": { "image": "example.test/api", "pull_policy": "missing" }
-        }))
-        .unwrap();
-
-        let error = local
-            .converge_global_slot(&ProjectName::parse("app").unwrap(), &spec)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(error, LocalMachineError::DockerUnavailable));
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 }

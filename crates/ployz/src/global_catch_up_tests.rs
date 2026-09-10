@@ -28,6 +28,7 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             target_services: None,
             capacity: None,
             storage: Ok(None),
+            create_error: None,
             ensure_calls: Cell::new(0),
             failures: if failed {
                 vec![ployz_core::MachineFailure {
@@ -76,6 +77,7 @@ async fn stale_local_generation_checks_capacity_before_ensuring_current_slot() {
         services: vec![stale, current],
         target_services: None,
         capacity: None,
+        create_error: None,
         ensure_calls: Cell::new(0),
         failures: Vec::new(),
         omissions: Vec::new(),
@@ -100,6 +102,7 @@ async fn successful_ensure_is_reobserved_before_success() {
         services: vec![service],
         target_services: None,
         capacity: None,
+        create_error: None,
         ensure_calls: Cell::new(0),
         failures: Vec::new(),
         omissions: Vec::new(),
@@ -126,6 +129,7 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         services: vec![service],
         target_services: Some(Vec::new()),
         capacity: None,
+        create_error: None,
         ensure_calls: Cell::new(0),
         failures: Vec::new(),
         omissions: Vec::new(),
@@ -165,6 +169,7 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         services: vec![service],
         target_services: Some(vec![hook_only]),
         capacity: None,
+        create_error: None,
         ensure_calls: Cell::new(0),
         failures: Vec::new(),
         omissions: Vec::new(),
@@ -197,6 +202,7 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         services: vec![stale.clone(), current],
         target_services: Some(vec![stale]),
         capacity: Some(BridgeEndpointCapacity::new(10, 0)),
+        create_error: None,
         ensure_calls: Cell::new(0),
         failures: Vec::new(),
         omissions: Vec::new(),
@@ -229,6 +235,7 @@ async fn another_projects_matching_shape_does_not_satisfy_catch_up() {
         services: vec![shop.clone(), prod],
         target_services: Some(vec![shop]),
         capacity: Some(BridgeEndpointCapacity::new(10, 0)),
+        create_error: None,
         ensure_calls: Cell::new(0),
         failures: Vec::new(),
         omissions: Vec::new(),
@@ -247,6 +254,7 @@ struct FakeCatchUpClient {
     capacity: Option<BridgeEndpointCapacity>,
     storage: Result<Option<MachineStorageObservation>, &'static str>,
     ensure_calls: Cell<usize>,
+    create_error: Option<&'static str>,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
 }
@@ -284,12 +292,30 @@ impl CatchUpClient for FakeCatchUpClient {
         Ok(self.capacity.clone())
     }
 
-    async fn ensure_global_slot(
+    async fn create_slot(
         &mut self,
         _machine_id: &MachineId,
-        _request: EnsureGlobalSlotRequest,
-    ) -> Result<(), RpcError> {
+        _request: CreateContainerRequest,
+    ) -> Result<ployz_core::ContainerCreated, RpcError> {
         self.ensure_calls.set(self.ensure_calls.get() + 1);
+        if let Some(message) = self.create_error {
+            return Err(RpcError {
+                code: ployz_core::RpcErrorCode::Conflict,
+                message: message.into(),
+                details: serde_json::Value::Null,
+            });
+        }
+        Ok(ployz_core::ContainerCreated {
+            container_id: container_id('a'),
+            display_name: "api".into(),
+        })
+    }
+
+    async fn start_slot(
+        &mut self,
+        _machine_id: &MachineId,
+        _container_id: ContainerId,
+    ) -> Result<(), RpcError> {
         Ok(())
     }
 
@@ -484,35 +510,7 @@ fn replicated_services_are_not_catch_up_slots() {
 async fn provisioned_globals_use_target_storage_and_report_unknown() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
-    let mut spec = requested(ServiceMode::Global);
-    let reference = ServiceVolumeReference::parse("data").unwrap();
-    spec.set_volume_graph(
-        ServiceVolumeGraph::parse(
-            vec![ServiceVolume {
-                reference: reference.clone(),
-                source: ployz_core::RawVolumeSource::Provisioned {
-                    name: DockerVolumeName::parse("data").unwrap(),
-                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
-                        NonZeroU64::new(100).unwrap(),
-                    ),
-                    labels: Default::default(),
-                }
-                .admit()
-                .expect("valid volume declaration"),
-            }],
-            vec![ServiceMount {
-                volume: reference,
-                target: ContainerPath::parse("/data").unwrap(),
-                read_only: false,
-                no_copy: false,
-                subpath: None,
-            }],
-        )
-        .unwrap()
-        .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
-        .unwrap(),
-    )
-    .unwrap();
+    let spec = provisioned_global_spec();
     let service = grouped(
         qualified("app", "api"),
         spec.to_resolved(service_id('a'), ResolvedUpdateConfig::default())
@@ -558,6 +556,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
             target_services: Some(vec![local, local_stateless]),
             capacity: Some(BridgeEndpointCapacity::new(10, 0)),
             storage,
+            create_error: None,
             ensure_calls: Cell::new(0),
             failures: Vec::new(),
             omissions: Vec::new(),
@@ -768,7 +767,9 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
             let observed = target.clone();
             let calls = Arc::new(AtomicUsize::new(0));
             let attempts = calls.clone();
-            let request = EnsureGlobalSlotRequest {
+            let request = CreateContainerRequest {
+                creation_key: Some("global:test".into()),
+                kind: ContainerKind::ServiceContainer,
                 project_name: ProjectName::parse("app").unwrap(),
                 resolved_spec: requested(ServiceMode::Global)
                     .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
@@ -779,20 +780,26 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                 crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
                     let target = observed.clone();
                     let expected = expected.clone();
-                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    let attempts = attempts.clone();
                     async move {
                         assert_eq!(
                             rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).unwrap(),
                             target.id.as_str()
                         );
+                        let body = rpc.into_inner().decode_request().unwrap().body;
+                        let inject_failure =
+                            !placement || matches!(body, RpcRequestBody::CreateContainer(_));
                         #[expect(
                             clippy::wildcard_enum_match_arm,
-                            reason = "fixture accepts only the two catch-up RPCs under test"
+                            reason = "fixture accepts only the catch-up RPCs under test"
                         )]
-                        let response = match rpc.into_inner().decode_request().unwrap().body {
+                        let response = match body {
                             RpcRequestBody::Inspect(inspect) => {
-                                assert!(!placement);
-                                assert_eq!(inspect.telemetry, InspectTelemetry::BridgeCapacity);
+                                if placement {
+                                    assert!(inspect.include_storage);
+                                } else {
+                                    assert_eq!(inspect.telemetry, InspectTelemetry::BridgeCapacity);
+                                }
                                 RpcResponse::from(MachineDetails {
                                     id: target.id,
                                     phase: LocalMachinePhase::Participating,
@@ -806,7 +813,12 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                     storage: None,
                                 })
                             }
-                            RpcRequestBody::EnsureGlobalSlot(ensure) => {
+                            RpcRequestBody::ListContainers(_) => {
+                                RpcResponse::from(ployz_core::ContainerList {
+                                    containers: Vec::new(),
+                                })
+                            }
+                            RpcRequestBody::CreateContainer(ensure) => {
                                 assert!(placement);
                                 assert_eq!(ensure, expected);
                                 RpcResponse::from(ContainerCreated {
@@ -816,7 +828,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                             }
                             other => panic!("unexpected catch-up RPC: {other:?}"),
                         };
-                        if attempt < failures {
+                        if inject_failure && attempts.fetch_add(1, Ordering::SeqCst) < failures {
                             Err(Status::unavailable("transient catch-up failure"))
                         } else {
                             Ok(Response::new(response.encode().unwrap()))
@@ -826,7 +838,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                 .await;
             let started = tokio::time::Instant::now();
             let succeeded = if placement {
-                CatchUpClient::ensure_global_slot(&mut client, &target.id, request)
+                CatchUpClient::create_slot(&mut client, &target.id, request)
                     .await
                     .is_ok()
             } else {
@@ -886,4 +898,247 @@ fn joiner_evaluates_stored_labels_and_independent_acceptance() {
         identities(&plan_global_catch_up(&services, &joiner, None)),
         ["ployz-system/ingress"]
     );
+}
+
+fn provisioned_global_spec() -> RequestedServiceSpec {
+    let mut spec = requested(ServiceMode::Global);
+    let reference = ServiceVolumeReference::parse("data").unwrap();
+    spec.set_volume_graph(
+        ServiceVolumeGraph::parse(
+            vec![ServiceVolume {
+                reference: reference.clone(),
+                source: ployz_core::RawVolumeSource::Provisioned {
+                    name: DockerVolumeName::parse("data").unwrap(),
+                    maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                        NonZeroU64::new(100).unwrap(),
+                    ),
+                    labels: Default::default(),
+                }
+                .admit()
+                .expect("valid volume declaration"),
+            }],
+            vec![ServiceMount {
+                volume: reference,
+                target: ContainerPath::parse("/data").unwrap(),
+                read_only: false,
+                no_copy: false,
+                subpath: None,
+            }],
+        )
+        .unwrap()
+        .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
+        .unwrap(),
+    )
+    .unwrap();
+    spec
+}
+
+#[tokio::test]
+async fn failed_placement_is_reported_even_if_final_observation_is_running() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let mut client = FakeCatchUpClient {
+        machine_id: joiner.id,
+        services: vec![global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(&founder, 'a'),
+        )],
+        target_services: Some(vec![global_service(
+            qualified("app", "api"),
+            'a',
+            Placement::default(),
+            running_on(&joiner, 'b'),
+        )]),
+        capacity: Some(BridgeEndpointCapacity::new(10, 0)),
+        storage: Ok(None),
+        ensure_calls: Cell::new(0),
+        create_error: Some("creation key conflict"),
+        failures: Vec::new(),
+        omissions: Vec::new(),
+    };
+    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    assert!(joined_catch_up_error(error).contains("creation key conflict"));
+}
+
+#[tokio::test]
+async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_slot() {
+    use ployz_core::{
+        ContainerChanged, ContainerList, LocalMachinePhase, MachineDetails, OpaquePayload,
+        RpcRequestBody, RpcResponse,
+    };
+    use std::sync::{Arc, Mutex};
+    use tonic::{Request, Response};
+
+    for outcome in [
+        "new",
+        "matching",
+        "conflict",
+        "revision",
+        "ineligible",
+        "unknown",
+    ] {
+        let mut target = machine('1', "joiner");
+        target.accepts_services = outcome != "ineligible";
+        let spec = if outcome == "unknown" {
+            provisioned_global_spec()
+        } else {
+            requested(ServiceMode::Global)
+        }
+        .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
+        .unwrap();
+        let request = CreateContainerRequest {
+            creation_key: Some(crate::cluster::global_creation_key(&spec)),
+            kind: ContainerKind::ServiceContainer,
+            project_name: ProjectName::parse("app").unwrap(),
+            resolved_spec: spec.clone(),
+        };
+        let expected = request.clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let recorded = calls.clone();
+        let observed = target.clone();
+        let (mut client, server) =
+            crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+                let target = observed.clone();
+                let recorded = recorded.clone();
+                let expected = expected.clone();
+                async move {
+                    assert_eq!(
+                        rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).unwrap(),
+                        target.id.as_str()
+                    );
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "fixture rejects unrelated RPCs"
+                    )]
+                    let response = match rpc.into_inner().decode_request().unwrap().body {
+                        RpcRequestBody::Inspect(inspect) => {
+                            assert!(inspect.include_storage);
+                            recorded.lock().unwrap().push("inspect");
+                            RpcResponse::from(MachineDetails {
+                                id: target.id,
+                                phase: LocalMachinePhase::Participating,
+                                public_key: target.public_key,
+                                machine: Some(target),
+                                advertised_endpoints: Vec::new(),
+                                store_version: Default::default(),
+                                rtts: Vec::new(),
+                                cloud_paired: false,
+                                telemetry: None,
+                                storage: None,
+                            })
+                        }
+                        RpcRequestBody::CreateContainer(create) => {
+                            recorded.lock().unwrap().push("create");
+                            assert_eq!(create, expected);
+                            if outcome == "conflict" {
+                                RpcResponse::from(RpcError {
+                                    code: ployz_core::RpcErrorCode::Conflict,
+                                    message: "creation key conflict".into(),
+                                    details: serde_json::Value::Null,
+                                })
+                            } else {
+                                RpcResponse::from(ployz_core::ContainerCreated {
+                                    container_id: container_id(if outcome == "revision" {
+                                        'b'
+                                    } else {
+                                        'a'
+                                    }),
+                                    display_name: "existing".into(),
+                                })
+                            }
+                        }
+                        RpcRequestBody::StartContainer(start) => {
+                            recorded.lock().unwrap().push("start");
+                            assert_eq!(
+                                start.container_id,
+                                container_id(if outcome == "revision" { 'b' } else { 'a' })
+                            );
+                            RpcResponse::from(ContainerChanged {
+                                container_id: start.container_id,
+                            })
+                        }
+                        RpcRequestBody::ListContainers(_) => {
+                            recorded.lock().unwrap().push("list");
+                            if outcome == "new" {
+                                return Ok(Response::new(
+                                    RpcResponse::from(ContainerList {
+                                        containers: Vec::new(),
+                                    })
+                                    .encode()
+                                    .unwrap(),
+                                ));
+                            }
+                            let mut slot = grouped(
+                                qualified("app", "api"),
+                                expected.resolved_spec,
+                                running_on(&target, 'a'),
+                            )
+                            .containers
+                            .remove(0)
+                            .into_observation();
+                            if outcome == "conflict" {
+                                slot.try_update(|parts| {
+                                    parts.resolved_spec.update.monitor_millis = Some(500)
+                                })
+                                .unwrap();
+                            } else if outcome == "revision" {
+                                slot.try_update(|parts| {
+                                    parts.resolved_spec.container.image = "api:old".into()
+                                })
+                                .unwrap();
+                            }
+                            let mut unrelated = slot.clone();
+                            unrelated
+                                .try_update(|parts| {
+                                    parts.project_name = ProjectName::parse("other").unwrap();
+                                    parts.container_id = container_id('c');
+                                })
+                                .unwrap();
+                            RpcResponse::from(ContainerList {
+                                containers: vec![slot, unrelated],
+                            })
+                        }
+                        RpcRequestBody::StopContainer(stop) => {
+                            recorded.lock().unwrap().push("stop");
+                            assert_eq!(stop.container_id, container_id('a'));
+                            RpcResponse::from(ContainerChanged {
+                                container_id: stop.container_id,
+                            })
+                        }
+                        RpcRequestBody::RemoveContainer(remove) => {
+                            recorded.lock().unwrap().push("remove");
+                            assert_eq!(remove.container_id, container_id('a'));
+                            assert!(!remove.remove_volumes);
+                            RpcResponse::from(ContainerChanged {
+                                container_id: remove.container_id,
+                            })
+                        }
+                        other => panic!("unexpected RPC: {other:?}"),
+                    };
+                    Ok(Response::new(response.encode().unwrap()))
+                }
+            })
+            .await;
+        let created = CatchUpClient::create_slot(&mut client, &target.id, request).await;
+        if let Ok(created) = &created {
+            CatchUpClient::start_slot(&mut client, &target.id, created.container_id)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            created.is_ok(),
+            ["matching", "new", "revision"].contains(&outcome)
+        );
+        let expected: &[&str] = match outcome {
+            "new" | "revision" => &["inspect", "list", "create", "start"],
+            "matching" => &["inspect", "list", "start"],
+            "conflict" => &["inspect", "list", "create"],
+            "ineligible" => &["inspect", "list", "stop", "remove"],
+            _ => &["inspect"],
+        };
+        assert_eq!(calls.lock().unwrap().as_slice(), expected);
+        server.abort();
+    }
 }

@@ -155,7 +155,7 @@ A bounded membership-command operation that establishes this Machine's running S
 _Avoid_: scheduler, Cluster-wide Deploy
 
 **Global slot convergence**:
-One bounded, target-local decision for a dispatched Global slot: ensure it when eligible, retire it when definitely ineligible, or hold it unchanged when eligibility is unknown.
+A bounded client attempt for a dispatched Global slot: establish it when eligible, retire it when definitely ineligible, or hold it unchanged when eligibility is unknown. Its observations and lifecycle actions are separate operations, not one atomic decision.
 _Avoid_: Background maintenance, Cluster-wide reconciler, scheduler
 
 **Observed Global Slot Spec**:

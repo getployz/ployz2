@@ -39,7 +39,7 @@ fn with_faults(daemon: JoinDaemon, target: Fault, ensure: Fault) -> JoinDaemon {
 async fn cloud_join_retries_target_readiness_and_reports_failure() {
     let (recovered, daemon) = cloud_join(Fault::Transient, Fault::Healthy).await;
     assert!(recovered.status.success());
-    assert_eq!(daemon.target_inspect_attempts(), 2);
+    assert_eq!(daemon.target_inspect_attempts(), 4);
 
     let (failed, daemon) = cloud_join(Fault::Permanent, Fault::Healthy).await;
     assert!(!failed.status.success());
@@ -53,7 +53,7 @@ async fn cloud_join_retries_target_readiness_and_reports_failure() {
 async fn machine_add_retries_target_readiness_and_reports_failure() {
     let (recovered, entry, target) = machine_add(Fault::Transient, Fault::Healthy).await;
     assert!(recovered.status.success());
-    assert_eq!(entry.target_inspect_attempts(), 2);
+    assert_eq!(entry.target_inspect_attempts(), 4);
     target.join_request();
 
     let (failed, entry, target) = machine_add(Fault::Permanent, Fault::Healthy).await;

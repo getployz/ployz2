@@ -3,10 +3,11 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerObservation, EnsureGlobalSlotRequest, InspectRequest,
-    ListContainersRequest, LiveServices, Machine, MachineId, MachineStorageObservation,
-    MachineTarget, ObservedGlobalSlotSpec, QualifiedService, ResolvedServiceSpec, RpcError,
-    ServiceObservation, ServicePlacementEligibility, op, service_containers,
+    BridgeEndpointCapacity, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
+    CreateContainerRequest, InspectRequest, ListContainersRequest, LiveServices, Machine,
+    MachineId, MachineStorageObservation, MachineTarget, ObservedGlobalSlotSpec, QualifiedService,
+    ResolvedServiceSpec, RpcError, ServiceObservation, ServicePlacementEligibility, op,
+    service_containers,
 };
 
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
@@ -35,10 +36,15 @@ pub(crate) trait CatchUpClient {
         &mut self,
         machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, Failure>;
-    async fn ensure_global_slot(
+    async fn create_slot(
         &mut self,
         machine_id: &MachineId,
-        request: EnsureGlobalSlotRequest,
+        request: CreateContainerRequest,
+    ) -> Result<ContainerCreated, RpcError>;
+    async fn start_slot(
+        &mut self,
+        machine_id: &MachineId,
+        container_id: ContainerId,
     ) -> Result<(), RpcError>;
     /// List Containers directly from the joined Machine for final verification.
     async fn target_containers(
@@ -85,15 +91,109 @@ impl CatchUpClient for Client {
         Ok(details.telemetry.map(|telemetry| telemetry.into_bridge()))
     }
 
-    async fn ensure_global_slot(
+    async fn create_slot(
         &mut self,
         machine_id: &MachineId,
-        request: EnsureGlobalSlotRequest,
-    ) -> Result<(), RpcError> {
-        self.call::<op::EnsureGlobalSlot>(request, Some(&MachineTarget::from(machine_id)))
+        request: CreateContainerRequest,
+    ) -> Result<ContainerCreated, RpcError> {
+        let target = MachineTarget::from(machine_id);
+        let details = self
+            .read::<op::Inspect>(
+                InspectRequest {
+                    include_storage: true,
+                    ..Default::default()
+                },
+                &target,
+            )
+            .await?;
+        let machine = details
+            .machine
+            .filter(|machine| {
+                machine.id == *machine_id
+                    && details.phase == ployz_core::LocalMachinePhase::Participating
+            })
+            .ok_or_else(|| RpcError {
+                code: ployz_core::RpcErrorCode::Conflict,
+                message: "Global catch-up target has no participating Machine observation".into(),
+                details: serde_json::Value::Null,
+            })?;
+        let eligibility = request.resolved_spec.placement_eligibility_in_project(
+            &request.project_name,
+            &machine,
+            details.storage.as_ref(),
+        );
+        if eligibility != ServicePlacementEligibility::Eligible {
+            if matches!(eligibility, ServicePlacementEligibility::Ineligible(_)) {
+                let containers = self
+                    .read::<op::ListContainers>(ListContainersRequest {}, &target)
+                    .await?;
+                for container in containers.containers.into_iter().filter(|container| {
+                    container.machine_id == *machine_id
+                        && container.kind == ContainerKind::ServiceContainer
+                        && container.project_name == request.project_name
+                        && container.resolved_spec.name == request.resolved_spec.name
+                }) {
+                    self.call::<op::StopContainer>(
+                        ployz_core::StopContainerRequest {
+                            container_id: container.container_id,
+                            signal: None,
+                            grace_period_seconds: None,
+                        },
+                        Some(&target),
+                    )
+                    .await
+                    .map_err(RpcError::from)?;
+                    self.call::<op::RemoveContainer>(
+                        ployz_core::RemoveContainerRequest {
+                            container_id: container.container_id,
+                            remove_volumes: false,
+                            force: false,
+                        },
+                        Some(&target),
+                    )
+                    .await
+                    .map_err(RpcError::from)?;
+                }
+            }
+            return Err(RpcError {
+                code: ployz_core::RpcErrorCode::Conflict,
+                message: format!("Global catch-up target eligibility is {eligibility:?}"),
+                details: serde_json::Value::Null,
+            });
+        }
+        // Explicit Deploy replacement keys also distinguish the previous Container.
+        // Reuse its exact persisted creation when catch-up finds it before Start.
+        let containers = self
+            .read::<op::ListContainers>(ListContainersRequest {}, &target)
+            .await?;
+        if let Some(existing) = containers.containers.into_iter().find(|container| {
+            container.machine_id == *machine_id
+                && container.kind == ContainerKind::ServiceContainer
+                && container.project_name == request.project_name
+                && container.resolved_spec == request.resolved_spec
+        }) {
+            return Ok(ContainerCreated {
+                container_id: existing.container_id,
+                display_name: existing.display_name.clone(),
+            });
+        }
+        self.call::<op::CreateContainer>(request, Some(&target))
             .await
-            .map(|_| ())
             .map_err(Into::into)
+    }
+
+    async fn start_slot(
+        &mut self,
+        machine_id: &MachineId,
+        container_id: ContainerId,
+    ) -> Result<(), RpcError> {
+        self.call::<op::StartContainer>(
+            ployz_core::StartContainerRequest { container_id },
+            Some(&MachineTarget::from(machine_id)),
+        )
+        .await
+        .map(|_| ())
+        .map_err(Into::into)
     }
 
     async fn target_containers(
@@ -270,16 +370,26 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     for slot in slots {
         let (identity, resolved_spec) = slot.into_parts();
         let failure_identity = identity.clone();
-        if let Err(error) = client
-            .ensure_global_slot(
+        let created = client
+            .create_slot(
                 &this_machine.id,
-                EnsureGlobalSlotRequest {
+                CreateContainerRequest {
+                    creation_key: Some(crate::cluster::global_creation_key(&resolved_spec)),
+                    kind: ContainerKind::ServiceContainer,
                     project_name: identity.project,
                     resolved_spec,
                 },
             )
-            .await
-        {
+            .await;
+        let result = match created {
+            Ok(created) => {
+                client
+                    .start_slot(&this_machine.id, created.container_id)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
             failures.push((failure_identity, error.to_string()));
         }
     }
@@ -300,7 +410,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         })
         .chain(unknown)
         .collect::<Vec<_>>();
-    if !missing.is_empty() {
+    if !missing.is_empty() || !failures.is_empty() {
         let details = failures
             .iter()
             .map(|(identity, error)| format!("{identity}: {error}"))

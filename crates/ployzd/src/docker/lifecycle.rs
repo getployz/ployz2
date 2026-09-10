@@ -8,9 +8,9 @@ use bollard::{
     },
 };
 use ployz_core::{
-    ContainerCreated, ContainerId, ContainerKind, ContainerRuntimeObservation, Machine, MachineId,
-    MachineStorageObservation, ProjectName, ResolvedServiceSpec, ServicePlacementEligibility,
-    ServicePlacementIneligibleReason, ServicePlacementUnknownReason, SlotOccupancy,
+    ContainerCreated, ContainerId, ContainerKind, Machine, MachineId, MachineStorageObservation,
+    ProjectName, ResolvedServiceSpec, ServicePlacementEligibility,
+    ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
 };
 
 #[cfg(test)]
@@ -39,44 +39,6 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     pub(crate) admission: Admission,
     /// Fresh local storage observation deferred to final container admission.
     pub(crate) storage: Storage,
-}
-
-/// Exact inputs for Machine-local Global Service Container convergence.
-pub(crate) struct GlobalSlotRequest<'spec, Storage, Admission> {
-    /// Project that owns the Global slot.
-    pub(crate) project_name: &'spec ProjectName,
-    /// Fully resolved Global Service specification to persist and execute.
-    pub(crate) spec: &'spec ResolvedServiceSpec,
-    /// Deferred Machine-local admission, awaited only after volume admission.
-    pub(crate) admission: Admission,
-    /// Fresh local storage observation deferred to final container admission.
-    pub(crate) storage: Storage,
-}
-
-/// Result of one fresh target-Machine Global convergence decision.
-#[derive(Debug)]
-pub(crate) enum GlobalSlotConvergence {
-    /// The fresh target evidence was eligible and this is the accepted running Container.
-    Ensured(ContainerCreated),
-    /// The fresh target evidence was ineligible and any existing local slots were retired.
-    Ineligible(ServicePlacementIneligibleReason),
-    /// The fresh target evidence was unknown and no Container mutation was made.
-    Unknown(ServicePlacementUnknownReason),
-}
-
-impl GlobalSlotConvergence {
-    /// Convert an eligible convergence outcome to the RPC's required Container result.
-    ///
-    /// # Errors
-    ///
-    /// Returns the matching admission error when fresh target evidence was ineligible or unknown.
-    pub(crate) fn into_container(self) -> Result<ContainerCreated, Error> {
-        match self {
-            Self::Ensured(created) => Ok(created),
-            Self::Ineligible(reason) => Err(ineligible_error(reason)),
-            Self::Unknown(reason) => Err(unknown_error(reason)),
-        }
-    }
 }
 
 impl ContainerRuntime {
@@ -170,81 +132,6 @@ impl ContainerRuntime {
         .map_err(E::from)
     }
 
-    /// Converge one Global Service against fresh target-Machine eligibility evidence.
-    ///
-    /// # Errors
-    ///
-    /// Returns when listing managed Containers, ensuring mounted Volumes, pulling the image,
-    /// or the required create, start, stop, or remove operation fails.
-    pub(crate) async fn converge_global_slot<Storage, Admission, E>(
-        &self,
-        machine: &Machine,
-        request: GlobalSlotRequest<'_, Storage, Admission>,
-    ) -> Result<GlobalSlotConvergence, E>
-    where
-        Storage: Future<Output = Option<MachineStorageObservation>> + Send,
-        Admission: Future<Output = Result<(), E>> + Send,
-        E: From<Error>,
-    {
-        let GlobalSlotRequest {
-            project_name,
-            spec,
-            admission,
-            storage,
-        } = request;
-        let existing = self
-            .list_managed(&machine.id)
-            .await
-            .map_err(E::from)?
-            .into_iter()
-            .filter(|observation| {
-                observation.kind == ContainerKind::ServiceContainer
-                    && &observation.project_name == project_name
-                    && observation.resolved_spec.name == spec.name
-            })
-            .collect::<Vec<_>>();
-        match self
-            .admit_and_ensure_volumes(machine, project_name, spec, storage)
-            .await
-            .map_err(E::from)?
-        {
-            ServicePlacementEligibility::Eligible => {}
-            ServicePlacementEligibility::Ineligible(reason) => {
-                self.retire_global_slots(existing).await.map_err(E::from)?;
-                return Ok(GlobalSlotConvergence::Ineligible(reason));
-            }
-            ServicePlacementEligibility::Unknown(reason) => {
-                return Ok(GlobalSlotConvergence::Unknown(reason));
-            }
-        }
-        admission.await?;
-        match SlotOccupancy::classify(existing, spec.serving_shape()) {
-            SlotOccupancy::Current(slot) => {
-                if !runtime_is_running(&slot.runtime) {
-                    self.start(&slot.container_id).await.map_err(E::from)?;
-                }
-                return Ok(GlobalSlotConvergence::Ensured(ContainerCreated {
-                    container_id: slot.container_id,
-                    display_name: slot.into_parts().display_name,
-                }));
-            }
-            SlotOccupancy::OtherShape | SlotOccupancy::Empty => {}
-        }
-        let created = self
-            .prepare_and_create(
-                machine,
-                ContainerKind::ServiceContainer,
-                project_name,
-                spec,
-                Some(global_slot_name(spec)),
-                None,
-            )
-            .await
-            .map_err(E::from)?;
-        self.start(&created.container_id).await.map_err(E::from)?;
-        Ok(GlobalSlotConvergence::Ensured(created))
-    }
-
     async fn prepare_and_create(
         &self,
         machine: &Machine,
@@ -312,16 +199,7 @@ impl ContainerRuntime {
                                     .await?
                                     .ok_or(Error::SlotNameOccupied(display_name));
                             }
-                            let existing = self
-                                .inspect_managed_by_name(&machine.id, &display_name)
-                                .await?;
-                            if existing.resolved_spec.serving_shape() != spec.serving_shape() {
-                                return Err(Error::SlotNameOccupied(display_name));
-                            }
-                            return Ok(ContainerCreated {
-                                container_id: existing.container_id,
-                                display_name: existing.into_parts().display_name,
-                            });
+                            return Err(Error::SlotNameOccupied(display_name));
                         }
                         Err(error) => return Err(error),
                     }
@@ -414,17 +292,6 @@ impl ContainerRuntime {
             container_id: existing.container_id,
             display_name: existing.into_parts().display_name,
         }))
-    }
-
-    async fn retire_global_slots(
-        &self,
-        slots: Vec<ployz_core::ContainerObservation>,
-    ) -> Result<(), Error> {
-        for slot in slots {
-            self.stop(&slot.container_id, None, None).await?;
-            self.remove(&slot.container_id, false, false).await?;
-        }
-        Ok(())
     }
 
     async fn admit_and_ensure_volumes(
@@ -643,10 +510,6 @@ fn idempotent_lifecycle_result(
     }
 }
 
-fn runtime_is_running(runtime: &ContainerRuntimeObservation) -> bool {
-    matches!(runtime, ContainerRuntimeObservation::Running { .. })
-}
-
 fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
     attempt < CONTAINER_NAME_ATTEMPTS
         && matches!(
@@ -668,12 +531,6 @@ fn creation_name(
     let scope =
         serde_json::to_vec(&(machine, project, kind, key)).expect("creation scope serializes");
     format!("ployz-create-{}", hex::encode(Sha256::digest(scope)))
-}
-
-fn global_slot_name(spec: &ResolvedServiceSpec) -> String {
-    let id = spec.service_id.as_str();
-    let suffix = id.get(..8).unwrap_or(id);
-    format!("{}-{suffix}-{}", spec.name, spec.serving_shape().token())
 }
 
 /// Refuse unsupported or unobservable placement without conflating the two.
@@ -722,9 +579,6 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
 }
 
 #[cfg(test)]
-mod convergence_tests;
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -744,3 +598,6 @@ mod tests {
         assert!(!retry_name_conflict(1, &server_error));
     }
 }
+
+#[cfg(test)]
+mod admission_tests;

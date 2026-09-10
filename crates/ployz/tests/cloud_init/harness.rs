@@ -8,9 +8,9 @@ use std::sync::{
 use ployz_core::{
     AdvertisedEndpoint, CloudPairingSet, ContainerChanged, ContainerCreated, ContainerDetails,
     ContainerId, ContainerKind, ContainerList, ContainerObservation, ContainerRuntimeObservation,
-    ContractDescription, CreateDomainRecordsRequest, DESCRIBE_CONTRACT_CAPABILITY, Domain,
-    DomainRecords, EnsureGlobalSlotRequest, HealthObservation, InitializeRequest, Initialized,
-    JoinAccepted, JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineId,
+    ContractDescription, CreateContainerRequest, CreateDomainRecordsRequest,
+    DESCRIBE_CONTRACT_CAPABILITY, Domain, DomainRecords, HealthObservation, InitializeRequest,
+    Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineId,
     MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineToken,
     MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered, ReserveDomainRequest,
     ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeInventory,
@@ -81,7 +81,7 @@ struct JoinInner {
     containers: Mutex<Vec<ContainerObservation>>,
     create_attempts: AtomicUsize,
     transient_create_failures: AtomicUsize,
-    ensure_requests: Mutex<Vec<EnsureGlobalSlotRequest>>,
+    ensure_requests: Mutex<Vec<CreateContainerRequest>>,
     ensure_attempts: AtomicUsize,
     transient_ensure_failures: AtomicUsize,
     target_inspect_attempts: AtomicUsize,
@@ -299,7 +299,7 @@ impl JoinDaemon {
         self
     }
 
-    pub fn ensure_requests(&self) -> Vec<EnsureGlobalSlotRequest> {
+    pub fn ensure_requests(&self) -> Vec<CreateContainerRequest> {
         self.inner.ensure_requests.lock().unwrap().clone()
     }
 
@@ -369,10 +369,10 @@ impl MachineRpc for JoinDaemon {
                 "first startup is still pulling Corrosion",
             ));
         }
-        if request
+        let targeted = request
             .metadata()
-            .contains_key(ployz_core::ONE_TARGET_HEADER)
-        {
+            .contains_key(ployz_core::ONE_TARGET_HEADER);
+        if targeted {
             self.inner
                 .target_inspect_attempts
                 .fetch_add(1, Ordering::SeqCst);
@@ -392,7 +392,7 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::Inspect(inspect) = request.body else {
             return Err(Status::invalid_argument("expected Inspect"));
         };
-        let joined = self.inner.joined.load(Ordering::SeqCst);
+        let joined = targeted || self.inner.joined.load(Ordering::SeqCst);
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         rpc_ok(MachineDetails {
             id: self.inner.registration.assigned_machine.id,
@@ -752,6 +752,63 @@ impl MachineRpc for JoinDaemon {
         let RpcRequestBody::CreateContainer(create) = decoded.body else {
             return Err(Status::invalid_argument("expected CreateContainer"));
         };
+        if create.creation_key.is_some() {
+            self.inner.ensure_attempts.fetch_add(1, Ordering::SeqCst);
+            if consume_transient_failure(&self.inner.transient_ensure_failures) {
+                return Err(Status::unavailable("transient ensure failure"));
+            }
+            if self.inner.fail_ensure.load(Ordering::SeqCst) {
+                return rpc_ok(RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "ensure failed".into(),
+                    details: serde_json::Value::Null,
+                });
+            }
+            self.inner
+                .ensure_requests
+                .lock()
+                .unwrap()
+                .push(create.clone());
+            let machine = self.inner.current_machine.lock().unwrap().clone();
+            let eligibility = create.resolved_spec.placement_eligibility_in_project(
+                &create.project_name,
+                &machine,
+                None,
+            );
+            if eligibility != ployz_core::ServicePlacementEligibility::Eligible {
+                return rpc_ok(RpcError {
+                    code: RpcErrorCode::Conflict,
+                    message: "target Global slot is ineligible or unknown".into(),
+                    details: serde_json::Value::Null,
+                });
+            }
+            let n = self.inner.containers.lock().unwrap().len() + 1;
+            let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
+            let machine_id = self.inner.registration.assigned_machine.id;
+            self.inner.containers.lock().unwrap().push(
+                ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                    container_id,
+                    display_name: format!("{}-slot", create.resolved_spec.name),
+                    created_at_unix_nanos: n as i64,
+                    machine_id,
+                    project_name: create.project_name,
+                    kind: ContainerKind::ServiceContainer,
+                    runtime: ContainerRuntimeObservation::Created,
+                    effective_healthcheck: None,
+                    resolved_spec: create.resolved_spec,
+                    address: None,
+                    labels: Default::default(),
+                })
+                .unwrap(),
+            );
+            if consume_transient_failure(&self.inner.transient_create_failures) {
+                return Err(Status::unavailable("lost Ingress container creation reply"));
+            }
+            return rpc_ok(ContainerCreated {
+                container_id,
+                display_name: format!("slot-{n}"),
+            });
+        }
         let n = self.inner.containers.lock().unwrap().len() + 1;
         let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
         let display_name = format!("{}-{n}", create.resolved_spec.name);
@@ -777,83 +834,6 @@ impl MachineRpc for JoinDaemon {
         rpc_ok(ContainerCreated {
             container_id,
             display_name,
-        })
-    }
-    async fn ensure_global_slot(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let decoded = request
-            .into_inner()
-            .decode_request()
-            .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let RpcRequestBody::EnsureGlobalSlot(ensure) = decoded.body else {
-            return Err(Status::invalid_argument("expected EnsureGlobalSlot"));
-        };
-        self.inner.ensure_attempts.fetch_add(1, Ordering::SeqCst);
-        if consume_transient_failure(&self.inner.transient_ensure_failures) {
-            return Err(Status::unavailable("transient ensure failure"));
-        }
-        if self.inner.fail_ensure.load(Ordering::SeqCst) {
-            return rpc_ok(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "ensure failed".into(),
-                details: serde_json::Value::Null,
-            });
-        }
-        self.inner
-            .ensure_requests
-            .lock()
-            .unwrap()
-            .push(ensure.clone());
-        let machine = self.inner.current_machine.lock().unwrap().clone();
-        let eligibility = ensure.resolved_spec.placement_eligibility_in_project(
-            &ensure.project_name,
-            &machine,
-            None,
-        );
-        if eligibility != ployz_core::ServicePlacementEligibility::Eligible {
-            if matches!(
-                eligibility,
-                ployz_core::ServicePlacementEligibility::Ineligible(_)
-            ) {
-                self.inner.containers.lock().unwrap().retain(|container| {
-                    container.machine_id != machine.id
-                        || container.project_name != ensure.project_name
-                        || container.resolved_spec.name != ensure.resolved_spec.name
-                });
-            }
-            return rpc_ok(RpcError {
-                code: RpcErrorCode::Conflict,
-                message: "target Global slot is ineligible or unknown".into(),
-                details: serde_json::Value::Null,
-            });
-        }
-        let n = self.inner.ensure_requests.lock().unwrap().len();
-        let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
-        let machine_id = self.inner.registration.assigned_machine.id;
-        self.inner.containers.lock().unwrap().push(
-            ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-                container_id,
-                display_name: format!("{}-slot", ensure.resolved_spec.name),
-                created_at_unix_nanos: n as i64,
-                machine_id,
-                project_name: ensure.project_name,
-                kind: ContainerKind::ServiceContainer,
-                runtime: ContainerRuntimeObservation::Running {
-                    health: HealthObservation::NotConfigured,
-                },
-                effective_healthcheck: None,
-                resolved_spec: ensure.resolved_spec,
-                address: None,
-                labels: Default::default(),
-            })
-            .unwrap(),
-        );
-        self.record("deploy_ingress");
-        rpc_ok(ContainerCreated {
-            container_id,
-            display_name: format!("slot-{n}"),
         })
     }
     async fn remove_volume(

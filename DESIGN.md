@@ -196,10 +196,12 @@ current eligibility before replacement, including Machine-local Volume locality.
 Build admission checks Build acceptance again after queue wait; already-admitted
 Builds may finish.
 Observer-side eligibility remains advisory, including an Unknown safe hold. A
-dispatched Global catch-up operation makes exactly one fresh target-local
-eligibility decision: ensure eligible slots, retire definitely ineligible slots,
-or hold unknown slots unchanged. These checks admit work for an already-selected
-target; they do not schedule work across Machines.
+Global catch-up client reads fresh target evidence, creates and starts eligible
+slots, retires definitely ineligible slots, and holds unknown slots unchanged.
+These separate observation and lifecycle calls are not atomic; new creation and
+storage preparation independently enforce fresh Machine-local admission.
+These checks admit work for an already-selected target; they do not schedule
+work across Machines.
 
 **Red flags:** daemon-side policy without one of the three reasons, daemon logic
 a client could compute from the observations it already gathers.
