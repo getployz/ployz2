@@ -1,3 +1,4 @@
+import type { RemovalEndpoint } from "#/modules/machines/pairing-removal";
 import { createdAt, type EncryptedSecretValue, type JsonObject, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { environmentDeployment } from "#/modules/deployments/tables";
@@ -382,12 +383,7 @@ export const organizationPairing = pgTable(
       .notNull()
       .$type<EncryptedSecretValue>(),
     removalStartedAt: timestamp("removal_started_at", { mode: "date", withTimezone: true }),
-    removalEndpoints: jsonb("removal_endpoints").$type<Array<{
-      machineId: MachineId;
-      encryptedExpected: EncryptedSecretValue | null;
-      encryptedSuccessor: EncryptedSecretValue | null;
-      confirmed: boolean;
-    }> | null>(),
+    removalEndpoints: jsonb("removal_endpoints").$type<readonly RemovalEndpoint[] | null>(),
     founderPublicKey: text("founder_public_key"),
     founderClaimMachineId: text("founder_claim_machine_id").notNull().$type<MachineId>(),
     founderMachineId: text("founder_machine_id").$type<MachineId>(),

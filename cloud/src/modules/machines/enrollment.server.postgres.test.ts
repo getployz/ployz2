@@ -1,3 +1,4 @@
+import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { readFile } from "node:fs/promises";
 import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot } from "@ployz/sdk";
 import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
@@ -19,7 +20,6 @@ import {
 import {
   completeMachineEnrollment,
   publishMachineEnrollment,
-  loadOrganizationConnections,
   enrollMachine,
   reserveEnrollmentAssignment,
   hashEnrollmentToken,
@@ -688,7 +688,7 @@ describe("organization enrollment coordinator", () => {
     const removal = (await harness.pool.query("select removal_started_at, removal_endpoints from organization_pairing")).rows[0];
     expect(removal.removal_started_at).toBeInstanceOf(Date);
     expect(removal.removal_endpoints).toEqual([
-      { machineId: attempt.machineId, encryptedExpected: null, encryptedSuccessor: null, confirmed: false },
+      { machineId: attempt.machineId, status: "unknown" },
     ]);
   });
 
