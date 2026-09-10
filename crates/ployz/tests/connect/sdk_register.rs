@@ -186,7 +186,10 @@ async fn node_smoke_covers_list_held_then_register() {
             DiscoveryService::new(description.clone()),
         )
         .await;
-    let isolated = DiscoveryService::new(description.clone());
+    let isolated = DiscoveryService::new(ployz_core::ContractDescription {
+        machine_id: isolated_id,
+        ..description.clone()
+    });
     isolated.set_register_error(RpcError {
         code: RpcErrorCode::Unavailable,
         message: "this Machine is isolation-locked".into(),

@@ -658,3 +658,47 @@ fn ctx_rm_help_describes_local_removal() {
     let parent = String::from_utf8(parent.stdout).unwrap();
     assert!(parent.contains("[aliases: remove, delete]"), "{parent}");
 }
+
+#[test]
+fn tailcat_context_selection_and_listing_never_print_capabilities() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = root.path().join("config.yaml");
+    let secret = "tailcat-private-cli-capability";
+    Config::new(
+        &path,
+        Some("private".into()),
+        BTreeMap::from([(
+            "private".into(),
+            Context {
+                connections: vec![Connection::tailcat(secret).unwrap()],
+            },
+        )]),
+    )
+    .save()
+    .unwrap();
+    for args in [
+        vec!["ctx", "ls"],
+        vec!["ctx", "show"],
+        vec!["ctx", "connection"],
+        vec!["ctx", "connection", "tailcat:[redacted]"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--ployz-config")
+            .arg(&path)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(secret));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+        if args.get(1) == Some(&"connection") {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("tailcat:[redacted]"));
+        }
+    }
+}

@@ -347,3 +347,52 @@ fn ssh_timeout_flag_is_global_and_reaches_transport_arguments() {
         );
     }
 }
+
+#[tokio::test]
+async fn tailcat_auxiliary_proxy_is_explicitly_unsupported_and_redacted() {
+    let connection = Connection::tailcat("private-capability").unwrap();
+    let result = SystemConnector::default()
+        .dial_proxy(&connection, "tcp", "127.0.0.1:1234")
+        .await;
+    let Err(ConnectError::ProxyUnsupported(message)) = result else {
+        panic!("Tailcat must reject auxiliary proxy");
+    };
+    assert!(message.contains("tailcat"));
+    assert!(!message.contains("private-capability"));
+}
+
+#[tokio::test]
+async fn child_stream_preserves_half_close_and_reaps_on_cancellation() {
+    use tokio::io::AsyncReadExt;
+    let mut stream = spawn_child(
+        Path::new("sh"),
+        &["-c".into(), "cat; printf response-after-eof".into()],
+    )
+    .unwrap();
+    stream.write_all(b"request").await.unwrap();
+    stream.shutdown().await.unwrap();
+    let mut result = String::new();
+    tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut result))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result, "requestresponse-after-eof");
+    assert!(stream._child.wait().await.unwrap().success());
+
+    let child = spawn_child(Path::new("cat"), &[]).unwrap();
+    let pid = child._child.id().unwrap();
+    drop(child);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while StdCommand::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cancelled helper was not reaped");
+}

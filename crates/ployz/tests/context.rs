@@ -488,3 +488,96 @@ fn selecting_connections_with_a_missing_name_is_context_not_found() {
         })
     );
 }
+
+#[test]
+fn tailcat_context_preserves_order_identity_and_redacts_capability() {
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = root.path().join("config.yaml");
+    let secret = "tailcat-private-capability";
+    let connection = Connection::tailcat(secret)
+        .unwrap()
+        .with_machine_id(MachineId::parse("0123456789abcdef0123456789abcdef").unwrap());
+    let ssh = Connection::ssh(SshDestination::parse("root@example.com").unwrap());
+    let config = Config::new(
+        &path,
+        Some("tailcat".into()),
+        BTreeMap::from([
+            (
+                "tailcat".into(),
+                Context {
+                    connections: vec![connection.clone(), ssh.clone()],
+                },
+            ),
+            (
+                "ssh".into(),
+                Context {
+                    connections: vec![ssh.clone()],
+                },
+            ),
+        ]),
+    );
+    config.save().unwrap();
+    let loaded = Config::load(&path).unwrap();
+    assert_eq!(loaded, config);
+    assert!(fs::read_to_string(&path).unwrap().contains(secret));
+    assert!(!format!("{loaded:?} {connection}").contains(secret));
+    assert_eq!(
+        resolve_connections(&path, None, None, "/missing".as_ref())
+            .unwrap()
+            .connections,
+        vec![connection, ssh.clone()]
+    );
+    assert_eq!(
+        resolve_connections(&path, None, Some("ssh"), "/missing".as_ref())
+            .unwrap()
+            .connections,
+        vec![ssh]
+    );
+
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+    assert!(matches!(
+        Config::load(&path),
+        Err(ConfigError::PrivatePermissions(_))
+    ));
+    config.save().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o750)).unwrap();
+    assert!(matches!(
+        Config::load(&path),
+        Err(ConfigError::PrivatePermissions(_))
+    ));
+    assert!(matches!(
+        config.save(),
+        Err(ConfigError::PrivatePermissions(_))
+    ));
+}
+
+#[test]
+fn tailcat_config_rejects_other_selectors_ssh_options_and_secret_in_arguments() {
+    let secret = "private-capability-never-in-errors";
+    for extra in [
+        "ssh: root@example.com",
+        "unix: /tmp/daemon.sock",
+        "tcp: 127.0.0.1:1234",
+        "ssh_key_file: /tmp/key",
+    ] {
+        let yaml = format!("tailcat: {secret}\n{extra}\n");
+        assert!(serde_norway::from_str::<Connection>(&yaml).is_err());
+    }
+    for value in ["", "has\nnewline", "has space", "nul\0byte"] {
+        assert!(Connection::tailcat(value).is_err());
+    }
+    let error = format!("tailcat://{secret}")
+        .parse::<Connection>()
+        .unwrap_err();
+    assert!(!format!("{error:?} {error}").contains(secret));
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.yaml");
+    fs::write(
+        &path,
+        format!("contexts:\n  prod:\n    connections:\n      - tailcat: {{ {secret}: invalid }}"),
+    )
+    .unwrap();
+    let error = Config::load(path).unwrap_err();
+    assert!(!format!("{error:?} {error}").contains(secret));
+}
