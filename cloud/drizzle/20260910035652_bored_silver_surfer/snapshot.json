@@ -3172,7 +3172,7 @@
     {
       "type": "text",
       "typeSchema": null,
-      "notNull": false,
+      "notNull": true,
       "dimensions": 0,
       "default": null,
       "generated": null,
@@ -9468,6 +9468,13 @@
     {
       "value": "\"founder_public_key\" is not null or \"founder_machine_id\" is not null",
       "name": "organization_pairing_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_pairing"
+    },
+    {
+      "value": "\"founder_claim_machine_id\" ~ '^[0-9a-f]{32}$'",
+      "name": "organization_pairing_founder_claim_machine_id_check",
       "entityType": "checks",
       "schema": "public",
       "table": "organization_pairing"

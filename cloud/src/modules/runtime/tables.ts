@@ -382,7 +382,7 @@ export const organizationPairing = pgTable(
       .notNull()
       .$type<EncryptedSecretValue>(),
     founderPublicKey: text("founder_public_key"),
-    founderClaimMachineId: text("founder_claim_machine_id").$type<MachineId>(),
+    founderClaimMachineId: text("founder_claim_machine_id").notNull().$type<MachineId>(),
     founderMachineId: text("founder_machine_id").$type<MachineId>(),
     firstConnectDeploymentEvaluatedAt: timestamp(
       "first_connect_deployment_evaluated_at",
@@ -395,6 +395,10 @@ export const organizationPairing = pgTable(
     check(
       "organization_pairing_state_check",
       sql`${table.founderPublicKey} is not null or ${table.founderMachineId} is not null`,
+    ),
+    check(
+      "organization_pairing_founder_claim_machine_id_check",
+      sql`${table.founderClaimMachineId} ~ '^[0-9a-f]{32}$'`,
     ),
     check(
       "organization_pairing_founder_machine_id_check",

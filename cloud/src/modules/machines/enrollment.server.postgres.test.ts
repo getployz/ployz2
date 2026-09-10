@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot } from "@ployz/sdk";
 import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
 import { ConfigProvider, Effect, Exit, Layer, Result, Schema } from "effect";
@@ -690,12 +691,13 @@ describe("organization enrollment coordinator", () => {
     const stale = makeSecretEncryption("stale-app-encryption-secret-1234567890");
     await harness.pool.query(
       `insert into organization_pairing (
-        organization_id, encrypted_pairing_secret, founder_public_key
-      ) values ($1, $2::jsonb, $3)`,
+        organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id
+      ) values ($1, $2::jsonb, $3, $4)`,
       [
         organizationId,
         JSON.stringify(stale.encrypt("ppair_stale")),
         identity(0).publicKey,
+        identity(0).machineId,
       ],
     );
 
@@ -713,22 +715,67 @@ describe("organization enrollment coordinator", () => {
     expect(fake.revokedPairings).toEqual([]);
   });
 
+  it("requires a valid Machine owner for pending and ready claims", async () => {
+    for (const completedMachineId of [null, identity(0).machineId]) {
+      await expect(harness.pool.query(`
+        insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_machine_id)
+        values ($1, '{}'::jsonb, 'founder', $2)
+      `, [organizationId, completedMachineId])).rejects.toMatchObject({ code: "23502" });
+      await expect(harness.pool.query(`
+        insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_machine_id, founder_claim_machine_id)
+        values ($1, '{}'::jsonb, 'founder', $2, 'not-a-machine')
+      `, [organizationId, completedMachineId])).rejects.toMatchObject({ code: "23514" });
+    }
+  });
+
+  it("rejects a nonempty pre-cutover pairing table without deleting or changing claims", async () => {
+    const migration = await readFile(new URL("../../../drizzle/20260910035652_bored_silver_surfer/migration.sql", import.meta.url), "utf8");
+    const client = await harness.pool.connect();
+    try {
+      await client.query("begin");
+      // Restore the preceding schema in this transaction only; execute the shipped cutover SQL.
+      await client.query(`
+        create temporary table organization_pairing (like public.organization_pairing including all);
+        alter table pg_temp.organization_pairing drop column founder_claim_machine_id cascade;
+        create temporary table organization_machine (like public.organization_machine including all);
+        alter table pg_temp.organization_machine drop column cluster_key cascade, drop column encrypted_tailcat;
+        insert into pg_temp.organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key)
+        values ('${organizationId}', '{"ciphertext":"existing-pending-claim"}'::jsonb, 'pending-founder');
+        insert into pg_temp.organization_pairing (organization_id, encrypted_pairing_secret, founder_machine_id)
+        values ('00000000-0000-4000-8000-000000000403', '{"ciphertext":"existing-ready-claim"}'::jsonb, '${identity(0).machineId}');
+        insert into pg_temp.organization_machine (organization_id, machine_id)
+        values ('${organizationId}', '${identity(0).machineId}');
+      `);
+      const claims = await client.query("select * from pg_temp.organization_pairing order by organization_id");
+      await client.query("savepoint cutover");
+      await expect(client.query(migration)).rejects.toMatchObject({
+        code: "55000", message: "Tailcat enrollment cutover requires no existing Organization pairings.",
+      });
+      await client.query("rollback to savepoint cutover");
+      expect((await client.query("select * from pg_temp.organization_pairing order by organization_id")).rows).toEqual(claims.rows);
+      expect((await client.query("select * from pg_temp.organization_machine")).rowCount).toBe(1);
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+  });
+
   it("rejects invalid pending and ready Organization Pairing shapes", async () => {
     await expect(
       harness.pool.query(`
         insert into organization_pairing (
-          organization_id, encrypted_pairing_secret
-        ) values ('${organizationId}', '{}'::jsonb)
+          organization_id, encrypted_pairing_secret, founder_claim_machine_id
+        ) values ('${organizationId}', '{}'::jsonb, '${identity(0).machineId}')
       `),
     ).rejects.toMatchObject({ code: "23514" });
 
     await expect(
       harness.pool.query(`
         insert into organization_pairing (
-          organization_id, encrypted_pairing_secret, founder_machine_id
+          organization_id, encrypted_pairing_secret, founder_machine_id, founder_claim_machine_id
         ) values (
           '${organizationId}', '{}'::jsonb,
-          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
         )
       `),
     ).resolves.toBeDefined();
@@ -741,9 +788,9 @@ describe("organization enrollment coordinator", () => {
       harness.pool.query(`
         insert into organization_pairing (
           organization_id, encrypted_pairing_secret,
-          founder_public_key, founder_machine_id
+          founder_public_key, founder_machine_id, founder_claim_machine_id
         ) values (
-          '${organizationId}', '{}'::jsonb, 'founder', 'not-a-machine'
+          '${organizationId}', '{}'::jsonb, 'founder', 'not-a-machine', '${identity(0).machineId}'
         )
       `),
     ).rejects.toMatchObject({ code: "23514" });
