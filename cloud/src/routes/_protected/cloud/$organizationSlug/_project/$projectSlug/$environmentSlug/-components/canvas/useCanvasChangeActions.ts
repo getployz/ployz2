@@ -1,4 +1,5 @@
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
+import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -207,7 +208,7 @@ export function useCanvasChangeActions({
       organizationSlug: params.organizationSlug, environmentId, revision: document.revision,
       snapshotSource: workingSnapshotSource, command: { kind: "all" },
     } });
-    await reconcileCollection(environments);
+    await reconcileNodeCollections(params.organizationSlug, collectionScope);
   }
 
   async function discardServiceChanges(serviceId: string) {
@@ -242,7 +243,7 @@ export function useCanvasChangeActions({
       snapshotSource: plan.kind === "delete" ? null : snapshotSource,
       command: { kind: "node", nodeType: plan.node.type, nodeId: plan.node.id },
     } });
-    await reconcileCollection(environments);
+    await reconcileNodeCollections(params.organizationSlug, collectionScope);
   }
 
   async function discardVolumeChanges(group: CanvasEnvironmentChangeGroup) {

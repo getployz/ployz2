@@ -1,3 +1,4 @@
+import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -52,7 +53,7 @@ export type EnvironmentParams = {
 };
 
 function createServicesCollection(organizationSlug: string, scope: CollectionScope) {
-  const identities = getRawServicesCollection(organizationSlug);
+  const identities = getRawServicesCollection(organizationSlug, scope);
   const documents = getEnvironmentDocumentsCollection(organizationSlug, scope);
   return createLiveQueryCollection({
     id: `electric:${organizationSlug}:services-with-context`,
@@ -103,7 +104,8 @@ function createServiceWriter(
         await updateServiceServerFn({
           data: { organizationSlug, environmentId, serviceId, revision, ...settings },
         });
-        await reconcileCollection(environments);
+        if (settings.deletedAt) await reconcileNodeCollections(organizationSlug, scope);
+        else await reconcileCollection(environments);
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Something went wrong while saving this field.");
         throw error;
@@ -152,9 +154,9 @@ const getVariableWriter = cachedByCollectionScope(createVariableWriter);
 
 function resourceSources(organizationSlug: string, scope: CollectionScope) {
   return {
-    resources: getRawEnvironmentResourcesCollection(organizationSlug),
-    lineages: getResourceLineagesCollection(organizationSlug),
-    positions: getCanvasPositionsCollection(organizationSlug),
+    resources: getRawEnvironmentResourcesCollection(organizationSlug, scope),
+    lineages: getResourceLineagesCollection(organizationSlug, scope),
+    positions: getCanvasPositionsCollection(organizationSlug, scope),
     documents: getEnvironmentDocumentsCollection(organizationSlug, scope),
   };
 }
@@ -192,7 +194,9 @@ export function useEnvironmentResourcesCollection(organizationSlug: string) {
 export function useVolumeResourcesCollection(organizationSlug: string) {
   return getVolumeResourcesCollection(organizationSlug, useCollectionScope());
 }
-export const useCanvasPositionsCollection = getCanvasPositionsCollection;
+export function useCanvasPositionsCollection(organizationSlug: string) {
+  return getCanvasPositionsCollection(organizationSlug, useCollectionScope());
+}
 export function useDeploymentsCollection(organizationSlug: string) {
   return getOrganizationDeploymentsCollection(organizationSlug, useCollectionScope());
 }

@@ -1,3 +1,4 @@
+import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useState } from "react";
@@ -41,8 +42,6 @@ import {
 import {
   getEnvironmentsCollection,
   getProjectsCollection,
-  getRawEnvironmentResourcesCollection,
-  getRawServicesCollection,
 } from "#/electric/collections";
 import { createServiceServerFn } from "#/modules/environment-design/service-functions";
 import {
@@ -207,9 +206,7 @@ function useServiceCreateActions({
       });
     },
     onSuccess: async (result) => {
-      await getRawServicesCollection(props.organizationSlug).utils.awaitTxId(
-        result.txid,
-      );
+      await reconcileNodeCollections(props.organizationSlug, collectionScope);
       if (props.mode === "service") {
         await props.onCreated?.(result.data);
       }
@@ -226,10 +223,8 @@ function useServiceCreateActions({
           y: 0,
         },
       }),
-    onSuccess: async (receipt) => {
-      await getRawEnvironmentResourcesCollection(
-        props.organizationSlug,
-      ).utils.awaitTxId(receipt.txid);
+    onSuccess: async () => {
+      await reconcileNodeCollections(props.organizationSlug, collectionScope);
     },
   });
   const createVolumeMutation = useMutation({
@@ -243,10 +238,8 @@ function useServiceCreateActions({
           y: 0,
         },
       }),
-    onSuccess: async (receipt) => {
-      await getRawEnvironmentResourcesCollection(
-        props.organizationSlug,
-      ).utils.awaitTxId(receipt.txid);
+    onSuccess: async () => {
+      await reconcileNodeCollections(props.organizationSlug, collectionScope);
     },
   });
 

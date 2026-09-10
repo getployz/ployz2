@@ -27,19 +27,15 @@ export const Route = createFileRoute(
 )({
   loader: ({ params, context }) => {
     const organizationSlug = params.organizationSlug;
-    const baseUrl = context.tableSyncBaseUrl;
     const canvasReady = Promise.all([
       preloadCollection(getProjectsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       preloadCollection(getEnvironmentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
-      getRawServicesCollection(organizationSlug, baseUrl).preload(),
-      getCanvasPositionsCollection(organizationSlug, baseUrl).preload(),
-      getRawEnvironmentResourcesCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
-      getResourceLineagesCollection(organizationSlug, baseUrl).preload(),
+      preloadCollection(getRawServicesCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
+      preloadCollection(getCanvasPositionsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
+      preloadCollection(getRawEnvironmentResourcesCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
+      preloadCollection(getResourceLineagesCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       preloadCollection(getEnvironmentNodeIntroductionsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       preloadOrganizationEnvironmentChangeStateProjections(
         { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id },

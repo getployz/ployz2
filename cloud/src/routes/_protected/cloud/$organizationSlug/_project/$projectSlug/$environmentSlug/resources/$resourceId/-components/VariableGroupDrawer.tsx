@@ -1,8 +1,7 @@
-import { reconcileCollection } from "#/collections/query-collection";
+import { reconcileNodeCollections } from "#/modules/environment-design/reconcile-node-collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useServerFn } from "@tanstack/react-start";
-import { getEnvironmentsCollection } from "#/electric/collections";
 import {
   Tabs,
   TabsContent,
@@ -63,7 +62,7 @@ export function VariableGroupDrawer({
               resourceId,
               name: value,
             } });
-            await reconcileCollection(getEnvironmentsCollection(state.organizationSlug, collectionScope));
+            await reconcileNodeCollections(state.organizationSlug, collectionScope);
           }}
         />
         <p className="truncate text-sm text-muted-foreground">Variable Group</p>

@@ -238,8 +238,9 @@ export function DeploymentRow({
   const [isDispatching, setIsDispatching] = useState(false);
   const router = useRouter();
   const { organizationSlug } = useParams({ strict: false });
+  const collectionScope = useCollectionScope();
   const rawResources = getRawEnvironmentResourcesCollection(
-    organizationSlug ?? "",
+    organizationSlug ?? "", collectionScope,
   );
   const { data: resourceRows = [] } = useLiveQuery({
     query: (q) =>
@@ -279,8 +280,6 @@ export function DeploymentRow({
         ? "Queued for next trigger"
         : "Waiting to deploy"
       : STATUS_LABEL[deployment.status];
-
-  const collectionScope = useCollectionScope();
 
   async function deployQueuedTarget() {
     if (!organizationSlug || !queuedForNextTrigger) return;

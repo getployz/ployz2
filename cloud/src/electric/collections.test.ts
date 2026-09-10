@@ -1,5 +1,6 @@
+import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
-import { getRawServicesCollection } from "#/electric/collections";
+import { getRawServicesCollection, getRawEnvironmentResourcesCollection, getCanvasPositionsCollection, getResourceLineagesCollection } from "#/electric/collections";
 import { tableSyncUrl } from "#/electric/table-sync-url";
 
 const TEST_BASE_URL = "http://localhost:61859/proxied/cloud/nick";
@@ -26,12 +27,17 @@ describe("Electric collection table-sync proxy URLs", () => {
     expect(url.pathname).toBe("/api/shapes/github_repository_cache");
   });
 
-  it("enables automatic indexes for client-side joins", () => {
-    const collection = getRawServicesCollection(
-      "auto-index-test",
-      TEST_BASE_URL,
-    );
-
-    expect(collection.config.autoIndex).toBe("eager");
+  it("isolates node collections by authenticated scope while retaining automatic indexes", () => {
+    const scope = { queryClient: new QueryClient(), sessionId: "session", userId: "user" };
+    for (const get of [getRawServicesCollection, getRawEnvironmentResourcesCollection,
+      getCanvasPositionsCollection, getResourceLineagesCollection]) {
+      const collection = get("acme", scope);
+      expect(collection.config.autoIndex).toBe("eager");
+      expect(get("acme", scope)).toBe(collection);
+      expect(get("other-org", scope)).not.toBe(collection);
+      expect(get("acme", { ...scope, sessionId: "other-session" })).not.toBe(collection);
+      expect(get("acme", { ...scope, userId: "other-user" })).not.toBe(collection);
+      expect(get("acme", { ...scope, queryClient: new QueryClient() })).not.toBe(collection);
+    }
   });
 });

@@ -1,3 +1,4 @@
+import { reconcileCollection } from "#/collections/query-collection";
 import { useServerFn } from "@tanstack/react-start";
 import { usePacedMutations, throttleStrategy } from "@tanstack/react-db";
 import { type OnNodeDrag } from "@xyflow/react";
@@ -95,22 +96,21 @@ export function useCanvasPositionMutation(params: {
           };
 
           if (modified.resourceType === "service") {
-            const receipt = await updateServicePosition({
+            await updateServicePosition({
               data: { ...data, serviceId: modified.resourceId },
             });
-            await collection.utils.awaitTxId(receipt.txid);
             return;
           }
 
-          const receipt = await updateResourcePosition({
+          await updateResourcePosition({
             data: {
               ...data,
               resourceId: modified.resourceId,
             },
           });
-          await collection.utils.awaitTxId(receipt.txid);
         }),
       );
+      await reconcileCollection(collection);
     },
     strategy: throttleStrategy({ wait: 250, leading: false, trailing: true }),
   });
