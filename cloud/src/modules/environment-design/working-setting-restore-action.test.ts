@@ -11,7 +11,7 @@ const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")
 it.each(["variableGroupAttachments", "source.credentials", "source"])(
   "restores %s through authored history and rolls back stale optimistic writes",
   async (path) => {
-    const restore = vi.fn<(input: { data: import("./working-document-restore").RestoreWorkingDocumentInput }) => Promise<{ txid: number }>>();
+    const restore = vi.fn<(input: { data: import("./working-document-restore").RestoreWorkingDocumentInput }) => Promise<{ data: EnvironmentDocument }>>();
     const baseline = parseServiceConfig({ version: 2, name: "API", privateDns: "api",
       source: path === "source" ? { version: 1, type: "empty", rootDir: "/" }
         : { version: 1, type: "image", image: "nginx", autoUpdate: { type: "off" }, credentials: { type: "configured", revision: "before" } },
@@ -83,7 +83,7 @@ it.each(["variableGroupAttachments", "source.credentials", "source"])(
       rows = [{ ...original, revision: id(9), intent: {
         ...original.intent, services: original.intent.services.map((service) => service.id === id(5) && optimistic ? optimistic : service),
       } }];
-      return { txid: 1 };
+      return { data: original };
     });
     const readsBeforeSave = read.mock.calls.length;
     await action({ serviceId: id(5), revision: id(4), path,

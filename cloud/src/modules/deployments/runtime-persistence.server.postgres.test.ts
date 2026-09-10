@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { Effect, Redacted } from "effect";
 import type { ContainerId, DeployOutcome, ExecutionError } from "@ployz/sdk";
 import { resolvedServiceSpecFixture, runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
-import { getPloyzTable } from "#/electric/synced-tables.server";
+import { getPloyzTable } from "#/collections/tables.server";
 import { Inngest } from "inngest";
 import * as schema from "#/db/schema";
 import {

@@ -13,7 +13,7 @@ import {
   getEnvironmentsCollection,
   getProjectsCollection,
   getVolumeRemoveAttemptsCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import { plainRowCollection } from "#/lib/tanstack-db";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import {
@@ -31,7 +31,7 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
   const volumeRemoveAttempts = getVolumeRemoveAttemptsCollection(organizationSlug, scope);
 
   const rows = createLiveQueryCollection({
-    id: `electric:${organizationSlug}:deployment-relationships`,
+    id: `collections:${organizationSlug}:deployment-relationships`,
     gcTime: 1,
     query: (q) => q
       .from({ deployment: deployments })
@@ -65,7 +65,7 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
   const collection: Collection<EnvironmentDeploymentSummary> =
     plainRowCollection(
       createLiveQueryCollection({
-        id: `electric:${organizationSlug}:deployment-summaries`,
+        id: `collections:${organizationSlug}:deployment-summaries`,
     gcTime: 1,
     query: (q) =>
       q.from({ deploymentRelationships: rows }).fn.select(({ deploymentRelationships }) => {

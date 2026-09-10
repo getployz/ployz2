@@ -12,7 +12,7 @@ import {
   getProjectsCollection,
   getRawEnvironmentResourcesCollection,
   getVolumeRemoveAttemptsCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import {
   Empty,
   EmptyDescription,

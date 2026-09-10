@@ -42,7 +42,7 @@ import {
 import {
   getEnvironmentsCollection,
   getProjectsCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import { createServiceServerFn } from "#/modules/environment-design/service-functions";
 import {
   ENVIRONMENT_INDEX_ROUTE_TO,

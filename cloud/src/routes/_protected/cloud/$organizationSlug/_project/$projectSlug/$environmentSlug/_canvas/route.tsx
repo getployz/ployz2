@@ -15,7 +15,7 @@ import {
   getRawEnvironmentResourcesCollection,
   getRawServicesCollection,
   getResourceLineagesCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import { preloadOrganizationEnvironmentChangeStateProjections } from "#/modules/deployments/use-environment-state-projection";
 import {
   EnvironmentCanvasScene,

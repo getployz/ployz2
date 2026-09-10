@@ -24,7 +24,7 @@ import {
   getResourceLineagesCollection,
   getEnvironmentNodeConfigSnapshotsCollection,
   getVolumeRemoveAttemptsCollection,
-} from "#/electric/collections";
+} from "#/collections/collections";
 import { getOrganizationDeploymentsCollection } from "#/modules/deployments/deployment-collection";
 import {
   createEnvironmentResourcesCollection,
@@ -56,7 +56,7 @@ function createServicesCollection(organizationSlug: string, scope: CollectionSco
   const identities = getRawServicesCollection(organizationSlug, scope);
   const documents = getEnvironmentDocumentsCollection(organizationSlug, scope);
   return createLiveQueryCollection({
-    id: `electric:${organizationSlug}:services-with-context`,
+    id: `collections:${organizationSlug}:services-with-context`,
     gcTime: 1,
     query: (q) => q.from({ identity: identities })
       .innerJoin({ document: documents }, ({ identity, document }) => eq(identity.environmentId, document.id))

@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { CollectionReadInput } from "./read.contract";
-import { getPloyzTable } from "#/electric/synced-tables.server";
+import { getPloyzTable } from "#/collections/tables.server";
 import * as tables from "#/db/schema";
 import type { Actor } from "#/modules/identity/actor";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";

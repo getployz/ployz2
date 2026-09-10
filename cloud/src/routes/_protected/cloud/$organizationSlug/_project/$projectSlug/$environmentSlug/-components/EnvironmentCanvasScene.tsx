@@ -16,7 +16,7 @@ import {
   normalizeEnvironmentServicesViewRecord,
 } from "#/modules/services/services.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/use-environment-state-projection";
-import { getEnvironmentNodeIntroductionsCollection } from "#/electric/collections";
+import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import {
   environmentResourceCanvasPositionSchema,

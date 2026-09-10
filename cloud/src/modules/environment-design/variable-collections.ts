@@ -2,7 +2,7 @@ import { reconcileCollection } from "#/collections/query-collection";
 import type { CollectionScope } from "#/collections/scope";
 import { createOptimisticAction } from "@tanstack/react-db";
 import { type SavedEnvironmentIntent, type SavedVariableIntent } from "@ployz/sdk/config";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import type { VariableRecord } from "./variables";
 import { plainVariableIntent, variableDocumentRecord } from "./variable-document";
 import {

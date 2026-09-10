@@ -46,7 +46,7 @@ import {
 } from "#/components/variables/variables-panel";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row";
 import { useReferenceTargets } from "#/components/variables/use-reference-targets";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import { decodeStrict } from "#/modules/environment-design/schema";
 import { variableGroupResourceRecordSchema } from "#/modules/environment-design/resources";

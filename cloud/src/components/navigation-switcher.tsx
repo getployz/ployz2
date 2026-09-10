@@ -14,7 +14,7 @@ import {
   PlusIcon,
   SlashIcon,
 } from "lucide-react";
-import { getEnvironmentsCollection } from "#/electric/collections";
+import { getEnvironmentsCollection } from "#/collections/collections";
 import {
   getDashboardDestination,
   getDashboardProjectDestination,

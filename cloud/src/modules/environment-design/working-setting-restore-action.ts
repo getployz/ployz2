@@ -8,7 +8,7 @@ export function createWorkingSettingRestoreAction({ environments, environmentId,
   environments: Pick<Collection<EnvironmentDocument>, "get" | "update">;
   environmentId: string;
   organizationSlug: string;
-  restore: (input: { data: RestoreWorkingDocumentInput }) => Promise<{ txid: number }>;
+  restore: (input: { data: RestoreWorkingDocumentInput }) => Promise<{ data: EnvironmentDocument }>;
   reconcile: () => Promise<void>;
 }) {
   return createOptimisticAction<{
