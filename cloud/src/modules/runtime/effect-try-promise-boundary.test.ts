@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const SRC = join(process.cwd(), "src");
 
 const TRY_PROMISE_ALLOWLIST = new Set([
+  "qualification/tailcat-883.live.ts", // Opt-in live test driver, outside application runtime.
   "modules/runtime/ployz.server.ts",
   "modules/billing/polar-provider.server.ts",
   "modules/github/github-observation.api.ts",
