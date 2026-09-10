@@ -247,24 +247,31 @@ async fn native_tailcat_confirms_machine_identity_and_performs_read_only_rpc() {
         .split_whitespace()
         .map(|value| value.parse().unwrap())
         .collect();
-    assert_eq!(counts.len(), 6);
-    assert!(counts[0] >= 8);
-    assert_eq!(counts[0], counts[1]);
+    let [
+        successful,
+        invalid,
+        peak_tcp,
+        peak_peers,
+        settled_tcp,
+        settled_peers,
+    ]: [usize; 6] = counts.try_into().expect("fixture must report six counts");
+    assert!(successful >= 8);
+    assert_eq!(successful, invalid);
     eprintln!(
         "Tailcat churn: successful={} invalid={} sampled_peak_tcp={} sampled_peak_peers={} settled_tcp={} settled_peers={}",
-        counts[0], counts[1], counts[2], counts[3], counts[4], counts[5]
+        successful, invalid, peak_tcp, peak_peers, settled_tcp, settled_peers
     );
     assert!(
-        counts[2] <= 12,
+        peak_tcp <= 12,
         "transient TCP overlap exceeded one dial plus cleanup"
     );
-    assert!(counts[3] <= 16, "peer admission exceeded limit");
+    assert!(peak_peers <= 16, "peer admission exceeded limit");
     assert_eq!(
-        counts[4], 9,
+        settled_tcp, 9,
         "TCP churn connections were retained after DrainTCP"
     );
     assert_eq!(
-        counts[5], 9,
+        settled_peers, 9,
         "peer churn connections were retained after DrainTCP"
     );
     wait_for_endpoint_state(input, &mut output, 9).await;
