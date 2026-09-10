@@ -28,7 +28,7 @@ async function main() {
   await assert.rejects(sdk.connect({ connections: [{ tailcat: { capability } }] }),
     (error) => error instanceof sdk.RpcError && error.code === "invalid_argument" && !error.message.includes(capability));
   await assert.rejects(sdk.connect({ connections: [] }), (error) => error.code === "invalid_argument");
-  const receipt = { node: process.version, platform: process.platform, arch: process.arch };
+  const receipt = { node: process.version, platform: process.platform, arch: process.arch, externalDerpOverride: process.env.TS_DEBUG_ALWAYS_USE_DERP !== undefined };
   const started = performance.now();
   const controller = new AbortController();
   stage = "cold connect";
