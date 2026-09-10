@@ -30,9 +30,9 @@ require_archives() {
     [ "$actual" = "$expected" ] || fail "archive set differs from the approved names"
     for archive in "$@"; do
         case $archive in
-            ployzd_*) check_archive "$archive" $'ployz-uninstall\nployzd' ;;
+            ployzd_*) check_archive "$archive" $'ployz-tailcat\nployz-uninstall\nployzd' ;;
             ployz-relay_*) check_archive "$archive" ployz-relay ;;
-            *) check_archive "$archive" ployz ;;
+            *) check_archive "$archive" $'ployz\nployz-tailcat' ;;
         esac
     done
 }
@@ -59,7 +59,7 @@ check_checksums_and_formula() {
         checksum=$(sha256 "$DIST/$archive")
         grep -Fq "$checksum" "$formula" || fail "Homebrew formula has no checksum for $archive"
     done < <(cli_archives)
-    grep -Fq 'bin.install "ployz"' "$formula" || fail "Homebrew formula does not install ployz"
+    grep -Fq 'bin.install "ployz", "ployz-tailcat"' "$formula" || fail "Homebrew formula does not install ployz"
 }
 
 run_archive() {
@@ -71,6 +71,10 @@ run_archive() {
         output=$($runner "$directory/installed" version)
     else
         output=$("$directory/installed" version)
+    fi
+    if [ "$binary" != ployz-relay ]; then
+        helper_output=$($runner "$directory/ployz-tailcat" version)
+        [ "$helper_output" = "$EXPECTED_VERSION" ] || fail "$archive helper returned version '$helper_output'"
     fi
     rm -rf "$directory"
     [ "$output" = "$EXPECTED_VERSION" ] || fail "$archive returned version '$output'"
@@ -108,6 +112,9 @@ case "${1:-}" in
                 ployz-relay_*) binary=ployz-relay ;;
             esac
             file "$directory/$binary" | grep -Fq 'statically linked' || fail "$archive is dynamically linked"
+            if [ "$binary" != ployz-relay ]; then
+                file "$directory/ployz-tailcat" | grep -Fq 'statically linked' || fail "$archive helper is dynamically linked"
+            fi
             rm -rf "$directory"
         done
         ;;
