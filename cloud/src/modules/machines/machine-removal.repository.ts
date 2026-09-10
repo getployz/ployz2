@@ -10,7 +10,7 @@ import {
 } from "#/modules/machines/machine-removal";
 import { Database, sqlErrorFrom } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
-import { machineRemoveAttempt as schemaMachineRemoveAttempt } from "#/modules/machines/tables";
+import { machineRemoveAttempt as schemaMachineRemoveAttempt, organizationMachine } from "#/modules/machines/tables";
 
 type Attempt = typeof schemaMachineRemoveAttempt.$inferSelect;
 
@@ -243,7 +243,15 @@ export const completeMachineRemoveAttempt = Effect.fn(
           ),
         )
         .returning();
-      if (updated) return toContext(updated);
+      if (updated) {
+        if (updated.state === "succeeded") {
+          yield* drizzle.delete(organizationMachine).where(and(
+            eq(organizationMachine.organizationId, updated.organizationId),
+            eq(organizationMachine.machineId, updated.machineId),
+          ));
+        }
+        return toContext(updated);
+      }
 
       const [existing] = yield* drizzle
         .select()

@@ -763,7 +763,8 @@ describe("organization enrollment coordinator", () => {
 
     await expect(fake.coordinator.tryRevokePairing(organizationId)).rejects.toMatchObject({ _tag: "Conflict" });
     expect((await harness.pool.query("select removal_started_at from organization_pairing")).rows)
-      .toEqual([{ removal_started_at: null }]);
+      .toEqual([{ removal_started_at: expect.any(Date) }]);
+    expect(await fake.coordinator.connections()).toEqual({ kind: "missing" });
   });
 
   it("requires a valid Machine owner for pending and ready claims", async () => {
