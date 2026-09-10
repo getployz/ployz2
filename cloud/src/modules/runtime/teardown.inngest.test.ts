@@ -1,3 +1,4 @@
+import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { InngestTestEngine } from "@inngest/test";
 import { Inngest } from "inngest";
 import type {
@@ -30,6 +31,8 @@ const activity = {
   complete: vi.fn(),
   failOwned: vi.fn(),
 };
+
+useServiceFreeEffectRunner();
 
 vi.spyOn(activities, "prepareTeardownAttemptActivity").mockImplementation(
   (input) => Effect.promise(() => activity.prepare(input)),
