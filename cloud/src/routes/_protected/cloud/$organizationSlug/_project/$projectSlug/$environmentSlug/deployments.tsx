@@ -1,3 +1,4 @@
+import { preloadCollection } from "#/collections/query-collection";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { Await, createFileRoute } from "@tanstack/react-router";
 import { RocketIcon } from "lucide-react";
@@ -28,8 +29,8 @@ export const Route = createFileRoute(
     const organizationSlug = params.organizationSlug;
     const baseUrl = context.tableSyncBaseUrl;
     const deploymentsReady = Promise.all([
-      getProjectsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id }).preload(),
-      getEnvironmentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id }).preload(),
+      preloadCollection(getProjectsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
+      preloadCollection(getEnvironmentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       getEnvironmentDeploymentsCollection(organizationSlug, baseUrl).preload(),
       getEnvironmentNodeConfigSnapshotsCollection(
         organizationSlug,
