@@ -334,9 +334,17 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let requests = requests.clone();
             async move {
-                let RpcRequestBody::CreateContainer(request) =
-                    rpc.into_inner().decode_request().unwrap().body
-                else {
+                let body = rpc.into_inner().decode_request().unwrap().body;
+                if matches!(body, RpcRequestBody::ListContainers(_)) {
+                    return Ok(Response::new(
+                        RpcResponse::from(ployz_core::ContainerList {
+                            containers: Vec::new(),
+                        })
+                        .encode()
+                        .unwrap(),
+                    ));
+                }
+                let RpcRequestBody::CreateContainer(request) = body else {
                     panic!("only create is expected");
                 };
                 requests.lock().unwrap().push(request);
@@ -484,4 +492,219 @@ async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_
     ));
     assert_eq!(*client.replacing.lock().unwrap(), [Some(old)]);
     client.assert_done();
+}
+
+#[tokio::test]
+async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoints() {
+    use crate::deploy::{DeployIntent, DeploySnapshot, IngressContext, PlanOptions, plan_deploy};
+    use ployz_core::{
+        BridgeEndpointCapacity, ContainerChanged, ContainerDetails, ContainerList, Machine,
+        MachineName, MachineObservation, MembershipObservation, OpaquePayload,
+        RequestedServiceSpec, RpcRequestBody, RpcResponse, ServiceMode, WireGuardPublicKey,
+    };
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+    use tonic::{Request, Response};
+
+    let target = Machine {
+        id: machine('1'),
+        name: MachineName::parse("one").unwrap(),
+        subnet: "10.210.1.0/24".parse().unwrap(),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
+        advertised_endpoints: Vec::new(),
+        runtime: Default::default(),
+    };
+    let mut desired = spec(None, None, None);
+    desired.mode = ServiceMode::Global;
+    desired.update.order = UpdateOrder::StopFirst;
+    desired.container.pull_policy = ployz_core::PullPolicy::Always;
+    let requested: RequestedServiceSpec =
+        serde_json::from_value(serde_json::to_value(&desired).unwrap()).unwrap();
+    let old_id = container('a');
+    let new_id = container('b');
+    let mut old = observation(
+        &target.id,
+        &old_id,
+        ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        },
+    );
+    old.try_update(|parts| {
+        parts.resolved_spec = desired.clone();
+        parts.resolved_spec.container.image = "alpine:old".into();
+    })
+    .unwrap();
+    let state = Arc::new(Mutex::new(vec![old]));
+    let remote = state.clone();
+    let keys = Arc::new(Mutex::new(Vec::new()));
+    let captured = keys.clone();
+    let first_start = Arc::new(AtomicBool::new(true));
+    let (client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+            let remote = remote.clone();
+            let captured = captured.clone();
+            let first_start = first_start.clone();
+            async move {
+                let mut remote = remote.lock().unwrap();
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "fixture exercises only replacement failure and retry primitives"
+                )]
+                let response = match rpc.into_inner().decode_request().unwrap().body {
+                    RpcRequestBody::InspectContainer(inspect) => {
+                        RpcResponse::from(ContainerDetails {
+                            container: remote
+                                .iter()
+                                .find(|c| c.container_id == inspect.container_id)
+                                .unwrap()
+                                .clone(),
+                            environment: None,
+                        })
+                    }
+                    RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
+                        containers: remote.clone(),
+                    }),
+                    RpcRequestBody::StopContainer(stop) => {
+                        remote
+                            .iter_mut()
+                            .find(|c| c.container_id == stop.container_id)
+                            .unwrap()
+                            .try_update(|parts| {
+                                parts.runtime = ContainerRuntimeObservation::Exited { code: 0 }
+                            })
+                            .unwrap();
+                        RpcResponse::from(ContainerChanged {
+                            container_id: stop.container_id,
+                        })
+                    }
+                    RpcRequestBody::CreateContainer(create) => {
+                        let key = create.creation_key.unwrap();
+                        captured.lock().unwrap().push(key.clone());
+                        if let Some(existing) = remote
+                            .iter()
+                            .find(|c| c.labels.get("ployz.creation.key") == Some(&key))
+                        {
+                            assert_eq!(existing.resolved_spec, create.resolved_spec);
+                            RpcResponse::from(ContainerCreated {
+                                container_id: existing.container_id,
+                                display_name: "retained".into(),
+                            })
+                        } else {
+                            let mut candidate = observation(
+                                &machine('1'),
+                                &new_id,
+                                ContainerRuntimeObservation::Created,
+                            );
+                            candidate
+                                .try_update(|parts| {
+                                    parts.resolved_spec = create.resolved_spec;
+                                    parts.created_at_unix_nanos = 1;
+                                    parts.labels.insert("ployz.creation.key".into(), key);
+                                })
+                                .unwrap();
+                            remote.push(candidate);
+                            RpcResponse::from(ContainerCreated {
+                                container_id: new_id,
+                                display_name: "candidate".into(),
+                            })
+                        }
+                    }
+                    RpcRequestBody::StartContainer(start) => {
+                        if first_start.swap(false, Ordering::SeqCst) {
+                            RpcResponse::from(error("start failed"))
+                        } else {
+                            remote
+                                .iter_mut()
+                                .find(|c| c.container_id == start.container_id)
+                                .unwrap()
+                                .try_update(|parts| {
+                                    parts.runtime = ContainerRuntimeObservation::Running {
+                                        health: HealthObservation::Healthy,
+                                    }
+                                })
+                                .unwrap();
+                            RpcResponse::from(ContainerChanged {
+                                container_id: start.container_id,
+                            })
+                        }
+                    }
+                    other => panic!("unexpected mutation: {other:?}"),
+                };
+                Ok(Response::new(response.encode().unwrap()))
+            }
+        })
+        .await;
+    let snapshot = |used| DeploySnapshot {
+        machines: vec![MachineObservation::new(
+            target.clone(),
+            MembershipObservation::Up,
+        )],
+        containers: state.lock().unwrap().clone(),
+        capacity: Some(BTreeMap::from([(
+            target.id,
+            BridgeEndpointCapacity::new(2, used),
+        )])),
+        ..Default::default()
+    };
+    let intent = DeployIntent::apply_one(
+        test_project(),
+        requested,
+        PlanOptions {
+            skip_health_monitor: true,
+            ..Default::default()
+        },
+    );
+    let first = plan_deploy(&intent, &snapshot(1), IngressContext::default()).unwrap();
+    assert!(matches!(
+        execute_operation_sequence(&first, &client, &CancellationToken::new(), None).await,
+        DeployOutcome::Failed { .. }
+    ));
+    assert_eq!(
+        state.lock().unwrap().len(),
+        2,
+        "failed start retains v2 beside stopped v1"
+    );
+    let retry = plan_deploy(&intent, &snapshot(2), IngressContext::default())
+        .expect("retained candidate needs no new endpoint");
+    let DeployOperation::RunContainer {
+        machine_id, spec, ..
+    } = retry.operations().first().unwrap()
+    else {
+        panic!("inactive replacement replans as a run");
+    };
+    let replay = MachineOperations::create_container(
+        &client,
+        machine_id,
+        ContainerKind::ServiceContainer,
+        &test_project(),
+        spec,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(replay.container_id, new_id);
+    MachineOperations::start_container(&client, machine_id, &replay.container_id)
+        .await
+        .unwrap();
+    let captured = keys.lock().unwrap();
+    let [first_key, retry_key] = captured.as_slice() else {
+        panic!("expected create and replay");
+    };
+    assert_eq!(first_key, retry_key);
+    assert_eq!(
+        state.lock().unwrap().len(),
+        2,
+        "replay must not allocate a second v2"
+    );
+    server.abort();
 }

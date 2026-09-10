@@ -189,25 +189,53 @@ impl MachineOperations for Client {
         spec: &ResolvedServiceSpec,
         replacing: Option<ContainerId>,
     ) -> Result<ContainerCreated, RpcError> {
-        crate::image::ensure_cluster_image(
-            self,
-            machine_id,
-            &spec.container.image,
-            spec.container.pull_policy,
-        )
-        .await?;
+        // Replanning a retained replacement as Run must keep its persisted creation identity.
+        let replay_key = if kind == ContainerKind::ServiceContainer
+            && spec.mode == ployz_core::ServiceMode::Global
+            && replacing.is_none()
+        {
+            self.clone()
+                .read::<op::ListContainers>(
+                    ployz_core::ListContainersRequest {},
+                    &MachineTarget::from(machine_id),
+                )
+                .await?
+                .containers
+                .into_iter()
+                .find_map(|container| {
+                    (container.machine_id == *machine_id
+                        && container.kind == kind
+                        && container.project_name == *project_name
+                        && container.resolved_spec == *spec)
+                        .then(|| container.labels.get("ployz.creation.key").cloned())
+                        .flatten()
+                })
+        } else {
+            None
+        };
+        if replay_key.is_none() {
+            crate::image::ensure_cluster_image(
+                self,
+                machine_id,
+                &spec.container.image,
+                spec.container.pull_policy,
+            )
+            .await?;
+        }
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
-                creation_key: (kind == ContainerKind::ServiceContainer
-                    && spec.mode == ployz_core::ServiceMode::Global)
-                    .then(|| {
-                        let key = crate::cluster::global_creation_key(spec);
-                        // Explicit replacement can overlap even an identical spec.
-                        match replacing {
-                            Some(old) => format!("{key}:replace:{old}"),
-                            None => key,
-                        }
-                    }),
+                creation_key: replay_key.or_else(|| {
+                    (kind == ContainerKind::ServiceContainer
+                        && spec.mode == ployz_core::ServiceMode::Global)
+                        .then(|| {
+                            let key = crate::cluster::global_creation_key(spec);
+                            // Explicit replacement can overlap even an identical spec.
+                            match replacing {
+                                Some(old) => format!("{key}:replace:{old}"),
+                                None => key,
+                            }
+                        })
+                }),
                 kind,
                 project_name: project_name.clone(),
                 resolved_spec: spec.clone(),
