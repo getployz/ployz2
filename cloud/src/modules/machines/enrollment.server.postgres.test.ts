@@ -78,7 +78,7 @@ function fakeRelay(database: GithubPostgresTestHarness["database"]) {
   let registerCalls = 0;
   const revokedPairings: string[] = [];
   const held: unknown[] = [];
-  const fail = { list: false, revoke: false, publish: false };
+  const fail = { list: false, revoke: false, publish: false, conflict: false };
   const published: EnrollmentAssignment[] = [];
   const inspectHolding: EnrollmentRelayService["inspectHolding"] = () =>
     Effect.gen(function* () {
@@ -109,6 +109,7 @@ function fakeRelay(database: GithubPostgresTestHarness["database"]) {
         publishEnrollment: async (_url, _bearer, _pairing, _entry, assignment) => {
           registerCalls += 1;
           published.push(assignment);
+          if (fail.conflict) throw Object.assign(new Error("Assignment conflicts"), { code: "conflict" });
           if (fail.publish) throw new Error("Lost publication response");
           return { assigned_machine: assignment.machine, visible_peers: [], target_versions: {} };
         },
@@ -441,6 +442,27 @@ describe("organization enrollment coordinator", () => {
     const changed = await fresh.coordinator.enroll({ token: (tokens[0] ?? ""), identity: { ...identity(1), requestedStorage: "zfs" } });
     expect(changed).toMatchObject({ failure: { _tag: "Conflict" } });
     expect(fresh.published).toHaveLength(1);
+  });
+
+  it("returns a permanent publication conflict without trying a stale Entry or freeing the assignment", async () => {
+    const fake = fakeRelay(harness.database);
+    const founder = await fake.coordinator.enroll({ token: tokens[0] ?? "", identity: identity(0) });
+    if (Result.isFailure(founder) || founder.success.kind !== "initialize") throw new Error("Founder missing");
+    fake.held.push({ machineId: heldMachineId });
+    await fake.coordinator.completeFounding({ token: tokens[0] ?? "", machineId: heldMachineId, pairingCredential: founder.success.pairing.secret });
+    fake.held.push({ machineId: identity(0).machineId });
+    fake.fail.conflict = true;
+
+    const outcome = await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
+
+    expect(outcome).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(fake.registerCalls()).toBe(1);
+    const saved = await harness.pool.query("select assignments from enrollment_allocation");
+    expect(saved.rows[0].assignments).toEqual(fake.published);
+    const retry = await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
+    expect(retry).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(fake.registerCalls()).toBe(2);
+    expect(fake.published[1]).toEqual(fake.published[0]);
   });
 
   it("serializes identical requests and keeps organization and Cluster histories independent", async () => {

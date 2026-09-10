@@ -301,10 +301,29 @@ export const registerThroughHeldList = Effect.fn(
   if (Option.isNone(snapshot)) return { kind: "not_yet" as const };
   const assignment = yield* reserveEnrollmentAssignment({ ...input, snapshot: snapshot.value });
   // The transaction has committed before any publication or joining response.
-  return yield* Effect.firstSuccessOf(input.held.map((machineId) =>
-    ployz.publishEnrollment(input.relayUrl, input.bearer, input.pairing, machineId, assignment)
-      .pipe(Effect.map((registration) => ({ kind: "registered" as const, registration }))),
-  )).pipe(Effect.catch(() => Effect.succeed({ kind: "not_yet" as const })));
+  for (const machineId of input.held) {
+    const registration = yield* ployz.publishEnrollment(
+      input.relayUrl, input.bearer, input.pairing, machineId, assignment,
+    ).pipe(
+      Effect.map(Option.some),
+      Effect.catch((error): Effect.Effect<Option.Option<never>, Conflict | PloyzProviderError> => {
+        const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))(error.cause);
+        if (Option.isSome(rpc)) {
+          if (rpc.value.code === "conflict") {
+            return Effect.fail(new Conflict({
+              message: "The saved enrollment assignment conflicts with the Entry Machine's current observation.",
+            }));
+          }
+          if (rpc.value.code !== "unavailable") return Effect.fail(error);
+        }
+        return Effect.succeed(Option.none());
+      }),
+    );
+    if (Option.isSome(registration)) {
+      return { kind: "registered" as const, registration: registration.value };
+    }
+  }
+  return { kind: "not_yet" as const };
 });
 
 type EnrollmentRelayInput = {
