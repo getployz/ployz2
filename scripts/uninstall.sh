@@ -81,7 +81,7 @@ main() {
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service"
     systemctl daemon-reload
-    rm -f "$INSTALL_BIN_DIR/ployzd" "$INSTALL_BIN_DIR/ployz-tailcat"
+    rm -f "$INSTALL_BIN_DIR/ployzd" "$INSTALL_BIN_DIR/ployzd-tailcat"
 
     if command -v ip >/dev/null 2>&1 && ip link show ployz >/dev/null 2>&1; then
         ip link delete ployz

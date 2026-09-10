@@ -161,7 +161,7 @@ pub(super) async fn install_binaries(
     progress: &mut impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
 ) -> Result<bool, Error> {
     let installed = installed_release(&paths.bin_dir.join("ployzd")).await?;
-    let helper = installed_release(&paths.bin_dir.join("ployz-tailcat"))
+    let helper = installed_release(&paths.bin_dir.join("ployzd-tailcat"))
         .await
         .ok()
         .flatten();
@@ -423,7 +423,7 @@ fn activate(
         stage: "persist daemon activation",
         source,
     })?;
-    let installed_helper = paths.bin_dir.join("ployz-tailcat");
+    let installed_helper = paths.bin_dir.join("ployzd-tailcat");
     fs::rename(helper, &installed_helper).map_err(|source| Error::Io {
         stage: "activate Tailcat helper",
         source,

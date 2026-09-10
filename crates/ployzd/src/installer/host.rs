@@ -121,6 +121,41 @@ pub(super) fn create_user_and_directories(
     Ok(())
 }
 
+pub(super) fn create_tailcat_state_directory(paths: &InstallPaths) -> Result<(), Error> {
+    // Called only after the daemon has claimed its data directory.
+    let directory = paths.data_dir.join("tailcat");
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if !metadata.file_type().is_dir() => {
+            return Err(Error::Verification(
+                "Tailcat state directory is not a directory".into(),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(Error::Io {
+                stage: "inspect Tailcat state directory",
+                source,
+            });
+        }
+    }
+    run_host(
+        "create private Tailcat state directory",
+        "install",
+        [
+            "-d",
+            "-m",
+            "0700",
+            "-o",
+            PLOYZ_USER,
+            "-g",
+            PLOYZ_USER,
+            &directory.to_string_lossy(),
+        ],
+    )?;
+    Ok(())
+}
+
 pub(super) fn verify_software_prerequisites(paths: &InstallPaths) -> Result<(), Error> {
     if !command_exists("dockerd") {
         return Err(Error::Command {
@@ -186,7 +221,7 @@ pub(super) fn install_systemd(paths: &InstallPaths, install_only: bool) -> Resul
     write_file_atomically(
         &paths.systemd_dir.join("ployz-tailcat.service"),
         &format!(
-            "[Unit]\nDescription=Ployz Tailcat management endpoint\nConditionPathExists={}/machine.json\nAfter=network-online.target ployz.service\nWants=network-online.target\n\n[Service]\nType=notify\nNotifyAccess=main\nTimeoutStartSec=30\nUser=ployz\nGroup=ployz\nExecStart={bin}/ployz-tailcat serve --state {}/tailcat/state.json\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=15\nUMask=0077\nNoNewPrivileges=true\nCapabilityBoundingSet=\nProtectSystem=strict\nReadWritePaths={}\nProtectHome=true\nProtectControlGroups=true\nProtectKernelTunables=true\nPrivateTmp=true\nPrivateDevices=true\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\nRestrictNamespaces=true\n\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Ployz Tailcat management endpoint\nConditionPathExists={}/machine.json\nAfter=network-online.target ployz.service\nWants=network-online.target\n\n[Service]\nType=notify\nNotifyAccess=main\nTimeoutStartSec=30\nUser=ployz\nGroup=ployz\nExecStart={bin}/ployzd-tailcat serve --state {}/tailcat/state.json\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=15\nUMask=0077\nNoNewPrivileges=true\nCapabilityBoundingSet=\nProtectSystem=strict\nReadWritePaths={}/tailcat\nProtectHome=true\nProtectControlGroups=true\nProtectKernelTunables=true\nPrivateTmp=true\nPrivateDevices=true\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\nRestrictNamespaces=true\n\n[Install]\nWantedBy=multi-user.target\n",
             paths.data_dir.display(),
             paths.data_dir.display(),
             paths.data_dir.display()
@@ -352,12 +387,12 @@ pub(super) async fn verify_running_tailcat(
         source,
     })?;
     let installed =
-        fs::metadata(paths.bin_dir.join("ployz-tailcat")).map_err(|source| Error::Io {
+        fs::metadata(paths.bin_dir.join("ployzd-tailcat")).map_err(|source| Error::Io {
             stage: "inspect installed Tailcat executable",
             source,
         })?;
     if (running.dev(), running.ino()) != (installed.dev(), installed.ino())
-        || installed_release(&paths.bin_dir.join("ployz-tailcat"))
+        || installed_release(&paths.bin_dir.join("ployzd-tailcat"))
             .await?
             .as_ref()
             != Some(target)
@@ -413,6 +448,18 @@ fn require_running_version(observed: &str, target: &MachineVersion) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tailcat_state_directory_does_not_follow_a_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = InstallPaths::at(root.path());
+        fs::create_dir_all(&paths.data_dir).unwrap();
+        std::os::unix::fs::symlink(root.path(), paths.data_dir.join("tailcat")).unwrap();
+        assert!(matches!(
+            create_tailcat_state_directory(&paths),
+            Err(Error::Verification(_))
+        ));
+    }
 
     #[test]
     fn running_machine_api_version_must_match_the_target() {
