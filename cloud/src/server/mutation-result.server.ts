@@ -18,10 +18,7 @@ export const withMutationResult = Effect.fn("Database.withMutationResult")(
     const database = yield* Database;
     const transact = () =>
       database.transaction(
-        Effect.gen(function* () {
-          const data = yield* program;
-          return { data };
-        }),
+        Effect.map(program, (data) => ({ data })),
         options?.isolationLevel === undefined
           ? undefined
           : { isolationLevel: options.isolationLevel },
