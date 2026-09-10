@@ -1,7 +1,7 @@
 //! The shared client publishes saved identity before Join and retries network work.
 use super::*;
 use ployz::enrollment::{join_enrollment, observe_enrollment};
-use ployz_core::{AdvertisedEndpoint, RegisterRequest, WireGuardPublicKey, allocate_enrollment};
+use ployz_core::{AdvertisedEndpoint, RegisterRequest, WireGuardPublicKey};
 
 #[tokio::test]
 async fn saved_assignment_is_published_before_join_and_retried_after_lost_response() {
@@ -32,22 +32,25 @@ async fn saved_assignment_is_published_before_join_and_retried_after_lost_respon
             ..Default::default()
         },
     };
-    let assignment = allocate_enrollment(&request, &snapshot, &[]).unwrap();
-    // The caller's assignment survives the interrupted network attempt.
-    let dir = std::env::temp_dir().join(format!("ployz-enrollment-{}", MachineId::random()));
-    std::fs::create_dir(&dir).unwrap();
-    std::fs::write(
-        dir.join("assignment.json"),
-        serde_json::to_vec(&assignment).unwrap(),
-    )
-    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let assignment =
+        ployz::enrollment::local::save_assignment(dir.path(), &request, &snapshot).unwrap();
+    // A process can acquire the stable lock before any network operation starts.
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.path().join("lock"))
+        .unwrap();
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+    drop(lock);
     assert!(
         join_enrollment(&mut entry, &mut joining, &assignment, None, None)
             .await
             .is_err()
     );
-    let reopened =
-        serde_json::from_slice(&std::fs::read(dir.join("assignment.json")).unwrap()).unwrap();
+    let fresh = observe_enrollment(&mut entry).await.unwrap();
+    let reopened = ployz::enrollment::local::save_assignment(dir.path(), &request, &fresh).unwrap();
+    assert_eq!(reopened, assignment);
     assert!(
         join_enrollment(&mut entry, &mut joining, &reopened, None, None)
             .await
@@ -83,5 +86,4 @@ async fn saved_assignment_is_published_before_join_and_retried_after_lost_respon
     );
     entry_server.abort();
     joining_server.abort();
-    std::fs::remove_dir_all(dir).unwrap();
 }
