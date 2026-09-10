@@ -1,4 +1,4 @@
-//! Relay-only Cloud session: connect, list_held, register, revoke_pairing,
+//! Native Cloud session: connect, list_held, register, revoke_pairing,
 //! about, runtime.watch, preview, run, preview_project_removal, remove_volumes,
 //! Data Loss for Machine, Project, and Cluster destroy, remove_machine,
 //! destroy_project, destroy_cluster, and close.
@@ -13,9 +13,11 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use crate::connect::{
-    Client, ConnectError, DialCredential, HeldRegister, PairingCredential, TransportError,
-    connect_relay, list_held as list_held_relay, revoke_cloud_pairing,
+    Client, ConnectError, Connector, DialCredential, HeldRegister, PairingCredential,
+    TransportError, connect_relay, connect_selected_with, list_held as list_held_relay,
+    revoke_cloud_pairing,
 };
+use crate::context::{Connection, ConnectionSource, SelectedConnections};
 use crate::deploy::{DeployIntent, DeployPlan, DeployPreview, VolumeFate};
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployOutcome,
@@ -50,7 +52,7 @@ struct SessionInner {
     cancel: CancellationToken,
 }
 
-/// Connected Cloud session over one Relay Attach.
+/// Connected Cloud session over one confirmed management connection.
 #[derive(Clone)]
 pub struct Session {
     inner: Arc<SessionInner>,
@@ -61,8 +63,8 @@ pub struct Session {
 /// Drop or [`cancel`](Self::cancel) ends this stream only. The Client stays usable.
 pub struct Watch {
     cancel: CancellationToken,
-    client: Client,
-    stream: Mutex<Option<tonic::Streaming<OpaquePayload>>>,
+    session: std::sync::Weak<SessionInner>,
+    stream: Arc<Mutex<Option<tonic::Streaming<OpaquePayload>>>>,
 }
 
 /// A planned Deploy that has not executed. [`Self::confirm`] runs these operations.
@@ -112,6 +114,33 @@ pub async fn connect(
     })
 }
 
+/// Select the first confirmed connection before any operation is dispatched.
+///
+/// # Errors
+/// Returns connection/identity failures; an empty connection list is invalid.
+pub async fn connect_connections(
+    connections: Vec<Connection>,
+    connector: Arc<dyn Connector>,
+) -> Result<Session, RpcError> {
+    if connections.is_empty() {
+        return Err(invalid_argument("connections must not be empty".into()));
+    }
+    let client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections,
+        },
+        connector,
+    )
+    .await?;
+    Ok(Session {
+        inner: Arc::new(SessionInner {
+            client: Mutex::new(Some(client)),
+            cancel: CancellationToken::new(),
+        }),
+    })
+}
+
 /// Dial a held Machine, send Machine RPC Register, then close.
 ///
 /// Same Dial tuple as [`connect`]. Callers never see the session.
@@ -129,14 +158,7 @@ pub async fn register(
     identity: RegisterRequest,
 ) -> Result<Registered, RpcError> {
     let session = connect(relay_url, bearer, pairing, machine_id).await?;
-    let result = async {
-        let mut client = session.client().await?;
-        client
-            .call::<op::Register>(identity, None)
-            .await
-            .map_err(RpcError::from)
-    }
-    .await;
+    let result = session.register(identity).await;
     session.close().await;
     result
 }
@@ -200,6 +222,19 @@ impl Session {
             .cloned()
     }
 
+    /// Register on the already selected Entry Machine, without replay on lost replies.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport or Register errors, including uncertain outcomes.
+    pub async fn register(&self, identity: RegisterRequest) -> Result<Registered, RpcError> {
+        let client = self.client().await?;
+        tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => Err(closed()),
+            result = client.call_unretried::<op::Register>(identity, None) => result.map_err(RpcError::from),
+        }
+    }
+
     /// Describe the entry Machine contract.
     ///
     /// # Errors
@@ -207,11 +242,12 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed or
     /// `DescribeContract` fails.
     pub async fn about(&self) -> Result<ContractDescription, RpcError> {
-        let mut client = self.client().await?;
-        client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-            .await
-            .map_err(RpcError::from)
+        let client = self.client().await?;
+        tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => Err(closed()),
+            result = client.call_unretried::<op::DescribeContract>(DescribeContractRequest {}, None) => result.map_err(RpcError::from),
+        }
     }
 
     /// Open a Runtime Watch stream of complete frames.
@@ -224,11 +260,8 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, Watch is not
     /// advertised, or the stream cannot be opened.
     pub async fn watch(&self) -> Result<Watch, RpcError> {
-        let mut client = self.client().await?;
-        let description = client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-            .await
-            .map_err(RpcError::from)?;
+        let client = self.client().await?;
+        let description = self.about().await?;
         if !description.supports(RUNTIME_WATCH_CAPABILITY) {
             return Err(RpcError {
                 code: RpcErrorCode::Unsupported,
@@ -239,14 +272,23 @@ impl Session {
         let payload = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
             .encode()
             .map_err(ConnectError::from)?;
-        let stream = client
-            .runtime_watch_stream(payload)
-            .await
-            .map_err(ConnectError::Rpc)?;
+        let stream = tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => return Err(closed()),
+            stream = client.runtime_watch_stream(payload) => stream.map_err(ConnectError::Rpc)?,
+        };
+        let cancel = self.inner.cancel.child_token();
+        let stream = Arc::new(Mutex::new(Some(stream)));
+        let cleanup = stream.clone();
+        let cancelled = cancel.clone();
+        tokio::spawn(async move {
+            cancelled.cancelled().await;
+            cleanup.lock().await.take();
+        });
         Ok(Watch {
-            cancel: self.inner.cancel.child_token(),
-            client,
-            stream: Mutex::new(Some(stream)),
+            cancel,
+            session: Arc::downgrade(&self.inner),
+            stream,
         })
     }
 
@@ -576,6 +618,18 @@ impl RunningDeploy {
     }
 }
 
+impl Drop for SessionInner {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 impl Watch {
     /// Next complete frame, or `None` if this stream was cancelled.
     ///
@@ -616,12 +670,16 @@ impl Watch {
             }
             Some(Ok(Some(payload))) => match decode_runtime_watch_frame(&payload) {
                 Ok(mut frame) => {
+                    let Some(inner) = self.session.upgrade() else {
+                        return Ok(None);
+                    };
+                    let client = Session { inner }.client().await?;
                     tokio::select! {
                         () = self.cancel.cancelled() => {
                             *guard = None;
                             Ok(None)
                         }
-                        () = self.client.observe_machine_storage(&mut frame.machines) => {
+                        () = client.observe_machine_storage(&mut frame.machines) => {
                             Ok(Some(frame))
                         }
                     }

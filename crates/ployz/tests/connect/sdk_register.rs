@@ -250,3 +250,40 @@ fn unwrap_rpc<T>(result: Result<T, RpcError>) -> RpcError {
         Err(error) => error,
     }
 }
+
+// Rung 2: selected sessions cannot walk to a second Entry or replay a lost mutation reply.
+#[tokio::test]
+async fn ordered_connections_confirm_before_register_and_never_replay() {
+    use super::support::serve_discovery;
+    use ployz::{connect::SystemConnector, context::Connection};
+    use std::sync::{Arc, atomic::Ordering};
+    let description = advertised_description();
+    let mut first = DiscoveryService::new(description.clone());
+    first.lose_register_reply = true;
+    let first_calls = first.register_calls.clone();
+    let second = DiscoveryService::new(description.clone());
+    let second_calls = second.register_calls.clone();
+    let (first_addr, first_server) = serve_discovery(first).await;
+    let (second_addr, second_server) = serve_discovery(second).await;
+    let client = sdk::connect_connections(
+        vec![
+            Connection::tcp("127.0.0.1:0".parse().unwrap()),
+            Connection::tcp(first_addr),
+            Connection::tcp(second_addr),
+        ],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        client.about().await.unwrap().machine_id,
+        description.machine_id
+    );
+    assert!(client.register(joiner_identity()).await.is_err());
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+    client.close().await;
+    assert!(client.about().await.is_err());
+    first_server.abort();
+    second_server.abort();
+}

@@ -182,6 +182,8 @@ pub(super) struct DiscoveryService {
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) cloud_paired: Arc<AtomicBool>,
     register_error: Arc<Mutex<Option<RpcError>>>,
+    pub(super) register_calls: Arc<AtomicUsize>,
+    pub(super) lose_register_reply: bool,
 }
 
 impl DiscoveryService {
@@ -220,6 +222,8 @@ impl DiscoveryService {
             removed_machines: Arc::new(Mutex::new(Vec::new())),
             cloud_paired: Arc::new(AtomicBool::new(false)),
             register_error: Arc::new(Mutex::new(None)),
+            register_calls: Arc::new(AtomicUsize::new(0)),
+            lose_register_reply: false,
         }
     }
 
@@ -506,6 +510,10 @@ impl MachineRpc for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        self.register_calls.fetch_add(1, Ordering::SeqCst);
+        if self.lose_register_reply {
+            return Err(Status::unavailable("reply lost after dispatch"));
+        }
         let request = request
             .into_inner()
             .decode_request()

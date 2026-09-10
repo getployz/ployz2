@@ -38,6 +38,76 @@ pub struct ConnectOptions {
     pub machine_id: String,
 }
 
+/// One cancellable connection attempt. Owns no shared helper manager.
+#[napi]
+pub struct PendingConnection {
+    connections: std::sync::Mutex<Option<Vec<ployz::context::Connection>>>,
+    helper: String,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+/// Parse the shared descriptor shape without reflecting capabilities in errors.
+///
+/// # Errors
+/// Returns InvalidArgument for malformed or empty connections.
+#[napi]
+pub fn start_connections(
+    connections: serde_json::Value,
+    helper: String,
+) -> Result<PendingConnection> {
+    let connections: Vec<ployz::context::Connection> = serde_json::from_value(connections)
+        .map_err(|_| {
+            rpc_to_napi(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "invalid management connections".into(),
+                details: serde_json::Value::Null,
+            })
+        })?;
+    if connections.is_empty() {
+        return Err(rpc_to_napi(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: "connections must not be empty".into(),
+            details: serde_json::Value::Null,
+        }));
+    }
+    Ok(PendingConnection {
+        connections: std::sync::Mutex::new(Some(connections)),
+        helper,
+        cancel: tokio_util::sync::CancellationToken::new(),
+    })
+}
+
+#[napi]
+impl PendingConnection {
+    /// Cancel this attempt; dropping the dial future reaps its helper.
+    #[napi]
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+
+    /// Await one confirmed session.
+    ///
+    /// # Errors
+    /// Returns cancellation, connection failure, or an already-consumed attempt.
+    #[napi]
+    pub async fn wait(&self) -> Result<Client> {
+        let connections = self
+            .connections
+            .lock()
+            .map_err(|_| Error::from_reason("connection lock failed"))?
+            .take()
+            .ok_or_else(|| Error::from_reason("connection already awaited"))?;
+        let connector = std::sync::Arc::new(
+            ployz::connect::SystemConnector::default().with_tailcat_program(&self.helper),
+        );
+        tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => Err(rpc_to_napi(RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null })),
+            result = sdk::connect_connections(connections, connector) => Ok(Client { inner: result.map_err(rpc_to_napi)? }),
+        }
+    }
+}
+
 /// One held Register from [`list_held`].
 #[napi(object)]
 pub struct HeldRegister {
@@ -71,6 +141,16 @@ pub struct RunningDeployHandle {
 
 #[napi]
 impl Client {
+    /// Send Register on this confirmed session without mutation replay.
+    ///
+    /// # Errors
+    /// Returns invalid input, transport failures or Register domain errors.
+    #[napi]
+    pub async fn register(&self, identity: serde_json::Value) -> Result<serde_json::Value> {
+        let identity = serde_json::from_value(identity).map_err(invalid_json)?;
+        to_json(&self.inner.register(identity).await.map_err(rpc_to_napi)?)
+    }
+
     /// Describe the entry Machine contract.
     ///
     /// # Errors

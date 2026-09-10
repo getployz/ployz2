@@ -134,8 +134,8 @@ function joinerIdentity() {
     "invalid_argument",
   );
 
-  if (typeof sdk.Client.prototype.register !== "undefined") {
-    throw new Error("Client.register must not exist");
+  if (typeof sdk.Client.prototype.register !== "function") {
+    throw new Error("Client.register must exist");
   }
   if (Object.hasOwn(sdk, "connectHeld")) {
     throw new Error("connectHeld must not be exported");
@@ -145,9 +145,8 @@ function joinerIdentity() {
   }
 
   const client = await sdk.connect({ relayUrl, bearer, pairing, machineId });
-  if (typeof client.register !== "undefined") {
-    throw new Error("operator Client must not grow register");
-  }
+  const sessionRegistered = await client.register(joinerIdentity());
+  if (sessionRegistered.assigned_machine.name !== "joiner") throw new Error("session Register failed");
   await client.close();
 
   console.log("ok");
