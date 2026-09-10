@@ -154,9 +154,10 @@ func TestCorruptStateIsNotReplaced(t *testing.T) {
 // Run production startup in a separate process: Setenv must precede goroutines.
 func TestRelayOnlyStartup(t *testing.T) {
 	if os.Getenv("PLOYZ_TEST_STARTUP") == "1" {
+		relayOnly := envknob.RegisterBool("TS_DEBUG_ALWAYS_USE_DERP")
 		os.Args = []string{"ployz-tailcat", "--version"}
 		main()
-		if !envknob.Bool("TS_DEBUG_ALWAYS_USE_DERP") {
+		if !relayOnly() {
 			t.Fatal("management helper enabled direct UDP")
 		}
 		return
