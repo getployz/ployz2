@@ -7,7 +7,7 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     CloudEnrollToken, CloudPairing, DescribeContractRequest, InitializeRequest, InspectRequest,
     JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken,
-    MachineTokenRequest, SetCloudPairingRequest, StorageChoice, op,
+    MachineTokenRequest, SetCloudPairingRequest, StorageChoice, TailcatCapability, op,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
@@ -343,7 +343,7 @@ where
         }
     }
     // Setting the same pairing is idempotent.
-    ready.call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest { tailcat_removal: None, cloud_pairing: Some(pairing.clone()) }, None)
+    ready.call_repeatable::<op::SetCloudPairing>(SetCloudPairingRequest::Set { pairing: pairing.clone() }, None)
         .await.map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
     let tailcat = machine_capability(matches, ready.connection(), install).await?;
     cloud_enroll::publish(
@@ -367,14 +367,14 @@ async fn machine_capability<Install, InstallFuture>(
     matches: &ArgMatches,
     connection: &crate::context::Connection,
     install: &Install,
-) -> Result<String, Error>
+) -> Result<TailcatCapability, Error>
 where
     Install: Fn(StorageChoice) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     use std::process::Stdio;
     let mut command = match connection.transport() {
-        Transport::Tailcat(capability) => return Ok(capability.as_str().to_owned()),
+        Transport::Tailcat(capability) => return Ok(capability.clone()),
         Transport::Unix(_) => {
             install(StorageChoice::None).await?;
             let mut command = tokio::process::Command::new("ployzd-tailcat");
@@ -417,10 +417,9 @@ where
     }
     let capability = String::from_utf8(output.stdout)
         .map_err(|_| Error::usage("invalid Tailcat endpoint capability output"))?;
-    let capability = capability.trim();
-    crate::context::Connection::tailcat(capability)
-        .map_err(|_| Error::usage("invalid Tailcat endpoint capability output"))?;
-    Ok(capability.to_owned())
+    let capability = capability.strip_suffix('\n').unwrap_or(&capability);
+    TailcatCapability::parse(capability)
+        .map_err(|_| Error::usage("invalid Tailcat endpoint capability output"))
 }
 
 async fn provision_storage<Install, InstallFuture>(

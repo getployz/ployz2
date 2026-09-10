@@ -558,18 +558,6 @@ impl LocalMachine {
         Ok(())
     }
 
-    /// Persist or clear Cloud Pairing under local mutation admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns when mutation admission is busy, the local task fails, this Machine is not
-    /// participating, or the local record cannot be persisted.
-    pub async fn set_cloud_pairing(&self, pairing: Option<CloudPairing>) -> Result<(), Error> {
-        let local = self.clone();
-        self.finish_mutation(async move { local.set_cloud_pairing_admitted(pairing) })
-            .await
-    }
-
     /// Membership Observation of Machines visible from this participating Machine.
     ///
     /// # Errors

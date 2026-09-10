@@ -171,10 +171,7 @@ impl Session {
         self.until_closed(async {
             client
                 .call_unretried::<op::SetCloudPairing>(
-                    ployz_core::SetCloudPairingRequest {
-                        cloud_pairing: None,
-                        tailcat_removal: Some(removal),
-                    },
+                    ployz_core::SetCloudPairingRequest::Remove { removal },
                     None,
                 )
                 .await
