@@ -12,7 +12,7 @@ use std::{
 
 use ployz::{
     connect::{Connector, SystemConnector, connect_selected_with},
-    context::{Connection, ConnectionSource, SelectedConnections},
+    context::{Connection, ConnectionSource, SelectedConnections, SshDestination},
 };
 use ployz_core::{
     MachineRpcClient, MachineRpcServer, OpaquePayload, RuntimeWatchFrame, RuntimeWatchRequest,
@@ -110,18 +110,25 @@ async fn native_tailcat_confirms_machine_identity_and_performs_read_only_rpc() {
         stderr.contains("Tailcat"),
         "CLI must report the fixed Tailcat configuration error"
     );
-    let connector = Arc::new(SystemConnector::default().with_tailcat_program(&helper));
+    let connector =
+        Arc::new(SystemConnector::new("/ployz-missing-ssh-client").with_tailcat_program(&helper));
     let selected = |connection| SelectedConnections {
         source: ConnectionSource::Direct,
         connections: vec![connection],
     };
     let connection = Connection::tailcat(capability.clone()).unwrap();
     let mut client = connect_selected_with(
-        selected(connection.clone().with_machine_id(description.machine_id)),
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![
+                Connection::ssh(SshDestination::parse("user@example.com").unwrap()),
+                connection.clone().with_machine_id(description.machine_id),
+            ],
+        },
         connector.clone(),
     )
     .await
-    .expect("native Tailcat must complete Machine RPC confirmation");
+    .expect("missing SSH must fall back to native Tailcat and confirm Machine RPC");
     assert_eq!(
         client.machines().await.unwrap(),
         vec![support::machine('a', "one")]
@@ -247,10 +254,19 @@ async fn native_tailcat_confirms_machine_identity_and_performs_read_only_rpc() {
         "Tailcat churn: successful={} invalid={} sampled_peak_tcp={} sampled_peak_peers={} settled_tcp={} settled_peers={}",
         counts[0], counts[1], counts[2], counts[3], counts[4], counts[5]
     );
-    assert!(counts[2] <= 12, "transient TCP overlap exceeded one dial plus cleanup");
+    assert!(
+        counts[2] <= 12,
+        "transient TCP overlap exceeded one dial plus cleanup"
+    );
     assert!(counts[3] <= 16, "peer admission exceeded limit");
-    assert_eq!(counts[4], 9, "TCP churn connections were retained after DrainTCP");
-    assert_eq!(counts[5], 9, "peer churn connections were retained after DrainTCP");
+    assert_eq!(
+        counts[4], 9,
+        "TCP churn connections were retained after DrainTCP"
+    );
+    assert_eq!(
+        counts[5], 9,
+        "peer churn connections were retained after DrainTCP"
+    );
     wait_for_endpoint_state(input, &mut output, 9).await;
     service.push_watch_frame(frame);
     assert_frames(&mut streams, &expected).await;

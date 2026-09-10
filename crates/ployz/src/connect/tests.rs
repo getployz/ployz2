@@ -299,6 +299,27 @@ async fn missing_ssh_client_survives_connection_selection() {
 }
 
 #[tokio::test]
+async fn missing_ssh_client_does_not_skip_later_non_ssh_connections() {
+    let error = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![
+                Connection::ssh(SshDestination::parse("user@example.com").unwrap()),
+                Connection::unix("/ployz-missing-rpc.sock").unwrap(),
+            ],
+        },
+        Arc::new(SystemConnector::new("/ployz-missing-ssh-client")),
+    )
+    .await
+    .err()
+    .expect("both unavailable connections must fail");
+    assert!(
+        matches!(error, ConnectError::AllFailed { attempts: 2, .. }),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn stalled_ssh_probe_obeys_configured_timeout() {
     let program = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ssh");
     let connector = SystemConnector::new(program).with_ssh_timeout(Duration::from_millis(100));

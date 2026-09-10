@@ -467,7 +467,7 @@ pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> t
 /// # Errors
 ///
 /// Returns [`ConnectError::SshClientMissing`] when the local ssh client cannot
-/// be spawned; further connections cannot succeed. Returns
+/// be spawned and only SSH connections remain. Returns
 /// [`ConnectError::AllFailed`] after every connection is tried.
 pub async fn connect_selected_with(
     selected: SelectedConnections,
@@ -475,10 +475,15 @@ pub async fn connect_selected_with(
 ) -> Result<Client, ConnectError> {
     let mut last_error = None;
     let mut setup_retryable = false;
-    for connection in &selected.connections {
+    for (index, connection) in selected.connections.iter().enumerate() {
         match connect_one(connection, &selected.source, &connector).await {
             Ok(client) => return Ok(client),
-            Err(error) if matches!(error, ConnectError::SshClientMissing(_)) => {
+            Err(error)
+                if matches!(error, ConnectError::SshClientMissing(_))
+                    && selected.connections[index + 1..]
+                        .iter()
+                        .all(|next| matches!(next.transport(), Transport::Ssh { .. })) =>
+            {
                 return Err(error);
             }
             Err(error) => {
