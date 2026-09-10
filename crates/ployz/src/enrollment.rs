@@ -42,6 +42,7 @@ pub async fn publish_enrollment(
     })?;
     let mut request = assignment.request.clone();
     request.assigned_subnet = Some(assignment.machine.subnet);
+    request.runtime.clone_from(&assignment.machine.runtime);
     entry
         .call::<op::Register>(request, None)
         .await

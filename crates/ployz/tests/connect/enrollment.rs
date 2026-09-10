@@ -26,7 +26,11 @@ async fn saved_assignment_is_published_before_join_and_retried_after_lost_respon
         public_key: WireGuardPublicKey([0; 32]),
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],
-        runtime: Default::default(),
+        runtime: ployz_core::MachineRuntime {
+            daemon_version: "1.2.3".into(),
+            hostname: "joining-host".into(),
+            ..Default::default()
+        },
     };
     let assignment = allocate_enrollment(&request, &snapshot, &[]).unwrap();
     // The caller's assignment survives the interrupted network attempt.
@@ -54,24 +58,12 @@ async fn saved_assignment_is_published_before_join_and_retried_after_lost_respon
         let trace = trace.lock().unwrap();
         assert_eq!(trace.events, ["publish", "join", "publish", "join"]);
         assert_eq!(
-            trace
-                .joined
-                .as_ref()
-                .unwrap()
-                .registration
-                .assigned_machine
-                .id,
-            joining_id
+            trace.published.as_ref().unwrap().assigned_machine,
+            assignment.machine
         );
         assert_eq!(
-            trace
-                .joined
-                .as_ref()
-                .unwrap()
-                .registration
-                .assigned_machine
-                .subnet,
-            assignment.machine.subnet
+            trace.joined.as_ref().unwrap().registration.assigned_machine,
+            assignment.machine
         );
     }
     entry_errors.set_register_error(RpcError {
