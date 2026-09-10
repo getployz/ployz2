@@ -1196,3 +1196,41 @@ async fn stream_after_redial_uses_the_replaced_channel() {
     server_a.abort();
     server_b.abort();
 }
+
+#[tokio::test]
+async fn redial_rechecks_expected_machine_identity() {
+    let expected = test_description();
+    let first = DiscoveryService::new(expected.clone());
+    let mut replacement = expected.clone();
+    replacement.machine_id = machine_id('b');
+    let (address_a, server_a) = serve_discovery(first.clone()).await;
+    let (address_b, server_b) = serve_discovery(DiscoveryService::new(replacement)).await;
+    let connects = Arc::new(AtomicUsize::new(0));
+    let mut client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![Connection::tcp(address_a).with_machine_id(expected.machine_id)],
+        },
+        Arc::new(CountingConnector::redirecting(
+            connects.clone(),
+            [address_a, address_b],
+        )),
+    )
+    .await
+    .unwrap();
+    first
+        .describe_outcomes
+        .lock()
+        .unwrap()
+        .push_back(DescribeOutcome::Status(Status::unavailable(
+            "transport dropped",
+        )));
+    let error = client
+        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("identity mismatch"));
+    assert_eq!(connects.load(Ordering::SeqCst), 2);
+    server_a.abort();
+    server_b.abort();
+}
