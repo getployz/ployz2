@@ -83,7 +83,7 @@ function CanvasWithData() {
   const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
   const document = useEnvironmentDocument(params.organizationSlug, environmentId);
   const nodeIntroductionsCollection = getEnvironmentNodeIntroductionsCollection(
-    params.organizationSlug,
+    params.organizationSlug, collectionScope,
   );
   const environmentChangeState = useEnvironmentChangeStateProjection({
     organizationSlug: params.organizationSlug,

@@ -164,52 +164,72 @@ export const getRawEnvironmentResourcesCollection = cachedByOrganization(
     }),
 );
 
-export const getEnvironmentDeploymentsCollection = cachedByOrganization(
-  (organizationSlug, baseUrl) =>
-    makeOrganizationCollection<EnvironmentDeploymentRow>({
-      table: "environment_deployment",
-      organizationSlug,
-      baseUrl,
+export const getEnvironmentDeploymentsCollection = cachedByCollectionScope(
+  (organizationSlug, scope) =>
+    createApiCollection<EnvironmentDeploymentRow>({
+      queryClient: scope.queryClient,
+      queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "environment_deployment"],
+      queryFn: async ({ signal }) => {
+        const rows = await readCollectionServerFn({ data: { table: "environment_deployment", organizationSlug, userId: scope.userId }, signal });
+        // SAFETY: the literal table selects environment_deployment in the authenticated allowlisted read.
+        return rows as EnvironmentDeploymentRow[];
+      },
       getKey: (row) => row.id,
     }),
 );
 
 export const getEnvironmentSavedStateRevisionsCollection =
-  cachedByOrganization((organizationSlug, baseUrl) =>
-    makeOrganizationCollection<EnvironmentSavedStateRevisionRow>({
-      table: "environment_saved_state_snapshot",
-      organizationSlug,
-      baseUrl,
+  cachedByCollectionScope((organizationSlug, scope) =>
+    createApiCollection<EnvironmentSavedStateRevisionRow>({
+      queryClient: scope.queryClient,
+      queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "environment_saved_state_snapshot"],
+      queryFn: async ({ signal }) => {
+        const rows = await readCollectionServerFn({ data: { table: "environment_saved_state_snapshot", organizationSlug, userId: scope.userId }, signal });
+        // SAFETY: the literal table selects environment_saved_state_snapshot in the authenticated allowlisted read.
+        return rows as EnvironmentSavedStateRevisionRow[];
+      },
       getKey: (row) => row.id,
     }),
   );
 
 export const getEnvironmentNodeConfigSnapshotsCollection =
-  cachedByOrganization((organizationSlug, baseUrl) =>
-    makeOrganizationCollection<EnvironmentNodeConfigSnapshotRow>({
-      table: "environment_node_config_snapshot",
-      organizationSlug,
-      baseUrl,
+  cachedByCollectionScope((organizationSlug, scope) =>
+    createApiCollection<EnvironmentNodeConfigSnapshotRow>({
+      queryClient: scope.queryClient,
+      queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "environment_node_config_snapshot"],
+      queryFn: async ({ signal }) => {
+        const rows = await readCollectionServerFn({ data: { table: "environment_node_config_snapshot", organizationSlug, userId: scope.userId }, signal });
+        // SAFETY: the literal table selects environment_node_config_snapshot in the authenticated allowlisted read.
+        return rows as EnvironmentNodeConfigSnapshotRow[];
+      },
       getKey: (row) => row.id,
     }),
   );
 
 export const getEnvironmentNodeIntroductionsCollection =
-  cachedByOrganization((organizationSlug, baseUrl) =>
-    makeOrganizationCollection<EnvironmentNodeIntroductionRow>({
-      table: "environment_node_introduction",
-      organizationSlug,
-      baseUrl,
+  cachedByCollectionScope((organizationSlug, scope) =>
+    createApiCollection<EnvironmentNodeIntroductionRow>({
+      queryClient: scope.queryClient,
+      queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "environment_node_introduction"],
+      queryFn: async ({ signal }) => {
+        const rows = await readCollectionServerFn({ data: { table: "environment_node_introduction", organizationSlug, userId: scope.userId }, signal });
+        // SAFETY: the literal table selects environment_node_introduction in the authenticated allowlisted read.
+        return rows as EnvironmentNodeIntroductionRow[];
+      },
       getKey: (row) => `${row.nodeType}:${row.nodeId}`,
     }),
   );
 
-export const getVolumeRemoveAttemptsCollection = cachedByOrganization(
-  (organizationSlug, baseUrl) =>
-    makeOrganizationCollection<VolumeRemoveAttemptRow>({
-      table: "volume_remove_attempt",
-      organizationSlug,
-      baseUrl,
+export const getVolumeRemoveAttemptsCollection = cachedByCollectionScope(
+  (organizationSlug, scope) =>
+    createApiCollection<VolumeRemoveAttemptRow>({
+      queryClient: scope.queryClient,
+      queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "volume_remove_attempt"],
+      queryFn: async ({ signal }) => {
+        const rows = await readCollectionServerFn({ data: { table: "volume_remove_attempt", organizationSlug, userId: scope.userId }, signal });
+        // SAFETY: the literal table selects volume_remove_attempt in the authenticated allowlisted read.
+        return rows as VolumeRemoveAttemptRow[];
+      },
       getKey: (row) => row.id,
     }),
 );

@@ -31,16 +31,10 @@ export const Route = createFileRoute(
     const deploymentsReady = Promise.all([
       preloadCollection(getProjectsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       preloadCollection(getEnvironmentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
-      getEnvironmentDeploymentsCollection(organizationSlug, baseUrl).preload(),
-      getEnvironmentNodeConfigSnapshotsCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
+      preloadCollection(getEnvironmentDeploymentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
+      preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       getRawEnvironmentResourcesCollection(organizationSlug, baseUrl).preload(),
-      getVolumeRemoveAttemptsCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
+      preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
     ]);
 
     return { deploymentsReady };

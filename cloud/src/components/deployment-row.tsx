@@ -1,3 +1,5 @@
+import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useState } from "react";
 import { Link, useParams, useRouter } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
@@ -36,7 +38,6 @@ import {
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import { asString } from "#/lib/json";
 import {
-  getEnvironmentDeploymentsCollection,
   getRawEnvironmentResourcesCollection,
 } from "#/electric/collections";
 import { cn } from "#/lib/utils";
@@ -279,6 +280,8 @@ export function DeploymentRow({
         : "Waiting to deploy"
       : STATUS_LABEL[deployment.status];
 
+  const collectionScope = useCollectionScope();
+
   async function deployQueuedTarget() {
     if (!organizationSlug || !queuedForNextTrigger) return;
     setIsDispatching(true);
@@ -290,6 +293,7 @@ export function DeploymentRow({
             environmentSlug: deployment.environmentSlug,
           },
         });
+      await reconcileDeploymentCollections(organizationSlug, collectionScope);
       await router.invalidate();
       toast.success("Deployment requested.");
     } catch {
@@ -303,7 +307,7 @@ export function DeploymentRow({
     if (!organizationSlug || !deployment.canRetry) return;
     setIsRetrying(true);
     try {
-      const receipt = await retryEnvironmentDeploymentServerFn({
+      await retryEnvironmentDeploymentServerFn({
           data: {
             organizationSlug,
             projectSlug: deployment.projectSlug,
@@ -311,9 +315,7 @@ export function DeploymentRow({
             failedDeploymentId: deployment.id,
           },
         });
-      await getEnvironmentDeploymentsCollection(
-        organizationSlug,
-      ).utils.awaitTxId(receipt.txid);
+      await reconcileDeploymentCollections(organizationSlug, collectionScope);
       toast.success("Deployment retry queued.");
     } catch {
       toast.error("Could not retry this deployment.");

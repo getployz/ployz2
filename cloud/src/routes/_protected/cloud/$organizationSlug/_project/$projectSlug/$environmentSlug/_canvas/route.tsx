@@ -30,8 +30,8 @@ export const Route = createFileRoute(
     const baseUrl = context.tableSyncBaseUrl;
     const canvasReady = Promise.all([
       preloadCollection(getProjectsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
-      getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, baseUrl).preload(),
-      getVolumeRemoveAttemptsCollection(organizationSlug, baseUrl).preload(),
+      preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
+      preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       preloadCollection(getEnvironmentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       getRawServicesCollection(organizationSlug, baseUrl).preload(),
       getCanvasPositionsCollection(organizationSlug, baseUrl).preload(),
@@ -40,12 +40,9 @@ export const Route = createFileRoute(
         baseUrl,
       ).preload(),
       getResourceLineagesCollection(organizationSlug, baseUrl).preload(),
-      getEnvironmentNodeIntroductionsCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
+      preloadCollection(getEnvironmentNodeIntroductionsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       preloadOrganizationEnvironmentChangeStateProjections(
-        context.queryClient,
+        { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id },
         organizationSlug,
       ),
     ]);

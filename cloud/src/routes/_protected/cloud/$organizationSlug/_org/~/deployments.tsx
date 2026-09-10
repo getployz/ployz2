@@ -29,18 +29,12 @@ export const Route = createFileRoute(
     const organizationSlug = params.organizationSlug;
     const baseUrl = context.tableSyncBaseUrl;
     const deploymentsReady = Promise.all([
-      getEnvironmentDeploymentsCollection(organizationSlug, baseUrl).preload(),
+      preloadCollection(getEnvironmentDeploymentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       preloadCollection(getEnvironmentsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       preloadCollection(getProjectsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
-      getEnvironmentNodeConfigSnapshotsCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
+      preloadCollection(getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
       getRawEnvironmentResourcesCollection(organizationSlug, baseUrl).preload(),
-      getVolumeRemoveAttemptsCollection(
-        organizationSlug,
-        baseUrl,
-      ).preload(),
+      preloadCollection(getVolumeRemoveAttemptsCollection(organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id })),
     ]);
 
     return { deploymentsReady };
