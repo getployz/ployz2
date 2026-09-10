@@ -1,4 +1,6 @@
 //! Bounded enrollment after the caller has durably saved its allocation.
+pub mod local;
+
 use crate::connect::Client;
 use ployz_core::{
     CloudPairing, EnrollmentAssignment, EnrollmentSnapshot, JoinAccepted, JoinRequest,
