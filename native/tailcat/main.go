@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tailscale/tailcat"
+	"tailscale.com/envknob"
 	"tailscale.com/types/logger"
 )
 
@@ -37,6 +38,8 @@ type endpointState struct {
 }
 
 func main() {
+	// ponytail: direct large RPCs are unqualified on Cloud; enable UDP only after qualification.
+	envknob.Setenv("TS_DEBUG_ALWAYS_USE_DERP", "true")
 	// Upstream debug paths also use the process logger; never print capabilities.
 	log.SetOutput(io.Discard)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

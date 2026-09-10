@@ -2235,6 +2235,8 @@ dependencies = [
  "ployz-core",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

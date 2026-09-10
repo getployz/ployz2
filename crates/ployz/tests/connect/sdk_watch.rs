@@ -584,3 +584,27 @@ fn assert_no_list_rpc(service: &DiscoveryService) {
         0
     );
 }
+
+#[tokio::test]
+async fn sdk_about_and_watch_retry_transient_contract_read() {
+    let (client, service, _session, _machine) = watching_session().await;
+    service
+        .describe_outcomes
+        .lock()
+        .unwrap()
+        .push_back(DescribeOutcome::Status(Status::unavailable("lost read")));
+    client.about().await.expect("safe read redials");
+    service
+        .describe_outcomes
+        .lock()
+        .unwrap()
+        .push_back(DescribeOutcome::Status(Status::unavailable(
+            "lost watch contract read",
+        )));
+    let watch = client
+        .watch()
+        .await
+        .expect("Watch uses its redialed client");
+    watch.cancel();
+    client.close().await;
+}

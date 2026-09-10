@@ -25,7 +25,20 @@ import type {
 } from "./generated/payloads";
 export * from "./generated/payloads";
 
+/** Same serialized descriptors as CLI contexts. Backend only: Tailcat is an admin capability. */
+export type Connection = (
+  | { readonly tailcat: string }
+  | { readonly ssh: string; readonly ssh_key_file?: string }
+  | { readonly tcp: string }
+  | { readonly unix: string }
+) & { readonly machine_id?: MachineId };
 export type ConnectOptions = {
+  readonly connections: readonly Connection[];
+  /** Cancels connection establishment and closes the resulting session. */
+  readonly signal?: AbortSignal;
+  /** Total connection/session lifetime budget; close cancels this timer. */
+  readonly timeoutMs?: number;
+} | {
   /** HTTP(S) base URL without credentials, query or fragment; validated before dialing. */
   readonly relayUrl: string;
   readonly bearer: string;
@@ -57,6 +70,7 @@ export type PreparedDeploy = DeployPreview & {
 
 export type RunningDeploy = AsyncIterable<DeployEvent> & {
   abort(): void;
+  /** Rejects with RpcError on session closure; an in-flight mutation may have completed. */
   readonly finished: Promise<DeployOutcome<ExecutionError>>;
 };
 
@@ -93,6 +107,7 @@ export declare function applyOne(
 ): DeployIntent;
 
 export declare class Client {
+  register(identity: RegisterRequest): Promise<Registered>;
   about(): Promise<ContractDescription>;
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;

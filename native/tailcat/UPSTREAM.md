@@ -28,3 +28,20 @@ in the prepared upstream directory for race instrumentation.
 `cargo test -p ployz --test tailcat_connect` runs these lifecycle checks before
 the private-DERP contract with ten helper processes and fifty concurrent RPC
 streams, cancellation, process termination, and final zero-peer cleanup.
+
+Management uses relay-only networking by default on both the client and server.
+Before creating goroutines, `main` calls the pinned Tailscale `envknob.Setenv`
+for `TS_DEBUG_ALWAYS_USE_DERP=true`; this also updates the registered magicsock
+knob, disabling its UDP sockets. An operator does not need to set an environment
+variable. `TestRelayOnlyStartup` exercises production startup in a subprocess
+with an externally false value and verifies the safe default wins.
+
+Actual Railway Node22/Linuxx64 qualification found that the same helper could
+complete small Inspect replies over its default route to a real Machine while
+larger DescribeContract replies stalled (25 seconds in the raw probe, five
+seconds at SDK confirmation). Relay-only completed the same SDK read in76ms,
+then passed RuntimeWatch, independent sessions, cancellation and deadline cleanup.
+`TS_DEBUG_MTU=1200` did not fix the default route; no MTU root cause is claimed.
+Direct UDP remains an optional optimization until that path passes qualification.
+The adapter uses the upstream routing switch, not a second transport or retry
+policy. Preserve this evidence when upgrading Tailcat/Tailscale.

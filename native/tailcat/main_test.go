@@ -7,12 +7,14 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tailscale/tailcat"
+	"tailscale.com/envknob"
 )
 
 func TestCapabilityFraming(t *testing.T) {
@@ -146,5 +148,23 @@ func TestCorruptStateIsNotReplaced(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(got, original) {
 		t.Fatal("corrupt state replaced")
+	}
+}
+
+// Run production startup in a separate process: Setenv must precede goroutines.
+func TestRelayOnlyStartup(t *testing.T) {
+	if os.Getenv("PLOYZ_TEST_STARTUP") == "1" {
+		relayOnly := envknob.RegisterBool("TS_DEBUG_ALWAYS_USE_DERP")
+		os.Args = []string{"ployz-tailcat", "--version"}
+		main()
+		if !relayOnly() {
+			t.Fatal("management helper enabled direct UDP")
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRelayOnlyStartup$")
+	cmd.Env = append(os.Environ(), "PLOYZ_TEST_STARTUP=1", "TS_DEBUG_ALWAYS_USE_DERP=false")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("helper startup: %v: %s", err, output)
 	}
 }

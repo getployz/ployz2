@@ -23,6 +23,7 @@ it.effect("fails over and finalizes the connected organization session", () =>
     let closed = 0;
     const ployz = makePloyzLayer({
       connect: async (options) => {
+        if (!("machineId" in options)) throw new Error("expected current Relay caller");
         dialed.push(options.machineId);
         if (options.machineId === "preferred") throw new Error("offline");
         return asTestDouble<Client>()({
