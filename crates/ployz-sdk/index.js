@@ -63,8 +63,12 @@ class Client {
     };
   }
 
-  register(identity) {
-    return withRpcError(this._inner.register(identity));
+  observeEnrollment() {
+    return withRpcError(this._inner.observeEnrollment());
+  }
+
+  register(assignment) {
+    return withRpcError(this._inner.register(assignment));
   }
 
   removeCloudPairing(removal) {
@@ -271,12 +275,7 @@ module.exports = {
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
   },
-  observeEnrollment: (...args) => withRpcError(native.observeEnrollment(...args)),
-  publishEnrollment: (...args) => withRpcError(native.publishEnrollment(...args)),
   connect,
-  listHeld: (...args) => withRpcError(native.listHeld(...args)),
-  register: (...args) => withRpcError(native.register(...args)),
-  revokePairing: (...args) => withRpcError(native.revokePairing(...args)),
   packageName: native.packageName,
   Client,
   RpcError,

@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
 import type { Connection, EnrollmentSnapshot, MachineId, RegisterRequest } from "@ployz/sdk";
 import { and, asc, desc, eq } from "drizzle-orm";
-import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Data, Effect, Option, Schema } from "effect";
 import {
   enrollmentAllocation,
   organizationMachine,
@@ -14,21 +14,16 @@ import { organizationPairing as schemaOrganizationPairing } from "#/modules/runt
 import type { EncryptedSecretValue } from "#/db/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import {
-  Ployz,
-  PloyzProviderError,
-} from "#/modules/runtime/ployz.server";
+import { PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import {
   enrollmentExpiry,
-  heldRegisterSchema,
   mintedEnrollment,
   registerRequestFromEnrollmentIdentity,
   rustMachineIdSchema,
   waitForFounder,
-  type CloudPairing,
   type EnrollmentIdentity,
   type EnrollmentCallback,
-  type HeldRelayList,
   type MintMachineEnrollmentInput,
   type OrganizationEnrollmentStatus,
   type ResetPendingEnrollmentInput,
@@ -63,29 +58,10 @@ function credentialsMatch(expected: string, actual: string) {
   return crypto.timingSafeEqual(digest(expected), digest(actual));
 }
 
-const missingDialError = new Validation({
-  message:
-    "PLOYZ_RELAY_DIAL_CREDENTIAL is required to Dial the Cloud Relay.",
+const loadEnrollmentSettings = Effect.fn("MachineEnrollment.loadSettings")(function* () {
+  const config = yield* AppConfig;
+  return { publicRelayUrl: config.ployz.relayUrl.href };
 });
-
-const loadEnrollmentSettings = Effect.fn("MachineEnrollment.loadSettings")(
-  function* () {
-    const config = yield* AppConfig;
-    return {
-      publicRelayUrl: config.ployz.relayUrl.href,
-      deploymentDialUrl: (
-        config.ployz.relayPrivateUrl ?? config.ployz.relayUrl
-      ).href,
-      deploymentDialBearer: config.ployz.relayDialCredential?.pipe(
-        Redacted.value,
-      ),
-    };
-  },
-);
-
-function deploymentDialBearer(bearer: string | undefined) {
-  return bearer ? Effect.succeed(bearer) : Effect.fail(missingDialError);
-}
 
 const authorizeEnrollmentOrganization = Effect.fn(
   "MachineEnrollment.authorizeOrganization",
@@ -229,13 +205,6 @@ const pairingFromRow = Effect.fn("MachineEnrollment.decodePairing")(
 );
 
 
-export function heldMachineIds(listed: readonly unknown[]): MachineId[] {
-  return listed.flatMap((entry) => {
-    const parsed = Schema.decodeUnknownOption(heldRegisterSchema)(entry);
-    return Option.isSome(parsed) ? [parsed.value.machineId] : [];
-  });
-}
-
 // SAFETY: the SDK exports this synchronous Rust policy through CommonJS.
 const { allocateEnrollment } = createRequire(import.meta.url)("@ployz/sdk") as Pick<
   typeof PloyzSdk, "allocateEnrollment"
@@ -278,170 +247,6 @@ export const reserveEnrollmentAssignment = Effect.fn(
     return assignment;
   }));
 });
-
-export const registerThroughHeldList = Effect.fn(
-  "MachineEnrollment.registerThroughHeldList",
-)(function* (input: {
-  organizationId: string;
-  relayUrl: string;
-  bearer: string;
-  pairing: string;
-  held: readonly MachineId[];
-  identity: RegisterRequest;
-}) {
-  const ployz = yield* Ployz;
-  if (input.held.length === 0) return { kind: "not_yet" as const };
-  const snapshot = yield* Effect.firstSuccessOf(input.held.map((machineId) =>
-    ployz.observeEnrollment(input.relayUrl, input.bearer, input.pairing, machineId),
-  )).pipe(Effect.option);
-  if (Option.isNone(snapshot)) return { kind: "not_yet" as const };
-  const assignment = yield* reserveEnrollmentAssignment({ ...input, snapshot: snapshot.value });
-  // The transaction has committed before any publication or joining response.
-  for (const machineId of input.held) {
-    const registration = yield* ployz.publishEnrollment(
-      input.relayUrl, input.bearer, input.pairing, machineId, assignment,
-    ).pipe(
-      Effect.map(Option.some),
-      Effect.catch((error): Effect.Effect<Option.Option<never>, Conflict | PloyzProviderError> => {
-        const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))(error.cause);
-        if (Option.isSome(rpc)) {
-          if (rpc.value.code === "conflict") {
-            return Effect.fail(new Conflict({
-              message: "The saved enrollment assignment conflicts with the Entry Machine's current observation.",
-            }));
-          }
-          if (rpc.value.code !== "unavailable") return Effect.fail(error);
-        }
-        return Effect.succeed(Option.none());
-      }),
-    );
-    if (Option.isSome(registration)) {
-      return { kind: "registered" as const, registration: registration.value };
-    }
-  }
-  return { kind: "not_yet" as const };
-});
-
-type EnrollmentRelayInput = {
-  relayUrl: string;
-  bearer: string;
-  pairing: string;
-};
-
-type EnrollmentRelayHolding =
-  | { readonly kind: "empty" }
-  | { readonly kind: "held"; readonly held: readonly MachineId[] };
-
-type EnrollmentRelayRegistrationInput = EnrollmentRelayInput & {
-  organizationId: string;
-  held: readonly MachineId[];
-  identity: RegisterRequest;
-};
-
-export interface EnrollmentRelayService {
-  readonly inspectHolding: (
-    input: EnrollmentRelayInput,
-  ) => Effect.Effect<EnrollmentRelayHolding, PloyzProviderError>;
-  readonly registerAvailable: (
-    input: EnrollmentRelayRegistrationInput,
-  ) => Effect.Effect<
-    Effect.Success<ReturnType<typeof registerThroughHeldList>>,
-    Effect.Error<ReturnType<typeof registerThroughHeldList>>
-  >;
-  readonly revokeIfEmpty: (
-    input: EnrollmentRelayInput,
-  ) => Effect.Effect<"revoked" | "held", PloyzProviderError>;
-  readonly revokePairing: (
-    input: EnrollmentRelayInput,
-  ) => Effect.Effect<void, PloyzProviderError>;
-}
-
-export class EnrollmentRelay extends Context.Service<
-  EnrollmentRelay,
-  EnrollmentRelayService
->()("ployz/EnrollmentRelay") {}
-
-const inspectRelayHolding = Effect.fn("MachineEnrollment.inspectRelayHolding")(
-  function* (input: EnrollmentRelayInput) {
-    const ployz = yield* Ployz;
-    const listed = yield* ployz.listHeldRegisters(
-      input.relayUrl,
-      input.bearer,
-      input.pairing,
-    );
-    if (listed.length === 0) return { kind: "empty" as const };
-    const held = heldMachineIds(listed);
-    if (held.length === 0) {
-      return yield* new PloyzProviderError({
-        operation: "list held registers",
-        cause: "Cloud could not read any Machine id from the Relay List",
-      });
-    }
-    return { kind: "held" as const, held };
-  },
-);
-
-export const EnrollmentRelayLive = Layer.effect(
-  EnrollmentRelay,
-  Effect.gen(function* () {
-    const ployz = yield* Ployz;
-    const database = yield* Database;
-    const withPloyz = <A, E>(effect: Effect.Effect<A, E, Ployz | Database>) =>
-      effect.pipe(Effect.provideService(Ployz, ployz), Effect.provideService(Database, database));
-    return {
-      inspectHolding: (input) => withPloyz(inspectRelayHolding(input)),
-      registerAvailable: (input) => withPloyz(registerThroughHeldList(input)),
-      revokeIfEmpty: (input) =>
-        withPloyz(
-          Effect.gen(function* () {
-            const holding = yield* inspectRelayHolding(input);
-            if (holding.kind === "held") return "held" as const;
-            yield* ployz.revokeRelayPairing(
-              input.relayUrl,
-              input.bearer,
-              input.pairing,
-            );
-            return "revoked" as const;
-          }),
-        ),
-      revokePairing: (input) =>
-        ployz.revokeRelayPairing(input.relayUrl, input.bearer, input.pairing),
-    } satisfies EnrollmentRelayService;
-  }),
-);
-
-const observePairingRelayList = Effect.fn("MachineEnrollment.observeRelayList")(
-  function* (pairing: CloudPairing) {
-    const relay = yield* EnrollmentRelay;
-    const settings = yield* loadEnrollmentSettings();
-    const bearer = yield* deploymentDialBearer(settings.deploymentDialBearer);
-    return yield* relay
-      .inspectHolding({
-        relayUrl: settings.deploymentDialUrl,
-        bearer,
-        pairing: pairing.secret,
-      })
-      .pipe(
-        Effect.map((holding) =>
-          holding.kind === "empty"
-            ? {
-                kind: "empty" as const,
-                pairing,
-                bearer,
-              }
-            : {
-                kind: "held" as const,
-                pairing,
-                bearer,
-                held: holding.held,
-              },
-        ),
-        Effect.catch((error) =>
-          Effect.succeed({ kind: "indeterminate" as const, error }),
-        ),
-      );
-  },
-);
 
 /** Absence disables Cloud access; an existing endpoint still needs confirmed revocation. */
 export const tryRevokeOrganizationRelayPairing = Effect.fn(
@@ -506,32 +311,6 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
   },
 );
 
-const joinFromHeldList = Effect.fn("MachineEnrollment.joinFromHeldList")(
-  function* (input: {
-    organizationId: string;
-    request: RegisterRequest;
-    listed: HeldRelayList;
-  }) {
-    const relay = yield* EnrollmentRelay;
-    const settings = yield* loadEnrollmentSettings();
-    const outcome = yield* relay.registerAvailable({
-      organizationId: input.organizationId,
-      relayUrl: settings.deploymentDialUrl,
-      bearer: input.listed.bearer,
-      pairing: input.listed.pairing.secret,
-      held: input.listed.held,
-      identity: input.request,
-    });
-    if (outcome.kind === "not_yet") return waitForFounder();
-    return {
-      kind: "join" as const,
-      pairing: input.listed.pairing,
-      storage: input.request.storage,
-      registration: outcome.registration,
-    };
-  },
-);
-
 export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
   function* (input: { token: string; identity: EnrollmentIdentity }) {
     const request = registerRequestFromEnrollmentIdentity(input.identity);
@@ -552,16 +331,54 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
     }
     if (state.kind === "pending") return waitForFounder();
 
-    const list = yield* observePairingRelayList(state.pairing);
-    if (list.kind === "indeterminate") return yield* list.error;
-    if (list.kind !== "held") return waitForFounder();
-    return yield* joinFromHeldList({
-      organizationId: token.organizationId,
-      request,
-      listed: list,
-    });
+    return yield* Effect.scoped(Effect.gen(function* () {
+      const access = yield* loadOrganizationConnections(token.organizationId);
+      if (access.kind === "missing" || access.connections.length === 0) return waitForFounder();
+      if (access.generation !== hashEnrollmentToken(state.pairing.secret)) {
+        return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
+      }
+      const opened = yield* (yield* OrganizationRuntime).open(token.organizationId);
+      if (opened.status !== "connected") return yield* new PloyzProviderError({ operation: "connect for enrollment", cause: opened });
+      const session = opened.connected;
+      const snapshot = yield* session.observeEnrollment();
+      const database = yield* Database;
+      const assignment = yield* database.transaction(Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const [current] = yield* drizzle.select(organizationPairingProjection).from(schemaOrganizationPairing)
+          .where(eq(schemaOrganizationPairing.organizationId, token.organizationId)).for("update");
+        if (!current || current.removalStartedAt !== null || !credentialsMatch(yield* decryptPairingSecret(current.encryptedPairingSecret), state.pairing.secret)) {
+          return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
+        }
+        return yield* reserveEnrollmentAssignment({
+          organizationId: token.organizationId, pairing: state.pairing.secret,
+          identity: request, snapshot,
+        });
+      }));
+      // The assignment commits before dispatch; a lost response is never replayed.
+      const registration = yield* session.register(assignment).pipe(Effect.catch((error): Effect.Effect<never, Conflict | PloyzProviderError> => {
+        const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))(error.cause);
+        return Option.isSome(rpc) && rpc.value.code === "conflict"
+          ? Effect.fail(new Conflict({ message: "The saved enrollment assignment conflicts with the Entry Machine's current observation." }))
+          : Effect.fail(error);
+      }));
+      return { kind: "join" as const, pairing: state.pairing, storage: request.storage, registration };
+    }));
   },
 );
+
+const requireEnrollmentMachine = Effect.fn("MachineEnrollment.requireMachine")(function* (
+  organizationId: string, pairing: PairingRow, secret: string, machineId: MachineId,
+) {
+  if (pairing.founderClaimMachineId === machineId) return;
+  const { drizzle } = yield* Database;
+  const [allocation] = yield* drizzle.select().from(enrollmentAllocation).where(and(
+    eq(enrollmentAllocation.organizationId, organizationId),
+    eq(enrollmentAllocation.clusterKey, hashEnrollmentToken(secret)),
+  ));
+  if (!pairing.founderMachineId || !allocation?.assignments.some((assignment) => assignment.machine.id === machineId)) {
+    return yield* new Conflict({ message: "The Machine does not own this enrollment attempt." });
+  }
+});
 
 /** Publish once against the locked current claim, before any network confirmation. */
 export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCandidate")(
@@ -577,13 +394,14 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       const [pairing] = yield* drizzle.select(organizationPairingProjection)
         .from(schemaOrganizationPairing)
         .where(eq(schemaOrganizationPairing.organizationId, token.organizationId)).for("update");
-      if (!pairing || pairing.removalStartedAt !== null || pairing.founderClaimMachineId !== input.machineId) {
+      if (!pairing || pairing.removalStartedAt !== null) {
         return yield* new Conflict({ message: "The Machine does not own this founding attempt." });
       }
       const secret = yield* decryptPairingSecret(pairing.encryptedPairingSecret);
       if (!credentialsMatch(secret, input.pairingCredential)) {
         return yield* new Conflict({ message: "The founding attempt is no longer current." });
       }
+      yield* requireEnrollmentMachine(token.organizationId, pairing, secret, input.machineId);
       const scope = and(
         eq(organizationMachine.organizationId, token.organizationId),
         eq(organizationMachine.machineId, input.machineId),
@@ -593,14 +411,14 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       if (saved?.clusterKey === clusterKey) {
         const previous = yield* decryptPairingSecret(saved.encryptedTailcat);
         if (!credentialsMatch(previous, input.tailcat)) {
-          return yield* new Conflict({ message: "The founding attempt already has another connection capability." });
+          return yield* new Conflict({ message: "The enrollment attempt already has another connection capability." });
         }
       } else {
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
-          clusterKey, encryptedTailcat: encryption.encrypt(input.tailcat), isDialEntry: true,
+          clusterKey, encryptedTailcat: encryption.encrypt(input.tailcat), isDialEntry: pairing.founderClaimMachineId === input.machineId,
         }).onConflictDoUpdate({ target: [organizationMachine.organizationId, organizationMachine.machineId],
-          set: { clusterKey, encryptedTailcat: encryption.encrypt(input.tailcat), isDialEntry: true, updatedAt: new Date() },
+          set: { clusterKey, encryptedTailcat: encryption.encrypt(input.tailcat), isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date() },
         });
       }
       return { machineId: input.machineId };
@@ -624,7 +442,7 @@ export const loadOrganizationConnections = Effect.fn("MachineEnrollment.loadConn
       // SAFETY: the table constraint enforces the SDK Machine ID representation.
       return { tailcat, machine_id: candidate.machineId as MachineId };
     }));
-    return { kind: "ready" as const, connections, generation: hashEnrollmentToken(secret) };
+    return { kind: "ready" as const, generation: hashEnrollmentToken(secret), connections };
   },
 );
 
@@ -654,17 +472,7 @@ export const completeMachineEnrollment = Effect.fn(
         message: "The founding attempt is no longer current.",
       });
     }
-    if (
-      row.founderMachineId !== null &&
-      row.founderMachineId !== machineId
-    ) {
-      return yield* new Conflict({
-        message: "The Organization is already ready on another Machine.",
-      });
-    }
-    if (row.founderClaimMachineId !== machineId) {
-      return yield* new Conflict({ message: "The Machine does not own this founding attempt." });
-    }
+    yield* requireEnrollmentMachine(token.organizationId, row, pairing.secret, machineId);
     const { drizzle } = yield* Database;
     const [candidate] = yield* drizzle.select().from(organizationMachine).where(and(
       eq(organizationMachine.organizationId, token.organizationId),
@@ -672,14 +480,27 @@ export const completeMachineEnrollment = Effect.fn(
       eq(organizationMachine.clusterKey, hashEnrollmentToken(pairing.secret)),
     )).limit(1);
     if (!candidate) {
-      return yield* new Conflict({ message: "Publish the founding Machine connection before completion." });
+      return yield* new Conflict({ message: "Publish the Machine connection before completion." });
     }
-    const tailcat = yield* decryptPairingSecret(candidate.encryptedTailcat);
-    const ployz = yield* Ployz;
     // Shared negotiation verifies machine_id before this transaction can make it ready.
-    yield* Effect.scoped(ployz.connect({ connections: [{ tailcat, machine_id: machineId }] }));
+    yield* Effect.scoped(Effect.gen(function* () {
+      const opened = yield* (yield* OrganizationRuntime).open(token.organizationId, machineId);
+      if (opened.status !== "connected") return yield* new PloyzProviderError({ operation: "confirm enrollment", cause: opened });
+    }));
 
     const database = yield* Database;
+    if (row.founderClaimMachineId !== machineId) {
+      yield* database.transaction(Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const [current] = yield* drizzle.select(organizationPairingProjection).from(schemaOrganizationPairing)
+          .where(eq(schemaOrganizationPairing.organizationId, token.organizationId)).for("update");
+        if (!current || current.removalStartedAt !== null || !credentialsMatch(yield* decryptPairingSecret(current.encryptedPairingSecret), pairing.secret)) {
+          return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
+        }
+        yield* requireEnrollmentMachine(token.organizationId, current, pairing.secret, machineId);
+      }));
+      return { machineId };
+    }
     const deployments = yield* database.transaction(
       commitFirstConnectAdmission({
         organizationId: token.organizationId,

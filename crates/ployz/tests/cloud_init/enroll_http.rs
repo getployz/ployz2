@@ -118,7 +118,7 @@ impl EnrollListen {
                 recorded_paths.lock().unwrap().push(path.clone());
                 if path.ends_with("/callback") {
                     let body = enroll_json_body(raw);
-                    if body["stage"] == "publish" {
+                    if body.get("stage").and_then(serde_json::Value::as_str) == Some("publish") {
                         events.record("publish");
                         recorded_publications.lock().unwrap().push(body);
                         write_http(

@@ -48,11 +48,6 @@ export type ConnectOptions = {
   readonly machineId: MachineId;
 };
 
-export type HeldRegister = {
-  readonly machineId: string;
-  readonly registerRttNs?: number | null;
-};
-
 export type WatchOptions = {
   readonly signal?: AbortSignal;
 };
@@ -76,29 +71,10 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
   readonly finished: Promise<DeployOutcome<ExecutionError>>;
 };
 
+export declare function packageName(): "@ployz/sdk";
 /** Backend-only ephemeral successor; never save as an ordinary connection candidate. */
 export declare function prepareTailcatRemoval(expected: string): Promise<string>;
-
-export declare function packageName(): "@ployz/sdk";
 export declare function connect(options: ConnectOptions): Promise<Client>;
-export declare function listHeld(
-  relayUrl: string,
-  bearer: string,
-  pairing: string,
-): Promise<HeldRegister[]>;
-export declare function register(
-  relayUrl: string,
-  bearer: string,
-  pairing: string,
-  machineId: MachineId,
-  identity: RegisterRequest,
-): Promise<Registered>;
-export declare function revokePairing(
-  relayUrl: string,
-  bearer: string,
-  pairing: string,
-): Promise<void>;
-
 export declare function applyAll(
   project_name: ProjectName,
   specs: readonly RequestedServiceSpec[],
@@ -114,7 +90,8 @@ export declare function applyOne(
 export declare class Client {
   removeCloudPairing(removal: TailcatRemoval): Promise<void>;
   inspect(): Promise<MachineDetails>;
-  register(identity: RegisterRequest): Promise<Registered>;
+  observeEnrollment(): Promise<EnrollmentSnapshot>;
+  register(assignment: EnrollmentAssignment): Promise<Registered>;
   about(): Promise<ContractDescription>;
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
@@ -151,5 +128,3 @@ export declare class Client {
 };
 
 export declare function allocateEnrollment(request: RegisterRequest, snapshot: EnrollmentSnapshot, saved: EnrollmentAssignment[]): EnrollmentAssignment;
-export declare function observeEnrollment(relayUrl: string, bearer: string, pairing: string, machineId: MachineId): Promise<EnrollmentSnapshot>;
-export declare function publishEnrollment(relayUrl: string, bearer: string, pairing: string, machineId: MachineId, assignment: EnrollmentAssignment): Promise<Registered>;

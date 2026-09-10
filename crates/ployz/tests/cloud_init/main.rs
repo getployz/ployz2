@@ -82,11 +82,29 @@ async fn cloud_init_join_participates_and_appears_on_list_held() {
         "Join without observed Globals must not place slots"
     );
 
-    let paths = enroll.paths();
-    assert_eq!(paths, [format!("/api/enroll/{TOKEN}")]);
-    assert!(
-        enroll.callbacks().is_empty(),
-        "join must not POST enroll callback"
+    assert_eq!(
+        enroll.paths(),
+        [
+            format!("/api/enroll/{TOKEN}"),
+            format!("/api/enroll/{TOKEN}/callback"),
+            format!("/api/enroll/{TOKEN}/callback"),
+        ]
+    );
+    assert_eq!(
+        enroll.publications(),
+        [json!({
+            "stage": "publish",
+            "machineId": machine_id.as_str(),
+            "pairingCredential": PAIRING,
+            "tailcat": "fixture-tailcat-capability",
+        })]
+    );
+    assert_eq!(
+        enroll.callbacks(),
+        [json!({
+            "machineId": machine_id.as_str(),
+            "pairingCredential": PAIRING,
+        })]
     );
 
     wait_for_held(&relay.url, PAIRING, machine_id).await;
@@ -495,10 +513,22 @@ async fn cloud_init_retries_not_yet_then_joins() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(enroll.paths(), vec![format!("/api/enroll/{TOKEN}"); 2]);
-    assert!(
-        enroll.callbacks().is_empty(),
-        "join must not POST enroll callback"
+    assert_eq!(
+        enroll.paths(),
+        [
+            format!("/api/enroll/{TOKEN}"),
+            format!("/api/enroll/{TOKEN}"),
+            format!("/api/enroll/{TOKEN}/callback"),
+            format!("/api/enroll/{TOKEN}/callback"),
+        ]
+    );
+    assert_eq!(enroll.publications().len(), 1);
+    assert_eq!(
+        enroll.callbacks(),
+        [json!({
+            "machineId": machine_id.as_str(),
+            "pairingCredential": PAIRING,
+        })]
     );
     wait_for_held(&relay.url, PAIRING, machine_id).await;
 }

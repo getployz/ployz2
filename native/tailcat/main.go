@@ -259,6 +259,8 @@ func writeState(path string, state *endpointState) error {
 }
 
 func serve(ctx context.Context, path string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	unlock, err := lockState(path)
 	if err != nil {
 		return errors.New("cannot lock Tailcat state")
@@ -287,7 +289,7 @@ func serve(ctx context.Context, path string) error {
 					remote.Close()
 					return
 				}
-				tailcat.ProxyConns(remote, local)
+				proxyUntilCanceled(ctx, remote, local)
 			}
 		},
 	}
@@ -301,7 +303,14 @@ func serve(ctx context.Context, path string) error {
 		server.Close()
 		return errors.New("Tailcat endpoint startup failed")
 	}
-	defer server.Close()
+	defer func() {
+		cancel()
+		// Give the userspace TCP stack time to transmit connection closure before exit.
+		drain, stop := context.WithTimeout(context.Background(), 2*time.Second)
+		defer stop()
+		_ = server.DrainTCP(drain)
+		server.Close()
+	}()
 	state.Capability = server.TailcatAddr()
 	state.Key.Public, err = tailcat.ParseAddr(state.Capability)
 	if err != nil {
@@ -404,4 +413,13 @@ func rotateCapability(path string, input io.Reader, persist bool) error {
 		}
 	}
 	return nil
+}
+
+func proxyUntilCanceled(ctx context.Context, remote, local net.Conn) {
+	stop := context.AfterFunc(ctx, func() {
+		remote.Close()
+		local.Close()
+	})
+	defer stop()
+	tailcat.ProxyConns(remote, local)
 }

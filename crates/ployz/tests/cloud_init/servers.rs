@@ -116,6 +116,13 @@ except (OSError, BrokenPipeError):
         )
         .unwrap();
         std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let export = directory.path().join("ployzd-tailcat");
+        std::fs::write(
+            &export,
+            "#!/bin/sh\n[ \"$1\" = export ] || exit 1\nprintf '%s\\n' fixture-tailcat-capability\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(export, std::fs::Permissions::from_mode(0o700)).unwrap();
         directory
     });
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));

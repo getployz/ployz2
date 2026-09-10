@@ -304,3 +304,32 @@ func TestRotationWaitsForStartupWriter(t *testing.T) {
 		t.Fatal("startup lock not released")
 	}
 }
+
+func TestProxyCancellationClosesBothPeers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote, client := net.Pipe()
+	local, daemon := net.Pipe()
+	defer client.Close()
+	defer daemon.Close()
+	done := make(chan struct{})
+	go func() { proxyUntilCanceled(ctx, remote, local); close(done) }()
+	payload := []byte("active watch")
+	go func() { _, _ = daemon.Write(payload) }()
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, got); err != nil || !bytes.Equal(got, payload) {
+		t.Fatal("proxy did not forward active stream")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("proxy survived cancellation")
+	}
+	for _, peer := range []net.Conn{client, daemon} {
+		_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+		if _, err := peer.Read(make([]byte, 1)); err != io.EOF {
+			t.Fatalf("peer did not close: %v", err)
+		}
+	}
+}
