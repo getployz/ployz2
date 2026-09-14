@@ -22,6 +22,15 @@ recorded here so they are not re-raised:
   which is what makes reconnect possible. It stays.
 - `pg_notify` in `pairing-removal.server.ts` runs inside the transaction on
   purpose: transactional NOTIFY fires on commit.
+- `prepareTailcatRemoval` is local: it spawns the tailcat helper to derive a
+  successor capability (`core/crates/ployz-sdk/src/lib.rs`). The transaction in
+  `pairing-removal.server.ts` wraps a fast subprocess, not a network call.
+- `Schema.is` takes no parse options, so it cannot replace the guards that
+  reject excess properties (`isValid`, the two GitHub struct guards). Only the
+  three option-free scalar guards were converted.
+- The `step.run` around the envelope decode in
+  `environment-deployment.inngest.ts` is a tested contract (the engine test
+  asserts one `step.run` call for the decode). It stays.
 
 ## Top five
 
@@ -58,7 +67,7 @@ still gates layer startup. Malformed payloads are logged and skipped instead
 of ending the listener. The database-layer subscription is unchanged (see the
 retraction above).
 
-### 3. Runtime escape hatches and lost interruption
+### 3. Runtime escape hatches and lost interruption (fixed in a follow-up PR)
 
 - `src/modules/deployments/runtime-activities.server.ts:233` runs a bare
   `Effect.runPromise` with a manually provided `Database` inside the SDK
@@ -77,20 +86,19 @@ retraction above).
   SIGTERM hook, so the pool's `acquireRelease` finalizer never runs in
   production.
 
-### 4. Remote call inside a row-locked transaction; no timeouts on the interactive path
+### 4. No ceiling on the organization connect phase (fixed in a follow-up PR)
 
-- `src/modules/machines/pairing-removal.server.ts:113-136` takes
-  `for("update")` and then calls `ployz.prepareTailcatRemoval` (remote, no
-  timeout) inside the same transaction. `enrollment.server.ts:421-430` already
-  shows the right shape: network first, short transaction after, with an
-  optimistic recheck.
-- `src/modules/runtime/ployz.server.ts`: only `watchFirstFrame` has a timeout;
-  `preview`, `inspect`, `connect`, and `confirm` are unbounded. `Schedule` is
-  unused, so non-Inngest paths get one attempt. Plan: `Effect.timeoutOrElse`
-  with a typed unreachable error on the interactive calls; a bounded retry on
-  `connect` only.
+- `OrganizationRuntime.open` had no bound on establishing a shared machine
+  session. The SDK's `timeoutMs` bounds the whole session lifetime, which
+  would cut long deploys, so only the connect phase is bounded (30 seconds,
+  `ORGANIZATION_CONNECT_TIMEOUT`). A timeout surfaces as `unreachable`.
+- `preview`/`inspect` take no `AbortSignal`, so an Effect timeout there would
+  only orphan the promise; interactive callers are bounded by the request
+  signal and the session scope closing.
+- The original first bullet (a remote call inside a row-locked transaction)
+  is retracted; see above.
 
-### 5. Test conventions
+### 5. Test conventions (partially fixed in a follow-up PR)
 
 - 18 of about 60 Effect-touching test files use `@effect/vitest`; 17 of 28
   `*.postgres.test.ts` files hand-roll `ManagedRuntime.make` plus
@@ -107,12 +115,20 @@ retraction above).
 - `Layer.mock` and `it.scoped` do not exist in rc.112; the codebase correctly
   never uses them.
 
-Plan: migrate to `it.layer(postgresHarnessLayer)`; codemod the `Exit.isFailure`
-digs to `Effect.flip` plus `assertInstanceOf`; delete the duplicate harness;
-add `TestClock` tests for the two sleep loops; enforce the convention with a
-static-analysis test like `effect-try-promise-boundary.test.ts`.
+Done: the `Exit.isFailure` digs in unit tests use `Effect.flip` plus an
+`instanceof` assertion, and a static-analysis test keeps the idiom out.
+Remaining, since they need a Postgres container to verify: migrate the
+`*.postgres.test.ts` files to `it.layer`, consolidate the two docker
+harnesses, and add `TestClock` tests for the two `Effect.sleep` loops.
 
 ## Smaller items
+
+Done in a follow-up PR: the GitHub token `Cache`, `Schema.is` for the scalar
+guards, logging of dropped dispatch failures, the duplicate
+`isUniqueViolation`, and removal of the unused `parseEnvironmentResourceNodeConfig`.
+Still open: branded identifiers (large, mechanical), Schema-backed internal
+Inngest event payloads, and `publicMessage` on public errors (a product copy
+decision).
 
 - `Uuid` is an unbranded string reused for every identifier in 15+ files;
   `Schema.brand` is used once. Brand one identifier at a time and follow the
