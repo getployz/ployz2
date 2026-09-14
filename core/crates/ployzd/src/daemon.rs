@@ -433,6 +433,11 @@ impl Daemon {
                 Err(error) => errors.push(error.to_string()),
             }
         }
+        // Release the data directory before returning, whatever Machine API tasks
+        // still hold a handle, so the next daemon on this directory can claim it.
+        if let Err(error) = self.local.close().await {
+            errors.push(error.to_string());
+        }
         if errors.is_empty() {
             Ok(())
         } else {

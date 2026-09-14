@@ -12,7 +12,7 @@
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
-    sync::{Arc, mpsc},
+    sync::{Arc, Mutex, PoisonError, mpsc},
     thread,
 };
 
@@ -26,21 +26,28 @@ use crate::mutation::MutationGate;
 type Mutation =
     Box<dyn FnOnce(&mut LocalMachineStore, &watch::Sender<Arc<LocalMachineRecord>>) + Send>;
 
+enum Message {
+    Mutate(Mutation),
+    /// Drop the store, releasing the data directory, then confirm and stop.
+    Close(oneshot::Sender<()>),
+}
+
 /// The owner thread has stopped, so no further mutation can be applied.
 ///
-/// The thread stops when a mutation panics or when every handle is dropped. Reads
-/// keep serving the last published record.
+/// The thread stops when a mutation panics, when [`close`](RecordOwner::close) is
+/// called, or when the last handle is dropped. Reads keep serving the last
+/// published record.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 #[error("local Machine record owner stopped")]
 pub struct RecordOwnerStopped;
 
 /// Handle to the thread that owns this Machine's durable record.
 ///
-/// Cloning shares the owner. Dropping the last clone stops the thread and releases
-/// the data directory lock.
+/// Cloning shares the owner. Dropping the last clone stops the thread and waits
+/// for it, so the data directory is released before the drop returns.
 #[derive(Clone)]
 pub struct RecordOwner {
-    mailbox: mpsc::Sender<Mutation>,
+    mailbox: mpsc::Sender<Message>,
     record: watch::Receiver<Arc<LocalMachineRecord>>,
     restart: watch::Sender<bool>,
     shared: Arc<Shared>,
@@ -52,6 +59,7 @@ struct Shared {
     run_dir: std::path::PathBuf,
     admission_lock: Arc<tokio::sync::Mutex<()>>,
     mutation_gate: MutationGate,
+    thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl RecordOwner {
@@ -61,21 +69,27 @@ impl RecordOwner {
     ///
     /// Returns the OS error when the owner thread cannot be spawned.
     pub fn spawn(store: LocalMachineStore) -> std::io::Result<Self> {
-        let (mailbox, mutations) = mpsc::channel::<Mutation>();
+        let (mailbox, messages) = mpsc::channel::<Message>();
         let (published, record) = watch::channel(Arc::new(store.record().clone()));
         let (restart, _) = watch::channel(false);
-        let shared = Arc::new(Shared {
-            data_dir: store.data_dir.clone(),
-            run_dir: store.run_dir.clone(),
-            admission_lock: Arc::clone(&store.admission_lock),
-            mutation_gate: store.mutation_gate.clone(),
-        });
-        thread::Builder::new()
+        let data_dir = store.data_dir.clone();
+        let run_dir = store.run_dir.clone();
+        let admission_lock = Arc::clone(&store.admission_lock);
+        let mutation_gate = store.mutation_gate.clone();
+        let thread = thread::Builder::new()
             .name("ployzd-local-machine-record".into())
             .spawn(move || {
                 let mut store = store;
                 // The iterator ends once every handle has dropped its sender.
-                for mutation in mutations {
+                for message in messages {
+                    let mutation = match message {
+                        Message::Mutate(mutation) => mutation,
+                        Message::Close(closed) => {
+                            drop(store);
+                            let _ = closed.send(());
+                            return;
+                        }
+                    };
                     if catch_unwind(AssertUnwindSafe(|| mutation(&mut store, &published))).is_err()
                     {
                         // The store's state is unknown, so refuse every later mutation by
@@ -93,8 +107,31 @@ impl RecordOwner {
             mailbox,
             record,
             restart,
-            shared,
+            shared: Arc::new(Shared {
+                data_dir,
+                run_dir,
+                admission_lock,
+                mutation_gate,
+                thread: Mutex::new(Some(thread)),
+            }),
         })
+    }
+
+    /// Release the data directory now, whatever other handles still exist.
+    ///
+    /// Returns once the store is dropped. Later mutations from any handle fail with
+    /// [`RecordOwnerStopped`]; reads keep the last published record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecordOwnerStopped`] when the owner already stopped, in which case a
+    /// panicked mutation may have left the data directory claimed.
+    pub async fn close(&self) -> Result<(), RecordOwnerStopped> {
+        let (closed, confirmation) = oneshot::channel();
+        self.mailbox
+            .send(Message::Close(closed))
+            .map_err(|_| RecordOwnerStopped)?;
+        confirmation.await.map_err(|_| RecordOwnerStopped)
     }
 
     /// The last published record. Never blocks on a save.
@@ -159,12 +196,12 @@ impl RecordOwner {
     {
         let (reply, receiver) = oneshot::channel();
         self.mailbox
-            .send(Box::new(move |store, published| {
+            .send(Message::Mutate(Box::new(move |store, published| {
                 let produced = mutation(store);
                 publish(published, store.record());
                 // A caller that stopped waiting does not need its reply.
                 let _ = reply.send(produced);
-            }))
+            })))
             .map_err(|_| RecordOwnerStopped)?;
         Ok(receiver)
     }
@@ -199,6 +236,30 @@ impl RecordOwner {
     #[must_use]
     pub(crate) fn mutation_gate(&self) -> &MutationGate {
         &self.shared.mutation_gate
+    }
+}
+
+impl Drop for RecordOwner {
+    fn drop(&mut self) {
+        // Only the last handle waits, so the data directory is free once it is gone.
+        if Arc::strong_count(&self.shared) != 1 {
+            return;
+        }
+        let Some(thread) = self
+            .shared
+            .thread
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        else {
+            return;
+        };
+        if thread.thread().id() == thread::current().id() {
+            return;
+        }
+        let (closed, _) = oneshot::channel();
+        let _ = self.mailbox.send(Message::Close(closed));
+        let _ = thread.join();
     }
 }
 
@@ -292,6 +353,39 @@ mod tests {
             Err(RecordOwnerStopped)
         );
         assert_eq!(owner.record().phase(), LocalMachinePhase::Participating);
+    }
+
+    #[test]
+    fn dropping_the_last_handle_releases_the_data_directory_before_returning() {
+        let dir = tempfile::tempdir().unwrap();
+        for _ in 0..20 {
+            let owner = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
+            let clone = owner.clone();
+            drop(owner);
+            assert!(
+                LocalMachineStore::open(dir.path()).is_err(),
+                "a live handle keeps the data directory claimed"
+            );
+            drop(clone);
+            LocalMachineStore::open(dir.path()).expect("released by the last drop");
+        }
+    }
+
+    #[tokio::test]
+    async fn close_releases_the_data_directory_while_other_handles_live() {
+        let (dir, owner) = owner();
+        let other = owner.clone();
+        owner.mutate(initialize).await.unwrap().unwrap();
+
+        owner.close().await.unwrap();
+
+        LocalMachineStore::open(dir.path()).expect("released by close");
+        assert_eq!(
+            other.mutate(|store| store.record().phase()).await,
+            Err(RecordOwnerStopped)
+        );
+        assert_eq!(other.close().await, Err(RecordOwnerStopped));
+        assert_eq!(other.record().phase(), LocalMachinePhase::Participating);
     }
 
     #[test]
