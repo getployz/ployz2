@@ -243,11 +243,12 @@ impl NetworkPlane {
         }
         let previous = std::mem::take(&mut self.peers);
         let (planned, newly_selected) = attach_peer_selections(planned, previous, selected, now);
+        self.apply_peers(&planned)?;
+        self.peers = planned;
+        // Only an installed selection is worth remembering across a restart.
         for (machine_id, endpoint) in newly_selected {
             persist_selection(local, machine_id, endpoint).await;
         }
-        self.apply_peers(&planned)?;
-        self.peers = planned;
         Ok(())
     }
 

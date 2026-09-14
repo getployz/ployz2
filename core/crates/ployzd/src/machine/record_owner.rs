@@ -12,7 +12,11 @@
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
-    sync::{Arc, Mutex, PoisonError, mpsc},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
     thread,
 };
 
@@ -36,7 +40,8 @@ enum Message {
 ///
 /// The thread stops when a mutation panics, when [`close`](RecordOwner::close) is
 /// called, or when the last handle is dropped. Reads keep serving the last
-/// published record.
+/// published record, and [`watch`](RecordOwner::watch) receivers close, which is
+/// how the daemon notices a panicked owner and shuts down.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 #[error("local Machine record owner stopped")]
 pub struct RecordOwnerStopped;
@@ -45,7 +50,6 @@ pub struct RecordOwnerStopped;
 ///
 /// Cloning shares the owner. Dropping the last clone stops the thread and waits
 /// for it, so the data directory is released before the drop returns.
-#[derive(Clone)]
 pub struct RecordOwner {
     mailbox: mpsc::Sender<Message>,
     record: watch::Receiver<Arc<LocalMachineRecord>>,
@@ -60,6 +64,8 @@ struct Shared {
     admission_lock: Arc<tokio::sync::Mutex<()>>,
     mutation_gate: MutationGate,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
+    /// Live handles. Counted explicitly so exactly one drop observes being last.
+    handles: AtomicUsize,
 }
 
 impl RecordOwner {
@@ -113,6 +119,7 @@ impl RecordOwner {
                 admission_lock,
                 mutation_gate,
                 thread: Mutex::new(Some(thread)),
+                handles: AtomicUsize::new(1),
             }),
         })
     }
@@ -239,10 +246,23 @@ impl RecordOwner {
     }
 }
 
+impl Clone for RecordOwner {
+    fn clone(&self) -> Self {
+        self.shared.handles.fetch_add(1, Ordering::AcqRel);
+        Self {
+            mailbox: self.mailbox.clone(),
+            record: self.record.clone(),
+            restart: self.restart.clone(),
+            shared: Arc::clone(&self.shared),
+        }
+    }
+}
+
 impl Drop for RecordOwner {
     fn drop(&mut self) {
         // Only the last handle waits, so the data directory is free once it is gone.
-        if Arc::strong_count(&self.shared) != 1 {
+        // The counter makes exactly one concurrent drop the last one.
+        if self.shared.handles.fetch_sub(1, Ordering::AcqRel) != 1 {
             return;
         }
         let Some(thread) = self
@@ -368,6 +388,27 @@ mod tests {
             );
             drop(clone);
             LocalMachineStore::open(dir.path()).expect("released by the last drop");
+        }
+    }
+
+    #[test]
+    fn concurrent_final_drops_still_release_the_data_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        for _ in 0..50 {
+            let owner = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
+            let clone = owner.clone();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let droppers = [owner, clone].map(|handle| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    drop(handle);
+                })
+            });
+            for dropper in droppers {
+                dropper.join().unwrap();
+            }
+            LocalMachineStore::open(dir.path()).expect("released once both drops returned");
         }
     }
 

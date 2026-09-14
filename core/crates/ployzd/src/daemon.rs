@@ -373,6 +373,10 @@ impl Daemon {
         let mut servers = self.servers;
         let mut completed_servers = None;
         let mut errors = Vec::new();
+        let mut records = self.local.watch();
+        // The record watch closes only when the owner thread stopped, which before
+        // shutdown means a mutation panicked: crash out and let systemd restart us.
+        let owner_stopped = async move { while records.changed().await.is_ok() {} };
         let stop = tokio::select! {
             result = &mut servers => {
                 completed_servers = Some(join_servers(result));
@@ -381,6 +385,7 @@ impl Daemon {
             _ = interrupt.recv() => StopKind::Signal("SIGINT"),
             _ = terminate.recv() => StopKind::Signal("SIGTERM"),
             () = self.stop.cancelled() => StopKind::Stop,
+            () = owner_stopped => StopKind::RecordOwner,
             changed = self.restart_requested.changed() => match changed {
                 Ok(()) => StopKind::Restart,
                 Err(error) => {
@@ -397,6 +402,7 @@ impl Daemon {
             StopKind::Stop => "stop requested".to_owned(),
             StopKind::Restart if resetting => "local Machine reset".to_owned(),
             StopKind::Restart => "restart requested".to_owned(),
+            StopKind::RecordOwner => "local Machine record owner stopped".to_owned(),
             StopKind::WatchFailed(what) => format!("{what} wait failed"),
         };
         tracing::info!(reason = reason.as_str(), "shutting down");
@@ -433,10 +439,19 @@ impl Daemon {
                 Err(error) => errors.push(error.to_string()),
             }
         }
-        // Release the data directory before returning, whatever Machine API tasks
-        // still hold a handle, so the next daemon on this directory can claim it.
-        if let Err(error) = self.local.close().await {
-            errors.push(error.to_string());
+        // Admitted work is detached from its RPC and outlives the server drain. Give
+        // it the same grace, then release the data directory so the next daemon on
+        // it can claim it; work still running keeps the record until process exit
+        // rather than failing halfway through.
+        match tokio::time::timeout(SERVER_DRAIN, self.local.admission_lock().lock_owned()).await {
+            Ok(_admission) => {
+                if let Err(error) = self.local.close().await {
+                    errors.push(error.to_string());
+                }
+            }
+            Err(_) => tracing::warn!(
+                "admitted Machine work is still running; the record stays claimed until exit"
+            ),
         }
         if errors.is_empty() {
             Ok(())
@@ -579,7 +594,8 @@ async fn start_corrosion(
 
 /// Wait until the published record is participating.
 ///
-/// `Ok(false)` when shutdown wins or the record owner stopped during shutdown.
+/// `Ok(false)` when shutdown wins or the record owner stopped; the daemon shuts
+/// down on the latter, so the gated plane simply never starts.
 async fn wait_for_participation(
     mut records: watch::Receiver<Arc<LocalMachineRecord>>,
     shutdown: CancellationToken,
@@ -588,11 +604,7 @@ async fn wait_for_participation(
         biased;
         () = shutdown.cancelled() => Ok(false),
         changed = records.wait_for(|record| record.phase() == LocalMachinePhase::Participating) => {
-            match changed {
-                Ok(_) => Ok(!shutdown.is_cancelled()),
-                Err(_) if shutdown.is_cancelled() => Ok(false),
-                Err(error) => Err(io::Error::other(error)),
-            }
+            Ok(changed.is_ok() && !shutdown.is_cancelled())
         }
     }
 }
@@ -602,6 +614,7 @@ enum StopKind {
     Signal(&'static str),
     Stop,
     Restart,
+    RecordOwner,
     WatchFailed(&'static str),
 }
 
@@ -886,6 +899,32 @@ mod tests {
         reset(&socket).await;
         daemon.wait().await.unwrap();
         assert!(!data_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn a_panicking_record_mutation_shuts_the_daemon_down() {
+        let root = TestDir::new("ployzd-daemon-owner-panic");
+        let (config, _socket) = test_config(&root.0, ContainerMode::Absent);
+        let daemon = Daemon::start(config).await.unwrap();
+        let owner = daemon.local.clone();
+        let waiting = tokio::spawn(daemon.wait());
+
+        assert!(
+            owner
+                .mutate(|_| -> () { panic!("store invariant violated") })
+                .await
+                .is_err()
+        );
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+            .await
+            .expect("the daemon exits after its record owner stops")
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("record owner stopped"),
+            "unexpected shutdown error: {error}"
+        );
     }
 
     #[tokio::test]
