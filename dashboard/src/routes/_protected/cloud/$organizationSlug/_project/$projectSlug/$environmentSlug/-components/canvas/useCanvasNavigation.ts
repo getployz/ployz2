@@ -184,6 +184,9 @@ export function useCanvasNavigation(
     }
 
     if (selectedNodeId === null) {
+      if (previousSelectedNodeId.current !== UNSET && previousSelectedNodeId.current !== null) {
+        void flow.setViewport(flow.getViewport(), { duration: 0 });
+      }
       previousSelectedNodeId.current = null;
       previousSelectedNodePositionKey.current = null;
     }
