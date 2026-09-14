@@ -25,6 +25,8 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 /// Quiet window after a change; a join fans several Machine rows out at once.
 const DEBOUNCE: Duration = Duration::from_millis(200);
+/// Longest a stream of changes can defer a re-read; the quiet window resets, this does not.
+const DEBOUNCE_LIMIT: Duration = Duration::from_secs(2);
 
 /// The latest Machines snapshot, or `None` until the first read succeeds.
 pub type MachinesSnapshot = Option<Arc<ReplicatedObservations<Machine, MachineId>>>;
@@ -77,22 +79,30 @@ async fn run(
     shutdown: CancellationToken,
 ) {
     loop {
+        // Read before subscribing: queries can work while subscriptions cannot, and
+        // a fresh subscription may follow missed changes.
+        refresh(&replicated, &publish).await;
         let subscription = tokio::select! {
-            subscription = replicated.subscribe_machine_changes() => subscription,
+            subscription = tokio::time::timeout(
+                REFRESH_INTERVAL,
+                replicated.subscribe_machine_changes(),
+            ) => subscription,
             () = shutdown.cancelled() => return,
         };
         let mut subscription = match subscription {
-            Ok(subscription) => subscription,
-            Err(error) => {
+            Ok(Ok(subscription)) => subscription,
+            Ok(Err(error)) => {
                 tracing::warn!(error = %error, "Machine view subscription failed, retrying");
                 tokio::select! {
                     () = tokio::time::sleep(RETRY_INTERVAL) => continue,
                     () = shutdown.cancelled() => return,
                 }
             }
+            Err(_) => {
+                tracing::warn!("Machine view subscription snapshot stalled, retrying");
+                continue;
+            }
         };
-        // A fresh subscription may follow missed changes: read before waiting.
-        refresh(&replicated, &publish).await;
         loop {
             match wait(&mut subscription, &shutdown).await {
                 Wake::Changed | Wake::Refresh => refresh(&replicated, &publish).await,
@@ -128,10 +138,13 @@ async fn wait(subscription: &mut Subscription, shutdown: &CancellationToken) -> 
     }
     let quiet = tokio::time::sleep(DEBOUNCE);
     tokio::pin!(quiet);
+    let limit = tokio::time::sleep(DEBOUNCE_LIMIT);
+    tokio::pin!(limit);
     loop {
         tokio::select! {
             biased;
             () = shutdown.cancelled() => return Wake::Shutdown,
+            () = &mut limit => return Wake::Changed,
             changed = subscription.changed() => {
                 if let Err(error) = changed {
                     return Wake::Resubscribe(error);
@@ -234,19 +247,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn keeps_retrying_when_subscriptions_are_unavailable() {
+    async fn serves_queries_while_subscriptions_are_unavailable() {
         let (replicated, server) = fake_cluster::store().await;
+        let only = machine("only", 1);
+        replicated.publish_local_machine(&only).await.unwrap();
         let shutdown = CancellationToken::new();
         let view = MachineView::start(replicated, shutdown.clone());
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(view.current().is_none());
-        shutdown.cancel();
         let mut latest = view.watch();
+
+        let snapshot = tokio::time::timeout(Duration::from_secs(2), async {
+            latest.wait_for(Option::is_some).await.unwrap().clone()
+        })
+        .await
+        .expect("a view without subscriptions still reads the table")
+        .unwrap();
+        assert_eq!(snapshot.observations, vec![only]);
+
+        shutdown.cancel();
         tokio::time::timeout(Duration::from_secs(2), async {
             while latest.changed().await.is_ok() {}
         })
         .await
         .expect("the view stops on shutdown");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_steady_stream_of_changes_cannot_defer_the_re_read_past_the_limit() {
+        let (replicated, server) = fake_cluster::store_with_subscriptions().await;
+        let shutdown = CancellationToken::new();
+        let view = MachineView::start(replicated.clone(), shutdown.clone());
+        let mut latest = view.watch();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            latest.wait_for(Option::is_some).await.unwrap();
+        })
+        .await
+        .unwrap();
+
+        // Change rows faster than the quiet window for longer than the limit.
+        let writer = tokio::spawn({
+            let replicated = replicated.clone();
+            async move {
+                for octet in 1..=60 {
+                    replicated
+                        .publish_local_machine(&machine(&format!("m{octet}"), octet))
+                        .await
+                        .unwrap();
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        });
+        let observed = tokio::time::timeout(Duration::from_millis(2900), async {
+            latest
+                .wait_for(|snapshot| {
+                    snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| !snapshot.observations.is_empty())
+                })
+                .await
+                .unwrap()
+                .clone()
+        })
+        .await
+        .expect("the limit publishes a snapshot while writes continue")
+        .unwrap();
+        assert!(!observed.observations.is_empty());
+        assert!(
+            !writer.is_finished(),
+            "the snapshot arrived while writes were still flowing"
+        );
+
+        writer.abort();
+        shutdown.cancel();
         server.abort();
     }
 }
