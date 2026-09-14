@@ -137,6 +137,16 @@ describe("Effect execution boundary", () => {
     await runtime.dispose();
   });
 
+  it("rethrows a NonRetriableError raised as a defect without wrapping it", async () => {
+    const runtime = ManagedRuntime.make(Layer.empty);
+    const runInngest = makeInngestEffectRunner(makeEffectRunner(runtime));
+    const terminal = new NonRetriableError("do not retry");
+
+    await expect(runInngest(Effect.die(terminal))).rejects.toBe(terminal);
+    expect(isNonRetriableInngestCause(Cause.die(terminal))).toBe(true);
+    await runtime.dispose();
+  });
+
   it("forwards non-Error failures as the NonRetriableError cause", async () => {
     const runtime = ManagedRuntime.make(Layer.empty);
     const runInngest = makeInngestEffectRunner(makeEffectRunner(runtime));

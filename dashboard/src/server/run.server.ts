@@ -25,6 +25,7 @@ export function isNonRetriableInngestCause(cause: unknown): boolean {
   // A raw `Cause` (thrown for defects and interruptions) is classified by its
   // squashed failure or defect value, matching what `Effect.runPromise` throws.
   const failure = Cause.isCause(cause) ? Cause.squash(cause) : cause;
+  if (failure instanceof NonRetriableError) return true;
   if (Schema.isSchemaError(failure)) return true;
   const evidence = parseErrorEvidence(
     failure instanceof Error ? failure : asRecord(failure),
@@ -88,7 +89,8 @@ export function makeInngestEffectRunner<R>(runEffect: EffectRunner<R>) {
     try {
       return await runEffect(program);
     } catch (cause) {
-      if (cause instanceof NonRetriableError) throw cause;
+      const failure = Cause.isCause(cause) ? Cause.squash(cause) : cause;
+      if (failure instanceof NonRetriableError) throw failure;
       const message = Cause.isCause(cause)
         ? describeCause(cause)
         : cause instanceof Error
