@@ -103,6 +103,9 @@ async fn run(
                 continue;
             }
         };
+        // A row written between the read above and Corrosion registering the
+        // subscription arrives in the drained initial snapshot, not as a change.
+        refresh(&replicated, &publish).await;
         loop {
             match wait(&mut subscription, &shutdown).await {
                 Wake::Changed | Wake::Refresh => refresh(&replicated, &publish).await,
