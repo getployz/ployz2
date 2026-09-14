@@ -419,10 +419,11 @@ export const GithubApiLive = Layer.effect(
             }),
         });
         const response = yield* Effect.tryPromise({
-          try: () =>
+          try: (signal) =>
             fetch(
               `https://api.github.com/app/installations/${installationId}/access_tokens`,
               {
+                signal,
                 method: "POST",
                 headers: {
                   Authorization: `Bearer ${jwt}`,
@@ -515,8 +516,9 @@ export const GithubApiLive = Layer.effect(
 
         const token = yield* installationToken(input.installationId);
         const response = yield* Effect.tryPromise({
-          try: () =>
+          try: (signal) =>
             fetch(input.url, {
+              signal,
               headers: {
                 Authorization: `Bearer ${token}`,
                 Accept: "application/vnd.github+json",
