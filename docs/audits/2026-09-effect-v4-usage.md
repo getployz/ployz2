@@ -15,6 +15,13 @@ recorded here so they are not re-raised:
   keeps only the serialized `name`.
 - Ployz SDK methods other than `connect`, `confirm`, and `watch` do not accept an
   `AbortSignal`, so not threading one there is not a defect.
+- `@effect/sql-pg`'s `PgClient.listen` is not a drop-in for the hand-rolled
+  `subscribeDatabaseNotifications`: it registers a no-op `error` handler on its
+  dedicated client and never fails the stream on connection end, so a dropped
+  backend would go undetected. The hand-rolled version fails on `error`/`end`,
+  which is what makes reconnect possible. It stays.
+- `pg_notify` in `pairing-removal.server.ts` runs inside the transaction on
+  purpose: transactional NOTIFY fires on commit.
 
 ## Top five
 
@@ -35,24 +42,21 @@ Fix: a typed failure wins (matching `Cause.squash` precedence) and the shadowed
 defect is logged; classification and messages use the squashed cause; `cause`
 is always forwarded.
 
-### 2. Pairing-removal listener latches dead
+### 2. Pairing-removal listener latches dead (fixed in a follow-up PR)
 
-`src/modules/runtime/organization-runtime.server.ts:94-104`,
-`src/server/database.server.ts:98-136`
+`src/modules/runtime/organization-runtime.server.ts:94-104`
 
 - On any stream failure `listenerFailure` is set and never cleared, so every
   later `OrganizationRuntime.open` fails until the process restarts.
   `database.server.postgres.test.ts` shows `pg_terminate_backend` produces
   exactly that failure.
-- LISTEN/NOTIFY is hand-rolled on `pg.Pool.connect()` and unsafe `Queue` calls.
-  `PgClient.listen(channel): Stream<string, SqlError>` and `notify` already
-  exist on the client constructed at `database.server.ts:163`.
 
-Plan: switch to `client.listen`/`client.notify`; wrap consumption in
-`Effect.retry(Schedule.exponential("250 millis").pipe(Schedule.jittered))`;
-replace the terminal latch with a health flag that recovers; close live
-sessions on each reconnect since removals during the gap were missed; extend
-the postgres test to assert delivery resumes after a terminated backend.
+Fix: the listener re-subscribes with exponential, jittered backoff capped at
+30 seconds. While it is down, `open` fails closed and live sessions are
+closed, since removals during the gap were not observed. The first LISTEN
+still gates layer startup. Malformed payloads are logged and skipped instead
+of ending the listener. The database-layer subscription is unchanged (see the
+retraction above).
 
 ### 3. Runtime escape hatches and lost interruption
 
