@@ -31,6 +31,12 @@ recorded here so they are not re-raised:
 - The `step.run` around the envelope decode in
   `environment-deployment.inngest.ts` is a tested contract (the engine test
   asserts one `step.run` call for the decode). It stays.
+- Internal Inngest event payloads are not unvalidated: every consumer decodes
+  its envelope with a `Schema.Struct` at the handler (deploy, volume and
+  machine removal, teardown, GitHub sync and ingestion, billing sync,
+  cancellation). Only the `eventType` declarations in `inngest/events.ts` are
+  type-only, and the per-consumer schemas are duplicated rather than shared.
+  That is a consolidation, not a bug, and was not pursued.
 
 ## Top five
 
@@ -126,9 +132,9 @@ harnesses, and add `TestClock` tests for the two `Effect.sleep` loops.
 Done in a follow-up PR: the GitHub token `Cache`, `Schema.is` for the scalar
 guards, logging of dropped dispatch failures, the duplicate
 `isUniqueViolation`, and removal of the unused `parseEnvironmentResourceNodeConfig`.
-Still open: branded identifiers (large, mechanical), Schema-backed internal
-Inngest event payloads, and `publicMessage` on public errors (a product copy
-decision).
+Still open: branded identifiers (large and mechanical; best done one
+identifier at a time once the current PRs merge) and `publicMessage` on public
+errors (a product copy decision, not a code defect).
 
 - `Uuid` is an unbranded string reused for every identifier in 15+ files;
   `Schema.brand` is used once. Brand one identifier at a time and follow the
@@ -137,9 +143,6 @@ decision).
   the five `isValidGithub*` guards in `github-ingestion.contracts.ts`.
 - `environment-resource-node.ts:89-95` builds a typed `SchemaError` Effect then
   `Effect.runSync`s it into a throw; return the Effect.
-- Seven internally triggered Inngest event payloads (`inngest/events.ts:93-125`)
-  are type-only `staticSchema<T>()`; give them `Schema.Struct`s and decode at
-  handler entry.
 - `encodePublicError` replaces every domain message with one of six fixed
   strings. Add an opt-in `publicMessage` on tagged errors.
 - `github-ingestion.branch.repository.ts:538-548` drops every non-SQL dispatch
