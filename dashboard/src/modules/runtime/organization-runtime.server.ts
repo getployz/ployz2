@@ -29,13 +29,14 @@ export const PAIRING_REMOVAL_CHANNEL = "ployz_pairing_removed";
 
 /**
  * Backoff for re-establishing the pairing removal listener after its
- * connection drops: exponential from 250ms, capped at 30s, jittered.
+ * connection drops: exponential from 250ms, jittered, then capped at 30s so
+ * the cap is the true maximum.
  */
 export const PAIRING_REMOVAL_LISTENER_RETRY = Schedule.exponential("250 millis").pipe(
+  Schedule.jittered,
   Schedule.modifyDelay(({ duration }) =>
     Effect.succeed(Duration.min(duration, Duration.seconds(30))),
   ),
-  Schedule.jittered,
 );
 
 const LISTENER_UNAVAILABLE = "Pairing removal listener is unavailable";
