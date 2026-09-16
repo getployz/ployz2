@@ -1,35 +1,33 @@
 import type { DeploymentTriggerOrigin } from "#/modules/deployments/deployment";
 
 export type QueueOccupant = {
-  id: string;
-  savedStateSnapshotId: string;
   triggerOrigin: DeploymentTriggerOrigin;
   inngestRunId: string | null;
 };
 
-export type QueueWrite<Occupant extends QueueOccupant = QueueOccupant> =
-  | { kind: "insert" }
-  | { kind: "refresh_automated"; occupant: Occupant }
-  | { kind: "leave_unchanged"; occupant: Occupant }
-  | { kind: "refuse_manual"; occupant: Occupant };
+export type QueueWriteKind =
+  | "insert"
+  | "refresh_automated"
+  | "leave_unchanged"
+  | "refuse_manual";
 
-export function decideQueueWrite<Occupant extends QueueOccupant>(
-  occupant: Occupant | null,
+export function decideQueueWrite(
+  occupant: QueueOccupant | null,
   triggerOrigin: DeploymentTriggerOrigin,
-): QueueWrite<Occupant> {
-  if (occupant === null) return { kind: "insert" };
+): QueueWriteKind {
+  if (occupant === null) return "insert";
   switch (triggerOrigin.origin) {
     case "manual":
-      return { kind: "refuse_manual", occupant };
+      return "refuse_manual";
     case "github":
     case "first_connect":
       if (occupant.triggerOrigin.origin === "manual") {
-        return { kind: "leave_unchanged", occupant };
+        return "leave_unchanged";
       }
       if (occupant.inngestRunId !== null) {
-        return { kind: "leave_unchanged", occupant };
+        return "leave_unchanged";
       }
-      return { kind: "refresh_automated", occupant };
+      return "refresh_automated";
     default: {
       const _never: never = triggerOrigin;
       return _never;

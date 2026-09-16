@@ -318,14 +318,18 @@ function writeQueuedSavedTarget(
       )
       .for("update")
       .limit(1);
-    const write = decideQueueWrite(queuedRows[0] ?? null, input.triggerOrigin);
-    switch (write.kind) {
+    const occupant = queuedRows[0] ?? null;
+    const write = decideQueueWrite(occupant, input.triggerOrigin);
+    switch (write) {
       case "refuse_manual":
         return yield* new Conflict({
           message: "An environment deployment attempt is already queued.",
         });
       case "leave_unchanged": {
-        const { id, status, createdAt } = write.occupant;
+        if (occupant === null) {
+          return yield* Effect.die("Queue occupancy returned leave_unchanged without a queued row.");
+        }
+        const { id, status, createdAt } = occupant;
         return { id, status, createdAt };
       }
       case "refresh_automated":
@@ -336,10 +340,10 @@ function writeQueuedSavedTarget(
         return _never;
       }
     }
-    const queued = write.kind === "refresh_automated" ? write.occupant : undefined;
     const now = new Date();
-    const deploymentRows = queued
-      ? yield* drizzle
+    const deploymentRows =
+      write === "refresh_automated" && occupant !== null
+        ? yield* drizzle
           .update(schemaEnvironmentDeployment)
           .set({
             triggerOrigin: input.triggerOrigin,
@@ -350,13 +354,13 @@ function writeQueuedSavedTarget(
             serviceActionPolicy: input.serviceActionPolicy ?? null,
             updatedAt: now,
           })
-          .where(eq(schemaEnvironmentDeployment.id, queued.id))
+          .where(eq(schemaEnvironmentDeployment.id, occupant.id))
           .returning({
             id: schemaEnvironmentDeployment.id,
             status: schemaEnvironmentDeployment.status,
             createdAt: schemaEnvironmentDeployment.createdAt,
           })
-      : yield* drizzle
+        : yield* drizzle
           .insert(schemaEnvironmentDeployment)
           .values({
             organizationId: organizationIdForEnvironment(input.environmentId),
@@ -382,7 +386,7 @@ function writeQueuedSavedTarget(
       .insert(environmentDeploymentSecret)
       .values({ environmentDeploymentId: deployment.id })
       .onConflictDoNothing();
-    if (queued !== undefined) {
+    if (write === "refresh_automated") {
       yield* drizzle
         .delete(schemaVolumeRemoveAttempt)
         .where(

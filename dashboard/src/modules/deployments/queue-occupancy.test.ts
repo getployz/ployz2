@@ -25,8 +25,6 @@ function occupant(
   input?: { inngestRunId?: string | null },
 ): QueueOccupant {
   return {
-    id: "attempt-1",
-    savedStateSnapshotId: "saved-1",
     triggerOrigin,
     inngestRunId: input?.inngestRunId ?? null,
   };
@@ -34,39 +32,28 @@ function occupant(
 
 describe("decideQueueWrite", () => {
   it("inserts when the queue slot is vacant", () => {
-    expect(
-      decideQueueWrite(null, manual),
-    ).toEqual({ kind: "insert" });
+    expect(decideQueueWrite(null, manual)).toBe("insert");
   });
 
   it("refuses a second manual Deploy while any attempt is queued", () => {
-    expect(
-      decideQueueWrite(occupant(github), manual),
-    ).toEqual({ kind: "refuse_manual", occupant: occupant(github) });
-    expect(
-      decideQueueWrite(occupant(manual), manual),
-    ).toEqual({ kind: "refuse_manual", occupant: occupant(manual) });
+    expect(decideQueueWrite(occupant(github), manual)).toBe("refuse_manual");
+    expect(decideQueueWrite(occupant(manual), manual)).toBe("refuse_manual");
   });
 
   it("leaves a queued manual attempt unchanged for automated triggers", () => {
-    expect(
-      decideQueueWrite(occupant(manual), github),
-    ).toEqual({ kind: "leave_unchanged", occupant: occupant(manual) });
-    expect(
-      decideQueueWrite(occupant(manual), firstConnect),
-    ).toEqual({ kind: "leave_unchanged", occupant: occupant(manual) });
+    expect(decideQueueWrite(occupant(manual), github)).toBe("leave_unchanged");
+    expect(decideQueueWrite(occupant(manual), firstConnect)).toBe(
+      "leave_unchanged",
+    );
   });
 
   it("refreshes an unowned automated occupant from a later automated admit", () => {
-    expect(
-      decideQueueWrite(occupant(github), github),
-    ).toEqual({ kind: "refresh_automated", occupant: occupant(github) });
+    expect(decideQueueWrite(occupant(github), github)).toBe("refresh_automated");
   });
 
   it("does not refresh an automated occupant after Inngest owns it", () => {
-    const owned = occupant(github, { inngestRunId: "run-1" });
     expect(
-      decideQueueWrite(owned, github),
-    ).toEqual({ kind: "leave_unchanged", occupant: owned });
+      decideQueueWrite(occupant(github, { inngestRunId: "run-1" }), github),
+    ).toBe("leave_unchanged");
   });
 });

@@ -73,7 +73,7 @@ export function useCanvasChangeActions({
   setDestructiveConfirmationOpen,
 }: UseCanvasChangeActionsInput) {
   const [pendingPublication, setPendingPublication] =
-    useState<CanvasPublicationKind>("save");
+    useState<CanvasPublicationKind | null>(null);
   const collectionScope = useCollectionScope();
   const document = useEnvironmentDocument(params.organizationSlug, environmentId);
   function workingReview() {
@@ -292,6 +292,9 @@ export function useCanvasChangeActions({
       );
     }
     const reviewedMutation = preparation.reviewedMutation;
+    if (pendingPublication === null) {
+      throw new Error("The destructive publication is missing its reviewed intent.");
+    }
     const outcome = await submitPublication(pendingPublication, {
       destructiveServiceIds: reviewedMutation.serviceIds,
       destructiveVolumeReviews: preparation.reviews,

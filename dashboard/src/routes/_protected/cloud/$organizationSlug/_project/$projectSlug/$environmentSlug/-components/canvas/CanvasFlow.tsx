@@ -169,7 +169,7 @@ export function CanvasFlow({
       actionLabel: "Save removals",
       pendingActionLabel: "Saving...",
     },
-  }[pendingPublication];
+  }[pendingPublication ?? "save"];
 
   function openVariableGroupCreatorFromServiceDialog() {
     creator.setCreatorOpen(false);
