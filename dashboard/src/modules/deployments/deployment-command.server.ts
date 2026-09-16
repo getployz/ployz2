@@ -70,7 +70,6 @@ const loadDestructiveEnvironmentSave = Effect.fn(
   );
   return projectDestructiveEnvironmentSave({
     workingNodes: workingProjection.nodeSnapshots,
-    savedNodes: explicitState?.saved?.nodes ?? [],
     appliedNodes: explicitState?.applied.nodes ?? [],
   });
 });

@@ -54,13 +54,11 @@ fn present_config() -> Value {
     json!({})
 }
 
-/// Working, saved, and applied ownership facts used to find destructive edits.
+/// Working and applied ownership facts used to find destructive edits.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DestructivePublicationInput {
     working_nodes: Vec<PublicationNode>,
-    #[serde(rename = "savedNodes")]
-    _saved_nodes: Vec<PublicationNode>,
     applied_nodes: Vec<PublicationNode>,
 }
 

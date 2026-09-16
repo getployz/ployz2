@@ -11,9 +11,9 @@ fn publication_review_binds_exact_basis_removals_and_visible_revision() {
     let node = |kind, id| json!({"nodeType":kind,"nodeId":id});
     let removals = config_request(json!({"operation":"destructive_publication","value":{
         "workingNodes":[node("service","keep")],
-        "savedNodes":[node("service","keep"),node("service","remove"),node("volume","volume"),node("volume","never-deployed")],
         "appliedNodes":[node("service","keep"),node("service","remove"),node("volume","volume")]
-    }})).unwrap();
+    }}))
+    .unwrap();
     assert_eq!(
         removals,
         json!({"serviceIds":["remove"],"volumeIds":["volume"]})
@@ -56,7 +56,7 @@ fn publication_review_binds_exact_basis_removals_and_visible_revision() {
 #[test]
 fn saved_removals_still_require_review_until_applied() {
     let removals = config_request(json!({"operation":"destructive_publication","value":{
-        "workingNodes": [], "savedNodes": [],
+        "workingNodes": [],
         "appliedNodes": [{"nodeType":"service","nodeId":"service"},
                          {"nodeType":"volume","nodeId":"volume"}]
     }}))

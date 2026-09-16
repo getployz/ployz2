@@ -8,7 +8,6 @@ import { loadEnvironmentSavedIntentById } from "./saved-state-repository.server"
 import { emptyEnvironmentIntent } from "./saved-intent";
 import { loadEnvironmentNodeIntroductionIntent } from "./environment-node-introduction.repository.server";
 import type { DiscardEnvironmentChangesInput } from "./working-document-restore";
-import "@tanstack/react-start/server-only";
 
 import { reusePublication } from "@ployz/sdk/config";
 import { Effect, Schema } from "effect";
@@ -186,7 +185,6 @@ const validateEnvironmentPublicationReview = Effect.fn(
   const mismatch = getDestructiveEnvironmentSaveReviewMismatch({
     expected: projectDestructiveEnvironmentSave({
       workingNodes: input.workingNodes,
-      savedNodes: explicitState?.saved?.nodes ?? [],
       appliedNodes: explicitState?.applied.nodes ?? [],
     }),
     reviewed: projectReviewedEnvironmentPublicationDestructiveSave(
