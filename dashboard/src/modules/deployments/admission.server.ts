@@ -6,7 +6,6 @@ import {
   desc,
   eq,
   inArray,
-  isNull,
   not,
   type SQL,
 } from "drizzle-orm";
@@ -294,28 +293,124 @@ function stageReviewedVolumeRemoveAttempt(input: {
   });
 }
 
-function writeQueuedSavedTarget(
-  input: DeploymentAdmissionInput,
-  target: SavedDeploymentTarget,
-) {
+export const QUEUED_MANUAL_DEPLOYMENT_CONFLICT_MESSAGE =
+  "A queued deployment already exists for this Environment. Wait for it to start or cancel it, then try again.";
+
+type QueueOccupancy =
+  | { readonly kind: "vacant" }
+  | {
+      readonly kind: "queued";
+      readonly id: string;
+      readonly createdAt: Date;
+      readonly triggerOrigin: DeploymentTriggerOriginType;
+      readonly savedStateSnapshotId: string;
+      readonly inngestRunId: string | null;
+    };
+
+type AdmissionDecision =
+  | { readonly kind: "insert" }
+  | { readonly kind: "coalesce"; readonly attemptId: string }
+  | { readonly kind: "preserve"; readonly attemptId: string }
+  | { readonly kind: "refuse" };
+
+function decideQueuedAdmission(
+  occupancy: QueueOccupancy,
+  incoming: DeploymentTriggerOriginType,
+): AdmissionDecision {
+  if (occupancy.kind === "vacant") return { kind: "insert" };
+  if (incoming.origin === "manual") return { kind: "refuse" };
+  if (occupancy.triggerOrigin.origin === "manual") {
+    return { kind: "preserve", attemptId: occupancy.id };
+  }
+  if (occupancy.inngestRunId !== null) return { kind: "refuse" };
+  return { kind: "coalesce", attemptId: occupancy.id };
+}
+
+function loadQueueOccupancy(environmentId: string) {
   return Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const queuedRows = yield* drizzle
       .select({
         id: schemaEnvironmentDeployment.id,
         createdAt: schemaEnvironmentDeployment.createdAt,
+        triggerOrigin: schemaEnvironmentDeployment.triggerOrigin,
+        savedStateSnapshotId: schemaEnvironmentDeployment.savedStateSnapshotId,
+        inngestRunId: schemaEnvironmentDeployment.inngestRunId,
       })
       .from(schemaEnvironmentDeployment)
       .where(
         and(
-          eq(schemaEnvironmentDeployment.environmentId, input.environmentId),
+          eq(schemaEnvironmentDeployment.environmentId, environmentId),
           eq(schemaEnvironmentDeployment.status, "queued"),
-          isNull(schemaEnvironmentDeployment.inngestRunId),
         ),
       )
       .for("update")
       .limit(1);
     const queued = queuedRows[0];
+    if (!queued) return { kind: "vacant" } satisfies QueueOccupancy;
+    return { kind: "queued", ...queued } satisfies QueueOccupancy;
+  });
+}
+
+export const assertManualDeploymentQueueVacant = Effect.fn(
+  "Deployments.assertManualDeploymentQueueVacant",
+)(function* (environmentId: string) {
+  const occupancy = yield* loadQueueOccupancy(environmentId);
+  if (occupancy.kind === "queued") {
+    return yield* new Conflict({
+      message: QUEUED_MANUAL_DEPLOYMENT_CONFLICT_MESSAGE,
+    });
+  }
+});
+
+function writeQueuedSavedTarget(
+  input: DeploymentAdmissionInput,
+  target: SavedDeploymentTarget,
+) {
+  return Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const occupancy = yield* loadQueueOccupancy(input.environmentId);
+    const decision = decideQueuedAdmission(occupancy, input.triggerOrigin);
+    switch (decision.kind) {
+      case "refuse":
+        return yield* new Conflict({
+          message: QUEUED_MANUAL_DEPLOYMENT_CONFLICT_MESSAGE,
+        });
+      case "preserve": {
+        const preserved = occupancy.kind === "queued" ? occupancy : null;
+        if (!preserved) {
+          return yield* Effect.die("Preserved admission lost its queued row.");
+        }
+        const snapshots = yield* drizzle
+          .select({ nodeType: schemaEnvironmentNodeConfigSnapshot.nodeType })
+          .from(schemaEnvironmentNodeConfigSnapshot)
+          .where(
+            eq(
+              schemaEnvironmentNodeConfigSnapshot.environmentDeploymentId,
+              preserved.id,
+            ),
+          );
+        return {
+          id: preserved.id,
+          status: "queued" as const,
+          createdAt: preserved.createdAt,
+          serviceCount: snapshots.filter(
+            ({ nodeType }) => nodeType === "service",
+          ).length,
+        };
+      }
+      case "insert":
+      case "coalesce":
+        break;
+      default: {
+        const exhausted: never = decision;
+        return yield* Effect.die(exhausted);
+      }
+    }
+    const queued =
+      decision.kind === "coalesce"
+        ? { id: decision.attemptId, createdAt: occupancy.kind === "queued" ? occupancy.createdAt : new Date() }
+        : undefined;
     const now = new Date();
     const deploymentRows = queued
       ? yield* drizzle

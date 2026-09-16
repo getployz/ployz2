@@ -187,14 +187,15 @@ const validateEnvironmentPublicationReview = Effect.fn(
   }
 });
 
-/** Publishes the exact reviewed Working graph without admitting a deployment. */
-export const saveReviewedEnvironmentState = Effect.fn(
-  "EnvironmentDesign.saveReviewedEnvironmentState",
+export const publishReviewedWorkingState = Effect.fn(
+  "EnvironmentDesign.publishReviewedWorkingState",
 )(function* (input: {
   environmentId: string;
   actorId: string;
   message: string | null;
   review: ReviewedEnvironmentPublication;
+  revisionPolicy: "always_create" | "reuse_latest_if_equivalent";
+  staleWorkingMessage: string;
 }) {
   yield* lockEnvironmentDeploymentQueue(input.environmentId);
   const state = yield* loadCurrentEnvironmentState(input.environmentId);
@@ -204,7 +205,7 @@ export const saveReviewedEnvironmentState = Effect.fn(
     currentWorkingStateFingerprint !== input.review.workingStateFingerprint
   ) {
     return yield* new Conflict({
-      message: "Working State changed after the Save was reviewed.",
+      message: input.staleWorkingMessage,
     });
   }
   yield* validateEnvironmentPublicationReview({
@@ -212,14 +213,30 @@ export const saveReviewedEnvironmentState = Effect.fn(
     workingNodes: state.projection.nodeSnapshots,
     review: input.review,
   });
-  const saved = yield* publishEnvironmentSavedState({
+  return yield* publishEnvironmentSavedState({
     environmentId: input.environmentId,
     actorId: input.actorId,
     message: input.message,
     basis: input.review.savedStateBasis,
     intent: state.intent,
     destructiveVolumeReviews: input.review.destructiveVolumeReviews,
+    revisionPolicy: input.revisionPolicy,
+  });
+});
+
+/** Publishes the exact reviewed Working graph without admitting a deployment. */
+export const saveReviewedEnvironmentState = Effect.fn(
+  "EnvironmentDesign.saveReviewedEnvironmentState",
+)(function* (input: {
+  environmentId: string;
+  actorId: string;
+  message: string | null;
+  review: ReviewedEnvironmentPublication;
+}) {
+  const saved = yield* publishReviewedWorkingState({
+    ...input,
     revisionPolicy: "always_create",
+    staleWorkingMessage: "Working State changed after the Save was reviewed.",
   });
   return { savedStateSnapshotId: saved.savedStateSnapshotId };
 });

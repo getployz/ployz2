@@ -14,6 +14,7 @@ import {
 } from "#/modules/github/github-ingestion.postgres-test-harness";
 import * as repository from "#/modules/github/github-ingestion.repository";
 import { InngestClient } from "#/modules/inngest/client";
+import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
 import {
   createDefaultServiceHealthcheck,
   createDefaultServiceRestartPolicy,
@@ -658,6 +659,57 @@ describe("GitHub branch deployment admission", () => {
     expect(triggers.map(({ headSha }) => headSha)).toEqual([
       "a".repeat(40),
       "b".repeat(40),
+    ]);
+  });
+
+  it("leaves a queued manual attempt unchanged when GitHub admits", async () => {
+    const queued = await harness.runTransaction(() =>
+      admitEnvironmentDeployment({
+        environmentId,
+        savedStateSnapshotId,
+        triggerOrigin: { origin: "manual", actorId: userId },
+        message: null,
+      }),
+    );
+    const laterSavedStateSnapshotId = "00000000-0000-4000-8000-000000000130";
+    await harness.db.insert(schema.environmentSavedStateSnapshot).values({
+      id: laterSavedStateSnapshotId,
+      organizationId,
+      environmentId,
+      actorId: userId,
+      volumeDeletionAuthorizations: [],
+      message: "Later Saved",
+      createdAt: new Date("2099-01-01T00:00:00.000Z"),
+      intent: savedIntent([
+        {
+          id: serviceId,
+          lineageId,
+          config: savedServiceConfig("Saved API v2"),
+        },
+      ]),
+    });
+
+    const admitted = await admitPush({
+      deliveryId: "queued-manual",
+      headSha: "c".repeat(40),
+      cursor: null,
+    });
+
+    expect(EffectResult.isSuccess(admitted)).toBe(true);
+    const deployments = await harness.db.select().from(schema.environmentDeployment);
+    const triggers = await harness.db.select().from(schema.githubEnvironmentTrigger);
+    expect(deployments).toEqual([
+      expect.objectContaining({
+        id: queued.id,
+        savedStateSnapshotId,
+        triggerOrigin: { origin: "manual", actorId: userId },
+      }),
+    ]);
+    expect(triggers).toEqual([
+      expect.objectContaining({
+        headSha: "c".repeat(40),
+        sourceDeliveryId: "queued-manual",
+      }),
     ]);
   });
 

@@ -145,37 +145,45 @@ describe("Saved deployment admission", () => {
     );
   }
 
-  it("serializes concurrent admissions into one mutable queued target", async () => {
+  it("serializes concurrent manual admissions into one queued target", async () => {
     const saved = await publish("first", null);
 
     const attempts = await Promise.all(
-      Array.from({ length: 8 }, () => admit(saved.savedStateSnapshotId)),
+      Array.from({ length: 8 }, () =>
+        admit(saved.savedStateSnapshotId).then(
+          (value) => ({ ok: true as const, value }),
+          (error) => ({ ok: false as const, error }),
+        ),
+      ),
     );
 
-    expect(new Set(attempts.map(({ id }) => id)).size).toBe(1);
+    expect(attempts.filter((attempt) => attempt.ok)).toHaveLength(1);
     expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(
       1,
     );
   });
 
-  it("replaces an unowned queued target but freezes one that has started", async () => {
+  it("refuses a second manual admit while one attempt is queued", async () => {
     const first = await publish("first", null);
     const queued = await admit(first.savedStateSnapshotId);
     const second = await publish("both", first.savedStateSnapshotId);
-    const replaced = await admit(second.savedStateSnapshotId);
 
-    expect(replaced.id).toBe(queued.id);
-    expect(
-      await harness.db
-        .select({ nodeId: schema.environmentNodeConfigSnapshot.nodeId })
-        .from(schema.environmentNodeConfigSnapshot)
-        .where(
-          eq(
-            schema.environmentNodeConfigSnapshot.environmentDeploymentId,
-            queued.id,
-          ),
-        ),
-    ).toHaveLength(2);
+    await expect(admit(second.savedStateSnapshotId)).rejects.toMatchObject({
+      _tag: "Conflict",
+    });
+    expect(await harness.db.select().from(schema.environmentDeployment)).toEqual([
+      expect.objectContaining({
+        id: queued.id,
+        status: "queued",
+        savedStateSnapshotId: first.savedStateSnapshotId,
+      }),
+    ]);
+  });
+
+  it("admits a later manual after the queued attempt starts", async () => {
+    const first = await publish("first", null);
+    const queued = await admit(first.savedStateSnapshotId);
+    const second = await publish("both", first.savedStateSnapshotId);
 
     await harness.db
       .update(schema.environmentDeployment)
@@ -201,7 +209,7 @@ describe("Saved deployment admission", () => {
       {
         id: queued.id,
         status: "planning",
-        savedStateSnapshotId: second.savedStateSnapshotId,
+        savedStateSnapshotId: first.savedStateSnapshotId,
       },
       {
         id: next.id,
@@ -317,6 +325,94 @@ describe("Saved deployment admission", () => {
     ).rejects.toMatchObject({ _tag: "Conflict" });
   });
 
+  it("fails linked awaiting volume removals when dispatch send fails", async () => {
+    const saved = await publish("first", null);
+    const deployment = await admit(saved.savedStateSnapshotId);
+    await harness.db.insert(schema.volumeRemoveAttempt).values({
+      organizationId,
+      requestedByUserId: userId,
+      environmentId,
+      environmentDeploymentId: deployment.id,
+      environmentResourceId: firstVolumeId,
+      volumes: [{ machine_id: machineId, name: `vol-${firstVolumeId}` }],
+      status: "awaiting_deployment",
+    });
+    const failing = new Inngest({ id: "admission-dispatch-volume-fail-test" });
+    failing.send = async () => {
+      throw new Error("Inngest unavailable");
+    };
+    await expect(
+      harness.runEffect(
+        dispatchEnvironmentDeployment(
+          { environmentDeploymentId: deployment.id, environmentId },
+        ).pipe(Effect.provideService(InngestClient, failing)),
+      ),
+    ).rejects.toMatchObject({ _tag: "InngestEventSendError" });
+    const [failed] = await harness.db
+      .select({
+        status: schema.environmentDeployment.status,
+        failureCode: schema.environmentDeployment.failureCode,
+        savedStateSnapshotId: schema.environmentDeployment.savedStateSnapshotId,
+      })
+      .from(schema.environmentDeployment)
+      .where(eq(schema.environmentDeployment.id, deployment.id));
+    const [volume] = await harness.db.select().from(schema.volumeRemoveAttempt);
+    expect(failed).toEqual({
+      status: "failed",
+      failureCode: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
+      savedStateSnapshotId: saved.savedStateSnapshotId,
+    });
+    expect(volume).toMatchObject({
+      environmentDeploymentId: deployment.id,
+      status: "failed",
+      inngestRunId: null,
+    });
+  });
+
+  it("does not fail a worker-claimed attempt or its volumes on a delayed send error", async () => {
+    const saved = await publish("first", null);
+    const deployment = await admit(saved.savedStateSnapshotId);
+    await harness.db.insert(schema.volumeRemoveAttempt).values({
+      organizationId,
+      requestedByUserId: userId,
+      environmentId,
+      environmentDeploymentId: deployment.id,
+      environmentResourceId: firstVolumeId,
+      volumes: [{ machine_id: machineId, name: `vol-${firstVolumeId}` }],
+      status: "awaiting_deployment",
+    });
+    const racing = new Inngest({ id: "admission-dispatch-claimed-test" });
+    racing.send = async () => {
+      await harness.db
+        .update(schema.environmentDeployment)
+        .set({ inngestRunId: "run-claimed" })
+        .where(eq(schema.environmentDeployment.id, deployment.id));
+      throw new Error("send lost the race");
+    };
+    await expect(
+      harness.runEffect(
+        dispatchEnvironmentDeployment(
+          { environmentDeploymentId: deployment.id, environmentId },
+        ).pipe(Effect.provideService(InngestClient, racing)),
+      ),
+    ).rejects.toMatchObject({ _tag: "InngestEventSendError" });
+    const [row] = await harness.db
+      .select({
+        status: schema.environmentDeployment.status,
+        inngestRunId: schema.environmentDeployment.inngestRunId,
+        failureCode: schema.environmentDeployment.failureCode,
+      })
+      .from(schema.environmentDeployment)
+      .where(eq(schema.environmentDeployment.id, deployment.id));
+    const [volume] = await harness.db.select().from(schema.volumeRemoveAttempt);
+    expect(row).toEqual({
+      status: "queued",
+      inngestRunId: "run-claimed",
+      failureCode: null,
+    });
+    expect(volume?.status).toBe("awaiting_deployment");
+  });
+
   it("records a no-Saved first connection so a later callback cannot deploy", async () => {
     await insertPairing();
 
@@ -387,5 +483,34 @@ describe("Saved deployment admission", () => {
     expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(
       1,
     );
+  });
+
+  it("leaves a queued manual attempt unchanged when first-connect admits", async () => {
+    await insertPairing();
+    const first = await publish("first", null);
+    const queued = await admit(first.savedStateSnapshotId);
+    const later = await publish("both", first.savedStateSnapshotId);
+
+    const connected = await connect();
+    const [row] = await harness.db
+      .select({
+        id: schema.environmentDeployment.id,
+        savedStateSnapshotId: schema.environmentDeployment.savedStateSnapshotId,
+        triggerOrigin: schema.environmentDeployment.triggerOrigin,
+      })
+      .from(schema.environmentDeployment);
+
+    expect(later.savedStateSnapshotId).not.toBe(first.savedStateSnapshotId);
+    expect(connected).toEqual([
+      {
+        environmentDeploymentId: queued.id,
+        environmentId,
+      },
+    ]);
+    expect(row).toEqual({
+      id: queued.id,
+      savedStateSnapshotId: first.savedStateSnapshotId,
+      triggerOrigin: { origin: "manual", actorId: userId },
+    });
   });
 });

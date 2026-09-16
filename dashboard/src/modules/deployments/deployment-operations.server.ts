@@ -259,52 +259,21 @@ const requirePullableManualSdkDeploy = Effect.fn(
   return yield* requirePullableSdkDeployImagesEffect(services);
 });
 
-export const createEnvironmentDeploymentSnapshot = Effect.fn(
-  "Deployments.createEnvironmentDeploymentSnapshot",
-)(function* (actor: Actor, input: CreateEnvironmentDeploymentSnapshotInput) {
-  const context = yield* requireEnvironment(actor, input);
-  const shouldDeploy = input.deploy !== false;
-  if (shouldDeploy) {
-    yield* requirePullableManualSdkDeploy(context.environment.id);
-  }
-  const message = input.message?.trim() || null;
-  if (shouldDeploy) {
-    const attempt = yield* withMutationResult(
-      createManualEnvironmentDeployment({
-        environmentId: context.environment.id,
-        actorId: actor.userId,
-        message,
-        review: {
-          savedStateBasis: input.savedStateBasis,
-          workingStateFingerprint: input.reviewedWorkingStateFingerprint,
-          destructiveServiceIds: [],
-          destructiveVolumeReviews: [],
-        },
-      }),
-      { isolationLevel: "read committed" },
-    ).pipe(
-      Effect.catchIf(isActiveDeploymentUniqueViolation, () =>
-        new Validation({
-          field: "environmentId",
-          message: "An environment deployment attempt is already active.",
-        }),
-      ),
-    );
-    yield* dispatchEnvironmentDeployment({
-      environmentDeploymentId: attempt.data.environmentDeploymentId,
-      environmentId: context.environment.id,
-    });
-    return { state: "deployment_queued" as const };
-  }
-
+const requireLivePublicationReview = Effect.fn(
+  "Deployments.requireLivePublicationReview",
+)(function* (
+  actor: Actor,
+  input: CreateEnvironmentDeploymentSnapshotInput,
+  environmentId: string,
+) {
   const destructiveVolumeReviews = input.destructiveVolumeReviews ?? [];
   const reviewedDestructiveSave = {
     serviceIds: input.destructiveServiceIds ?? [],
-    volumeIds: destructiveVolumeReviews.map((review) => review.target.resourceId),
+    volumeIds: destructiveVolumeReviews.map(
+      (review) => review.target.resourceId,
+    ),
   };
-  const destructiveSave = yield* loadDestructiveEnvironmentSave(
-    context.environment.id,
-  );
+  const destructiveSave = yield* loadDestructiveEnvironmentSave(environmentId);
   const destructiveReviewMismatch = getDestructiveEnvironmentSaveReviewMismatch({
     expected: destructiveSave,
     reviewed: reviewedDestructiveSave,
@@ -316,11 +285,11 @@ export const createEnvironmentDeploymentSnapshot = Effect.fn(
   }
   if (destructiveSave.volumeIds.length > 0) {
     const freshReviews = yield* gatherExactTombstonedVolumeReviews({
-        actor,
-        organizationSlug: input.organizationSlug,
-        environmentId: context.environment.id,
-        resourceIds: destructiveSave.volumeIds,
-      });
+      actor,
+      organizationSlug: input.organizationSlug,
+      environmentId,
+      resourceIds: destructiveSave.volumeIds,
+    });
     const mismatch = getDestructiveVolumeReviewMismatch({
       reviewed: destructiveVolumeReviews,
       fresh: freshReviews,
@@ -333,22 +302,62 @@ export const createEnvironmentDeploymentSnapshot = Effect.fn(
       });
     }
   }
+  return {
+    savedStateBasis: input.savedStateBasis,
+    workingStateFingerprint: input.reviewedWorkingStateFingerprint,
+    destructiveServiceIds: reviewedDestructiveSave.serviceIds,
+    destructiveVolumeReviews,
+  };
+});
 
-  yield* withMutationResult(
-    saveReviewedEnvironmentState({
+export const createEnvironmentDeploymentSnapshot = Effect.fn(
+  "Deployments.createEnvironmentDeploymentSnapshot",
+)(function* (actor: Actor, input: CreateEnvironmentDeploymentSnapshotInput) {
+  const context = yield* requireEnvironment(actor, input);
+  const shouldDeploy = input.deploy !== false;
+  if (shouldDeploy) {
+    yield* requirePullableManualSdkDeploy(context.environment.id);
+  }
+  const message = input.message?.trim() || null;
+  const review = yield* requireLivePublicationReview(
+    actor,
+    input,
+    context.environment.id,
+  );
+  if (!shouldDeploy) {
+    yield* withMutationResult(
+      saveReviewedEnvironmentState({
+        environmentId: context.environment.id,
+        actorId: actor.userId,
+        message,
+        review,
+      }),
+      { isolationLevel: "read committed" },
+    );
+    return { state: "saved" as const };
+  }
+
+  const attempt = yield* withMutationResult(
+    createManualEnvironmentDeployment({
       environmentId: context.environment.id,
       actorId: actor.userId,
       message,
-      review: {
-        savedStateBasis: input.savedStateBasis,
-        workingStateFingerprint: input.reviewedWorkingStateFingerprint,
-        destructiveServiceIds: reviewedDestructiveSave.serviceIds,
-        destructiveVolumeReviews,
-      },
+      review,
     }),
     { isolationLevel: "read committed" },
+  ).pipe(
+    Effect.catchIf(isActiveDeploymentUniqueViolation, () =>
+      new Validation({
+        field: "environmentId",
+        message: "An environment deployment attempt is already active.",
+      }),
+    ),
   );
-  return { state: "saved" as const };
+  yield* dispatchEnvironmentDeployment({
+    environmentDeploymentId: attempt.data.environmentDeploymentId,
+    environmentId: context.environment.id,
+  });
+  return { state: "deployment_queued" as const };
 });
 
 export const dispatchExistingQueuedEnvironmentDeployment = Effect.fn(

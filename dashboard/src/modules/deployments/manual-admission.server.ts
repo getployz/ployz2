@@ -1,13 +1,13 @@
 import "@tanstack/react-start/server-only";
 
 import { Effect } from "effect";
-import { loadCurrentEnvironmentState } from "#/modules/environment-design/working-state-repository.server";
 import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
-import { fingerprintReviewedEnvironmentWorkingStateSync } from "#/modules/environment-design/working-state-fingerprint.server";
 import type { ReviewedEnvironmentPublication } from "#/modules/environment-design/working-state-review";
-import { publishEnvironmentSavedState } from "#/modules/environment-design/saved-state-operations.server";
-import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
-import { Conflict } from "#/server/public-error";
+import { publishReviewedWorkingState } from "#/modules/environment-design/saved-state-operations.server";
+import {
+  admitEnvironmentDeployment,
+  assertManualDeploymentQueueVacant,
+} from "#/modules/deployments/admission.server";
 
 export const createManualEnvironmentDeployment = Effect.fn(
   "Deployments.createManualEnvironmentDeployment",
@@ -18,23 +18,15 @@ export const createManualEnvironmentDeployment = Effect.fn(
   readonly review: ReviewedEnvironmentPublication;
 }) {
   yield* lockEnvironmentDeploymentQueue(input.environmentId);
-  const state = yield* loadCurrentEnvironmentState(input.environmentId);
-  const currentWorkingStateFingerprint =
-    fingerprintReviewedEnvironmentWorkingStateSync(state.projection);
-  if (currentWorkingStateFingerprint !== input.review.workingStateFingerprint) {
-    return yield* new Conflict({
-      message: "Working State changed after the manual deployment was reviewed.",
-    });
-  }
-
-  const saved = yield* publishEnvironmentSavedState({
+  yield* assertManualDeploymentQueueVacant(input.environmentId);
+  const saved = yield* publishReviewedWorkingState({
     environmentId: input.environmentId,
     actorId: input.actorId,
     message: input.message,
-    basis: input.review.savedStateBasis,
-    intent: state.intent,
-    destructiveVolumeReviews: [],
+    review: input.review,
     revisionPolicy: "reuse_latest_if_equivalent",
+    staleWorkingMessage:
+      "Working State changed after the manual deployment was reviewed.",
   });
 
   const deployment = yield* admitEnvironmentDeployment({

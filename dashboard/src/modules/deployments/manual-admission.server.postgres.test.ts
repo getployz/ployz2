@@ -545,57 +545,30 @@ describe("manual environment saved-state persistence", () => {
     ).toEqual([]);
   });
 
-  it("refreshes one queued target from a new Saved revision while preserving earlier Saved evidence", async () => {
+  it("refuses a second manual Deploy while one attempt is queued", async () => {
     const first = await deploy("First target");
-    const [firstNode] = await harness.db
-      .select({ config: schema.environmentNodeConfigSnapshot.config })
-      .from(schema.environmentNodeConfigSnapshot)
-      .where(
-        eq(
-          schema.environmentNodeConfigSnapshot.environmentDeploymentId,
-          first.environmentDeploymentId,
-        ),
-      );
-
     await harness.db
       .update(schema.environment)
       .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Changed target"}::text))`, revision: randomUUID() })
       .where(eq(schema.environment.id, environmentId));
-    const second = await deploy("Second target");
 
+    await expect(deploy("Second target")).rejects.toMatchObject({
+      _tag: "Conflict",
+    });
+    const attempts = await harness.db.select().from(schema.environmentDeployment);
     const savedRows = await harness.db
-      .select({
-        intent: schema.environmentSavedStateSnapshot.intent,
-      })
+      .select()
       .from(schema.environmentSavedStateSnapshot)
       .where(
         eq(schema.environmentSavedStateSnapshot.environmentId, environmentId),
       );
-    const queuedNodes = await harness.db
-      .select({ config: schema.environmentNodeConfigSnapshot.config })
-      .from(schema.environmentNodeConfigSnapshot)
-      .where(
-        eq(
-          schema.environmentNodeConfigSnapshot.environmentDeploymentId,
-          second.environmentDeploymentId,
-        ),
-      );
-
-    expect(second.environmentDeploymentId).toBe(first.environmentDeploymentId);
-    expect(firstNode?.config).toEqual(expect.objectContaining({ name: "API" }));
-    expect(savedRows).toHaveLength(2);
-    expect(
-      savedRows.map(
-        (row) =>
-          decodeStrict(savedEnvironmentIntentSchema, row.intent).services[0]?.config
-            .name,
-      ),
-    ).toEqual(expect.arrayContaining(["API", "Changed target"]));
-    expect(queuedNodes).toEqual([
+    expect(attempts).toEqual([
       expect.objectContaining({
-        config: expect.objectContaining({ name: "Changed target" }),
+        id: first.environmentDeploymentId,
+        status: "queued",
       }),
     ]);
+    expect(savedRows).toHaveLength(1);
   });
 
   it("freezes a started Attempt Target while later Working changes queue separately", async () => {

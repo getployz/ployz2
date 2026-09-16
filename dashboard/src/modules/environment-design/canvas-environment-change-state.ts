@@ -24,6 +24,16 @@ export type CanvasEnvironmentChangeState = {
   baselineToken: string;
 };
 
+export function canvasPublicationPlan(input: {
+  readonly destructiveServiceIds: readonly string[];
+  readonly deletedDeployedVolumeIds: readonly string[];
+}): { readonly kind: "submit" } | { readonly kind: "confirm_destructive" } {
+  return input.destructiveServiceIds.length > 0 ||
+    input.deletedDeployedVolumeIds.length > 0
+    ? { kind: "confirm_destructive" }
+    : { kind: "submit" };
+}
+
 export function buildCanvasEnvironmentChangeState(input: {
   working: EnvironmentStateProjection;
   saved: EnvironmentStateProjection;

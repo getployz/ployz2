@@ -9,6 +9,9 @@ import {
   sendInngestEvent,
 } from "#/modules/inngest/client";
 import { createEnvironmentDeployRequestedEvent } from "#/modules/inngest/events";
+import {
+  failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction,
+} from "#/modules/runtime/volume-removal.repository";
 
 export const ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE =
   "inngest_dispatch_failed";
@@ -54,31 +57,46 @@ export const dispatchEnvironmentDeployment = Effect.fn(
   yield* sendInngestEvent(createEnvironmentDeployRequestedEvent(input)).pipe(
     Effect.catchTag("InngestEventSendError", (failure) =>
       Effect.gen(function* () {
+        const database = yield* Database;
         const finishedAt = new Date();
-        yield* drizzle
-          .update(schemaEnvironmentDeployment)
-          .set({
-            status: "failed",
-            failureCode: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
-            failureMessage: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_MESSAGE,
-            finishedAt,
-            updatedAt: finishedAt,
-          })
-          .where(
-            and(
-              eq(
-                schemaEnvironmentDeployment.id,
-                input.environmentDeploymentId,
-              ),
-              eq(
-                schemaEnvironmentDeployment.environmentId,
-                input.environmentId,
-              ),
-              eq(schemaEnvironmentDeployment.status, "queued"),
-              isNull(schemaEnvironmentDeployment.inngestRunId),
-            ),
-          )
-          .returning({ id: schemaEnvironmentDeployment.id });
+        yield* database.transaction(
+          Effect.gen(function* () {
+            const { drizzle: tx } = yield* Database;
+            const failed = yield* tx
+              .update(schemaEnvironmentDeployment)
+              .set({
+                status: "failed",
+                failureCode: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
+                failureMessage: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_MESSAGE,
+                finishedAt,
+                updatedAt: finishedAt,
+              })
+              .where(
+                and(
+                  eq(
+                    schemaEnvironmentDeployment.id,
+                    input.environmentDeploymentId,
+                  ),
+                  eq(
+                    schemaEnvironmentDeployment.environmentId,
+                    input.environmentId,
+                  ),
+                  eq(schemaEnvironmentDeployment.status, "queued"),
+                  isNull(schemaEnvironmentDeployment.inngestRunId),
+                ),
+              )
+              .returning({ id: schemaEnvironmentDeployment.id });
+            if (failed.length === 0) return;
+            yield* failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction(
+              tx,
+              {
+                environmentDeploymentId: input.environmentDeploymentId,
+                deploymentDisposition: "failed",
+                now: finishedAt,
+              },
+            );
+          }),
+        );
         return yield* failure;
       }),
     ),

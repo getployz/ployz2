@@ -1,6 +1,9 @@
 import { expect, it } from "vitest";
 import { parseServiceConfig } from "@ployz/sdk/config";
-import { buildCanvasEnvironmentChangeState } from "./canvas-environment-change-state";
+import {
+  buildCanvasEnvironmentChangeState,
+  canvasPublicationPlan,
+} from "./canvas-environment-change-state";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import type { EnvironmentStateProjection } from "./environment-change-set";
 
@@ -53,4 +56,27 @@ it("advances successful nodes independently after a partial failure", () => {
   });
   expect(result.groups).toMatchObject([{ nodeId: "worker", rows: [{ currentValue: "1", newValue: "5" }] }]);
   expect(result.totalCount).toBe(1);
+});
+
+it("submits Save and Deploy without confirmation when nothing is destructive", () => {
+  const empty = {
+    destructiveServiceIds: [],
+    deletedDeployedVolumeIds: [],
+  };
+  expect(canvasPublicationPlan(empty)).toEqual({ kind: "submit" });
+});
+
+it("requires the same destructive confirmation for Save and Deploy", () => {
+  expect(
+    canvasPublicationPlan({
+      destructiveServiceIds: ["svc"],
+      deletedDeployedVolumeIds: [],
+    }),
+  ).toEqual({ kind: "confirm_destructive" });
+  expect(
+    canvasPublicationPlan({
+      destructiveServiceIds: [],
+      deletedDeployedVolumeIds: ["vol"],
+    }),
+  ).toEqual({ kind: "confirm_destructive" });
 });
