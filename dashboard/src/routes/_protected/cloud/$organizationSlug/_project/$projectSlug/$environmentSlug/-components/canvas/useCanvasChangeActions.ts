@@ -227,41 +227,45 @@ export function useCanvasChangeActions({
     return outcome;
   }
 
-  function requestDeploy() {
+  async function requestDeploy() {
     if (!deployTargetIsAvailable()) return;
     if (hasDestructiveChanges()) {
       setPendingPublication("deploy");
       setDestructiveConfirmationOpen(true);
       return;
     }
-    void submitPublication("deploy", {
-      destructiveServiceIds: [],
-      destructiveVolumeReviews: [],
-    }).catch((error: unknown) => {
+    try {
+      await submitPublication("deploy", {
+        destructiveServiceIds: [],
+        destructiveVolumeReviews: [],
+      });
+    } catch (error) {
       toast.error(
         error instanceof Error
           ? error.message
           : "Failed to queue the desired state snapshot.",
       );
-    });
+    }
   }
 
-  function requestSave() {
+  async function requestSave() {
     if (hasDestructiveChanges()) {
       setPendingPublication("save");
       setDestructiveConfirmationOpen(true);
       return;
     }
-    void submitPublication("save", {
-      destructiveServiceIds: [],
-      destructiveVolumeReviews: [],
-    }).catch((error: unknown) => {
+    try {
+      await submitPublication("save", {
+        destructiveServiceIds: [],
+        destructiveVolumeReviews: [],
+      });
+    } catch (error) {
       toast.error(
         error instanceof Error
           ? error.message
           : "Failed to save the desired state snapshot.",
       );
-    });
+    }
   }
 
   async function prepareDestructiveReview() {
