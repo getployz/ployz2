@@ -54,7 +54,6 @@ export const environmentPublicationReviewSchema = Schema.Struct({
 
 export type EnvironmentPublicationReview =
   typeof environmentPublicationReviewSchema.Type;
-export type ReviewedEnvironmentPublication = EnvironmentPublicationReview;
 
 export function projectReviewedEnvironmentPublicationDestructiveSave(
   review: EnvironmentPublicationReview,

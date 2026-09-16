@@ -16,7 +16,7 @@ import {
 } from "#/modules/deployments/cloud-deployment-command.server";
 import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
 import { saveReviewedEnvironmentState } from "#/modules/environment-design/saved-state-operations.server";
-import type { ReviewedEnvironmentPublication } from "#/modules/environment-design/working-state-review";
+import type { EnvironmentPublicationReview } from "#/modules/environment-design/working-state-review";
 import { fingerprintReviewedEnvironmentWorkingState } from "#/modules/environment-design/working-state-review";
 import { savedEnvironmentIntentSchema } from "#/modules/environment-design/saved-intent";
 import { decodeStrict } from "#/modules/environment-design/schema";
@@ -55,7 +55,7 @@ function saveManualEnvironmentStateSnapshot(input: {
   readonly environmentId: string;
   readonly actorId: string;
   readonly message: string | null;
-  readonly review: ReviewedEnvironmentPublication;
+  readonly review: EnvironmentPublicationReview;
 }) {
   return Effect.match(
     saveReviewedEnvironmentState({
@@ -73,7 +73,7 @@ function deployManualEnvironmentState(input: {
   readonly environmentId: string;
   readonly actorId: string;
   readonly message: string | null;
-  readonly review: ReviewedEnvironmentPublication;
+  readonly review: EnvironmentPublicationReview;
 }) {
   return createManualEnvironmentDeployment(input).pipe(
     Effect.provideService(SecretEncryption, encryption),
