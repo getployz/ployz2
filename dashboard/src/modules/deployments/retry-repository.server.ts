@@ -151,7 +151,6 @@ export const createRetryAttempt = Effect.fn("Deployments.createRetryAttempt")(
           environmentDeploymentId: deployment.id,
           status: deployment.status,
           createdAt: deployment.createdAt,
-          serviceCount: deployment.serviceCount,
           retryOfDeploymentId: source.id,
         };
       }),

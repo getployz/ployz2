@@ -48,13 +48,13 @@ describe("decideQueueWrite", () => {
         triggerOrigin: manual,
         savedStateSnapshotId: "saved-2",
       }),
-    ).toEqual({ kind: "refuse_manual" });
+    ).toEqual({ kind: "refuse_manual", occupant: occupant(github) });
     expect(
       decideQueueWrite(occupant(manual), {
         triggerOrigin: manual,
         savedStateSnapshotId: "saved-2",
       }),
-    ).toEqual({ kind: "refuse_manual" });
+    ).toEqual({ kind: "refuse_manual", occupant: occupant(manual) });
   });
 
   it("leaves a queued manual attempt unchanged for automated triggers", () => {
@@ -63,13 +63,13 @@ describe("decideQueueWrite", () => {
         triggerOrigin: github,
         savedStateSnapshotId: "saved-2",
       }),
-    ).toEqual({ kind: "leave_unchanged" });
+    ).toEqual({ kind: "leave_unchanged", occupant: occupant(manual) });
     expect(
       decideQueueWrite(occupant(manual), {
         triggerOrigin: firstConnect,
         savedStateSnapshotId: "saved-2",
       }),
-    ).toEqual({ kind: "leave_unchanged" });
+    ).toEqual({ kind: "leave_unchanged", occupant: occupant(manual) });
   });
 
   it("refreshes an unowned automated occupant from a later automated admit", () => {
@@ -78,15 +78,16 @@ describe("decideQueueWrite", () => {
         triggerOrigin: github,
         savedStateSnapshotId: "saved-2",
       }),
-    ).toEqual({ kind: "refresh_automated" });
+    ).toEqual({ kind: "refresh_automated", occupant: occupant(github) });
   });
 
   it("does not refresh an automated occupant after Inngest owns it", () => {
+    const owned = occupant(github, { inngestRunId: "run-1" });
     expect(
-      decideQueueWrite(occupant(github, { inngestRunId: "run-1" }), {
+      decideQueueWrite(owned, {
         triggerOrigin: github,
         savedStateSnapshotId: "saved-2",
       }),
-    ).toEqual({ kind: "leave_unchanged" });
+    ).toEqual({ kind: "leave_unchanged", occupant: owned });
   });
 });

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asc, eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 import { Inngest } from "inngest";
 import * as schema from "#/db/schema";
 import {
@@ -9,6 +9,7 @@ import {
 } from "#/modules/github/github-ingestion.postgres-test-harness";
 import { InngestClient } from "#/modules/inngest/client";
 import { publishEnvironmentSavedState } from "#/modules/environment-design/saved-state-operations.server";
+import type { DeploymentTriggerOrigin } from "./deployment";
 import {
   admitEnvironmentDeployment,
   loadLatestSavedDeploymentTarget,
@@ -111,17 +112,42 @@ describe("Saved deployment admission", () => {
     );
   }
 
-  function admit(savedStateSnapshotId: string) {
+  const manual = { origin: "manual" as const, actorId: userId };
+  const github = (deliveryId: string) => ({
+    origin: "github" as const,
+    deliveryId,
+    branchEvaluationRevision: 1,
+    installationId: 17,
+    repositoryId: 42,
+  });
+
+  function admit(
+    savedStateSnapshotId: string,
+    triggerOrigin: DeploymentTriggerOrigin = github("delivery-1"),
+  ) {
     return harness.runTransaction(() =>
         admitEnvironmentDeployment(
           {
             environmentId,
             savedStateSnapshotId,
-            triggerOrigin: { origin: "manual", actorId: userId },
+            triggerOrigin,
             message: null,
           },
         ),
     );
+  }
+
+  async function queuedRow(id: string) {
+    const [row] = await harness.db
+      .select({
+        id: schema.environmentDeployment.id,
+        status: schema.environmentDeployment.status,
+        savedStateSnapshotId: schema.environmentDeployment.savedStateSnapshotId,
+        triggerOrigin: schema.environmentDeployment.triggerOrigin,
+      })
+      .from(schema.environmentDeployment)
+      .where(eq(schema.environmentDeployment.id, id));
+    return row;
   }
 
   async function insertPairing() {
@@ -145,11 +171,13 @@ describe("Saved deployment admission", () => {
     );
   }
 
-  it("serializes concurrent admissions into one mutable queued target", async () => {
+  it("serializes concurrent automated admissions into one queued target", async () => {
     const saved = await publish("first", null);
 
     const attempts = await Promise.all(
-      Array.from({ length: 8 }, () => admit(saved.savedStateSnapshotId)),
+      Array.from({ length: 8 }, (_, index) =>
+        admit(saved.savedStateSnapshotId, github(`delivery-${index}`)),
+      ),
     );
 
     expect(new Set(attempts.map(({ id }) => id)).size).toBe(1);
@@ -158,11 +186,65 @@ describe("Saved deployment admission", () => {
     );
   });
 
-  it("replaces an unowned queued target but freezes one that has started", async () => {
+  it("refuses a second manual admit while any attempt is queued", async () => {
+    const first = await publish("first", null);
+    const queued = await admit(first.savedStateSnapshotId, manual);
+    const second = await publish("both", first.savedStateSnapshotId);
+
+    const refused = await harness.runTransactionResult(() =>
+      admitEnvironmentDeployment({
+        environmentId,
+        savedStateSnapshotId: second.savedStateSnapshotId,
+        triggerOrigin: manual,
+        message: null,
+      }),
+    );
+
+    expect(Result.isFailure(refused) && refused.failure).toMatchObject({
+      _tag: "Conflict",
+      message: "An environment deployment attempt is already queued.",
+    });
+    expect(await queuedRow(queued.id)).toEqual({
+      id: queued.id,
+      status: "queued",
+      savedStateSnapshotId: first.savedStateSnapshotId,
+      triggerOrigin: manual,
+    });
+    expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(1);
+  });
+
+  it("leaves a queued manual attempt unchanged for an automated admit", async () => {
+    const first = await publish("first", null);
+    const queued = await admit(first.savedStateSnapshotId, manual);
+    const second = await publish("both", first.savedStateSnapshotId);
+
+    const unchanged = await admit(second.savedStateSnapshotId, github("later"));
+
+    expect(unchanged.id).toBe(queued.id);
+    expect(await queuedRow(queued.id)).toEqual({
+      id: queued.id,
+      status: "queued",
+      savedStateSnapshotId: first.savedStateSnapshotId,
+      triggerOrigin: manual,
+    });
+    expect(
+      await harness.db
+        .select({ nodeId: schema.environmentNodeConfigSnapshot.nodeId })
+        .from(schema.environmentNodeConfigSnapshot)
+        .where(
+          eq(
+            schema.environmentNodeConfigSnapshot.environmentDeploymentId,
+            queued.id,
+          ),
+        ),
+    ).toEqual([{ nodeId: firstVolumeId }]);
+  });
+
+  it("replaces an unowned automated queued target but freezes one that has started", async () => {
     const first = await publish("first", null);
     const queued = await admit(first.savedStateSnapshotId);
     const second = await publish("both", first.savedStateSnapshotId);
-    const replaced = await admit(second.savedStateSnapshotId);
+    const replaced = await admit(second.savedStateSnapshotId, github("delivery-2"));
 
     expect(replaced.id).toBe(queued.id);
     expect(

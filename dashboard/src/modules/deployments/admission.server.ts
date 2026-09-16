@@ -6,7 +6,6 @@ import {
   desc,
   eq,
   inArray,
-  isNull,
   not,
   type SQL,
 } from "drizzle-orm";
@@ -31,6 +30,7 @@ import {
 } from "#/db/scope-values.server";
 import { projectJsonObject } from "#/lib/json";
 import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
+import { decideQueueWrite } from "#/modules/deployments/queue-occupancy";
 import { getVolumePhysicalName } from "#/modules/environment-design/volume-config";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { stageVolumeRemoveAttempt } from "#/modules/runtime/volume-removal.repository";
@@ -303,19 +303,43 @@ function writeQueuedSavedTarget(
     const queuedRows = yield* drizzle
       .select({
         id: schemaEnvironmentDeployment.id,
+        status: schemaEnvironmentDeployment.status,
         createdAt: schemaEnvironmentDeployment.createdAt,
+        savedStateSnapshotId: schemaEnvironmentDeployment.savedStateSnapshotId,
+        triggerOrigin: schemaEnvironmentDeployment.triggerOrigin,
+        inngestRunId: schemaEnvironmentDeployment.inngestRunId,
       })
       .from(schemaEnvironmentDeployment)
       .where(
         and(
           eq(schemaEnvironmentDeployment.environmentId, input.environmentId),
           eq(schemaEnvironmentDeployment.status, "queued"),
-          isNull(schemaEnvironmentDeployment.inngestRunId),
         ),
       )
       .for("update")
       .limit(1);
-    const queued = queuedRows[0];
+    const write = decideQueueWrite(queuedRows[0] ?? null, {
+      triggerOrigin: input.triggerOrigin,
+      savedStateSnapshotId: target.savedStateSnapshotId,
+    });
+    switch (write.kind) {
+      case "refuse_manual":
+        return yield* new Conflict({
+          message: "An environment deployment attempt is already queued.",
+        });
+      case "leave_unchanged": {
+        const { id, status, createdAt } = write.occupant;
+        return { id, status, createdAt };
+      }
+      case "refresh_automated":
+      case "insert":
+        break;
+      default: {
+        const _never: never = write;
+        return _never;
+      }
+    }
+    const queued = write.kind === "refresh_automated" ? write.occupant : undefined;
     const now = new Date();
     const deploymentRows = queued
       ? yield* drizzle
@@ -402,12 +426,7 @@ function writeQueuedSavedTarget(
         }),
       { discard: true },
     );
-    return {
-      ...deployment,
-      serviceCount: target.nodeSnapshots.filter(
-        ({ nodeType }) => nodeType === "service",
-      ).length,
-    };
+    return deployment;
   });
 }
 
