@@ -104,7 +104,7 @@ export function useCanvasChangeActions({
   const prepareEnvironmentDestructiveVolumes = useServerFn(
     prepareEnvironmentDestructiveVolumesServerFn,
   );
-  const createDeploymentSnapshotMutation = useMutation({
+  const publicationMutation = useMutation({
     mutationFn: async (input: {
       kind: CanvasPublicationKind;
       message: string;
@@ -208,7 +208,7 @@ export function useCanvasChangeActions({
       reviewedWorkingStateFingerprint?: string;
     },
   ) {
-    const outcome = await createDeploymentSnapshotMutation.mutateAsync({
+    const outcome = await publicationMutation.mutateAsync({
       kind,
       message: commitMessage,
       savedStateBasis,
@@ -227,45 +227,38 @@ export function useCanvasChangeActions({
     return outcome;
   }
 
-  async function requestDeploy() {
-    if (!deployTargetIsAvailable()) return;
+  /**
+   * Save and Deploy share one path. Removals route through the destructive
+   * dialog, which gathers Volume evidence; otherwise the canvas submits the
+   * removal set it observed, which is the confirmed empty set.
+   */
+  async function requestPublication(kind: CanvasPublicationKind) {
+    if (kind === "deploy" && !deployTargetIsAvailable()) return;
     if (hasDestructiveChanges()) {
-      setPendingPublication("deploy");
+      setPendingPublication(kind);
       setDestructiveConfirmationOpen(true);
       return;
     }
     try {
-      await submitPublication("deploy", {
-        destructiveServiceIds: [],
+      await submitPublication(kind, {
+        destructiveServiceIds: [...destructiveServiceIds],
         destructiveVolumeReviews: [],
       });
     } catch (error) {
       toast.error(
         error instanceof Error
           ? error.message
-          : "Failed to queue the desired state snapshot.",
+          : `Failed to ${kind} the desired state snapshot.`,
       );
     }
   }
 
-  async function requestSave() {
-    if (hasDestructiveChanges()) {
-      setPendingPublication("save");
-      setDestructiveConfirmationOpen(true);
-      return;
-    }
-    try {
-      await submitPublication("save", {
-        destructiveServiceIds: [],
-        destructiveVolumeReviews: [],
-      });
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Failed to save the desired state snapshot.",
-      );
-    }
+  function requestDeploy() {
+    return requestPublication("deploy");
+  }
+
+  function requestSave() {
+    return requestPublication("save");
   }
 
   async function prepareDestructiveReview() {
@@ -331,7 +324,7 @@ export function useCanvasChangeActions({
     discardNodeChanges,
     discardRowChange,
     requestSave,
-    isSubmittingDeploymentSnapshot: createDeploymentSnapshotMutation.isPending,
+    isSubmittingDeploymentSnapshot: publicationMutation.isPending,
     requestDeploy,
     pendingPublication,
     prepareDestructiveReview,
