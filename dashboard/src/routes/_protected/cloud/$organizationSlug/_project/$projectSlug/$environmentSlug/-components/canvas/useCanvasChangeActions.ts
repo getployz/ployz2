@@ -227,11 +227,6 @@ export function useCanvasChangeActions({
     return outcome;
   }
 
-  /**
-   * Save and Deploy share one path. Removals route through the destructive
-   * dialog, which gathers Volume evidence; otherwise the canvas submits the
-   * removal set it observed, which is the confirmed empty set.
-   */
   async function requestPublication(kind: CanvasPublicationKind) {
     if (kind === "deploy" && !deployTargetIsAvailable()) return;
     if (hasDestructiveChanges()) {
@@ -241,7 +236,7 @@ export function useCanvasChangeActions({
     }
     try {
       await submitPublication(kind, {
-        destructiveServiceIds: [...destructiveServiceIds],
+        destructiveServiceIds: [],
         destructiveVolumeReviews: [],
       });
     } catch (error) {
