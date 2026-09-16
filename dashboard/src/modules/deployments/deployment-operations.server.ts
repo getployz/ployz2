@@ -11,7 +11,7 @@ import { Effect, Schema } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
-import { requireEnvironment } from "#/modules/deployments/cloud-deployment-command.server";
+import { requireEnvironmentForActor } from "#/modules/environment-design/authoring-repository.server";
 import {
   createRetryAttempt,
   loadAuthorizedDeploymentEvidence,
@@ -164,7 +164,7 @@ export const dispatchExistingQueuedEnvironmentDeployment = Effect.fn(
   "Deployments.dispatchExistingQueuedEnvironmentDeployment",
 )(function* (actor: Actor, input: DispatchQueuedEnvironmentDeploymentInput) {
   const { drizzle: database } = yield* Database;
-  const context = yield* requireEnvironment(actor, input);
+  const context = yield* requireEnvironmentForActor(actor, input);
   const rows = yield* database
         .select({ id: schemaEnvironmentDeployment.id })
         .from(schemaEnvironmentDeployment)
@@ -190,7 +190,7 @@ export const dispatchExistingQueuedEnvironmentDeployment = Effect.fn(
 export const retryEnvironmentDeployment = Effect.fn(
   "Deployments.retryEnvironmentDeployment",
 )(function* (actor: Actor, input: RetryEnvironmentDeploymentInput) {
-  const context = yield* requireEnvironment(actor, input);
+  const context = yield* requireEnvironmentForActor(actor, input);
   return yield* createRetryAttempt({
       environmentId: context.environment.id,
       userId: actor.userId,
@@ -200,7 +200,7 @@ export const retryEnvironmentDeployment = Effect.fn(
 
 export const cancelEnvironmentDeployment = Effect.fn("Deployments.cancelEnvironmentDeployment")(
   function* (actor: Actor, input: CancelEnvironmentDeploymentInput) {
-    const context = yield* requireEnvironment(actor, input);
+    const context = yield* requireEnvironmentForActor(actor, input);
     const { drizzle } = yield* Database;
     const [deployment] = yield* drizzle.select().from(schemaEnvironmentDeployment).where(and(
       eq(schemaEnvironmentDeployment.id, input.deploymentId),

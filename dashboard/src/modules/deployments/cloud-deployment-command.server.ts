@@ -11,7 +11,7 @@ import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.se
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { findUnpullableSdkDeployImages } from "#/modules/deployments/image-gate";
 import { isActiveDeploymentUniqueViolation } from "#/modules/deployments/queue-lock.server";
-import { getEnvironmentContextForActor } from "#/modules/environment-design/authoring-repository.server";
+import { requireEnvironmentForActor } from "#/modules/environment-design/authoring-repository.server";
 import {
   DestructiveVolumeReviewChangedError,
   getDestructiveVolumeReviewMismatch,
@@ -28,7 +28,7 @@ import {
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { withMutationResult } from "#/server/mutation-result.server";
-import { NotFound, Validation } from "#/server/public-error";
+import { Validation } from "#/server/public-error";
 
 type EnvironmentContextInput = {
   readonly organizationSlug: string;
@@ -36,15 +36,12 @@ type EnvironmentContextInput = {
   readonly environmentSlug: string;
 };
 
-export const requireEnvironment = Effect.fn("CloudDeployment.requireEnvironment")(
-  function* (actor: Actor, input: EnvironmentContextInput) {
-    const context = yield* getEnvironmentContextForActor(actor, input);
-    if (context !== null) return context;
-    return yield* new NotFound({
-      message: "The environment was not found.",
-    });
-  },
-);
+type ManualPublication = {
+  readonly environmentId: string;
+  readonly actorId: string;
+  readonly message: string | null;
+  readonly review: EnvironmentPublicationReview;
+};
 
 const loadDestructiveEnvironmentSave = Effect.fn(
   "CloudDeployment.loadDestructiveEnvironmentSave",
@@ -71,7 +68,7 @@ const loadDestructiveEnvironmentSave = Effect.fn(
 export const prepareEnvironmentDestructiveVolumes = Effect.fn(
   "CloudDeployment.prepareEnvironmentDestructiveVolumes",
 )(function* (actor: Actor, input: EnvironmentContextInput) {
-  const context = yield* requireEnvironment(actor, input);
+  const context = yield* requireEnvironmentForActor(actor, input);
   const destructiveSave = yield* loadDestructiveEnvironmentSave(
     context.environment.id,
   );
@@ -127,19 +124,12 @@ const requireFreshDestructiveVolumeEvidence = Effect.fn(
   }
 });
 
+/** Publishes the reviewed Working State and admits that exact Saved revision in the caller's transaction. */
 export const createManualEnvironmentDeployment = Effect.fn(
   "CloudDeployment.createManualEnvironmentDeployment",
-)(function* (input: {
-  readonly environmentId: string;
-  readonly actorId: string;
-  readonly message: string | null;
-  readonly review: EnvironmentPublicationReview;
-}) {
+)(function* (input: ManualPublication) {
   const saved = yield* saveReviewedEnvironmentState({
-    environmentId: input.environmentId,
-    actorId: input.actorId,
-    message: input.message,
-    review: input.review,
+    ...input,
     revisionPolicy: "reuse_latest_if_equivalent",
   });
   const deployment = yield* admitEnvironmentDeployment({
@@ -159,7 +149,7 @@ export const createManualEnvironmentDeployment = Effect.fn(
 const publishReviewedEnvironment = Effect.fn(
   "CloudDeployment.publishReviewedEnvironment",
 )(function* (actor: Actor, environmentId: string, input: ReviewedPublicationInput) {
-  const publication = {
+  const publication: ManualPublication = {
     environmentId,
     actorId: actor.userId,
     message: input.message || null,
@@ -174,12 +164,7 @@ const publishReviewedEnvironment = Effect.fn(
       return { state: "saved" as const };
     }
     case "manual_deploy": {
-      const deployment = yield* createManualEnvironmentDeployment({
-        environmentId,
-        actorId: actor.userId,
-        message: publication.message,
-        review: publication.review,
-      });
+      const deployment = yield* createManualEnvironmentDeployment(publication);
       return {
         state: "deployment_queued" as const,
         environmentDeploymentId: deployment.environmentDeploymentId,
@@ -203,7 +188,7 @@ const publishReviewedEnvironment = Effect.fn(
 export const submitReviewedPublication = Effect.fn(
   "CloudDeployment.submitReviewedPublication",
 )(function* (actor: Actor, input: ReviewedPublicationInput) {
-  const context = yield* requireEnvironment(actor, input);
+  const context = yield* requireEnvironmentForActor(actor, input);
   const environmentId = context.environment.id;
   if (input.intent === "manual_deploy") {
     yield* requirePullableManualSdkDeploy(environmentId);
