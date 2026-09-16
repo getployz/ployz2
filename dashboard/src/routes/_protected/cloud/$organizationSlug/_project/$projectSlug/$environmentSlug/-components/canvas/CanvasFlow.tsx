@@ -53,7 +53,7 @@ const DESTRUCTIVE_DIALOG = {
   save: {
     title: "Save destructive changes?",
     description:
-      "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision as Saved intent; runtime deletion happens only during a later volume destroy.",
+      "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision as Saved State; runtime deletion happens only during a later volume destroy.",
     actionLabel: "Save removals",
     pendingActionLabel: "Saving...",
   },

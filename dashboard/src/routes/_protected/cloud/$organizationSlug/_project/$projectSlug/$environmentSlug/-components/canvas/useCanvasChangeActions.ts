@@ -219,7 +219,7 @@ export function useCanvasChangeActions({
       toast.error(
         error instanceof Error
           ? error.message
-          : `Failed to ${kind} the Working State.`,
+          : `Failed to ${kind === "deploy" ? "Deploy" : "Save"}.`,
       );
     }
   }
