@@ -52,3 +52,17 @@ fn publication_review_binds_exact_basis_removals_and_visible_revision() {
     assert_eq!(config_request(json!({"operation":"reuse_publication","policy":"reuse_latest_if_equivalent","current":candidate,"latest":candidate})).unwrap(), true);
     assert_eq!(config_request(json!({"operation":"reuse_publication","policy":"always_create","current":candidate,"latest":candidate})).unwrap(), false);
 }
+
+#[test]
+fn saved_removals_still_require_review_until_applied() {
+    let removals = config_request(json!({"operation":"destructive_publication","value":{
+        "workingNodes": [], "savedNodes": [],
+        "appliedNodes": [{"nodeType":"service","nodeId":"service"},
+                         {"nodeType":"volume","nodeId":"volume"}]
+    }}))
+    .unwrap();
+    assert_eq!(
+        removals,
+        json!({"serviceIds":["service"],"volumeIds":["volume"]})
+    );
+}
