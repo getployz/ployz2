@@ -79,6 +79,8 @@ describe("canvas publication submission", () => {
       message: review.message,
       review: wireReview,
     });
+    expect(isValid(reviewedPublicationSchema, save)).toBe(true);
+    expect(isValid(reviewedPublicationSchema, deploy)).toBe(true);
   });
 
   it("surfaces a conflict without reconciling or resubmitting", async () => {
