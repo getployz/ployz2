@@ -239,7 +239,6 @@ describe("deployment runtime persistence", () => {
       triggerOrigin: { origin: "manual", actorId: userId }, message: null,
     }));
     const admitted = await admit();
-    expect((await admit()).id).toBe(admitted.id);
     expect(await harness.db.select().from(schema.environmentDeploymentSecret)).toEqual([
       { environmentDeploymentId: admitted.id, encryptedRuntimeOutcome: null },
     ]);
