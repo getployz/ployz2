@@ -42,7 +42,23 @@ import type { CanvasResourceNode } from "./types";
 import { DestructiveConfirmationDialog } from "#/components/destructive-volume/volume-destruction-confirmation-dialog";
 import type { EnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introductions";
 
-// Shared styling for every canvas edge: dashed, primary colour, matching arrow.
+const DESTRUCTIVE_DIALOG = {
+  deploy: {
+    title: "Deploy destructive changes?",
+    description:
+      "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision and admits that Saved revision for deployment.",
+    actionLabel: "Deploy removals",
+    pendingActionLabel: "Deploying...",
+  },
+  save: {
+    title: "Save destructive changes?",
+    description:
+      "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision as Saved intent; runtime deletion happens only during a later volume destroy.",
+    actionLabel: "Save removals",
+    pendingActionLabel: "Saving...",
+  },
+} as const;
+
 const DEFAULT_EDGE_OPTIONS = {
   type: "smoothstep",
   style: { stroke: "var(--primary)", strokeDasharray: "6 4" },
@@ -75,8 +91,6 @@ export function CanvasFlow({
   );
   const [flowReady, setFlowReady] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
-  const [destructiveConfirmationOpen, setDestructiveConfirmationOpen] =
-    useState(false);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
   const { onNodeDrag } = useCanvasPositionMutation({
@@ -130,6 +144,7 @@ export function CanvasFlow({
     requestSave,
     requestDeploy,
     pendingPublication,
+    setPendingPublication,
     prepareDestructiveReview,
     confirmDestructiveAction,
   } = useCanvasChangeActions({
@@ -147,29 +162,11 @@ export function CanvasFlow({
     deletedDeployedVolumeIds,
     commitMessage,
     setCommitMessage,
-    setDestructiveConfirmationOpen,
   });
   useCanvasEscapeShortcut({
     params,
     selectedNodeId,
   });
-
-  const destructiveDialog = {
-    deploy: {
-      title: "Deploy destructive changes?",
-      description:
-        "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision and admits that Saved revision for deployment.",
-      actionLabel: "Deploy removals",
-      pendingActionLabel: "Deploying...",
-    },
-    save: {
-      title: "Save destructive changes?",
-      description:
-        "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision as Saved intent; runtime deletion happens only during a later volume destroy.",
-      actionLabel: "Save removals",
-      pendingActionLabel: "Saving...",
-    },
-  }[pendingPublication ?? "save"];
 
   function openVariableGroupCreatorFromServiceDialog() {
     creator.setCreatorOpen(false);
@@ -307,20 +304,21 @@ export function CanvasFlow({
           await volumeCreator.createVolume(input);
         }}
       />
-      <DestructiveConfirmationDialog
-        open={destructiveConfirmationOpen}
-        onOpenChange={setDestructiveConfirmationOpen}
-        confirmPhrase={params.environmentSlug}
-        serviceNames={destructiveServiceNames}
-        title={destructiveDialog.title}
-        description={destructiveDialog.description}
-        actionLabel={destructiveDialog.actionLabel}
-        pendingActionLabel={destructiveDialog.pendingActionLabel}
-        callbacks={{
-          load: prepareDestructiveReview,
-          confirm: confirmDestructiveAction,
-        }}
-      />
+      {pendingPublication !== null ? (
+        <DestructiveConfirmationDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPendingPublication(null);
+          }}
+          confirmPhrase={params.environmentSlug}
+          serviceNames={destructiveServiceNames}
+          {...DESTRUCTIVE_DIALOG[pendingPublication]}
+          callbacks={{
+            load: prepareDestructiveReview,
+            confirm: confirmDestructiveAction,
+          }}
+        />
+      ) : null}
     </>
   );
 }

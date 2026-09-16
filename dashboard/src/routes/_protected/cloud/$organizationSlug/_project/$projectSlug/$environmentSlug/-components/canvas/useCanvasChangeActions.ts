@@ -58,7 +58,6 @@ type UseCanvasChangeActionsInput = {
   deletedDeployedVolumeIds: string[];
   commitMessage: string;
   setCommitMessage: (message: string) => void;
-  setDestructiveConfirmationOpen: (open: boolean) => void;
 };
 
 export function useCanvasChangeActions({
@@ -70,7 +69,6 @@ export function useCanvasChangeActions({
   deletedDeployedVolumeIds,
   commitMessage,
   setCommitMessage,
-  setDestructiveConfirmationOpen,
 }: UseCanvasChangeActionsInput) {
   const [pendingPublication, setPendingPublication] =
     useState<CanvasPublicationKind | null>(null);
@@ -210,7 +208,6 @@ export function useCanvasChangeActions({
     if (kind === "deploy" && !deployTargetIsAvailable()) return;
     if (hasDestructiveChanges()) {
       setPendingPublication(kind);
-      setDestructiveConfirmationOpen(true);
       return;
     }
     try {
@@ -303,6 +300,7 @@ export function useCanvasChangeActions({
     requestSave,
     requestDeploy,
     pendingPublication,
+    setPendingPublication,
     prepareDestructiveReview,
     confirmDestructiveAction,
   };
