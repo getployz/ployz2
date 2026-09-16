@@ -357,9 +357,34 @@ describe("Saved deployment admission", () => {
     ]);
   });
 
-  it("does not re-dispatch a run-owned row and terminalizes an enqueue failure", async () => {
+  function stageAwaitingVolumeRemoval(environmentDeploymentId: string) {
+    return harness.db.insert(schema.volumeRemoveAttempt).values({
+      organizationId,
+      requestedByUserId: userId,
+      environmentId,
+      environmentDeploymentId,
+      environmentResourceId: firstVolumeId,
+      volumes: [{ machine_id: machineId, name: `vol-${firstVolumeId}` }],
+      status: "awaiting_deployment",
+    });
+  }
+
+  async function volumeRemovalStatuses(environmentDeploymentId: string) {
+    return harness.db
+      .select({ status: schema.volumeRemoveAttempt.status })
+      .from(schema.volumeRemoveAttempt)
+      .where(
+        eq(
+          schema.volumeRemoveAttempt.environmentDeploymentId,
+          environmentDeploymentId,
+        ),
+      );
+  }
+
+  it("does not re-dispatch a run-owned row and terminalizes an enqueue failure with its Volume removals", async () => {
     const saved = await publish("first", null);
     const deployment = await admit(saved.savedStateSnapshotId);
+    await stageAwaitingVolumeRemoval(deployment.id);
     const failing = new Inngest({ id: "admission-dispatch-fail-test" });
     failing.send = async () => {
       throw new Error("Inngest unavailable");
@@ -375,13 +400,22 @@ describe("Saved deployment admission", () => {
       .select({
         status: schema.environmentDeployment.status,
         failureCode: schema.environmentDeployment.failureCode,
+        savedStateSnapshotId: schema.environmentDeployment.savedStateSnapshotId,
       })
       .from(schema.environmentDeployment)
       .where(eq(schema.environmentDeployment.id, deployment.id));
     expect(failed).toEqual({
       status: "failed",
       failureCode: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
+      savedStateSnapshotId: saved.savedStateSnapshotId,
     });
+    expect(await volumeRemovalStatuses(deployment.id)).toEqual([
+      { status: "failed" },
+    ]);
+    expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(1);
+    expect(
+      await harness.db.select().from(schema.environmentSavedStateSnapshot),
+    ).toHaveLength(1);
 
     const second = await admit(saved.savedStateSnapshotId);
     await harness.db
@@ -397,6 +431,44 @@ describe("Saved deployment admission", () => {
         ).pipe(Effect.provideService(InngestClient, owned)),
       ),
     ).rejects.toMatchObject({ _tag: "Conflict" });
+  });
+
+  it("keeps a worker-claimed row and its Volume removals when the send error arrives late", async () => {
+    const saved = await publish("first", null);
+    const deployment = await admit(saved.savedStateSnapshotId);
+    await stageAwaitingVolumeRemoval(deployment.id);
+    const racing = new Inngest({ id: "admission-dispatch-race-test" });
+    racing.send = async () => {
+      await harness.db
+        .update(schema.environmentDeployment)
+        .set({ inngestRunId: "run-claimed" })
+        .where(eq(schema.environmentDeployment.id, deployment.id));
+      throw new Error("Inngest timed out after delivery");
+    };
+
+    const outcome = await harness.runEffect(
+      dispatchEnvironmentDeployment(
+        { environmentDeploymentId: deployment.id, environmentId },
+      ).pipe(Effect.provideService(InngestClient, racing)),
+    );
+
+    expect(outcome).toEqual({ state: "already_claimed" });
+    const [row] = await harness.db
+      .select({
+        status: schema.environmentDeployment.status,
+        inngestRunId: schema.environmentDeployment.inngestRunId,
+        failureCode: schema.environmentDeployment.failureCode,
+      })
+      .from(schema.environmentDeployment)
+      .where(eq(schema.environmentDeployment.id, deployment.id));
+    expect(row).toEqual({
+      status: "queued",
+      inngestRunId: "run-claimed",
+      failureCode: null,
+    });
+    expect(await volumeRemovalStatuses(deployment.id)).toEqual([
+      { status: "awaiting_deployment" },
+    ]);
   });
 
   it("records a no-Saved first connection so a later callback cannot deploy", async () => {

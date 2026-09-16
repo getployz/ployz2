@@ -3,6 +3,7 @@ import "@tanstack/react-start/server-only";
 import { and, eq, isNull } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
+import { failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction } from "#/modules/runtime/volume-removal.repository";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import {
@@ -20,6 +21,50 @@ export type EnvironmentDeploymentDispatchInput = {
   readonly environmentId: string;
 };
 
+function unownedQueuedAttempt(input: EnvironmentDeploymentDispatchInput) {
+  return and(
+    eq(schemaEnvironmentDeployment.id, input.environmentDeploymentId),
+    eq(schemaEnvironmentDeployment.environmentId, input.environmentId),
+    eq(schemaEnvironmentDeployment.status, "queued"),
+    isNull(schemaEnvironmentDeployment.inngestRunId),
+  );
+}
+
+/**
+ * Fails the attempt and its linked awaiting Volume removals together, but
+ * only while no worker owns the row. A claimed row means the event reached
+ * Inngest despite the send error, so its owner and Volume rows stay intact.
+ */
+const terminalizeUnownedDispatchFailure = Effect.fn(
+  "Deployments.terminalizeUnownedDispatchFailure",
+)(function* (input: EnvironmentDeploymentDispatchInput) {
+  const database = yield* Database;
+  return yield* database.transaction(
+    Effect.gen(function* () {
+      const tx = (yield* Database).drizzle;
+      const finishedAt = new Date();
+      const failed = yield* tx
+        .update(schemaEnvironmentDeployment)
+        .set({
+          status: "failed",
+          failureCode: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
+          failureMessage: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_MESSAGE,
+          finishedAt,
+          updatedAt: finishedAt,
+        })
+        .where(unownedQueuedAttempt(input))
+        .returning({ id: schemaEnvironmentDeployment.id });
+      if (failed.length === 0) return { state: "already_claimed" as const };
+      yield* failAwaitingVolumeRemoveAttemptsForDeploymentInTransaction(tx, {
+        environmentDeploymentId: input.environmentDeploymentId,
+        deploymentDisposition: "failed",
+        now: finishedAt,
+      });
+      return { state: "failed" as const };
+    }),
+  );
+});
+
 /**
  * Dispatches any committed queued row that is still unowned. Replays enqueue
  * deliberately: the event has a deterministic deployment ID, so Inngest owns
@@ -33,17 +78,7 @@ export const dispatchEnvironmentDeployment = Effect.fn(
   const requested = yield* drizzle
     .update(schemaEnvironmentDeployment)
     .set({ dispatchRequestedAt: requestedAt, updatedAt: requestedAt })
-    .where(
-      and(
-        eq(
-          schemaEnvironmentDeployment.id,
-          input.environmentDeploymentId,
-        ),
-        eq(schemaEnvironmentDeployment.environmentId, input.environmentId),
-        eq(schemaEnvironmentDeployment.status, "queued"),
-        isNull(schemaEnvironmentDeployment.inngestRunId),
-      ),
-    )
+    .where(unownedQueuedAttempt(input))
     .returning({ id: schemaEnvironmentDeployment.id });
   if (requested.length === 0) {
     return yield* new Conflict({
@@ -51,37 +86,14 @@ export const dispatchEnvironmentDeployment = Effect.fn(
     });
   }
 
-  yield* sendInngestEvent(createEnvironmentDeployRequestedEvent(input)).pipe(
+  return yield* sendInngestEvent(createEnvironmentDeployRequestedEvent(input)).pipe(
+    Effect.map(() => ({ state: "dispatched" as const })),
     Effect.catchTag("InngestEventSendError", (failure) =>
       Effect.gen(function* () {
-        const finishedAt = new Date();
-        yield* drizzle
-          .update(schemaEnvironmentDeployment)
-          .set({
-            status: "failed",
-            failureCode: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
-            failureMessage: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_MESSAGE,
-            finishedAt,
-            updatedAt: finishedAt,
-          })
-          .where(
-            and(
-              eq(
-                schemaEnvironmentDeployment.id,
-                input.environmentDeploymentId,
-              ),
-              eq(
-                schemaEnvironmentDeployment.environmentId,
-                input.environmentId,
-              ),
-              eq(schemaEnvironmentDeployment.status, "queued"),
-              isNull(schemaEnvironmentDeployment.inngestRunId),
-            ),
-          )
-          .returning({ id: schemaEnvironmentDeployment.id });
+        const outcome = yield* terminalizeUnownedDispatchFailure(input);
+        if (outcome.state === "already_claimed") return outcome;
         return yield* failure;
       }),
     ),
   );
-  return { state: "dispatched" as const };
 });
