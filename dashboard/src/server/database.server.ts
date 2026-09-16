@@ -28,7 +28,7 @@ export interface DatabaseService {
   readonly transaction: <A, E, R>(
     program: Effect.Effect<A, E, R>,
     config?: PgTransactionConfig,
-  ) => Effect.Effect<A, E | SqlError, Exclude<R, Database>>;
+  ) => Effect.Effect<A, E | SqlError | DatabasePostCommitFailure, Exclude<R, Database>>;
 }
 
 export class Database extends Context.Service<Database, DatabaseService>()(
@@ -66,6 +66,10 @@ export class BetterAuthDatabase extends Context.Service<
 
 export class DatabasePoolCloseFailure extends Data.TaggedError(
   "DatabasePoolCloseFailure",
+)<{ readonly cause: unknown }> {}
+
+export class DatabasePostCommitFailure extends Data.TaggedError(
+  "DatabasePostCommitFailure",
 )<{ readonly cause: unknown }> {}
 
 export class DatabaseSubscriptionFailure extends Data.TaggedError(
@@ -108,9 +112,9 @@ export function makeDatabaseService(
           );
           if (pending) pending.push(...effects);
           else {
-            // SAFETY: callbacks are registered by this program through afterCommit,
-            // which preserves their error type in the transaction's E channel.
-            yield* Effect.forEach(effects as Effect.Effect<void, E>[], effect => effect, { discard: true });
+            yield* Effect.forEach(effects, effect => effect, { discard: true }).pipe(
+              Effect.mapError(cause => new DatabasePostCommitFailure({ cause })),
+            );
           }
           return result;
         }),
@@ -118,7 +122,8 @@ export function makeDatabaseService(
   }
 }
 
-/** Defers external work through nested transactions to the outermost commit. */
+/** Defers work to the outermost commit, which reports DatabasePostCommitFailure.
+ * Attach callback-specific recovery to program before registering it. */
 export const afterDatabaseCommit = <A, E, R>(program: Effect.Effect<A, E, R>) =>
   Effect.flatMap(Database, database => database.afterCommit(program));
 

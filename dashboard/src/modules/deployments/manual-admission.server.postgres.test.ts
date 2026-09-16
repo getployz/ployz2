@@ -257,7 +257,7 @@ describe("manual environment saved-state persistence", () => {
     vi.mocked(inngest.send).mockRejectedValueOnce(new Error("send failed"));
     const command = submit(true, await publicationReview());
     if (nested) {
-      await expect(harness.runTransaction(() => command)).rejects.toMatchObject({ _tag: "InngestEventSendError" });
+      await expect(harness.runTransaction(() => command)).rejects.toMatchObject({ _tag: "DatabasePostCommitFailure", cause: { _tag: "InngestEventSendError" } });
     } else {
       await expect(harness.runEffect(command)).resolves.toEqual({ state: "attempt_dispatch_failed" });
     }
