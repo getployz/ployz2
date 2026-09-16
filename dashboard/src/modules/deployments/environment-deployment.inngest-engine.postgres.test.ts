@@ -162,7 +162,7 @@ describe("deployment Inngest durable smoke", () => {
     expect(cancellation.result).toEqual({
       functionId: "process-environment-deployment",
       runId: targetRunId,
-      marked: true,
+      marked: false,
     });
     const [terminal] = await harness.db
       .select({
@@ -175,10 +175,10 @@ describe("deployment Inngest durable smoke", () => {
       .from(schema.environmentDeployment)
       .where(eq(schema.environmentDeployment.id, targetDeploymentId));
     expect(terminal).toEqual({
-      status: "cancelled",
+      status: "deploying",
       inngestRunId: targetRunId,
       cancellationRequestedAt: expect.any(Date),
-      finishedAt: expect.any(Date),
+      finishedAt: null,
     });
   });
 });

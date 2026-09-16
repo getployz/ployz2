@@ -89,16 +89,14 @@ export const createEnvironmentDeploymentSnapshotSchema = Schema.Struct({
   deploy: Schema.optional(Schema.Boolean),
   savedStateBasis: environmentSavedStateBasisSchema,
   reviewedWorkingStateFingerprint: WorkingStateFingerprint,
-  destructiveServiceIds: Schema.optional(
-    Schema.mutable(Schema.Array(Uuid)).check(
+  destructiveServiceIds: Schema.mutable(Schema.Array(Uuid)).check(
       Schema.makeFilter((serviceIds) =>
         new Set(serviceIds).size === serviceIds.length
           ? undefined
           : "A destructive Service can be reviewed only once.",
       ),
     ),
-  ),
-  destructiveVolumeReviews: Schema.optional(destructiveVolumeReviewsSchema),
+  destructiveVolumeReviews: destructiveVolumeReviewsSchema,
 });
 
 export const organizationEnvironmentChangeStateQuerySchema = Schema.Struct({

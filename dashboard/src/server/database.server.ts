@@ -24,6 +24,7 @@ export interface DatabaseService {
     DatabaseSubscriptionFailure,
     Scope.Scope
   >;
+  readonly afterCommit: <A, E, R>(program: Effect.Effect<A, E, R>) => Effect.Effect<void, E, R>;
   readonly transaction: <A, E, R>(
     program: Effect.Effect<A, E, R>,
     config?: PgTransactionConfig,
@@ -78,22 +79,43 @@ export class DatabaseSubscriptionFailure extends Data.TaggedError(
 export function makeDatabaseService(
   drizzle: EffectPgDatabase,
   subscribe: DatabaseService["subscribe"],
+  pending?: Effect.Effect<void, unknown>[],
+  committedDatabase?: DatabaseService,
 ): DatabaseService {
-  return {
+  const database: DatabaseService = {
     drizzle,
     subscribe,
-    transaction: (program, config) =>
-      drizzle.transaction(
-        (transaction) =>
-          Effect.provideService(
-            program,
-            Database,
-            makeDatabaseService(transaction, subscribe),
-          ),
-        config,
-      ),
+    afterCommit: <A, E, R>(program: Effect.Effect<A, E, R>) => Effect.gen(function* () {
+      if (!pending) return yield* Effect.asVoid(program);
+      const context = yield* Effect.context<R>();
+      pending.push(program.pipe(
+        Effect.provide(Context.add(context, Database, committedDatabase ?? database)),
+        Effect.asVoid,
+      ));
+    }),
+    transaction: <A, E, R>(program: Effect.Effect<A, E, R>, config?: PgTransactionConfig) =>
+      Effect.gen(function* () {
+        const effects: Effect.Effect<void, unknown>[] = [];
+        const result = yield* drizzle.transaction(
+          (transaction) => Effect.provideService(program, Database,
+            makeDatabaseService(transaction, subscribe, effects, committedDatabase ?? database)),
+          config,
+        );
+        if (pending) pending.push(...effects);
+        else {
+          // SAFETY: callbacks are registered by this program through afterCommit,
+          // which preserves their error type in the transaction's E channel.
+          yield* Effect.forEach(effects as Effect.Effect<void, E>[], effect => effect, { discard: true });
+        }
+        return result;
+      }),
   };
+  return database;
 }
+
+/** Defers external work through nested transactions to the outermost commit. */
+export const afterDatabaseCommit = <A, E, R>(program: Effect.Effect<A, E, R>) =>
+  Effect.flatMap(Database, database => database.afterCommit(program));
 
 export function subscribeDatabaseNotifications(
   pool: Pool,

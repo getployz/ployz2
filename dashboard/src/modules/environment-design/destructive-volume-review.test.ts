@@ -22,6 +22,7 @@ describe("destructive reviews on deployment admission", () => {
       environmentSlug: "production",
       savedStateBasis,
       reviewedWorkingStateFingerprint,
+      ...{ destructiveServiceIds: [], destructiveVolumeReviews: [] },
       destructiveServiceIds: ["00000000-0000-4000-8000-000000000001"],
     });
     expect(valid).toBe(true);
@@ -32,6 +33,7 @@ describe("destructive reviews on deployment admission", () => {
       environmentSlug: "production",
       savedStateBasis,
       reviewedWorkingStateFingerprint,
+      ...{ destructiveServiceIds: [], destructiveVolumeReviews: [] },
       destructiveServiceIds: [
         "00000000-0000-4000-8000-000000000001",
         "00000000-0000-4000-8000-000000000001",
@@ -49,6 +51,7 @@ describe("destructive reviews on deployment admission", () => {
         environmentSlug: "production",
         savedStateBasis,
         reviewedWorkingStateFingerprint,
+      ...{ destructiveServiceIds: [], destructiveVolumeReviews: [] },
         destructiveVolumeReviews: [review],
       }),
     ).toBe(true);
@@ -59,6 +62,7 @@ describe("destructive reviews on deployment admission", () => {
       environmentSlug: "production",
       savedStateBasis,
       reviewedWorkingStateFingerprint,
+      ...{ destructiveServiceIds: [], destructiveVolumeReviews: [] },
       destructiveVolumeReviews: [review, review],
     });
     expect(duplicate).toBe(false);

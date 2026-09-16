@@ -13,6 +13,7 @@ import {
   loadResolvedDeployEnv,
   persistSdkDeployPreview,
   persistSdkDeployOutcome,
+  markDeploymentStatus,
   type DeploymentContext,
 } from "#/modules/deployments/runtime-repository.server";
 import {
@@ -194,16 +195,23 @@ export const executeRuntimeIntent = Effect.fn("Deployments.executeRuntimeIntent"
 
 export const executeEnvironmentDeployment = Effect.fn(
   "Deployments.executeEnvironmentDeployment",
-)(function* (context: DeploymentContext) {
+)(function* (context: DeploymentContext, expectedInngestRunId?: string) {
+  if (context.deployment.inngestRunId !== (expectedInngestRunId ?? null)) {
+    return yield* new DeploymentRuntimeInvalid({ failureCode: "sdk_outcome_invalid", message: "Deployment belongs to another workflow run." });
+  }
   const intent = yield* compileRuntimeIntent(context);
   const prepared = yield* previewRuntimeIntent(context.organization.id, intent);
-  yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, preview: prepared.preview });
+  yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, expectedInngestRunId: context.deployment.inngestRunId ?? undefined, preview: prepared.preview });
   const database = yield* Database;
   const readStatus = database.drizzle.select({ status: environmentDeployment.status, cancellationRequestedAt: environmentDeployment.cancellationRequestedAt })
     .from(environmentDeployment).where(eq(environmentDeployment.id, context.deployment.id)).limit(1);
   const [current] = yield* readStatus;
-  if (!current || current.status === "cancelled") return yield* Effect.interrupt;
-  if (current.cancellationRequestedAt) return { type: "failed" as const, completed: 0, unexecuted: prepared.prepared.operations.length, reason: "cancelled" as const };
+  if (!current || current.status !== "deploying") return yield* Effect.interrupt;
+  if (current.cancellationRequestedAt) {
+    yield* markDeploymentStatus({ environmentDeploymentId: context.deployment.id,
+      expectedInngestRunId, status: "cancelled", message: "Cancelled before runtime execution." });
+    return { type: "failed" as const, completed: 0, unexecuted: prepared.prepared.operations.length, reason: "cancelled" as const };
+  }
   const cancellation = new AbortController();
   // Inngest cancellation cannot interrupt an executing step. Check the durable
   // row even when the SDK emits no progress, then await its cleanup and outcome.
@@ -237,13 +245,13 @@ export const executeEnvironmentDeployment = Effect.fn(
     previous = progress;
     await persistProgress(persistDeploymentProgress(context.deployment.id, progress));
   }, cancellation.signal).pipe(Effect.raceFirst(watchCancellation));
-  yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, outcome: evidence });
+  yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, expectedInngestRunId: context.deployment.inngestRunId ?? undefined, outcome: evidence });
   return outcome;
 });
 
 export const executeLatestEnvironmentDeployment = Effect.fn(
   "Deployments.executeLatestEnvironmentDeployment",
-)(function* (environmentDeploymentId: string) {
+)(function* (environmentDeploymentId: string, expectedInngestRunId?: string) {
   const context = yield* loadDeploymentContext(environmentDeploymentId);
   if (!context) {
     return yield* new DeploymentRuntimeInvalid({
@@ -251,5 +259,5 @@ export const executeLatestEnvironmentDeployment = Effect.fn(
       message: "Environment deployment was not found.",
     });
   }
-  return yield* executeEnvironmentDeployment(context);
+  return yield* executeEnvironmentDeployment(context, expectedInngestRunId);
 });
