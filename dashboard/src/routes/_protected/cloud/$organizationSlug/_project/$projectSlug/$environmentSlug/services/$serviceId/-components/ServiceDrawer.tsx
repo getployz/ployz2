@@ -13,7 +13,7 @@ export function ServiceDrawer({
   state: ServiceDrawerState;
 }) {
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
+    <div className="flex h-full min-h-0 flex-col">
       <ServiceDrawerHeader params={params} state={state} />
       <ServiceDrawerTabs state={state} />
     </div>

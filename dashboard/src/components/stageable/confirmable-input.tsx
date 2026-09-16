@@ -1,5 +1,7 @@
 import * as React from "react"
 import { CheckIcon, XIcon } from "lucide-react"
+import { Combobox as ComboboxPrimitive } from "@base-ui/react/combobox"
+import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxItem, ComboboxList, ComboboxTrigger } from "#/components/ui/combobox"
 
 import { cn } from "#/lib/utils"
 import { FieldError } from "#/components/ui/field"
@@ -25,6 +27,9 @@ function ConfirmableInput({
   error,
   className,
   multiline = false,
+  suggestions,
+  suggestionsLoading = false,
+  suggestionsMessage,
   ...props
 }: Omit<
   React.ComponentProps<"input"> & React.ComponentProps<"textarea">,
@@ -40,7 +45,11 @@ function ConfirmableInput({
   suffix?: React.ReactNode
   error?: React.ReactNode
   multiline?: boolean
+  suggestions?: string[]
+  suggestionsLoading?: boolean
+  suggestionsMessage?: string
 }) {
+  const [suggestionsOpen, setSuggestionsOpen] = React.useState(false)
   // SAFETY: input and textarea onKeyDown handlers are the same function; their event element types don't unify.
   const onKeyDown = props.onKeyDown as
     | ((event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => void)
@@ -71,6 +80,7 @@ function ConfirmableInput({
   function handleKeyDown(
     e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
   ) {
+    if (suggestionsOpen && (e.key === "Enter" || e.key === "Escape")) return
     if (e.key === "Enter" && isDirty) {
       if (multiline && !e.metaKey && !e.ctrlKey) {
         onKeyDown?.(e)
@@ -90,7 +100,7 @@ function ConfirmableInput({
     onKeyDown?.(e)
   }
 
-  return (
+  const field = (
     <div className={cn("flex flex-col gap-1", className)}>
       <InputGroup data-changed={isChanged || undefined}>
         {multiline ? (
@@ -100,6 +110,17 @@ function ConfirmableInput({
             aria-invalid={props["aria-invalid"] ?? !!error}
             disabled={props.disabled}
             onChange={updateDraftValue}
+            onKeyDown={handleKeyDown}
+          />
+        ) : suggestions ? (
+          <ComboboxPrimitive.Input
+            {...props}
+            render={<InputGroupInput />}
+            aria-invalid={props["aria-invalid"] ?? !!error}
+            onFocus={(event) => {
+              setSuggestionsOpen(true)
+              props.onFocus?.(event)
+            }}
             onKeyDown={handleKeyDown}
           />
         ) : (
@@ -112,9 +133,12 @@ function ConfirmableInput({
             onKeyDown={handleKeyDown}
           />
         )}
-        {suffix || isDirty ? (
+        {suffix || isDirty || suggestions ? (
           <InputGroupAddon align="inline-end">
             {suffix ? <InputGroupText>{suffix}</InputGroupText> : null}
+            {suggestions ? (
+              <InputGroupButton size="icon-xs" variant="ghost" render={<ComboboxTrigger />} aria-label="Show suggestions" />
+            ) : null}
             {isDirty ? (
               <>
                 <InputGroupButton
@@ -145,6 +169,32 @@ function ConfirmableInput({
       </InputGroup>
       {error ? <FieldError>{error}</FieldError> : null}
     </div>
+  )
+
+  if (!suggestions) return field
+
+  return (
+    <Combobox
+      items={suggestions}
+      value={value || null}
+      inputValue={value}
+      onInputValueChange={onValueChange}
+      onValueChange={(next) => { if (next !== null) onValueChange(next) }}
+      open={suggestionsOpen}
+      onOpenChange={setSuggestionsOpen}
+      openOnInputClick
+      disabled={props.disabled}
+    >
+      {field}
+      <ComboboxContent>
+        <ComboboxEmpty>
+          {suggestionsLoading ? <Spinner aria-label="Loading suggestions" /> : suggestionsMessage ?? "No matches. Enter a custom path."}
+        </ComboboxEmpty>
+        <ComboboxList>
+          {(item: string) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
   )
 }
 

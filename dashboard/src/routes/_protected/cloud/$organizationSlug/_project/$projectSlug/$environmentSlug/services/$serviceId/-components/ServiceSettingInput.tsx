@@ -25,6 +25,10 @@ export function ServiceSettingInput({
   baselineLabel = "Deployed",
   baselineValue,
   placeholder,
+  suggestions,
+  suggestionsLoading,
+  suggestionsMessage,
+  onFocus,
   inputMode,
   type,
   min,
@@ -40,6 +44,10 @@ export function ServiceSettingInput({
   baselineLabel?: string;
   baselineValue?: string;
   placeholder?: string;
+  suggestions?: string[];
+  suggestionsLoading?: boolean;
+  suggestionsMessage?: string;
+  onFocus?: () => void;
   inputMode?: "decimal" | "numeric" | "text";
   type?: "number" | "text";
   min?: number;
@@ -87,6 +95,10 @@ export function ServiceSettingInput({
       isPending={active.pending}
       error={active.error}
       placeholder={placeholder}
+      suggestions={suggestions}
+      suggestionsLoading={suggestionsLoading}
+      suggestionsMessage={suggestionsMessage}
+      onFocus={onFocus}
       title={
         isChanged && baselineValue != null
           ? `${baselineLabel}: ${baselineValue}`

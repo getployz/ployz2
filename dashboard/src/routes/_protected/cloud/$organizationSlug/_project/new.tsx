@@ -43,13 +43,16 @@ function RouteComponent() {
       </div>
       <Card className="relative w-full max-w-md">
         <CardHeader>
-          <CardTitle>Create project</CardTitle>
+          <CardTitle>Add your app</CardTitle>
           <CardDescription>
-            Start with a service or create an empty project.
+            Pick the GitHub repository. Ployz reads it and fills in the rest.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ServiceCreateCommand organizationSlug={organizationSlug} />
+          <ServiceCreateCommand
+            organizationSlug={organizationSlug}
+            initialPanel="git"
+          />
         </CardContent>
       </Card>
     </main>

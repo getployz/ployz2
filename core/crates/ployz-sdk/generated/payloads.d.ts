@@ -686,7 +686,7 @@ name: ServiceName, };
 
 export type ServiceBuildConfig = { builder: ServiceBuilder, dockerfilePath: string | null, watchPaths: Array<string>, };
 
-export type ServiceBuilder = "dockerfile" | "auto";
+export type ServiceBuilder = "dockerfile" | "railpack";
 
 export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>, variableGroupAttachments: Array<VariableGroupAttachment>, version: 2, name: string, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, cron: string | null, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostname: ServiceManagedHostname | null, build: ServiceBuildConfig, };
 

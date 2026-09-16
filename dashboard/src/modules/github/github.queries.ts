@@ -3,7 +3,21 @@ import {
   getGithubRepoAccessStateServerFn,
   listGithubBranchesServerFn,
   getGithubInstallUrlServerFn,
+  searchGithubFilesServerFn,
 } from "#/modules/github/github.functions";
+
+export function githubFileSearchQueryOptions(input: {
+  repositoryId: number;
+  installationId: number;
+  ref: string;
+  pattern: string;
+}) {
+  return queryOptions({
+    queryKey: [...githubKeys.all, "files", input],
+    queryFn: () => searchGithubFilesServerFn({ data: input }),
+    staleTime: 60_000,
+  });
+}
 
 export const githubKeys = {
   all: ["github"] as const,

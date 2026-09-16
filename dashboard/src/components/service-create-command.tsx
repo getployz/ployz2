@@ -2,7 +2,8 @@ import { applyCreatedService, applyCreatedResource } from "#/modules/environment
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useState } from "react";
 import { ArrowLeftIcon, ChevronRightIcon } from "lucide-react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { githubRepoAccessQueryOptions } from "#/modules/github/github.queries";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
@@ -427,7 +428,12 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
   const mode: CreateMode = props.mode === "service" ? "service" : "project";
   const [panel, setPanel] = useState<Panel>(props.initialPanel ?? "root");
   const [query, setQuery] = useState("");
-  const showHeader = panel !== "root";
+  // Project mode is repo-only: no root menu to go back to.
+  const showHeader = panel !== "root" && mode === "service";
+  const { data: githubAccess } = useQuery({
+    ...githubRepoAccessQueryOptions(),
+    enabled: panel === "git",
+  });
   const {
     error,
     isPending,
@@ -440,7 +446,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
     <div
       className="flex w-full min-w-0 flex-col gap-2"
       onKeyDownCapture={(event) => {
-        if (panel === "root" || event.key !== "Escape") {
+        if (panel === "root" || mode !== "service" || event.key !== "Escape") {
           return;
         }
 
@@ -482,7 +488,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
       ) : null}
 
       <Command shouldFilter={panel !== "git"}>
-        <CommandInput
+        {panel !== "git" || githubAccess?.hasInstallations ? <CommandInput
           aria-label={
             panel === "git"
               ? "Search GitHub repositories"
@@ -504,7 +510,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
                   ? "Choose a service type…"
                   : "Choose what to add…"
           }
-        />
+        /> : null}
         <CommandList>
           {panel === "root" ? (
             <RootPanel

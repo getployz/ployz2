@@ -27,7 +27,7 @@ function config(replicas: number): ServiceDeploymentConfig {
     privateDns: "api",
     routes: [],
     managedHostname: null,
-    build: { builder: "auto", dockerfilePath: null, watchPaths: [] },
+    build: { builder: "railpack", dockerfilePath: null, watchPaths: [] },
     env: {},
     mounts: [],
     variableGroupAttachments: [],

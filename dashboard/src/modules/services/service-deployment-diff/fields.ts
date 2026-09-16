@@ -64,7 +64,7 @@ function displaySetting(path: string, value: ServiceSettingChange["before"]): st
     case "healthcheck": return record?.["type"] === "none" ? "Disabled" : `${asString(record?.["path"])} (${asFiniteNumber(record?.["timeoutSeconds"])}s timeout)`;
     case "restartPolicy": return ({ always: "Always", "on-failure": "On failure", no: "No", "unless-stopped": "Unless stopped" })[asString(value) ?? ""] ?? "";
     case "managedHostname": return `${asString(record?.["prefix"])} (port ${asFiniteNumber(record?.["targetPort"]) ?? "PORT"})`;
-    case "build": return record?.["builder"] === "dockerfile" ? (record["dockerfilePath"] ? `Dockerfile (${asString(record["dockerfilePath"])})` : "Dockerfile") : "Auto-detect";
+    case "build": return record?.["builder"] === "dockerfile" ? (record["dockerfilePath"] ? `Dockerfile (${asString(record["dockerfilePath"])})` : "Dockerfile") : "Railpack";
     case "cpuLimit": return `${asFiniteNumber(value)} vCPU`;
     case "memLimit": return `${asFiniteNumber(value)} GB`;
     default: {

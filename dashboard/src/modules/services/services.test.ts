@@ -223,7 +223,7 @@ describe("service schemas", () => {
       routes: [],
       managedHostname: null,
       build: {
-        builder: "auto",
+        builder: "railpack",
         dockerfilePath: null,
         watchPaths: [],
       },

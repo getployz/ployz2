@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
 import { PlusIcon, XIcon } from "lucide-react";
 import type { ServiceBuildConfig } from "#/modules/environment-design/tables";
 import { Badge } from "#/components/ui/badge";
@@ -24,6 +26,29 @@ export function ServiceBuildSection({
   const buildDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.build);
   const build = service.build;
   const [watchInput, setWatchInput] = useState("");
+  const [searchDockerfiles, setSearchDockerfiles] = useState(false);
+  const source = service.source;
+  const gitRef =
+    source.type === "git" && source.branch.type === "connected"
+      ? {
+          repositoryId: source.repositoryId,
+          installationId: source.installationId,
+          ref: source.branch.name,
+        }
+      : null;
+  const files = useQuery({
+    ...githubFileSearchQueryOptions({
+      repositoryId: gitRef?.repositoryId ?? 0,
+      installationId: gitRef?.installationId ?? 0,
+      ref: gitRef?.ref ?? "",
+      pattern: "**/*Dockerfile*",
+    }),
+    enabled: searchDockerfiles && gitRef !== null && build.builder === "dockerfile",
+    retry: false,
+  });
+  const dockerfilePaths = (files.data?.paths ?? [])
+    .filter((path) => !path.endsWith(".dockerignore"))
+    .sort((left, right) => left.split("/").length - right.split("/").length || left.localeCompare(right));
 
   function updateBuild(patch: Partial<ServiceBuildConfig>) {
     const transaction = collection.update(service.id, (draft) => {
@@ -46,19 +71,19 @@ export function ServiceBuildSection({
       <Field>
         <FieldLabel>Builder</FieldLabel>
         <FieldDescription>
-          Build from a Dockerfile, or let the platform detect a builder.
+          Build with Railpack or use your own Dockerfile.
         </FieldDescription>
         <ToggleGroup
           variant="outline"
           value={[build.builder]}
           onValueChange={(value) => {
             const [next] = value;
-            if (next === "auto" || next === "dockerfile") {
+            if (next === "railpack" || next === "dockerfile") {
               updateBuild({ builder: next });
             }
           }}
         >
-          <ToggleGroupItem value="auto">Auto-detect</ToggleGroupItem>
+          <ToggleGroupItem value="railpack">Railpack</ToggleGroupItem>
           <ToggleGroupItem value="dockerfile">Dockerfile</ToggleGroupItem>
         </ToggleGroup>
       </Field>
@@ -72,6 +97,10 @@ export function ServiceBuildSection({
           <ServiceSettingInput
             ariaLabel="Dockerfile path"
             placeholder="Dockerfile"
+            suggestions={dockerfilePaths}
+            suggestionsLoading={files.isFetching}
+            suggestionsMessage={files.isError ? "Couldn’t load suggestions. Enter a path." : undefined}
+            onFocus={() => setSearchDockerfiles(true)}
             value={build.dockerfilePath ?? ""}
             isChanged={buildDiff.changed}
             onCommit={(raw) =>

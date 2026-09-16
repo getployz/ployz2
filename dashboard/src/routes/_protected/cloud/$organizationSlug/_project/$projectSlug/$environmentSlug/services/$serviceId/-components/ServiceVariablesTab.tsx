@@ -183,7 +183,7 @@ export function ServiceVariablesTab({
   }
 
   return (
-    <TabsContent value="variables" className="mt-4 overflow-y-auto">
+    <TabsContent value="variables" className="mt-4 overflow-y-auto"><div className="mx-auto w-full max-w-2xl">
       <VariablesPanel
         variables={variables}
         collection={variableWriter}
@@ -326,7 +326,7 @@ export function ServiceVariablesTab({
         variables={variables}
         valueTargets={valueTargets}
       />
-    </TabsContent>
+    </div></TabsContent>
   );
 }
 

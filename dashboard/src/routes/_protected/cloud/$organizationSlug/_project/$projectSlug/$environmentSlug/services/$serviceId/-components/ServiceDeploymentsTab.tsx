@@ -35,7 +35,7 @@ export function ServiceDeploymentsTab() {
   );
 
   return (
-    <TabsContent value="deployments" className="mt-4 flex flex-col gap-4">
+    <TabsContent value="deployments" className="mx-auto mt-4 flex w-full max-w-2xl flex-col gap-4">
       {sorted.length === 0 ? (
         <Alert>
           <AlertTitle>No deployments yet</AlertTitle>

@@ -24,6 +24,14 @@ import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "#/components/ui/empty";
+import {
   Command,
   CommandDialog,
   CommandGroup,
@@ -202,6 +210,9 @@ function GitRepoSelectorActions() {
   const { data: installUrlData } = useSuspenseQuery(
     githubInstallUrlQueryOptions()
   );
+  const { data: accessState } = useSuspenseQuery(
+    githubRepoAccessQueryOptions()
+  );
   const { mutateAsync: requestRepoSync, isPending: isRefreshing } = useMutation(
     {
       mutationKey: [...githubKeys.repos(), "refresh"],
@@ -211,6 +222,36 @@ function GitRepoSelectorActions() {
       },
     }
   );
+
+  if (!accessState.configured) return null;
+
+  if (!accessState.hasInstallations) {
+    return (
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia>
+            <GitHubMarkIcon className="size-8 text-muted-foreground" />
+          </EmptyMedia>
+          <EmptyTitle>Connect GitHub</EmptyTitle>
+          <EmptyDescription>
+            Give Ployz access to the repositories you want to deploy.
+          </EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          <Button
+            disabled={!installUrlData.url}
+            onClick={() => {
+              if (installUrlData.url) {
+                window.open(installUrlData.url, "_blank", "width=1020,height=680");
+              }
+            }}
+          >
+            Connect GitHub
+          </Button>
+        </EmptyContent>
+      </Empty>
+    );
+  }
 
   return (
     <CommandGroup>
@@ -306,17 +347,16 @@ function GitRepoSelectorResults({
   if (selectorState === "not-configured") {
     return (
       <SelectorEmpty>
-        <p>GitHub isn’t set up.</p>
+        <p>GitHub connection is unavailable.</p>
         <p className="mt-1">
-          Add `GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_SLUG` to load
-          repositories.
+          Please try again later or contact support.
         </p>
       </SelectorEmpty>
     );
   }
 
   if (selectorState === "no-installations") {
-    return <SelectorEmpty>No GitHub installations found</SelectorEmpty>;
+    return null;
   }
 
   return (
@@ -601,6 +641,7 @@ function OpenGitRepoSelectorDialog({
   onOpenChange,
   onSelectRepo,
 }: GitRepoSelectorDialogProps) {
+  const { data: githubAccess } = useQuery(githubRepoAccessQueryOptions());
   const dialog = useSelectorDialogState<GitRepoSelection>({
     onOpenChange,
     onSelect: onSelectRepo,
@@ -617,13 +658,13 @@ function OpenGitRepoSelectorDialog({
       error={dialog.error}
     >
       <Command shouldFilter={false}>
-        <CommandInput
+        {githubAccess?.hasInstallations ? <CommandInput
           aria-label="Search GitHub repositories"
           disabled={dialog.isPending}
           value={dialog.query}
           onValueChange={dialog.setQuery}
           placeholder="Search GitHub repositories…"
-        />
+        /> : null}
         <CommandList>
           <GitRepoSelector
             query={dialog.query}

@@ -206,7 +206,8 @@ pub struct ServiceManagedHostname {
 pub enum ServiceBuilder {
     Dockerfile,
     #[default]
-    Auto,
+    #[serde(alias = "auto")]
+    Railpack,
 }
 
 /// Build policy supplied to the selected builder.
