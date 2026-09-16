@@ -64,7 +64,6 @@ const loadDestructiveEnvironmentSave = Effect.fn(
   });
 });
 
-/** Fresh machine testimony for every deployed Volume the Working State removes. */
 export const prepareEnvironmentDestructiveVolumes = Effect.fn(
   "CloudDeployment.prepareEnvironmentDestructiveVolumes",
 )(function* (actor: Actor, input: EnvironmentContextInput) {
@@ -94,12 +93,7 @@ const requirePullableManualSdkDeploy = Effect.fn(
   if (error) return yield* error;
 });
 
-/**
- * Volume evidence is gathered from machines, so it runs before the
- * publication transaction. The reviewed set must match the current deployed
- * removals and their fresh testimony; a drift returns the fresh reviews so
- * the canvas can ask for confirmation again.
- */
+/** Volume evidence comes from machines, so this runs before the publication transaction. */
 const requireFreshDestructiveVolumeEvidence = Effect.fn(
   "CloudDeployment.requireFreshDestructiveVolumeEvidence",
 )(function* (actor: Actor, environmentId: string, input: ReviewedPublicationInput) {
@@ -124,7 +118,6 @@ const requireFreshDestructiveVolumeEvidence = Effect.fn(
   }
 });
 
-/** Publishes the reviewed Working State and admits that exact Saved revision in the caller's transaction. */
 export const createManualEnvironmentDeployment = Effect.fn(
   "CloudDeployment.createManualEnvironmentDeployment",
 )(function* (input: ManualPublication) {
@@ -177,14 +170,6 @@ const publishReviewedEnvironment = Effect.fn(
   }
 });
 
-/**
- * The one manual publication command. Save and Deploy run the same review
- * against current server state and fail before any write on a stale Working
- * fingerprint, stale Saved basis, or incomplete destructive set. Save
- * publishes only. Deploy publishes and admits in one transaction, then
- * dispatches after commit; a send failure leaves a failed attempt and the
- * Saved revision behind for an explicit retry.
- */
 export const submitReviewedPublication = Effect.fn(
   "CloudDeployment.submitReviewedPublication",
 )(function* (actor: Actor, input: ReviewedPublicationInput) {

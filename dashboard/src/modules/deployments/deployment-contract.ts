@@ -75,7 +75,6 @@ export const volumeRemoveAttemptSummarySchema = Schema.Struct({
   updatedAt: Schema.Date,
 });
 
-/** Save and manual Deploy send the same complete review. Only `intent` differs. */
 export const reviewedPublicationSchema = Schema.Struct({
   ...EnvironmentContext,
   intent: Schema.Literals(["save", "manual_deploy"]),

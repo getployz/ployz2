@@ -187,11 +187,6 @@ const validateEnvironmentPublicationReview = Effect.fn(
   }
 });
 
-/**
- * Publishes the exact reviewed Working graph under the queue lock. Every
- * manual publisher (Save and Deploy) runs this same fingerprint and
- * destructive-review check before any Saved write.
- */
 export const saveReviewedEnvironmentState = Effect.fn(
   "EnvironmentDesign.saveReviewedEnvironmentState",
 )(function* (input: {
