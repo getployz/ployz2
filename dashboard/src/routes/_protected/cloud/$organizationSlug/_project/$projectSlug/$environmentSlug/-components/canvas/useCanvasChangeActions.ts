@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -16,7 +17,6 @@ import type {
 } from "#/modules/environment-design/canvas-environment-change-state";
 import type {
   DestructiveVolumeReview,
-  EnvironmentPublicationSubmissionOutcome,
 } from "#/modules/deployments/deployment-contract";
 import type {
   EnvironmentSavedStateBasis,
@@ -24,8 +24,8 @@ import type {
 import { getDeployTargetPreflight } from "#/modules/runtime/deploy-target-preflight";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  createEnvironmentDeploymentSnapshotServerFn,
   prepareEnvironmentDestructiveVolumesServerFn,
+  submitReviewedPublicationServerFn,
 } from "#/modules/deployments/deployment.functions";
 import { serviceDeploymentKeys } from "#/modules/deployments/deployment-queries";
 import type { PreparedDestructiveReview } from "#/components/destructive-volume/volume-destruction-confirmation-dialog";
@@ -34,6 +34,11 @@ import {
   fingerprintReviewedEnvironmentWorkingState,
   projectReviewedEnvironmentWorkingState,
 } from "#/modules/environment-design/working-state-review";
+import {
+  canvasPublicationSnapshotInput,
+  submitCanvasPublication,
+  type CanvasPublicationKind,
+} from "./canvas-publication-submission";
 
 type EnvironmentRouteParams = {
   organizationSlug: string;
@@ -67,6 +72,8 @@ export function useCanvasChangeActions({
   setCommitMessage,
   setDestructiveConfirmationOpen,
 }: UseCanvasChangeActionsInput) {
+  const [pendingPublication, setPendingPublication] =
+    useState<CanvasPublicationKind>("save");
   const collectionScope = useCollectionScope();
   const document = useEnvironmentDocument(params.organizationSlug, environmentId);
   function workingReview() {
@@ -90,8 +97,8 @@ export function useCanvasChangeActions({
           savedSnapshotSource.environmentSavedStateSnapshotId,
       }
     : { kind: "no_saved_state" };
-  const createDeploymentSnapshot = useServerFn(
-    createEnvironmentDeploymentSnapshotServerFn,
+  const submitReviewedPublication = useServerFn(
+    submitReviewedPublicationServerFn,
   );
   const discard = useServerFn(discardEnvironmentChangesServerFn);
   const prepareEnvironmentDestructiveVolumes = useServerFn(
@@ -99,7 +106,7 @@ export function useCanvasChangeActions({
   );
   const createDeploymentSnapshotMutation = useMutation({
     mutationFn: async (input: {
-      deploy: boolean;
+      kind: CanvasPublicationKind;
       message: string;
       savedStateBasis: EnvironmentSavedStateBasis;
       destructiveServiceIds: string[];
@@ -111,29 +118,28 @@ export function useCanvasChangeActions({
         (await fingerprintReviewedEnvironmentWorkingState(
           workingReview(),
         ));
-      const result: EnvironmentPublicationSubmissionOutcome =
-        await createDeploymentSnapshot({
-          data: {
-            organizationSlug: params.organizationSlug,
-            projectSlug: params.projectSlug,
-            environmentSlug: params.environmentSlug,
-            message: input.message,
-            deploy: input.deploy,
-            savedStateBasis: input.savedStateBasis,
-            reviewedWorkingStateFingerprint,
-            destructiveServiceIds: input.destructiveServiceIds,
-            destructiveVolumeReviews: input.destructiveVolumeReviews,
-          },
-        });
-
-      await reconcileDeploymentCollections(params.organizationSlug, collectionScope);
-      await queryClient.invalidateQueries({
-        queryKey: serviceDeploymentKeys.environmentChangeStatesOrg(
-          params.organizationSlug,
-        ),
+      return submitCanvasPublication({
+        submit: (data) => submitReviewedPublication({ data }),
+        reconcile: async () => {
+          await reconcileDeploymentCollections(
+            params.organizationSlug,
+            collectionScope,
+          );
+          await queryClient.invalidateQueries({
+            queryKey: serviceDeploymentKeys.environmentChangeStatesOrg(
+              params.organizationSlug,
+            ),
+          });
+        },
+        data: canvasPublicationSnapshotInput(params, {
+          kind: input.kind,
+          message: input.message,
+          savedStateBasis: input.savedStateBasis,
+          reviewedWorkingStateFingerprint,
+          destructiveServiceIds: input.destructiveServiceIds,
+          destructiveVolumeReviews: input.destructiveVolumeReviews,
+        }),
       });
-
-      return result;
     },
   });
 
@@ -188,64 +194,74 @@ export function useCanvasChangeActions({
     return true;
   }
 
-  async function submitDeployment() {
+  function hasDestructiveChanges() {
+    return (
+      destructiveServiceIds.length > 0 || deletedDeployedVolumeIds.length > 0
+    );
+  }
+
+  async function submitPublication(
+    kind: CanvasPublicationKind,
+    review: {
+      destructiveServiceIds: string[];
+      destructiveVolumeReviews: DestructiveVolumeReview[];
+      reviewedWorkingStateFingerprint?: string;
+    },
+  ) {
     const outcome = await createDeploymentSnapshotMutation.mutateAsync({
-      deploy: true,
+      kind,
       message: commitMessage,
       savedStateBasis,
-      destructiveServiceIds: [],
-      destructiveVolumeReviews: [],
+      destructiveServiceIds: review.destructiveServiceIds,
+      destructiveVolumeReviews: review.destructiveVolumeReviews,
+      reviewedWorkingStateFingerprint: review.reviewedWorkingStateFingerprint,
     });
-    if (outcome.state === "deployment_queued") setCommitMessage("");
+    if (outcome.state === "attempt_dispatch_failed") {
+      toast.error("Cloud could not dispatch the deployment workflow.");
+      setCommitMessage("");
+      return outcome;
+    }
+    if (outcome.state === "deployment_queued" || outcome.state === "saved") {
+      setCommitMessage("");
+    }
     return outcome;
   }
 
-  async function handleDeploy() {
+  function requestDeploy() {
     if (!deployTargetIsAvailable()) return;
-    try {
-      await submitDeployment();
-    } catch (error) {
+    if (hasDestructiveChanges()) {
+      setPendingPublication("deploy");
+      setDestructiveConfirmationOpen(true);
+      return;
+    }
+    void submitPublication("deploy", {
+      destructiveServiceIds: [],
+      destructiveVolumeReviews: [],
+    }).catch((error: unknown) => {
       toast.error(
         error instanceof Error
           ? error.message
           : "Failed to queue the desired state snapshot.",
       );
-    }
+    });
   }
 
-  async function handleSaveWithoutDeploying() {
-    try {
-      await createDeploymentSnapshotMutation.mutateAsync({
-        deploy: false,
-        message: commitMessage,
-        savedStateBasis,
-        destructiveServiceIds: [],
-        destructiveVolumeReviews: [],
-      });
-
-      setCommitMessage("");
-    } catch (error) {
+  function requestSave() {
+    if (hasDestructiveChanges()) {
+      setPendingPublication("save");
+      setDestructiveConfirmationOpen(true);
+      return;
+    }
+    void submitPublication("save", {
+      destructiveServiceIds: [],
+      destructiveVolumeReviews: [],
+    }).catch((error: unknown) => {
       toast.error(
         error instanceof Error
           ? error.message
           : "Failed to save the desired state snapshot.",
       );
-    }
-  }
-
-  function requestDeploy() {
-    void handleDeploy();
-  }
-
-  function requestSave() {
-    if (
-      destructiveServiceIds.length > 0 ||
-      deletedDeployedVolumeIds.length > 0
-    ) {
-      setDestructiveConfirmationOpen(true);
-      return;
-    }
-    void handleSaveWithoutDeploying();
+    });
   }
 
   async function prepareDestructiveReview() {
@@ -279,17 +295,16 @@ export function useCanvasChangeActions({
     preparation: PreparedDestructiveReview,
   ) {
     if (!preparation.reviewedMutation) {
-      throw new Error("The destructive Save is missing its reviewed mutation.");
+      throw new Error(
+        "The destructive publication is missing its reviewed mutation.",
+      );
     }
     const reviewedMutation = preparation.reviewedMutation;
-    const outcome = await createDeploymentSnapshotMutation.mutateAsync({
-      deploy: false,
-      message: commitMessage,
-      savedStateBasis: reviewedMutation.savedStateBasis,
-      reviewedWorkingStateFingerprint:
-        reviewedMutation.workingStateFingerprint,
+    const outcome = await submitPublication(pendingPublication, {
       destructiveServiceIds: reviewedMutation.serviceIds,
       destructiveVolumeReviews: preparation.reviews,
+      reviewedWorkingStateFingerprint:
+        reviewedMutation.workingStateFingerprint,
     });
     if (outcome.state === "review_updated_evidence") {
       return {
@@ -304,7 +319,6 @@ export function useCanvasChangeActions({
         },
       };
     }
-    setCommitMessage("");
     return { state: "submitted" as const };
   }
 
@@ -315,6 +329,7 @@ export function useCanvasChangeActions({
     requestSave,
     isSubmittingDeploymentSnapshot: createDeploymentSnapshotMutation.isPending,
     requestDeploy,
+    pendingPublication,
     prepareDestructiveReview,
     confirmDestructiveAction,
   };

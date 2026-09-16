@@ -40,7 +40,7 @@ import {
   getDestructiveEnvironmentSaveReviewMismatch,
   projectDestructiveEnvironmentSave,
   projectReviewedEnvironmentPublicationDestructiveSave,
-  type ReviewedEnvironmentPublication,
+  type EnvironmentPublicationReview,
 } from "./working-state-review";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
@@ -163,7 +163,7 @@ const validateEnvironmentPublicationReview = Effect.fn(
 )(function* (input: {
   environmentId: string;
   workingNodes: CurrentEnvironmentSnapshotProjection["nodeSnapshots"];
-  review: ReviewedEnvironmentPublication;
+  review: EnvironmentPublicationReview;
 }) {
   const projection = yield* loadEnvironmentSnapshotProjection({
     kind: "environment",
@@ -187,14 +187,19 @@ const validateEnvironmentPublicationReview = Effect.fn(
   }
 });
 
-/** Publishes the exact reviewed Working graph without admitting a deployment. */
+/**
+ * Publishes the exact reviewed Working graph under the queue lock. Every
+ * manual publisher (Save and Deploy) runs this same fingerprint and
+ * destructive-review check before any Saved write.
+ */
 export const saveReviewedEnvironmentState = Effect.fn(
   "EnvironmentDesign.saveReviewedEnvironmentState",
 )(function* (input: {
   environmentId: string;
   actorId: string;
   message: string | null;
-  review: ReviewedEnvironmentPublication;
+  review: EnvironmentPublicationReview;
+  revisionPolicy: "always_create" | "reuse_latest_if_equivalent";
 }) {
   yield* lockEnvironmentDeploymentQueue(input.environmentId);
   const state = yield* loadCurrentEnvironmentState(input.environmentId);
@@ -204,7 +209,7 @@ export const saveReviewedEnvironmentState = Effect.fn(
     currentWorkingStateFingerprint !== input.review.workingStateFingerprint
   ) {
     return yield* new Conflict({
-      message: "Working State changed after the Save was reviewed.",
+      message: "Working State changed after this action was reviewed.",
     });
   }
   yield* validateEnvironmentPublicationReview({
@@ -219,7 +224,7 @@ export const saveReviewedEnvironmentState = Effect.fn(
     basis: input.review.savedStateBasis,
     intent: state.intent,
     destructiveVolumeReviews: input.review.destructiveVolumeReviews,
-    revisionPolicy: "always_create",
+    revisionPolicy: input.revisionPolicy,
   });
   return { savedStateSnapshotId: saved.savedStateSnapshotId };
 });

@@ -13,7 +13,7 @@ import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environ
 import { markDeploymentStatus } from "#/modules/deployments/runtime-repository.server";
 import {
   createManualEnvironmentDeployment,
-} from "#/modules/deployments/manual-admission.server";
+} from "#/modules/deployments/cloud-deployment-command.server";
 import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
 import { saveReviewedEnvironmentState } from "#/modules/environment-design/saved-state-operations.server";
 import type { ReviewedEnvironmentPublication } from "#/modules/environment-design/working-state-review";
@@ -57,10 +57,27 @@ function saveManualEnvironmentStateSnapshot(input: {
   readonly message: string | null;
   readonly review: ReviewedEnvironmentPublication;
 }) {
-  return Effect.match(saveReviewedEnvironmentState(input), {
-    onFailure: (error) => ({ status: "error" as const, error }),
-    onSuccess: (value) => ({ status: "ok" as const, value }),
-  }).pipe(Effect.provideService(SecretEncryption, encryption));
+  return Effect.match(
+    saveReviewedEnvironmentState({
+      ...input,
+      revisionPolicy: "always_create",
+    }),
+    {
+      onFailure: (error) => ({ status: "error" as const, error }),
+      onSuccess: (value) => ({ status: "ok" as const, value }),
+    },
+  ).pipe(Effect.provideService(SecretEncryption, encryption));
+}
+
+function deployManualEnvironmentState(input: {
+  readonly environmentId: string;
+  readonly actorId: string;
+  readonly message: string | null;
+  readonly review: ReviewedEnvironmentPublication;
+}) {
+  return createManualEnvironmentDeployment(input).pipe(
+    Effect.provideService(SecretEncryption, encryption),
+  );
 }
 
 describe("manual environment saved-state persistence", () => {
@@ -158,7 +175,7 @@ describe("manual environment saved-state persistence", () => {
   async function deploy(message: string) {
     const review = await publicationReview();
     return harness.runTransaction(() =>
-      createManualEnvironmentDeployment(
+      deployManualEnvironmentState(
         {
           environmentId,
           actorId: userId,
@@ -384,7 +401,7 @@ describe("manual environment saved-state persistence", () => {
       .where(eq(schema.environment.id, environmentId));
 
     await expect(harness.runTransaction(() =>
-      createManualEnvironmentDeployment(
+      deployManualEnvironmentState(
         {
           environmentId,
           actorId: userId,
@@ -399,7 +416,7 @@ describe("manual environment saved-state persistence", () => {
       ),
     )).rejects.toMatchObject({
       message:
-        "Working State changed after the manual deployment was reviewed.",
+        "Working State changed after this action was reviewed.",
     });
 
     expect(
@@ -437,7 +454,7 @@ describe("manual environment saved-state persistence", () => {
     expect(result.status).toBe("error");
     if (result.status === "error") {
       expect(result.error.message).toBe(
-        "Working State changed after the Save was reviewed.",
+        "Working State changed after this action was reviewed.",
       );
     }
     expect(
@@ -479,6 +496,33 @@ describe("manual environment saved-state persistence", () => {
     }
   });
 
+  it("rejects an unreviewed destructive transition at the Deploy publication boundary", async () => {
+    const deployment = await deploy("Applied baseline");
+    await harness.runEffect(
+      markDeploymentStatus({
+        environmentDeploymentId: deployment.environmentDeploymentId,
+        status: "applied",
+      }).pipe(
+        Effect.provideService(SecretEncryption, encryption),
+        Effect.provideService(InngestClient, inngest),
+      ),
+    );
+    await harness.db
+      .update(schema.environment)
+      .set({ intent: { version: 1, environmentSlug: "production", services: [], variableGroups: [], volumes: [] }, revision: randomUUID() })
+      .where(eq(schema.environment.id, environmentId));
+
+    await expect(deploy("Automated publication")).rejects.toMatchObject({
+      message: expect.stringContaining("changed after review"),
+    });
+    expect(
+      await harness.db.select().from(schema.environmentSavedStateSnapshot),
+    ).toHaveLength(1);
+    expect(
+      await harness.db.select().from(schema.environmentDeployment),
+    ).toHaveLength(1);
+  });
+
   it("keeps the reviewed revision fixed across a repeatable-read retry", async () => {
     const reviewedWorkingStateFingerprint = await reviewFingerprint();
     let attempt = 0;
@@ -518,7 +562,7 @@ describe("manual environment saved-state persistence", () => {
 
     const result = await Effect.runPromise(
       withMutationResult(
-        createManualEnvironmentDeployment({
+        deployManualEnvironmentState({
           environmentId,
           actorId: userId,
           message: "Reviewed state",
@@ -545,23 +589,18 @@ describe("manual environment saved-state persistence", () => {
     ).toEqual([]);
   });
 
-  it("refreshes one queued target from a new Saved revision while preserving earlier Saved evidence", async () => {
+  it("refuses a second queued manual Deploy without replacing the pinned revision", async () => {
     const first = await deploy("First target");
-    const [firstNode] = await harness.db
-      .select({ config: schema.environmentNodeConfigSnapshot.config })
-      .from(schema.environmentNodeConfigSnapshot)
-      .where(
-        eq(
-          schema.environmentNodeConfigSnapshot.environmentDeploymentId,
-          first.environmentDeploymentId,
-        ),
-      );
 
     await harness.db
       .update(schema.environment)
       .set({ intent: sql`jsonb_set(${schema.environment.intent}, '{services,0,config,name}', to_jsonb(${"Changed target"}::text))`, revision: randomUUID() })
       .where(eq(schema.environment.id, environmentId));
-    const second = await deploy("Second target");
+
+    await expect(deploy("Second target")).rejects.toMatchObject({
+      _tag: "Conflict",
+      message: "An environment deployment attempt is already queued.",
+    });
 
     const savedRows = await harness.db
       .select({
@@ -577,23 +616,21 @@ describe("manual environment saved-state persistence", () => {
       .where(
         eq(
           schema.environmentNodeConfigSnapshot.environmentDeploymentId,
-          second.environmentDeploymentId,
+          first.environmentDeploymentId,
         ),
       );
 
-    expect(second.environmentDeploymentId).toBe(first.environmentDeploymentId);
-    expect(firstNode?.config).toEqual(expect.objectContaining({ name: "API" }));
-    expect(savedRows).toHaveLength(2);
+    expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(
+      1,
+    );
+    expect(savedRows).toHaveLength(1);
     expect(
-      savedRows.map(
-        (row) =>
-          decodeStrict(savedEnvironmentIntentSchema, row.intent).services[0]?.config
-            .name,
-      ),
-    ).toEqual(expect.arrayContaining(["API", "Changed target"]));
+      decodeStrict(savedEnvironmentIntentSchema, savedRows[0]?.intent).services[0]
+        ?.config.name,
+    ).toBe("API");
     expect(queuedNodes).toEqual([
       expect.objectContaining({
-        config: expect.objectContaining({ name: "Changed target" }),
+        config: expect.objectContaining({ name: "API" }),
       }),
     ]);
   });
@@ -803,7 +840,15 @@ describe("manual environment saved-state persistence", () => {
       })
       .where(eq(schema.environmentSavedStateSnapshot.id, saved.id));
 
-    const next = await deploy("Deploy without volume destroy");
+    const next = await harness.runTransaction(() =>
+      admitEnvironmentDeployment({
+        environmentId,
+        savedStateSnapshotId: saved.id,
+        triggerOrigin: { origin: "manual", actorId: userId },
+        message: "Deploy without volume destroy",
+        serviceActionPolicy: { kind: "all_affected_required" },
+      }),
+    );
     const attempts = await harness.db
       .select({
         id: schema.volumeRemoveAttempt.id,
@@ -814,7 +859,7 @@ describe("manual environment saved-state persistence", () => {
       .where(
         eq(
           schema.volumeRemoveAttempt.environmentDeploymentId,
-          next.environmentDeploymentId,
+          next.id,
         ),
       );
     expect(attempts).toEqual([

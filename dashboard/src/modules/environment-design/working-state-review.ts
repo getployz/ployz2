@@ -1,7 +1,9 @@
 import { canonicalWorkingReview, destructivePublication, destructivePublicationMismatch } from "@ployz/sdk/config";
 import type { CompiledEnvironmentIntent } from "@ployz/sdk/config";
-import type { DestructiveVolumeReview } from "./destructive-volume-review";
-import type { EnvironmentSavedStateBasis } from "./saved-state";
+import { Schema } from "effect";
+import { destructiveVolumeReviewsSchema } from "./destructive-volume-review";
+import { environmentSavedStateBasisSchema } from "./saved-state";
+import { Uuid } from "./workspace-schemas";
 
 type ReviewedNodeSnapshot = {
   nodeType: "service" | "variable_group" | "volume";
@@ -23,21 +25,39 @@ export type DestructiveEnvironmentSave = {
   volumeIds: string[];
 };
 
+export const workingStateFingerprintSchema = Schema.String.check(
+  Schema.isPattern(/^environment-working-state-v1:[0-9a-f]{64}$/u),
+);
+
+export const destructiveServiceIdsSchema = Schema.mutable(
+  Schema.Array(Uuid),
+).check(
+  Schema.makeFilter((serviceIds) =>
+    new Set(serviceIds).size === serviceIds.length
+      ? undefined
+      : "A destructive Service can be reviewed only once.",
+  ),
+);
+
 /**
  * Authority to publish one exact Working State revision as Saved State.
  *
  * The destructive set is required even when empty so every publisher is
  * checked against the same locked transition instead of opting into safety.
  */
-export type ReviewedEnvironmentPublication = {
-  savedStateBasis: EnvironmentSavedStateBasis;
-  workingStateFingerprint: string;
-  destructiveServiceIds: string[];
-  destructiveVolumeReviews: DestructiveVolumeReview[];
-};
+export const environmentPublicationReviewSchema = Schema.Struct({
+  savedStateBasis: environmentSavedStateBasisSchema,
+  workingStateFingerprint: workingStateFingerprintSchema,
+  destructiveServiceIds: destructiveServiceIdsSchema,
+  destructiveVolumeReviews: destructiveVolumeReviewsSchema,
+});
+
+export type EnvironmentPublicationReview =
+  typeof environmentPublicationReviewSchema.Type;
+export type ReviewedEnvironmentPublication = EnvironmentPublicationReview;
 
 export function projectReviewedEnvironmentPublicationDestructiveSave(
-  review: ReviewedEnvironmentPublication,
+  review: EnvironmentPublicationReview,
 ): DestructiveEnvironmentSave {
   return {
     serviceIds: review.destructiveServiceIds,

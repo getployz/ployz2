@@ -129,6 +129,7 @@ export function CanvasFlow({
     discardRowChange,
     requestSave,
     requestDeploy,
+    pendingPublication,
     prepareDestructiveReview,
     confirmDestructiveAction,
   } = useCanvasChangeActions({
@@ -294,10 +295,22 @@ export function CanvasFlow({
         onOpenChange={setDestructiveConfirmationOpen}
         confirmPhrase={params.environmentSlug}
         serviceNames={destructiveServiceNames}
-        title="Save destructive changes?"
-        description="Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision as Saved intent; runtime deletion happens only during a volume destroy, not Deploy."
-        actionLabel="Save removals"
-        pendingActionLabel="Saving..."
+        title={
+          pendingPublication === "deploy"
+            ? "Deploy destructive changes?"
+            : "Save destructive changes?"
+        }
+        description={
+          pendingPublication === "deploy"
+            ? "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision and admits that Saved revision for deployment."
+            : "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision as Saved intent; runtime deletion happens only during a later volume destroy."
+        }
+        actionLabel={
+          pendingPublication === "deploy" ? "Deploy removals" : "Save removals"
+        }
+        pendingActionLabel={
+          pendingPublication === "deploy" ? "Deploying..." : "Saving..."
+        }
         callbacks={{
           load: prepareDestructiveReview,
           confirm: confirmDestructiveAction,

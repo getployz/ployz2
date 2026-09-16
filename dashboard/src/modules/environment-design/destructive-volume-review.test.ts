@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  createEnvironmentDeploymentSnapshotSchema,
   getDestructiveVolumeReviewMismatch,
+  reviewedPublicationSchema,
   type DestructiveVolumeReview,
 } from "#/modules/deployments/deployment-contract";
 import {
@@ -10,63 +10,92 @@ import {
 } from "#/modules/environment-design/destructive-volume-review";
 import { isValid } from "#/modules/environment-design/schema";
 
-const reviewedWorkingStateFingerprint =
+const workingStateFingerprint =
   `environment-working-state-v1:${"a".repeat(64)}`;
 const savedStateBasis = { kind: "no_saved_state" as const };
 
+function validPublication(
+  review: {
+    destructiveServiceIds?: string[];
+    destructiveVolumeReviews?: DestructiveVolumeReview[];
+  } = {},
+) {
+  return {
+    organizationSlug: "acme",
+    projectSlug: "api",
+    environmentSlug: "production",
+    intent: "save" as const,
+    message: null,
+    review: {
+      savedStateBasis,
+      workingStateFingerprint,
+      destructiveServiceIds: review.destructiveServiceIds ?? [],
+      destructiveVolumeReviews: review.destructiveVolumeReviews ?? [],
+    },
+  };
+}
+
 describe("destructive reviews on deployment admission", () => {
   it("accepts each reviewed Service removal once", () => {
-    const valid = isValid(createEnvironmentDeploymentSnapshotSchema, {
-      organizationSlug: "acme",
-      projectSlug: "api",
-      environmentSlug: "production",
-      savedStateBasis,
-      reviewedWorkingStateFingerprint,
-      destructiveServiceIds: ["00000000-0000-4000-8000-000000000001"],
-    });
+    const valid = isValid(
+      reviewedPublicationSchema,
+      validPublication({
+        destructiveServiceIds: ["00000000-0000-4000-8000-000000000001"],
+      }),
+    );
     expect(valid).toBe(true);
 
-    const duplicate = isValid(createEnvironmentDeploymentSnapshotSchema, {
-      organizationSlug: "acme",
-      projectSlug: "api",
-      environmentSlug: "production",
-      savedStateBasis,
-      reviewedWorkingStateFingerprint,
-      destructiveServiceIds: [
-        "00000000-0000-4000-8000-000000000001",
-        "00000000-0000-4000-8000-000000000001",
-      ],
-    });
+    const duplicate = isValid(
+      reviewedPublicationSchema,
+      validPublication({
+        destructiveServiceIds: [
+          "00000000-0000-4000-8000-000000000001",
+          "00000000-0000-4000-8000-000000000001",
+        ],
+      }),
+    );
     expect(duplicate).toBe(false);
   });
 
   it("validates complete typed evidence and rejects duplicate resources", () => {
     const review = reviewedVolume();
     expect(
-      isValid(createEnvironmentDeploymentSnapshotSchema, {
-        organizationSlug: "acme",
-        projectSlug: "api",
-        environmentSlug: "production",
-        savedStateBasis,
-        reviewedWorkingStateFingerprint,
-        destructiveVolumeReviews: [review],
-      }),
+      isValid(
+        reviewedPublicationSchema,
+        validPublication({ destructiveVolumeReviews: [review] }),
+      ),
     ).toBe(true);
 
-    const duplicate = isValid(createEnvironmentDeploymentSnapshotSchema, {
-      organizationSlug: "acme",
-      projectSlug: "api",
-      environmentSlug: "production",
-      savedStateBasis,
-      reviewedWorkingStateFingerprint,
-      destructiveVolumeReviews: [review, review],
-    });
+    const duplicate = isValid(
+      reviewedPublicationSchema,
+      validPublication({ destructiveVolumeReviews: [review, review] }),
+    );
     expect(duplicate).toBe(false);
     expect(isValid(destructiveVolumeReviewsSchema, [review, review])).toBe(false);
     expect(
       isValid(destructiveVolumeReviewsSchema, [
         reviewedVolume({ usedBytes: Number.POSITIVE_INFINITY }),
       ]),
+    ).toBe(false);
+    expect(
+      isValid(reviewedPublicationSchema, {
+        ...validPublication(),
+        review: {
+          savedStateBasis,
+          workingStateFingerprint,
+          destructiveServiceIds: ["00000000-0000-4000-8000-000000000001"],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isValid(reviewedPublicationSchema, {
+        ...validPublication(),
+        review: {
+          savedStateBasis,
+          workingStateFingerprint,
+          destructiveVolumeReviews: [review],
+        },
+      }),
     ).toBe(false);
   });
 
