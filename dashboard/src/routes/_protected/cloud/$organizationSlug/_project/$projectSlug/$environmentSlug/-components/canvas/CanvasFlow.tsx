@@ -46,14 +46,14 @@ const DESTRUCTIVE_DIALOG = {
   deploy: {
     title: "Deploy destructive changes?",
     description:
-      "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision and admits that Saved revision for deployment.",
+      "Review every deployed Service and Volume removal. Confirmation publishes this exact Working State revision and starts a Cloud Deployment Attempt against that Saved State.",
     actionLabel: "Deploy removals",
     pendingActionLabel: "Deploying...",
   },
   save: {
     title: "Save destructive changes?",
     description:
-      "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision as Saved State; runtime deletion happens only during a later volume destroy.",
+      "Review every deployed Service and Volume removal. Confirmation publishes this exact Working State revision as Saved State; runtime deletion happens only during a later volume destroy.",
     actionLabel: "Save removals",
     pendingActionLabel: "Saving...",
   },

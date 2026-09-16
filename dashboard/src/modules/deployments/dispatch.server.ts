@@ -14,7 +14,7 @@ import { createEnvironmentDeployRequestedEvent } from "#/modules/inngest/events"
 export const ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE =
   "inngest_dispatch_failed";
 export const ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_MESSAGE =
-  "Cloud could not dispatch the deployment workflow.";
+  "Cloud could not start the Cloud Deployment Attempt.";
 
 export type EnvironmentDeploymentDispatchInput = {
   readonly environmentDeploymentId: string;
