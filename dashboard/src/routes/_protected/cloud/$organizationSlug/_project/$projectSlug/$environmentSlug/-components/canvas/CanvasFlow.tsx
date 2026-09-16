@@ -154,6 +154,23 @@ export function CanvasFlow({
     selectedNodeId,
   });
 
+  const destructiveDialog = {
+    deploy: {
+      title: "Deploy destructive changes?",
+      description:
+        "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision and admits that Saved revision for deployment.",
+      actionLabel: "Deploy removals",
+      pendingActionLabel: "Deploying...",
+    },
+    save: {
+      title: "Save destructive changes?",
+      description:
+        "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision as Saved intent; runtime deletion happens only during a later volume destroy.",
+      actionLabel: "Save removals",
+      pendingActionLabel: "Saving...",
+    },
+  }[pendingPublication];
+
   function openVariableGroupCreatorFromServiceDialog() {
     creator.setCreatorOpen(false);
     variableGroupCreator.openCreatorAtPosition(creator.creatorPosition);
@@ -295,22 +312,10 @@ export function CanvasFlow({
         onOpenChange={setDestructiveConfirmationOpen}
         confirmPhrase={params.environmentSlug}
         serviceNames={destructiveServiceNames}
-        title={
-          pendingPublication === "deploy"
-            ? "Deploy destructive changes?"
-            : "Save destructive changes?"
-        }
-        description={
-          pendingPublication === "deploy"
-            ? "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision and admits that Saved revision for deployment."
-            : "Review every deployed Service and Volume removal. Confirmation publishes this exact Environment revision as Saved intent; runtime deletion happens only during a later volume destroy."
-        }
-        actionLabel={
-          pendingPublication === "deploy" ? "Deploy removals" : "Save removals"
-        }
-        pendingActionLabel={
-          pendingPublication === "deploy" ? "Deploying..." : "Saving..."
-        }
+        title={destructiveDialog.title}
+        description={destructiveDialog.description}
+        actionLabel={destructiveDialog.actionLabel}
+        pendingActionLabel={destructiveDialog.pendingActionLabel}
         callbacks={{
           load: prepareDestructiveReview,
           confirm: confirmDestructiveAction,

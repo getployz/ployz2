@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  canvasPublicationSnapshotInput,
+  canvasPublicationInput,
   submitCanvasPublication,
 } from "./canvas-publication-submission";
 import {
@@ -52,11 +52,11 @@ describe("canvas publication submission", () => {
       destructiveServiceIds: ["00000000-0000-4000-8000-000000000002"],
       destructiveVolumeReviews: [volumeReview],
     };
-    const save = canvasPublicationSnapshotInput(params, {
+    const save = canvasPublicationInput(params, {
       kind: "save",
       ...review,
     });
-    const deploy = canvasPublicationSnapshotInput(params, {
+    const deploy = canvasPublicationInput(params, {
       kind: "deploy",
       ...review,
     });
@@ -96,7 +96,7 @@ describe("canvas publication submission", () => {
       submitCanvasPublication({
         submit,
         reconcile,
-        data: canvasPublicationSnapshotInput(params, {
+        data: canvasPublicationInput(params, {
           kind: "deploy",
           message: "Stale",
           savedStateBasis,

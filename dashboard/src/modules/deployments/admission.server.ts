@@ -318,10 +318,7 @@ function writeQueuedSavedTarget(
       )
       .for("update")
       .limit(1);
-    const write = decideQueueWrite(queuedRows[0] ?? null, {
-      triggerOrigin: input.triggerOrigin,
-      savedStateSnapshotId: target.savedStateSnapshotId,
-    });
+    const write = decideQueueWrite(queuedRows[0] ?? null, input.triggerOrigin);
     switch (write.kind) {
       case "refuse_manual":
         return yield* new Conflict({

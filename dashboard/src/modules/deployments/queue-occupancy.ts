@@ -7,11 +7,6 @@ export type QueueOccupant = {
   inngestRunId: string | null;
 };
 
-export type QueueAdmissionRequest = {
-  triggerOrigin: DeploymentTriggerOrigin;
-  savedStateSnapshotId: string;
-};
-
 export type QueueWrite<Occupant extends QueueOccupant = QueueOccupant> =
   | { kind: "insert" }
   | { kind: "refresh_automated"; occupant: Occupant }
@@ -20,10 +15,10 @@ export type QueueWrite<Occupant extends QueueOccupant = QueueOccupant> =
 
 export function decideQueueWrite<Occupant extends QueueOccupant>(
   occupant: Occupant | null,
-  request: QueueAdmissionRequest,
+  triggerOrigin: DeploymentTriggerOrigin,
 ): QueueWrite<Occupant> {
   if (occupant === null) return { kind: "insert" };
-  switch (request.triggerOrigin.origin) {
+  switch (triggerOrigin.origin) {
     case "manual":
       return { kind: "refuse_manual", occupant };
     case "github":
@@ -36,7 +31,7 @@ export function decideQueueWrite<Occupant extends QueueOccupant>(
       }
       return { kind: "refresh_automated", occupant };
     default: {
-      const _never: never = request.triggerOrigin;
+      const _never: never = triggerOrigin;
       return _never;
     }
   }

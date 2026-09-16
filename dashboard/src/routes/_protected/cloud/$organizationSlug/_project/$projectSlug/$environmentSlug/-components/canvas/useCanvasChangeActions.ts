@@ -35,7 +35,7 @@ import {
   projectReviewedEnvironmentWorkingState,
 } from "#/modules/environment-design/working-state-review";
 import {
-  canvasPublicationSnapshotInput,
+  canvasPublicationInput,
   submitCanvasPublication,
   type CanvasPublicationKind,
 } from "./canvas-publication-submission";
@@ -131,7 +131,7 @@ export function useCanvasChangeActions({
             ),
           });
         },
-        data: canvasPublicationSnapshotInput(params, {
+        data: canvasPublicationInput(params, {
           kind: input.kind,
           message: input.message,
           savedStateBasis: input.savedStateBasis,
@@ -243,7 +243,7 @@ export function useCanvasChangeActions({
       toast.error(
         error instanceof Error
           ? error.message
-          : `Failed to ${kind} the desired state snapshot.`,
+          : `Failed to ${kind} the Working State.`,
       );
     }
   }
@@ -319,7 +319,6 @@ export function useCanvasChangeActions({
     discardNodeChanges,
     discardRowChange,
     requestSave,
-    isSubmittingDeploymentSnapshot: publicationMutation.isPending,
     requestDeploy,
     pendingPublication,
     prepareDestructiveReview,

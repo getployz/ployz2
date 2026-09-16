@@ -7,9 +7,7 @@ import type { EnvironmentSavedStateBasis } from "#/modules/environment-design/sa
 
 export type CanvasPublicationKind = "save" | "deploy";
 
-export type CanvasPublicationSnapshotInput = ReviewedPublicationInput;
-
-export function canvasPublicationSnapshotInput(
+export function canvasPublicationInput(
   params: {
     organizationSlug: string;
     projectSlug: string;
@@ -23,7 +21,7 @@ export function canvasPublicationSnapshotInput(
     destructiveServiceIds: string[];
     destructiveVolumeReviews: DestructiveVolumeReview[];
   },
-): CanvasPublicationSnapshotInput {
+): ReviewedPublicationInput {
   return {
     organizationSlug: params.organizationSlug,
     projectSlug: params.projectSlug,
@@ -41,10 +39,10 @@ export function canvasPublicationSnapshotInput(
 
 export async function submitCanvasPublication(input: {
   submit: (
-    data: CanvasPublicationSnapshotInput,
+    data: ReviewedPublicationInput,
   ) => Promise<EnvironmentPublicationSubmissionOutcome>;
   reconcile: () => Promise<void>;
-  data: CanvasPublicationSnapshotInput;
+  data: ReviewedPublicationInput;
 }): Promise<EnvironmentPublicationSubmissionOutcome> {
   const result = await input.submit(input.data);
   await input.reconcile();
