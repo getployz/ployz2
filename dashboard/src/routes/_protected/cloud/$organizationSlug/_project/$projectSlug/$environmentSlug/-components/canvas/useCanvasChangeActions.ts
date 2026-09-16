@@ -4,7 +4,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { discardEnvironmentChangesServerFn } from "#/modules/environment-design/working-document-restore.functions";
 import type { DiscardEnvironmentChangesInput } from "#/modules/environment-design/working-document-restore";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -104,44 +104,6 @@ export function useCanvasChangeActions({
   const prepareEnvironmentDestructiveVolumes = useServerFn(
     prepareEnvironmentDestructiveVolumesServerFn,
   );
-  const publicationMutation = useMutation({
-    mutationFn: async (input: {
-      kind: CanvasPublicationKind;
-      message: string;
-      savedStateBasis: EnvironmentSavedStateBasis;
-      destructiveServiceIds: string[];
-      destructiveVolumeReviews: DestructiveVolumeReview[];
-      reviewedWorkingStateFingerprint?: string;
-    }) => {
-      const reviewedWorkingStateFingerprint =
-        input.reviewedWorkingStateFingerprint ??
-        (await fingerprintReviewedEnvironmentWorkingState(
-          workingReview(),
-        ));
-      return submitCanvasPublication({
-        submit: (data) => submitReviewedPublication({ data }),
-        reconcile: async () => {
-          await reconcileDeploymentCollections(
-            params.organizationSlug,
-            collectionScope,
-          );
-          await queryClient.invalidateQueries({
-            queryKey: serviceDeploymentKeys.environmentChangeStatesOrg(
-              params.organizationSlug,
-            ),
-          });
-        },
-        data: canvasPublicationInput(params, {
-          kind: input.kind,
-          message: input.message,
-          savedStateBasis: input.savedStateBasis,
-          reviewedWorkingStateFingerprint,
-          destructiveServiceIds: input.destructiveServiceIds,
-          destructiveVolumeReviews: input.destructiveVolumeReviews,
-        }),
-      });
-    },
-  });
 
   async function discardChanges(command: DiscardEnvironmentChangesInput["command"]) {
     try {
@@ -208,13 +170,30 @@ export function useCanvasChangeActions({
       reviewedWorkingStateFingerprint?: string;
     },
   ) {
-    const outcome = await publicationMutation.mutateAsync({
-      kind,
-      message: commitMessage,
-      savedStateBasis,
-      destructiveServiceIds: review.destructiveServiceIds,
-      destructiveVolumeReviews: review.destructiveVolumeReviews,
-      reviewedWorkingStateFingerprint: review.reviewedWorkingStateFingerprint,
+    const reviewedWorkingStateFingerprint =
+      review.reviewedWorkingStateFingerprint ??
+      (await fingerprintReviewedEnvironmentWorkingState(workingReview()));
+    const outcome = await submitCanvasPublication({
+      submit: (data) => submitReviewedPublication({ data }),
+      reconcile: async () => {
+        await reconcileDeploymentCollections(
+          params.organizationSlug,
+          collectionScope,
+        );
+        await queryClient.invalidateQueries({
+          queryKey: serviceDeploymentKeys.environmentChangeStatesOrg(
+            params.organizationSlug,
+          ),
+        });
+      },
+      data: canvasPublicationInput(params, {
+        kind,
+        message: commitMessage,
+        savedStateBasis,
+        reviewedWorkingStateFingerprint,
+        destructiveServiceIds: review.destructiveServiceIds,
+        destructiveVolumeReviews: review.destructiveVolumeReviews,
+      }),
     });
     if (outcome.state === "attempt_dispatch_failed") {
       toast.error("Cloud could not dispatch the deployment workflow.");

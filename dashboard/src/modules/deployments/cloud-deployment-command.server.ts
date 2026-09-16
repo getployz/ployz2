@@ -134,8 +134,6 @@ export const createManualEnvironmentDeployment = Effect.fn(
   });
   return {
     environmentDeploymentId: deployment.id,
-    status: deployment.status,
-    createdAt: deployment.createdAt,
   };
 });
 

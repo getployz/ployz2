@@ -305,7 +305,6 @@ function writeQueuedSavedTarget(
         id: schemaEnvironmentDeployment.id,
         status: schemaEnvironmentDeployment.status,
         createdAt: schemaEnvironmentDeployment.createdAt,
-        savedStateSnapshotId: schemaEnvironmentDeployment.savedStateSnapshotId,
         triggerOrigin: schemaEnvironmentDeployment.triggerOrigin,
         inngestRunId: schemaEnvironmentDeployment.inngestRunId,
       })
