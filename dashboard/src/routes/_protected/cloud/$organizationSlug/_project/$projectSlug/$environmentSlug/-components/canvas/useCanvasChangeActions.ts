@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -67,6 +68,7 @@ export function useCanvasChangeActions({
   setCommitMessage,
   setDestructiveConfirmationOpen,
 }: UseCanvasChangeActionsInput) {
+  const [reviewAction, setReviewAction] = useState<"save" | "deploy">("save");
   const collectionScope = useCollectionScope();
   const document = useEnvironmentDocument(params.organizationSlug, environmentId);
   function workingReview() {
@@ -234,10 +236,17 @@ export function useCanvasChangeActions({
   }
 
   function requestDeploy() {
+    if (!deployTargetIsAvailable()) return;
+    setReviewAction("deploy");
+    if (destructiveServiceIds.length > 0 || deletedDeployedVolumeIds.length > 0) {
+      setDestructiveConfirmationOpen(true);
+      return;
+    }
     void handleDeploy();
   }
 
   function requestSave() {
+    setReviewAction("save");
     if (
       destructiveServiceIds.length > 0 ||
       deletedDeployedVolumeIds.length > 0
@@ -279,11 +288,11 @@ export function useCanvasChangeActions({
     preparation: PreparedDestructiveReview,
   ) {
     if (!preparation.reviewedMutation) {
-      throw new Error("The destructive Save is missing its reviewed mutation.");
+      throw new Error("The destructive action is missing its reviewed mutation.");
     }
     const reviewedMutation = preparation.reviewedMutation;
     const outcome = await createDeploymentSnapshotMutation.mutateAsync({
-      deploy: false,
+      deploy: reviewAction === "deploy",
       message: commitMessage,
       savedStateBasis: reviewedMutation.savedStateBasis,
       reviewedWorkingStateFingerprint:
@@ -309,6 +318,7 @@ export function useCanvasChangeActions({
   }
 
   return {
+    reviewAction,
     discardAllChanges,
     discardNodeChanges,
     discardRowChange,
