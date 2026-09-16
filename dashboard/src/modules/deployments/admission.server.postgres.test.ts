@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asc, eq } from "drizzle-orm";
 import { Effect, Result } from "effect";
 import { Inngest } from "inngest";
+import type { MachineId } from "@ployz/sdk";
 import * as schema from "#/db/schema";
 import {
   type GithubPostgresTestHarness,
@@ -18,6 +19,7 @@ import {
   dispatchEnvironmentDeployment,
   ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
 } from "./dispatch.server";
+import { stageVolumeRemoveAttempt } from "#/modules/runtime/volume-removal.repository";
 import { commitFirstConnectAdmission } from "./first-connect.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000401";
@@ -28,7 +30,7 @@ const firstVolumeId = "00000000-0000-4000-8000-000000000405";
 const firstLineageId = "00000000-0000-4000-8000-000000000406";
 const secondVolumeId = "00000000-0000-4000-8000-000000000407";
 const secondLineageId = "00000000-0000-4000-8000-000000000408";
-const machineId = "0123456789abcdef0123456789abcdef";
+const machineId = "0123456789abcdef0123456789abcdef" as MachineId;
 const encryptedPairingSecret = {
   version: 1 as const,
   iv: "iv",
@@ -358,15 +360,16 @@ describe("Saved deployment admission", () => {
   });
 
   function stageAwaitingVolumeRemoval(environmentDeploymentId: string) {
-    return harness.db.insert(schema.volumeRemoveAttempt).values({
-      organizationId,
-      requestedByUserId: userId,
-      environmentId,
-      environmentDeploymentId,
-      environmentResourceId: firstVolumeId,
-      volumes: [{ machine_id: machineId, name: `vol-${firstVolumeId}` }],
-      status: "awaiting_deployment",
-    });
+    return harness.runEffect(
+      stageVolumeRemoveAttempt({
+        organizationId,
+        requestedByUserId: userId,
+        environmentId,
+        environmentDeploymentId,
+        environmentResourceId: firstVolumeId,
+        volumes: [{ machine_id: machineId, name: `vol-${firstVolumeId}` }],
+      }),
+    );
   }
 
   async function volumeRemovalStatuses(environmentDeploymentId: string) {
