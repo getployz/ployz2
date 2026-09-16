@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentDeployment } from "./tables";
-import { markDeploymentStatus } from "./runtime-lifecycle.repository.server";
+import { cancelDeploymentBeforeExecution } from "./runtime-lifecycle.repository.server";
 import { Database } from "#/server/database.server";
 
 export const markCancelledByInngestRunId = Effect.fn("Deployments.markCancelledByInngestRunId")(
@@ -17,9 +17,9 @@ export const markDeploymentCancelled = Effect.fn("Deployments.markDeploymentCanc
         : eq(environmentDeployment.id, target.deploymentId)).limit(1);
     if (!deployment) return false;
     const expectedInngestRunId = "runId" in target ? target.runId : undefined;
-    const cancelled = yield* markDeploymentStatus({
+    const cancelled = yield* cancelDeploymentBeforeExecution({
       environmentDeploymentId: deployment.id, expectedInngestRunId,
-      beforeExecution: true, status: "cancelled", message,
+      message,
     });
     if (cancelled) return true;
     // Execution retains its slot until the SDK reports cleanup and its outcome.

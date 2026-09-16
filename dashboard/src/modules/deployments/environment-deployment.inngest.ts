@@ -30,7 +30,6 @@ import { loadDeploymentContext } from "#/modules/deployments/runtime-hydration.r
 import {
   beginEnvironmentDeploymentPlanning,
   markDeploymentFailedIfOwned,
-  markDeploymentStatus,
   ownsDeploymentRun,
   recordInngestRun,
 } from "#/modules/deployments/runtime-lifecycle.repository.server";
@@ -267,28 +266,6 @@ export async function executeProcessEnvironmentDeployment(
         };
       }
       break;
-    }
-
-    const deploying = await step.run("mark-deployment-deploying", () =>
-      runEffect(
-        markDeploymentStatus({
-          environmentDeploymentId,
-          status: "deploying",
-          expectedInngestRunId: runId,
-        }),
-      ),
-    );
-    if (!deploying) {
-      const terminalContext = deploymentContext(
-        await step.run("reload-deployment-after-deploying-race", () =>
-          runEffect(loadDeploymentContext(environmentDeploymentId)),
-        ),
-      );
-      return {
-        environmentDeploymentId,
-        status: terminalContext?.deployment.status ?? "missing",
-        skipped: true,
-      };
     }
 
     await step.run("execute-sdk-deploy", () =>

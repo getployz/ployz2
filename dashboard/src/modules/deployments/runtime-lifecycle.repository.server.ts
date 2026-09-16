@@ -67,15 +67,39 @@ function lockDeploymentEnvironment(environmentDeploymentId: string) {
   });
 }
 
-function markEnvironmentDeploymentStatus(input: {
+type DeploymentRunStatusChange = {
   environmentDeploymentId: string;
-  status: EnvironmentDeploymentStatus;
+  status: Exclude<EnvironmentDeploymentStatus, "queued">;
   message?: string;
   failureCode?: string;
+  /** Omit only for an unowned attempt. */
   expectedInngestRunId?: string;
-  beforeExecution?: boolean;
-  dispatchFailure?: boolean;
-}) {
+};
+
+type DeploymentTransition =
+  | (DeploymentRunStatusChange & { kind: "run" })
+  | { kind: "dispatch_failed"; environmentDeploymentId: string; status: "failed"; message: string; failureCode: string }
+  | { kind: "cancel_before_execution"; environmentDeploymentId: string; status: "cancelled"; message: string; expectedInngestRunId?: string };
+
+function transitionGuard(input: DeploymentTransition) {
+  switch (input.kind) {
+    case "dispatch_failed":
+      return and(eq(schemaEnvironmentDeployment.status, "queued"), isNull(schemaEnvironmentDeployment.inngestRunId));
+    case "cancel_before_execution":
+      return and(inArray(schemaEnvironmentDeployment.status, ["queued", "planning"]),
+        input.expectedInngestRunId ? eq(schemaEnvironmentDeployment.inngestRunId, input.expectedInngestRunId) : undefined);
+    case "run":
+      return and(
+        input.expectedInngestRunId ? eq(schemaEnvironmentDeployment.inngestRunId, input.expectedInngestRunId) : isNull(schemaEnvironmentDeployment.inngestRunId),
+        input.status === "planning"
+          ? and(eq(schemaEnvironmentDeployment.status, "queued"), isNotNull(schemaEnvironmentDeployment.dispatchRequestedAt))
+          : input.status === "deploying" ? eq(schemaEnvironmentDeployment.status, "planning")
+          : inArray(schemaEnvironmentDeployment.status, [...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES]),
+      );
+  }
+}
+
+function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
   return Effect.gen(function* () {
     const database = yield* Database;
     const updatedAt = new Date();
@@ -88,7 +112,7 @@ function markEnvironmentDeploymentStatus(input: {
           updatedAt,
         };
         if (input.message) patch.failureMessage = input.message;
-        if (input.failureCode) patch.failureCode = input.failureCode;
+        if ("failureCode" in input && input.failureCode) patch.failureCode = input.failureCode;
         if (input.status === "cancelled") patch.cancellationRequestedAt = updatedAt;
         if (input.status === "planning") patch.startedAt = updatedAt;
         if (TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES.has(input.status)) {
@@ -100,21 +124,7 @@ function markEnvironmentDeploymentStatus(input: {
           .where(
             and(
               eq(schemaEnvironmentDeployment.id, input.environmentDeploymentId),
-              input.beforeExecution && !input.expectedInngestRunId ? undefined : input.expectedInngestRunId
-                ? eq(schemaEnvironmentDeployment.inngestRunId, input.expectedInngestRunId)
-                : isNull(schemaEnvironmentDeployment.inngestRunId),
-              input.status === "queued" ? sql`false` : undefined,
-              input.dispatchFailure ? eq(schemaEnvironmentDeployment.status, "queued") : undefined,
-              input.beforeExecution ? inArray(schemaEnvironmentDeployment.status, ["queued", "planning"]) : undefined,
-              input.status === "deploying" ? eq(schemaEnvironmentDeployment.status, "planning") : undefined,
-              input.status === "planning"
-                ? and(
-                    eq(schemaEnvironmentDeployment.status, "queued"),
-                    isNotNull(schemaEnvironmentDeployment.dispatchRequestedAt),
-                  )
-                : inArray(schemaEnvironmentDeployment.status, [
-                    ...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES,
-                  ]),
+              transitionGuard(input),
             ),
           )
           .returning({ id: schemaEnvironmentDeployment.id });
@@ -201,7 +211,13 @@ export const markDeploymentFailedIfOwned = Effect.fn("Deployments.markDeployment
 
 export const failUndispatchedDeployment = Effect.fn("Deployments.failUndispatchedDeployment")(
   (input: { environmentDeploymentId: string; message: string; failureCode: string }) =>
-    markDeploymentStatus({ ...input, status: "failed", dispatchFailure: true }),
+    markEnvironmentDeploymentStatus({ ...input, kind: "dispatch_failed", status: "failed" }).pipe(Effect.map(changed => changed !== null)),
+);
+
+/** User cancellation may settle any owner only before execution starts. */
+export const cancelDeploymentBeforeExecution = Effect.fn("Deployments.cancelDeploymentBeforeExecution")(
+  (input: { environmentDeploymentId: string; expectedInngestRunId?: string; message: string }) =>
+    markEnvironmentDeploymentStatus({ ...input, kind: "cancel_before_execution", status: "cancelled" }).pipe(Effect.map(changed => changed !== null)),
 );
 
 /** Derive node cleanup from the same Rust evidence used by Applied State. */
@@ -215,13 +231,16 @@ function settleConfirmedNodes(environmentDeploymentId: string, confirmedNodeIds?
       eq(environmentNodeConfigSnapshot.environmentDeploymentId, environmentDeploymentId),
       confirmedNodeIds ? inArray(environmentNodeConfigSnapshot.nodeId, [...confirmedNodeIds]) : undefined,
     ));
-    for (const node of nodes) {
-      yield* drizzle.delete(schemaEnvironmentNodeIntroduction).where(and(
-        eq(schemaEnvironmentNodeIntroduction.environmentId, deployment.environmentId),
-        eq(schemaEnvironmentNodeIntroduction.nodeType, node.nodeType),
-        eq(schemaEnvironmentNodeIntroduction.nodeId, node.nodeId),
-      ));
-    }
+    yield* drizzle.delete(schemaEnvironmentNodeIntroduction).where(and(
+      eq(schemaEnvironmentNodeIntroduction.environmentId, deployment.environmentId),
+      sql`exists (
+        select 1 from ${environmentNodeConfigSnapshot} snapshot
+        where snapshot.environment_deployment_id = ${environmentDeploymentId}
+          and snapshot.node_type = ${schemaEnvironmentNodeIntroduction.nodeType}
+          and snapshot.node_id = ${schemaEnvironmentNodeIntroduction.nodeId}
+          ${confirmedNodeIds ? sql`and ${inArray(sql`snapshot.node_id`, [...confirmedNodeIds])}` : sql``}
+      )`,
+    ));
     const serviceIds = nodes.filter(node => node.nodeType === "service").map(node => node.nodeId);
     if (serviceIds.length) yield* drizzle.update(schemaService).set({ firstDeployedAt: new Date() })
       .where(and(inArray(schemaService.id, serviceIds), isNull(schemaService.firstDeployedAt)));
@@ -263,14 +282,14 @@ export const persistSdkDeployOutcome = Effect.fn(
     }).pipe(Effect.option);
     if (Option.isNone(projected)) {
       yield* markEnvironmentDeploymentStatus({
-        environmentDeploymentId: input.environmentDeploymentId, expectedInngestRunId: input.expectedInngestRunId,
+        kind: "run", environmentDeploymentId: input.environmentDeploymentId, expectedInngestRunId: input.expectedInngestRunId,
         status: "failed", message: "Invalid runtime outcome; effects are unknown.", failureCode: "sdk_deploy_outcome_unknown",
       });
       return [];
     }
     const outcome = projected.value.summary;
     const released = yield* markEnvironmentDeploymentStatus({
-      environmentDeploymentId: input.environmentDeploymentId,
+      kind: "run", environmentDeploymentId: input.environmentDeploymentId,
       expectedInngestRunId: input.expectedInngestRunId,
       status: outcome.type === "success" ? "applied" : outcome.reason === "cancelled" ? "cancelled" : "failed",
       message: outcome.type === "failed" ? `Deployment stopped (${outcome.reason}): ${outcome.completed} operations completed; ${outcome.unexecuted} not attempted. The failed operation may have additional effects.` : undefined,
@@ -319,16 +338,8 @@ export const persistSdkDeployPreview = Effect.fn(
 
 export const markDeploymentStatus = Effect.fn(
   "Deployments.markDeploymentStatus",
-)(function* (input: {
-  environmentDeploymentId: string;
-  status: EnvironmentDeploymentStatus;
-  message?: string;
-  failureCode?: string;
-  expectedInngestRunId?: string;
-  beforeExecution?: boolean;
-  dispatchFailure?: boolean;
-}) {
-  const changed = yield* markEnvironmentDeploymentStatus(input).pipe(
+)(function* (input: DeploymentRunStatusChange) {
+  const changed = yield* markEnvironmentDeploymentStatus({ ...input, kind: "run" }).pipe(
     Effect.catchIf(
       isActiveDeploymentUniqueViolation,
       (cause) => new DeploymentQueueOccupied({ cause }),

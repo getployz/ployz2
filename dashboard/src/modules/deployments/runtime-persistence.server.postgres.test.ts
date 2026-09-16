@@ -153,12 +153,12 @@ describe("deployment runtime persistence", () => {
     ]);
   });
 
-  it("cancels a quiet runner from the persisted row and retains its cancellation outcome", async () => {
+  it.each(["outcome", "rejection"])("settles a cancelled quiet runner after runtime %s", async (completion) => {
     const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
       environmentId, savedStateSnapshotId: targetSavedId,
       triggerOrigin: { origin: "manual", actorId: userId }, message: null,
     }));
-    await harness.db.update(schema.environmentDeployment).set({ status: "deploying", startedAt: new Date() }).where(eq(schema.environmentDeployment.id, admitted.id));
+    await harness.db.update(schema.environmentDeployment).set({ status: "planning", startedAt: new Date() }).where(eq(schema.environmentDeployment.id, admitted.id));
     let aborted = false;
     let closed = false;
     let started = false;
@@ -178,6 +178,7 @@ describe("deployment runtime persistence", () => {
         async *[Symbol.asyncIterator]() {
           started = true;
           await stopped;
+          if (completion === "rejection") throw new Error("Runtime disconnected during cancellation");
           yield { type: "outcome" as const, outcome };
         },
       }),
@@ -200,13 +201,23 @@ describe("deployment runtime persistence", () => {
       expect(cancelling?.finishedAt).toBeNull();
       expect(closed).toBe(false);
       finish();
-      expect(await settled).toEqual({ value: { type: "failed", completed: 0, unexecuted: 0, reason: "cancelled" } });
+      if (completion === "rejection") {
+        expect(await settled).toMatchObject({ error: { _tag: "PloyzProviderError" } });
+      } else {
+        expect(await settled).toEqual({ value: { type: "failed", completed: 0, unexecuted: 0, reason: "cancelled" } });
+      }
       await harness.runEffect(markDeploymentCancelled({ deploymentId: admitted.id }, "Runtime cancelled.").pipe(Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" }))));
       const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
-      expect(row?.status).toBe("cancelled");
-      expect(row?.runtimeProgress?.outcome).toBe("failed");
+      expect(row?.finishedAt).toBeInstanceOf(Date);
       const [secret] = await harness.db.select().from(schema.environmentDeploymentSecret);
-      expect(secret?.encryptedRuntimeOutcome).toBeTruthy();
+      if (completion === "rejection") {
+        expect(row).toMatchObject({ status: "failed", failureCode: "sdk_deploy_outcome_unknown" });
+        expect(secret?.encryptedRuntimeOutcome).toBeFalsy();
+      } else {
+        expect(row?.status).toBe("cancelled");
+        expect(row?.runtimeProgress?.outcome).toBe("failed");
+        expect(secret?.encryptedRuntimeOutcome).toBeTruthy();
+      }
       expect(closed).toBe(true);
     } finally {
       finish();
@@ -218,7 +229,7 @@ describe("deployment runtime persistence", () => {
     const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
       environmentId, savedStateSnapshotId: targetSavedId, triggerOrigin: { origin: "manual", actorId: userId }, message: null,
     }));
-    await harness.db.update(schema.environmentDeployment).set({ status: "deploying", cancellationRequestedAt: new Date() })
+    await harness.db.update(schema.environmentDeployment).set({ status: "planning", cancellationRequestedAt: new Date() })
       .where(eq(schema.environmentDeployment.id, admitted.id));
     const confirm = vi.fn(() => { throw new Error("Cancelled work must not execute"); });
     const client = asTestDouble<Client>()({ preview: async () => asTestDouble<PreparedDeploy>()({ ...preview(), confirm }), close: async () => {} });

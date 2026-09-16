@@ -19,7 +19,6 @@ const activity = {
   claim: vi.fn(),
   load: vi.fn(),
   planning: vi.fn(),
-  apply: vi.fn(),
   execute: vi.fn(),
   authorizeFailure: vi.fn(),
   terminalizeFailure: vi.fn(),
@@ -56,10 +55,6 @@ vi.spyOn(
 ).mockImplementation((input) =>
   Effect.promise(() => activity.planning(input)),
 );
-vi.spyOn(
-  runtimeLifecycle,
-  "markDeploymentStatus",
-).mockImplementation((input) => Effect.promise(() => activity.apply(input)));
 vi.spyOn(
   runtimeLifecycle,
   "ownsDeploymentRun",
@@ -128,7 +123,6 @@ describe("process-environment-deployment Inngest adapter", () => {
     activity.claim.mockResolvedValue(true);
     activity.load.mockResolvedValue(deploymentContext);
     activity.planning.mockResolvedValue({ state: "started" });
-    activity.apply.mockResolvedValue(true);
     activity.execute.mockImplementation(async () => {
       activity.load.mockResolvedValue({ ...deploymentContext, deployment: { ...deploymentContext.deployment, status: "applied" } });
       return { type: "success", completed: 0 } satisfies DeploymentRuntimeOutcome;
