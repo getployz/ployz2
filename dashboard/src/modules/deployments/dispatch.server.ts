@@ -55,12 +55,12 @@ const sendEnvironmentDeployment = Effect.fn(
   yield* sendInngestEvent(createEnvironmentDeployRequestedEvent(input)).pipe(
     Effect.catchTag("InngestEventSendError", (failure) =>
       Effect.gen(function* () {
-        yield* failUndispatchedDeployment({
+        const failed = yield* failUndispatchedDeployment({
           environmentDeploymentId: input.environmentDeploymentId,
           failureCode: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_CODE,
           message: ENVIRONMENT_DEPLOYMENT_DISPATCH_FAILURE_MESSAGE,
         });
-        return yield* failure;
+        if (failed) return yield* failure;
       }),
     ),
   );

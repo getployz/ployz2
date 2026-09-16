@@ -1,7 +1,7 @@
 import { asTestDouble } from "#/lib/test-double";
 import { runtimeWatchFrameFixture, runtimeWatchVolumeFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { OrganizationRuntime, type OrganizationRuntimeService, type ConnectedRuntimeClient } from "#/modules/runtime/organization-runtime.server";
-import { createEnvironmentDeploymentSnapshot, prepareEnvironmentDestructiveVolumes } from "./deployment-command.server";
+import { submitReviewedPublication, prepareEnvironmentDestructiveVolumes } from "./deployment-command.server";
 import { dispatchEnvironmentDeployment } from "./dispatch.server";
 import { recordInngestRun } from "./runtime-lifecycle.repository.server";
 import { createRetryAttempt } from "./retry-repository.server";
@@ -186,10 +186,9 @@ describe("manual environment saved-state persistence", () => {
   function submit(deploy: boolean, review: ReviewedEnvironmentPublication, runtime: OrganizationRuntimeService = {
     cancel: () => Effect.void, open: () => Effect.die("Unexpected runtime call"),
   }) {
-    return createEnvironmentDeploymentSnapshot({ userId }, {
-      organizationSlug: "acceptance", projectSlug: "cloud", environmentSlug: "production", deploy,
-      savedStateBasis: review.savedStateBasis, reviewedWorkingStateFingerprint: review.workingStateFingerprint,
-      destructiveServiceIds: review.destructiveServiceIds, destructiveVolumeReviews: review.destructiveVolumeReviews,
+    return submitReviewedPublication({ userId }, {
+      organizationSlug: "acceptance", projectSlug: "cloud", environmentSlug: "production",
+      intent: deploy ? "manual_deploy" : "save", review,
     }).pipe(Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, inngest),
       Effect.provideService(OrganizationRuntime, runtime));
   }
@@ -249,14 +248,19 @@ describe("manual environment saved-state persistence", () => {
       expect(await harness.runEffect(recordInngestRun({ environmentDeploymentId: attempt.id, runId: "claimed-before-send-failure" }))).toBe(true);
       throw new Error("late send error");
     });
-    await expect(harness.runEffect(submit(true, await publicationReview()))).rejects.toMatchObject({ _tag: "InngestEventSendError" });
+    await expect(harness.runEffect(submit(true, await publicationReview()))).resolves.toEqual({ state: "deployment_queued" });
     const [attempt] = await harness.db.select().from(schema.environmentDeployment);
     expect(attempt).toMatchObject({ status: "queued", inngestRunId: "claimed-before-send-failure", finishedAt: null });
   });
 
-  it("keeps committed Saved State after dispatch failure and retries the exact revision explicitly", async () => {
+  it.each([false, true])("keeps committed Saved State after dispatch failure and retries the exact revision explicitly (nested=%s)", async (nested) => {
     vi.mocked(inngest.send).mockRejectedValueOnce(new Error("send failed"));
-    await expect(harness.runEffect(submit(true, await publicationReview()))).rejects.toMatchObject({ _tag: "InngestEventSendError" });
+    const command = submit(true, await publicationReview());
+    if (nested) {
+      await expect(harness.runTransaction(() => command)).rejects.toMatchObject({ _tag: "InngestEventSendError" });
+    } else {
+      await expect(harness.runEffect(command)).resolves.toEqual({ state: "attempt_dispatch_failed" });
+    }
     const [failed] = await harness.db.select().from(schema.environmentDeployment);
     if (!failed) throw new Error("missing attempt");
     expect(failed).toMatchObject({ status: "failed", failureCode: "inngest_dispatch_failed", finishedAt: expect.any(Date) });

@@ -29,7 +29,7 @@ import { admitEnvironmentDeployment } from "./admission.server";
 import { lockEnvironmentDeploymentQueue } from "./queue-lock.server";
 import type { ReviewedEnvironmentPublication } from "#/modules/environment-design/working-state-review";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/dispatch.server";
-import type { CreateEnvironmentDeploymentSnapshotInput, DispatchQueuedEnvironmentDeploymentInput, RetryEnvironmentDeploymentInput } from "#/modules/deployments/deployment-contract";
+import type { ReviewedPublicationInput, DispatchQueuedEnvironmentDeploymentInput, RetryEnvironmentDeploymentInput } from "#/modules/deployments/deployment-contract";
 
 type EnvironmentContextInput = {
   readonly organizationSlug: string;
@@ -102,18 +102,18 @@ const requirePullableManualSdkDeploy = Effect.fn(
   return yield* requirePullableSdkDeployImagesEffect(services);
 });
 
-export const createEnvironmentDeploymentSnapshot = Effect.fn(
-  "Deployments.createEnvironmentDeploymentSnapshot",
-)(function* (actor: Actor, input: CreateEnvironmentDeploymentSnapshotInput) {
+export const submitReviewedPublication = Effect.fn(
+  "Deployments.submitReviewedPublication",
+)(function* (actor: Actor, input: ReviewedPublicationInput) {
   const context = yield* requireEnvironment(actor, input);
-  const shouldDeploy = input.deploy !== false;
+  const shouldDeploy = input.intent === "manual_deploy";
   if (shouldDeploy) {
     yield* requirePullableManualSdkDeploy(context.environment.id);
   }
   const message = input.message?.trim() || null;
-  const destructiveVolumeReviews = input.destructiveVolumeReviews;
+  const destructiveVolumeReviews = input.review.destructiveVolumeReviews;
   const reviewedDestructiveSave = {
-    serviceIds: input.destructiveServiceIds,
+    serviceIds: input.review.destructiveServiceIds,
     volumeIds: destructiveVolumeReviews.map((review) => review.target.resourceId),
   };
   const destructiveSave = yield* loadDestructiveEnvironmentSave(
@@ -152,12 +152,7 @@ export const createEnvironmentDeploymentSnapshot = Effect.fn(
     environmentId: context.environment.id,
     actorId: actor.userId,
     message,
-    review: {
-      savedStateBasis: input.savedStateBasis,
-      workingStateFingerprint: input.reviewedWorkingStateFingerprint,
-      destructiveServiceIds: reviewedDestructiveSave.serviceIds,
-      destructiveVolumeReviews,
-    },
+    review: input.review,
   };
   if (shouldDeploy) {
     const attempt = yield* withMutationResult(
@@ -171,11 +166,15 @@ export const createEnvironmentDeploymentSnapshot = Effect.fn(
         }),
       ),
     );
-    yield* dispatchEnvironmentDeployment({
+    return yield* dispatchEnvironmentDeployment({
       environmentDeploymentId: attempt.data.environmentDeploymentId,
       environmentId: context.environment.id,
-    });
-    return { state: "deployment_queued" as const };
+    }).pipe(
+      Effect.as({ state: "deployment_queued" as const }),
+      Effect.catchTag("InngestEventSendError", () =>
+        Effect.succeed({ state: "attempt_dispatch_failed" as const }),
+      ),
+    );
   }
 
   yield* withMutationResult(
