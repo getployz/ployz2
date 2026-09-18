@@ -286,7 +286,6 @@ export const searchGithubFiles = Effect.fn("Github.searchFiles")(
     const paths = files.paths.filter((path) => matcher.match(path)).sort();
     return {
       paths: paths.slice(0, 200),
-      commitSha: files.commitSha,
       truncated: files.truncated || paths.length > 200,
     };
   },

@@ -6,7 +6,7 @@ export function SourcePickerLayout({ title, children }: { title: string; childre
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <div className="w-fit rounded-md border bg-popover px-3 py-2 font-medium">{title}</div>
-      <div className="flex min-w-0 flex-col gap-3 rounded-xl bg-popover p-3 text-popover-foreground shadow-md [&>[data-slot=command]]:overflow-visible">
+      <div className="flex min-w-0 flex-col gap-3 rounded-xl bg-popover p-3 text-popover-foreground [&>[data-slot=command]]:overflow-visible">
         {children}
       </div>
     </div>
@@ -19,7 +19,7 @@ export function SourcePickerInput({ children, onBack, disabled }: {
   disabled?: boolean;
 }) {
   return (
-    <InputGroup className="h-12">
+    <InputGroup>
       {onBack ? (
         <InputGroupAddon>
           <InputGroupButton aria-label="Back" size="icon-sm" onClick={onBack} disabled={disabled}>

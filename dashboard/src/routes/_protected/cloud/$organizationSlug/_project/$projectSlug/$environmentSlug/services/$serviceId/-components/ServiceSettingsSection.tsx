@@ -24,11 +24,11 @@ export function ServiceSettingsSection({
         isDanger && "border-destructive/50",
       )}
     >
-      <div className="flex flex-col gap-1 px-5 pt-5">
-        <h2 className={cn("text-lg font-semibold", isDanger && "text-destructive")}>{title}</h2>
+      <div className="flex flex-col gap-1 px-4 pt-4">
+        <h2 className={cn("text-base font-medium", isDanger && "text-destructive")}>{title}</h2>
         {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
       </div>
-      <div className="px-5 py-5 text-sm">{children}</div>
+      <div className="p-4 text-sm">{children}</div>
     </section>
   );
 }

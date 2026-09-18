@@ -122,7 +122,6 @@ export const listInstallationFiles = Effect.fn("Github.listInstallationFiles")(
       url: `${base}/commits/${encodeURIComponent(ref)}`,
       operation: "resolve_file_ref",
       schema: Schema.Struct({
-        sha: githubExactShaSchema,
         commit: Schema.Struct({ tree: Schema.Struct({ sha: githubExactShaSchema }) }),
       }),
     });
@@ -143,7 +142,6 @@ export const listInstallationFiles = Effect.fn("Github.listInstallationFiles")(
     return {
       paths: tree.tree.filter((entry) => entry.type === "blob" && entry.mode !== "120000")
         .map((entry) => entry.path),
-      commitSha: commit.sha,
       truncated: tree.truncated,
     };
   },

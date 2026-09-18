@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
+import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import { PlusIcon, XIcon } from "lucide-react";
 import type { ServiceBuildConfig } from "#/modules/environment-design/tables";
 import { Badge } from "#/components/ui/badge";
@@ -17,6 +18,52 @@ import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deploy
 import { ServiceSettingInput } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceSettingInput";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 
+type GitRef = {
+  repositoryId: number;
+  installationId: number;
+  ref: string;
+};
+
+function DockerfilePathInput({
+  gitRef,
+  value,
+  isChanged,
+  onCommit,
+}: {
+  gitRef: GitRef;
+  value: string;
+  isChanged: boolean;
+  onCommit: (raw: string) => PersistableTransaction;
+}) {
+  const [search, setSearch] = useState(false);
+  const files = useQuery({
+    ...githubFileSearchQueryOptions({
+      ...gitRef,
+      pattern: "**/*Dockerfile*",
+    }),
+    enabled: search,
+    retry: false,
+  });
+  const suggestions = (files.data?.paths ?? [])
+    .filter((path) => !path.endsWith(".dockerignore"))
+    .sort((left, right) => left.split("/").length - right.split("/").length || left.localeCompare(right));
+
+  return (
+    <ServiceSettingInput
+      ariaLabel="Dockerfile path"
+      placeholder="Dockerfile"
+      suggestions={suggestions}
+      suggestionsLoading={files.isFetching}
+      suggestionsMessage={files.isError ? "Couldn’t load suggestions. Enter a path." : undefined}
+      suggestionsNotice={files.data?.truncated ? "Some files are omitted. You can enter a path manually." : undefined}
+      onFocus={() => setSearch(true)}
+      value={value}
+      isChanged={isChanged}
+      onCommit={onCommit}
+    />
+  );
+}
+
 export function ServiceBuildSection({
   state,
 }: {
@@ -26,7 +73,6 @@ export function ServiceBuildSection({
   const buildDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.build);
   const build = service.build;
   const [watchInput, setWatchInput] = useState("");
-  const [searchDockerfiles, setSearchDockerfiles] = useState(false);
   const source = service.source;
   const gitRef =
     source.type === "git" && source.branch.type === "connected"
@@ -36,25 +82,21 @@ export function ServiceBuildSection({
           ref: source.branch.name,
         }
       : null;
-  const files = useQuery({
-    ...githubFileSearchQueryOptions({
-      repositoryId: gitRef?.repositoryId ?? 0,
-      installationId: gitRef?.installationId ?? 0,
-      ref: gitRef?.ref ?? "",
-      pattern: "**/*Dockerfile*",
-    }),
-    enabled: searchDockerfiles && gitRef !== null && build.builder === "dockerfile",
-    retry: false,
-  });
-  const dockerfilePaths = (files.data?.paths ?? [])
-    .filter((path) => !path.endsWith(".dockerignore"))
-    .sort((left, right) => left.split("/").length - right.split("/").length || left.localeCompare(right));
 
   function updateBuild(patch: Partial<ServiceBuildConfig>) {
     const transaction = collection.update(service.id, (draft) => {
       draft.build = { ...draft.build, ...patch };
     });
     void transaction.isPersisted.promise;
+  }
+
+  function commitDockerfilePath(raw: string) {
+    return collection.update(service.id, (draft) => {
+      draft.build = {
+        ...draft.build,
+        dockerfilePath: raw.length > 0 ? raw : null,
+      };
+    });
   }
 
   function addWatchPath() {
@@ -94,24 +136,22 @@ export function ServiceBuildSection({
           <FieldDescription>
             Path to the Dockerfile within the repository.
           </FieldDescription>
-          <ServiceSettingInput
-            ariaLabel="Dockerfile path"
-            placeholder="Dockerfile"
-            suggestions={dockerfilePaths}
-            suggestionsLoading={files.isFetching}
-            suggestionsMessage={files.isError ? "Couldn’t load suggestions. Enter a path." : undefined}
-            onFocus={() => setSearchDockerfiles(true)}
-            value={build.dockerfilePath ?? ""}
-            isChanged={buildDiff.changed}
-            onCommit={(raw) =>
-              collection.update(service.id, (draft) => {
-                draft.build = {
-                  ...draft.build,
-                  dockerfilePath: raw.length > 0 ? raw : null,
-                };
-              })
-            }
-          />
+          {gitRef ? (
+            <DockerfilePathInput
+              gitRef={gitRef}
+              value={build.dockerfilePath ?? ""}
+              isChanged={buildDiff.changed}
+              onCommit={commitDockerfilePath}
+            />
+          ) : (
+            <ServiceSettingInput
+              ariaLabel="Dockerfile path"
+              placeholder="Dockerfile"
+              value={build.dockerfilePath ?? ""}
+              isChanged={buildDiff.changed}
+              onCommit={commitDockerfilePath}
+            />
+          )}
         </Field>
       ) : null}
 

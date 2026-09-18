@@ -105,6 +105,7 @@ type GitBranchSelectorProps = {
   repositoryId: number;
   installationId: number;
   query: string;
+  defaultBranch?: string;
   disabled?: boolean;
   onSelectBranch: (branchName: string) => void | Promise<void>;
 };
@@ -439,6 +440,7 @@ function GitBranchSelectorResults({
   repositoryId,
   installationId,
   query,
+  defaultBranch,
   disabled = false,
   onSelectBranch,
 }: GitBranchSelectorProps) {
@@ -484,9 +486,20 @@ function GitBranchSelectorResults({
           onSelect={() => onSelectBranch(branch.name)}
         >
           <span>{branch.name}</span>
+          {branch.name === defaultBranch ? (
+            <CommandShortcut>Default</CommandShortcut>
+          ) : null}
         </CommandItem>
       ))}
     </CommandGroup>
+  );
+}
+
+export function GitBranchSelector(props: GitBranchSelectorProps) {
+  return (
+    <Suspense fallback={<SelectorLoading />}>
+      <GitBranchSelectorResults {...props} />
+    </Suspense>
   );
 }
 
@@ -545,16 +558,14 @@ function OpenGitBranchSelectorDialog({
           </CommandPrimitive.Input>
         </SourcePickerInput>
         <CommandList>
-          <Suspense fallback={<SelectorLoading />}>
-            <GitBranchSelectorResults
-              repositoryFullName={repositoryFullName}
-              repositoryId={repositoryId}
-              installationId={installationId}
-              query={dialog.query}
-              disabled={dialog.isPending}
-              onSelectBranch={dialog.runSelect}
-            />
-          </Suspense>
+          <GitBranchSelector
+            repositoryFullName={repositoryFullName}
+            repositoryId={repositoryId}
+            installationId={installationId}
+            query={dialog.query}
+            disabled={dialog.isPending}
+            onSelectBranch={dialog.runSelect}
+          />
         </CommandList>
       </Command>
       </SourcePickerLayout>

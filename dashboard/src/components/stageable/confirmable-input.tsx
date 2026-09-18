@@ -1,8 +1,5 @@
 import * as React from "react"
 import { CheckIcon, XIcon } from "lucide-react"
-import { Combobox as ComboboxPrimitive } from "@base-ui/react/combobox"
-import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxItem, ComboboxList, ComboboxTrigger } from "#/components/ui/combobox"
-
 import { cn } from "#/lib/utils"
 import { FieldError } from "#/components/ui/field"
 import { Spinner } from "#/components/ui/spinner"
@@ -15,24 +12,7 @@ import {
   InputGroupTextarea,
 } from "#/components/ui/input-group"
 
-function ConfirmableInput({
-  value,
-  onValueChange,
-  onConfirm,
-  onCancel,
-  isDirty = false,
-  isPending = false,
-  isChanged = false,
-  suffix,
-  error,
-  className,
-  multiline = false,
-  suggestions,
-  suggestionsLoading = false,
-  suggestionsMessage,
-  onSuggestionSelect,
-  ...props
-}: Omit<
+export type ConfirmableInputProps = Omit<
   React.ComponentProps<"input"> & React.ComponentProps<"textarea">,
   "defaultValue" | "onChange" | "onSubmit" | "value"
 > & {
@@ -46,13 +26,28 @@ function ConfirmableInput({
   suffix?: React.ReactNode
   error?: React.ReactNode
   multiline?: boolean
-  suggestions?: string[]
-  suggestionsLoading?: boolean
-  suggestionsMessage?: string
-  onSuggestionSelect?: (value: string) => void
-}) {
-  const [suggestionsOpen, setSuggestionsOpen] = React.useState(false)
-  const [highlightedSuggestion, setHighlightedSuggestion] = React.useState<string | undefined>(undefined)
+  endAddon?: React.ReactNode
+  renderInput?: (
+    props: Omit<React.ComponentProps<typeof InputGroupInput>, "value" | "onChange">,
+  ) => React.ReactNode
+}
+
+function ConfirmableInput({
+  value,
+  onValueChange,
+  onConfirm,
+  onCancel,
+  isDirty = false,
+  isPending = false,
+  isChanged = false,
+  suffix,
+  error,
+  className,
+  multiline = false,
+  endAddon,
+  renderInput,
+  ...props
+}: ConfirmableInputProps) {
   // SAFETY: input and textarea onKeyDown handlers are the same function; their event element types don't unify.
   const onKeyDown = props.onKeyDown as
     | ((event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => void)
@@ -83,15 +78,12 @@ function ConfirmableInput({
   function handleKeyDown(
     e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
   ) {
-    if (suggestionsOpen && e.key === "Escape") return
-    if (suggestionsOpen && e.key === "Enter" && highlightedSuggestion !== undefined) return
     if (e.key === "Enter" && isDirty) {
       if (multiline && !e.metaKey && !e.ctrlKey) {
         onKeyDown?.(e)
         return
       }
       e.preventDefault()
-      setSuggestionsOpen(false)
       handleConfirm()
       return
     }
@@ -117,17 +109,13 @@ function ConfirmableInput({
             onChange={updateDraftValue}
             onKeyDown={handleKeyDown}
           />
-        ) : suggestions ? (
-          <ComboboxPrimitive.Input
-            {...props}
-            render={<InputGroupInput />}
-            aria-invalid={props["aria-invalid"] ?? !!error}
-            onFocus={(event) => {
-              setSuggestionsOpen(true)
-              props.onFocus?.(event)
-            }}
-            onKeyDown={handleKeyDown}
-          />
+        ) : renderInput ? (
+          renderInput({
+            ...props,
+            "aria-invalid": props["aria-invalid"] ?? !!error,
+            disabled: props.disabled,
+            onKeyDown: handleKeyDown,
+          })
         ) : (
           <InputGroupInput
             {...props}
@@ -138,12 +126,10 @@ function ConfirmableInput({
             onKeyDown={handleKeyDown}
           />
         )}
-        {suffix || (isDirty && !isPending) || suggestions ? (
+        {suffix || endAddon || (isDirty && !isPending) ? (
           <InputGroupAddon align="inline-end">
             {suffix ? <InputGroupText>{suffix}</InputGroupText> : null}
-            {suggestions ? (
-              <InputGroupButton size="icon-xs" variant="ghost" render={<ComboboxTrigger />} aria-label="Show suggestions" />
-            ) : null}
+            {endAddon}
             {isDirty && !isPending ? (
               <>
                 <InputGroupButton
@@ -176,39 +162,7 @@ function ConfirmableInput({
     </div>
   )
 
-  if (!suggestions) return field
-
-  return (
-    <Combobox
-      items={suggestions}
-      value={value || null}
-      inputValue={value}
-      onInputValueChange={(next, details) => {
-        if (details.reason !== "item-press" || !onSuggestionSelect) onValueChange(next)
-      }}
-      onValueChange={(next) => {
-        if (next !== null) (onSuggestionSelect ?? onValueChange)(next)
-      }}
-      onItemHighlighted={setHighlightedSuggestion}
-      open={suggestionsOpen}
-      onOpenChange={(open) => {
-        setSuggestionsOpen(open)
-        if (!open) setHighlightedSuggestion(undefined)
-      }}
-      openOnInputClick
-      disabled={props.disabled}
-    >
-      {field}
-      <ComboboxContent>
-        <ComboboxEmpty>
-          {suggestionsLoading ? <Spinner aria-label="Loading suggestions" /> : suggestionsMessage ?? "No matches. Enter a custom path."}
-        </ComboboxEmpty>
-        <ComboboxList>
-          {(item: string) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}
-        </ComboboxList>
-      </ComboboxContent>
-    </Combobox>
-  )
+  return field
 }
 
 export { ConfirmableInput }

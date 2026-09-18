@@ -19,8 +19,10 @@ import {
   CommandShortcut,
 } from "#/components/ui/command";
 import {
+  GitBranchSelector,
   GitRepoSelector,
   ImageSelector,
+  type GitRepoSelection,
 } from "#/components/service-source-selector";
 import {
   type CreateMenuItemId,
@@ -52,8 +54,33 @@ import {
   ENVIRONMENT_SERVICE_ROUTE_TO,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 
-type Panel = "root" | "git" | "image";
+type InitialPanel = "root" | "git" | "image";
+type Panel =
+  | { kind: InitialPanel }
+  | { kind: "branch"; repository: GitRepoSelection };
 type CreateMode = "project" | "service";
+
+function pickerPresentation(panel: Panel, mode: CreateMode) {
+  if (panel.kind === "branch") {
+    return {
+      title: "GitHub Branch",
+      ariaLabel: "Search GitHub branches",
+      placeholder: `Search branches in ${panel.repository.fullName}…`,
+    };
+  }
+  if (panel.kind === "git") {
+    return {
+      title: "GitHub Repository",
+      ariaLabel: "Search GitHub repositories",
+      placeholder: "Search GitHub repositories…",
+    };
+  }
+  return {
+    title: mode === "project" ? "Add your app" : "Add service",
+    ariaLabel: "Choose a source",
+    placeholder: "Choose a source…",
+  };
+}
 
 type ProjectCreatedResult = {
   project: {
@@ -68,7 +95,7 @@ type ProjectCreatedResult = {
 type ProjectCommandProps = {
   mode?: "project";
   organizationSlug: string;
-  initialPanel?: Panel;
+  initialPanel?: InitialPanel;
   onCreated?: (result: ProjectCreatedResult) => void | Promise<void>;
 };
 
@@ -81,7 +108,7 @@ type ServiceCommandProps = {
     x: number;
     y: number;
   };
-  initialPanel?: Panel;
+  initialPanel?: InitialPanel;
   onCreated?: (
     result: Awaited<ReturnType<typeof createServiceServerFn>>["data"],
   ) => void | Promise<void>;
@@ -247,9 +274,9 @@ function useServiceCreateActions({
     createVolumeMutation.reset();
   }
 
-  function setActivePanel(nextPanel: Panel) {
+  function setActivePanel(nextPanel: InitialPanel) {
     resetPanelState();
-    setPanel(nextPanel);
+    setPanel({ kind: nextPanel });
   }
 
   const isPending =
@@ -422,11 +449,12 @@ function useServiceCreateActions({
 
 export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
   const mode: CreateMode = props.mode === "service" ? "service" : "project";
-  const [panel, setPanel] = useState<Panel>(props.initialPanel ?? "root");
+  const [panel, setPanel] = useState<Panel>({ kind: props.initialPanel ?? "root" });
   const [query, setQuery] = useState("");
+  const presentation = pickerPresentation(panel, mode);
   const { data: githubAccess } = useQuery({
     ...githubRepoAccessQueryOptions(),
-    enabled: panel === "git",
+    enabled: panel.kind === "git",
   });
   const {
     error,
@@ -440,13 +468,13 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
     <div
       className="flex w-full min-w-0 flex-col gap-2"
       onKeyDownCapture={(event) => {
-        if (panel === "root" || event.key !== "Escape") {
+        if (panel.kind === "root" || event.key !== "Escape") {
           return;
         }
 
         event.preventDefault();
         event.stopPropagation();
-        setActivePanel("root");
+        setActivePanel(panel.kind === "branch" ? "git" : "root");
       }}
     >
       {error ? (
@@ -466,7 +494,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
         </Alert>
       ) : null}
 
-      {panel === "image" ? (
+      {panel.kind === "image" ? (
         <ImageSelector
           disabled={isPending}
           onBack={() => setActivePanel("root")}
@@ -475,18 +503,24 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
           }}
         />
       ) : (
-      <SourcePickerLayout title={panel === "git" ? "GitHub Repository" : mode === "project" ? "Add your app" : "Add service"}>
-      <Command key={panel} shouldFilter={panel !== "git"} className="gap-3 p-0">
-        {panel !== "git" || githubAccess?.hasInstallations ? (
+      <SourcePickerLayout title={presentation.title}>
+      <Command key={panel.kind} shouldFilter={panel.kind === "root"} className="gap-3 p-0">
+        {panel.kind !== "git" || githubAccess?.hasInstallations ? (
           <SourcePickerInput
-            onBack={panel === "git" ? () => setActivePanel("root") : undefined}
+            onBack={
+              panel.kind === "git"
+                ? () => setActivePanel("root")
+                : panel.kind === "branch"
+                  ? () => setActivePanel("git")
+                  : undefined
+            }
             disabled={isPending}
           >
             <CommandPrimitive.Input asChild value={query} onValueChange={setQuery}>
               <InputGroupInput
                 autoFocus
-                aria-label={panel === "git" ? "Search GitHub repositories" : "Choose a source"}
-                placeholder={panel === "git" ? "Search GitHub repositories…" : "Choose a source…"}
+                aria-label={presentation.ariaLabel}
+                placeholder={presentation.placeholder}
                 disabled={isPending}
               />
             </CommandPrimitive.Input>
@@ -497,14 +531,14 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
           </Button>
         )}
         <CommandList>
-          {panel === "root" ? (
+          {panel.kind === "root" ? (
             <RootPanel
               mode={mode}
               onSelectItem={selectCreateItem}
               isPending={isPending}
             />
           ) : null}
-          {panel === "git" ? (
+          {panel.kind === "git" ? (
             <GitPanel
               mode={mode}
               query={query}
@@ -515,15 +549,34 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
                 installationId,
                 defaultBranch,
               }) => {
-                void createServiceFromSource(
-                  createGitServiceSource({
-                    repository: fullName,
+                setQuery("");
+                setPanel({
+                  kind: "branch",
+                  repository: {
+                    fullName,
                     repositoryId,
                     installationId,
-                    branch: {
-                      type: "connected",
-                      name: defaultBranch,
-                    },
+                    defaultBranch,
+                  },
+                });
+              }}
+            />
+          ) : null}
+          {panel.kind === "branch" ? (
+            <GitBranchSelector
+              repositoryFullName={panel.repository.fullName}
+              repositoryId={panel.repository.repositoryId}
+              installationId={panel.repository.installationId}
+              query={query}
+              defaultBranch={panel.repository.defaultBranch}
+              disabled={isPending}
+              onSelectBranch={(branch) => {
+                void createServiceFromSource(
+                  createGitServiceSource({
+                    repository: panel.repository.fullName,
+                    repositoryId: panel.repository.repositoryId,
+                    installationId: panel.repository.installationId,
+                    branch: { type: "connected", name: branch },
                   }),
                 );
               }}
