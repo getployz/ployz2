@@ -45,7 +45,7 @@ export function SuggestibleConfirmableInput({
       onValueChange={(next) => {
         if (next !== null) (onSuggestionSelect ?? props.onValueChange)(next)
       }}
-      onItemHighlighted={setHighlighted}
+      onItemHighlighted={(item) => setHighlighted(item)}
       open={open}
       onOpenChange={(next) => {
         setOpen(next)

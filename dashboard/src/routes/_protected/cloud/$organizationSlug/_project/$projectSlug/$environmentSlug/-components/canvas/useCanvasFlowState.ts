@@ -116,16 +116,6 @@ export function useCanvasFlowState({
       .join("|"),
     nodes: workingNodes,
   };
-  const saved: EnvironmentStateProjection =
-    environmentChangeState?.saved
-      ? {
-          token: environmentChangeState.saved.token,
-          nodes: environmentChangeState.saved.nodes.map(projectedNode),
-        }
-      : {
-          token: `saved:none:${environmentNamespace}`,
-          nodes: [],
-        };
   const applied: EnvironmentStateProjection = {
     token:
       environmentChangeState?.applied.token ??
