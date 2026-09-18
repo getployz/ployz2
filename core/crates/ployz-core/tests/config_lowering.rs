@@ -23,7 +23,10 @@ fn lowering_owns_port_defaults_and_domain_overrides() {
     for (env, expected_port) in [(json!({}), 8080), (json!({"PORT":"3000"}), 3000)] {
         let intent = lower(config.clone(), env).unwrap();
         let spec = &intent["target"][0];
-        assert_eq!(spec["container"]["environment"]["PORT"], expected_port.to_string());
+        assert_eq!(
+            spec["container"]["environment"]["PORT"],
+            expected_port.to_string()
+        );
         assert_eq!(spec["container"]["healthcheck"]["port"], expected_port);
         assert_eq!(spec["ports"][0]["container_port"], expected_port);
         assert_eq!(spec["ports"][1]["container_port"], expected_port);
@@ -35,16 +38,35 @@ fn lowering_owns_port_defaults_and_domain_overrides() {
     let intent = lower(explicit.clone(), json!({"PORT":"3000"})).unwrap();
     assert_eq!(intent["target"][0]["ports"][0]["container_port"], 80);
     assert_eq!(intent["target"][0]["ports"][1]["container_port"], 9000);
-    assert_eq!(intent["target"][0]["container"]["environment"]["PORT"], "3000");
-    assert_eq!(intent["target"][0]["container"]["healthcheck"]["port"], 3000);
+    assert_eq!(
+        intent["target"][0]["container"]["environment"]["PORT"],
+        "3000"
+    );
+    assert_eq!(
+        intent["target"][0]["container"]["healthcheck"]["port"],
+        3000
+    );
 
     for invalid in ["", "0", "65536", "not-a-port"] {
-        assert_eq!(lower(config.clone(), json!({"PORT":invalid})).unwrap_err().path, "healthcheck");
+        assert_eq!(
+            lower(config.clone(), json!({"PORT":invalid}))
+                .unwrap_err()
+                .path,
+            "healthcheck"
+        );
         let mut automatic = config.clone();
         automatic["healthcheck"] = json!({"type":"none"});
-        assert_eq!(lower(automatic.clone(), json!({"PORT":invalid})).unwrap_err().path, "routes");
+        assert_eq!(
+            lower(automatic.clone(), json!({"PORT":invalid}))
+                .unwrap_err()
+                .path,
+            "routes"
+        );
         automatic["routes"] = json!([]);
-        assert_eq!(lower(automatic, json!({"PORT":invalid})).unwrap_err().path, "managedHostnames");
+        assert_eq!(
+            lower(automatic, json!({"PORT":invalid})).unwrap_err().path,
+            "managedHostnames"
+        );
     }
 
     explicit["healthcheck"] = json!({"type":"none"});

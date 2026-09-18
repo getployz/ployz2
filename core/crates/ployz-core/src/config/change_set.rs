@@ -129,7 +129,10 @@ mod tests {
                 .collect();
             assert_eq!(rows, expected);
             assert_eq!(review.total_count, expected.len());
-            assert_eq!(review.head_token, format!("{:?}", submitted.or(Some(applied))));
+            assert_eq!(
+                review.head_token,
+                format!("{:?}", submitted.or(Some(applied)))
+            );
         }
     }
 
@@ -146,7 +149,11 @@ mod tests {
         assert_eq!(group.lifecycle, ReviewLifecycleKind::Create);
         assert_eq!(group.comparison, Some(ReviewComparisonRole::Introduction));
         assert_eq!(
-            group.settings.iter().map(|row| (row.before.clone(), row.after.clone())).collect::<Vec<_>>(),
+            group
+                .settings
+                .iter()
+                .map(|row| (row.before.clone(), row.after.clone()))
+                .collect::<Vec<_>>(),
             vec![(json!(1), json!(7))]
         );
         assert_eq!(review.total_count, 2);

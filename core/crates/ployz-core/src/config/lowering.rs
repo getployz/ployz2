@@ -25,7 +25,9 @@ fn target_port(
     explicit
         .or_else(|| environment.get("PORT").and_then(|value| value.parse().ok()))
         .and_then(std::num::NonZeroU16::new)
-        .ok_or_else(|| ConfigError::at(path, "Expected a target port or PORT variable from 1–65535"))
+        .ok_or_else(|| {
+            ConfigError::at(path, "Expected a target port or PORT variable from 1–65535")
+        })
 }
 
 /// Captured node settings plus adapter-resolved runtime inputs for one Project.

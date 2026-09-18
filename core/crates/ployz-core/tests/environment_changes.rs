@@ -177,13 +177,7 @@ fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
 fn derived_variables_are_not_counted_and_secret_values_stay_redacted() {
     let mut current = service(1);
     current["env"] = json!({"TOKEN":{"kind":"secret","fingerprint":"private-fingerprint","source":{"kind":"variable_group","resourceId":"group","resourceName":"Shared","variableGroupId":"group-id","key":"TOKEN"}}});
-    let mut candidate = input(
-        "service",
-        &service(1),
-        current,
-        service(1),
-        None,
-    );
+    let mut candidate = input("service", &service(1), current, service(1), None);
     let result = project(candidate.clone());
     assert_eq!(result["totalCount"], 0);
     assert!(!result.to_string().contains("private-fingerprint"));

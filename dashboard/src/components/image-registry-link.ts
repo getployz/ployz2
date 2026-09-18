@@ -14,11 +14,11 @@ export function imageRegistryLink(image: string): string | null {
   if (!isValidImageReference(image.trim())) return null;
   const repository = image.trim().split("@")[0]?.replace(/:[^/]+$/, "") ?? "";
 
-  const parts = repository.split("/");
-  const first = parts[0]!;
-  const hasRegistry = parts.length > 1 && (/[.:]/.test(first) || first === "localhost");
-  const registry = hasRegistry ? parts.shift()! : "docker.io";
-  if (parts.some((part) => !part || part === "." || part === "..")) return null;
+  const segments = repository.split("/");
+  const first = segments[0] ?? "";
+  const hasRegistry = segments.length > 1 && (/[.:]/.test(first) || first === "localhost");
+  const registry = hasRegistry ? first : "docker.io";
+  const parts = hasRegistry ? segments.slice(1) : segments;
   const path = parts.map(encodeURIComponent).join("/");
 
   if (["docker.io", "index.docker.io", "registry-1.docker.io"].includes(registry)) {

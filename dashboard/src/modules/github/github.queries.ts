@@ -24,7 +24,6 @@ export const githubKeys = {
   repos: () => [...githubKeys.all, "repos"] as const,
   access: () => [...githubKeys.all, "access"] as const,
   branches: (input: {
-    repositoryFullName: string;
     repositoryId: number;
     installationId: number;
   }) =>
@@ -33,7 +32,6 @@ export const githubKeys = {
       "branches",
       input.installationId,
       input.repositoryId,
-      input.repositoryFullName,
     ] as const,
   installUrl: () => [...githubKeys.all, "install-url"] as const,
 };
@@ -54,7 +52,6 @@ export function githubInstallUrlQueryOptions() {
 }
 
 export function githubBranchesQueryOptions(input: {
-  repositoryFullName: string;
   repositoryId: number;
   installationId: number;
 }) {

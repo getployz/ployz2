@@ -41,6 +41,7 @@ pub struct ChangeSetInput {
     pub node_introductions: ReviewStateProjection,
 }
 
+/// The configuration a node's changed settings and field discards compare against.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewComparisonRole {

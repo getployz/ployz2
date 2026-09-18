@@ -101,7 +101,6 @@ type ImageSelectorDialogProps = {
 };
 
 type GitBranchSelectorProps = {
-  repositoryFullName: string;
   repositoryId: number;
   installationId: number;
   query: string;
@@ -436,7 +435,6 @@ export function GitRepoSelector(props: GitRepoSelectorProps) {
 }
 
 function GitBranchSelectorResults({
-  repositoryFullName,
   repositoryId,
   installationId,
   query,
@@ -446,7 +444,6 @@ function GitBranchSelectorResults({
 }: GitBranchSelectorProps) {
   const { data: branchesData } = useSuspenseQuery(
     githubBranchesQueryOptions({
-      repositoryFullName,
       repositoryId,
       installationId,
     })
@@ -546,7 +543,7 @@ function OpenGitBranchSelectorDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="Select branch"
-      description="Choose a GitHub branch"
+      description={`Choose a branch in ${repositoryFullName}`}
       errorTitle="Couldn’t select branch"
       error={dialog.error}
     >
@@ -559,7 +556,6 @@ function OpenGitBranchSelectorDialog({
         </SourcePickerInput>
         <CommandList>
           <GitBranchSelector
-            repositoryFullName={repositoryFullName}
             repositoryId={repositoryId}
             installationId={installationId}
             query={dialog.query}
@@ -605,15 +601,6 @@ export function ImageSelector({
             value={value}
             onChange={(event) => setValue(event.target.value)}
             placeholder="nginx:latest"
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                event.stopPropagation();
-                if (!event.nativeEvent.isComposing && !event.repeat && validImage && !disabled) {
-                  void onSelectImage(trimmedValue);
-                }
-              }
-            }}
           />
           {disabled ? <InputGroupAddon align="inline-end"><Spinner /></InputGroupAddon> : null}
         </SourcePickerInput>

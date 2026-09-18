@@ -564,7 +564,6 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
           ) : null}
           {panel.kind === "branch" ? (
             <GitBranchSelector
-              repositoryFullName={panel.repository.fullName}
               repositoryId={panel.repository.repositoryId}
               installationId={panel.repository.installationId}
               query={query}
