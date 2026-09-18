@@ -45,7 +45,9 @@ pub struct ChangeSetInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewComparisonRole {
+    /// Compare with the latest submitted revision, or the applied revision if none exists.
     Head,
+    /// Compare a node absent from the head with its initial authored configuration.
     Introduction,
 }
 

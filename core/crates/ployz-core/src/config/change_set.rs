@@ -145,7 +145,7 @@ mod tests {
             node_introductions: state(Some(1)),
         })
         .unwrap();
-        let group = &review.groups[0];
+        let group = review.groups.first().expect("new node has a change group");
         assert_eq!(group.lifecycle, ReviewLifecycleKind::Create);
         assert_eq!(group.comparison, Some(ReviewComparisonRole::Introduction));
         assert_eq!(
