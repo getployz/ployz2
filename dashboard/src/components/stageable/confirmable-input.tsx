@@ -97,7 +97,7 @@ function ConfirmableInput({
     onKeyDown?.(e)
   }
 
-  const field = (
+  return (
     <div className={cn("flex flex-col gap-1", className)}>
       <InputGroup data-changed={isChanged || undefined}>
         {multiline ? (
@@ -162,7 +162,6 @@ function ConfirmableInput({
     </div>
   )
 
-  return field
 }
 
 export { ConfirmableInput }
