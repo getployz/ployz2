@@ -206,7 +206,7 @@ function CanvasWithData() {
         organizationId={organizationId}
         environmentId={environmentId}
         servicesWithBoundEnv={servicesWithBoundEnv}
-        environmentResources={environmentResources}
+        environmentResources={visibleGroups}
         volumeResources={volumeResources}
         environmentChangeState={environmentChangeState}
         nodeIntroductions={nodeIntroductions}

@@ -148,10 +148,7 @@ pub fn render_variable_parts(parts: &[ValuePart], slugs: &BTreeMap<String, Strin
         .collect()
 }
 
-fn env_value(
-    variable: &SavedVariableIntent,
-    slugs: &BTreeMap<String, String>,
-) -> ServiceEnvValue {
+fn env_value(variable: &SavedVariableIntent, slugs: &BTreeMap<String, String>) -> ServiceEnvValue {
     match &variable.value {
         SavedVariableValue::Literal { value } => ServiceEnvValue::Literal {
             value: value.clone(),
@@ -165,9 +162,7 @@ fn env_value(
         },
         SavedVariableValue::Template { parts } => ServiceEnvValue::Literal {
             value: render_variable_parts(parts, slugs),
-            parts: Some(
-                parts.clone(),
-            ),
+            parts: Some(parts.clone()),
         },
     }
 }

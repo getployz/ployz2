@@ -238,8 +238,7 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
         .is_some_and(|services| {
             services.iter().any(|service| {
                 service.get("config").is_some_and(|config| {
-                    config.get("env").is_some()
-                        || config.get("mounts").is_some()
+                    config.get("env").is_some() || config.get("mounts").is_some()
                 })
             })
         })
@@ -273,15 +272,15 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
         false,
     )?;
     unique(
-        intent
-            .volumes
-            .iter()
-            .map(|v| v.resource_id.as_str()),
+        intent.volumes.iter().map(|v| v.resource_id.as_str()),
         "resources.id",
         true,
     )?;
     unique(
-        intent.volumes.iter().map(|v| v.resource_lineage_id.as_str()),
+        intent
+            .volumes
+            .iter()
+            .map(|v| v.resource_lineage_id.as_str()),
         "resources.lineageId",
         true,
     )?;

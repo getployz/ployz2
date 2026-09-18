@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-vi.mock("#/lib/feature-flags", () => ({ variableGroupsEnabled: true }));
+vi.hoisted(() => vi.stubEnv("VITE_VARIABLE_GROUPS_ENABLED", "true"));
 import { loadEnvironmentDocument } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
 import { assert, it } from "@effect/vitest";

@@ -1,3 +1,4 @@
+import { canonicalJson } from "./canonical-json";
 import { Effect, Schema } from "effect";
 import {
   parseEnvironmentIntent,
@@ -69,7 +70,7 @@ function unique(values: string[], label: string) {
   if (new Set(values).size !== values.length) throw new Error(`Duplicate ${label}.`);
 }
 
-export function parseDashboardEnvironmentIntent(value: unknown): SavedEnvironmentIntent {
+export function parseDashboardEnvironmentIntent<Input>(value: Input): SavedEnvironmentIntent {
   const wire = decodeStrict(documentSchema, value);
   const { variableGroups, services, ...environment } = wire;
   const core = parseEnvironmentIntent({ ...environment, services: services.map(({ variableGroupAttachments: _attachments, variables: _variables, ...service }) => ({ ...service, variables: [] })) });
@@ -92,10 +93,13 @@ export function parseDashboardEnvironmentIntent(value: unknown): SavedEnvironmen
       const authored = authoredServices.get(service.id);
       if (!authored) throw new Error("Core returned an unknown Service identity.");
       return { ...service,
+        // SAFETY: documentSchema validated these fields; cloning removes readonly ownership.
         variables: structuredClone(authored.variables) as SavedVariableIntent[],
+        // SAFETY: documentSchema validated these fields; cloning removes readonly ownership.
         variableGroupAttachments: structuredClone(authored.variableGroupAttachments) as SavedServiceIntent["variableGroupAttachments"],
       };
     }),
+    // SAFETY: documentSchema validated these fields; cloning removes readonly ownership.
     variableGroups: structuredClone(variableGroups) as SavedVariableGroupIntent[],
   };
 }
@@ -125,12 +129,21 @@ export function compileSavedEnvironmentIntent(input: { environmentId: string; in
   const slugs = new Map([...intent.services.map((s) => [s.lineageId, s.slug] as const), ...intent.variableGroups.map((g) => [g.variableGroupLineageId, g.slug] as const)]);
   const envValue = (variable: SavedVariableIntent, group?: SavedVariableGroupIntent): DashboardServiceConfig["env"][string] => {
     const source = group ? { kind: "variable_group" as const, resourceId: group.resourceId, resourceName: group.name, variableGroupId: group.variableGroupId, key: variable.key } : undefined;
-    if (variable.value.kind === "secret") return { kind: "secret", variableId: variable.id, fingerprint: variable.valueFingerprint, ...(variable.value.encryptedValue ? { encryptedValue: variable.value.encryptedValue } : {}), ...(source ? { source } : {}) };
-    if (variable.value.kind === "literal") return { kind: "literal", value: variable.value.value, ...(source ? { source } : {}) };
-    const parts = variable.value.parts.map((part): ValuePart => part.kind === "ref" && part.owner.scope === "self" && group
-      ? { ...part, owner: { scope: "variable_group", lineageId: group.variableGroupLineageId } } : part);
-    return { kind: "literal", value: partsToDisplay(variable.value.parts, (id) => slugs.get(id) ?? null), parts, ...(source ? { source } : {}) };
+    let result: DashboardServiceConfig["env"][string];
+    if (variable.value.kind === "secret") {
+      result = { kind: "secret", variableId: variable.id, fingerprint: variable.valueFingerprint };
+      if (variable.value.encryptedValue) result.encryptedValue = variable.value.encryptedValue;
+    } else if (variable.value.kind === "literal") {
+      result = { kind: "literal", value: variable.value.value };
+    } else {
+      const parts = variable.value.parts.map((part): ValuePart => part.kind === "ref" && part.owner.scope === "self" && group
+        ? { ...part, owner: { scope: "variable_group", lineageId: group.variableGroupLineageId } } : part);
+      result = { kind: "literal", value: partsToDisplay(variable.value.parts, (id) => slugs.get(id) ?? null), parts };
+    }
+    if (source) result.source = source;
+    return result;
   };
+
   const nodeSnapshots: CompiledSavedEnvironmentIntent["nodeSnapshots"] = core.nodeSnapshots.map((node) => {
     if (node.nodeType === "volume" && !("source" in node.config)) {
       return { ...node, nodeType: "volume", configVersion: 2, config: node.config };
@@ -152,17 +165,23 @@ export function compileSavedEnvironmentIntent(input: { environmentId: string; in
   for (const service of intent.services) for (const variable of service.variables) variableProducers.push({ ownerScope: "service", ownerId: service.id, ownerLineageId: service.lineageId, key: variable.key, value: variable.value });
   for (const group of intent.variableGroups) {
     nodeSnapshots.push({ environmentId: input.environmentId, nodeId: group.resourceId, nodeLineageId: group.resourceLineageId, nodeType: "variable_group", configVersion: 1,
-      config: { version: 1, name: group.name, variables: group.variables.map((v): VariableGroupConfig["variables"][number] => ({ key: v.key, description: v.description, exported: v.exported,
-        value: v.value.kind === "secret" ? { type: "sealed", hasValue: true, fingerprint: v.valueFingerprint, ...(v.value.encryptedValue ? { encryptedValue: v.value.encryptedValue } : {}) }
-          : { type: "plain", value: v.value.kind === "literal" ? v.value.value : partsToDisplay(v.value.parts, (id) => slugs.get(id) ?? null) },
-      })).sort((a, b) => compareText(a.key, b.key)) } });
+      config: { version: 1, name: group.name, variables: group.variables.map((v): VariableGroupConfig["variables"][number] => {
+        let value: VariableGroupConfig["variables"][number]["value"];
+        if (v.value.kind === "secret") {
+          value = { type: "sealed", hasValue: true, fingerprint: v.valueFingerprint };
+          if (v.value.encryptedValue) value = { ...value, encryptedValue: v.value.encryptedValue };
+        } else {
+          value = { type: "plain", value: v.value.kind === "literal" ? v.value.value : partsToDisplay(v.value.parts, (id) => slugs.get(id) ?? null) };
+        }
+        return { key: v.key, description: v.description, exported: v.exported, value };
+      }).sort((a, b) => compareText(a.key, b.key)) } });
     for (const variable of group.variables) variableProducers.push({ ownerScope: "variable_group", ownerId: group.variableGroupId, ownerLineageId: group.variableGroupLineageId, key: variable.key, value: variable.value });
   }
   variableProducers.sort((a, b) => compareText(a.ownerScope, b.ownerScope) || compareText(a.ownerLineageId, b.ownerLineageId) || compareText(a.key, b.key));
   return { nodeSnapshots, variableProducers };
 }
 
-export const decodePersistedSavedEnvironmentIntent = Effect.fn("EnvironmentDesign.decodePersistedSavedEnvironmentIntent")(function* (intent: unknown) {
+export const decodePersistedSavedEnvironmentIntent = Effect.fn("EnvironmentDesign.decodePersistedSavedEnvironmentIntent")(function* <Input>(intent: Input) {
   return yield* Schema.decodeUnknownEffect(savedEnvironmentIntentSchema)(intent, strictParseOptions).pipe(Effect.mapError(() => new Conflict({ message: "Saved Environment State is invalid." })));
 });
 export const decodePersistedSavedEnvironmentState = Effect.fn("EnvironmentDesign.decodePersistedSavedEnvironmentState")(function* (input: { environmentId: string; intent: unknown }) {
@@ -196,11 +215,9 @@ export function reuseSavedEnvironmentPublication(input: {
   latest: { intent: SavedEnvironmentIntent; volumeDeletionAuthorizations: unknown } | null;
 }) {
   if (input.policy === "always_create" || !input.latest) return false;
-  const json = (value: unknown) => JSON.stringify(value, (_key, entry: unknown) =>
-    entry && typeof entry === "object" && !Array.isArray(entry)
-      ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => compareText(a, b))) : entry);
-  return json(canonicalizeSavedEnvironmentIntent(parseDashboardEnvironmentIntent(input.current.intent))) === json(canonicalizeSavedEnvironmentIntent(parseDashboardEnvironmentIntent(input.latest.intent)))
-    && json(input.current.volumeDeletionAuthorizations) === json(input.latest.volumeDeletionAuthorizations);
+
+  return canonicalJson(canonicalizeSavedEnvironmentIntent(parseDashboardEnvironmentIntent(input.current.intent))) === canonicalJson(canonicalizeSavedEnvironmentIntent(parseDashboardEnvironmentIntent(input.latest.intent)))
+    && canonicalJson(input.current.volumeDeletionAuthorizations) === canonicalJson(input.latest.volumeDeletionAuthorizations);
 }
 
 export function restoreDashboardEnvironmentNode(current: SavedEnvironmentIntent, baseline: SavedEnvironmentIntent | null,
@@ -246,5 +263,6 @@ export function savedVariableIntent(input: { id: string; key: string; descriptio
     : isPureLiteral(input.valueParts ?? []) ? { kind: "literal" as const, value: partsToLiteralString(input.valueParts ?? []) ?? "" }
     : { kind: "template" as const, parts: input.valueParts ?? [] };
   if (!value) throw new Error(`Secret variable ${input.key} has no saved value.`);
+  // SAFETY: savedVariableSchema validates the value; cloning permits mutable domain ownership.
   return structuredClone(decodeStrict(savedVariableSchema, { id: input.id, key: input.key, description: input.description, exported: input.exported, valueFingerprint: input.valueFingerprint, value })) as SavedVariableIntent;
 }

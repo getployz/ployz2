@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-vi.mock("#/lib/feature-flags", () => ({ variableGroupsEnabled: true }));
+vi.hoisted(() => vi.stubEnv("VITE_VARIABLE_GROUPS_ENABLED", "true"));
 import { fingerprintReviewedEnvironmentWorkingState, projectReviewedEnvironmentWorkingState } from "./working-state-review";
 import { restoreWorkingDocument } from "./working-document-restore.server";
 import { discardEnvironmentChanges } from "./saved-state-operations.server";

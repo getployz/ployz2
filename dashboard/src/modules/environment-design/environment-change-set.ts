@@ -40,7 +40,7 @@ export function resolveEnvironmentWorkingComparison<T>(input: {
 export type DashboardReviewChangeSet = { groups: Array<{ node: EnvironmentNodeIdentity; lifecycle: "create" | "update" | "delete"; settings: ServiceSettingChange[] }>; totalCount: number; canSave: boolean };
 
 function nodeMap(state: EnvironmentStateProjection) { return new Map(state.nodes.map((entry) => [`${entry.node.type}:${entry.node.id}`, entry])); }
-function changes(type: EnvironmentNodeIdentity["type"], current: unknown, baseline: unknown): ServiceSettingChange[] {
+function changes(type: EnvironmentNodeIdentity["type"], current: EnvironmentNodeProjection["config"], baseline: EnvironmentNodeProjection["config"]): ServiceSettingChange[] {
   if (!current || !baseline) return [];
   if (type === "service") return compareDashboardServiceSettings(parseDashboardServiceConfig(current), parseDashboardServiceConfig(baseline));
   if (type === "volume") return compareResourceSettings("volume", parseResourceConfig("volume", current), parseResourceConfig("volume", baseline));
@@ -49,7 +49,8 @@ function changes(type: EnvironmentNodeIdentity["type"], current: unknown, baseli
 function compare(baseline: EnvironmentStateProjection, working: EnvironmentStateProjection, introductions: EnvironmentStateProjection) {
   const before = nodeMap(baseline); const after = nodeMap(working); const intro = nodeMap(introductions); const groups: DashboardReviewChangeSet["groups"] = [];
   for (const key of [...new Set([...before.keys(), ...after.keys()])].sort()) {
-    const previous = before.get(key)?.config ?? null; const next = after.get(key)?.config ?? null; const entry = after.get(key) ?? before.get(key)!;
+    const previous = before.get(key)?.config ?? null; const next = after.get(key)?.config ?? null; const entry = after.get(key) ?? before.get(key);
+    if (!entry) continue;
     const settings = changes(entry.node.type, next, previous ?? intro.get(key)?.config ?? null).filter((row) => row.path !== "node" && !("derivedFrom" in row && row.derivedFrom));
     const lifecycle = !previous && next ? "create" : previous && !next ? "delete" : previous && settings.length ? "update" : null;
     if (lifecycle) groups.push({ node: entry.node, lifecycle, settings });

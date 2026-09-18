@@ -29,21 +29,32 @@ export type DashboardServiceConfig = Omit<ServiceConfig, "env"> & {
 /** Core compares ordinary Service values; group expressions remain Dashboard display values here. */
 export function toCoreServiceConfig(value: DashboardServiceConfig): ServiceConfig {
   const { variableGroupAttachments: _attachments, env, ...config } = value;
-  return { ...config, env: Object.fromEntries(Object.entries(env).map(([key, entry]) => {
+  const coreEnv: ServiceConfig["env"] = {};
+  for (const [key, entry] of Object.entries(env)) {
     const { source: _source, ...plain } = entry;
-    if (plain.kind === "secret" || !plain.parts) return [key, plain];
-    const parts = plain.parts.flatMap((part) => part.kind === "ref" && part.owner.scope === "variable_group" ? [] : [part]);
-    // Group expressions are compared by their rendered value, never sent as Core reference owners.
-    if (parts.length !== plain.parts.length) return [key, { kind: "literal" as const, value: plain.value }];
-    return [key, { ...plain, parts: parts as Extract<ServiceConfig["env"][string], { kind: "literal" }>["parts"] }];
-  })) };
+    if (plain.kind === "secret") { coreEnv[key] = plain; continue; }
+    const literal: Extract<ServiceConfig["env"][string], { kind: "literal" }> = { kind: "literal", value: plain.value };
+    if (plain.parts) {
+      const parts: NonNullable<typeof literal.parts> = [];
+      for (const part of plain.parts) {
+        if (part.kind === "text") parts.push(part);
+        else if (part.owner.scope === "self") parts.push({ ...part, owner: { scope: "self" } });
+        else if (part.owner.scope === "service") parts.push({ ...part, owner: { scope: "service", lineageId: part.owner.lineageId } });
+      }
+      // Dashboard compares mixed templates separately; Core never receives group owners.
+      if (parts.length === plain.parts.length) literal.parts = parts;
+    }
+    coreEnv[key] = literal;
+  }
+  return { ...config, env: coreEnv };
 }
 
 /** Validate Dashboard extensions separately from Core-owned settings. */
-export function parseDashboardServiceConfig(value: unknown): DashboardServiceConfig {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Service configuration.");
-  const { variableGroupAttachments = [], env = {}, ...settings } = value as Record<string, unknown>;
+export function parseDashboardServiceConfig<Input>(value: Input): DashboardServiceConfig {
+  const { variableGroupAttachments = [], env = {}, ...settings } = decodeStrict(Schema.Record(Schema.String, Schema.Unknown), value);
+  // SAFETY: strict schema admission established the shape; cloning permits mutable domain ownership.
   const attachments = structuredClone(decodeStrict(attachmentsSchema, variableGroupAttachments)) as DashboardServiceConfig["variableGroupAttachments"];
+  // SAFETY: strict schema admission established the shape; cloning permits mutable domain ownership.
   const parsedEnv = structuredClone(decodeStrict(Schema.Record(Schema.String, envValueSchema), env)) as DashboardServiceConfig["env"];
   const config = parseServiceConfig({ ...settings, env: {} });
   return { ...config, env: parsedEnv, variableGroupAttachments: attachments };

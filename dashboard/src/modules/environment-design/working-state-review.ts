@@ -1,3 +1,4 @@
+import { canonicalJson } from "./canonical-json";
 import { destructivePublication, destructivePublicationMismatch } from "@ployz/sdk/config";
 import type { CompiledSavedEnvironmentIntent } from "./saved-intent";
 import { Schema } from "effect";
@@ -89,19 +90,12 @@ export function projectReviewedEnvironmentWorkingState(document: {
 
 export function canonicalReviewedEnvironmentWorkingStateJson(input: ReviewedEnvironmentWorkingState) {
   const order = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
-  const reviewable = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(reviewable);
-    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value)
-      .filter(([key]) => key !== "encryptedValue" && key !== "parts")
-      .sort(([a], [b]) => order(a, b)).map(([key, entry]) => [key, reviewable(entry)]));
-    return value;
-  };
-  return JSON.stringify(reviewable({
+  return canonicalJson({
     nodeSnapshots: input.nodeSnapshots.map(({ nodeType, nodeId, nodeLineageId, configVersion, config }) =>
       ({ nodeType, nodeId, nodeLineageId, configVersion, config }))
       .sort((a, b) => order(`${a.nodeType}:${a.nodeId}`, `${b.nodeType}:${b.nodeId}`)),
     revisionMarkers: [...input.revisionMarkers ?? []].sort(order),
-  }));
+  }, ["encryptedValue", "parts"]);
 }
 
 export function formatReviewedEnvironmentWorkingStateFingerprint(

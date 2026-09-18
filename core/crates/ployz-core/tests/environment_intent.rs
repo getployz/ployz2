@@ -15,14 +15,37 @@ fn intent() -> serde_json::Value {
 #[test]
 fn authored_service_variables_compile_with_volume_mounts() {
     let compiled = config_request(json!({"operation":"compile_environment","environment_id":"00000000-0000-4000-8000-000000000001","value":intent()})).unwrap();
-    assert_eq!(compiled["nodeSnapshots"].as_array().unwrap().len(), 2);
-    assert_eq!(compiled["nodeSnapshots"][0]["config"]["env"]["HOST"]["value"], "db");
-    assert_eq!(compiled["nodeSnapshots"][0]["config"]["mounts"][0]["volumeName"], "Data");
+    assert_eq!(
+        compiled
+            .pointer("/nodeSnapshots")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        compiled
+            .pointer("/nodeSnapshots/0/config/env/HOST/value")
+            .unwrap(),
+        "db"
+    );
+    assert_eq!(
+        compiled
+            .pointer("/nodeSnapshots/0/config/mounts/0/volumeName")
+            .unwrap(),
+        "Data"
+    );
 }
 
 #[test]
 fn authored_documents_reject_derived_service_fields() {
     let mut value = intent();
-    value["services"][0]["config"]["env"] = json!({});
+    value
+        .pointer_mut("/services/0/config")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert("env".to_owned(), json!({}));
     assert!(config_request(json!({"operation":"parse_environment","value":value})).is_err());
 }

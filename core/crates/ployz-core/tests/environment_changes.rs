@@ -16,8 +16,21 @@ fn service(replicas: u8) -> Value {
 #[test]
 fn service_and_volume_changes_remain_reviewable() {
     let service_review = project("service", service(2), service(1));
-    assert_eq!(service_review["groups"][0]["lifecycle"], "update");
-    assert_eq!(service_review["groups"][0]["settings"][0]["path"], "replicas");
-    let volume_review = project("volume", json!({"version":2,"name":"Renamed"}), json!({"version":2,"name":"Data"}));
-    assert_eq!(volume_review["groups"][0]["settings"][0]["path"], "name");
+    assert_eq!(
+        service_review.pointer("/groups/0/lifecycle").unwrap(),
+        "update"
+    );
+    assert_eq!(
+        service_review.pointer("/groups/0/settings/0/path").unwrap(),
+        "replicas"
+    );
+    let volume_review = project(
+        "volume",
+        json!({"version":2,"name":"Renamed"}),
+        json!({"version":2,"name":"Data"}),
+    );
+    assert_eq!(
+        volume_review.pointer("/groups/0/settings/0/path").unwrap(),
+        "name"
+    );
 }

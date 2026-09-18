@@ -121,6 +121,7 @@ export function getResourceDeploymentDiffRows(nodeType: "volume" | "variable_gro
   current: VolumeConfig | VariableGroupConfig;
   baseline: VolumeConfig | VariableGroupConfig | null;
 }): DiffRow[] {
+  // SAFETY: resource configurations are parsed by their node type before presentation.
   const changes = nodeType === "variable_group"
     ? compareVariableGroupSettings(input.current, input.baseline)
     : compareResourceSettings("volume", input.current as VolumeConfig, input.baseline as VolumeConfig | null);
