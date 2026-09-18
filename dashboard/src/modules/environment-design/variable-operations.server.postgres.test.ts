@@ -1,3 +1,5 @@
+import { vi } from "vitest";
+vi.mock("#/lib/feature-flags", () => ({ variableGroupsEnabled: true }));
 import { loadEnvironmentDocument } from "./working-state-repository.server";
 import { emptyEnvironmentIntent } from "./saved-intent";
 import { createVariableGroupResource } from "./resource-operations.server";

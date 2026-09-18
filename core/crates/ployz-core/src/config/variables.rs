@@ -101,7 +101,7 @@ fn resolve_parts(
             producer.key == *key
                 && match owner {
                     ValuePartOwner::Self_ => producer.owner_id == self_owner_id,
-                    ValuePartOwner::Service { .. } | ValuePartOwner::VariableGroup { .. } => {
+                    ValuePartOwner::Service { .. } => {
                         producer.owner == *owner
                     }
                 }

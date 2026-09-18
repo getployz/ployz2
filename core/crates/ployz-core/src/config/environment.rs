@@ -18,7 +18,6 @@ pub struct SavedEnvironmentIntent {
     pub version: u8,
     pub environment_slug: String,
     pub services: Vec<SavedServiceIntent>,
-    pub variable_groups: Vec<SavedVariableGroupIntent>,
     pub volumes: Vec<SavedVolumeIntent>,
 }
 
@@ -34,7 +33,6 @@ pub struct SavedServiceIntent {
     #[ts(flatten)]
     pub configuration: SavedServiceConfiguration,
     pub variables: Vec<SavedVariableIntent>,
-    pub variable_group_attachments: Vec<VariableGroupAttachment>,
     pub volume_attachments: Vec<VolumeAttachment>,
 }
 
@@ -177,33 +175,12 @@ impl SavedServiceConfiguration {
     }
 }
 
-/// A Variable Group reference and its precedence within a Service.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct VariableGroupAttachment {
-    pub variable_group_id: String,
-    pub sort_order: i64,
-}
-
 /// A Volume owner reference and the Service path where it is mounted.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VolumeAttachment {
     pub volume_resource_id: String,
     pub mount_path: String,
-}
-
-/// A Variable Group owner with stable resource and producer identities.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SavedVariableGroupIntent {
-    pub resource_id: String,
-    pub resource_lineage_id: String,
-    pub variable_group_id: String,
-    pub variable_group_lineage_id: String,
-    pub slug: String,
-    pub name: String,
-    pub variables: Vec<SavedVariableIntent>,
 }
 
 /// An authored Volume name attached to stable resource and lineage identities.
@@ -263,7 +240,6 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
                 service.get("config").is_some_and(|config| {
                     config.get("env").is_some()
                         || config.get("mounts").is_some()
-                        || config.get("variableGroupAttachments").is_some()
                 })
             })
         })
@@ -298,45 +274,14 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
     )?;
     unique(
         intent
-            .variable_groups
+            .volumes
             .iter()
-            .map(|v| v.variable_group_id.as_str()),
-        "variableGroups.variableGroupId",
-        true,
-    )?;
-    unique(
-        intent
-            .variable_groups
-            .iter()
-            .map(|v| v.variable_group_lineage_id.as_str()),
-        "variableGroups.variableGroupLineageId",
-        true,
-    )?;
-    unique(
-        intent.variable_groups.iter().map(|v| v.slug.as_str()),
-        "variableGroups.slug",
-        false,
-    )?;
-    unique(
-        intent
-            .variable_groups
-            .iter()
-            .map(|v| v.resource_id.as_str())
-            .chain(intent.volumes.iter().map(|v| v.resource_id.as_str())),
+            .map(|v| v.resource_id.as_str()),
         "resources.id",
         true,
     )?;
     unique(
-        intent
-            .variable_groups
-            .iter()
-            .map(|v| v.resource_lineage_id.as_str())
-            .chain(
-                intent
-                    .volumes
-                    .iter()
-                    .map(|v| v.resource_lineage_id.as_str()),
-            ),
+        intent.volumes.iter().map(|v| v.resource_lineage_id.as_str()),
         "resources.lineageId",
         true,
     )?;
@@ -345,7 +290,6 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
             .services
             .iter()
             .flat_map(|v| &v.variables)
-            .chain(intent.variable_groups.iter().flat_map(|v| &v.variables))
             .map(|v| v.id.as_str()),
         "variables.id",
         true,
@@ -353,14 +297,6 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
     for service in &mut intent.services {
         service.configuration.normalize()?;
         validate_variables(&service.variables)?;
-        unique(
-            service
-                .variable_group_attachments
-                .iter()
-                .map(|a| a.variable_group_id.as_str()),
-            "variableGroupAttachments",
-            true,
-        )?;
         unique(
             service
                 .volume_attachments
@@ -377,12 +313,7 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
             "volumeAttachments.mountPath",
             false,
         )?;
-        if service.variable_group_attachments.iter().any(|a| {
-            !intent
-                .variable_groups
-                .iter()
-                .any(|g| g.variable_group_id == a.variable_group_id)
-        }) || service.volume_attachments.iter().any(|a| {
+        if service.volume_attachments.iter().any(|a| {
             !intent
                 .volumes
                 .iter()
@@ -393,10 +324,6 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
                 "Attachment must reference an authored resource",
             ));
         }
-    }
-    for group in &intent.variable_groups {
-        nonempty(&group.name, "variableGroups.name")?;
-        validate_variables(&group.variables)?;
     }
     for volume in &intent.volumes {
         nonempty(&volume.name, "volumes.name")?;
@@ -461,12 +388,6 @@ pub fn redact_environment_intent(mut intent: SavedEnvironmentIntent) -> SavedEnv
         .services
         .iter_mut()
         .flat_map(|service| &mut service.variables)
-        .chain(
-            intent
-                .variable_groups
-                .iter_mut()
-                .flat_map(|group| &mut group.variables),
-        )
     {
         if let SavedVariableValue::Secret { encrypted_value } = &mut variable.value {
             *encrypted_value = None;
@@ -482,22 +403,13 @@ pub fn canonicalize_environment_intent(
 ) -> SavedEnvironmentIntent {
     intent.services.sort_by(|a, b| a.id.cmp(&b.id));
     intent
-        .variable_groups
-        .sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
-    intent
         .volumes
         .sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
     for service in &mut intent.services {
         service.variables.sort_by(|a, b| a.id.cmp(&b.id));
-        service.variable_group_attachments.sort_by(|a, b| {
-            (a.sort_order, &a.variable_group_id).cmp(&(b.sort_order, &b.variable_group_id))
-        });
         service.volume_attachments.sort_by(|a, b| {
             (&a.mount_path, &a.volume_resource_id).cmp(&(&b.mount_path, &b.volume_resource_id))
         });
-    }
-    for group in &mut intent.variable_groups {
-        group.variables.sort_by(|a, b| a.id.cmp(&b.id));
     }
     intent
 }
