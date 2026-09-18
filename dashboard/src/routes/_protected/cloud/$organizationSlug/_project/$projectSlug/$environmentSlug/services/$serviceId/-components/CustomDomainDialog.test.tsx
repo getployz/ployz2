@@ -21,6 +21,48 @@ function capabilityAction() {
 }
 
 describe("CustomDomainDialog", () => {
+  it("saves a blank target as following PORT rather than freezing the hint", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <CustomDomainDialog
+        defaultTargetPort={3000}
+        capabilityAction={capabilityAction()}
+        onCapabilityRejected={vi.fn().mockResolvedValue(undefined)}
+        onClose={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Domain"), { target: { value: "api.example.com" } });
+    const save = screen.getByRole("button", { name: "Save route" });
+    await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(save);
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ targetPort: null })));
+  });
+
+  it("enables saving a corrected port without requiring blur", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <CustomDomainDialog
+        route={{ id: crypto.randomUUID(), hostname: "api.example.com", targetPort: 8080 }}
+        defaultTargetPort={8080}
+        capabilityAction={capabilityAction()}
+        onCapabilityRejected={vi.fn().mockResolvedValue(undefined)}
+        onClose={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+    const port = screen.getByLabelText("Target port");
+    const save = screen.getByRole("button", { name: "Save route" });
+    fireEvent.focus(port);
+    fireEvent.change(port, { target: { value: "70000" } });
+    await waitFor(() => expect(save.hasAttribute("disabled")).toBe(true));
+    expect(screen.queryByText("Enter a port between 1 and 65535.")).toBeNull();
+    fireEvent.change(port, { target: { value: "3000" } });
+    await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(save);
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ targetPort: 3000 })));
+  });
+
   it("closes only after route persistence succeeds", async () => {
     const onClose = vi.fn();
     const onSubmit = vi.fn().mockResolvedValue(undefined);
@@ -73,6 +115,9 @@ describe("CustomDomainDialog", () => {
     fireEvent.change(screen.getByLabelText("Domain"), {
       target: { value: "api.example.com" },
     });
+    fireEvent.change(screen.getByLabelText("Target port"), {
+      target: { value: "3000" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Save route" }));
 
     await waitFor(() => {
@@ -97,6 +142,9 @@ describe("CustomDomainDialog", () => {
 
     fireEvent.change(screen.getByLabelText("Domain"), {
       target: { value: "api.example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Target port"), {
+      target: { value: "3000" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save route" }));
 

@@ -1,10 +1,11 @@
 import { CopyButton } from "#/components/copy-button";
+import { Skeleton } from "#/components/ui/skeleton";
 import { useState, type ReactNode } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
-  CircleAlertIcon,
   GlobeIcon,
+  NetworkIcon,
   PencilIcon,
   PlusIcon,
   Trash2Icon,
@@ -12,13 +13,16 @@ import {
 } from "lucide-react";
 import { Result, Schema, SchemaGetter } from "effect";
 import type { ServiceManagedHostname, ServiceRoute } from "#/modules/environment-design/tables";
-import {
-  Alert,
-  AlertAction,
-  AlertDescription,
-  AlertTitle,
-} from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "#/components/ui/dialog";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import {
   Field,
@@ -26,18 +30,14 @@ import {
   FieldGroup,
   FieldLabel,
 } from "#/components/ui/field";
-import { Spinner } from "#/components/ui/spinner";
 import {
   appFormOptions,
   showErrorsAfterBlurOrSubmit,
   useAppForm,
-  validateAfterBlurThenWhileInvalid,
+  validateOnChangeOrBlur,
 } from "#/form";
 import { cn } from "#/lib/utils";
-import {
-  billingKeys,
-  billingStateQueryOptions,
-} from "#/modules/billing/billing.queries";
+import { billingKeys } from "#/modules/billing/billing.queries";
 import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deployment-diff/fields";
 import {
   serviceManagedHostnameSchema,
@@ -46,10 +46,10 @@ import {
 } from "#/modules/environment-design/services";
 import { strictParseOptions } from "#/modules/environment-design/schema";
 import { useRuntimeStatus } from "#/providers/runtime-provider";
-import { customDomainCapabilityPresentation } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceNetworkingSection.presentation";
 import { ServiceSettingInput } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceSettingInput";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 import { CustomDomainDialog } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/CustomDomainDialog";
+import { domainPortSchema } from "./domain-port";
 
 
 /** Derive a valid managed-domain prefix from the service's private DNS name. */
@@ -61,6 +61,14 @@ function defaultPrefix(privateDns: string) {
   return label.length > 0 ? label : "app";
 }
 
+/** First `base`, `base-2`, `base-3`… not already taken. */
+function nextFreePrefix(base: string, taken: Iterable<string>) {
+  const used = new Set(taken);
+  let candidate = base;
+  for (let n = 2; used.has(candidate); n += 1) candidate = `${base}-${n}`;
+  return candidate;
+}
+
 export function ServiceNetworkingSection({
   state,
 }: {
@@ -69,38 +77,17 @@ export function ServiceNetworkingSection({
   const { service, collection, diff, managedPrefixesInUse, defaultTargetPort } =
     state;
   const routesDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.routes);
-  const managedDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.managedHostname);
+  const managedDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.managedHostnames);
   const privateDnsDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.privateDns);
+  // `{service}.internal` resolves within the caller's project; the bare name also works via the search domain.
+  const privateHostname = `${service.privateDns}.internal`;
   const routes = service.routes;
-  const managed = service.managedHostname;
+  const managedList = service.managedHostnames;
   const queryClient = useQueryClient();
-  const billingQuery = useQuery(
-    billingStateQueryOptions(state.organizationSlug),
-  );
-  const customDomainCapability = customDomainCapabilityPresentation(
-    billingQuery.isPending
-      ? { status: "loading" }
-      : billingQuery.error !== null || billingQuery.data === undefined
-        ? { status: "unavailable" }
-        : {
-            status: "ready",
-            billingMode: billingQuery.data.billingMode,
-            currentPlan: billingQuery.data.currentPlan,
-            hasActivePaidSubscription:
-              billingQuery.data.hasActivePaidSubscription,
-          },
-  );
-  const canChangeCustomDomains = customDomainCapability.canAddOrReplace;
 
   const runtimeStatus = useRuntimeStatus();
   const hostedDnsHostname = runtimeStatus.hostedDnsHostname;
   const hostedDnsHostnameIsCurrent = runtimeStatus.lensStatus === "observed";
-  const canUseManaged =
-    hostedDnsHostnameIsCurrent && hostedDnsHostname !== null;
-  const managedHostname =
-    managed != null && hostedDnsHostname != null
-      ? `${managed.prefix}.${hostedDnsHostname}`
-      : null;
   const certificateEvidence = (hostname: string): DomainCertificateEvidence => {
     const certificate = runtimeStatus.certificates.find(
       (candidate) => candidate.hostname === hostname,
@@ -115,7 +102,9 @@ export function ServiceNetworkingSection({
   };
 
   const [editing, setEditing] = useState<
-    | { kind: "managed" }
+    | { kind: "managed"; index: number }
+    | { kind: "generate" }
+    | { kind: "private" }
     | { kind: "route"; index: number }
     | { kind: "add" }
     | null
@@ -134,13 +123,19 @@ export function ServiceNetworkingSection({
     });
   }
 
-  function setManaged(next: ServiceManagedHostname | null) {
+  function commitManaged(next: ServiceManagedHostname[]) {
     void collection.update(service.id, (draft) => {
-      draft.managedHostname = next;
+      draft.managedHostnames = next;
     }).isPersisted.promise;
   }
 
-  const hasAnyDomain = managed != null || routes.length > 0;
+  // Prefixes are unique per environment, including this service's other domains.
+  const takenPrefixesFor = (index: number | null) => [
+    ...managedPrefixesInUse,
+    ...managedList.filter((_, i) => i !== index).map((m) => m.prefix),
+  ];
+
+  const hasAnyDomain = managedList.length > 0 || routes.length > 0;
   const routeBeingEdited =
     editing?.kind === "route" ? routes[editing.index] : undefined;
 
@@ -151,7 +146,7 @@ export function ServiceNetworkingSection({
       >
         <FieldLabel>Public Networking</FieldLabel>
         <FieldDescription>
-          Access this service publicly over HTTP through the domains below.
+          Access your application over HTTP with the following domains.
         </FieldDescription>
 
         <div className="flex flex-col gap-2">
@@ -161,26 +156,48 @@ export function ServiceNetworkingSection({
             </Empty>
           ) : null}
 
-          {managed != null ? (
+          {managedList.map((managed, index) => (
             <ManagedDomainRow
+              key={managed.prefix}
               managed={managed}
               hostedDnsHostname={hostedDnsHostname}
               hostedDnsHostnameIsCurrent={hostedDnsHostnameIsCurrent}
               certificateEvidence={
-                managedHostname ? certificateEvidence(managedHostname) : null
+                hostedDnsHostname
+                  ? certificateEvidence(`${managed.prefix}.${hostedDnsHostname}`)
+                  : null
               }
-              takenPrefixes={managedPrefixesInUse}
+              takenPrefixes={takenPrefixesFor(index)}
               defaultTargetPort={defaultTargetPort}
               changed={managedDiff.changed}
-              editing={editing?.kind === "managed"}
-              onEdit={() => setEditing({ kind: "managed" })}
+              editing={editing?.kind === "managed" && editing.index === index}
+              onEdit={() => setEditing({ kind: "managed", index })}
               onCancel={() => setEditing(null)}
               onDelete={() => {
-                setManaged(null);
+                commitManaged(managedList.filter((_, i) => i !== index));
                 setEditing(null);
               }}
               onSubmit={(next) => {
-                setManaged(next);
+                commitManaged(managedList.map((m, i) => (i === index ? next : m)));
+                setEditing(null);
+              }}
+            />
+          ))}
+
+          {editing?.kind === "generate" ? (
+            <ManagedDomainDialog
+              key="generate-managed-domain"
+              mode="generate"
+              managed={{
+                prefix: nextFreePrefix(defaultPrefix(service.privateDns), takenPrefixesFor(null)),
+                targetPort: null,
+              }}
+              hostedDnsHostname={hostedDnsHostname}
+              takenPrefixes={takenPrefixesFor(null)}
+              defaultTargetPort={defaultTargetPort}
+              onClose={() => setEditing(null)}
+              onSubmit={(next) => {
+                commitManaged([...managedList, next]);
                 setEditing(null);
               }}
             />
@@ -190,9 +207,9 @@ export function ServiceNetworkingSection({
             <CustomDomainRow
               key={`${route.hostname}:${route.targetPort}`}
               route={route}
+              defaultTargetPort={defaultTargetPort}
               certificateEvidence={certificateEvidence(route.hostname)}
               changed={routesDiff.changed}
-              canEdit={canChangeCustomDomains}
               onEdit={() => setEditing({ kind: "route", index })}
               onDelete={() => {
                 commitRoutes(routes.filter((_, i) => i !== index));
@@ -202,52 +219,19 @@ export function ServiceNetworkingSection({
           ))}
         </div>
 
-        {customDomainCapability.status === "blocked" ? (
-          <Alert>
-            {billingQuery.isPending ? <Spinner /> : <CircleAlertIcon />}
-            <AlertTitle>Custom domain access</AlertTitle>
-            <AlertDescription>
-              {customDomainCapability.message}
-            </AlertDescription>
-            {customDomainCapability.showUpgrade ? (
-              <AlertAction>
-                <Button
-                  nativeButton={false}
-                  render={
-                    <Link
-                      to="/cloud/$organizationSlug/~/billing"
-                      params={{ organizationSlug: state.organizationSlug }}
-                    />
-                  }
-                  size="sm"
-                >
-                  Upgrade to Solo
-                </Button>
-              </AlertAction>
-            ) : null}
-          </Alert>
-        ) : null}
-
         <div className="flex flex-wrap gap-2">
-          {canUseManaged && managed == null ? (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() =>
-                setManaged({
-                  prefix: defaultPrefix(service.privateDns),
-                  targetPort: defaultTargetPort,
-                })
-              }
-            >
-              <ZapIcon data-icon="inline-start" />
-              Generate Domain
-            </Button>
-          ) : null}
+          {/* Authoring needs no server; the host is filled in once one is enrolled. */}
           <Button
             type="button"
             variant="outline"
-            disabled={!canChangeCustomDomains}
+            onClick={() => setEditing({ kind: "generate" })}
+          >
+            <ZapIcon data-icon="inline-start" />
+            Generate Domain
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
             onClick={() => setEditing({ kind: "add" })}
           >
             <PlusIcon data-icon="inline-start" />
@@ -310,37 +294,83 @@ export function ServiceNetworkingSection({
         ) : null}
       </Field>
 
-      <Field>
-        <FieldLabel>Private DNS name</FieldLabel>
+      <Field data-changed={privateDnsDiff.changed || undefined}>
+        <FieldLabel>Private Networking</FieldLabel>
         <FieldDescription>
-          Used as the runtime service ID and internal DNS name.
+          Communicate with this service from within the environment.
         </FieldDescription>
-        <ServiceSettingInput
-          ariaLabel="Private DNS name"
-          placeholder="kin-server"
-          value={service.privateDns}
-          isChanged={privateDnsDiff.changed}
-          baselineLabel={privateDnsDiff.baselineLabel}
-          baselineValue={privateDnsDiff.baselineValue}
-          validate={(raw) => {
-            const parsed = Schema.decodeUnknownResult(servicePrivateDnsSchema)(
-              raw,
-              strictParseOptions,
-            );
-            return Result.isFailure(parsed)
-              ? parsed.failure instanceof Error
-                ? parsed.failure.message
-                : "Invalid value"
-              : null;
-          }}
-          onCommit={(raw) =>
-            collection.update(service.id, (draft) => {
-              draft.privateDns = raw;
-            })
+        <DomainRowShell
+          icon={<NetworkIcon />}
+          changed={privateDnsDiff.changed}
+          actions={
+            <>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Edit private endpoint"
+                onClick={() => setEditing({ kind: "private" })}
+              >
+                <PencilIcon />
+              </Button>
+            </>
           }
-        />
+        >
+          <DomainTitle hostname={privateHostname} copyLabel="Copy private hostname" />
+          <div className="truncate text-muted-foreground text-sm">
+            → or just <span className="font-mono">{service.privateDns}</span>
+          </div>
+        </DomainRowShell>
+        {editing?.kind === "private" ? (
+          <Dialog open onOpenChange={(open) => !open && setEditing(null)}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Edit private endpoint</DialogTitle>
+                <DialogDescription>
+                  The name other services in this environment use to reach it.
+                </DialogDescription>
+              </DialogHeader>
+              <ServiceSettingInput
+                ariaLabel="Private endpoint name"
+                placeholder="api"
+                value={service.privateDns}
+                isChanged={privateDnsDiff.changed}
+                baselineLabel={privateDnsDiff.baselineLabel}
+                baselineValue={privateDnsDiff.baselineValue}
+                validate={(raw) => {
+                  const parsed = Schema.decodeUnknownResult(servicePrivateDnsSchema)(
+                    raw,
+                    strictParseOptions,
+                  );
+                  return Result.isFailure(parsed)
+                    ? parsed.failure instanceof Error
+                      ? parsed.failure.message
+                      : "Invalid value"
+                    : null;
+                }}
+                onCommit={(raw) => {
+                  const tx = collection.update(service.id, (draft) => {
+                    draft.privateDns = raw;
+                  });
+                  void tx.isPersisted.promise.then(() => setEditing(null));
+                  return tx;
+                }}
+              />
+            </DialogContent>
+          </Dialog>
+        ) : null}
       </Field>
     </FieldGroup>
+  );
+}
+
+/** Hostname with its copy button right beside it, same spot in every row. */
+function DomainTitle({ hostname, copyLabel }: { hostname: string; copyLabel: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-1">
+      <span className="truncate font-mono text-sm">{hostname}</span>
+      <CopyButton value={hostname} label={copyLabel} size="icon-xs" />
+    </div>
   );
 }
 
@@ -396,7 +426,7 @@ function ManagedDomainRow({
   hostedDnsHostnameIsCurrent: boolean;
   certificateEvidence: DomainCertificateEvidence;
   takenPrefixes: string[];
-  defaultTargetPort: number;
+  defaultTargetPort: number | null;
   changed: boolean;
   editing: boolean;
   onEdit: () => void;
@@ -406,30 +436,26 @@ function ManagedDomainRow({
 }) {
   const hostname = hostedDnsHostname
     ? `${managed.prefix}.${hostedDnsHostname}`
-    : `${managed.prefix}.…`;
+    : null;
   const port = managed.targetPort ?? defaultTargetPort;
-
-  if (editing) {
-    return (
-      <ManagedDomainForm
-        managed={managed}
-        hostedDnsHostname={hostedDnsHostname}
-        takenPrefixes={takenPrefixes}
-        defaultTargetPort={defaultTargetPort}
-        onCancel={onCancel}
-        onSubmit={onSubmit}
-      />
-    );
-  }
 
   return (
     <div className="flex flex-col gap-1">
+      {editing ? (
+        <ManagedDomainDialog
+          managed={managed}
+          hostedDnsHostname={hostedDnsHostname}
+          takenPrefixes={takenPrefixes}
+          defaultTargetPort={defaultTargetPort}
+          onClose={onCancel}
+          onSubmit={onSubmit}
+        />
+      ) : null}
       <DomainRowShell
         changed={changed}
         icon={<GlobeIcon />}
         actions={
           <>
-            <CopyButton value={hostname} label="Copy domain" />
             <Button
               type="button"
               variant="ghost"
@@ -451,13 +477,22 @@ function ManagedDomainRow({
           </>
         }
       >
-        <div className="truncate font-mono text-sm">{hostname}</div>
-        <div className="text-muted-foreground text-sm">→ Port {port}</div>
+        {hostname ? (
+          <DomainTitle hostname={hostname} copyLabel="Copy domain" />
+        ) : (
+          <div className="truncate font-mono text-sm">
+            {managed.prefix}
+            <span className="text-muted-foreground">
+              .<Skeleton variant="inline" aria-label="pending" />.up.ployz.dev
+            </span>
+          </div>
+        )}
+        <div className="text-muted-foreground text-sm">→ {port === null ? "Uses PORT" : `Port ${port}`}</div>
       </DomainRowShell>
       <FieldDescription>
-        {hostedDnsHostname
-          ? `${hostedDnsHostnameIsCurrent ? "Hosted DNS hostname observed" : "Hosted DNS hostname last observed"}: ${hostedDnsHostname}.`
-          : "Hosted DNS hostname has not been observed."}
+        {hostname && !hostedDnsHostnameIsCurrent
+          ? "Last seen address; the server is not connected right now."
+          : null}
       </FieldDescription>
       <CertificateEvidence evidence={certificateEvidence} />
     </div>
@@ -483,30 +518,22 @@ function CertificateEvidence({
   );
 }
 
-const portStringSchema = Schema.String.check(
-  Schema.makeFilter<string>((value) => {
-    const trimmed = value.trim();
-    if (trimmed === "") return undefined;
-    const port = Number(trimmed);
-    return Number.isInteger(port) && port >= 1 && port <= 65535
-      ? undefined
-      : "Enter a port between 1 and 65535, or leave blank.";
-  }),
-);
-
-function ManagedDomainForm({
+function ManagedDomainDialog({
+  mode = "edit",
   managed,
   hostedDnsHostname,
   takenPrefixes,
   defaultTargetPort,
-  onCancel,
+  onClose,
   onSubmit,
 }: {
+  /** "generate" asks only for the port; the subdomain is derived and editable later. */
+  mode?: "edit" | "generate";
   managed: ServiceManagedHostname;
   hostedDnsHostname: string | null;
   takenPrefixes: string[];
-  defaultTargetPort: number;
-  onCancel: () => void;
+  defaultTargetPort: number | null;
+  onClose: () => void;
   onSubmit: (next: ServiceManagedHostname) => void;
 }) {
   const taken = new Set(takenPrefixes);
@@ -517,17 +544,17 @@ function ManagedDomainForm({
           taken.has(value) ? "This subdomain is already in use." : undefined,
         ),
       ),
-      port: portStringSchema,
+      port: domainPortSchema,
     })
       .pipe(
         Schema.decodeTo(serviceManagedHostnameSchema, {
           decode: SchemaGetter.transform(({ prefix, port }) => ({
             prefix,
-            targetPort: port.trim() === "" ? null : Number(port),
+            targetPort: port,
           })),
           encode: SchemaGetter.transform(({ prefix, targetPort }) => ({
             prefix,
-            port: targetPort === null ? "" : String(targetPort),
+            port: targetPort,
           })),
         }),
     ),
@@ -537,10 +564,10 @@ function ManagedDomainForm({
   const formOptions = appFormOptions.strictSchema({
     defaultValues: {
       prefix: managed.prefix,
-      port: String(managed.targetPort ?? defaultTargetPort),
+      port: managed.targetPort === null ? "" : String(managed.targetPort),
     },
     errorVisibility: showErrorsAfterBlurOrSubmit,
-    validators: [validateAfterBlurThenWhileInvalid(schema)],
+    validators: [validateOnChangeOrBlur(schema)],
   });
   const form = useAppForm({
     ...formOptions,
@@ -550,50 +577,83 @@ function ManagedDomainForm({
   });
 
   return (
-    <form.AppForm>
-      <form.Form className="flex flex-col gap-2 rounded-lg border bg-card p-3">
-        <form.Field name="prefix">
-          {(field) => (
-            <field.Text
-              label="Subdomain"
-              className="font-mono"
-              description={`.${hostedDnsHostname ?? "…"}`}
-            />
-          )}
-        </form.Field>
-        <form.Field name="port">
-          {(field) => (
-            <field.Text
-              label="Target port"
-              inputMode="numeric"
-              placeholder={String(defaultTargetPort)}
-              description="The port your app listens on."
-            />
-          )}
-        </form.Field>
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={onCancel}>
-            Cancel
-          </Button>
-          <form.SubmitButton size="sm">Update</form.SubmitButton>
-        </div>
-      </form.Form>
-    </form.AppForm>
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <form.AppForm>
+          <form.Form className="flex flex-col gap-4">
+            <DialogHeader>
+              <DialogTitle>
+                {mode === "generate" ? "Generate Service Domain" : "Edit managed domain"}
+              </DialogTitle>
+              <DialogDescription>
+                {mode === "generate"
+                  ? "Enter the port your app is listening on."
+                  : "Update your domain or target port."}
+              </DialogDescription>
+            </DialogHeader>
+            <FieldGroup>
+              {mode === "edit" ? (
+                <form.Field name="prefix">
+                  {(field) => (
+                    <field.Text
+                      label="Subdomain"
+                      className="font-mono"
+                      description={`.${hostedDnsHostname ?? "{pending}.up.ployz.dev"}`}
+                    />
+                  )}
+                </form.Field>
+              ) : null}
+              <form.Field name="port">
+                {(field) => (
+                  <field.Text
+                    label={mode === "generate" ? "Port" : "Target port"}
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={65535}
+                    step={1}
+                    placeholder={defaultTargetPort === null ? "Uses PORT" : String(defaultTargetPort)}
+                    description="Leave blank to use PORT."
+                  />
+                )}
+              </form.Field>
+            </FieldGroup>
+            <DialogFooter>
+              <DialogClose
+                render={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    // Keep focus on the input so Cancel doesn't trigger blur validation.
+                    onMouseDown={(event) => event.preventDefault()}
+                  />
+                }
+              >
+                Cancel
+              </DialogClose>
+              <form.SubmitButton>
+                {mode === "generate" ? "Generate Domain" : "Save domain"}
+              </form.SubmitButton>
+            </DialogFooter>
+          </form.Form>
+        </form.AppForm>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 function CustomDomainRow({
   route,
+  defaultTargetPort,
   certificateEvidence,
   changed,
-  canEdit,
   onEdit,
   onDelete,
 }: {
   route: ServiceRoute;
+  defaultTargetPort: number | null;
   certificateEvidence: DomainCertificateEvidence;
   changed: boolean;
-  canEdit: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -604,13 +664,11 @@ function CustomDomainRow({
         icon={<GlobeIcon />}
         actions={
           <>
-            <CopyButton value={route.hostname} label={`Copy ${route.hostname}`} />
             <Button
               type="button"
               variant="ghost"
               size="icon-sm"
               aria-label={`Edit ${route.hostname}`}
-              disabled={!canEdit}
               onClick={onEdit}
             >
               <PencilIcon />
@@ -627,9 +685,11 @@ function CustomDomainRow({
           </>
         }
       >
-        <div className="truncate font-mono text-sm">{route.hostname}</div>
+        <DomainTitle hostname={route.hostname} copyLabel={`Copy ${route.hostname}`} />
         <div className="text-muted-foreground text-sm">
-          → Port {route.targetPort}
+          → {route.targetPort === null && defaultTargetPort === null
+            ? "Uses PORT"
+            : `Port ${route.targetPort ?? defaultTargetPort}`}
         </div>
       </DomainRowShell>
       <CertificateEvidence evidence={certificateEvidence} />

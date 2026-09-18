@@ -63,20 +63,21 @@ export function ServiceSettingInput({
   const active = draft.source === value ? draft : freshDraft(value);
   const isDirty = active.value !== value;
 
-  async function confirm() {
-    const raw = active.value.trim();
+  async function confirm(next = active.value) {
+    const raw = next.trim();
+    const nextDraft = { ...active, value: raw };
     const error = validate?.(raw) ?? null;
     if (error) {
-      setDraft({ ...active, error });
+      setDraft({ ...nextDraft, error });
       return;
     }
 
-    setDraft({ ...active, error: null, pending: true });
+    setDraft({ ...nextDraft, error: null, pending: true });
     try {
       await onCommit(raw).isPersisted.promise;
       setDraft(freshDraft(raw));
     } catch {
-      setDraft({ ...active, error: "Could not save", pending: false });
+      setDraft({ ...nextDraft, error: "Could not save", pending: false });
     }
   }
 
@@ -98,6 +99,7 @@ export function ServiceSettingInput({
       suggestions={suggestions}
       suggestionsLoading={suggestionsLoading}
       suggestionsMessage={suggestionsMessage}
+      onSuggestionSelect={(next) => { void confirm(next); }}
       onFocus={onFocus}
       title={
         isChanged && baselineValue != null

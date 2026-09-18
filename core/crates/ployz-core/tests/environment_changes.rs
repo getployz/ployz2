@@ -14,14 +14,12 @@ fn input(
     node_type: &str,
     introduced: &Value,
     working: Value,
-    saved: Value,
     applied: Value,
     submitted: Option<Value>,
 ) -> Value {
     let node = json!({"type":node_type,"id":"stable-id"});
     json!({
         "working":{"token":"working","nodes":[{"node":node,"config":working}]},
-        "saved":{"token":"saved","nodes":[{"node":node,"config":saved}]},
         "applied":{"token":"applied","nodes":[{"node":node,"config":applied}]},
         "nodeIntroductions":{"token":"introduced","nodes":[{"node":node,"config":introduced}]},
         "submitted":submitted.map(|config| json!({"token":"submitted","nodes":[{"node":node,"config":config}]}))
@@ -77,15 +75,14 @@ fn variable_group_attachment_changes_have_one_restorable_authored_owner() {
             baseline_nodes[0]["config"]["env"],
             current_nodes[0]["config"]["env"]
         );
-        for saved in [&baseline_nodes, &current_nodes] {
+        {
             let review = project(json!({
                 "working":{"token":"working","nodes":current_nodes},
-                "saved":{"token":"saved","nodes":saved},
                 "applied":{"token":"applied","nodes":baseline_nodes},
                 "nodeIntroductions":{"token":"none","nodes":[]},"submitted":null
             }));
             assert_eq!(review["totalCount"], 1, "{before} -> {after}");
-            assert_eq!(review["canSave"], saved != &current_nodes);
+            assert_eq!(review["headToken"], "applied");
             let group = &review["groups"][0];
             assert_eq!(group["node"], json!({"type":"service","id":id(1)}));
             let row = &group["settings"][0];
@@ -134,7 +131,6 @@ fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
                     node_type,
                     &original,
                     after.clone(),
-                    after.clone(),
                     if submitted { after } else { before.clone() },
                     submitted.then_some(before),
                 ));
@@ -158,7 +154,6 @@ fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
             &original,
             changed.clone(),
             Value::Null,
-            Value::Null,
             None,
         ));
         let row = &result["groups"][0]["settings"][0];
@@ -169,7 +164,6 @@ fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
         let result = project(input(
             node_type,
             &original,
-            changed.clone(),
             changed.clone(),
             original.clone(),
             Some(changed),
@@ -187,7 +181,6 @@ fn derived_variables_are_not_counted_and_secret_values_stay_redacted() {
         "service",
         &service(1),
         current,
-        service(1),
         service(1),
         None,
     );

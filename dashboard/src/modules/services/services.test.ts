@@ -215,13 +215,14 @@ describe("service schemas", () => {
     });
 
     expect(config).toMatchObject({
+      restartPolicy: "on-failure",
       maxRetries: 10,
       cron: null,
       replicas: 1,
       cpuLimit: null,
       memLimit: null,
       routes: [],
-      managedHostname: null,
+      managedHostnames: [],
       build: {
         builder: "railpack",
         dockerfilePath: null,

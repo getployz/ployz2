@@ -166,7 +166,6 @@ export function useCanvasFlowState({
     : null;
   const canvasChangeState = buildCanvasEnvironmentChangeState({
     working,
-    saved,
     applied,
     nodeIntroductions: introductions,
     deploymentEvidence,
@@ -267,7 +266,7 @@ export function useCanvasFlowState({
     diffGroups,
     totalChanges: canvasChangeState.totalCount,
     canDeploy: true,
-    canSave: canvasChangeState.canSave,
+    canSave: canvasChangeState.totalCount > 0,
     diffRowCountByServiceId: countByNodeId,
     servicesById,
     selectedNodePositionKey,

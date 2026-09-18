@@ -102,6 +102,7 @@ _Avoid_: Latest-state mutation, automatic rebase, loop of Saved writes
 
 **Derived Service Configuration**:
 The disposable compiler output produced from a complete Saved State authoring graph. It resolves attached Variable Groups and Volumes into each Service's environment, mounts, and variable producer index. It belongs to an Attempt Target and is never independently edited or read as Saved authority.
+At runtime lowering, Core supplies `PORT=8080` only when resolved authored variables omit `PORT`. Generated and custom domains with a null target port follow this container `PORT`; explicit targets override routing only. HTTP healthchecks use the container `PORT`. Invalid authored values are not replaced by the default and fail lowering when a port is required.
 _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
 
 **Applied State**:

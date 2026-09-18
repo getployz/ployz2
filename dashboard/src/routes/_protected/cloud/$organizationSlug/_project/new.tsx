@@ -7,13 +7,6 @@ import {
 import "@xyflow/react/dist/style.css";
 import { createFileRoute } from "@tanstack/react-router";
 import { ServiceCreateCommand } from "#/components/service-create-command";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "#/components/ui/card";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/new",
@@ -41,20 +34,9 @@ function RouteComponent() {
           </ReactFlow>
         </ReactFlowProvider>
       </div>
-      <Card className="relative w-full max-w-md">
-        <CardHeader>
-          <CardTitle>Add your app</CardTitle>
-          <CardDescription>
-            Pick the GitHub repository. Ployz reads it and fills in the rest.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ServiceCreateCommand
-            organizationSlug={organizationSlug}
-            initialPanel="git"
-          />
-        </CardContent>
-      </Card>
+      <div className="relative w-full max-w-md">
+        <ServiceCreateCommand organizationSlug={organizationSlug} />
+      </div>
     </main>
   );
 }

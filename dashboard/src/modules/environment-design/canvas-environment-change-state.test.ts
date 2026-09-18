@@ -23,20 +23,20 @@ it.each([
 ] as Array<[EnvironmentDeploymentStatus, number, number, string[][]]>)(
   "shows one diff for %s with Working %s and Applied %s", (status, working, applied, expected) => {
     const result = buildCanvasEnvironmentChangeState({
-      working: state(working), saved: state(5), applied: state(applied),
+      working: state(working), applied: state(applied),
       nodeIntroductions: empty,
       deploymentEvidence: { id: "attempt", status, ...state(5) },
       nodes: [{ node, name: "API", summaryLabel: "API" }],
     });
     expect(result.groups.flatMap(group => group.rows.map(row => [row.currentValue, row.newValue]))).toEqual(expected);
     expect(result.totalCount).toBe(expected.length);
-    expect(result.canSave).toBe(working !== 5);
+    expect(result.headToken).toBe(["queued", "planning", "deploying"].includes(status) ? "5" : String(applied));
   },
 );
 
 it("keeps the submitted revision as baseline after a later Save", () => {
   const result = buildCanvasEnvironmentChangeState({
-    working: state(7), saved: state(9), applied: state(1), nodeIntroductions: empty,
+    working: state(7), applied: state(1), nodeIntroductions: empty,
     deploymentEvidence: { id: "attempt", status: "queued", ...state(5) },
     nodes: [],
   });
@@ -47,7 +47,7 @@ it("advances successful nodes independently after a partial failure", () => {
   const worker = { type: "service" as const, id: "worker" };
   const target = { token: "target", nodes: [...state(5).nodes, { node: worker, config: config(5) }] };
   const result = buildCanvasEnvironmentChangeState({
-    working: target, saved: target,
+    working: target,
     applied: { token: "partial", nodes: [...state(5).nodes, { node: worker, config: config(1) }] },
     nodeIntroductions: empty, deploymentEvidence: null, nodes: [],
   });

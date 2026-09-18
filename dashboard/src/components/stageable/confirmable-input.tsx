@@ -30,6 +30,7 @@ function ConfirmableInput({
   suggestions,
   suggestionsLoading = false,
   suggestionsMessage,
+  onSuggestionSelect,
   ...props
 }: Omit<
   React.ComponentProps<"input"> & React.ComponentProps<"textarea">,
@@ -48,8 +49,10 @@ function ConfirmableInput({
   suggestions?: string[]
   suggestionsLoading?: boolean
   suggestionsMessage?: string
+  onSuggestionSelect?: (value: string) => void
 }) {
   const [suggestionsOpen, setSuggestionsOpen] = React.useState(false)
+  const [highlightedSuggestion, setHighlightedSuggestion] = React.useState<string | undefined>(undefined)
   // SAFETY: input and textarea onKeyDown handlers are the same function; their event element types don't unify.
   const onKeyDown = props.onKeyDown as
     | ((event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => void)
@@ -80,13 +83,15 @@ function ConfirmableInput({
   function handleKeyDown(
     e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
   ) {
-    if (suggestionsOpen && (e.key === "Enter" || e.key === "Escape")) return
+    if (suggestionsOpen && e.key === "Escape") return
+    if (suggestionsOpen && e.key === "Enter" && highlightedSuggestion !== undefined) return
     if (e.key === "Enter" && isDirty) {
       if (multiline && !e.metaKey && !e.ctrlKey) {
         onKeyDown?.(e)
         return
       }
       e.preventDefault()
+      setSuggestionsOpen(false)
       handleConfirm()
       return
     }
@@ -133,13 +138,13 @@ function ConfirmableInput({
             onKeyDown={handleKeyDown}
           />
         )}
-        {suffix || isDirty || suggestions ? (
+        {suffix || (isDirty && !isPending) || suggestions ? (
           <InputGroupAddon align="inline-end">
             {suffix ? <InputGroupText>{suffix}</InputGroupText> : null}
             {suggestions ? (
               <InputGroupButton size="icon-xs" variant="ghost" render={<ComboboxTrigger />} aria-label="Show suggestions" />
             ) : null}
-            {isDirty ? (
+            {isDirty && !isPending ? (
               <>
                 <InputGroupButton
                   size="icon-xs"
@@ -178,10 +183,18 @@ function ConfirmableInput({
       items={suggestions}
       value={value || null}
       inputValue={value}
-      onInputValueChange={onValueChange}
-      onValueChange={(next) => { if (next !== null) onValueChange(next) }}
+      onInputValueChange={(next, details) => {
+        if (details.reason !== "item-press" || !onSuggestionSelect) onValueChange(next)
+      }}
+      onValueChange={(next) => {
+        if (next !== null) (onSuggestionSelect ?? onValueChange)(next)
+      }}
+      onItemHighlighted={setHighlightedSuggestion}
       open={suggestionsOpen}
-      onOpenChange={setSuggestionsOpen}
+      onOpenChange={(open) => {
+        setSuggestionsOpen(open)
+        if (!open) setHighlightedSuggestion(undefined)
+      }}
       openOnInputClick
       disabled={props.disabled}
     >

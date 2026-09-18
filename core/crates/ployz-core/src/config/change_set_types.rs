@@ -30,16 +30,22 @@ pub struct ReviewStateProjection {
     pub nodes: Vec<ReviewNodeProjection>,
 }
 
-/// Submitted is the authored revision of the latest queued or running attempt.
-/// It changes the editing baseline without advancing confirmed Applied State.
+/// Head is `submitted` (the queued or running attempt's revision) when one exists, else `applied`.
+/// A node absent from Head compares against its Introduction. Saved State is never a comparison.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChangeSetInput {
     pub working: ReviewStateProjection,
-    pub saved: ReviewStateProjection,
     pub applied: ReviewStateProjection,
     pub submitted: Option<ReviewStateProjection>,
     pub node_introductions: ReviewStateProjection,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewComparisonRole {
+    Head,
+    Introduction,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -54,6 +60,8 @@ pub enum ReviewLifecycleKind {
 pub struct ReviewNodeChange {
     pub node: ReviewNodeIdentity,
     pub lifecycle: ReviewLifecycleKind,
+    /// What `settings` and discard compare against; `None` only when nothing exists to compare.
+    pub comparison: Option<ReviewComparisonRole>,
     pub settings: Vec<ServiceSettingChange>,
 }
 
@@ -63,5 +71,6 @@ pub struct ReviewNodeChange {
 pub struct ReviewChangeSet {
     pub groups: Vec<ReviewNodeChange>,
     pub total_count: usize,
-    pub can_save: bool,
+    /// Token of the Head this set was computed against; discard must present it back.
+    pub head_token: String,
 }

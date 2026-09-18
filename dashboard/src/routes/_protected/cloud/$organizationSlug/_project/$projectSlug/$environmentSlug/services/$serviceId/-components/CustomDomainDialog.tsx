@@ -28,39 +28,33 @@ import {
   appFormOptions,
   showErrorsAfterBlurOrSubmit,
   useAppForm,
-  validateAfterBlurThenWhileInvalid,
+  validateOnChangeOrBlur,
 } from "#/form";
 import { serviceRouteSchema } from "#/modules/environment-design/services";
-
-const portStringSchema = Schema.String.check(
-  Schema.makeFilter((value) => {
-    const port = Number(value.trim());
-    return Number.isInteger(port) && port >= 1 && port <= 65_535;
-  }, { message: "Enter a port between 1 and 65535." }),
-);
+import { domainPortSchema } from "./domain-port";
 
 const customDomainFormSchema = Schema.toStandardSchemaV1(
   Schema.Struct({
     hostname: Schema.Trim.check(
       Schema.isNonEmpty({ message: "Enter a hostname." }),
     ),
-    port: portStringSchema,
+    port: domainPortSchema,
   }).pipe(
     Schema.decodeTo(
       Schema.Struct({
         hostname: Schema.String,
-        targetPort: Schema.Int.check(
+        targetPort: Schema.NullOr(Schema.Int.check(
           Schema.isBetween({ minimum: 1, maximum: 65_535 }),
-        ),
+        )),
       }),
       {
         decode: SchemaGetter.transform(({ hostname, port }) => ({
           hostname,
-          targetPort: Number(port),
+          targetPort: port,
         })),
         encode: SchemaGetter.transform(({ hostname, targetPort }) => ({
           hostname,
-          port: String(targetPort),
+          port: targetPort,
         })),
       },
     ),
@@ -71,7 +65,7 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
 const customDomainFormOptions = appFormOptions.strictSchema({
   defaultValues: { hostname: "", port: "" },
   errorVisibility: showErrorsAfterBlurOrSubmit,
-  validators: [validateAfterBlurThenWhileInvalid(customDomainFormSchema)],
+  validators: [validateOnChangeOrBlur(customDomainFormSchema)],
 });
 
 type SaveFailure = {
@@ -100,7 +94,7 @@ export function CustomDomainDialog({
   onSubmit,
 }: {
   route?: ServiceRoute;
-  defaultTargetPort: number;
+  defaultTargetPort: number | null;
   capabilityAction: ReactNode;
   onCapabilityRejected: () => Promise<void>;
   onClose: () => void;
@@ -112,7 +106,7 @@ export function CustomDomainDialog({
     ...customDomainFormOptions,
     defaultValues: {
       hostname: route?.hostname ?? "",
-      port: String(route?.targetPort ?? defaultTargetPort),
+      port: route?.targetPort == null ? "" : String(route.targetPort),
     },
     onSubmit: async ({ schemaOutputs }) => {
       setSaveFailure(null);
@@ -154,8 +148,7 @@ export function CustomDomainDialog({
                 {route ? "Edit custom domain" : "Add custom domain"}
               </DialogTitle>
               <DialogDescription>
-                Saving stages this route. Apply changes separately from the
-                canvas.
+                Point a domain you own at this service.
               </DialogDescription>
             </DialogHeader>
             <FieldGroup>
@@ -174,8 +167,13 @@ export function CustomDomainDialog({
                   <field.Text
                     id="custom-domain-target-port"
                     label="Target port"
+                    type="number"
                     inputMode="numeric"
-                    placeholder="8080"
+                    min={1}
+                    max={65535}
+                    step={1}
+                    placeholder={defaultTargetPort === null ? "Uses PORT" : String(defaultTargetPort)}
+                    description="Leave blank to use PORT."
                   />
                 )}
               </form.Field>
@@ -195,7 +193,16 @@ export function CustomDomainDialog({
               </Alert>
             ) : null}
             <DialogFooter>
-              <DialogClose render={<Button type="button" variant="outline" />}>
+              <DialogClose
+                render={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    // Keep focus on the input so Cancel doesn't trigger blur validation.
+                    onMouseDown={(event) => event.preventDefault()}
+                  />
+                }
+              >
                 Cancel
               </DialogClose>
               <form.SubmitButton>Save route</form.SubmitButton>

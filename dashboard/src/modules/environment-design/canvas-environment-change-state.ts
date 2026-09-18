@@ -20,13 +20,11 @@ export type CanvasEnvironmentChangeGroup = CanvasNodeDiffGroup & { changeCount: 
 export type CanvasEnvironmentChangeState = {
   groups: CanvasEnvironmentChangeGroup[];
   totalCount: number;
-  canSave: boolean;
-  baselineToken: string;
+  headToken: string;
 };
 
 export function buildCanvasEnvironmentChangeState(input: {
   working: EnvironmentStateProjection;
-  saved: EnvironmentStateProjection;
   applied: EnvironmentStateProjection;
   nodeIntroductions: EnvironmentNodeIntroductionsProjection;
   deploymentEvidence: CanvasDeploymentEvidence | null;
@@ -35,15 +33,14 @@ export function buildCanvasEnvironmentChangeState(input: {
   const submitted = input.deploymentEvidence && ["queued", "planning", "deploying"].includes(input.deploymentEvidence.status)
     ? input.deploymentEvidence : null;
   const result = buildEnvironmentChangeSet({
-    working: input.working, saved: input.saved, applied: input.applied,
+    working: input.working, applied: input.applied,
     submitted: submitted ? { token: submitted.token, nodes: submitted.nodes } : null,
     nodeIntroductions: input.nodeIntroductions,
   });
   const presentations = new Map(input.nodes.map(node => [`${node.node.type}:${node.node.id}`, node]));
   return {
     totalCount: result.totalCount,
-    canSave: result.canSave,
-    baselineToken: (submitted ?? input.applied).token,
+    headToken: result.headToken,
     groups: result.groups.map(group => {
       const key = `${group.node.type}:${group.node.id}`;
       const presentation = presentations.get(key);

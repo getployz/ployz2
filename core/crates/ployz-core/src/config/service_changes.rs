@@ -50,7 +50,7 @@ const FIELDS: &[&str] = &[
     "cpuLimit",
     "memLimit",
     "privateDns",
-    "managedHostname",
+    "managedHostnames",
     "build",
     "variableGroupAttachments",
 ];

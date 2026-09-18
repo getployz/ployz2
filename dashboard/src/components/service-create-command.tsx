@@ -1,6 +1,7 @@
 import { applyCreatedService, applyCreatedResource } from "#/modules/environment-design/apply-created-node";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useState } from "react";
+import { Command as CommandPrimitive } from "cmdk";
 import { ArrowLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { githubRepoAccessQueryOptions } from "#/modules/github/github.queries";
@@ -8,10 +9,11 @@ import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
+import { InputGroupInput } from "#/components/ui/input-group";
+import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
 import {
   Command,
   CommandGroup,
-  CommandInput,
   CommandItem,
   CommandList,
   CommandShortcut,
@@ -109,15 +111,13 @@ type GitPanelReposProps = {
 
 type GitPanelProps = GitPanelReposProps;
 
-type ImagePanelProps = {
-  disabled: boolean;
-  onCreateImage: (image: string) => void;
-};
-
 function RootPanel({ mode, onSelectItem, isPending }: RootPanelProps) {
+  const items = getCreateMenuItems({ includeEmptyProject: mode === "project" }).filter(({ id }) =>
+    mode === "service" || id === "git-repository" || id === "container-image" || id === "empty-project",
+  );
   return (
     <CommandGroup>
-      {getCreateMenuItems({ includeEmptyProject: mode === "project" }).map(
+      {items.map(
         ({ id, icon: Icon, label }) => (
           <CommandItem
             key={id}
@@ -146,10 +146,6 @@ function RootPanel({ mode, onSelectItem, isPending }: RootPanelProps) {
 
 function GitPanel(props: GitPanelProps) {
   return <GitRepoSelector {...props} />;
-}
-
-function ImagePanel({ disabled, onCreateImage }: ImagePanelProps) {
-  return <ImageSelector disabled={disabled} onSelectImage={onCreateImage} />;
 }
 
 function useServiceCreateActions({
@@ -428,8 +424,6 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
   const mode: CreateMode = props.mode === "service" ? "service" : "project";
   const [panel, setPanel] = useState<Panel>(props.initialPanel ?? "root");
   const [query, setQuery] = useState("");
-  // Project mode is repo-only: no root menu to go back to.
-  const showHeader = panel !== "root" && mode === "service";
   const { data: githubAccess } = useQuery({
     ...githubRepoAccessQueryOptions(),
     enabled: panel === "git",
@@ -446,7 +440,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
     <div
       className="flex w-full min-w-0 flex-col gap-2"
       onKeyDownCapture={(event) => {
-        if (panel === "root" || mode !== "service" || event.key !== "Escape") {
+        if (panel === "root" || event.key !== "Escape") {
           return;
         }
 
@@ -472,45 +466,36 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
         </Alert>
       ) : null}
 
-      {showHeader ? (
-        <div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setActivePanel("root");
-            }}
-          >
-            <ArrowLeftIcon data-icon="inline-start" />
-            Back
-          </Button>
-        </div>
-      ) : null}
-
-      <Command shouldFilter={panel !== "git"}>
-        {panel !== "git" || githubAccess?.hasInstallations ? <CommandInput
-          aria-label={
-            panel === "git"
-              ? "Search GitHub repositories"
-              : panel === "image"
-                ? "Search container images"
-                : mode === "service"
-                  ? "Choose a service type"
-                  : "Choose what to add"
-          }
+      {panel === "image" ? (
+        <ImageSelector
           disabled={isPending}
-          value={query}
-          onValueChange={setQuery}
-          placeholder={
-            panel === "git"
-              ? "Search GitHub repositories…"
-              : panel === "image"
-                ? "Search container images…"
-                : mode === "service"
-                  ? "Choose a service type…"
-                  : "Choose what to add…"
-          }
-        /> : null}
+          onBack={() => setActivePanel("root")}
+          onSelectImage={(image) => {
+            void createServiceFromSource(createImageServiceSource({ image }));
+          }}
+        />
+      ) : (
+      <SourcePickerLayout title={panel === "git" ? "GitHub Repository" : mode === "project" ? "Add your app" : "Add service"}>
+      <Command key={panel} shouldFilter={panel !== "git"} className="gap-3 p-0">
+        {panel !== "git" || githubAccess?.hasInstallations ? (
+          <SourcePickerInput
+            onBack={panel === "git" ? () => setActivePanel("root") : undefined}
+            disabled={isPending}
+          >
+            <CommandPrimitive.Input asChild value={query} onValueChange={setQuery}>
+              <InputGroupInput
+                autoFocus
+                aria-label={panel === "git" ? "Search GitHub repositories" : "Choose a source"}
+                placeholder={panel === "git" ? "Search GitHub repositories…" : "Choose a source…"}
+                disabled={isPending}
+              />
+            </CommandPrimitive.Input>
+          </SourcePickerInput>
+        ) : (
+          <Button variant="ghost" size="sm" className="self-start" disabled={isPending} onClick={() => setActivePanel("root")}>
+            <ArrowLeftIcon /> Back
+          </Button>
+        )}
         <CommandList>
           {panel === "root" ? (
             <RootPanel
@@ -544,18 +529,10 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
               }}
             />
           ) : null}
-          {panel === "image" ? (
-            <ImagePanel
-              disabled={isPending}
-              onCreateImage={(image) => {
-                void createServiceFromSource(
-                  createImageServiceSource({ image }),
-                );
-              }}
-            />
-          ) : null}
         </CommandList>
       </Command>
+      </SourcePickerLayout>
+      )}
     </div>
   );
 }
