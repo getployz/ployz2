@@ -24,7 +24,6 @@ import { projectDestructiveEnvironmentSave } from "#/modules/environment-design/
 import type { CanvasResourceNode } from "./types";
 
 type UseCanvasFlowStateInput = {
-  environmentNamespace: string;
   servicesWithBoundEnv: EnvironmentServiceViewRecord[];
   environmentResources: VariableGroupResourceRecord[];
   volumeResources: VolumeResourceRecord[];
@@ -57,7 +56,6 @@ function countGroupsByNode(groups: CanvasEnvironmentChangeGroup[]) {
 }
 
 export function useCanvasFlowState({
-  environmentNamespace,
   servicesWithBoundEnv,
   environmentResources,
   volumeResources,

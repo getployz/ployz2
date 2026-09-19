@@ -1,3 +1,4 @@
+import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
@@ -6,7 +7,8 @@ import {
   ENVIRONMENT_INDEX_ROUTE_TO,
   ENVIRONMENT_ROUTE_FROM,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
-import { DEFAULT_SERVICE_PORT, parseServiceConfig } from "@ployz/sdk/config";
+import { DEFAULT_SERVICE_PORT } from "@ployz/sdk/config";
+import { parseDashboardServiceConfig } from "#/modules/environment-design/service-config";
 import {
   getServiceDeploymentDiffState,
   type ServiceDeploymentDiffState,
@@ -71,7 +73,7 @@ function serviceNodes(
     .filter((node) => node.nodeType === "service" && node.nodeId === serviceId)
     .map((node) => ({
       node: { type: "service", id: serviceId },
-      config: node.config ? parseServiceConfig(node.config) : null,
+      config: node.config ? parseDashboardServiceConfig(node.config) : null,
     }));
 }
 
@@ -199,7 +201,7 @@ export function useServiceDrawerState(
         id: item.service.id,
         name: item.service.name,
       })),
-      ...environmentResources.map((item) => ({
+      ...(variableGroupsEnabled ? environmentResources : []).map((item) => ({
         type: "variable_group" as const,
         id: item.resource.id,
         name: item.resource.name,

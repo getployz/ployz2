@@ -1,15 +1,16 @@
 import "@tanstack/react-start/server-only";
-import { compareServiceSettings, parseServiceConfig, restoreEnvironmentNode } from "@ployz/sdk/config";
+import { variableGroupsEnabled } from "#/lib/feature-flags";
+import { compareDashboardServiceSettings } from "./config-changes";
+import { parseDashboardServiceConfig } from "./service-config";
 import type { Actor } from "#/modules/identity/actor";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { requireEnvironmentForActorById } from "./authoring-repository.server";
 import { loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "./working-state-repository.server";
 import { loadEnvironmentSavedIntentById } from "./saved-state-repository.server";
-import { emptyEnvironmentIntent } from "./saved-intent";
+import { emptyEnvironmentIntent, restoreDashboardEnvironmentNode } from "./saved-intent";
 import { loadEnvironmentNodeIntroductionIntent } from "./environment-node-introduction.repository.server";
 import type { DiscardEnvironmentChangesInput } from "./working-document-restore";
 
-import { reusePublication } from "@ployz/sdk/config";
 import { Effect, Schema } from "effect";
 import {
   environmentSavedStateSnapshot as schemaEnvironmentSavedStateSnapshot,
@@ -28,6 +29,7 @@ import {
   canonicalizeSavedEnvironmentIntent,
   compileSavedEnvironmentIntent,
   encodePersistedSavedEnvironmentIntent,
+  reuseSavedEnvironmentPublication,
   savedEnvironmentIntentSchema,
   type CompiledSavedEnvironmentIntent,
   type SavedEnvironmentIntent,
@@ -130,7 +132,7 @@ const publishEnvironmentSavedState = Effect.fn(
       ),
     });
 
-  if (latest && reusePublication({
+  if (latest && reuseSavedEnvironmentPublication({
     policy: input.revisionPolicy,
     current: { intent: canonical.intent, volumeDeletionAuthorizations },
     latest: { intent: latest.intent, volumeDeletionAuthorizations: latest.volumeDeletionAuthorizations },
@@ -273,6 +275,10 @@ const loadAppliedIntent = Effect.fn("EnvironmentDesign.loadAppliedIntent")(
 /** One transaction restores the reviewed scope in Working and Saved State. */
 export const discardEnvironmentChanges = Effect.fn("EnvironmentDesign.discardEnvironmentChanges")(
   function* (actor: Actor, input: DiscardEnvironmentChangesInput) {
+    if (!variableGroupsEnabled && input.command.kind === "node" &&
+      (input.command.nodeType === "variable_group" || input.command.path === "variableGroupAttachments")) {
+      return yield* new Conflict({ message: "Variable Groups are disabled." });
+    }
     yield* requireEnvironmentForActorById(actor, input);
     return yield* withMutationResult(Effect.gen(function* () {
       yield* lockEnvironmentDeploymentQueue(input.environmentId);
@@ -298,7 +304,7 @@ export const discardEnvironmentChanges = Effect.fn("EnvironmentDesign.discardEnv
         baseline = yield* loadAppliedIntent(input.environmentId, document.namespace, projection);
       }
       const command = input.command;
-      // Same rule as Core's change set: a node absent from Head compares against its Introduction.
+      // Same rule as the Environment Change Set: a node absent from Head compares against its Introduction.
       const introduction = command.kind === "node" && command.path !== undefined && !(head?.nodes ?? [])
         .some(node => node.nodeType === command.nodeType && node.nodeId === command.nodeId && node.config !== null);
       if (introduction) {
@@ -308,7 +314,7 @@ export const discardEnvironmentChanges = Effect.fn("EnvironmentDesign.discardEnv
       }
       const restore = (current: SavedEnvironmentIntent) => Effect.try({
         try: () => command.kind === "all" ? baseline
-          : restoreEnvironmentNode(current, baseline, command, command.path),
+          : restoreDashboardEnvironmentNode(current, baseline, command, command.path),
         catch: () => new Conflict({ message: "Discard would leave invalid Environment relationships." }),
       });
       const working = yield* restore(document.intent);
@@ -319,7 +325,7 @@ export const discardEnvironmentChanges = Effect.fn("EnvironmentDesign.discardEnv
       const headNode = nodeAt(head?.nodes);
       const savedNeedsRestore = command.kind === "all" || !command.path ||
         (savedNode != null && headNode != null &&
-          compareServiceSettings(parseServiceConfig(savedNode), parseServiceConfig(headNode))
+          compareDashboardServiceSettings(parseDashboardServiceConfig(savedNode), parseDashboardServiceConfig(headNode))
             .some(row => row.path === command.path && row.canRestore));
       // New-node field resets use its Introduction and do not publish it.
       if (latest && !introduction && savedNeedsRestore) {

@@ -88,6 +88,9 @@ _Avoid_: Prepared snapshot, build workflow, Core Deploy
 The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment.
 _Avoid_: Saved State, deployable revision, client diff ledger
 
+**Variable Group**:
+A Cloud-owned collection of variables that can be attached to Services. Cloud resolves its values into Service configuration before requesting Engine operations; the Engine has no Variable Group identity or lifecycle.
+
 **Saved State**:
 The latest explicitly published immutable revision of authored Environment configuration, including its reviewed destructive authority. Save and Deploy both plan against a selected Working State revision and obtain any required approval before publishing it; Save stops at publication without building images or changing running resources, while Deploy starts an attempt against that exact Saved revision.
 _Avoid_: Applied state, frozen attempt target, unsaved draft
@@ -126,7 +129,7 @@ The strictly versioned configuration an environment node had immediately after i
 _Avoid_: Initial diff, creation event log, default config
 
 **Environment Change Set**:
-One pure, serializable comparison from the latest queued or running Cloud Deployment Attempt's authored Saved revision to Working State, falling back to per-node Applied State when no attempt is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. Node Introductions supply field resets only before a node has Saved or Applied State. Lifecycle changes and setting changes are counted once; deployment progress is separate.
+One pure, serializable comparison from the latest queued or running Cloud Deployment Attempt's authored Saved revision to Working State, falling back to per-node Applied State when no attempt is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. Node Introductions supply field resets while a node is absent from Head (the submitted revision, or Applied State when no attempt is active). Lifecycle changes and setting changes are counted once; deployment progress is separate.
 _Avoid_: Persisted diff, mutation log, deployment snapshot
 
 **Discard**:
