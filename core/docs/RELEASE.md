@@ -87,13 +87,14 @@ Goreleaser does not touch the tap (`--skip=homebrew`); `scripts/promote-release.
 
 `ployzd install` on Linux installs or replaces a Machine daemon. It accepts `--version stable`, `--version beta`, or an exact version; use `--software-only` for ordinary replacement after the Machine has already been prepared. Setup downloads and verifies the CLI release's daemon as a temporary bootstrap, then that daemon installs the selected Machine release through this interface.
 
-## Tailcat helper
+## Management transport
 
-Every CLI and daemon archive includes the matching native `ployz-tailcat` helper;
-all six archives are covered by `checksums.txt`. Homebrew and the CLI installer
-install the helper beside the CLI. Machine installation manages the helper as
-`ployzd-tailcat` through the existing daemon lifecycle. Each native SDK package
-also bundles its platform helper.
+Each of the six archives contains a single binary, covered by `checksums.txt`;
+Homebrew, the CLI installer, and Machine installation copy one file. The iroh
+management transport is in-process in the CLI, the daemon, and every native SDK
+binding, so no helper is packaged and no extra systemd unit is installed.
 
-Tailcat uses public DERP infrastructure; Ployz builds and deploys no hosted relay
-process or image.
+Clients reach Machines through the self-hosted Ployz Relay at `relay.ployz.dev`,
+an Uncloud service on the Hetzner host running the iroh relay release binary. It
+is deployed separately from these releases; the hostname is a compiled constant
+in `ployz-core`.
