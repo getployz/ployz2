@@ -8,7 +8,7 @@ import {
   ReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import type {
@@ -79,6 +79,7 @@ export function CanvasFlow({
     useState(false);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
+  const locationKey = useLocation({ select: (location) => location.href });
   const { onNodeDrag } = useCanvasPositionMutation({
     ...params,
     organizationId,
@@ -223,9 +224,8 @@ export function CanvasFlow({
       </div>
       </div>
 
-      {totalChanges > 0 || canSave ? <div className="canvas-change-controls">
-        <ApplyChangesBar
-          className="w-full sm:w-auto"
+      <ApplyChangesBar
+          key={locationKey}
           groups={diffGroups}
           totalChanges={totalChanges}
           canDeploy={canDeploy}
@@ -248,7 +248,6 @@ export function CanvasFlow({
             void discardRowChange(group, path);
           }}
         />
-      </div> : null}
 
       <ServiceCreatorDialog
         open={creator.creatorOpen}

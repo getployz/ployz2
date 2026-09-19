@@ -1,9 +1,11 @@
 import { createAuthClient } from "better-auth/react";
-import { organizationClient } from "better-auth/client/plugins";
+import { inferAdditionalFields, organizationClient } from "better-auth/client/plugins";
 import { polarClient } from "@polar-sh/better-auth";
 
+import { sessionAdditionalFields } from "./session-fields";
+
 export const authClient = createAuthClient({
-  plugins: [organizationClient(), polarClient()],
+  plugins: [organizationClient(), polarClient(), inferAdditionalFields({ session: sessionAdditionalFields })],
 });
 
 export function initializeAuthSession() {

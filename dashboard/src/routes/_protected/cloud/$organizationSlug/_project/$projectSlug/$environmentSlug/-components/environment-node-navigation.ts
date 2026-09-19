@@ -1,4 +1,5 @@
 import { eq, useLiveQuery } from "@tanstack/react-db";
+import { withoutVirtualProps } from "#/lib/tanstack-db";
 import { useQuery } from "@tanstack/react-query";
 import { linkOptions } from "@tanstack/react-router";
 import { variableGroupsEnabled } from "#/lib/feature-flags";
@@ -155,15 +156,15 @@ export function useEnvironmentNavigationNodes(
   );
 
   const nodes: NavigationNode[] = [
-    ...(serviceRows.data ?? []).map(({ id, name }) => ({
+    ...(serviceRows.data ?? []).map(withoutVirtualProps).map(({ id, name }) => ({
       id,
       name,
       type: "service" as const,
     })),
-    ...(variableGroupsEnabled ? (resourceRows.data ?? []) : []).map(
+    ...(variableGroupsEnabled ? (resourceRows.data ?? []) : []).map(withoutVirtualProps).map(
       ({ id, name }) => ({ id, name, type: "variable_group" as const }),
     ),
-    ...(volumeRows.data ?? []).map(({ id, name }) => ({
+    ...(volumeRows.data ?? []).map(withoutVirtualProps).map(({ id, name }) => ({
       id,
       name,
       type: "volume" as const,

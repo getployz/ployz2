@@ -1,4 +1,8 @@
 import type { ReactNode } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { authClient } from "#/auth/auth-client";
+import { useAuthSession } from "#/auth/auth.hooks";
 import { useMatch } from "@tanstack/react-router";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { AppSidebar } from "./app-sidebar";
@@ -17,14 +21,31 @@ export function DashboardShell({
   scope: DashboardScope;
   children: ReactNode;
 }) {
-  // Cloud routes are client-only; the provider writes this preference on toggle.
-  const defaultOpen = !document.cookie
-    .split(";")
-    .some((cookie) => cookie.trim() === "sidebar_state=false");
+  return <DashboardSidebarProvider><DashboardLayout scope={scope}>{children}</DashboardLayout></DashboardSidebarProvider>;
+}
+
+export function DashboardSidebarProvider({ children }: { children: ReactNode }) {
+  const { data: auth, refetch } = useAuthSession();
+  const preference = useMutation({
+    scope: { id: `sidebar-preference:${auth?.session.id}` },
+    mutationFn: async (sidebarOpen: boolean) => {
+      // Better Auth's client does not infer additional update-session fields yet.
+      const result = await authClient.updateSession({ fetchOptions: { method: "POST", body: { sidebarOpen } } });
+      if (result.error) throw new Error("Couldn't save sidebar preference. Try again.");
+      await refetch();
+      if (authClient.$store.atoms["session"]?.get().error) {
+        throw new Error("Sidebar preference saved, but session refresh failed. Reload to restore it.");
+      }
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const open = preference.isPending
+    ? preference.variables
+    : auth?.session.sidebarOpen ?? true;
 
   return (
-    <SidebarProvider defaultOpen={defaultOpen} className="h-dvh min-h-0 overflow-hidden">
-      <DashboardLayout scope={scope}>{children}</DashboardLayout>
+    <SidebarProvider open={open} onOpenChange={(value) => preference.mutate(value)} className="h-dvh min-h-0 overflow-hidden">
+      {children}
     </SidebarProvider>
   );
 }

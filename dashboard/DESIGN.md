@@ -196,12 +196,12 @@ The product palette is neutral first. Ink and white carry action hierarchy; warm
 
 ## Elevation
 
-Ployz uses structured flatness. Static hierarchy comes from surface tone, one-pixel rules, and spacing. Shadows are reserved for elements that genuinely move above the document—menus, popovers, dialogs, sheets, and the floating Apply Changes toolbar. A static card does not earn a shadow merely by being a card.
+Ployz uses structured flatness. Static hierarchy comes from surface tone, one-pixel rules, and spacing. Shadows are reserved for elements that genuinely move above the document—menus, popovers, dialogs, sheets, and contextual overlays. A static card does not earn a shadow merely by being a card.
 
 ### Shadow Vocabulary
 
 - **Floating Low** (`0 1px 3px rgb(0 0 0 / 0.10), 0 2px 4px -1px rgb(0 0 0 / 0.10)`): menus, compact popovers, and lifted controls.
-- **Floating Medium** (`0 1px 3px rgb(0 0 0 / 0.10), 0 4px 6px -1px rgb(0 0 0 / 0.10)`): dialogs, sheets, and the Apply Changes toolbar when it floats over the canvas.
+- **Floating Medium** (`0 1px 3px rgb(0 0 0 / 0.10), 0 4px 6px -1px rgb(0 0 0 / 0.10)`): dialogs, sheets, and contextual overlays.
 
 **The Structured Flatness Rule.** Surfaces are flat at rest. If an element does not overlap or move independently of its surroundings, use tone, border, or spacing instead of shadow.
 
@@ -243,7 +243,7 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 ### Apply Changes
 
-The staged-change system is the signature product component. Edits autosave, but changed fields remain marked in pink until deployment or discard. The same signal appears on affected nodes and rows, while a persistent floating toolbar states the exact change count and exposes Details, Deploy, and Discard. The Deploy button remains neutral ink: placement, count, and continuity connect it to staged intent without making pink a generic action color.
+The staged-change system connects edited fields, affected resources, and environment-wide review. Desktop and tablet place the change count and Review action in the persistent environment header; mobile uses a structural footer. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
 
 **The One Vocabulary Rule.** A state looks and behaves the same in every field, resource, drawer, diff row, and toolbar. Local reinvention is a defect.
 

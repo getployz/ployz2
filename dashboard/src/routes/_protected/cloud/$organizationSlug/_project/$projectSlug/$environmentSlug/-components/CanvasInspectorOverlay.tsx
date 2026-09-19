@@ -80,9 +80,8 @@ export function CanvasInspectorOverlay({
       aria-label="Architecture"
       tabIndex={-1}
       className="environment-canvas-scene"
-      data-inspector-takeover={Boolean(selection && takeover)}
     >
-      <div className="canvas-workspace-header" inert={Boolean(selection && takeover)}>{header}</div>
+      <div className="canvas-workspace-header">{header}</div>
       {canvas}
       {selection ? <>
         <button

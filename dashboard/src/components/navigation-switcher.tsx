@@ -1,5 +1,6 @@
 import { type ReactNode, useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
+import { withoutVirtualProps } from "#/lib/tanstack-db";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Link,
@@ -147,8 +148,10 @@ export function ProjectSwitcher({
     organizationSlug,
     collectionScope,
   );
-  const { data: environments = [], isLoading: environmentsLoading } =
-    useLiveQuery(environmentCollection);
+  const { data: environmentRows = [], isLoading: environmentsLoading } =
+    useLiveQuery((q) => q.from({ environment: environmentCollection })
+      .select(({ environment }) => environment), [environmentCollection]);
+  const environments = environmentRows.map(withoutVirtualProps);
   const environmentsError = useSyncExternalStore(
     (onChange) =>
       collectionScope.queryClient.getQueryCache().subscribe(onChange),
