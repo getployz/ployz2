@@ -52,6 +52,14 @@ _Avoid_: Token claim, founder election, leader election, founder failover
 An Organization's protected access descriptor for one Server in its current Cloud Pairing. It permits a connection attempt but establishes neither membership nor live presence.
 _Avoid_: Server catalog, online Server, registered member
 
+**Management Capability**:
+The protected bearer a Connection Candidate holds for reaching one Server over the in-process management transport. It grants shared administrative access; rotation revokes every previous holder, and removal is confirmed by the Server's response or an identity refusal on retry, never by absence or timeout.
+_Avoid_: Tailcat Capability, per-user permission, Pairing Credential, helper credential
+
+**Management Identity**:
+The Server's iroh public key that a Management Capability dials. It is not a mesh peer, a Machine ID, or evidence of presence.
+_Avoid_: Machine ID, WireGuard key, online Server
+
 **Manual Founding Reset**:
 An operator-confirmed abandonment of a pending Founding Claim after endpoint access has been revoked. An absent Connection Candidate, failed connection, or timeout is not evidence permitting reset.
 _Avoid_: Automatic reclaim, founder failover, token reset

@@ -1,4 +1,4 @@
-Superseded by [0005 — Tailcat connection candidates](0005-tailcat-connection-candidates.md).
+Superseded by [0005 — Management Capability connection candidates](0005-tailcat-connection-candidates.md).
 
 # Relay slots are keyed by Pairing Credential and Machine ID
 
