@@ -56,7 +56,7 @@ class Ployz < Formula
   end
 
   def install
-    bin.install "ployz", "ployz-tailcat"
+    bin.install "ployz"
   end
 
   def caveats
