@@ -9,7 +9,6 @@ import { projectListQueryOptions } from "#/modules/environment-design/workspace-
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Card,
-  CardContent,
   CardFooter,
   CardHeader,
   CardTitle,
@@ -25,7 +24,7 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~
     const projects = await context.queryClient.ensureQueryData(
       projectListQueryOptions(params.organizationSlug),
     );
-    // No projects means nothing to overview: go straight to "Add your app".
+    // No projects means nothing to overview: go straight to project creation.
     if (projects.length === 0) {
       throw redirect({
         to: NewProjectRoute.to,
@@ -47,13 +46,10 @@ function ProjectsPending() {
       </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {Array.from({ length: 3 }, (_, index) => (
-          <Card key={index} className="min-h-52">
+          <Card key={index}>
             <CardHeader>
               <Skeleton className="h-5 w-36" />
             </CardHeader>
-            <CardContent className="flex-1">
-              <Skeleton className="h-4 w-24" />
-            </CardContent>
             <CardFooter className="gap-2">
               <Skeleton className="size-2 rounded-full" />
               <Skeleton className="h-3 w-24" />
@@ -88,7 +84,7 @@ function CreateProjectButton({
       className={buttonVariants({ size: "lg" })}
     >
       <PlusIcon data-icon="inline-start" />
-      Add app
+      New project
     </Link>
   );
 }
@@ -135,11 +131,10 @@ function RouteComponent() {
           {filteredProjects.map((project) => {
             const resolvedEnvironment = project.resolvedEnvironment;
             const card = (
-              <Card className="flex min-h-52 flex-col">
+              <Card>
                 <CardHeader>
                   <CardTitle>{project.name}</CardTitle>
                 </CardHeader>
-                <CardContent className="flex-1" />
                 <CardFooter className="gap-2">
                   {resolvedEnvironment ? (
                     <>

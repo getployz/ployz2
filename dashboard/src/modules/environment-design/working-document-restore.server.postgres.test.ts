@@ -177,6 +177,31 @@ it.live(
           intent: baseline, volumeDeletionAuthorizations: [],
         }).returning({ id: environmentSavedStateSnapshot.id });
         if (!saved) return yield* Effect.die("Saved intent missing.");
+        const savedOnlyIntent = structuredClone(baseline);
+        const savedOnlyService = savedOnlyIntent.services[0];
+        if (!savedOnlyService) return yield* Effect.die("Saved Service missing.");
+        savedOnlyService.config.replicas = 5;
+        const [savedOnly] = yield* database.drizzle.insert(environmentSavedStateSnapshot).values({
+          organizationId: organizationRecord.id, environmentId: environmentRecord.id, actorId: actor.userId,
+          intent: savedOnlyIntent, volumeDeletionAuthorizations: [],
+        }).returning({ id: environmentSavedStateSnapshot.id });
+        if (!savedOnly) return yield* Effect.die("Saved revision missing.");
+        yield* updateService(actor, { ...scope, revision: yield* revision(), serviceId, replicas: 7 });
+        const invalidIntroductionReset = yield* Effect.flip(discardEnvironmentChanges(actor, {
+          ...scope, revision: yield* revision(), headToken: `applied:none:${scope.environmentId}`,
+          savedStateBasis: { kind: "saved_revision", savedStateSnapshotId: savedOnly.id },
+          command: { kind: "node", nodeType: "service", nodeId: serviceId, path: "replicas" },
+        }));
+        assert.strictEqual(invalidIntroductionReset._tag, "Conflict");
+        assert.strictEqual(invalidIntroductionReset.message, "This field has no discard baseline.");
+        const invalidLegacyReset = yield* Effect.flip(restoreWorkingDocument(actor, {
+          ...scope, revision: yield* revision(), snapshotSource: { kind: "introduction" },
+          command: { kind: "node", nodeType: "service", nodeId: serviceId, path: "replicas" },
+        }));
+        assert.strictEqual(invalidLegacyReset._tag, "Conflict");
+        assert.strictEqual(invalidLegacyReset.message, "Only unsaved, unapplied nodes can reset to their Introduction.");
+        assert.strictEqual((yield* loadEnvironmentDocument(scope.environmentId)).intent.services[0]?.config.replicas, 7);
+        assert.strictEqual((yield* loadLatestEnvironmentSavedState(scope.environmentId))?.intent.services[0]?.config.replicas, 5);
         const snapshotSource = { kind: "saved" as const, environmentSavedStateSnapshotId: saved.id };
         const oldRevision = yield* revision();
         yield* updateService(actor, { ...scope, revision: oldRevision, serviceId, name: "Changed API", replicas: 3 });

@@ -426,6 +426,7 @@ describe("manual environment saved-state persistence", () => {
     const changeSet = buildEnvironmentChangeSet({
       working: { token: "working:unchanged", nodes },
       applied: { token: explicit.applied.token, nodes: [] },
+      saved: { token: "saved", nodes },
       nodeIntroductions: { token: "introductions:none", nodes: [] },
       submitted: null,
     });

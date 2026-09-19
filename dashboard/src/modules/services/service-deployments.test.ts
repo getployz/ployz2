@@ -86,6 +86,7 @@ describe("service deployment state", () => {
         }),
       }) },
       applied: [{ node, config: projectServiceDeploymentConfig({ ...currentConfig, source: baselineSource }) }],
+      saved: null,
       submitted: null,
       introduction: null,
     }));

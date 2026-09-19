@@ -129,7 +129,7 @@ The strictly versioned configuration an environment node had immediately after i
 _Avoid_: Initial diff, creation event log, default config
 
 **Environment Change Set**:
-One pure, serializable comparison from the latest queued or running Cloud Deployment Attempt's authored Saved revision to Working State, falling back to per-node Applied State when no attempt is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. Node Introductions supply field resets while a node is absent from Head (the submitted revision, or Applied State when no attempt is active). Lifecycle changes and setting changes are counted once; deployment progress is separate.
+One pure, serializable comparison from the latest queued or running Cloud Deployment Attempt's authored Saved revision to Working State, falling back to per-node Applied State when no attempt is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. Node Introductions supply field resets only while a node is absent from Head, Saved State, and Applied State. Lifecycle changes and setting changes are counted once; deployment progress is separate.
 _Avoid_: Persisted diff, mutation log, deployment snapshot
 
 **Discard**:

@@ -20,7 +20,7 @@ import type { EnvironmentServiceViewRecord } from "#/modules/services/services.c
 import { ApplyChangesBar } from "./ApplyChangesBar";
 import { SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
-import { CanvasServiceList } from "./CanvasServiceList";
+import { CanvasNodeList } from "./CanvasServiceList";
 import { CanvasServicesProvider } from "./CanvasServicesContext";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
 import { useCanvasNavigation } from "./useCanvasNavigation";
@@ -33,7 +33,6 @@ import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VariableGroupCreatorDialog } from "./VariableGroupCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useCanvasChangeActions } from "./useCanvasChangeActions";
-import { useCanvasEscapeShortcut } from "./useCanvasEscapeShortcut";
 import { useCanvasFlowState } from "./useCanvasFlowState";
 import {
   ENVIRONMENT_ROUTE_FROM,
@@ -84,7 +83,7 @@ export function CanvasFlow({
     ...params,
     organizationId,
   });
-  const { selectedServiceId, selectedNodeId } = useCanvasInspectorSelection();
+  const { selectedNodeId } = useCanvasInspectorSelection();
   const {
     canvasChangeState,
     diffGroups,
@@ -149,10 +148,6 @@ export function CanvasFlow({
     setCommitMessage,
     setDestructiveConfirmationOpen,
   });
-  useCanvasEscapeShortcut({
-    params,
-    selectedNodeId,
-  });
 
   function openVariableGroupCreatorFromServiceDialog() {
     creator.setCreatorOpen(false);
@@ -166,7 +161,8 @@ export function CanvasFlow({
 
   return (
     <>
-      <div className="hidden h-full sm:block">
+      <div className="canvas-graph" inert={selectedNodeId !== null}>
+      <div className="hidden h-full min-[861px]:block">
         <CanvasContextMenu
           onCreateFromPanel={creator.openCreatorAtLastRightClick}
           onCreateBlank={creator.createBlankServiceAtLastRightClick}
@@ -209,14 +205,25 @@ export function CanvasFlow({
           </CanvasServicesProvider>
         </CanvasContextMenu>
       </div>
-      <CanvasServiceList
+      <CanvasNodeList
         services={activeServicesWithBoundEnv}
-        selectedServiceId={selectedServiceId}
+        selectedNodeId={selectedNodeId}
         servicesById={servicesById}
-        hasChanges={totalChanges > 0}
+        environmentResourcesById={environmentResourcesById}
+        volumeResourcesById={volumeResourcesById}
       />
+      <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
+        <Button
+          className="pointer-events-auto"
+          onClick={() => creator.openCreatorAtCenter()}
+        >
+          <PlusIcon data-icon="inline-start" />
+          Create
+        </Button>
+      </div>
+      </div>
 
-      <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 sm:inset-x-auto sm:left-4">
+      {totalChanges > 0 || canSave ? <div className="canvas-change-controls">
         <ApplyChangesBar
           className="w-full sm:w-auto"
           groups={diffGroups}
@@ -241,16 +248,7 @@ export function CanvasFlow({
             void discardRowChange(group, path);
           }}
         />
-      </div>
-      <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
-        <Button
-          className="pointer-events-auto"
-          onClick={() => creator.openCreatorAtCenter()}
-        >
-          <PlusIcon data-icon="inline-start" />
-          Create
-        </Button>
-      </div>
+      </div> : null}
 
       <ServiceCreatorDialog
         open={creator.creatorOpen}

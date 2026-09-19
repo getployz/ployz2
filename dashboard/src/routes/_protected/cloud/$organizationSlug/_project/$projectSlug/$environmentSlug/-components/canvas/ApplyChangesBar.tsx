@@ -38,7 +38,7 @@ export function ApplyChangesBar({
   onDiscardRow,
 }: ApplyChangesBarProps) {
   const [open, setOpen] = useState(false);
-  if (totalChanges <= 0) return null;
+  if (totalChanges <= 0 && !canSaveWithoutDeploying) return null;
 
   return (
     <>

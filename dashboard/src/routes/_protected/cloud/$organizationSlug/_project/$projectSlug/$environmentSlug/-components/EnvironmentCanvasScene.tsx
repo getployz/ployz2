@@ -1,7 +1,8 @@
 import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection, useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
-import { Suspense, useRef } from "react";
+import { Suspense } from "react";
+import { DashboardPageHeader } from "#/components/dashboard-header";
 import {
   Background,
   BackgroundVariant,
@@ -39,6 +40,7 @@ import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
 export function PendingCanvas() {
   return (
+    <div className="canvas-graph">
     <ReactFlowProvider
       initialNodes={[LOADING_NODE]}
       initialWidth={1200}
@@ -62,6 +64,7 @@ export function PendingCanvas() {
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
       </ReactFlow>
     </ReactFlowProvider>
+    </div>
   );
 }
 
@@ -218,29 +221,26 @@ function CanvasWithData() {
 }
 
 export function EnvironmentCanvasScene() {
-  const servicesRef = useRef<HTMLDivElement>(null);
-  const { projectSlug, environmentSlug } = useParams({
+  const { organizationSlug, projectSlug, environmentSlug } = useParams({
     from: ENVIRONMENT_ROUTE_FROM,
   });
-  const canvasKey = `${projectSlug}/${environmentSlug}`;
-  const { isInspectorOpen: isInspectorPage } = useCanvasInspectorSelection();
+  const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
+  const { selectedNodeId, selectedServiceId } = useCanvasInspectorSelection();
 
   return (
-    <div
-      ref={servicesRef}
-      role="region"
-      aria-label="Environment services"
-      tabIndex={0}
-      className="relative h-full w-full outline-none"
+    <CanvasInspectorOverlay
+      selection={selectedNodeId ? {
+        key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
+        nodeId: selectedNodeId,
+      } : null}
+      header={<DashboardPageHeader />}
+      canvas={
+        <Suspense fallback={<PendingCanvas />}>
+          <CanvasWithData key={canvasKey} />
+        </Suspense>
+      }
     >
-      <Suspense fallback={<PendingCanvas />}>
-        <CanvasWithData key={canvasKey} />
-      </Suspense>
-      {isInspectorPage ? (
-        <CanvasInspectorOverlay finalFocus={servicesRef}>
-          <Outlet />
-        </CanvasInspectorOverlay>
-      ) : null}
-    </div>
+      {selectedNodeId ? <Outlet /> : null}
+    </CanvasInspectorOverlay>
   );
 }

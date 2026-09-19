@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PencilIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { CommandDialog } from "#/components/ui/command";
 import { FieldError } from "#/components/ui/field";
@@ -100,6 +101,7 @@ export function CanvasInspectorNameEditor({
         }}
       >
         <span className="truncate">{value}</span>
+        <PencilIcon data-icon="inline-end" />
       </Button>
 
       <CommandDialog
