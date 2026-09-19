@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DashboardShell } from "./dashboard-shell";
 import { ThemeProvider } from "./theme-provider";
 import { authClient } from "#/auth/auth-client";
+import type { AuthSession } from "#/auth/auth";
 import { Route as RootRoute } from "#/routes/__root";
 import { environmentKeys, organizationKeys, projectKeys } from "#/modules/environment-design/workspace-queries";
 
@@ -13,17 +14,22 @@ const clients: QueryClient[] = [];
 const mediaListeners = new Map<(event: MediaQueryListEvent) => void, string>();
 const scrollSelector = '[data-scroll-restoration-id="wireframe-content"]';
 const originalScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+const testSession = {
+  session: { id: "test-session", userId: "test-user" },
+  user: { id: "test-user", name: "Test User", email: "test@example.com" },
+} satisfies AuthSession;
 beforeEach(() => {
+  document.cookie = "sidebar_state=; path=/; max-age=0";
   vi.stubGlobal("innerWidth", 1200);
   vi.stubGlobal("matchMedia", (query: string) => ({
     matches: query.includes("max-width") && window.innerWidth <= 860,
     addEventListener(_type: string, listener: (event: MediaQueryListEvent) => void) { mediaListeners.set(listener, query); },
     removeEventListener(_type: string, listener: (event: MediaQueryListEvent) => void) { mediaListeners.delete(listener); },
   }));
-  vi.stubGlobal("fetch", async () => Response.json(null));
+  vi.stubGlobal("fetch", async () => Response.json(testSession));
   const session = authClient.$store.atoms["session"];
   if (!session) throw new Error("Auth session store unavailable");
-  session.set({ ...session.get(), data: null, isPending: false, isRefetching: false });
+  session.set({ ...session.get(), data: testSession, isPending: false, isRefetching: false });
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("scrollTo", () => {});
   Object.defineProperty(HTMLElement.prototype, "scrollTo", {
@@ -33,6 +39,10 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  document.cookie = "sidebar_state=; path=/; max-age=0";
+  document.cookie = "theme=; path=/; max-age=0";
+  document.documentElement.classList.remove("light", "dark", "system");
+  document.documentElement.style.removeProperty("color-scheme");
   for (const client of clients.splice(0)) client.clear();
   mediaListeners.clear(); vi.clearAllMocks(); vi.unstubAllGlobals();
   if (originalScrollTo) Object.defineProperty(HTMLElement.prototype, "scrollTo", originalScrollTo);
@@ -49,9 +59,9 @@ async function show() {
   for (const table of ["project", "environment", "service", "environment_resource", "resource_lineage", "environment_canvas_node_position", "environment_node_config_snapshot", "volume_remove_attempt"]) {
     client.setQueryData(["collections", "test-session", "test-user", "acme", table], table === "environment" ? [environmentData] : []);
   }
-  RootRoute.updateLoader({ loader: () => ({ theme: "light", session: null }) });
+  RootRoute.updateLoader({ loader: () => ({ theme: "light", session: testSession }) });
   const root = RootRoute.update({ component: () => <ThemeProvider theme="light"><Outlet /></ThemeProvider> });
-  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "test-session" }, user: { id: "test-user" } } }) });
+  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: testSession }) });
   const cloud = createRoute({ getParentRoute: () => protectedRoute, path: "cloud" });
   const organization = createRoute({ getParentRoute: () => cloud, path: "$organizationSlug" });
   const projectLayout = createRoute({ getParentRoute: () => organization, id: "_project" });
@@ -86,6 +96,42 @@ it("renders real scope queries and retains named navigation when collapsed", asy
   expect(router.state.location.pathname).toBe("/cloud/acme/store/production/logs");
   fireEvent.click(within(sidebar).getByRole("button", { name: "Expand sidebar" }));
   expect(within(sidebar).getByRole("link", { name: "Ployz home" })).toBeTruthy();
+});
+
+it("opens the collapsed account menu on hover and applies a theme choice", async () => {
+  await show();
+  fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+  const account = screen.getByRole("button", { name: "Open account menu" });
+  fireEvent.mouseEnter(account);
+  fireEvent.mouseMove(account);
+  const dark = await screen.findByRole("menuitem", { name: "Dark" });
+  expect(screen.getByText("test@example.com")).toBeTruthy();
+  fireEvent.click(dark);
+  expect(document.documentElement.classList.contains("dark")).toBe(true);
+  expect(document.cookie).toContain("theme=dark");
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+});
+
+it("restores both sidebar preferences after remounting the dashboard", async () => {
+  const first = await show();
+  fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+  first.unmount();
+
+  const second = await show();
+  fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+  second.unmount();
+
+  await show();
+  expect(screen.getByRole("button", { name: "Collapse sidebar" })).toBeTruthy();
+});
+
+it.each([
+  ["false", "Expand sidebar"],
+  ["true", "Collapse sidebar"],
+])("reads sidebar_state=%s on a fresh dashboard mount", async (saved, action) => {
+  document.cookie = `sidebar_state=${saved}; path=/`;
+  await show();
+  expect(screen.getByRole("button", { name: action })).toBeTruthy();
 });
 
 it("resets its persistent scroll surface when navigating to a different environment page", async () => {

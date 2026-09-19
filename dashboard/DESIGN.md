@@ -239,7 +239,7 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 - The application uses a 64px top navigation and a 256px expanded sidebar, collapsing structurally on smaller viewports.
 - Items are 32px high with 10px corners. Active location uses a muted neutral surface and medium weight, not the staged-intent color.
-- Navigation labels remain visible whenever width permits; icon-only states always provide accessible names and tooltips.
+- Navigation labels remain visible whenever width permits; icon-only states always provide accessible names and either tooltips or labelled hover menus.
 
 ### Apply Changes
 

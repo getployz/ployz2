@@ -160,11 +160,11 @@ export default function DashboardAccountMenu({
         <SidebarMenuItem>
           <DropdownMenu>
             <DropdownMenuTrigger
+              openOnHover={collapsed}
               render={
                 <SidebarMenuButton
                   size="lg"
                   aria-label="Open account menu"
-                  tooltip="Account"
                   className={collapsed ? "justify-center" : undefined}
                 />
               }

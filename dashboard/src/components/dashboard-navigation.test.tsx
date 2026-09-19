@@ -190,6 +190,25 @@ it("does not turn an expanded directory into a popup when collapsing the sidebar
   expect(screen.queryByRole("dialog", { name: "Architecture" })).toBeNull();
 });
 
+it("reveals the collapsed Architecture menu on hover without stealing focus", async () => {
+  await showNavigation();
+  fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+  const expand = screen.getByRole("button", { name: "Expand sidebar" });
+  act(() => expand.focus());
+  const trigger = screen.getByRole("button", { name: "Architecture" });
+  fireEvent.mouseEnter(trigger);
+  fireEvent.mouseMove(trigger);
+  const menu = await screen.findByRole("dialog", { name: "Architecture" });
+  expect(document.activeElement).toBe(expand);
+  fireEvent.mouseEnter(menu);
+  expect(screen.getByRole("link", { name: "Architecture" })).toBeTruthy();
+  fireEvent.keyDown(menu, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Architecture" })).toBeNull());
+  expect(document.activeElement).toBe(expand);
+  fireEvent.click(trigger);
+  expect(await screen.findByRole("dialog", { name: "Architecture" })).toBeTruthy();
+});
+
 it("still opens the rail directory on a new canvas selection but not a same-resource page change", async () => {
   const router = await showNavigation();
   fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));

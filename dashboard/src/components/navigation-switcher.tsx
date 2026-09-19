@@ -49,11 +49,6 @@ import {
 } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "#/components/ui/tooltip";
 import { cn } from "#/lib/utils";
 import { createEnvironmentServerFn } from "#/modules/environment-design/workspace-functions";
 import {
@@ -84,6 +79,7 @@ function ScopePicker({
   const fullLabel = suffix ? `${label} / ${suffix}` : label;
   const trigger = (
     <DropdownMenuTrigger
+      openOnHover={rail}
       render={
         <Button
           variant={triggerVariant}
@@ -111,16 +107,7 @@ function ScopePicker({
   );
   return (
     <DropdownMenu>
-      {rail ? (
-        <Tooltip>
-          <TooltipTrigger render={trigger} />
-          <TooltipContent side="right">
-            {name}: {fullLabel}
-          </TooltipContent>
-        </Tooltip>
-      ) : (
-        trigger
-      )}
+      {trigger}
       <DropdownMenuContent
         align="start"
         side={rail ? "right" : "bottom"}

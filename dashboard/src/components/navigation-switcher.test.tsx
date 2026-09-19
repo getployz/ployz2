@@ -43,16 +43,28 @@ it.each(["desktop", "mobile", "rail"] as const)("offers the same scoped org and 
   const routeTree = root.addChildren([protectedRoute.addChildren([organizationRoute.addChildren([projectGroup.addChildren([environment.addChildren([logs])]), organizationGroup.addChildren([organizationHome])])])]);
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: ["/cloud/acme/store/production/logs?serviceId=old&tab=networking"] }) });
   try {
-    render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
-    fireEvent.click(await screen.findByRole("button", { name: "Project and environment: Store / Production" }));
+    render(<><input aria-label="Current editor" /><QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider></>);
+    const projectTrigger = await screen.findByRole("button", { name: "Project and environment: Store / Production" });
+    if (projection === "rail") {
+      screen.getByRole("textbox", { name: "Current editor" }).focus();
+      fireEvent.mouseEnter(projectTrigger);
+      fireEvent.mouseMove(projectTrigger);
+    }
+    else fireEvent.click(projectTrigger);
     expect(await screen.findByRole("menuitem", { name: "Staging" })).toBeTruthy();
+    if (projection === "rail") expect(screen.getByRole("menu").contains(document.activeElement)).toBe(true);
     expect(screen.getByRole("menuitem", { name: "Other production" }).getAttribute("href")).toBe("/cloud/acme/docs/production/logs");
     expect(screen.getByRole("menuitem", { name: "Organization" }).getAttribute("href")).toBe("/cloud/acme/~");
     expect(screen.getByRole("menuitem", { name: "New project" }).getAttribute("href")).toBe("/cloud/acme/new");
     expect(screen.getAllByRole("menuitem", { name: "Add environment" })).toHaveLength(2);
     fireEvent.click(screen.getByRole("menuitem", { name: "Staging" }));
     await waitFor(() => expect(router.state.location.href).toBe("/cloud/acme/store/staging/logs"));
-    fireEvent.click(screen.getByRole("button", { name: "Organization: Acme" }));
+    const organizationTrigger = screen.getByRole("button", { name: "Organization: Acme" });
+    if (projection === "rail") {
+      fireEvent.mouseEnter(organizationTrigger);
+      fireEvent.mouseMove(organizationTrigger);
+    }
+    else fireEvent.click(organizationTrigger);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Other org" }));
     await waitFor(() => expect(router.state.location.href).toBe("/cloud/other/~"));
   } finally {

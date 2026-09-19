@@ -17,8 +17,13 @@ export function DashboardShell({
   scope: DashboardScope;
   children: ReactNode;
 }) {
+  // Cloud routes are client-only; the provider writes this preference on toggle.
+  const defaultOpen = !document.cookie
+    .split(";")
+    .some((cookie) => cookie.trim() === "sidebar_state=false");
+
   return (
-    <SidebarProvider className="h-dvh min-h-0 overflow-hidden">
+    <SidebarProvider defaultOpen={defaultOpen} className="h-dvh min-h-0 overflow-hidden">
       <DashboardLayout scope={scope}>{children}</DashboardLayout>
     </SidebarProvider>
   );

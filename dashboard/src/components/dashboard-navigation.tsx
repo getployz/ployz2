@@ -242,11 +242,11 @@ function EnvironmentNavigation({
     });
   }
   const { open } = disclosure;
-  const setOpen = (value: boolean) =>
+  const setOpen = (value: boolean, details?: { reason: string }) =>
     setDisclosure((current) => ({
       ...current,
       open: value,
-      userOpened: value || current.userOpened,
+      userOpened: details?.reason !== "trigger-hover" && (value || current.userOpened),
       navigationTarget: value ? null : current.navigationTarget,
     }));
   const navigateToNode = (nodeId: string) => {
@@ -313,10 +313,10 @@ function EnvironmentNavigation({
           {projection === "rail" ? (
             <Popover open={open} onOpenChange={setOpen}>
               <PopoverTrigger
+                openOnHover
                 render={
                   <SidebarMenuButton
                     aria-label="Architecture"
-                    tooltip="Architecture"
                     isActive={section === "overview"}
                     className="justify-center"
                   />
