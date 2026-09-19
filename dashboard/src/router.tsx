@@ -1,5 +1,6 @@
 import {
   createRouter as createTanStackRouter,
+  useHydrated,
   useRouterState,
 } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
@@ -10,11 +11,12 @@ import { PloyzMark } from "./components/icons/ployz-logo";
 import { RouteContentSkeleton } from "./components/route-content-skeleton";
 
 function AppPending() {
+  const hydrated = useHydrated();
   const hasResolvedLocation = useRouterState({
     select: (state) => state.resolvedLocation !== undefined,
   });
 
-  if (hasResolvedLocation) {
+  if (hydrated && hasResolvedLocation) {
     return (
       <main className="mx-auto flex w-full max-w-6xl flex-col px-4 py-6 md:px-6 md:py-8">
         <RouteContentSkeleton />

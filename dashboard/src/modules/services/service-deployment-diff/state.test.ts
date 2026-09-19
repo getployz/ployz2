@@ -53,6 +53,7 @@ describe("service drawer Working comparison", () => {
     const diff = getServiceDeploymentDiffState(buildEnvironmentNodeChange({
       working: { node, config: config(3) },
       applied: input.baseline ? [{ node, config: input.baseline }] : [],
+      saved: null,
       submitted: null,
       introduction: { node, config: input.introduction },
     }));
@@ -68,7 +69,7 @@ describe("service drawer Working comparison", () => {
   it("does not invent field comparisons without a baseline or Introduction", () => {
     const node = { type: "service" as const, id: "service-1" };
     const diff = getServiceDeploymentDiffState(buildEnvironmentNodeChange({
-      working: { node, config: config(3) }, applied: [], submitted: null, introduction: null,
+      working: { node, config: config(3) }, applied: [], saved: null, submitted: null, introduction: null,
     }));
 
     expect(diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.replicas)).toEqual({

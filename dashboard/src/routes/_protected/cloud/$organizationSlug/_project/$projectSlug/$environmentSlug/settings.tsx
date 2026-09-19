@@ -53,7 +53,7 @@ function RouteComponent() {
           environmentId={environmentId}
           confirmPhrase={environment.data.name}
           title="Tear down this environment"
-          description="Destroys this environment’s services and volumes, then drops its Cloud rows. This cannot be undone."
+          description="Deletes this environment and all of its services and volumes. This cannot be undone."
           actionLabel="Tear down environment"
           headingId="environment-teardown-heading"
           onCompleted={leaveDeletedTree}
@@ -65,7 +65,7 @@ function RouteComponent() {
           projectSlug={projectSlug}
           confirmPhrase={project.data.name}
           title="Tear down this project"
-          description="Unions Data Loss across every environment in this project, then destroys them through Inngest. This cannot be undone."
+          description="Deletes this project and all of its environments, services, and volumes. This cannot be undone."
           actionLabel="Tear down project"
           headingId="project-teardown-heading"
           showHeading={false}

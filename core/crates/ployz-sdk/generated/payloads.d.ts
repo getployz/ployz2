@@ -25,7 +25,7 @@ export type CertificateObservation = { hostname: IngressHost, status: Certificat
 
 export type ChangeKind = "add" | "update" | "remove";
 
-export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
+export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, saved: ReviewStateProjection | null, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
 
 export type ClusterDomainLabel = string;
 

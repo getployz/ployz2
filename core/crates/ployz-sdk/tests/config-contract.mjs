@@ -71,12 +71,22 @@ for (const api of [native, browser]) {
   const review = api.projectEnvironmentChanges({
     working: { token: 'working', nodes: nodes(api.compileEnvironmentIntent(id(3), changed)) },
     applied: { token: 'applied', nodes: nodes(compiled) },
+    saved: null,
     nodeIntroductions: { token: 'introductions', nodes: [] }, submitted: null,
   });
   const setting = review.groups[0].settings[0];
   assert.equal(setting.kind, 'add');
   assert.equal(setting.canRestore, true);
   assert.equal(review.totalCount, 1);
+  const savedCreation = api.projectEnvironmentChanges({
+    working: { token: 'working', nodes: nodes(api.compileEnvironmentIntent(id(3), changed)) },
+    applied: { token: 'applied:none', nodes: [] },
+    saved: { token: 'saved', nodes: nodes(compiled) },
+    nodeIntroductions: { token: 'introductions', nodes: nodes(compiled) }, submitted: null,
+  });
+  assert.equal(savedCreation.groups[0].comparison, null);
+  assert.deepEqual(savedCreation.groups[0].settings, []);
+  assert.equal(savedCreation.totalCount, 1);
   results.push({ baseline, changes, restored, redacted, resolved, intent, compiled, reverted, volumeRows, rendered, review });
 }
 assert.deepEqual(results[0], results[1]);

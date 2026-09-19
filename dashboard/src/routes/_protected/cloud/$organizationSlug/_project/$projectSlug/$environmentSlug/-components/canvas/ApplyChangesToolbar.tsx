@@ -32,6 +32,17 @@ export function ApplyChangesToolbar({
   onOpenDetails: () => void;
   onSaveWithoutDeploying: () => void;
 }) {
+  if (totalChanges <= 0) {
+    return (
+      <div className={cn("flex flex-wrap items-center gap-2", className)}>
+        <span className="px-2 text-sm font-medium">Unpublished changes</span>
+        <Button disabled={!canSaveWithoutDeploying} onClick={onSaveWithoutDeploying}>
+          Save without deploying
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div
       className={cn(

@@ -181,6 +181,9 @@ export function useServiceDrawerState(
     ? buildEnvironmentNodeChange({
         working: { node, config: projectServiceDeploymentConfig(service) },
         applied: serviceNodes(environmentChangeState.applied.nodes, params.serviceId),
+        saved: environmentChangeState.saved
+          ? serviceNodes(environmentChangeState.saved.nodes, params.serviceId)
+          : null,
         submitted: environmentChangeState.deploymentEvidence
           ? serviceNodes(environmentChangeState.deploymentEvidence.nodes, params.serviceId)
           : null,

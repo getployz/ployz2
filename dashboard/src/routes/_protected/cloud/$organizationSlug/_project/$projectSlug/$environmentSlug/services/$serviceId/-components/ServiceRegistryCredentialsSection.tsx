@@ -177,7 +177,7 @@ export function ServiceRegistryCredentialsSection({
             />
           ) : (
             <RegistryCredentialEmptyState
-              description={`If you are trying to deploy a private Docker image, please add your ${providerLabel} credentials.`}
+              description={`Private image? Add your ${providerLabel} credentials.`}
               actionLabel="Add credentials"
               onAction={() => {
                 setMode("create");

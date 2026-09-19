@@ -24,6 +24,7 @@ it.each([
   "shows one diff for %s with Working %s and Applied %s", (status, working, applied, expected) => {
     const result = buildCanvasEnvironmentChangeState({
       working: state(working), applied: state(applied),
+      saved: state(5),
       nodeIntroductions: empty,
       deploymentEvidence: { id: "attempt", status, ...state(5) },
       nodes: [{ node, name: "API", summaryLabel: "API" }],
@@ -37,10 +38,12 @@ it.each([
 it("keeps the submitted revision as baseline after a later Save", () => {
   const result = buildCanvasEnvironmentChangeState({
     working: state(7), applied: state(1), nodeIntroductions: empty,
+    saved: state(7),
     deploymentEvidence: { id: "attempt", status: "queued", ...state(5) },
     nodes: [],
   });
   expect(result.groups[0]?.rows).toMatchObject([{ currentValue: "5", newValue: "7", canDiscard: true }]);
+  expect(result.canSave).toBe(false);
 });
 
 it("advances successful nodes independently after a partial failure", () => {
@@ -48,6 +51,7 @@ it("advances successful nodes independently after a partial failure", () => {
   const target = { token: "target", nodes: [...state(5).nodes, { node: worker, config: config(5) }] };
   const result = buildCanvasEnvironmentChangeState({
     working: target,
+    saved: target,
     applied: { token: "partial", nodes: [...state(5).nodes, { node: worker, config: config(1) }] },
     nodeIntroductions: empty, deploymentEvidence: null, nodes: [],
   });
@@ -60,7 +64,7 @@ it.each([null, "deploying"] as const)("hides group changes across every review b
   const saved = { token: "saved", nodes: [{ node: group, config: { version: 1 as const, name: "Shared", variables: [] } }] };
   const working = { token: "working", nodes: [{ node: group, config: { version: 1 as const, name: "Renamed", variables: [] } }] };
   const result = buildCanvasEnvironmentChangeState({
-    working, applied: saved, nodeIntroductions: saved,
+    working, saved, applied: saved, nodeIntroductions: saved,
     deploymentEvidence: status ? { ...saved, id: "attempt", status } : null,
     nodes: [{ node: group, name: "Renamed", summaryLabel: "Variable Group" }],
   });

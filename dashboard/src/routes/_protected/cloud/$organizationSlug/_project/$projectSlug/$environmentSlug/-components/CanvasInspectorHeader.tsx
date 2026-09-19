@@ -1,12 +1,19 @@
 import { useReducedMotion } from "#/lib/motion";
-import type { ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import { XIcon } from "lucide-react";
+import { ArrowLeftIcon, Maximize2Icon, Minimize2Icon, XIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
-import { DrawerClose } from "#/components/ui/drawer";
-import { useIsMobile } from "#/hooks/use-mobile";
-import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
+import { DashboardNavigationPicker } from "#/components/dashboard-navigation";
+import { ENVIRONMENT_INDEX_ROUTE_TO } from "./environment-route-paths";
+
+// Shared by the frame and header; route selection remains owned by the router.
+export const InspectorPresentation = createContext<{
+  takeover: boolean;
+  canResize: boolean;
+  isMobile: boolean;
+  toggleFullscreen: () => void;
+} | null>(null);
 
 type CanvasInspectorHeaderParams = {
   organizationSlug: string;
@@ -14,45 +21,51 @@ type CanvasInspectorHeaderParams = {
   environmentSlug: string;
 };
 
-const closeContent = (
-  <>
-    <XIcon />
-    <span className="sr-only">Close</span>
-  </>
-);
-
-export function CanvasInspectorHeader({
-  params,
-  children,
-}: {
+export function CanvasInspectorHeader({ params, children }: {
   params: CanvasInspectorHeaderParams;
   children: ReactNode;
 }) {
-  const isMobile = useIsMobile();
+  const presentation = useContext(InspectorPresentation);
   const reducedMotion = useReducedMotion();
+  if (!presentation) throw new Error("Canvas inspector header must be inside its workspace");
+  const { takeover, canResize, isMobile, toggleFullscreen } = presentation;
+  const returnLink = (
+    <Link
+      to={ENVIRONMENT_INDEX_ROUTE_TO}
+      params={params}
+      search={(previous) => ({ ...previous, tab: undefined })}
+      viewTransition={reducedMotion ? false : { types: ["canvas-inspector-close"] }}
+      className={buttonVariants({ variant: "ghost", size: "icon" })}
+      data-canvas-inspector-exit
+      data-canvas-inspector-desktop-control={isMobile ? undefined : true}
+      aria-label={isMobile || takeover ? "Back to Architecture" : "Close inspector"}
+      title={isMobile || takeover ? "Back to Architecture" : "Close inspector"}
+    >
+      {isMobile || takeover ? <ArrowLeftIcon /> : <XIcon />}
+    </Link>
+  );
 
   return (
-    <div className="flex items-center justify-between gap-3 border-b px-4 py-2.5">
+    <div className="canvas-inspector-header flex shrink-0 items-center gap-3 border-b px-4">
+      {isMobile || takeover ? returnLink : null}
       <div className="min-w-0 flex-1">{children}</div>
-      {isMobile ? (
-        <DrawerClose render={<Button variant="ghost" size="icon" />}>
-          {closeContent}
-        </DrawerClose>
-      ) : (
-        <Link
-          to={ENVIRONMENT_INDEX_ROUTE_TO}
-          params={{
-            organizationSlug: params.organizationSlug,
-            projectSlug: params.projectSlug,
-            environmentSlug: params.environmentSlug,
-          }}
-          search={(prev) => prev}
-          viewTransition={reducedMotion ? false : { types: ["canvas-inspector-close"] }}
-          className={buttonVariants({ variant: "ghost", size: "icon" })}
+      {isMobile ? <>
+        <span aria-hidden className="text-muted-foreground">/</span>
+        <DashboardNavigationPicker scope={{ kind: "environment", ...params }} />
+      </> : null}
+      {!isMobile && canResize ? (
+        <Button
+          variant="ghost"
+          size="icon"
+          data-canvas-inspector-desktop-control
+          onClick={toggleFullscreen}
+          aria-label={takeover ? "Restore inspector" : "Fill canvas"}
+          title={takeover ? "Restore inspector" : "Fill canvas"}
         >
-          {closeContent}
-        </Link>
-      )}
+          {takeover ? <Minimize2Icon /> : <Maximize2Icon />}
+        </Button>
+      ) : null}
+      {!isMobile && !takeover ? returnLink : null}
     </div>
   );
 }
