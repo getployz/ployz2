@@ -18,7 +18,6 @@ import type { CanvasEnvironmentResourceState, CanvasVolumeResourceState } from "
 import { asTestDouble } from "#/lib/test-double";
 
 let workspaceWidth = 1000;
-let resize = () => {};
 const params = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
 const volume = asTestDouble<CanvasVolumeResourceState>()({
   diffRowCount: 1,
@@ -112,17 +111,8 @@ beforeEach(() => {
     width: workspaceWidth, height: 700, top: 0, left: 0, bottom: 700, right: workspaceWidth,
     x: 0, y: 0, toJSON: () => ({}),
   }));
-  vi.stubGlobal("ResizeObserver", class {
-    constructor(callback: () => void) { resize = callback; }
-    observe() {}
-    disconnect() {}
-  });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-
-function resizeWorkspace(width: number) {
-  act(() => { workspaceWidth = width; resize(); });
-}
 
 describe("canvas inspector presentation", () => {
   it("keeps the canvas and editor when filling, changing pages, and restoring", async () => {
@@ -148,15 +138,9 @@ describe("canvas inspector presentation", () => {
     expect(screen.getByText("API node")).toBe(canvasNode);
   });
 
-  it("uses available width without forgetting explicit fullscreen and resets on resource or scope changes", async () => {
+  it("resets explicit fullscreen on resource or scope changes", async () => {
     const router = await openInspector();
-    resizeWorkspace(700);
-    expect(screen.getByRole("link", { name: "Back to Architecture" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Fill canvas" })).toBeNull();
-    resizeWorkspace(1000);
     fireEvent.click(screen.getByRole("button", { name: "Fill canvas" }));
-    resizeWorkspace(700);
-    resizeWorkspace(1000);
     expect(screen.getByRole("button", { name: "Restore inspector" })).toBeTruthy();
     await act(() => router.navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: "worker" } }));
     expect(screen.getByRole("button", { name: "Fill canvas" })).toBeTruthy();
@@ -181,15 +165,15 @@ describe("canvas inspector presentation", () => {
     expect(document.activeElement).toBe(canvasNode);
   });
 
-  it("combines mobile return, rename, and page navigation in the inspector header", async () => {
+  it("renders responsive return, rename, and page navigation without viewport measurement", async () => {
     vi.stubGlobal("innerWidth", 390);
     await openInspector();
     expect(screen.getByRole("button", { name: "Edit service name" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Close inspector" })).toBeNull();
-    expect(screen.getByRole("link", { name: "Back to Architecture" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Close inspector" }).className).toContain("canvas-inspector-close");
+    expect(screen.getByRole("link", { name: "Back to Architecture" }).className).toContain("canvas-inspector-back");
     expect(screen.getAllByRole("button", { name: "Project navigation" })).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Project navigation" }).textContent).toBe("Settings");
-    expect(screen.queryByRole("button", { name: "Fill canvas" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Fill canvas" }).hasAttribute("data-canvas-inspector-resize")).toBe(true);
   });
 
   it.each([

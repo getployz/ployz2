@@ -8,14 +8,8 @@ import {
 
 export function useRuntimeLens(organizationSlug: string) {
   const collections = getRuntimeCollections(organizationSlug, useCollectionScope());
-  const { data: machines = [], isLoading: machinesLoading } = useLiveQuery({
-    query: (q) =>
-      q.from({ machine: collections.machines }).select(({ machine }) => machine),
-  });
-  const { data: statusRows = [], isLoading: statusLoading } = useLiveQuery({
-    query: (q) =>
-      q.from({ status: collections.status }).select(({ status }) => status),
-  });
+  const { data: machines = [], isLoading: machinesLoading } = useLiveQuery(collections.machines);
+  const { data: statusRows = [], isLoading: statusLoading } = useLiveQuery(collections.status);
   const status = statusRows[0]?.status ?? "connecting";
   const error = statusRows[0]?.error ?? null;
   const incompleteIds =

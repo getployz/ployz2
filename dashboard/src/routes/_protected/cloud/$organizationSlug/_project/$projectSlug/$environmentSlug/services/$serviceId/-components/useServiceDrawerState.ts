@@ -107,14 +107,15 @@ export function useServiceDrawerState(
     environmentId,
   });
   const { data: rawServices } = useLiveSuspenseQuery(
-    (q) =>
+    { queryKey: ['drawer-services', collection.id, canvasPositions.id, documents.id, params.projectSlug, params.environmentSlug], query: (q) =>
       buildEnvironmentServicesViewQuery(q, params, {
         services: collection,
         canvasPositions,
         documents,
-      }),
+      }) },
   );
   const { data: environmentResourceRows } = useLiveSuspenseQuery({
+    queryKey: ['drawer-resources', environmentResourcesCollection.id, params.projectSlug, params.environmentSlug],
     query: (q) =>
       q
         .from({ resource: environmentResourcesCollection })
@@ -125,6 +126,7 @@ export function useServiceDrawerState(
         .select(({ resource }) => resource),
   });
   const { data: serviceIntroductionRows } = useLiveSuspenseQuery({
+    queryKey: ['service-introduction', nodeIntroductions.id, params.serviceId],
     query: (q) =>
       q
         .from({ introduction: nodeIntroductions })

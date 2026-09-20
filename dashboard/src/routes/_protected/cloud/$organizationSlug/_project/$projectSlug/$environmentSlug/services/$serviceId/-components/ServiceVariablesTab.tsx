@@ -74,6 +74,7 @@ export function ServiceVariablesTab({
     serviceId: node.id, environmentId: state.service.environmentId })) ?? [];
   const { data: environmentResourceRows } =
     useLiveSuspenseQuery({
+    queryKey: ['service-variable-resources', environmentResourcesCollection.id, state.service.environmentId],
       query: (q) =>
         q
           .from({ resource: environmentResourcesCollection })

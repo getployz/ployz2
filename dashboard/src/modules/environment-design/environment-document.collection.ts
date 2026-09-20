@@ -28,6 +28,6 @@ export const getEnvironmentDocumentsCollection = cachedByCollectionScope((organi
 
 export function useEnvironmentDocument(organizationSlug: string, environmentId: string | null) {
   const collection = getEnvironmentDocumentsCollection(organizationSlug, useCollectionScope());
-  return useLiveQuery((q) => q.from({ document: collection })
-    .where(({ document }) => eq(document.id, environmentId ?? "")).findOne()).data;
+  return useLiveQuery({ queryKey: ['environment-document', collection.id, environmentId], query: (q) => q.from({ document: collection })
+    .where(({ document }) => eq(document.id, environmentId ?? "")).findOne() }).data;
 }

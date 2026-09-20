@@ -16,7 +16,7 @@ export function useReferenceTargets(input: {
 }): ReferenceTarget[] {
   const document = useEnvironmentDocument(input.organizationSlug, input.environmentId);
   const services = useServicesCollection(input.organizationSlug);
-  const { data: identities } = useLiveQuery(q => q.from({ service: services }).where(({ service }) => eq(service.environmentId, input.environmentId)));
+  const { data: identities } = useLiveQuery({ queryKey: ['reference-services', services.id, input.environmentId], query: q => q.from({ service: services }).where(({ service }) => eq(service.environmentId, input.environmentId)) });
   const names = new Map(identities.map(service => [service.id, service.name]));
   if (!document) return [];
   const variables = (entries: typeof document.intent.services[number]["variables"]) => entries.map((variable) => ({

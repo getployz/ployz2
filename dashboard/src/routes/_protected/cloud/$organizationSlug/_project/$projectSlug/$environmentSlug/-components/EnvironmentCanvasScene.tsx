@@ -95,6 +95,7 @@ function CanvasWithData() {
   });
   const { selectedNodeId } = useCanvasInspectorSelection();
   const { data: services } = useLiveSuspenseQuery({
+    queryKey: ['canvas-services', servicesCollection.id, canvasPositionsCollection.id, documents.id, params.projectSlug, params.environmentSlug],
     query: (q) =>
       buildEnvironmentServicesViewQuery(q, params, {
         services: servicesCollection,
@@ -103,6 +104,7 @@ function CanvasWithData() {
       }),
   });
   const { data: environmentResourceRows } = useLiveSuspenseQuery({
+    queryKey: ['canvas-resources', environmentResourcesCollection.id, params.projectSlug, params.environmentSlug],
     query: (q) =>
       q
         .from({ resource: environmentResourcesCollection })
@@ -113,6 +115,7 @@ function CanvasWithData() {
         .select(({ resource }) => resource),
   });
   const { data: canvasPositionRows } = useLiveSuspenseQuery({
+    queryKey: ['canvas-positions', canvasPositionsCollection.id, environmentId],
     query: (q) =>
       q
         .from({ canvasPosition: canvasPositionsCollection })
@@ -131,6 +134,7 @@ function CanvasWithData() {
         })),
   });
   const { data: volumeResourceRows } = useLiveSuspenseQuery({
+    queryKey: ['canvas-volumes', volumeResourcesCollection.id, params.projectSlug, params.environmentSlug],
     query: (q) =>
       q
         .from({ resource: volumeResourcesCollection })
@@ -141,6 +145,7 @@ function CanvasWithData() {
         .select(({ resource }) => resource),
   });
   const { data: nodeIntroductionRows } = useLiveSuspenseQuery({
+    queryKey: ['canvas-introductions', nodeIntroductionsCollection.id, environmentId],
     query: (q) =>
       q
         .from({ introduction: nodeIntroductionsCollection })

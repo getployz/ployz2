@@ -66,7 +66,7 @@ export function useEnvironmentNavigationNodes(params: EnvironmentParams) {
     ? getVolumeResourcesCollection(organizationSlug, scope)
     : null;
   const serviceRows = useLiveQuery(
-    (q) =>
+    { queryKey: ['navigation-services', services?.id ?? null, projectSlug, environmentSlug], query: (q) =>
       services
         ? q
             .from({ service: services })
@@ -75,10 +75,10 @@ export function useEnvironmentNavigationNodes(params: EnvironmentParams) {
               eq(service.environmentSlug, environmentSlug),
             )
             .select(({ service }) => ({ id: service.id, name: service.name }))
-        : undefined,
+        : undefined },
   );
   const resourceRows = useLiveQuery(
-    (q) =>
+    { queryKey: ['navigation-resources', resources?.id ?? null, projectSlug, environmentSlug], query: (q) =>
       resources
         ? q
             .from({ resource: resources })
@@ -90,10 +90,10 @@ export function useEnvironmentNavigationNodes(params: EnvironmentParams) {
               id: resource.resource.id,
               name: resource.resource.name,
             }))
-        : undefined,
+        : undefined },
   );
   const volumeRows = useLiveQuery(
-    (q) =>
+    { queryKey: ['navigation-volumes', volumes?.id ?? null, projectSlug, environmentSlug], query: (q) =>
       volumes
         ? q
             .from({ volume: volumes })
@@ -103,7 +103,7 @@ export function useEnvironmentNavigationNodes(params: EnvironmentParams) {
               id: volume.resource.id,
               name: volume.resource.name,
             }))
-        : undefined,
+        : undefined },
   );
 
   const nodes: NavigationNode[] = [

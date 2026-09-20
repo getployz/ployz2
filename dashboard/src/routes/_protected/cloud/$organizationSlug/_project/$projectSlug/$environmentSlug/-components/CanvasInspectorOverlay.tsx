@@ -1,10 +1,8 @@
-import { prefersReducedMotion } from "#/lib/motion";
 import {
-  Suspense, useEffect, useLayoutEffect, useRef, useState,
+  Suspense, useEffect, useRef, useState,
   type ReactNode,
 } from "react";
 import { useHydrated, useNavigate, useParams } from "@tanstack/react-router";
-import { useIsMobile } from "#/hooks/use-mobile";
 import { cn } from "#/lib/utils";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { CanvasInspectorPending } from "./CanvasInspectorRouteStates";
@@ -21,32 +19,19 @@ export function CanvasInspectorOverlay({
   header: ReactNode;
   selection: { key: string; nodeId: string } | null;
 }) {
-  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const workspaceRef = useRef<HTMLDivElement>(null);
   const inspectorRef = useRef<HTMLElement>(null);
   const previousNode = useRef<string | null>(null);
-  const [width, setWidth] = useState<number | null>(null);
   const selectionKey = selection?.key ?? null;
   const [preference, setPreference] = useState({ key: selectionKey, full: false });
   const isHydrated = useHydrated();
-  const automaticTakeover = isMobile || (width !== null && width <= 740);
-  const takeover = automaticTakeover || (preference.key === selectionKey && preference.full);
+  const takeover = preference.key === selectionKey && preference.full;
 
   if (preference.key !== selectionKey) {
     setPreference({ key: selectionKey, full: false });
   }
-
-  useLayoutEffect(() => {
-    const workspace = workspaceRef.current;
-    if (!workspace) return;
-    const measure = () => setWidth(workspace.getBoundingClientRect().width);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(workspace);
-    return () => observer.disconnect();
-  }, []);
 
   useEffect(() => {
     const workspace = workspaceRef.current;
@@ -71,7 +56,7 @@ export function CanvasInspectorOverlay({
       to: ENVIRONMENT_INDEX_ROUTE_TO,
       params,
       search: (previous) => ({ ...previous, tab: undefined }),
-      viewTransition: prefersReducedMotion() ? false : { types: ["canvas-inspector-close"] },
+      viewTransition: { types: ["canvas-inspector-close"] },
     });
   }
 
@@ -110,8 +95,6 @@ export function CanvasInspectorOverlay({
         >
           <InspectorPresentation value={{
             takeover,
-            canResize: !automaticTakeover,
-            isMobile,
             toggleFullscreen: () => setPreference({ key: selectionKey, full: !preference.full }),
           }}>
             <Suspense fallback={<CanvasInspectorPending />}>{children}</Suspense>

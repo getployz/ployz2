@@ -129,10 +129,7 @@ function useRuntimeContext() {
 
 export function useRuntimeStatus() {
   const { collections } = useRuntimeContext();
-  const { data: rows = [] } = useLiveQuery({
-    query: (q) =>
-      q.from({ status: collections.status }).select(({ status }) => status),
-  });
+  const { data: rows = [] } = useLiveQuery(collections.status);
   const row = rows[0];
   const lensStatus = row?.status ?? "connecting";
 
@@ -151,6 +148,7 @@ export function useRuntimeStatus() {
 export function useRuntimeService(identity: string) {
   const { collections } = useRuntimeContext();
   const { data: rows = [] } = useLiveQuery({
+    queryKey: ['runtime-service', collections.services.id, identity],
     query: (q) =>
       q
         .from({ service: collections.services })

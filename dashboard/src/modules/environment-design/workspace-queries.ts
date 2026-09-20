@@ -7,7 +7,6 @@ import { getProjectsCollection, getEnvironmentSummariesCollection, getProjectPre
 import { preloadCollection } from "#/collections/query-collection";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { withoutVirtualProps } from "#/lib/tanstack-db";
 import type { EnvironmentBySlug } from "./workspace-schemas";
 import { getOrganizationStateServerFn, selectEnvironmentServerFn, syncOrganizationSlugServerFn } from "./workspace-functions";
 
@@ -74,17 +73,17 @@ export async function loadWorkspaceEnvironment(input: EnvironmentBySlug, scope: 
 export function useWorkspace(organizationSlug: string) {
   const scope = useCollectionScope();
   const collections = workspaceCollections(organizationSlug, scope);
-  const projects = useLiveQuery((q) => q.from({ project: collections.projects }));
-  const environments = useLiveQuery((q) => q.from({ environment: collections.environments }));
-  const preferences = useLiveQuery((q) => q.from({ preference: collections.preferences }));
+  const projects = useLiveQuery(collections.projects);
+  const environments = useLiveQuery(collections.environments);
+  const preferences = useLiveQuery(collections.preferences);
   const isError = useSyncExternalStore(
     (onChange) => scope.queryClient.getQueryCache().subscribe(onChange),
     () => Object.values(collections).some((collection) => collection.utils.isError),
     () => false,
   );
-  const environmentRows = environments.data.map(withoutVirtualProps);
+  const environmentRows = environments.data;
   return {
-    projects: resolveProjects(projects.data.map(withoutVirtualProps), environmentRows, preferences.data.map(withoutVirtualProps)),
+    projects: resolveProjects(projects.data, environmentRows, preferences.data),
     environments: environmentRows,
     isPending: projects.isLoading || environments.isLoading || preferences.isLoading,
     isError,

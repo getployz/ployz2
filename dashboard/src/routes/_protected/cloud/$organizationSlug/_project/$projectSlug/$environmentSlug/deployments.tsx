@@ -64,6 +64,7 @@ function DeploymentHistory({ projectName, environmentName }: { projectName: stri
   const deployments = useDeploymentsCollection(params.organizationSlug);
 
   const { data: rows } = useLiveSuspenseQuery({
+    queryKey: ['environment-deployments', deployments.id, projectSlug, environmentSlug],
     query: (q) =>
       q
         .from({ deployment: deployments })
