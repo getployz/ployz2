@@ -238,9 +238,7 @@ export function CanvasFlow({
           onSaveWithoutDeploying={() => {
             requestSave();
           }}
-          onDiscardAll={() => {
-            void discardAllChanges();
-          }}
+          onDiscardAll={discardAllChanges}
           onDiscardNode={(group) => {
             void discardNodeChanges(group);
           }}

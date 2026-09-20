@@ -16,7 +16,7 @@ type ApplyChangesBarProps = {
   onCommitMessageChange: (value: string) => void;
   onDeploy: () => void;
   onSaveWithoutDeploying: () => void;
-  onDiscardAll: () => void;
+  onDiscardAll: () => Promise<boolean>;
   onDiscardNode: (group: CanvasEnvironmentChangeGroup) => void;
   onDiscardRow: (group: CanvasEnvironmentChangeGroup, path: string) => void;
 };
@@ -79,7 +79,7 @@ export function ApplyChangesBar({
         onCommitMessageChange={onCommitMessageChange}
         onDeploy={() => { setOpen(false); onDeploy(); }}
         onSave={() => { setOpen(false); onSaveWithoutDeploying(); }}
-        onDiscardAll={onDiscardAll}
+        onDiscardAll={async () => { if (await onDiscardAll()) setOpen(false); }}
         onDiscardNode={onDiscardNode}
         onDiscardRow={onDiscardRow}
       /> : null}
