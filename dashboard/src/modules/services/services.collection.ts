@@ -69,10 +69,13 @@ function createServicesCollection(organizationSlug: string, scope: CollectionSco
   })));
 }
 
+export type ServiceConfigurationRecord = Pick<ServiceWithContextRecord,
+  Extract<keyof ServiceDeploymentFieldSelection, keyof ServiceWithContextRecord> | "id">;
+
 export type ServiceWriter = {
   update(
     serviceId: string,
-    updater: (draft: ServiceWithContextRecord) => void,
+    updater: (draft: ServiceConfigurationRecord) => void,
   ): { isPersisted: { promise: Promise<unknown> } };
 };
 
@@ -118,7 +121,7 @@ function createServiceWriter(
       const modified = structuredClone(current);
       updater(modified);
       const settings: ServiceDeploymentFieldSelection = {
-        name: modified.name, source: modified.source,
+        source: modified.source,
         preDeployCommand: modified.preDeployCommand, startCommand: modified.startCommand,
         healthcheck: modified.healthcheck, restartPolicy: modified.restartPolicy,
         maxRetries: modified.maxRetries, cron: modified.cron, replicas: modified.replicas,

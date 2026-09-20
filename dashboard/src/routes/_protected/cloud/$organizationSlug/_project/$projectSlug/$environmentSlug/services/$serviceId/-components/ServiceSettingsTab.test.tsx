@@ -35,13 +35,13 @@ async function show(source: ServiceSource) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(client);
   const update = vi.fn(() => ({ isPersisted: { promise: Promise.resolve() } }));
-  const build = { builder: "dockerfile", dockerfilePath: "docker/Dockerfile", watchPaths: ["src/**"] } as const;
+  const build = { builder: "dockerfile", dockerfilePath: "docker/Dockerfile", } as const;
   const state = asTestDouble<ServiceDrawerState>()({
     organizationSlug: "acme",
     environmentSlug: "production",
     service: {
       id: "service", environmentId: "environment", name: "api", privateDns: "api",
-      source, build: { ...build, watchPaths: [...build.watchPaths] },
+      source, build, policy: { autoDeploy: true, waitForCi: false, watchPaths: ["src/**"], imageUpdate: { type: "off" } },
       routes: [], managedHostnames: [], replicas: 1,
       preDeployCommand: null, startCommand: null, healthcheck: { type: "none" },
       restartPolicy: "on-failure", maxRetries: 10, cron: null,
@@ -49,6 +49,7 @@ async function show(source: ServiceSource) {
     },
     diff: { field: () => ({ changed: false, baselineValue: undefined }) },
     collection: { update },
+    editMetadata: update,
     managedPrefixesInUse: [],
     defaultTargetPort: 8080,
   });

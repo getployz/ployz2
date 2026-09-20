@@ -12,7 +12,7 @@ afterEach(() => {
 });
 const state = (replicas: number) => ({
   token: String(replicas), nodes: [{ node: { type: "service" as const, id: "api" }, config: parseServiceConfig({
-    version: 2, name: "API", privateDns: "api", replicas,
+    version: 2, privateDns: "api", replicas,
     source: { version: 1, type: "empty", rootDir: "/" },
     healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
   }) }],

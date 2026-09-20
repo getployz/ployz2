@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { environment } from "#/modules/project/tables";
-import { service, serviceRegistryCredential, variable, variableSecret, environmentResource, environmentVariableGroup } from "./tables";
+import { service, variable, variableSecret, environmentResource, environmentVariableGroup } from "./tables";
 import { canonicalizeSavedEnvironmentIntent, compileSavedEnvironmentIntent, parseDashboardEnvironmentIntent, redactSavedEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -56,6 +56,10 @@ export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnviro
     if (intent.services.some((node) => !identities.some((identity) => identity.id === node.id && identity.lineageId === node.lineageId))) {
       return yield* new Conflict({ message: "A service does not belong to this Environment." });
     }
+    if (intent.services.some(node => node.config.source.type === "image" &&
+      node.config.source.credentials.type === "configured" && node.config.source.credentials.credentialId !== node.id)) {
+      return yield* new Conflict({ message: "Registry credentials do not belong to this service." });
+    }
     const resources = yield* drizzle.select().from(environmentResource).where(eq(environmentResource.environmentId, document.id));
     const groups = yield* drizzle.select().from(environmentVariableGroup).where(eq(environmentVariableGroup.environmentId, document.id));
     if (intent.volumes.some((node) => !resources.some((identity) => identity.id === node.resourceId && identity.lineageId === node.resourceLineageId && identity.implementationType === "volume")) ||
@@ -82,17 +86,6 @@ export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnviro
       set: { encryptedValue: sql`excluded.encrypted_value` },
       setWhere: eq(variableSecret.environmentId, document.id),
     });
-    const credentials = intent.services.flatMap((node) => node.encryptedRegistrySecret
-      ? [{ serviceId: node.id, encryptedRegistryUsername: node.encryptedRegistryUsername, encryptedRegistrySecret: node.encryptedRegistrySecret }]
-      : []);
-    if (credentials.length) {
-      yield* drizzle.insert(serviceRegistryCredential).values(credentials).onConflictDoUpdate({
-        target: serviceRegistryCredential.serviceId,
-        set: { encryptedRegistryUsername: sql`excluded.encrypted_registry_username`, encryptedRegistrySecret: sql`excluded.encrypted_registry_secret` },
-      });
-      yield* drizzle.update(service).set({ hasRegistryCredential: true })
-        .where(and(eq(service.environmentId, document.id), inArray(service.id, credentials.map((credential) => credential.serviceId))));
-    }
     const [written] = yield* drizzle.update(environment).set({
       intent: redactSavedEnvironmentIntent(intent), revision: randomUUID(), updatedAt: new Date(),
     }).where(and(eq(environment.id, document.id), eq(environment.revision, document.revision))).returning();
@@ -117,14 +110,6 @@ export const loadCurrentEnvironmentState = Effect.fn("EnvironmentDesign.loadCurr
       const encryptedValue = byId.get(variable.id);
       if (!encryptedValue) return yield* new Conflict({ message: "A sealed variable has no private value." });
       variable.value.encryptedValue = encryptedValue;
-    }
-    const credentials = intent.services.length ? yield* drizzle.select({ credential: serviceRegistryCredential }).from(serviceRegistryCredential)
-      .innerJoin(service, eq(service.id, serviceRegistryCredential.serviceId))
-      .where(and(eq(service.environmentId, environmentId), inArray(service.id, intent.services.map((node) => node.id)))) : [];
-    for (const node of intent.services) {
-      const credential = credentials.find((row) => row.credential.serviceId === node.id)?.credential;
-      node.encryptedRegistryUsername = credential?.encryptedRegistryUsername ?? null;
-      node.encryptedRegistrySecret = credential?.encryptedRegistrySecret ?? null;
     }
     return {
       document,

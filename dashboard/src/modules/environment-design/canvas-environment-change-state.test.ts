@@ -6,7 +6,7 @@ import type { EnvironmentStateProjection } from "./environment-change-set";
 
 const node = { type: "service" as const, id: "api" };
 const config = (replicas: number) => parseServiceConfig({
-  version: 2, name: "API", privateDns: "api", replicas,
+  version: 2, privateDns: "api", replicas,
   source: { version: 1, type: "empty", rootDir: "/" },
   healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
 });

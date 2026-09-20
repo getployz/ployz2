@@ -74,6 +74,7 @@ export type EnvironmentSnapshotProjection = {
       nodeLineageId: string;
       configVersion: number;
       config: JsonObject;
+      credentialRevision: string | null;
       encryptedRegistryUsername: EncryptedSecretValue | null;
       encryptedRegistrySecret: EncryptedSecretValue | null;
       sourceSavedStateSnapshotId: string;
@@ -90,6 +91,7 @@ type LoadedNode = {
   nodeLineageId: string;
   configVersion: number;
   config: unknown;
+  credentialRevision: string | null;
   encryptedRegistryUsername: EncryptedSecretValue | null;
   encryptedRegistrySecret: EncryptedSecretValue | null;
   snapshotCreatedAt: Date;
@@ -289,6 +291,7 @@ function loadNodeConfigSnapshots(ids: readonly string[]) {
         nodeLineageId: schemaEnvironmentNodeConfigSnapshot.nodeLineageId,
         configVersion: schemaEnvironmentNodeConfigSnapshot.configVersion,
         config: schemaEnvironmentNodeConfigSnapshot.config,
+        credentialRevision: schemaEnvironmentNodeConfigSnapshotSecret.credentialRevision,
         encryptedRegistryUsername:
           schemaEnvironmentNodeConfigSnapshotSecret.encryptedRegistryUsername,
         encryptedRegistrySecret:
@@ -542,6 +545,7 @@ function projectSnapshotHeads(scope: SnapshotScope) {
             node.config,
             "Applied node config is not a JSON object.",
           ),
+          credentialRevision: node.credentialRevision,
           encryptedRegistryUsername: node.encryptedRegistryUsername,
           encryptedRegistrySecret: node.encryptedRegistrySecret,
           sourceSavedStateSnapshotId: requiredMapValue(

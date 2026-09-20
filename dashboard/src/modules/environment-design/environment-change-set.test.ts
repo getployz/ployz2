@@ -3,7 +3,7 @@ import { parseDashboardServiceConfig as parseServiceConfig } from "#/modules/env
 import { buildEnvironmentChangeSet, type EnvironmentNodeProjection } from "./environment-change-set";
 
 const service = parseServiceConfig({
-  version: 2, name: "API", privateDns: "api",
+  version: 2, privateDns: "api",
   source: { version: 1, type: "empty", rootDir: "/" },
   healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
 });

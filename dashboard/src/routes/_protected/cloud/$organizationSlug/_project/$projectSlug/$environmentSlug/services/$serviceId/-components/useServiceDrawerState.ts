@@ -1,3 +1,4 @@
+import { useServiceMetadataEditor } from "#/modules/environment-design/service-metadata.collection";
 import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
@@ -47,6 +48,7 @@ export type ServiceDrawerState = {
   environmentNodes: EnvironmentNodeNameIdentity[];
   diff: ServiceDeploymentDiffState;
   collection: ServiceWriter;
+  editMetadata: (input: Parameters<ReturnType<typeof useServiceMetadataEditor>>[0]) => { isPersisted: { promise: Promise<unknown> } };
   /** Managed-domain prefixes already claimed by other services in this
    * environment, for client-side uniqueness hints (server validates org-wide). */
   managedPrefixesInUse: string[];
@@ -80,6 +82,7 @@ function serviceNodes(
 export function useServiceDrawerState(
   params: ServiceRouteParams,
 ): ServiceDrawerState | null {
+  const editMetadata = useServiceMetadataEditor(params.organizationSlug);
   const collectionScope = useCollectionScope();
   const collection = useServicesCollection(params.organizationSlug);
   const serviceWriter = useServiceWriter(params.organizationSlug);
@@ -205,6 +208,7 @@ export function useServiceDrawerState(
     ],
     diff: getServiceDeploymentDiffState(change),
     collection: serviceWriter,
+    editMetadata,
     managedPrefixesInUse: services
       .filter((item) => item.service.id !== service.id)
       .flatMap((item) => item.service.managedHostnames.map((m) => m.prefix)),
