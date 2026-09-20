@@ -17,6 +17,7 @@ import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import {
   enrollmentExpiry,
+  MANAGEMENT_CAPABILITY_LENGTH,
   mintedEnrollment,
   registerRequestFromEnrollmentIdentity,
   rustMachineIdSchema,
@@ -342,8 +343,8 @@ const requireEnrollmentMachine = Effect.fn("MachineEnrollment.requireMachine")(f
 
 /** Publish once against the locked current claim, before any network confirmation. */
 export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCandidate")(
-  function* (input: { token: string; machineId: MachineId; pairingCredential: string; tailcat: string }) {
-    if (input.tailcat.length === 0 || input.tailcat.length > 16 * 1024) {
+  function* (input: { token: string; machineId: MachineId; pairingCredential: string; capability: string }) {
+    if (input.capability.length === 0 || input.capability.length > MANAGEMENT_CAPABILITY_LENGTH) {
       return yield* new Validation({ message: "Invalid Machine connection capability." });
     }
     const token = yield* verifyEnrollmentToken(input.token);
@@ -369,16 +370,16 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       const clusterKey = hashEnrollmentToken(secret);
       const [saved] = yield* drizzle.select().from(organizationMachine).where(scope);
       if (saved?.clusterKey === clusterKey) {
-        const previous = yield* decryptPairingSecret(saved.encryptedTailcat);
-        if (!credentialsMatch(previous, input.tailcat)) {
+        const previous = yield* decryptPairingSecret(saved.encryptedCapability);
+        if (!credentialsMatch(previous, input.capability)) {
           return yield* new Conflict({ message: "The enrollment attempt already has another connection capability." });
         }
       } else {
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
-          clusterKey, encryptedTailcat: encryption.encrypt(input.tailcat), isDialEntry: pairing.founderClaimMachineId === input.machineId,
+          clusterKey, encryptedCapability: encryption.encrypt(input.capability), isDialEntry: pairing.founderClaimMachineId === input.machineId,
         }).onConflictDoUpdate({ target: [organizationMachine.organizationId, organizationMachine.machineId],
-          set: { clusterKey, encryptedTailcat: encryption.encrypt(input.tailcat), isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date() },
+          set: { clusterKey, encryptedCapability: encryption.encrypt(input.capability), isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date() },
         });
       }
       return { machineId: input.machineId };

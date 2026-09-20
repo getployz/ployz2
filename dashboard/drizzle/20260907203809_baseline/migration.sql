@@ -553,7 +553,7 @@ CREATE TABLE "organization_machine" (
 	"organization_id" uuid,
 	"machine_id" text,
 	"cluster_key" text NOT NULL,
-	"encrypted_tailcat" jsonb NOT NULL,
+	"encrypted_capability" jsonb NOT NULL,
 	"is_dial_entry" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,

@@ -4093,7 +4093,7 @@
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "encrypted_tailcat",
+      "name": "encrypted_capability",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_machine"
