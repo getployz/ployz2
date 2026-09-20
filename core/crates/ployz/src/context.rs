@@ -10,7 +10,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ployz_core::{MachineId, TailcatCapability};
+use ployz_core::{MachineId, ManagementCapability};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
@@ -179,7 +179,7 @@ impl Config {
             context
                 .connections
                 .iter()
-                .any(|connection| matches!(connection.transport(), Transport::Tailcat(_)))
+                .any(|connection| matches!(connection.transport(), Transport::Management(_)))
         })
     }
 
@@ -421,7 +421,7 @@ pub struct Connection {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Transport {
-    Tailcat(TailcatCapability),
+    Management(ManagementCapability),
     Ssh {
         destination: SshDestination,
         key_file: Option<PathBuf>,
@@ -444,18 +444,22 @@ struct ConnectionFile {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum TransportFile {
-    Tailcat(TailcatCapability),
+    Management(ManagementCapability),
     Ssh(String),
     Tcp(SocketAddr),
     Unix(PathBuf),
 }
 
 impl Connection {
-    pub fn tailcat(capability: impl Into<String>) -> Result<Self, ConnectionError> {
+    /// A Management Capability connection. The error never echoes the value.
+    ///
+    /// # Errors
+    /// Returns [`ConnectionError::ManagementCapability`] when the value is malformed.
+    pub fn management(capability: impl AsRef<str>) -> Result<Self, ConnectionError> {
         Ok(Self {
-            transport: Transport::Tailcat(
-                TailcatCapability::parse(capability)
-                    .map_err(|_| ConnectionError::TailcatCapability)?,
+            transport: Transport::Management(
+                ManagementCapability::parse(capability)
+                    .map_err(|_| ConnectionError::ManagementCapability)?,
             ),
             machine_id: None,
         })
@@ -514,7 +518,7 @@ impl Connection {
     pub fn ssh_key_file(&self) -> Option<&Path> {
         match &self.transport {
             Transport::Ssh { key_file, .. } => key_file.as_deref(),
-            Transport::Tailcat(_) | Transport::Tcp(_) | Transport::Unix(_) => None,
+            Transport::Management(_) | Transport::Tcp(_) | Transport::Unix(_) => None,
         }
     }
 
@@ -527,9 +531,9 @@ impl Connection {
 impl fmt::Display for Connection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.transport {
-            Transport::Tailcat(_) => match self.machine_id {
-                Some(machine_id) => write!(formatter, "tailcat:{machine_id}"),
-                None => formatter.write_str("tailcat:[redacted]"),
+            Transport::Management(_) => match self.machine_id {
+                Some(machine_id) => write!(formatter, "management:{machine_id}"),
+                None => formatter.write_str("management:[redacted]"),
             },
             Transport::Ssh { destination, .. } => write!(formatter, "ssh://{destination}"),
             Transport::Tcp(address) => write!(formatter, "tcp://{address}"),
@@ -538,18 +542,18 @@ impl fmt::Display for Connection {
     }
 }
 
-// Tailcat capabilities are opaque, `tc`-prefixed base64url, not SSH destinations.
+// Management Capabilities are `ployz1:`-prefixed secrets, not SSH destinations.
 // Recognize even malformed pastes here so parse errors never echo their secret.
-pub(crate) fn is_tailcat_address(value: &str) -> bool {
-    value.trim().starts_with("tc") && !value.contains('@') && !value.contains("://")
+pub(crate) fn is_management_capability(value: &str) -> bool {
+    value.trim().starts_with("ployz1:")
 }
 
 impl FromStr for Connection {
     type Err = ConnectionError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.starts_with("tailcat:") || is_tailcat_address(value) {
-            return Err(ConnectionError::TailcatConfigOnly);
+        if value.starts_with("management:") || is_management_capability(value) {
+            return Err(ConnectionError::ManagementConfigOnly);
         }
         if let Some(address) = value.strip_prefix("tcp://") {
             return address
@@ -576,7 +580,7 @@ impl Serialize for Connection {
         S: Serializer,
     {
         let transport = match &self.transport {
-            Transport::Tailcat(capability) => TransportFile::Tailcat(capability.clone()),
+            Transport::Management(capability) => TransportFile::Management(capability.clone()),
             Transport::Ssh { destination, .. } => TransportFile::Ssh(destination.to_string()),
             Transport::Tcp(address) => TransportFile::Tcp(*address),
             Transport::Unix(path) => TransportFile::Unix(path.clone()),
@@ -601,14 +605,14 @@ impl<'de> Deserialize<'de> for Connection {
                 destination: SshDestination::parse(destination).map_err(de::Error::custom)?,
                 key_file,
             },
-            (TransportFile::Tailcat(capability), None) => Transport::Tailcat(capability),
+            (TransportFile::Management(capability), None) => Transport::Management(capability),
             (TransportFile::Tcp(address), None) => Transport::Tcp(address),
             (TransportFile::Unix(path), None) if path.is_absolute() => Transport::Unix(path),
             (TransportFile::Unix(path), None) => {
                 return Err(de::Error::custom(ConnectionError::UnixPath(path)));
             }
             (
-                TransportFile::Tailcat(_) | TransportFile::Tcp(_) | TransportFile::Unix(_),
+                TransportFile::Management(_) | TransportFile::Tcp(_) | TransportFile::Unix(_),
                 Some(_),
             ) => {
                 return Err(de::Error::custom(ConnectionError::SshKeyTransport));
@@ -632,8 +636,8 @@ pub struct SshDestination {
 impl SshDestination {
     pub fn parse(value: impl Into<String>) -> Result<Self, ConnectionError> {
         let value = value.into();
-        if is_tailcat_address(&value) {
-            return Err(ConnectionError::TailcatConfigOnly);
+        if is_management_capability(&value) {
+            return Err(ConnectionError::ManagementConfigOnly);
         }
         let Some((user, destination)) = value.split_once('@') else {
             return Err(ConnectionError::SshDestination(value));
@@ -770,12 +774,12 @@ pub enum ConfigError {
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ConnectionError {
-    #[error("invalid Tailcat capability")]
-    TailcatCapability,
+    #[error("invalid Management Capability")]
+    ManagementCapability,
     #[error(
-        "store Tailcat capabilities in a private context config; do not pass them as command arguments"
+        "store Management Capabilities in a private context config; do not pass them as command arguments"
     )]
-    TailcatConfigOnly,
+    ManagementConfigOnly,
     #[error("invalid SSH destination {0:?}")]
     SshDestination(String),
     #[error("invalid TCP address {0:?}")]

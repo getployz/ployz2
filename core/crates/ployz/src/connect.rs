@@ -1,24 +1,31 @@
 use std::{
     borrow::Cow,
+    collections::HashMap,
     future::Future,
     io,
     path::{Path, PathBuf},
     pin::Pin,
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock},
     task::{Context as TaskContext, Poll},
     time::Duration,
 };
 
 use hyper_util::rt::TokioIo;
+use iroh::{
+    Endpoint as IrohEndpoint, EndpointAddr, PublicKey, RelayMode, RelayUrl, SecretKey,
+    endpoint::{VarInt, presets},
+    tls::CaTlsConfig,
+};
 use ployz_core::{
-    CodecError, FramingError, MachineId, MachineTarget, RoutingMetadataError, RpcError,
-    RpcErrorCode, apply_one_target,
+    CodecError, DEFAULT_RELAY_URL, DescribeContractRequest, FramingError, MANAGEMENT_ALPN,
+    MachineId, MachineRpcClient, MachineTarget, ManagementCapability, RoutingMetadataError,
+    RpcError, RpcErrorCode, apply_one_target, op,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf},
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command},
 };
@@ -70,11 +77,43 @@ pub trait Connector: Send + Sync {
     ) -> Result<BoxProxyStream, ConnectError>;
 }
 
+/// Application close code the daemon uses to refuse a connection whose key is not accepted.
+const REFUSED_BY_IDENTITY: VarInt = VarInt::from_u32(0x50);
+
+/// The relay the management transport dials through. Production uses the compiled
+/// [`DEFAULT_RELAY_URL`] with the embedded WebPKI roots; tests point at an in-process relay.
+#[derive(Clone, Debug)]
+pub struct ManagementRelay {
+    url: RelayUrl,
+    tls: CaTlsConfig,
+}
+
+impl Default for ManagementRelay {
+    fn default() -> Self {
+        Self {
+            url: DEFAULT_RELAY_URL
+                .parse()
+                .expect("the compiled relay URL is valid"),
+            tls: CaTlsConfig::default(),
+        }
+    }
+}
+
+impl ManagementRelay {
+    /// Test hook: another relay and the trust roots that verify it, such as
+    /// `iroh::test_utils::run_relay_server` with `CaTlsConfig::insecure_skip_verify()`
+    /// (that constructor needs iroh's `test-utils` feature, so it stays in test crates).
+    #[must_use]
+    pub fn custom(url: RelayUrl, tls: CaTlsConfig) -> Self {
+        Self { url, tls }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SystemConnector {
     ssh_program: PathBuf,
-    tailcat_program: PathBuf,
     ssh_timeout: Duration,
+    relay: ManagementRelay,
 }
 
 impl Default for SystemConnector {
@@ -87,15 +126,15 @@ impl SystemConnector {
     pub fn new(ssh_program: impl Into<PathBuf>) -> Self {
         Self {
             ssh_program: ssh_program.into(),
-            tailcat_program: PathBuf::from("ployz-tailcat"),
             ssh_timeout: Duration::from_secs(5),
+            relay: ManagementRelay::default(),
         }
     }
 
-    /// Select the installed native helper (also used by packaged SDK hosts).
+    /// Dial the management transport through `relay` instead of the compiled default.
     #[must_use]
-    pub fn with_tailcat_program(mut self, program: impl Into<PathBuf>) -> Self {
-        self.tailcat_program = program.into();
+    pub fn with_management_relay(mut self, relay: ManagementRelay) -> Self {
+        self.relay = relay;
         self
     }
 
@@ -111,12 +150,14 @@ impl SystemConnector {
 impl Connector for SystemConnector {
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
         match connection.transport() {
-            Transport::Tailcat(capability) => tokio::time::timeout(
+            Transport::Management(capability) => tokio::time::timeout(
                 Duration::from_secs(15),
-                connect_tailcat(capability, &self.tailcat_program),
+                connect_management(capability, &self.relay),
             )
             .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Tailcat connection timed out"))?,
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::TimedOut, "management connection timed out")
+            })?,
             Transport::Tcp(address) => connect_endpoint(format!("http://{address}")).await,
             Transport::Unix(path) => connect_endpoint(format!("unix:{}", path.display())).await,
             Transport::Ssh {
@@ -155,7 +196,7 @@ impl Connector for SystemConnector {
             return Err(ConnectError::UnsupportedNetwork(network.into()));
         }
         match connection.transport() {
-            Transport::Tailcat(_) | Transport::Tcp(_) => {
+            Transport::Management(_) | Transport::Tcp(_) => {
                 Err(ConnectError::ProxyUnsupported(connection.to_string()))
             }
             Transport::Unix(_) => TcpStream::connect(address)
@@ -181,17 +222,93 @@ impl Connector for SystemConnector {
     }
 }
 
-async fn connect_tailcat(
-    capability: &ployz_core::TailcatCapability,
-    program: &Path,
-) -> Result<Channel, ConnectError> {
-    let mut stream = spawn_child(program, &["connect".into()])?;
-    stream.write_all(capability.as_str().as_bytes()).await?;
-    stream.write_all(b"\n").await?;
-    connect_child(stream, Duration::from_secs(15)).await
+type EndpointKey = ([u8; 32], RelayUrl);
+
+/// One iroh endpoint per client secret and relay for the whole process; a Cloud host
+/// dialing many Machines with one capability shares its UDP socket and relay session.
+fn management_endpoints() -> &'static Mutex<HashMap<EndpointKey, IrohEndpoint>> {
+    static ENDPOINTS: OnceLock<Mutex<HashMap<EndpointKey, IrohEndpoint>>> = OnceLock::new();
+    ENDPOINTS.get_or_init(Mutex::default)
 }
 
-async fn connect_child(stream: ChildIo, timeout: Duration) -> Result<Channel, ConnectError> {
+async fn management_endpoint(
+    client_secret: &[u8; 32],
+    relay: &ManagementRelay,
+) -> Result<IrohEndpoint, ConnectError> {
+    let key = (*client_secret, relay.url.clone());
+    let cached = management_endpoints()
+        .lock()
+        .expect("management endpoint cache is never poisoned")
+        .get(&key)
+        .cloned();
+    if let Some(endpoint) = cached {
+        return Ok(endpoint);
+    }
+    // Minimal preset: ring crypto, no address lookup, no public relays; only ours.
+    let endpoint = IrohEndpoint::builder(presets::Minimal)
+        .secret_key(SecretKey::from_bytes(client_secret))
+        .relay_mode(RelayMode::custom([relay.url.clone()]))
+        .ca_tls_config(relay.tls.clone())
+        .bind()
+        .await
+        .map_err(|error| ConnectError::Attempt(format!("management bind: {error}").into()))?;
+    // A concurrent first dial may have bound too; keep whichever landed first.
+    Ok(management_endpoints()
+        .lock()
+        .expect("management endpoint cache is never poisoned")
+        .entry(key)
+        .or_insert(endpoint)
+        .clone())
+}
+
+/// Dial the Machine's Management Identity by key with only the relay as a hint, open the
+/// single RPC stream and confirm the daemon accepted this capability before handing the
+/// channel out.
+async fn connect_management(
+    capability: &ManagementCapability,
+    relay: &ManagementRelay,
+) -> Result<Channel, ConnectError> {
+    let machine = PublicKey::from_bytes(capability.machine())
+        .map_err(|_| ConnectionError::ManagementCapability)?;
+    let endpoint = management_endpoint(capability.client_secret(), relay).await?;
+    let address = EndpointAddr::new(machine).with_relay_url(relay.url.clone());
+    let connection = endpoint
+        .connect(address, MANAGEMENT_ALPN)
+        .await
+        .map_err(|error| ConnectError::Attempt(format!("management dial: {error}").into()))?;
+    let (send, receive) = connection
+        .open_bi()
+        .await
+        .map_err(|error| ConnectError::Attempt(format!("management stream: {error}").into()))?;
+    let probe = async {
+        let channel =
+            connect_stream(tokio::io::join(receive, send), Duration::from_secs(15)).await?;
+        // The daemon refuses by identity right after the handshake, which the client only
+        // observes once it reads. Probe before the channel is trusted so refusal is
+        // distinguishable from an unreachable Machine.
+        MachineRpcClient::new(channel.clone())
+            .describe_contract(
+                op::DescribeContract::into_request(DescribeContractRequest {}).encode()?,
+            )
+            .await?;
+        Ok::<_, ConnectError>(channel)
+    };
+    probe
+        .await
+        .map_err(|error| match connection.close_reason() {
+            Some(iroh::endpoint::ConnectionError::ApplicationClosed(close))
+                if close.error_code == REFUSED_BY_IDENTITY =>
+            {
+                ConnectError::RefusedByIdentity
+            }
+            _ => error,
+        })
+}
+
+async fn connect_stream(
+    stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    timeout: Duration,
+) -> Result<Channel, ConnectError> {
     let mut stream = Some(stream);
     Endpoint::from_static("http://[::]:50051")
         .connect_timeout(timeout)
@@ -244,7 +361,7 @@ async fn connect_ssh(
         });
     }
     let args = ssh_args(destination, key_file, control_path.as_deref(), timeout);
-    connect_child(spawn_child(program, &args)?, timeout).await
+    connect_stream(spawn_child(program, &args)?, timeout).await
 }
 
 fn ssh_args(
@@ -395,11 +512,13 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     match error {
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
-        error @ ConnectError::IdentityMismatch { .. } => RpcError {
-            code: RpcErrorCode::Unauthenticated,
-            message: error.to_string(),
-            details: Value::Null,
-        },
+        error @ (ConnectError::IdentityMismatch { .. } | ConnectError::RefusedByIdentity) => {
+            RpcError {
+                code: RpcErrorCode::Unauthenticated,
+                message: error.to_string(),
+                details: Value::Null,
+            }
+        }
         error @ (ConnectError::Attempt(_)
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
@@ -605,6 +724,8 @@ pub enum ConnectError {
     Dial(#[from] tonic::transport::Error),
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
+    #[error("Machine refused this Management Capability; it was cleared or replaced")]
+    RefusedByIdentity,
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing(#[source] io::Error),
     #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}")]
@@ -674,6 +795,7 @@ impl ConnectError {
             Self::Rpc(error) => error.is_retryable(),
             Self::Remote(_)
             | Self::IdentityMismatch { .. }
+            | Self::RefusedByIdentity
             | Self::MissingMachineDetails
             | Self::SshClientMissing(_)
             | Self::Routing(_)

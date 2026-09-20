@@ -6,16 +6,21 @@ use std::sync::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, CloudPairingSet, ContainerChanged, ContainerCreated, ContainerDetails,
-    ContainerId, ContainerKind, ContainerList, ContainerObservation, ContainerRuntimeObservation,
+    AdvertisedEndpoint, ContainerChanged, ContainerCreated, ContainerDetails, ContainerId,
+    ContainerKind, ContainerList, ContainerObservation, ContainerRuntimeObservation,
     ContractDescription, CreateContainerRequest, CreateDomainRecordsRequest,
     DESCRIBE_CONTRACT_CAPABILITY, Domain, DomainRecords, HealthObservation, InitializeRequest,
     Initialized, JoinAccepted, JoinRequest, LocalMachinePhase, Machine, MachineDetails, MachineId,
     MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineToken,
     MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered, ReserveDomainRequest,
-    ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, VolumeInventory,
-    WireGuardPublicKey,
+    ResetAccepted, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SetCloudPairingResponse,
+    VolumeInventory, WireGuardPublicKey,
 };
+
+/// The Management Capability the fake daemon mints for any Cloud Pairing.
+pub fn fixture_capability() -> ployz_core::ManagementCapability {
+    ployz_core::ManagementCapability::new([0xa1; 32], [0xb2; 32])
+}
 use tonic::{Request, Response, Status, Streaming};
 
 #[path = "enroll_http.rs"]
@@ -490,12 +495,14 @@ impl MachineRpc for JoinDaemon {
                 self.inner.cloud_paired.store(true, Ordering::SeqCst);
                 self.record("set_cloud_pairing");
             }
-            ployz_core::SetCloudPairingRequest::Clear {}
-            | ployz_core::SetCloudPairingRequest::Remove { .. } => {
+            ployz_core::SetCloudPairingRequest::Clear {} => {
                 self.inner.cloud_paired.store(false, Ordering::SeqCst);
+                return rpc_ok(SetCloudPairingResponse { capability: None });
             }
         }
-        rpc_ok(CloudPairingSet {})
+        rpc_ok(SetCloudPairingResponse {
+            capability: Some(fixture_capability()),
+        })
     }
 
     async fn request_machine_upgrade(

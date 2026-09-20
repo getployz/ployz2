@@ -159,19 +159,17 @@ impl Session {
         }
     }
 
-    /// Clear pairing and request bounded Tailcat rotation. A reply is not revocation evidence.
+    /// Clear the pairing; the daemon revokes the capability's key before replying, so a
+    /// reply is confirmation. A later dial refused by identity is confirmation too.
     ///
     /// # Errors
-    /// Returns cancellation, transport, or endpoint errors, including uncertain outcomes.
-    pub async fn remove_cloud_pairing(
-        &self,
-        removal: ployz_core::TailcatRemoval,
-    ) -> Result<(), RpcError> {
+    /// Returns cancellation or transport errors, including uncertain outcomes.
+    pub async fn remove_cloud_pairing(&self) -> Result<(), RpcError> {
         let client = self.client()?;
         self.until_closed(async {
             client
                 .call_unretried::<op::SetCloudPairing>(
-                    ployz_core::SetCloudPairingRequest::Remove { removal },
+                    ployz_core::SetCloudPairingRequest::Clear {},
                     None,
                 )
                 .await
