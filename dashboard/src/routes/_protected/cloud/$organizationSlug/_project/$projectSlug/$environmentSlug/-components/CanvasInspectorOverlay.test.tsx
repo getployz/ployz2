@@ -188,7 +188,7 @@ describe("canvas inspector presentation", () => {
     expect(screen.queryByRole("link", { name: "Close inspector" })).toBeNull();
     expect(screen.getByRole("link", { name: "Back to Architecture" })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Project navigation" })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Project navigation" }).textContent).toBe("Configuration");
+    expect(screen.getByRole("button", { name: "Project navigation" }).textContent).toBe("Settings");
     expect(screen.queryByRole("button", { name: "Fill canvas" })).toBeNull();
   });
 

@@ -1,11 +1,9 @@
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Tabs, TabsList, TabsTrigger } from "#/components/ui/tabs";
-import { ServiceDeploymentsTab } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceDeploymentsTab";
 import { ServiceSettingsTab } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceSettingsTab";
 import { ServiceVariablesTab } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesTab";
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 import { servicePageSchema, SERVICE_PAGES } from "./service-pages";
-import { useIsMobile } from "#/hooks/use-mobile";
 import { Schema } from "effect";
 
 export function ServiceDrawerTabs({
@@ -15,7 +13,6 @@ export function ServiceDrawerTabs({
 }) {
   const from = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId";
   const { tab } = useSearch({ from });
-  const isMobile = useIsMobile();
   const navigate = useNavigate({ from: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/services/$serviceId" });
   return (
     <Tabs
@@ -27,13 +24,12 @@ export function ServiceDrawerTabs({
       }}
       className="flex min-h-0 flex-1 flex-col overflow-hidden"
     >
-      {!isMobile ? <TabsList variant="line" className="max-w-full shrink-0 overflow-x-auto max-[860px]:hidden">
+      <TabsList variant="line" className="max-w-full shrink-0 overflow-x-auto max-[860px]:hidden">
         {SERVICE_PAGES.map((page) => <TabsTrigger key={page.id} value={page.id}>{page.label}</TabsTrigger>)}
-      </TabsList> : null}
+      </TabsList>
 
       <ServiceSettingsTab state={state} />
       <ServiceVariablesTab state={state} />
-      <ServiceDeploymentsTab />
     </Tabs>
   );
 }

@@ -1,11 +1,10 @@
 import { useDeferredValue, useState } from "react";
-import { useSuspenseQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { ResourcePageControls } from "#/components/resource-page-controls";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { projectListQueryOptions } from "#/modules/environment-design/workspace-queries";
+import { preloadWorkspace, readWorkspace, useWorkspace } from "#/modules/environment-design/workspace-queries";
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Card,
@@ -21,9 +20,7 @@ import { Route as NewProjectRoute } from "#/routes/_protected/cloud/$organizatio
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/")({
   loader: async ({ params, context }) => {
-    const projects = await context.queryClient.ensureQueryData(
-      projectListQueryOptions(params.organizationSlug),
-    );
+    const projects = readWorkspace(await preloadWorkspace(params.organizationSlug, { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id }));
     // No projects means nothing to overview: go straight to project creation.
     if (projects.length === 0) {
       throw redirect({
@@ -50,8 +47,7 @@ function ProjectsPending() {
             <CardHeader>
               <Skeleton className="h-5 w-36" />
             </CardHeader>
-            <CardFooter className="gap-2">
-              <Skeleton className="size-2 rounded-full" />
+            <CardFooter>
               <Skeleton className="h-3 w-24" />
             </CardFooter>
           </Card>
@@ -93,9 +89,7 @@ function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
-  const { data: projects } = useSuspenseQuery(
-    projectListQueryOptions(organizationSlug),
-  );
+  const { projects } = useWorkspace(organizationSlug);
   const normalizedQuery = deferredQuery.trim().toLowerCase();
   const filteredProjects = normalizedQuery
     ? projects.filter((project) => {
@@ -135,7 +129,8 @@ function RouteComponent() {
                 <CardHeader>
                   <CardTitle>{project.name}</CardTitle>
                 </CardHeader>
-                <CardFooter className="gap-2">
+                <CardFooter>
+                  <div className="flex items-center gap-2">
                   {resolvedEnvironment ? (
                     <>
                       <span className="size-2 shrink-0 rounded-full bg-primary" />
@@ -151,6 +146,7 @@ function RouteComponent() {
                       </span>
                     </>
                   )}
+                  </div>
                 </CardFooter>
               </Card>
             );

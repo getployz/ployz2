@@ -10,6 +10,7 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarHeader,
+  SidebarSeparator,
   SidebarTrigger,
   useSidebar,
 } from "./ui/sidebar";
@@ -37,12 +38,14 @@ export function AppSidebar({ scope }: { scope: DashboardScope }) {
             </Link>
           ) : null}
           <SidebarTrigger
+            size="icon"
             aria-label={open ? "Collapse sidebar" : "Expand sidebar"}
             title={open ? "Collapse sidebar" : "Expand sidebar"}
           />
         </div>
         <NavigationSwitcher projection={open ? "desktop" : "rail"} />
       </SidebarHeader>
+      <SidebarSeparator />
       <SidebarContent>
         <DashboardNavigation
           scope={scope}

@@ -1,5 +1,4 @@
-import { useEffect, useRef } from "react";
-import { ArrowLeftIcon } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "#/components/ui/dialog";
 import { Button } from "#/components/ui/button";
 import { InputGroup, InputGroupInput } from "#/components/ui/input-group";
 import type {
@@ -34,30 +33,15 @@ export function EnvironmentChangesReview({
   onDiscardNode: (group: CanvasEnvironmentChangeGroup) => void;
   onDiscardRow: (group: CanvasEnvironmentChangeGroup, path: string) => void;
 }) {
-  const backRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => { backRef.current?.focus({ preventScroll: true }); }, []);
-
   return (
-    <section
-      className="canvas-change-review"
-      aria-label="Environment changes"
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && !event.defaultPrevented) {
-          event.preventDefault();
-          event.stopPropagation();
-          onClose();
-        }
-      }}
-    >
-      <div className="flex shrink-0 items-center gap-3 border-b px-6 py-4">
-        <Button ref={backRef} variant="ghost" size="icon" aria-label="Back to editing" title="Back to editing" onClick={onClose}>
-          <ArrowLeftIcon />
-        </Button>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent padding="none" className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-3xl">
+      <div className="shrink-0 border-b px-6 py-4 pr-12">
         <div>
-          <h2 className="font-medium">Environment changes</h2>
-          <p className="text-sm text-muted-foreground">
+          <DialogTitle>Environment changes</DialogTitle>
+          <DialogDescription className="mt-2">
             {canSave ? "Unpublished configuration" : totalChanges > 0 ? "Configuration saved · not yet deployed" : "No changes to review"}
-          </p>
+          </DialogDescription>
         </div>
       </div>
       <div className="shrink-0 border-b px-6 py-3">
@@ -91,6 +75,7 @@ export function EnvironmentChangesReview({
         <Button variant="outline" disabled={!canSave} onClick={onSave}>Save without deploying</Button>
         {canDeploy ? <Button onClick={onDeploy}>Deploy changes</Button> : null}
       </div>
-    </section>
+      </DialogContent>
+    </Dialog>
   );
 }

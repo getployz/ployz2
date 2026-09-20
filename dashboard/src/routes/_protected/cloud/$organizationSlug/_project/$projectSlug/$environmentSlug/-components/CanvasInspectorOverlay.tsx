@@ -53,7 +53,9 @@ export function CanvasInspectorOverlay({
     if (selectionKey) {
       previousNode.current = selection?.nodeId ?? null;
       const inspector = inspectorRef.current;
-      (inspector?.querySelector<HTMLElement>("[data-canvas-inspector-exit]") ?? inspector)?.focus({ preventScroll: true });
+      const exit = [...(inspector?.querySelectorAll<HTMLElement>("[data-canvas-inspector-exit]") ?? [])]
+        .find((element) => element.getBoundingClientRect().width > 0);
+      (exit ?? inspector)?.focus({ preventScroll: true });
     } else if (previousNode.current && workspace) {
       const nodeId = previousNode.current;
       // Both canvas links and the mobile list expose the same stable node identity.

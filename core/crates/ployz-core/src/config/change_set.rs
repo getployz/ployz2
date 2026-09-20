@@ -101,7 +101,7 @@ mod tests {
                 config: replicas.map(|replicas| {
                     serde_json::to_value(
                         parse_service_config(json!({
-                            "version": 2, "name": "API", "privateDns": "api", "replicas": replicas,
+                            "version": 2, "privateDns": "api", "replicas": replicas,
                             "source": {"version": 1, "type": "empty", "rootDir": "/"},
                             "healthcheck": {"type": "none"}, "restartPolicy": "unless-stopped"
                         }))

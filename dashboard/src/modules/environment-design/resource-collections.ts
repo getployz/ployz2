@@ -1,4 +1,4 @@
-import { collectionOptions, liveQueryCollectionOptions, type DbClient, eq, toArray, type Collection, type UtilsRecord } from "@tanstack/react-db";
+import { BasicIndex, collectionOptions, liveQueryCollectionOptions, type DbClient, eq, toArray, type Collection, type UtilsRecord } from "@tanstack/react-db";
 import { withoutVirtualProps } from "#/lib/tanstack-db";
 import { variableGroupDocumentRecord, volumeDocumentRecord, volumeIsVisible, type VolumeHistory, type ResourceDocumentView } from "./resource-document";
 
@@ -19,12 +19,12 @@ type VolumeSources = ResourceSources & {
 };
 
 function resourceDocumentRows(client: DbClient, type: "variable_group" | "volume", { resources, lineages, positions, documents }: ResourceSources) {
-  const resourcePositions = client.collection(collectionOptions(liveQueryCollectionOptions({
+  const resourcePositions = client.collection(collectionOptions({ ...liveQueryCollectionOptions({
     id: `${positions.id}:${type}-positions`,
     query: (q) => q.from({ position: positions }).where(({ position }) => eq(position.resourceType, type)),
     getKey: (position) => position.resourceId,
-  })));
-  return client.collection(collectionOptions(liveQueryCollectionOptions({
+  }), autoIndex: "eager", defaultIndexType: BasicIndex }));
+  return client.collection(collectionOptions({ ...liveQueryCollectionOptions({
     id: `${resources.id}:${type}-document-rows`,
     query: (q) => q.from({ resource: resources })
       .where(({ resource }) => eq(resource.implementationType, type))
@@ -33,7 +33,7 @@ function resourceDocumentRows(client: DbClient, type: "variable_group" | "volume
       .leftJoin({ position: resourcePositions }, ({ resource, position }) => eq(resource.id, position.resourceId))
       .fn.select(({ resource, lineage, document, position }) => ({ resource, lineage, document, position })),
     getKey: (row) => row.resource.id,
-  })));
+  }), autoIndex: "eager", defaultIndexType: BasicIndex }));
 }
 
 function documentView(row: ReturnType<typeof resourceDocumentRows> extends { values(): IterableIterator<infer R> } ? R : never) {

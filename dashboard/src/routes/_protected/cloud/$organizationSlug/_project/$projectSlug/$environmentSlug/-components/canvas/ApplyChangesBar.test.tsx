@@ -55,8 +55,8 @@ it("hides accepted changes, then shows only the new edit", () => {
   expect(screen.getAllByText("API")).toHaveLength(1);
   expect(screen.getByText("5")).toBeTruthy();
   expect(screen.getByText("7")).toBeTruthy();
-  expect(screen.queryByRole("dialog")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Back to editing" }));
+  expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
   expect(screen.queryByRole("region", { name: "Environment changes" })).toBeNull();
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Review changes" }));
 });

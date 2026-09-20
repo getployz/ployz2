@@ -296,7 +296,10 @@ export type RuntimeCollections = ReturnType<
   typeof createRuntimeCollections
 >;
 
-export const getRuntimeCollections = cachedByCollectionScope(createRuntimeCollections);
+const scopedRuntimeCollections = cachedByCollectionScope(createRuntimeCollections);
+export function getRuntimeCollections(organizationSlug: string, scope: CollectionScope) {
+  return scopedRuntimeCollections(organizationSlug, { ...scope, environmentSlug: undefined });
+}
 
 export async function preloadRuntimeCollections(organizationSlug: string, scope: CollectionScope) {
   const collections = getRuntimeCollections(organizationSlug, scope);

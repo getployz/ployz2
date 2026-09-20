@@ -95,15 +95,15 @@ async function show(
 
 it("shows the selected service pages first without duplicating its resource row", async () => {
   const router = await show();
-  expect(screen.getAllByRole("link").slice(0, SERVICE_PAGES.length).map((link) => link.textContent)).toEqual(SERVICE_PAGES.map((page) => page.label));
-  expect(screen.queryByRole("link", { name: "API" })).toBeNull();
-  expect(screen.getByRole("link", { name: "Environment variables" }).getAttribute("aria-current")).toBe("page");
-  fireEvent.click(screen.getByRole("link", { name: "Configuration" }));
+  expect(screen.getAllByRole("link").slice(1, SERVICE_PAGES.length + 1).map((link) => link.textContent)).toEqual(SERVICE_PAGES.map((page) => page.label));
+  expect(screen.getByRole("link", { name: "API" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Variables" }).getAttribute("aria-current")).toBe("page");
+  fireEvent.click(screen.getByRole("link", { name: "Settings" }));
   await waitFor(() => expect(router.state.location.href).toBe("/cloud/acme/store/staging/services/api?tab=settings"));
-  expect(screen.getByRole("link", { name: "Configuration" }).getAttribute("aria-current")).toBe("page");
+  expect(screen.getByRole("link", { name: "Settings" }).getAttribute("aria-current")).toBe("page");
   fireEvent.click(screen.getByRole("link", { name: "Worker" }));
   await waitFor(() => expect(router.state.location.href).toBe("/cloud/acme/store/staging/services/worker"));
-  expect(screen.queryByRole("link", { name: "Worker" })).toBeNull();
+  expect(screen.getByRole("link", { name: "Worker" })).toBeTruthy();
   expect(screen.getByRole("link", { name: "API" })).toBeTruthy();
 });
 
@@ -113,7 +113,7 @@ it("searches other resources without hiding the selected pages, with a clear no-
   fireEvent.change(search, { target: { value: "  STORAGE  " } });
   expect(screen.getByRole("link", { name: "Database storage" })).toBeTruthy();
   expect(screen.queryByRole("link", { name: "Worker" })).toBeNull();
-  expect(screen.getByRole("link", { name: "Environment variables" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Variables" })).toBeTruthy();
   fireEvent.change(search, { target: { value: "missing" } });
   expect(screen.getByText("No matching resources")).toBeTruthy();
   fireEvent.change(search, { target: { value: "" } });
@@ -159,9 +159,9 @@ it.each(["data", "shared"])("opens %s as a resource and exposes only Configurati
   if (!node) throw new Error(`Missing node fixture: ${id}`);
   fireEvent.click(screen.getByRole("link", { name: node.name }));
   await waitFor(() => expect(router.state.location.href).toBe(`/cloud/acme/store/staging/resources/${id}`));
-  expect(screen.getByRole("link", { name: "Configuration" }).getAttribute("aria-current")).toBe("page");
-  expect(screen.queryByRole("link", { name: "Environment variables" })).toBeNull();
-  expect(screen.queryByRole("link", { name: node.name })).toBeNull();
+  expect(screen.getByRole("link", { name: "Settings" }).getAttribute("aria-current")).toBe("page");
+  expect(screen.queryByRole("link", { name: "Variables" })).toBeNull();
+  expect(screen.getByRole("link", { name: node.name })).toBeTruthy();
 });
 
 it("shows a true empty state but omits the other-resources section for a sole selected node", async () => {
@@ -172,7 +172,7 @@ it("shows a true empty state but omits the other-resources section for a sole se
   await show(nodes.slice(0, 1));
   expect(screen.queryByText("Other resources")).toBeNull();
   expect(screen.queryByText("No other resources")).toBeNull();
-  expect(screen.getByRole("link", { name: "Configuration" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
   expect(screen.queryByRole("searchbox")).toBeNull();
 });
 
@@ -182,7 +182,8 @@ it("does not turn an expanded directory into a popup when collapsing the sidebar
   expect(screen.getByRole("button", { name: "Collapse Architecture" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
   expect(screen.queryByRole("dialog", { name: "Architecture" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Architecture" }));
+  fireEvent.mouseEnter(screen.getByRole("link", { name: "Architecture" }));
+  fireEvent.mouseMove(screen.getByRole("link", { name: "Architecture" }));
   expect(await screen.findByRole("dialog", { name: "Architecture" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
   expect(screen.queryByRole("dialog", { name: "Architecture" })).toBeNull();
@@ -195,29 +196,48 @@ it("reveals the collapsed Architecture menu on hover without stealing focus", as
   fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
   const expand = screen.getByRole("button", { name: "Expand sidebar" });
   act(() => expand.focus());
-  const trigger = screen.getByRole("button", { name: "Architecture" });
+  const trigger = screen.getByRole("link", { name: "Architecture" });
   fireEvent.mouseEnter(trigger);
   fireEvent.mouseMove(trigger);
   const menu = await screen.findByRole("dialog", { name: "Architecture" });
   expect(document.activeElement).toBe(expand);
   fireEvent.mouseEnter(menu);
-  expect(screen.getByRole("link", { name: "Architecture" })).toBeTruthy();
+  expect(screen.getAllByRole("link", { name: "Architecture" })).toHaveLength(2);
   fireEvent.keyDown(menu, { key: "Escape" });
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Architecture" })).toBeNull());
   expect(document.activeElement).toBe(expand);
   fireEvent.click(trigger);
-  expect(await screen.findByRole("dialog", { name: "Architecture" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "Architecture" })).toBeNull();
 });
 
-it("still opens the rail directory on a new canvas selection but not a same-resource page change", async () => {
+it("keeps the rail directory closed on service selection and page changes", async () => {
   const router = await showNavigation();
   fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
   await act(async () => { router.history.push("/cloud/acme/store/staging/services/api"); });
-  const directory = await screen.findByRole("dialog", { name: "Architecture" });
-  fireEvent.keyDown(directory, { key: "Escape" });
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Architecture" })).toBeNull());
+  expect(screen.queryByRole("dialog", { name: "Architecture" })).toBeNull();
   await act(async () => { router.history.push("/cloud/acme/store/staging/services/api?tab=variables"); });
   expect(screen.queryByRole("dialog", { name: "Architecture" })).toBeNull();
   await act(async () => { router.history.push("/cloud/acme/store/staging/services/worker"); });
-  expect(await screen.findByRole("dialog", { name: "Architecture" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "Architecture" })).toBeNull();
+});
+
+it("expands a resource independently without navigating", async () => {
+  const router = await show();
+  const href = router.state.location.href;
+  fireEvent.click(screen.getByRole("button", { name: "Collapse API" }));
+  await waitFor(() => expect(screen.queryByRole("link", { name: "Variables" })).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "Expand Worker" }));
+  expect(await screen.findByRole("link", { name: "Variables" })).toBeTruthy();
+  expect(router.state.location.href).toBe(href);
+  fireEvent.click(screen.getByRole("link", { name: "Variables" }));
+  await waitFor(() => expect(router.state.location.href).toBe("/cloud/acme/store/staging/services/worker?tab=variables"));
+});
+
+it("navigates to Architecture when the rail icon is clicked", async () => {
+  const router = await showNavigation();
+  await act(async () => { router.history.push("/cloud/acme/store/staging/services/api"); });
+  fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+  fireEvent.click(screen.getByRole("link", { name: "Architecture" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/cloud/acme/store/staging"));
+  expect(screen.queryByRole("dialog", { name: "Architecture" })).toBeNull();
 });

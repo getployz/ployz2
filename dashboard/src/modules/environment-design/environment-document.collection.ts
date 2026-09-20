@@ -1,7 +1,7 @@
 import { cachedByCollectionScope, getDbClient } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { compileSavedEnvironmentIntent } from "./saved-intent";
-import { collectionOptions, liveQueryCollectionOptions, type DbClient, eq, useLiveQuery } from "@tanstack/react-db";
+import { BasicIndex, collectionOptions, liveQueryCollectionOptions, type DbClient, eq, useLiveQuery } from "@tanstack/react-db";
 import { getEnvironmentsCollection, getProjectsCollection } from "#/collections/collections";
 import { plainRowCollection, withoutVirtualProps } from "#/lib/tanstack-db";
 
@@ -9,7 +9,7 @@ export function createEnvironmentDocumentsCollection(client: DbClient, { environ
   environments: ReturnType<typeof getEnvironmentsCollection>;
   projects: ReturnType<typeof getProjectsCollection>;
 }) {
-  const collection = client.collection(collectionOptions(liveQueryCollectionOptions({
+  const collection = client.collection(collectionOptions({ ...liveQueryCollectionOptions({
     id: `${environments.id}:documents`,
     query: (q) => q.from({ environment: environments })
       .innerJoin({ project: projects }, ({ environment, project }) => eq(environment.projectId, project.id))
@@ -17,7 +17,7 @@ export function createEnvironmentDocumentsCollection(client: DbClient, { environ
         compiled: compileSavedEnvironmentIntent({ environmentId: environment.id, intent: environment.intent }),
       })),
     getKey: (document) => document.id,
-  })));
+  }), autoIndex: "eager", defaultIndexType: BasicIndex }));
   return plainRowCollection(collection);
 }
 export const getEnvironmentDocumentsCollection = cachedByCollectionScope((organizationSlug, scope) =>

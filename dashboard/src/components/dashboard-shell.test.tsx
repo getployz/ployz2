@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { environmentResourcesOptions } from "#/modules/environment-design/environment-data";
 import { act, cleanup, fireEvent, render, screen, waitFor, within, type RenderOptions } from "@testing-library/react";
 import { Schema } from "effect";
 import { Fragment } from "react";
@@ -14,7 +15,7 @@ import { ThemeProvider } from "./theme-provider";
 import { authClient } from "#/auth/auth-client";
 import type { AuthSession } from "#/auth/auth";
 import { Route as RootRoute } from "#/routes/__root";
-import { environmentKeys, organizationKeys, projectKeys } from "#/modules/environment-design/workspace-queries";
+import { organizationKeys } from "#/modules/environment-design/workspace-queries";
 
 // Better Auth captures fetch when the client is created.
 const transport = vi.hoisted(() => {
@@ -80,12 +81,13 @@ function PreferenceProbe() {
 async function show(ssr = false) {
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   clients.push(client);
-  const environmentData = { id: "production", projectId: "project", namespace: "production", name: "Production" };
+  const environmentData = { intent: { version: 1, environmentSlug: "production", services: [], volumes: [], variableGroups: [] }, createdAt: new Date(0), id: "production", projectId: "project", namespace: "production", name: "Production" };
   client.setQueryData(organizationKeys.state("acme"), { activeOrganization: { id: "org", slug: "acme", name: "Acme" }, organizations: [{ id: "org", slug: "acme", name: "Acme" }] });
-  client.setQueryData(projectKeys.list("acme"), [{ id: "project", slug: "store", name: "Store", resolvedEnvironment: environmentData }]);
-  client.setQueryData(environmentKeys.detail("acme", "store", "production"), environmentData);
-  for (const table of ["project", "environment", "service", "environment_resource", "resource_lineage", "environment_canvas_node_position", "environment_node_config_snapshot", "volume_remove_attempt"]) {
-    client.setQueryData(["collections", "test-session", "test-user", "acme", table], table === "environment" ? [environmentData] : []);
+  client.setQueryData(["collections", "test-session", "test-user", "acme", "project"], [{ id: "project", slug: "store", name: "Store", resolvedEnvironment: environmentData }]);
+  client.setQueryData(["collections", "test-session", "test-user", "acme", "environment_summary"], [environmentData]);
+  client.setQueryData(["collections", "test-session", "test-user", "acme", "project_preference"], []);
+  for (const table of ["environment", "service", "environment_resource", "resource_lineage", "environment_canvas_node_position", "environment_node_config_snapshot", "volume_remove_attempt", "environment_deployment"]) {
+    client.setQueryData(["collections", "test-session", "test-user", "acme", table, "production"], table === "environment" ? [environmentData] : []);
   }
   RootRoute.updateLoader({ loader: () => ({ theme: "light", session: savedSession }) });
   Object.assign(RootRoute.options, { shellComponent: Fragment });
@@ -97,7 +99,10 @@ async function show(ssr = false) {
   const organization = createRoute({ getParentRoute: () => cloud, path: "$organizationSlug" });
   const projectLayout = createRoute({ getParentRoute: () => organization, id: "_project" });
   const project = createRoute({ getParentRoute: () => projectLayout, path: "$projectSlug" });
-  const environment = createRoute({ getParentRoute: () => project, path: "$environmentSlug", component: () => ssr ? <DashboardSidebarProvider><PreferenceProbe /></DashboardSidebarProvider> : (
+  const environment = createRoute({ getParentRoute: () => project, path: "$environmentSlug", loader: () => ({ navigationReady: client.ensureQueryData(environmentResourcesOptions(
+    { organizationSlug: "acme", projectSlug: "store", environmentSlug: "production" },
+    { queryClient: client, sessionId: "test-session", userId: "test-user", environmentSlug: "production" },
+  )) }), component: () => ssr ? <DashboardSidebarProvider><PreferenceProbe /></DashboardSidebarProvider> : (
     <DashboardShell scope={{ kind: "environment", organizationSlug: "acme", projectSlug: "store", environmentSlug: "production" }}><Outlet /></DashboardShell>
   ) });
   const logs = createRoute({ getParentRoute: () => environment, path: "logs", component: () => <div>Log entries</div> });
@@ -147,7 +152,7 @@ it("renders real scope queries and retains named navigation when collapsed", asy
   await within(sidebar).findByRole("button", { name: "Expand sidebar" });
   expect(within(sidebar).getByRole("button", { name: "Expand sidebar" })).toBeTruthy();
   expect(within(sidebar).queryByRole("link", { name: "Ployz home" })).toBeNull();
-  expect(within(sidebar).getByRole("button", { name: "Architecture" })).toBeTruthy();
+  expect(within(sidebar).getByRole("link", { name: "Architecture" })).toBeTruthy();
   expect(within(sidebar).getByRole("link", { name: "Logs" }).getAttribute("aria-current")).toBe("page");
   expect(router.state.location.pathname).toBe("/cloud/acme/store/production/logs");
   fireEvent.click(within(sidebar).getByRole("button", { name: "Expand sidebar" }));
@@ -159,7 +164,7 @@ it("opens the collapsed account menu on hover and applies a theme choice", async
   await show();
   fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
   await screen.findByRole("button", { name: "Expand sidebar" });
-  const account = screen.getByRole("button", { name: "Open account menu" });
+  const account = within(screen.getByRole("complementary", { name: "Dashboard navigation" })).getByRole("button", { name: "Open account menu" });
   fireEvent.mouseEnter(account);
   fireEvent.mouseMove(account);
   const dark = await screen.findByRole("menuitem", { name: "Dark" });
@@ -241,7 +246,8 @@ it("removes an open collapsed-rail popup when resizing to mobile", async () => {
   const { router } = await show();
   fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
   await screen.findByRole("button", { name: "Expand sidebar" });
-  fireEvent.click(screen.getByRole("button", { name: "Architecture" }));
+  fireEvent.mouseEnter(screen.getByRole("link", { name: "Architecture" }));
+  fireEvent.mouseMove(screen.getByRole("link", { name: "Architecture" }));
   expect(await screen.findByRole("dialog", { name: "Architecture" })).toBeTruthy();
   await act(async () => {
     vi.stubGlobal("innerWidth", 390);

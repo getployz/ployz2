@@ -19,7 +19,7 @@ export function useAuthSession(): AuthSessionValue {
   const hydrated = useHydrated();
   const state = authClient.useSession();
   return {
-    data: hydrated ? state.data : serverSession,
+    data: hydrated && !state.isPending ? state.data : serverSession,
     isPending: false,
     refetch: state.refetch,
   };

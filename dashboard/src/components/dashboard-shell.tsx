@@ -68,25 +68,25 @@ function DashboardLayout({
       {!isMobile ? (
         <aside
           className={cn(
-            "hidden shrink-0 border-r bg-sidebar motion-safe:transition-[width] motion-safe:duration-150 min-wf-nav:block",
-            open ? "w-64" : "w-16",
+            "group hidden shrink-0 border-r bg-sidebar motion-safe:transition-[width] motion-safe:duration-150 min-wf-nav:block",
+            open ? "w-64" : "w-12",
           )}
+          data-state={open ? "expanded" : "collapsed"}
+          data-collapsible={open ? "" : "icon"}
           aria-label="Dashboard navigation"
         >
           <AppSidebar scope={scope} />
         </aside>
       ) : null}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-        {isMobile ? (
-          <MobileDashboardNavigation
-            key={
-              scope.kind === "all"
-                ? scope.organizationSlug
-                : `${scope.organizationSlug}/${scope.projectSlug}/${scope.environmentSlug}`
-            }
-            scope={scope}
-          />
-        ) : null}
+        <MobileDashboardNavigation
+          key={
+            scope.kind === "all"
+              ? scope.organizationSlug
+              : `${scope.organizationSlug}/${scope.projectSlug}/${scope.environmentSlug}`
+          }
+          scope={scope}
+        />
         {!canvas ? <DashboardPageHeader /> : null}
         <NavigationProgress />
         <OrganizationCollectionRefreshNotice

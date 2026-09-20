@@ -1,3 +1,4 @@
+import { cn } from "#/lib/utils";
 import { useReducedMotion } from "#/lib/motion";
 import { createContext, useContext, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
@@ -28,32 +29,31 @@ export function CanvasInspectorHeader({ params, children }: {
   const presentation = useContext(InspectorPresentation);
   const reducedMotion = useReducedMotion();
   if (!presentation) throw new Error("Canvas inspector header must be inside its workspace");
-  const { takeover, canResize, isMobile, toggleFullscreen } = presentation;
+  const { takeover, canResize, toggleFullscreen } = presentation;
   const returnLink = (
     <Link
       to={ENVIRONMENT_INDEX_ROUTE_TO}
       params={params}
       search={(previous) => ({ ...previous, tab: undefined })}
       viewTransition={reducedMotion ? false : { types: ["canvas-inspector-close"] }}
-      className={buttonVariants({ variant: "ghost", size: "icon" })}
+      className={cn(buttonVariants({ variant: "ghost", size: "icon" }), !takeover && "min-wf-nav:hidden")}
       data-canvas-inspector-exit
-      data-canvas-inspector-desktop-control={isMobile ? undefined : true}
-      aria-label={isMobile || takeover ? "Back to Architecture" : "Close inspector"}
-      title={isMobile || takeover ? "Back to Architecture" : "Close inspector"}
+      aria-label="Back to Architecture"
+      title="Back to Architecture"
     >
-      {isMobile || takeover ? <ArrowLeftIcon /> : <XIcon />}
+      <ArrowLeftIcon />
     </Link>
   );
 
   return (
     <div className="canvas-inspector-header flex shrink-0 items-center gap-3 border-b px-4">
-      {isMobile || takeover ? returnLink : null}
+      {returnLink}
       <div className="min-w-0 flex-1">{children}</div>
-      {isMobile ? <>
+      <div className="flex items-center gap-3 min-wf-nav:hidden">
         <span aria-hidden className="text-muted-foreground">/</span>
         <DashboardNavigationPicker scope={{ kind: "environment", ...params }} />
-      </> : null}
-      {!isMobile && canResize ? (
+      </div>
+      {canResize ? (
         <Button
           variant="ghost"
           size="icon"
@@ -65,7 +65,21 @@ export function CanvasInspectorHeader({ params, children }: {
           {takeover ? <Minimize2Icon /> : <Maximize2Icon />}
         </Button>
       ) : null}
-      {!isMobile && !takeover ? returnLink : null}
+      {!takeover ? (
+        <Link
+          to={ENVIRONMENT_INDEX_ROUTE_TO}
+          params={params}
+          search={(previous) => ({ ...previous, tab: undefined })}
+          viewTransition={reducedMotion ? false : { types: ["canvas-inspector-close"] }}
+          className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "hidden min-wf-nav:inline-flex")}
+          data-canvas-inspector-exit
+          data-canvas-inspector-desktop-control
+          aria-label="Close inspector"
+          title="Close inspector"
+        >
+          <XIcon />
+        </Link>
+      ) : null}
     </div>
   );
 }

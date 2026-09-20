@@ -97,7 +97,7 @@ The Cloud-owned, user-visible attempt to turn one frozen Attempt Target into run
 _Avoid_: Prepared snapshot, build workflow, Core Deploy
 
 **Working State**:
-The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment.
+The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity, Node Introduction, and canvas position when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention.
 _Avoid_: Saved State, deployable revision, client diff ledger
 
 **Variable Group**:

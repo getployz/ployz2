@@ -40,6 +40,26 @@ function createStores() {
   return { sources, id, environmentId, client, server };
 }
 
+it("hides a never-deployed volume when only Working State removes it", async () => {
+  const { sources, client, server, id } = createStores();
+  await Promise.all(Object.values(sources).map(reconcileCollection));
+  const volumes = createVolumeResourcesCollection({ client: getDbClient(client), sources });
+  try {
+    await volumes.preload();
+    expect(volumes.get(id)).toBeDefined();
+    const document = server.documents[0];
+    if (!document) throw new Error("Missing document fixture");
+    server.documents = [{ ...document, intent: { ...document.intent, volumes: [] } }];
+    await reconcileCollection(sources.documents);
+    await vi.waitFor(() => expect(volumes.get(id)).toBeUndefined());
+    expect(sources.resources.get(id)).toBeDefined();
+  } finally {
+    await volumes.cleanup();
+    await Promise.all(Object.values(sources).map((collection) => collection.cleanup()));
+    client.clear();
+  }
+});
+
 it("refreshes joined resources after API creation, optimistic position persistence and deletion", async () => {
   const stores = createStores();
   await Promise.all(Object.values(stores.sources).map(reconcileCollection));

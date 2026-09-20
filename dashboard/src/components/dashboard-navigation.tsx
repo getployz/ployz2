@@ -4,6 +4,7 @@ import {
   ArrowLeftIcon,
   BoxIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   DatabaseIcon,
   LayersIcon,
 } from "lucide-react";
@@ -91,11 +92,54 @@ function Destination({
   );
 }
 
+function ResourceNavigation({
+  scope, node, selected, tab, onNavigate,
+}: {
+  scope: EnvironmentScope;
+  node: NavigationNode;
+  selected: boolean;
+  tab?: string;
+  onNavigate?: (nodeId: string) => void;
+}) {
+  const [open, setOpen] = useState(selected);
+  const Icon = nodeIcons[node.type];
+  const pages = node.type === "service" ? SERVICE_PAGES : [SERVICE_PAGES[0]];
+  return (
+    <SidebarMenuItem>
+      <Collapsible open={open} onOpenChange={setOpen}>
+        <div className="flex min-w-0 items-center">
+          <SidebarMenuButton render={<Link {...nodeDestination(scope, node)}
+            onClick={() => onNavigate?.(node.id)} title={node.name} />}>
+            <Icon /><span>{node.name}</span>
+          </SidebarMenuButton>
+          <CollapsibleTrigger render={<Button variant="ghost" size="icon"
+            aria-label={`${open ? "Collapse" : "Expand"} ${node.name}`} />}>
+            <ChevronRightIcon className={cn(open && "rotate-90")} />
+          </CollapsibleTrigger>
+        </div>
+        <CollapsibleContent>
+          <div className="pl-4">
+          <SidebarMenu>
+            {pages.map((page) => (
+              <SidebarMenuItem key={page.id}>
+                <SidebarMenuButton isActive={selected && (tab ?? "settings") === page.id}
+                  render={<Link {...nodeDestination(scope, node, page.id)}
+                    onClick={() => onNavigate?.(node.id)}
+                    aria-current={selected && (tab ?? "settings") === page.id ? "page" : undefined} />}>
+                  <span>{page.label}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
+          </SidebarMenu>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </SidebarMenuItem>
+  );
+}
+
 export function EnvironmentNodeDirectory({
-  scope,
-  nodes,
-  selectedId,
-  onNavigate,
+  scope, nodes, selectedId, onNavigate,
 }: {
   scope: EnvironmentScope;
   nodes: NavigationNode[];
@@ -105,100 +149,28 @@ export function EnvironmentNodeDirectory({
   const [filter, setFilter] = useState("");
   const { tab } = useSearch({ strict: false });
   const selected = nodes.find((node) => node.id === selectedId);
-  const others = nodes.filter(
-    (node) =>
-      node.id !== selectedId &&
-      node.name.toLowerCase().includes(filter.trim().toLowerCase()),
-  );
+  const others = nodes.filter((node) => node.id !== selectedId &&
+    node.name.toLowerCase().includes(filter.trim().toLowerCase()));
   return (
-    <div className="flex min-w-0 flex-col gap-2">
-      {selected ? (
-        <div className="flex min-w-0 flex-col gap-1">
-          <p className="truncate px-2 font-medium" title={selected.name}>
-            {selected.name}
-          </p>
-          <SidebarMenu>
-            {selected.type === "service" ? (
-              SERVICE_PAGES.map((page) => (
-                <SidebarMenuItem key={page.id}>
-                  <SidebarMenuButton
-                    isActive={(tab ?? "settings") === page.id}
-                    render={
-                      <Link
-                        {...nodeDestination(scope, selected, page.id)}
-                        onClick={() => onNavigate?.(selected.id)}
-                        aria-current={
-                          (tab ?? "settings") === page.id ? "page" : undefined
-                        }
-                      />
-                    }
-                  >
-                    <span>{page.label}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))
-            ) : (
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  isActive
-                  render={
-                    <Link
-                      {...nodeDestination(scope, selected)}
-                      onClick={() => onNavigate?.(selected.id)}
-                      aria-current="page"
-                    />
-                  }
-                >
-                  Configuration
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            )}
-          </SidebarMenu>
-        </div>
-      ) : null}
+    <div className="flex min-w-0 flex-col gap-1">
       {nodes.length > 6 || filter !== "" ? (
-        <Input
-          type="search"
-          aria-label="Find resource"
-          placeholder="Find resource…"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-        />
+        <Input type="search" aria-label="Find resource" placeholder="Find resource…"
+          value={filter} onChange={(event) => setFilter(event.target.value)} />
       ) : null}
-      {!selected || nodes.length > 1 ? (
-        <>
-          <p className="px-2 text-xs text-muted-foreground">
-            {selected ? "Other resources" : "Resources"}
-          </p>
-          <SidebarMenu className="max-h-64 overflow-y-auto overscroll-contain">
-            {others.map((node) => {
-              const Icon = nodeIcons[node.type];
-              return (
-                <SidebarMenuItem key={node.id}>
-                  <SidebarMenuButton
-                    render={
-                      <Link
-                        {...nodeDestination(scope, node)}
-                        onClick={() => onNavigate?.(node.id)}
-                        title={node.name}
-                      />
-                    }
-                  >
-                    <Icon />
-                    <span>{node.name}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              );
-            })}
-          </SidebarMenu>
-          {!others.length ? (
-            <Empty variant="placeholder">
-              <EmptyDescription>
-                {filter ? "No matching resources" : "No resources yet"}
-              </EmptyDescription>
-            </Empty>
-          ) : null}
-        </>
+      {selected ? (
+        <SidebarMenu>
+          <ResourceNavigation key={selected.id} scope={scope} node={selected} selected tab={tab} onNavigate={onNavigate} />
+        </SidebarMenu>
+      ) : null}
+      <SidebarMenu className="max-h-64 overflow-y-auto overscroll-contain">
+        {others.map((node) => (
+          <ResourceNavigation key={node.id} scope={scope} node={node} selected={false} tab={tab} onNavigate={onNavigate} />
+        ))}
+      </SidebarMenu>
+      {!others.length && (!selected || filter) ? (
+        <Empty variant="placeholder">
+          <EmptyDescription>{filter ? "No matching resources" : "No resources yet"}</EmptyDescription>
+        </Empty>
       ) : null}
     </div>
   );
@@ -236,7 +208,7 @@ function EnvironmentNavigation({
           ? projection !== "rail" && (selectedNodeId !== null || disclosure.open)
           : selectedNodeId === null
             ? disclosure.open
-            : selectedNodeId !== disclosure.navigationTarget,
+            : projection !== "rail" && selectedNodeId !== disclosure.navigationTarget,
       userOpened: false,
       navigationTarget: null,
     });
@@ -261,7 +233,7 @@ function EnvironmentNavigation({
     }
     onNavigate?.();
   };
-  const resources = useEnvironmentNavigationNodes(scope, open);
+  const resources = useEnvironmentNavigationNodes(scope);
   const section = useDashboardSection();
   const items = createDashboardNavItems(scope);
   const architecture = items.find((item) => item.section === "overview");
@@ -292,7 +264,7 @@ function EnvironmentNavigation({
   if (!architecture) return null;
   return (
     <SidebarGroup>
-      <SidebarMenu>
+      <SidebarMenu className="mb-1">
         <SidebarMenuItem>
           <SidebarMenuButton
             render={<Link {...organization} onClick={onNavigate} />}
@@ -311,11 +283,21 @@ function EnvironmentNavigation({
       <SidebarMenu>
         <SidebarMenuItem>
           {projection === "rail" ? (
-            <Popover open={open} onOpenChange={setOpen}>
+            <Popover open={open} onOpenChange={(value, details) => {
+              if (details.reason === "trigger-press") return;
+              setOpen(value, details);
+            }}>
               <PopoverTrigger
                 openOnHover
+                nativeButton={false}
+                role="link"
                 render={
                   <SidebarMenuButton
+                    render={<Link {...getDashboardDestination(scope, "overview")}
+                      onClick={() => {
+                        setOpen(false);
+                        onNavigate?.();
+                      }} />}
                     aria-label="Architecture"
                     isActive={section === "overview"}
                     className="justify-center"
@@ -326,6 +308,7 @@ function EnvironmentNavigation({
               </PopoverTrigger>
               <PopoverContent
                 side="right"
+                sideOffset={8}
                 align="start"
                 initialFocus={() => disclosure.userOpened}
                 finalFocus={() => disclosure.userOpened}
@@ -382,11 +365,11 @@ function EnvironmentNavigation({
                     />
                   }
                 >
-                  <ChevronDownIcon className={cn(open && "rotate-180")} />
+                  <ChevronRightIcon className={cn(open && "rotate-90")} />
                 </CollapsibleTrigger>
               </div>
               <CollapsibleContent>
-                <div className="ml-3 border-l py-2 pl-3">{directory}</div>
+                <div className="pl-4">{directory}</div>
               </CollapsibleContent>
             </Collapsible>
           )}
@@ -460,8 +443,8 @@ export function DashboardNavigationPicker({
   const title = isInspectorOpen
     ? selectedServiceId
       ? (SERVICE_PAGES.find((page) => page.id === (tab ?? "settings"))?.label ??
-        "Configuration")
-      : "Configuration"
+        "Settings")
+      : "Settings"
     : getDashboardSectionLabel(scope, section);
   return (
     <Popover open={open} onOpenChange={setOpen}>

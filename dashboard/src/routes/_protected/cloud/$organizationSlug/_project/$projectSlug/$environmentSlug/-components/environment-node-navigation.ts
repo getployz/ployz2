@@ -1,20 +1,10 @@
+import { environmentResourcesOptions } from "#/modules/environment-design/environment-data";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { withoutVirtualProps } from "#/lib/tanstack-db";
 import { useQuery } from "@tanstack/react-query";
 import { linkOptions } from "@tanstack/react-router";
 import { variableGroupsEnabled } from "#/lib/feature-flags";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { preloadCollection } from "#/collections/query-collection";
-import {
-  getProjectsCollection,
-  getEnvironmentsCollection,
-  getRawServicesCollection,
-  getRawEnvironmentResourcesCollection,
-  getResourceLineagesCollection,
-  getCanvasPositionsCollection,
-  getEnvironmentNodeConfigSnapshotsCollection,
-  getVolumeRemoveAttemptsCollection,
-} from "#/collections/collections";
 import {
   getServicesCollection,
   getEnvironmentResourcesCollection,
@@ -62,46 +52,10 @@ export function nodeDestination(
       });
 }
 
-export function useEnvironmentNavigationNodes(
-  params: EnvironmentParams,
-  enabled: boolean,
-) {
+export function useEnvironmentNavigationNodes(params: EnvironmentParams) {
   const scope = useCollectionScope();
   const { organizationSlug, projectSlug, environmentSlug } = params;
-  const ready = useQuery({
-    queryKey: [
-      "node-navigation",
-      scope.sessionId,
-      scope.userId,
-      organizationSlug,
-    ],
-    enabled,
-    staleTime: Infinity,
-    queryFn: async () => {
-      // Reuse lifecycle projections: a Volume remains navigable until removal completes.
-      await Promise.all([
-        preloadCollection(getProjectsCollection(organizationSlug, scope)),
-        preloadCollection(getEnvironmentsCollection(organizationSlug, scope)),
-        preloadCollection(getRawServicesCollection(organizationSlug, scope)),
-        preloadCollection(
-          getRawEnvironmentResourcesCollection(organizationSlug, scope),
-        ),
-        preloadCollection(
-          getResourceLineagesCollection(organizationSlug, scope),
-        ),
-        preloadCollection(
-          getCanvasPositionsCollection(organizationSlug, scope),
-        ),
-        preloadCollection(
-          getEnvironmentNodeConfigSnapshotsCollection(organizationSlug, scope),
-        ),
-        preloadCollection(
-          getVolumeRemoveAttemptsCollection(organizationSlug, scope),
-        ),
-      ]);
-      return true;
-    },
-  });
+  const ready = useQuery(environmentResourcesOptions(params, scope));
   const services = ready.data
     ? getServicesCollection(organizationSlug, scope)
     : null;

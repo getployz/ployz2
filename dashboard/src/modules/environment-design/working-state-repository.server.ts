@@ -4,9 +4,11 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { environment } from "#/modules/project/tables";
-import { service, variable, variableSecret, environmentResource, environmentVariableGroup } from "./tables";
+import { service, variable, variableSecret, environmentResource, environmentVariableGroup, environmentCanvasNodePosition } from "./tables";
 import { canonicalizeSavedEnvironmentIntent, compileSavedEnvironmentIntent, parseDashboardEnvironmentIntent, redactSavedEnvironmentIntent, type SavedEnvironmentIntent } from "./saved-intent";
 import { Database } from "#/server/database.server";
+import { environmentNodeIntroduction, environmentNodeIntroductionSecret, environmentNodeConfigSnapshot, volumeRemoveAttempt } from "#/modules/runtime/tables";
+import { environmentSavedStateSnapshot } from "#/modules/deployments/tables";
 import { Conflict, NotFound } from "#/server/public-error";
 
 export type EnvironmentDocument = typeof environment.$inferSelect;
@@ -90,6 +92,7 @@ export const writeEnvironmentDocument = Effect.fn("EnvironmentDesign.writeEnviro
       intent: redactSavedEnvironmentIntent(intent), revision: randomUUID(), updatedAt: new Date(),
     }).where(and(eq(environment.id, document.id), eq(environment.revision, document.revision))).returning();
     if (!written) return yield* new Conflict({ message: "Working State changed while this edit was being saved." });
+    yield* pruneDraftVolumes(written);
     return written;
   },
 );
@@ -124,4 +127,41 @@ export const loadCurrentEnvironmentState = Effect.fn("EnvironmentDesign.loadCurr
 
 export const loadCurrentEnvironmentSnapshotProjection = Effect.fn("EnvironmentDesign.loadCurrentEnvironmentSnapshotProjection")(
   function* (environmentId: string) { return (yield* loadCurrentEnvironmentState(environmentId)).projection; },
+);
+
+/** The Environment write lock serializes this with publication. Retained JSON
+ * history has no identity FK, so it must be checked before deleting identities. */
+const pruneDraftVolumes = Effect.fn("EnvironmentDesign.pruneDraftVolumes")(
+  function* (document: EnvironmentDocument) {
+    const { drizzle } = yield* Database;
+    const deleted = yield* drizzle.delete(environmentResource).where(and(
+      eq(environmentResource.environmentId, document.id),
+      eq(environmentResource.implementationType, "volume"),
+      sql`not exists (select 1 from jsonb_array_elements(${JSON.stringify(document.intent.volumes)}::jsonb) node
+        where node->>'resourceId' = ${environmentResource.id}::text)`,
+      sql`not exists (select 1 from ${environmentSavedStateSnapshot} saved
+        where saved.environment_id = ${document.id}
+          and saved.intent->'volumes' @> jsonb_build_array(jsonb_build_object('resourceId', ${environmentResource.id}::text)))`,
+      sql`not exists (select 1 from ${environmentNodeConfigSnapshot} snapshot
+        where snapshot.environment_id = ${document.id} and snapshot.node_type = 'volume'
+          and snapshot.node_id = ${environmentResource.id})`,
+      sql`not exists (select 1 from ${volumeRemoveAttempt} removal
+        where removal.environment_resource_id = ${environmentResource.id})`,
+      sql`not exists (select 1 from ${environmentNodeIntroductionSecret} introduction
+        where introduction.environment_id = ${document.id}
+          and not (introduction.node_type = 'volume' and introduction.node_id = ${environmentResource.id})
+          and introduction.authored_intent->'volumes' @> jsonb_build_array(jsonb_build_object('resourceId', ${environmentResource.id}::text)))`,
+    )).returning({ id: environmentResource.id });
+    if (!deleted.length) return;
+    const ids = deleted.map((row) => row.id);
+    // Introduction secrets cascade from their public introduction; lineage is shared.
+    yield* drizzle.delete(environmentNodeIntroduction).where(and(
+      eq(environmentNodeIntroduction.environmentId, document.id),
+      eq(environmentNodeIntroduction.nodeType, "volume"), inArray(environmentNodeIntroduction.nodeId, ids),
+    ));
+    yield* drizzle.delete(environmentCanvasNodePosition).where(and(
+      eq(environmentCanvasNodePosition.environmentId, document.id),
+      eq(environmentCanvasNodePosition.resourceType, "volume"), inArray(environmentCanvasNodePosition.resourceId, ids),
+    ));
+  },
 );

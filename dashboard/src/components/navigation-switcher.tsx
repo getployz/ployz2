@@ -1,6 +1,4 @@
-import { type ReactNode, useState, useSyncExternalStore } from "react";
-import { useLiveQuery } from "@tanstack/react-db";
-import { withoutVirtualProps } from "#/lib/tanstack-db";
+import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Link,
@@ -11,12 +9,11 @@ import {
 import { useServerFn } from "@tanstack/react-start";
 import {
   Building2Icon,
-  CheckIcon,
-  ChevronDownIcon,
+  ChevronsUpDownIcon,
   FolderIcon,
   PlusIcon,
 } from "lucide-react";
-import { getEnvironmentsCollection } from "#/collections/collections";
+import { getEnvironmentsCollection, getEnvironmentSummariesCollection, environmentSummary } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import {
   getDashboardDestination,
@@ -34,91 +31,23 @@ import {
   DialogTitle,
 } from "#/components/ui/dialog";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "#/components/ui/dropdown-menu";
-import {
   Field,
   FieldError,
   FieldGroup,
   FieldLabel,
 } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
+import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "#/components/ui/command";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
 import { createEnvironmentServerFn } from "#/modules/environment-design/workspace-functions";
 import {
   organizationStateQueryOptions,
-  projectListQueryOptions,
+  useWorkspace,
 } from "#/modules/environment-design/workspace-queries";
 
 type Projection = "desktop" | "mobile" | "rail";
-
-function ScopePicker({
-  label,
-  suffix,
-  name,
-  icon,
-  projection = "desktop",
-  triggerVariant = "ghost",
-  children,
-}: {
-  label: string;
-  suffix?: string;
-  name: string;
-  icon: ReactNode;
-  projection?: Projection;
-  triggerVariant?: "ghost" | "outline";
-  children: ReactNode;
-}) {
-  const rail = projection === "rail";
-  const fullLabel = suffix ? `${label} / ${suffix}` : label;
-  const trigger = (
-    <DropdownMenuTrigger
-      openOnHover={rail}
-      render={
-        <Button
-          variant={triggerVariant}
-          size={rail ? "icon-sm" : "sm"}
-          aria-label={`${name}: ${fullLabel}`}
-          title={fullLabel}
-          className={cn(!rail && "w-full min-w-0 justify-start")}
-        />
-      }
-    >
-      {projection !== "mobile" ? icon : null}
-      {!rail && (
-        <>
-          <span className="flex min-w-0 flex-1 items-center gap-1 text-left">
-            <span className="min-w-0 flex-1 truncate">{label}</span>
-            {suffix ? <>
-              <span aria-hidden className="shrink-0 text-muted-foreground">/</span>
-              <span className="max-w-[65%] shrink-0 truncate">{suffix}</span>
-            </> : null}
-          </span>
-          <ChevronDownIcon data-icon="inline-end" />
-        </>
-      )}
-    </DropdownMenuTrigger>
-  );
-  return (
-    <DropdownMenu>
-      {trigger}
-      <DropdownMenuContent
-        align="start"
-        side={rail ? "right" : "bottom"}
-        className="min-w-56 max-w-[calc(100vw-2rem)]"
-      >
-        {children}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
 
 export function ProjectSwitcher({
   organizationSlug,
@@ -137,162 +66,118 @@ export function ProjectSwitcher({
   triggerVariant?: "ghost" | "outline";
   projection?: Projection;
 }) {
-  const collectionScope = useCollectionScope();
-  const {
-    data: projects = [],
-    isPending,
-    isError,
-    refetch,
-  } = useQuery(projectListQueryOptions(organizationSlug));
-  const environmentCollection = getEnvironmentsCollection(
-    organizationSlug,
-    collectionScope,
-  );
-  const { data: environmentRows = [], isLoading: environmentsLoading } =
-    useLiveQuery((q) => q.from({ environment: environmentCollection })
-      .select(({ environment }) => environment));
-  const environments = environmentRows.map(withoutVirtualProps);
-  const environmentsError = useSyncExternalStore(
-    (onChange) =>
-      collectionScope.queryClient.getQueryCache().subscribe(onChange),
-    () => environmentCollection.utils.isError,
-    () => false,
-  );
+  const { projects, environments, isPending, isError, refetch } = useWorkspace(organizationSlug);
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [browsedProjectSlug, setBrowsedProjectSlug] = useState(projectSlug);
   const [createProject, setCreateProject] = useState<string | null>(null);
-  const activeProject = projects.find(
-    (project) => project.slug === projectSlug,
-  );
-  const activeEnvironment = environments.find(
-    (environment) =>
-      environment.projectId === activeProject?.id &&
-      environment.namespace === environmentSlug,
-  );
-  const label = projectSlug ? activeProject?.name ?? projectSlug : "Organization";
-  const environmentLabel = projectSlug
-    ? activeEnvironment?.name ?? environmentSlug ?? activeProject?.resolvedEnvironment?.name ?? "Choose environment"
+  const activeProject = projects.find((project) => project.slug === projectSlug);
+  const activeEnvironment = environments.find((environment) =>
+    environment.projectId === activeProject?.id && environment.namespace === environmentSlug);
+  const selectedProject = projects.find((project) => project.slug === browsedProjectSlug) ?? activeProject ?? projects[0];
+  const projectEnvironments = environments.filter((environment) => environment.projectId === selectedProject?.id);
+  const label = triggerLabel ?? (projectSlug ? activeProject?.name ?? projectSlug : "Choose project");
+  const suffix = !triggerLabel && projectSlug
+    ? activeEnvironment?.name ?? environmentSlug ?? activeProject?.resolvedEnvironment?.name
     : undefined;
+  const fullLabel = suffix ? `${label} / ${suffix}` : label;
+  const rail = projection === "rail";
 
   return (
     <>
-      <ScopePicker
-        name="Project and environment"
-        label={triggerLabel ?? label}
-        suffix={triggerLabel ? undefined : environmentLabel}
-        icon={<FolderIcon data-icon="inline-start" />}
-        projection={projection}
-        triggerVariant={triggerVariant}
-      >
-        <DropdownMenuGroup>
-          <DropdownMenuItem
-            render={
-              <Link
-                {...getDashboardDestination(
-                  { kind: "all", organizationSlug },
-                  section,
-                )}
-              />
-            }
-          >
-            <Building2Icon />
-            Organization
-            {!projectSlug && <CheckIcon className="ml-auto" />}
-          </DropdownMenuItem>
-        </DropdownMenuGroup>
-        <DropdownMenuSeparator />
-        {isPending || isError ? (
-          <DropdownMenuGroup>
-            <DropdownMenuItem
-              disabled={isPending}
-              onClick={() => void refetch()}
-            >
-              {isPending
-                ? "Loading projects…"
-                : "Could not load projects. Retry"}
-            </DropdownMenuItem>
-          </DropdownMenuGroup>
-        ) : projects.length === 0 ? (
-          <DropdownMenuGroup>
-            <DropdownMenuItem disabled>No projects yet</DropdownMenuItem>
-          </DropdownMenuGroup>
-        ) : (
-          projects.map((project) => {
-            const projectEnvironments = environments.filter(
-              (environment) => environment.projectId === project.id,
-            );
-            return (
-              <DropdownMenuGroup key={project.id}>
-                <DropdownMenuLabel>{project.name}</DropdownMenuLabel>
-                {projectEnvironments.map((environment) => (
-                  <DropdownMenuItem
-                    key={environment.id}
-                    render={
-                      <Link
-                        {...getDashboardDestination(
-                          {
-                            kind: "environment",
-                            organizationSlug,
-                            projectSlug: project.slug,
-                            environmentSlug: environment.namespace,
-                          },
-                          section,
-                        )}
-                      />
-                    }
-                  >
-                    {environment.name}
-                    {project.slug === projectSlug &&
-                      environment.namespace === environmentSlug && (
-                        <CheckIcon className="ml-auto" />
-                      )}
-                  </DropdownMenuItem>
-                ))}
-                {projectEnvironments.length === 0 && (
-                  <DropdownMenuItem
-                    disabled={!environmentsError}
-                    onClick={() => void environmentCollection.utils.refetch()}
-                  >
-                    {environmentsError
-                      ? "Could not load environments. Retry"
-                      : environmentsLoading
-                        ? "Loading environments…"
-                        : "No environments yet"}
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem
-                  onClick={() => setCreateProject(project.slug)}
-                >
-                  <PlusIcon /> Add environment
-                </DropdownMenuItem>
-              </DropdownMenuGroup>
-            );
-          })
-        )}
-        <DropdownMenuSeparator />
-        <DropdownMenuGroup>
-          <DropdownMenuItem
-            render={
-              <Link
-                to="/cloud/$organizationSlug/new"
-                params={{ organizationSlug }}
-                search={{}}
-              />
-            }
-          >
-            <PlusIcon /> New project
-          </DropdownMenuItem>
-        </DropdownMenuGroup>
-      </ScopePicker>
-      {createProject && (
-        <CreateEnvironmentDialog
-          key={`${organizationSlug}/${createProject}`}
-          onOpenChange={(open) => {
-            if (!open) setCreateProject(null);
-          }}
-          organizationSlug={organizationSlug}
-          projectSlug={createProject}
-          section={section}
-        />
-      )}
+      <Popover open={open} onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (nextOpen) setBrowsedProjectSlug(projectSlug);
+      }}>
+        <PopoverTrigger openOnHover={rail} render={
+          <Button variant={triggerVariant ?? "ghost"} size={rail ? "icon" : projection === "mobile" ? "sm" : "default"}
+            aria-label={`Project and environment: ${fullLabel}`} title={fullLabel}
+            className={cn(!rail && "w-full min-w-0 justify-start")} />
+        }>
+          {projection !== "mobile" && <FolderIcon data-icon="inline-start" />}
+          {!rail && <>
+            <span className="flex min-w-0 flex-1 items-center gap-1 text-left">
+              <span className="min-w-0 truncate">{label}</span>
+              {suffix && <><span aria-hidden className="shrink-0 text-muted-foreground">/</span><span className="max-w-[65%] shrink-0 truncate">{suffix}</span></>}
+            </span>
+            <ChevronsUpDownIcon data-icon="inline-end" />
+          </>}
+        </PopoverTrigger>
+        <PopoverContent padding="none" align="start" side={rail ? "right" : "bottom"} className="w-[min(36rem,calc(100vw-2rem))]">
+          <PopoverTitle className="sr-only">Choose project and environment</PopoverTitle>
+          {isPending || isError ? (
+            <Button variant="ghost" disabled={isPending} onClick={() => void refetch()}>
+              {isPending ? "Loading projects…" : "Could not load projects. Retry"}
+            </Button>
+          ) : <div className="grid grid-cols-2">
+            <div className="min-w-0 border-r">
+              <Command tabIndex={0} label="Projects" value={selectedProject?.slug ?? ""}
+                onValueChange={(value) => { if (projects.some((project) => project.slug === value)) setBrowsedProjectSlug(value); }}>
+                <CommandList className="min-h-40 max-h-[min(20rem,45dvh)]">
+                  <CommandEmpty>No projects found</CommandEmpty>
+                  <CommandGroup heading="Projects">
+                    {projects.map((project) => <CommandItem key={project.id} value={project.slug} keywords={[project.name]}
+                      data-checked={project.slug === projectSlug} aria-label={project.name}
+                      onSelect={() => {
+                        const environment = project.resolvedEnvironment;
+                        if (!environment) return;
+                        setOpen(false);
+                        void navigate(getDashboardDestination({
+                          kind: "environment", organizationSlug,
+                          projectSlug: project.slug, environmentSlug: environment.namespace
+                        }, section));
+                      }}>
+                      <FolderIcon /><span className="truncate">{project.name}</span>
+                    </CommandItem>)}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </div>
+            <div className="min-w-0">
+              <Command key={selectedProject?.id} tabIndex={0} label="Environments"
+                defaultValue={projectEnvironments.find((environment) => environment.namespace === (
+                  selectedProject?.slug === projectSlug ? environmentSlug : selectedProject?.resolvedEnvironment?.namespace
+                ))?.id}>
+                <CommandList className="min-h-40 max-h-[min(20rem,45dvh)]">
+                  <CommandEmpty>No environments found</CommandEmpty>
+                  <CommandGroup heading="Environments">
+                    {projectEnvironments.map((environment) => <CommandItem key={environment.id} value={environment.id} keywords={[environment.name]}
+                      data-checked={selectedProject?.slug === projectSlug && environment.namespace === environmentSlug}
+                      aria-label={environment.name}
+                      onSelect={() => {
+                        if (!selectedProject) return;
+                        setOpen(false);
+                        void navigate(getDashboardDestination({
+                          kind: "environment", organizationSlug,
+                          projectSlug: selectedProject.slug, environmentSlug: environment.namespace
+                        }, section));
+                      }}>
+                      <span className="truncate">{environment.name}</span>
+                    </CommandItem>)}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </div>
+            <div className="min-w-0 border-r border-t px-2 py-1">
+              <Button variant="ghost" size="sm" className="w-full justify-start" onClick={() => setOpen(false)}
+                render={<Link preload={false} to="/cloud/$organizationSlug/new" params={{ organizationSlug }} search={{}} />}>
+                <PlusIcon data-icon="inline-start" /><span className="truncate">New project</span>
+              </Button>
+            </div>
+            <div className="min-w-0 border-t px-2 py-1">
+              <Button variant="ghost" size="sm" className="w-full justify-start" disabled={!selectedProject} onClick={() => {
+                if (!selectedProject) return;
+                setOpen(false);
+                setCreateProject(selectedProject.slug);
+              }}><PlusIcon data-icon="inline-start" /><span className="truncate">New environment</span></Button>
+            </div>
+          </div>}
+
+        </PopoverContent>
+      </Popover>
+      {createProject && <CreateEnvironmentDialog key={`${organizationSlug}/${createProject}`}
+        onOpenChange={(nextOpen) => { if (!nextOpen) setCreateProject(null); }}
+        organizationSlug={organizationSlug} projectSlug={createProject} section={section} />}
     </>
   );
 }
@@ -330,8 +215,9 @@ function CreateEnvironmentDialog({
     onSuccess: async (receipt, input) => {
       await getEnvironmentsCollection(
         input.organizationSlug,
-        collectionScope,
+        { ...collectionScope, environmentSlug: receipt.data.namespace },
       ).writeCommitted(receipt.data);
+      await getEnvironmentSummariesCollection(input.organizationSlug, collectionScope).writeCommitted(environmentSummary(receipt.data));
       // A completed creation still belongs to its original scope after navigation.
       if (router.state.location.state.key !== input.locationKey) return;
       onOpenChange(false);
@@ -405,6 +291,9 @@ export function NavigationSwitcher({
 }: {
   projection?: Projection;
 }) {
+  const [organizationOpen, setOrganizationOpen] = useState(false);
+  const navigate = useNavigate();
+  const rail = projection === "rail";
   const { organizationSlug, projectSlug, environmentSlug } = useParams({
     strict: false,
   });
@@ -429,44 +318,48 @@ export function NavigationSwitcher({
         projection === "rail" && "items-center",
       )}
     >
-      <ScopePicker
-        name="Organization"
-        label={organizationLabel}
-        icon={<Building2Icon data-icon="inline-start" />}
-        projection={projection}
-      >
-        <DropdownMenuGroup>
-          <DropdownMenuLabel>Organizations</DropdownMenuLabel>
-          {organizationState?.organizations.map((organization) => (
-            <DropdownMenuItem
-              key={organization.id}
-              render={
-                <Link
-                  {...getDashboardDestination(
-                    { kind: "all", organizationSlug: organization.slug },
-                    section,
-                  )}
-                />
-              }
-            >
-              {organization.name}
-              {organization.slug === organizationSlug && (
-                <CheckIcon className="ml-auto" />
-              )}
-            </DropdownMenuItem>
-          ))}
-          {isPending || isError ? (
-            <DropdownMenuItem
-              disabled={isPending}
-              onClick={() => void refetch()}
-            >
-              {isPending
-                ? "Loading organizations…"
-                : "Could not load organizations. Retry"}
-            </DropdownMenuItem>
-          ) : null}
-        </DropdownMenuGroup>
-      </ScopePicker>
+      <Popover open={organizationOpen} onOpenChange={setOrganizationOpen}>
+        <PopoverTrigger openOnHover={rail} render={
+          <Button variant="ghost" size={rail ? "icon" : projection === "mobile" ? "sm" : "default"}
+            aria-label={`Organization: ${organizationLabel}`} title={organizationLabel}
+            className={cn(!rail && "w-full min-w-0 justify-start")} />
+        }>
+          {projection !== "mobile" && <Building2Icon data-icon="inline-start" />}
+          {!rail && <>
+            <span className="min-w-0 flex-1 truncate text-left">{organizationLabel}</span>
+            <ChevronsUpDownIcon data-icon="inline-end" />
+          </>}
+        </PopoverTrigger>
+        <PopoverContent padding="none" align="start" side={rail ? "right" : "bottom"}
+          className="w-[min(18rem,calc(100vw-2rem))]">
+          <PopoverTitle className="sr-only">Choose organization</PopoverTitle>
+          <div className="min-w-0">
+            <Command tabIndex={0} label="Organizations">
+              <CommandList className="max-h-[min(20rem,45dvh)]">
+                <CommandGroup heading="Organizations">
+                  {organizationState?.organizations.map((organization) => (
+                    <CommandItem key={organization.id} value={organization.slug}
+                      data-checked={organization.slug === organizationSlug}
+                      onSelect={() => {
+                        setOrganizationOpen(false);
+                        void navigate(getDashboardDestination(
+                          { kind: "all", organizationSlug: organization.slug }, section,
+                        ));
+                      }}>
+                      <Building2Icon /><span className="truncate">{organization.name}</span>
+                    </CommandItem>
+                  ))}
+                  {isPending || isError ? (
+                    <CommandItem disabled={isPending} onSelect={() => void refetch()}>
+                      {isPending ? "Loading organizations…" : "Could not load organizations. Retry"}
+                    </CommandItem>
+                  ) : null}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </div>
+        </PopoverContent>
+      </Popover>
       <ProjectSwitcher
         key={`${organizationSlug}/${projectSlug ?? ""}/${environmentSlug ?? ""}`}
         organizationSlug={organizationSlug}

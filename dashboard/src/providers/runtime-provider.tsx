@@ -76,7 +76,7 @@ export function RuntimeProvider({
       }
       const parsed = Schema.decodeUnknownOption(
         runtimeConnectionStatusEventSchema,
-      )(raw, { onExcessProperty: "error" });
+      )(raw);
       if (Option.isNone(parsed)) {
         applyUnavailable("Runtime connection state could not be read.");
         return;

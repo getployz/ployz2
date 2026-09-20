@@ -1,24 +1,18 @@
-import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import {
   getDashboardSectionLabel,
   type DashboardScope,
 } from "./dashboard-navigation-model";
 import { useDashboardSection } from "./use-dashboard-section";
-import { environmentBySlugQueryOptions } from "#/modules/environment-design/workspace-queries";
+import { useWorkspace } from "#/modules/environment-design/workspace-queries";
 
 function EnvironmentName({
   scope,
 }: {
   scope: Extract<DashboardScope, { kind: "environment" }>;
 }) {
-  const { data } = useQuery(
-    environmentBySlugQueryOptions(
-      scope.organizationSlug,
-      scope.projectSlug,
-      scope.environmentSlug,
-    ),
-  );
+  const { environments } = useWorkspace(scope.organizationSlug);
+  const data = environments.find((row) => row.namespace === scope.environmentSlug);
   return (
     <span className="truncate text-muted-foreground">
       {data?.name ?? scope.environmentSlug}
