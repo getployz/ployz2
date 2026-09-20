@@ -359,6 +359,9 @@ impl LocalMachineStore {
     }
 
     /// Persist the Cloud Pairing and the accepted management client in one write.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
     pub fn persist_cloud_pairing(
         &mut self,
         pairing: Option<CloudPairing>,

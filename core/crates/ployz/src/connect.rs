@@ -1,26 +1,24 @@
+mod management;
+
+pub use management::ManagementRelay;
+use management::connect_management;
+
 use std::{
     borrow::Cow,
-    collections::HashMap,
     future::Future,
     io,
     path::{Path, PathBuf},
     pin::Pin,
     process::Stdio,
-    sync::{Arc, Mutex, OnceLock},
+    sync::Arc,
     task::{Context as TaskContext, Poll},
     time::Duration,
 };
 
 use hyper_util::rt::TokioIo;
-use iroh::{
-    Endpoint as IrohEndpoint, EndpointAddr, PublicKey, RelayMode, RelayUrl, SecretKey,
-    endpoint::{VarInt, presets},
-    tls::CaTlsConfig,
-};
 use ployz_core::{
-    CodecError, DEFAULT_RELAY_URL, DescribeContractRequest, FramingError, MANAGEMENT_ALPN,
-    MachineId, MachineRpcClient, MachineTarget, ManagementCapability, RoutingMetadataError,
-    RpcError, RpcErrorCode, apply_one_target, op,
+    CodecError, FramingError, MachineId, MachineTarget, RoutingMetadataError, RpcError,
+    RpcErrorCode, apply_one_target,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -75,38 +73,6 @@ pub trait Connector: Send + Sync {
         network: &str,
         address: &str,
     ) -> Result<BoxProxyStream, ConnectError>;
-}
-
-/// Application close code the daemon uses to refuse a connection whose key is not accepted.
-const REFUSED_BY_IDENTITY: VarInt = VarInt::from_u32(0x50);
-
-/// The relay the management transport dials through. Production uses the compiled
-/// [`DEFAULT_RELAY_URL`] with the embedded WebPKI roots; tests point at an in-process relay.
-#[derive(Clone, Debug)]
-pub struct ManagementRelay {
-    url: RelayUrl,
-    tls: CaTlsConfig,
-}
-
-impl Default for ManagementRelay {
-    fn default() -> Self {
-        Self {
-            url: DEFAULT_RELAY_URL
-                .parse()
-                .expect("the compiled relay URL is valid"),
-            tls: CaTlsConfig::default(),
-        }
-    }
-}
-
-impl ManagementRelay {
-    /// Test hook: another relay and the trust roots that verify it, such as
-    /// `iroh::test_utils::run_relay_server` with `CaTlsConfig::insecure_skip_verify()`
-    /// (that constructor needs iroh's `test-utils` feature, so it stays in test crates).
-    #[must_use]
-    pub fn custom(url: RelayUrl, tls: CaTlsConfig) -> Self {
-        Self { url, tls }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -220,89 +186,6 @@ impl Connector for SystemConnector {
             }
         }
     }
-}
-
-type EndpointKey = ([u8; 32], RelayUrl);
-
-/// One iroh endpoint per client secret and relay for the whole process; a Cloud host
-/// dialing many Machines with one capability shares its UDP socket and relay session.
-fn management_endpoints() -> &'static Mutex<HashMap<EndpointKey, IrohEndpoint>> {
-    static ENDPOINTS: OnceLock<Mutex<HashMap<EndpointKey, IrohEndpoint>>> = OnceLock::new();
-    ENDPOINTS.get_or_init(Mutex::default)
-}
-
-async fn management_endpoint(
-    client_secret: &[u8; 32],
-    relay: &ManagementRelay,
-) -> Result<IrohEndpoint, ConnectError> {
-    let key = (*client_secret, relay.url.clone());
-    let cached = management_endpoints()
-        .lock()
-        .expect("management endpoint cache is never poisoned")
-        .get(&key)
-        .cloned();
-    if let Some(endpoint) = cached {
-        return Ok(endpoint);
-    }
-    // Minimal preset: ring crypto, no address lookup, no public relays; only ours.
-    let endpoint = IrohEndpoint::builder(presets::Minimal)
-        .secret_key(SecretKey::from_bytes(client_secret))
-        .relay_mode(RelayMode::custom([relay.url.clone()]))
-        .ca_tls_config(relay.tls.clone())
-        .bind()
-        .await
-        .map_err(|error| ConnectError::Attempt(format!("management bind: {error}").into()))?;
-    // A concurrent first dial may have bound too; keep whichever landed first.
-    Ok(management_endpoints()
-        .lock()
-        .expect("management endpoint cache is never poisoned")
-        .entry(key)
-        .or_insert(endpoint)
-        .clone())
-}
-
-/// Dial the Machine's Management Identity by key with only the relay as a hint, open the
-/// single RPC stream and confirm the daemon accepted this capability before handing the
-/// channel out.
-async fn connect_management(
-    capability: &ManagementCapability,
-    relay: &ManagementRelay,
-) -> Result<Channel, ConnectError> {
-    let machine = PublicKey::from_bytes(capability.machine())
-        .map_err(|_| ConnectionError::ManagementCapability)?;
-    let endpoint = management_endpoint(capability.client_secret(), relay).await?;
-    let address = EndpointAddr::new(machine).with_relay_url(relay.url.clone());
-    let connection = endpoint
-        .connect(address, MANAGEMENT_ALPN)
-        .await
-        .map_err(|error| ConnectError::Attempt(format!("management dial: {error}").into()))?;
-    let (send, receive) = connection
-        .open_bi()
-        .await
-        .map_err(|error| ConnectError::Attempt(format!("management stream: {error}").into()))?;
-    let probe = async {
-        let channel =
-            connect_stream(tokio::io::join(receive, send), Duration::from_secs(15)).await?;
-        // The daemon refuses by identity right after the handshake, which the client only
-        // observes once it reads. Probe before the channel is trusted so refusal is
-        // distinguishable from an unreachable Machine.
-        MachineRpcClient::new(channel.clone())
-            .describe_contract(
-                op::DescribeContract::into_request(DescribeContractRequest {}).encode()?,
-            )
-            .await?;
-        Ok::<_, ConnectError>(channel)
-    };
-    probe
-        .await
-        .map_err(|error| match connection.close_reason() {
-            Some(iroh::endpoint::ConnectionError::ApplicationClosed(close))
-                if close.error_code == REFUSED_BY_IDENTITY =>
-            {
-                ConnectError::RefusedByIdentity
-            }
-            _ => error,
-        })
 }
 
 async fn connect_stream(
@@ -510,6 +393,11 @@ impl AsyncWrite for ChildIo {
 
 pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     match error {
+        ConnectError::AllFailed {
+            attempts: 1,
+            last: Some(error),
+            ..
+        } if matches!(*error, ConnectError::RefusedByIdentity) => rpc_error(*error),
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
         error @ (ConnectError::IdentityMismatch { .. } | ConnectError::RefusedByIdentity) => {

@@ -39,6 +39,7 @@ pub struct ManagementCapability {
 }
 
 impl ManagementCapability {
+    /// Frame a Machine public key and the client secret authorized to manage it.
     #[must_use]
     pub fn new(machine: [u8; 32], client_secret: [u8; 32]) -> Self {
         Self {

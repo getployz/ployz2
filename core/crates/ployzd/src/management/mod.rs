@@ -2,6 +2,7 @@
 //! accepted client key, reachable through the Ployz Relay by Management Identity.
 
 use std::{
+    convert::Infallible,
     io,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -13,7 +14,7 @@ use iroh::{
     Endpoint, RelayMode, RelayUrl, SecretKey,
     endpoint::{
         BindError, Connection, IdleTimeout, QuicTransportConfig, RecvStream, SendStream, VarInt,
-        presets,
+        WeakConnectionHandle, presets,
     },
     tls::CaTlsConfig,
 };
@@ -25,9 +26,13 @@ use tokio::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tonic::transport::{Server, server::Connected};
+use tonic::{
+    body::Body,
+    codegen::{Service, http},
+    transport::{Server, server::Connected},
+};
 
-use crate::{machine::LocalMachineRecord, machine_api::MachineApi};
+use crate::machine::LocalMachineRecord;
 
 /// Application close code sent when the remote key is not the accepted client.
 pub const REFUSED_BY_IDENTITY: VarInt = VarInt::from_u32(0x50);
@@ -44,7 +49,9 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// `CaTlsConfig::insecure_skip_verify()` (iroh `test-utils` feature).
 #[derive(Clone, Debug)]
 pub struct ManagementConfig {
+    /// The only relay used for management traffic.
     pub relay_url: RelayUrl,
+    /// UDP listen port; zero asks the OS for an ephemeral port.
     pub port: u16,
     /// How the relay's HTTPS certificate is verified.
     pub relay_tls: CaTlsConfig,
@@ -68,14 +75,10 @@ impl Default for ManagementConfig {
 pub struct ManagementSecret([u8; 32]);
 
 impl ManagementSecret {
+    /// Mint a Machine management identity using the OS random source.
     #[must_use]
     pub fn generate() -> Self {
         Self(SecretKey::generate().to_bytes())
-    }
-
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
     }
 
     /// Management Identity: the public key clients dial.
@@ -137,13 +140,20 @@ pub fn admits(accepted_client: Option<&[u8; 32]>, remote: &[u8; 32]) -> bool {
 ///
 /// # Errors
 /// Returns the tonic transport error when the RPC server fails.
-pub async fn serve(
+pub async fn serve<S>(
     endpoint: Endpoint,
     mut records: watch::Receiver<Arc<LocalMachineRecord>>,
-    api: MachineApi,
+    api: S,
     shutdown: CancellationToken,
-) -> io::Result<()> {
-    let live: Arc<Mutex<Vec<Connection>>> = Arc::default();
+) -> io::Result<()>
+where
+    S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send,
+{
+    let live: Arc<Mutex<Vec<WeakConnectionHandle>>> = Arc::default();
     let (accepted_tx, accepted_rx) = mpsc::channel::<io::Result<ManagementIo>>(16);
     let acceptor = tokio::spawn(accept_loop(
         endpoint.clone(),
@@ -163,8 +173,7 @@ pub async fn serve(
                         if changed.is_err() {
                             break;
                         }
-                        let accepted = records.borrow().accepted_client;
-                        revoke_others(&live, accepted.as_ref());
+                        revoke_others(&live, &records);
                     }
                 }
             }
@@ -183,29 +192,37 @@ pub async fn serve(
     served.map_err(io::Error::other)
 }
 
-fn revoke_others(live: &Mutex<Vec<Connection>>, accepted: Option<&[u8; 32]>) {
-    live.lock()
-        .expect("live connection list is not poisoned")
-        .retain(|connection| {
-            let keep = admits(accepted, connection.remote_id().as_bytes());
-            if !keep {
-                connection.close(REVOKED, b"revoked");
-            }
-            keep && connection.close_reason().is_none()
-        });
+fn revoke_others(
+    live: &Mutex<Vec<WeakConnectionHandle>>,
+    records: &watch::Receiver<Arc<LocalMachineRecord>>,
+) {
+    let mut live = live.lock().expect("live connection list is not poisoned");
+    let accepted = records.borrow().accepted_client;
+    live.retain(|weak| {
+        let Some(connection) = weak.upgrade() else {
+            return false;
+        };
+        let keep = admits(accepted.as_ref(), connection.remote_id().as_bytes());
+        if !keep {
+            connection.close(REVOKED, b"revoked");
+        }
+        keep && connection.close_reason().is_none()
+    });
 }
 
 async fn accept_loop(
     endpoint: Endpoint,
     records: watch::Receiver<Arc<LocalMachineRecord>>,
-    live: Arc<Mutex<Vec<Connection>>>,
+    live: Arc<Mutex<Vec<WeakConnectionHandle>>>,
     accepted: mpsc::Sender<io::Result<ManagementIo>>,
     shutdown: CancellationToken,
 ) {
     let handshakes = Arc::new(Semaphore::new(MAX_CONCURRENT_HANDSHAKES));
+    let mut tasks = tokio::task::JoinSet::new();
     loop {
         let incoming = tokio::select! {
             () = shutdown.cancelled() => return,
+            _ = tasks.join_next(), if !tasks.is_empty() => continue,
             incoming = endpoint.accept() => match incoming {
                 Some(incoming) => incoming,
                 None => return,
@@ -217,7 +234,7 @@ async fn accept_loop(
         let records = records.clone();
         let live = Arc::clone(&live);
         let accepted = accepted.clone();
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let connection = match incoming.await {
                 Ok(connection) => connection,
                 Err(error) => {
@@ -225,11 +242,22 @@ async fn accept_loop(
                     return;
                 }
             };
-            drop(permit);
-            let remote = *connection.remote_id().as_bytes();
-            if !admits(records.borrow().accepted_client.as_ref(), &remote) {
-                connection.close(REFUSED_BY_IDENTITY, b"refused by identity");
-                return;
+            {
+                // Admission and registration share the revoker's lock, before waiting
+                // for peer input: a delayed first stream cannot escape key rotation.
+                let mut live = live.lock().expect("live connection list is not poisoned");
+                if !admits(
+                    records.borrow().accepted_client.as_ref(),
+                    connection.remote_id().as_bytes(),
+                ) {
+                    connection.close(REFUSED_BY_IDENTITY, b"refused by identity");
+                    return;
+                }
+                live.retain(|weak| {
+                    weak.upgrade()
+                        .is_some_and(|connection| connection.close_reason().is_none())
+                });
+                live.push(connection.weak_handle());
             }
             let (send, recv) = match connection.accept_bi().await {
                 Ok(streams) => streams,
@@ -238,11 +266,7 @@ async fn accept_loop(
                     return;
                 }
             };
-            {
-                let mut live = live.lock().expect("live connection list is not poisoned");
-                live.retain(|connection| connection.close_reason().is_none());
-                live.push(connection.clone());
-            }
+            drop(permit);
             let io = ManagementIo {
                 io: tokio::io::join(recv, send),
                 _connection: connection,
@@ -288,9 +312,11 @@ impl AsyncWrite for ManagementIo {
 }
 
 impl Connected for ManagementIo {
-    type ConnectInfo = ();
+    type ConnectInfo = WeakConnectionHandle;
 
-    fn connect_info(&self) -> Self::ConnectInfo {}
+    fn connect_info(&self) -> Self::ConnectInfo {
+        self._connection.weak_handle()
+    }
 }
 
 #[cfg(test)]
