@@ -19,6 +19,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 
 use crate::machine_pool;
+use crate::management::ManagementSecret;
 use crate::network::WireGuardPrivateKey;
 
 mod record_wire;
@@ -137,6 +138,11 @@ pub struct LocalMachineRecord {
     body: LocalMachineBody,
     /// WireGuard private key; required in every phase.
     wireguard_private_key: WireGuardPrivateKey,
+    /// Management Identity secret; minted when the record is born.
+    management_secret: ManagementSecret,
+    /// Public key of the one client the management transport admits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_client: Option<[u8; 32]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -287,10 +293,18 @@ impl LocalMachineRecord {
         Ok(Self {
             body,
             wireguard_private_key,
+            management_secret: ManagementSecret::generate(),
+            accepted_client: None,
             wireguard_mtu: None,
             cloud_pairing: None,
             selected_endpoints: BTreeMap::new(),
         })
+    }
+
+    /// Secret behind this Machine's Management Identity.
+    #[must_use]
+    pub fn management_secret(&self) -> &ManagementSecret {
+        &self.management_secret
     }
 
     /// Inspect phase-specific fields without changing lifecycle or key identity.
@@ -347,6 +361,8 @@ impl LocalMachineRecord {
                 prior: Box::new(self.body.into_prior()),
             },
             wireguard_private_key: self.wireguard_private_key,
+            management_secret: self.management_secret,
+            accepted_client: self.accepted_client,
             wireguard_mtu: self.wireguard_mtu,
             cloud_pairing: self.cloud_pairing,
             selected_endpoints: self.selected_endpoints,

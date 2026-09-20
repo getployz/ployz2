@@ -18,6 +18,7 @@ use thiserror::Error;
 use super::{
     FoundingCluster, LocalMachineBody, LocalMachineRecord, ParticipationOrigin, local_runtime,
 };
+use crate::management::ManagementSecret;
 use crate::network::{WireGuardPrivateKey, allocate_machine_subnet};
 
 const STATE_FILE_NAME: &str = "machine.json";
@@ -121,6 +122,8 @@ impl LocalMachineStore {
                         id: MachineId::random(),
                     },
                     wireguard_private_key: WireGuardPrivateKey::generate(),
+                    management_secret: ManagementSecret::generate(),
+                    accepted_client: None,
                     wireguard_mtu: None,
                     cloud_pairing: None,
                     selected_endpoints: BTreeMap::new(),
@@ -355,12 +358,15 @@ impl LocalMachineStore {
         Ok(())
     }
 
+    /// Persist the Cloud Pairing and the accepted management client in one write.
     pub fn persist_cloud_pairing(
         &mut self,
         pairing: Option<CloudPairing>,
+        accepted_client: Option<[u8; 32]>,
     ) -> Result<(), StoreError> {
         let mut updated = self.record.clone();
         updated.cloud_pairing = pairing;
+        updated.accepted_client = accepted_client;
         save(&self.data_dir, &updated)?;
         self.record = updated;
         Ok(())

@@ -8,10 +8,10 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, CloudPairingSet, ContainerList, ContainerObservationMap,
-    ContractDescription, Domain, DomainRecords, IngressProxyConfig, LocalMachinePhase, LogMetadata,
-    LogOrigin, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, op,
+    CapabilityAdvertisement, ContainerList, ContainerObservationMap, ContractDescription, Domain,
+    DomainRecords, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin,
+    MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, op,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -208,10 +208,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetCloudPairing>(request)?;
-        if let Err(error) = self.local.set_cloud_pairing(request).await {
-            return local_error(error);
-        }
-        respond(CloudPairingSet {})
+        finish(self.local.set_cloud_pairing(request).await)
     }
 
     async fn list_machines(

@@ -8,13 +8,13 @@ use std::{
 };
 
 use ployz_core::{
-    CloudPairing, InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest,
-    LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity,
-    MachineList, MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest,
-    MachineUpdated, ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest,
-    Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation,
-    RttStatistics, SelectedEndpoint, UpdateMachineRequest, WireGuardInspected,
-    associate_wireguard_peers, synthesize_membership,
+    InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase,
+    LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
+    MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated,
+    ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest, Registered,
+    RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics,
+    SelectedEndpoint, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
+    synthesize_membership,
 };
 use thiserror::Error;
 use tokio::sync::OwnedMutexGuard;
@@ -40,7 +40,7 @@ pub struct LocalMachine {
 }
 
 mod container;
-mod tailcat_removal;
+mod pairing;
 mod upgrade;
 
 #[derive(Clone)]
@@ -521,25 +521,6 @@ impl LocalMachine {
         let local = self.clone();
         self.finish_mutation(async move { local.join_admitted(request).await })
             .await
-    }
-
-    /// Persist or clear the current Cloud Pairing credential.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NotParticipating`] when this Machine is not
-    /// participating, [`Error::RecordOwner`] when the record owner has
-    /// stopped, and [`Error::Store`] when the record cannot be written.
-    async fn set_cloud_pairing_admitted(&self, pairing: Option<CloudPairing>) -> Result<(), Error> {
-        self.owner
-            .mutate(move |store| {
-                if store.record().phase() != LocalMachinePhase::Participating {
-                    return Err(Error::NotParticipating);
-                }
-                store.persist_cloud_pairing(pairing)?;
-                Ok(())
-            })
-            .await?
     }
 
     /// Membership Observation of Machines visible from this participating Machine.

@@ -11,6 +11,7 @@ use ployzd::machine::{
     LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior, LocalMachineRecord,
     LocalMachineStore, ParticipationOrigin, RecordOwner, StoreError,
 };
+use ployzd::management::ManagementSecret;
 use ployzd::network::WireGuardPrivateKey;
 
 use test_dir::TestDir;
@@ -643,7 +644,8 @@ fn opening_joining_without_a_machine_or_key_fails() {
                 "bootstrap": [],
                 "min_store_version": { "actor": 1 }
             },
-            "wireguard_private_key": key
+            "wireguard_private_key": key,
+            "management_secret": ManagementSecret::generate()
         }))
         .unwrap(),
     )
@@ -826,7 +828,8 @@ fn local_record_decoding_rejects_incoherent_identity_and_empty_join_payloads() {
     );
     let valid = serde_json::json!({
         "body": { "phase": "joining", "machine": machine, "bootstrap": [peer] },
-        "wireguard_private_key": key
+        "wireguard_private_key": key,
+        "management_secret": ManagementSecret::generate()
     });
     assert!(serde_json::from_value::<LocalMachineRecord>(valid.clone()).is_ok());
     for (path, value) in [
