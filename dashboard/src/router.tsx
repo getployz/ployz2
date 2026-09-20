@@ -5,6 +5,8 @@ import {
 } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
+import { routerWithDbClient } from "@tanstack/react-router-with-db";
+import { getDbClient } from "./collections/scope";
 import { environmentManager, QueryClient } from "@tanstack/react-query";
 import { NotFoundPage } from "./components/not-found-page";
 import { PloyzMark } from "./components/icons/ployz-logo";
@@ -50,9 +52,10 @@ export function getRouter() {
       },
     },
   });
+  const dbClient = getDbClient(queryClient);
   const router = createTanStackRouter({
     routeTree,
-    context: { queryClient },
+    context: { queryClient, dbClient },
     defaultNotFoundComponent: () => <NotFoundPage />,
     defaultPendingComponent: AppPending,
     scrollRestoration: true,
@@ -70,7 +73,7 @@ export function getRouter() {
     queryClient,
   });
 
-  return router;
+  return routerWithDbClient(router, dbClient);
 }
 
 declare module "@tanstack/react-router" {

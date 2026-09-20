@@ -94,7 +94,6 @@ export function useEnvironmentProjectionRefresh(
           updatedAt: deployment.updatedAt,
         }));
     },
-    [deployments, environmentId],
   );
   const { data: savedRevisions = [] } = useLiveQuery(
     (q) => {
@@ -106,7 +105,6 @@ export function useEnvironmentProjectionRefresh(
         )
         .select(({ savedRevision }) => ({ id: savedRevision.id }));
     },
-    [savedStateRevisions, environmentId],
   );
   const projectionVersion = [
     ...deploymentLifecycle.map(

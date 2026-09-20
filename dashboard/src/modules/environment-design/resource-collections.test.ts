@@ -1,3 +1,4 @@
+import { getDbClient } from "#/collections/scope";
 import { expect, it, vi } from "vitest";
 import { createOptimisticAction } from "@tanstack/react-db";
 import { QueryClient } from "@tanstack/react-query";
@@ -42,7 +43,7 @@ function createStores() {
 it("refreshes joined resources after API creation, optimistic position persistence and deletion", async () => {
   const stores = createStores();
   await Promise.all(Object.values(stores.sources).map(reconcileCollection));
-  const volumes = createVolumeResourcesCollection({ organizationSlug: "test", sources: stores.sources });
+  const volumes = createVolumeResourcesCollection({ client: getDbClient(stores.client), sources: stores.sources });
   await volumes.preload();
   expect(volumes.get(stores.id)).toMatchObject({ resource: { name: "data" }, isAuthored: true, canvasPosition: { x: 10, y: 20 } });
   expect(volumes.get(stores.id)?.canvasPosition).not.toHaveProperty("organizationId");
@@ -91,7 +92,7 @@ it("updates joined volume history from API snapshots and completed removals", as
   if (!document) throw new Error("Missing fixture document");
   document.intent.volumes = [];
   await reconcileCollection(sources.documents);
-  const volumes = createVolumeResourcesCollection({ organizationSlug: "history-test",
+  const volumes = createVolumeResourcesCollection({ client: getDbClient(client),
     sources: { ...sources, snapshots: snapshotCollection, removals: removalCollection } });
   try {
     await volumes.preload();

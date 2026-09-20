@@ -122,7 +122,6 @@ export function useEnvironmentNavigationNodes(
             )
             .select(({ service }) => ({ id: service.id, name: service.name }))
         : undefined,
-    [services, projectSlug, environmentSlug],
   );
   const resourceRows = useLiveQuery(
     (q) =>
@@ -138,7 +137,6 @@ export function useEnvironmentNavigationNodes(
               name: resource.resource.name,
             }))
         : undefined,
-    [resources, projectSlug, environmentSlug],
   );
   const volumeRows = useLiveQuery(
     (q) =>
@@ -152,7 +150,6 @@ export function useEnvironmentNavigationNodes(
               name: volume.resource.name,
             }))
         : undefined,
-    [volumes, projectSlug, environmentSlug],
   );
 
   const nodes: NavigationNode[] = [

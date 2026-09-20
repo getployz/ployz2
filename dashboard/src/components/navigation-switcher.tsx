@@ -150,7 +150,7 @@ export function ProjectSwitcher({
   );
   const { data: environmentRows = [], isLoading: environmentsLoading } =
     useLiveQuery((q) => q.from({ environment: environmentCollection })
-      .select(({ environment }) => environment), [environmentCollection]);
+      .select(({ environment }) => environment));
   const environments = environmentRows.map(withoutVirtualProps);
   const environmentsError = useSyncExternalStore(
     (onChange) =>

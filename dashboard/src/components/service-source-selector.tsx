@@ -323,7 +323,7 @@ function GitRepoSelectorResults({
   const { data: repoCountRows } =
     useLiveQuery((q) => githubRepos
       ? { gcTime: 1, query: q.from({ repo: githubRepos }).select(({ repo }) => ({ count: count(repo.id) })) }
-      : undefined, [githubRepos]);
+      : undefined);
 
   const { data: repos = [], isLoading } = useLiveQuery(
     (q) => {
@@ -340,7 +340,6 @@ function GitRepoSelectorResults({
 
       return { gcTime: 1, query: repoQuery.limit(INITIAL_GITHUB_REPO_LIMIT) };
     },
-    [githubRepos, normalizedQuery],
   );
   const repoCount = repoCountRows?.[0]?.count ?? 0;
   const selectorState = getGitRepoSelectorState({

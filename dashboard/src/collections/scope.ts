@@ -1,4 +1,17 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { DbClient } from "@tanstack/react-db";
+
+const dbClients = new WeakMap<QueryClient, DbClient>();
+
+/** DB and Query share the router's request/browser lifetime. */
+export function getDbClient(queryClient: QueryClient) {
+  let client = dbClients.get(queryClient);
+  if (!client) {
+    client = new DbClient();
+    dbClients.set(queryClient, client);
+  }
+  return client;
+}
 
 export type CollectionScope = { queryClient: QueryClient; sessionId: string; userId: string };
 

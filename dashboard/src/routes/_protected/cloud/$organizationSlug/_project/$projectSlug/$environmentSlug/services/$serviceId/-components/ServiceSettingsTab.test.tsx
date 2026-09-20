@@ -59,7 +59,7 @@ async function show(source: ServiceSource) {
   const projectGroup = createRoute({ getParentRoute: () => organization, id: "_project" });
   const environment = createRoute({
     getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug",
-    component: () => <Tabs value="settings"><ServiceSettingsTab state={use(State)} /></Tabs>,
+    component: () => <RuntimeProvider organizationSlug="acme"><Tabs value="settings"><ServiceSettingsTab state={use(State)} /></Tabs></RuntimeProvider>,
   });
   const service = createRoute({ getParentRoute: () => environment, path: "services/$serviceId" });
   const router = createRouter({
@@ -69,11 +69,9 @@ async function show(source: ServiceSource) {
   await router.load();
   const page = (nextSource: ServiceSource) => (
     <QueryClientProvider client={client}>
-      <RuntimeProvider organizationSlug="acme">
         <State value={{ ...state, service: { ...state.service, source: nextSource } }}>
           <RouterProvider router={router} />
         </State>
-      </RuntimeProvider>
     </QueryClientProvider>
   );
   const view = render(page(source));

@@ -110,13 +110,6 @@ export function useServiceDrawerState(
         canvasPositions,
         documents,
       }),
-    [
-      canvasPositions,
-      collection,
-      params.environmentSlug,
-      params.projectSlug,
-      documents,
-    ],
   );
   const { data: environmentResourceRows } = useLiveSuspenseQuery({
     query: (q) =>

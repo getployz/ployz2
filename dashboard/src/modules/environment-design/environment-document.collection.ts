@@ -1,26 +1,27 @@
-import { cachedByCollectionScope } from "#/collections/scope";
+import { cachedByCollectionScope, getDbClient } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { compileSavedEnvironmentIntent } from "./saved-intent";
-import { createLiveQueryCollection, eq, useLiveQuery } from "@tanstack/react-db";
+import { collectionOptions, liveQueryCollectionOptions, type DbClient, eq, useLiveQuery } from "@tanstack/react-db";
 import { getEnvironmentsCollection, getProjectsCollection } from "#/collections/collections";
 import { plainRowCollection, withoutVirtualProps } from "#/lib/tanstack-db";
 
-export function createEnvironmentDocumentsCollection(organizationSlug: string, { environments, projects }: {
+export function createEnvironmentDocumentsCollection(client: DbClient, { environments, projects }: {
   environments: ReturnType<typeof getEnvironmentsCollection>;
   projects: ReturnType<typeof getProjectsCollection>;
 }) {
-  return plainRowCollection(createLiveQueryCollection({
-    id: `collections:${organizationSlug}:environment-documents`,
+  const collection = client.collection(collectionOptions(liveQueryCollectionOptions({
+    id: `${environments.id}:documents`,
     query: (q) => q.from({ environment: environments })
       .innerJoin({ project: projects }, ({ environment, project }) => eq(environment.projectId, project.id))
       .fn.select(({ environment, project }) => ({ ...withoutVirtualProps(environment), projectSlug: project.slug,
         compiled: compileSavedEnvironmentIntent({ environmentId: environment.id, intent: environment.intent }),
       })),
     getKey: (document) => document.id,
-  }));
+  })));
+  return plainRowCollection(collection);
 }
 export const getEnvironmentDocumentsCollection = cachedByCollectionScope((organizationSlug, scope) =>
-  createEnvironmentDocumentsCollection(organizationSlug, {
+  createEnvironmentDocumentsCollection(getDbClient(scope.queryClient), {
     environments: getEnvironmentsCollection(organizationSlug, scope),
     projects: getProjectsCollection(organizationSlug, scope),
   }));
@@ -28,5 +29,5 @@ export const getEnvironmentDocumentsCollection = cachedByCollectionScope((organi
 export function useEnvironmentDocument(organizationSlug: string, environmentId: string | null) {
   const collection = getEnvironmentDocumentsCollection(organizationSlug, useCollectionScope());
   return useLiveQuery((q) => q.from({ document: collection })
-    .where(({ document }) => eq(document.id, environmentId ?? "")).findOne(), [collection, environmentId]).data;
+    .where(({ document }) => eq(document.id, environmentId ?? "")).findOne()).data;
 }

@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within, type RenderOptions } from "@testing-library/react";
 import { Schema } from "effect";
+import { Fragment } from "react";
+import { getDbClient } from "#/collections/scope";
 import { renderToString } from "react-dom/server";
 import { hydrate } from "@tanstack/react-router/ssr/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -86,7 +88,10 @@ async function show(ssr = false) {
     client.setQueryData(["collections", "test-session", "test-user", "acme", table], table === "environment" ? [environmentData] : []);
   }
   RootRoute.updateLoader({ loader: () => ({ theme: "light", session: savedSession }) });
-  const root = RootRoute.update({ component: () => ssr ? <Outlet /> : <ThemeProvider theme="light"><Outlet /></ThemeProvider> });
+  Object.assign(RootRoute.options, { shellComponent: Fragment });
+  const root = RootRoute.update({
+    component: () => ssr ? <Outlet /> : <ThemeProvider theme="light"><Outlet /></ThemeProvider>,
+  });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: savedSession }) });
   const cloud = createRoute({ getParentRoute: () => protectedRoute, path: "cloud" });
   const organization = createRoute({ getParentRoute: () => cloud, path: "$organizationSlug" });
@@ -99,7 +104,7 @@ async function show(ssr = false) {
   const settings = createRoute({ getParentRoute: () => environment, path: "settings", component: () => <div>Environment preferences</div> });
   const create = (isServer: boolean) => createRouter({
     isServer,
-    context: { queryClient: client },
+    context: { queryClient: client, dbClient: getDbClient(client) },
     routeTree: root.addChildren([protectedRoute.addChildren([cloud.addChildren([organization.addChildren([projectLayout.addChildren([project.addChildren([environment.addChildren([logs, settings])])])])])])]),
     history: createMemoryHistory({ initialEntries: ["/cloud/acme/store/production/logs"] }),
     scrollRestoration: true, scrollToTopSelectors: [scrollSelector],
