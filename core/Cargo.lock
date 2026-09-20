@@ -3361,6 +3361,7 @@ dependencies = [
  "http-body-util",
  "instant-acme",
  "ipnet",
+ "iroh",
  "listenfd",
  "netlink-packet-wireguard",
  "nix",
