@@ -13,7 +13,7 @@ import {
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { Ployz, PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import {
   enrollmentExpiry,
@@ -341,7 +341,7 @@ const requireEnrollmentMachine = Effect.fn("MachineEnrollment.requireMachine")(f
   }
 });
 
-/** Publish once against the locked current claim, before any network confirmation. */
+/** Publish under the current claim; verify rotated credentials before replacing them. */
 export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCandidate")(
   function* (input: { token: string; machineId: MachineId; pairingCredential: string; capability: string }) {
     if (input.capability.length === 0 || input.capability.length > MANAGEMENT_CAPABILITY_LENGTH) {
@@ -350,7 +350,8 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     const token = yield* verifyEnrollmentToken(input.token);
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
-    return yield* database.transaction(Effect.gen(function* () {
+    const publish = (expectedIv?: string) => database.transaction(Effect.gen(function* () {
+      yield* verifyEnrollmentToken(input.token);
       const { drizzle } = yield* Database;
       const [pairing] = yield* drizzle.select(organizationPairingProjection)
         .from(schemaOrganizationPairing)
@@ -369,11 +370,16 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       );
       const clusterKey = hashEnrollmentToken(secret);
       const [saved] = yield* drizzle.select().from(organizationMachine).where(scope);
+      if (expectedIv !== undefined && (saved?.clusterKey !== clusterKey || saved.encryptedCapability.iv !== expectedIv)) {
+        return yield* new Conflict({ message: "The Machine connection changed during credential verification. Retry enrollment." });
+      }
       if (saved?.clusterKey === clusterKey) {
         const previous = yield* decryptPairingSecret(saved.encryptedCapability);
-        if (!credentialsMatch(previous, input.capability)) {
-          return yield* new Conflict({ message: "The enrollment attempt already has another connection capability." });
-        }
+        if (credentialsMatch(previous, input.capability)) return null;
+        if (expectedIv === undefined) return saved.encryptedCapability.iv;
+        yield* drizzle.update(organizationMachine).set({
+          encryptedCapability: encryption.encrypt(input.capability), updatedAt: new Date(),
+        }).where(scope);
       } else {
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
@@ -382,8 +388,19 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           set: { clusterKey, encryptedCapability: encryption.encrypt(input.capability), isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date() },
         });
       }
-      return { machineId: input.machineId };
+      return null;
     }));
+    const expectedIv = yield* publish();
+    if (expectedIv !== null) {
+      // Shared negotiation confirms the intended Machine; no SQL lock spans the network call.
+      yield* Effect.scoped(Effect.gen(function* () {
+        yield* (yield* Ployz).connect({
+          connections: [{ machine_id: input.machineId, management: input.capability }], timeoutMs: 10_000,
+        });
+        yield* publish(expectedIv);
+      }));
+    }
+    return { machineId: input.machineId };
   },
 );
 
