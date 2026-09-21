@@ -904,7 +904,10 @@ mod preparation_tests {
             .await
             .unwrap();
         assert_eq!(result.unwrap_err().message, "fixture failure");
-        assert_eq!(running.next().await.unwrap()["phase"], "truncated");
+        assert_eq!(
+            running.next().await.unwrap().get("phase").unwrap(),
+            "truncated"
+        );
         let mut count = 0;
         while running.next().await.is_some() {
             count += 1;
@@ -922,8 +925,20 @@ mod preparation_tests {
                 }),
             },
         ));
-        assert_eq!(error.details["preparation"]["kind"], "unknown");
-        assert_eq!(error.details["preparation"]["stage"], "Building");
-        assert!(error.details["preparation"]["work"].is_object());
+        assert_eq!(
+            error.details.pointer("/preparation/kind").unwrap(),
+            "unknown"
+        );
+        assert_eq!(
+            error.details.pointer("/preparation/stage").unwrap(),
+            "Building"
+        );
+        assert!(
+            error
+                .details
+                .pointer("/preparation/work")
+                .unwrap()
+                .is_object()
+        );
     }
 }

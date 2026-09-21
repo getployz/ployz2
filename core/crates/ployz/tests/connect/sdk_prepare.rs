@@ -113,15 +113,16 @@ async fn node_preparation_delivers_images_and_retains_them_through_confirmation(
         assert!(recorder.created.load(Ordering::SeqCst));
         let deliveries = recorder.deliveries.lock().unwrap();
         assert_eq!(deliveries.len(), 1);
+        let delivery = deliveries.first().unwrap();
         assert_eq!(
-            deliveries[0].0,
+            delivery.0,
             ployz_core::RoutingRequest::One(ployz_core::MachineTarget::from(&support::machine_id(
                 destination_id
             )))
         );
-        assert_eq!(deliveries[0].1.platform, "linux/amd64");
+        assert_eq!(delivery.1.platform, "linux/amd64");
         assert!(
-            deliveries[0]
+            delivery
                 .1
                 .pull
                 .image()
