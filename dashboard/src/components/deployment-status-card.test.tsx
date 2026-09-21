@@ -68,3 +68,34 @@ it("labels a disconnected preparation as unknown, preserving the final diagnosis
   expect(html).not.toContain("A complete runtime outcome was not received");
   expect(html).not.toContain("Using prebuilt images");
 });
+
+it("shows preparation cancellation without claiming the runtime outcome is unknown", () => {
+  const deployment = asTestDouble<EnvironmentDeploymentSummary>()({ sourcePins: {}, buildServiceIds: ["web"], status: "cancelled", createdAt: new Date(), serviceCount: 1 });
+  const html = renderToStaticMarkup(createElement(DeploymentStatusCard, { deployment, progress: null, expanded: true, onExpandedChange() {}, showLogs: false, onLogsChange() {}, actions: null, logsPanel: null }));
+  expect(html).toContain("Preparation cancelled");
+  expect(html).toContain("Deployment cancelled");
+  expect(html).not.toContain("outcome unknown");
+  expect(html).not.toContain("Waiting for runtime progress");
+});
+
+it.each(["ready", "preview", "success"] as const)("keeps %s preparation completed despite later terminal failure or cancellation", (evidence) => {
+  for (const status of ["failed", "cancelled"] as const) {
+    const deployment = asTestDouble<EnvironmentDeploymentSummary>()({ sourcePins: {}, buildServiceIds: ["web"], status, createdAt: new Date(), serviceCount: 1,
+      deployPreview: evidence === "preview" ? asTestDouble<NonNullable<EnvironmentDeploymentSummary["deployPreview"]>>()({ warnings: [] }) : null,
+    });
+    const progress = { completed: 0, total: 0, outcome: evidence === "success" ? "success" as const : null, rows: [], compensation: [],
+      preparation: { phase: evidence === "ready" ? "ready" as const : "build" as const, serviceId: "web", machineId: "machine", machineName: "builder", message: null, output: "", outputTruncated: false },
+    };
+    const html = renderToStaticMarkup(createElement(DeploymentStatusCard, { deployment, progress, expanded: true, onExpandedChange() {}, showLogs: false, onLogsChange() {}, actions: null, logsPanel: null }));
+    expect(html).toContain("Images prepared");
+    expect(html).not.toContain("Image preparation failed");
+    expect(html).not.toContain("Preparation cancelled");
+  }
+});
+
+it("keeps Deploy pending while Git preparation has not reported progress", () => {
+  const deployment = asTestDouble<EnvironmentDeploymentSummary>()({ sourcePins: {}, buildServiceIds: ["web"], status: "deploying", createdAt: new Date(), serviceCount: 1 });
+  const html = renderToStaticMarkup(createElement(DeploymentStatusCard, { deployment, progress: null, expanded: true, onExpandedChange() {}, showLogs: false, onLogsChange() {}, actions: null, logsPanel: null }));
+  expect(html).toContain("Waiting to prepare images");
+  expect(html).not.toContain("Waiting for runtime progress");
+});
