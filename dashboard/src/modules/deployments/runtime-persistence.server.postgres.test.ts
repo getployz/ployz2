@@ -301,6 +301,43 @@ describe("deployment runtime persistence", () => {
     expect((await harness.db.select().from(schema.environmentDeployment))[0]).toMatchObject({ status: "cancelled", finishedAt: expect.any(Date) });
   });
 
+  it.each(["success", "cancelled"])("holds the execution slot through cleanup before persisting %s", async (resultKind) => {
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: targetSavedId, triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    await harness.db.update(schema.environmentDeployment).set({ status: "planning" }).where(eq(schema.environmentDeployment.id, admitted.id));
+    let release: () => void = () => undefined;
+    let closing: () => void = () => undefined;
+    const cleanup = new Promise<void>((resolve) => { release = resolve; });
+    const closeStarted = new Promise<void>((resolve) => { closing = resolve; });
+    const outcome = { type: "success" as const, completed: [] };
+    const confirm = vi.fn(() => ({ finished: Promise.resolve(outcome), abort: () => undefined,
+      async *[Symbol.asyncIterator]() { yield { type: "outcome" as const, outcome }; },
+    }));
+    const client = asTestDouble<Client>()({
+      preview: async () => {
+        if (resultKind === "cancelled") await harness.db.update(schema.environmentDeployment).set({ cancellationRequestedAt: new Date() }).where(eq(schema.environmentDeployment.id, admitted.id));
+        return asTestDouble<PreparedDeploy>()({ ...preview(), confirm });
+      },
+      close: async () => { closing(); await cleanup; },
+    });
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+      .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
+    const running = harness.runEffect(executeLatestEnvironmentDeployment(admitted.id).pipe(Effect.scoped, Effect.provide(runtime),
+      Effect.provideService(GithubApi, { json: () => Effect.die("No Git expected"), archive: () => Effect.die("No Git expected") }),
+      Effect.provideService(InngestClient, new Inngest({ id: "cleanup-test" })), Effect.provideService(SecretEncryption, encryption)));
+    try {
+      await closeStarted;
+      const [active] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+      expect(active?.status).toBe("deploying");
+      expect(active?.finishedAt).toBeNull();
+      expect(confirm).toHaveBeenCalledTimes(resultKind === "success" ? 1 : 0);
+    } finally { release(); }
+    await running;
+    const [terminal] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+    expect(terminal?.status).toBe(resultKind === "success" ? "applied" : "cancelled");
+  });
+
   it("updates current state and retained logs atomically, and scopes log reads to the organization", async () => {
     const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
       environmentId, savedStateSnapshotId: targetSavedId,

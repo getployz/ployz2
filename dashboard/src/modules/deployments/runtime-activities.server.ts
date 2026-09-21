@@ -23,6 +23,7 @@ import { errorEvidenceFrom } from "#/lib/error-evidence";
 import { persistDeploymentProgress } from "./deployment-events.server";
 import { deploymentProgressForEvent, type DeploymentProgress } from "./deployment-progress";
 import { PloyzPreparationError } from "#/modules/runtime/ployz.server";
+import { DeploymentExecutionError } from "./execution-error";
 import { acquireDeploymentSources } from "./runtime-sources.server";
 import { preparationProgressCollector } from "./preparation-progress";
 import { lowerDeployment } from "@ployz/sdk/config";
@@ -177,6 +178,28 @@ export const executeRuntimeIntent = Effect.fn("Deployments.executeRuntimeIntent"
   },
 );
 
+/** Poll failure is fatal: a quiet operation must never outlive its cancellation observer. */
+export function watchDeploymentCancellation<E, R>(
+  readStatus: Effect.Effect<readonly { status: string; cancellationRequestedAt: Date | null }[], E, R>,
+  cancellation: AbortController,
+) {
+  return Effect.gen(function* () {
+    while (true) {
+      const [deployment] = yield* readStatus;
+      if (!deployment || deployment.status !== "deploying" || deployment.cancellationRequestedAt) {
+        cancellation.abort();
+        return yield* Effect.never;
+      }
+      yield* Effect.sleep("1 second");
+    }
+  }).pipe(
+    Effect.tapError(() => Effect.sync(() => cancellation.abort())),
+    Effect.mapError((cause) => new DeploymentExecutionError({
+      failureCode: "sdk_deploy_outcome_unknown", message: "Cancellation monitoring failed; remote execution outcome is unknown.", cause,
+    })),
+  );
+}
+
 export const executeEnvironmentDeployment = Effect.fn(
   "Deployments.executeEnvironmentDeployment",
 )(function* (context: DeploymentContext, expectedInngestRunId?: string) {
@@ -197,22 +220,10 @@ export const executeEnvironmentDeployment = Effect.fn(
     const [initial] = yield* readStatus;
     if (!initial || initial.status !== "deploying") return yield* Effect.interrupt;
     if (initial.cancellationRequestedAt) {
-      yield* markDeploymentStatus({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, status: "cancelled", message: "Cancelled before source acquisition." });
-      return { type: "failed" as const, completed: 0, unexecuted: 0, reason: "cancelled" as const };
+      return { outcome: { type: "failed" as const, completed: 0, unexecuted: 0, reason: "cancelled" as const }, evidence: null };
     }
-    // Inngest cancellation cannot interrupt an executing step. Check the durable
-    // row even when the SDK emits no progress, then await its cleanup and outcome.
-    const watchCancellation = Effect.gen(function* () {
-      while (true) {
-        const [deployment] = yield* readStatus;
-        if (!deployment || deployment.status !== "deploying" || deployment.cancellationRequestedAt) {
-          cancellation.abort();
-          return yield* Effect.never;
-        }
-        yield* Effect.sleep("1 second");
-      }
-    });
-    yield* watchCancellation.pipe(Effect.forkScoped);
+    const watchCancellation = watchDeploymentCancellation(readStatus, cancellation);
+    return yield* Effect.gen(function* () {
     const progressContext = yield* Effect.context<Database>();
     const persistProgress = Effect.runPromiseWith(progressContext);
     const collector = preparationProgressCollector();
@@ -248,8 +259,7 @@ export const executeEnvironmentDeployment = Effect.fn(
     yield* persistSdkDeployPreview({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, preview: prepared.preview });
     const [beforeConfirm] = yield* readStatus;
     if (!beforeConfirm || beforeConfirm.status !== "deploying" || beforeConfirm.cancellationRequestedAt || cancellation.signal.aborted) {
-      yield* markDeploymentStatus({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, status: "cancelled", message: "Cancelled before application execution." });
-      return { type: "failed" as const, completed: 0, unexecuted: native.operations.length, reason: "cancelled" as const };
+      return { outcome: { type: "failed" as const, completed: 0, unexecuted: native.operations.length, reason: "cancelled" as const }, evidence: null };
     }
     let previous: DeploymentProgress | null = null;
     // The SDK reports progress through a Promise callback. Run each persist with
@@ -269,9 +279,17 @@ export const executeEnvironmentDeployment = Effect.fn(
       previous = progress;
       await persistProgress(persistDeploymentProgress(context.deployment.id, progress));
     }, cancellation.signal);
-    yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, expectedInngestRunId: context.deployment.inngestRunId ?? undefined, outcome: evidence });
+    return { outcome, evidence };
+    }).pipe(Effect.raceFirst(watchCancellation));
+  }).pipe(Effect.scoped, Effect.flatMap(({ outcome, evidence }) => Effect.gen(function* () {
+    // Only release the Environment slot after native and source finalizers settle.
+    if (evidence) {
+      yield* persistSdkDeployOutcome({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, outcome: evidence });
+    } else {
+      yield* markDeploymentStatus({ environmentDeploymentId: context.deployment.id, expectedInngestRunId, status: "cancelled", message: "Cancelled before application execution." });
+    }
     return outcome;
-  }).pipe(Effect.scoped, Effect.onExit(exit => {
+  })), Effect.onExit(exit => {
     if (Exit.isSuccess(exit)) return Effect.void;
     // A cancelled workflow cannot schedule another cleanup step. Settle here
     // even if preview, confirmation, or outcome decoding fails.

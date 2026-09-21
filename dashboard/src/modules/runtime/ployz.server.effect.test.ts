@@ -7,6 +7,7 @@ import {
   makePloyzLayer,
   Ployz,
   PloyzProviderError,
+  PloyzPreparationError,
 } from "#/modules/runtime/ployz.server";
 
 const options = {
@@ -254,3 +255,19 @@ it("keeps the session owned through quiet preparation interruption cleanup", asy
   await running;
   assert.isTrue(closed);
 });
+
+it.effect("distinguishes rejected preparation input from a disconnected preparation", () => Effect.gen(function* () {
+  for (const [code, failureCode] of [["invalid_argument", "sdk_preparation_failed"], ["unavailable", "sdk_preparation_unknown"]]) {
+    const layer = makePloyzLayer({ connect: async () => asTestDouble<Client>()({
+      prepare: () => { throw Object.assign(new Error("private-provider-details"), { code }); },
+      close: async () => undefined,
+    }) });
+    const failure = yield* Effect.scoped(Effect.gen(function* () {
+      const session = yield* (yield* Ployz).connect(options);
+      return yield* session.prepare({ deployment: { projectName: "test", snapshots: [] }, sources: {} }, async () => undefined, new AbortController().signal);
+    })).pipe(Effect.provide(layer), Effect.flip);
+    assert.instanceOf(failure, PloyzPreparationError);
+    if (failure instanceof PloyzPreparationError) assert.strictEqual(failure.failureCode, failureCode);
+    assert.isFalse(failure.message.includes("private-provider-details"));
+  }
+}));

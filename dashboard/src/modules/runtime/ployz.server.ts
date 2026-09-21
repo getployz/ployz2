@@ -159,6 +159,9 @@ function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
         message: kind === "unknown" ? "Build connection lost; remote work outcome is unknown." : kind === "cancelled" ? "Build cancelled." : `Preparation failed${stage ? ` during ${stage}` : ""}. See build output for details.`,
       });
     }
+    if (Schema.is(Schema.Struct({ code: Schema.Literal("invalid_argument") }))(cause)) {
+      return new PloyzPreparationError({ failureCode: "sdk_preparation_failed", message: "Preparation input is invalid; no build was started." });
+    }
     return new PloyzPreparationError({ failureCode: "sdk_preparation_unknown", message: "Preparation ended without a confirmed result; remote work outcome is unknown." });
   }
   const missingDataLoss = missingDataLossFromSdkError(cause);
