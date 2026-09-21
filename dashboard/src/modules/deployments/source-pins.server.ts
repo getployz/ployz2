@@ -1,11 +1,11 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, isNull } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { environmentDeployment } from "./tables";
 import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
-import { validateDeploymentSourcePins } from "./source-pins";
+import { deploymentSourcePinsSchema, validateDeploymentSourcePins } from "./source-pins";
 
 /** Resolve outside this transaction, then persist before source download. Existing pins never rotate. */
 export const persistDeploymentSourcePin = Effect.fn("Deployments.persistSourcePin")(
@@ -29,7 +29,10 @@ export const persistDeploymentSourcePin = Effect.fn("Deployments.persistSourcePi
       if (!attempt) return yield* new Conflict({ message: "Deployment no longer owns source acquisition." });
       const snapshots = yield* drizzle.select().from(environmentNodeConfigSnapshot)
         .where(eq(environmentNodeConfigSnapshot.environmentDeploymentId, attempt.id));
-      const pins = yield* validateDeploymentSourcePins({ [input.serviceId]: { commitSha: input.commitSha } }, snapshots);
+      const decoded = yield* Schema.decodeUnknownEffect(deploymentSourcePinsSchema)(
+        { [input.serviceId]: { commitSha: input.commitSha } }, { onExcessProperty: "error" },
+      ).pipe(Effect.mapError(() => new Conflict({ message: "Deployment source pins are invalid." })));
+      const pins = yield* validateDeploymentSourcePins(decoded, snapshots);
       const previous = attempt.sourcePins[input.serviceId];
       if (previous && previous.commitSha !== input.commitSha) {
         return yield* new Conflict({ message: "A captured deployment commit cannot be replaced." });
