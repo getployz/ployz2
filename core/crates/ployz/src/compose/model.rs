@@ -124,6 +124,10 @@ impl ComposeProject {
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ComposeError {
+    #[error("Build {outcome:?}")]
+    RemoteBuild {
+        outcome: Box<ployz_build::remote::Outcome>,
+    },
     #[error("{0}")]
     Prerequisite(String),
     #[error("{0}")]

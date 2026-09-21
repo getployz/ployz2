@@ -257,20 +257,9 @@ impl CapturedBuild {
 
 pub(super) fn remote_error(outcome: Outcome) -> ComposeError {
     match outcome {
-        Outcome::Failed {
-            stage,
-            message,
-            work,
-        } => invalid_build(&format!(
-            "Build failed during {stage:?}: {message}; target evidence: {work:?}"
-        )),
-        Outcome::Unknown {
-            stage,
-            message,
-            work,
-        } => invalid_build(&format!(
-            "Build outcome unknown during {stage:?}: {message}; target evidence: {work:?}"
-        )),
+        outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }) => ComposeError::RemoteBuild {
+            outcome: Box::new(outcome),
+        },
         Outcome::CapabilitiesChecked { .. }
         | Outcome::Images { .. }
         | Outcome::Validated { .. }
