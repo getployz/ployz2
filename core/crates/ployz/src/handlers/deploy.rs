@@ -84,7 +84,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         )
         .await
         .map_err(|error| {
-            if let crate::preparation::PreparationError::Connect(error) = error {
+            if let crate::preparation::PreparationError::Connect(error)
+            | crate::preparation::PreparationError::Selection(error) = error
+            {
                 super::build::selection_error(error)
             } else {
                 Error::from(error)

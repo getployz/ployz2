@@ -964,7 +964,31 @@ async fn shared_preparation_preserves_failed_and_unknown_work_without_confirmati
         else {
             panic!("expected typed remote Build evidence")
         };
-        assert_eq!(*actual, outcome);
+        let expected = match outcome {
+            Outcome::Failed {
+                stage,
+                message,
+                work,
+            } => crate::compose::RemoteBuildFailure::Failed {
+                stage,
+                message,
+                work,
+            },
+            Outcome::Unknown {
+                stage,
+                message,
+                work,
+            } => crate::compose::RemoteBuildFailure::Unknown {
+                stage,
+                message,
+                work,
+            },
+            Outcome::CapabilitiesChecked { .. }
+            | Outcome::Images { .. }
+            | Outcome::Validated { .. }
+            | Outcome::Published { .. } => panic!("expected failure fixture"),
+        };
+        assert_eq!(*actual, expected);
         assert_eq!(mutations.load(Ordering::SeqCst), 0);
         assert!(builds.pulls.lock().unwrap().is_empty());
         server.abort();

@@ -13,7 +13,7 @@ const sdk = require(dir);
   const client = await sdk.connect({ connections: [{ unix: path.join(process.env.PLOYZ_SOCKET_DIRECTORY, `${process.env.PLOYZ_MACHINE_ID}.sock`) }] });
   try {
     const checkout = path.join(dir, "checkout");
-    fs.mkdirSync(checkout);
+    fs.mkdirSync(path.join(checkout, "apps/api"), { recursive: true });
     fs.writeFileSync(path.join(checkout, "Dockerfile"), "FROM scratch\n");
     const input = {
       deployment: {
@@ -22,8 +22,8 @@ const sdk = require(dir);
           config: {
             version: 2, privateDns: "api",
             source: { version: 2, type: "git", repository: "acme/api", repositoryId: 42,
-              installationId: 7, rootDir: "/", branch: { type: "connected", name: "main" } },
-            build: { builder: "dockerfile", dockerfilePath: "Dockerfile" },
+              installationId: 7, rootDir: "/apps/api", branch: { type: "connected", name: "main" } },
+            build: { builder: "dockerfile", dockerfilePath: "../../Dockerfile" },
             preDeployCommand: null, startCommand: null,
             healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
           },
@@ -63,6 +63,14 @@ const sdk = require(dir);
         assert.equal(error.details.preparation.stage, "Building");
         assert.deepEqual(error.details.preparation.work, { api: "Unattempted" });
         assert.match(error.message, /cleanup complete/);
+        return true;
+      });
+    } else if (process.env.PLOYZ_PREPARATION_OUTCOME === "selection") {
+      await assert.rejects(preparation.finished, error => {
+        assert.equal(error.details.preparation.kind, "failed");
+        assert.equal(error.details.preparation.stage, "Selection");
+        assert.equal(error.details.preparation.rejections["builds disabled"], 1);
+        assert.match(error.message, /no build was started/);
         return true;
       });
     } else {

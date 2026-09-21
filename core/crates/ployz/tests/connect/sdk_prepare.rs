@@ -160,3 +160,27 @@ async fn node_preparation_cancels_a_quiet_build_and_awaits_its_terminal_evidence
     assert_eq!(recorder.uploads.load(Ordering::SeqCst), 1);
     assert!(!recorder.created.load(Ordering::SeqCst));
 }
+
+#[tokio::test]
+async fn node_preparation_reports_no_eligible_builder_as_known_failure() {
+    let session = UnixSession::start().await;
+    let mut description = support::test_description();
+    description.machine_id = support::machine_id('a');
+    let recorder = Arc::new(support::BuildRecorder::default());
+    let mut service = support::DiscoveryService::new(description.clone());
+    let mut machine = support::machine('a', "disabled-builder");
+    machine.machine.runtime.architecture = "x86_64".into();
+    machine.machine.accepts_builds = false;
+    service.machines = vec![machine];
+    service.builds = Some(recorder.clone());
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    session
+        .assert_sdk_script(
+            "node_prepare.js",
+            description.machine_id,
+            &[("PLOYZ_PREPARATION_OUTCOME", "selection")],
+        )
+        .await;
+    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 0);
+    assert!(recorder.routes.lock().unwrap().is_empty());
+}

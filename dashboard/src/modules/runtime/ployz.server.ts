@@ -50,7 +50,13 @@ export class PloyzPreparationError extends Data.TaggedError("PloyzPreparationErr
 }> { readonly retriable = false as const; }
 const preparationFailureSchema = Schema.Struct({ details: Schema.Struct({ preparation: Schema.Struct({
   kind: Schema.Literals(["failed", "unknown", "cancelled"]),
-  stage: Schema.optional(Schema.String),
+  stage: Schema.optional(Schema.Literals(["Selection", "Observation", "Admission", "Queued", "Upload", "Preparation", "Building", "Output", "Cleanup"])),
+  message: Schema.optional(Schema.String),
+  rejections: Schema.optional(Schema.NullOr(Schema.Struct({
+    "membership unavailable": Schema.optional(Schema.Number),
+    "builds disabled": Schema.optional(Schema.Number),
+    "capability unverified": Schema.optional(Schema.Number),
+  }))),
   work: Schema.optional(Schema.Record(Schema.String, Schema.Union([
     Schema.Literals(["Unattempted", "Unknown", "Validated", "Published"]), Schema.Struct({ Image: Schema.Unknown }),
   ]))),
@@ -149,14 +155,26 @@ function missingDataLossFromSdkError(cause: unknown) {
   return new MissingDataLossIdentities(decoded.value.details.missing);
 }
 
-function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
+function safePreparationDiagnosis(message: string, secrets: readonly string[]) {
+  let safe = message;
+  for (const secret of secrets) if (secret.length > 0) safe = safe.replaceAll(secret, "[redacted]");
+  return safe.replace(/ployz1:[^\s"'<>]+/g, "[redacted capability]")
+    .replace(/https?:\/\/[^\s/@]+:[^\s/@]+@/g, "https://[redacted]@")
+    .replace(/\b(token|password|secret|authorization|credential)[=:]\s*(?:Bearer\s+)?[^\s,;]+/gi, "$1=[redacted]")
+    .split("").filter((character) => character === "\n" || character === "\t" || character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127).join("")
+    .slice(-2048);
+}
+
+function asSdkFailure(operation: string, cause: unknown, secrets: readonly string[] = []): PloyzSdkError {
   if (operation === "prepare") {
     const failure = Schema.decodeUnknownOption(preparationFailureSchema)(cause);
     if (Option.isSome(failure)) {
-      const { kind, stage, work } = failure.value.details.preparation;
+      const { kind, stage, work, message, rejections } = failure.value.details.preparation;
+      const diagnosis = message ? safePreparationDiagnosis(message, secrets) : undefined;
+      const selection = rejections ? Object.entries(rejections).map(([reason, count]) => `${count} ${reason}`).join("; ") : "";
       return new PloyzPreparationError({ failureCode: `sdk_preparation_${kind}`, stage,
         work: work ? Object.fromEntries(Object.entries(work).map(([target, evidence]) => [target, Schema.is(Schema.String)(evidence) ? evidence : "Image"])) : undefined,
-        message: kind === "unknown" ? "Build connection lost; remote work outcome is unknown." : kind === "cancelled" ? "Build cancelled." : `Preparation failed${stage ? ` during ${stage}` : ""}. See build output for details.`,
+        message: [kind === "unknown" ? "Remote work outcome is unknown." : kind === "cancelled" ? "Build cancelled." : `Preparation failed${stage ? ` during ${stage}` : ""}.`, diagnosis, selection].filter(Boolean).join(" "),
       });
     }
     if (Schema.is(Schema.Struct({ code: Schema.Literal("invalid_argument") }))(cause)) {
@@ -171,10 +189,10 @@ function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
   return new PloyzProviderError({ operation, cause });
 }
 
-function sdkPromise<A>(operation: string, run: (signal: AbortSignal) => Promise<A>) {
+function sdkPromise<A>(operation: string, run: (signal: AbortSignal) => Promise<A>, secrets: readonly string[] = []) {
   return Effect.tryPromise({
     try: run,
-    catch: (cause) => asSdkFailure(operation, cause),
+    catch: (cause) => asSdkFailure(operation, cause, secrets),
   });
 }
 
@@ -258,8 +276,9 @@ function wrapClient(client: Client): PloyzSession {
     removeVolumes: (request) =>
       sdkPromise("remove volumes", () => client.removeVolumes(request)),
     prepare: (input, onEvent, cancellation) => Effect.gen(function* () {
+      const secrets = input.deployment.snapshots.flatMap((snapshot) => Object.values(snapshot.resolvedEnv ?? {}));
       const running = yield* Effect.acquireRelease(
-        Effect.try({ try: () => client.prepare(input, { signal: cancellation }), catch: (cause) => asSdkFailure("prepare", cause) }),
+        Effect.try({ try: () => client.prepare(input, { signal: cancellation }), catch: (cause) => asSdkFailure("prepare", cause, secrets) }),
         (running) => Effect.promise(async () => {
           running.abort();
           // Interruption also waits for native cleanup before releasing the attempt slot.
@@ -275,7 +294,7 @@ function wrapClient(client: Client): PloyzSession {
           await running.finished.then((prepared) => prepared.close(), () => undefined);
           throw cause;
         }
-      });
+      }, secrets);
     }),
     preview: (intent) =>
       sdkPromise("preview", () => client.preview(intent)).pipe(

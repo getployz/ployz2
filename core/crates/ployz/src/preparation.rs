@@ -1,7 +1,6 @@
 //! Shared captured-source preparation, builder eligibility and image delivery.
 use crate::connect::ConnectError;
 use ployz_core::{DescribeContractRequest, MachineTarget, RpcError, RpcErrorCode, op};
-use serde_json::Value;
 use std::time::Duration;
 
 /// Selected builder and rejected observations, for caller-owned presentation.
@@ -31,12 +30,20 @@ pub async fn select_build_machine(
         candidates.sort_by_cached_key(|_| uuid::Uuid::new_v4());
     }
     let mut reasons = Vec::new();
+    let mut rejected = std::collections::BTreeMap::<&str, usize>::new();
     for observed in candidates {
         if cancellation.is_cancelled() {
             reasons.push("Build selection cancelled".into());
             break;
         }
         let machine = &observed.machine;
+        let category = if !observed.membership.invites_rpc() {
+            "membership unavailable"
+        } else if !machine.accepts_builds {
+            "builds disabled"
+        } else {
+            "capability unverified"
+        };
         let reason = if !observed.membership.invites_rpc() {
             format!("membership is {:?}", observed.membership)
         } else if !machine.accepts_builds {
@@ -72,6 +79,7 @@ pub async fn select_build_machine(
                 Err(error) => format!("Build capability could not be verified: {error}"),
             }
         };
+        *rejected.entry(category).or_default() += 1;
         reasons.push(format!(
             "Machine {} ({}): {reason}",
             machine.name, machine.id
@@ -87,7 +95,7 @@ pub async fn select_build_machine(
                 reasons.join("; ")
             }
         ),
-        details: Value::Null,
+        details: serde_json::json!({"rejections": rejected}),
     }))
 }
 
@@ -105,6 +113,8 @@ pub enum PreparationError {
     Compose(#[from] ComposeError),
     #[error(transparent)]
     Connect(#[from] ConnectError),
+    #[error("Build selection failed: {0}")]
+    Selection(ConnectError),
     #[error(transparent)]
     Plan(#[from] DeployError),
     #[error("{0}")]
@@ -181,10 +191,9 @@ pub async fn prepare(
                 BuildLocation::Local { docker } => build.execute(docker, cancellation)?,
                 BuildLocation::Remote(target) => {
                     let selected = read(cancellation, async {
-                        Ok(
-                            select_build_machine(client, target, &targets, &machines, cancellation)
-                                .await?,
-                        )
+                        select_build_machine(client, target, &targets, &machines, cancellation)
+                            .await
+                            .map_err(PreparationError::Selection)
                     })
                     .await?;
                     let id = selected.machine.id;
