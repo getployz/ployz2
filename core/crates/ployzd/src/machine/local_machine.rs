@@ -35,6 +35,7 @@ use crate::{
 #[derive(Clone)]
 pub struct LocalMachine {
     owner: RecordOwner,
+    management_client: Option<[u8; 32]>,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
 }
@@ -90,6 +91,8 @@ pub enum Error {
     StoragePreparation(#[from] ployz_core::RpcError),
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error("management credential has been revoked")]
+    ManagementRevoked,
     #[error("Machine is not participating")]
     NotParticipating,
     #[error("Cluster store is not available")]
@@ -146,9 +149,17 @@ impl LocalMachine {
     pub fn new(owner: RecordOwner) -> Self {
         Self {
             owner,
+            management_client: None,
             cluster: None,
             containers: None,
         }
+    }
+
+    /// Bind subsequent mutation admission to this authenticated management client.
+    #[must_use]
+    pub(crate) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
+        self.management_client = Some(remote);
+        self
     }
 
     #[must_use]
@@ -183,8 +194,18 @@ impl LocalMachine {
         &self.owner
     }
 
+    pub(crate) fn require_management_access(&self) -> Result<(), Error> {
+        if let Some(remote) = self.management_client
+            && self.record().accepted_client() != Some(remote)
+        {
+            return Err(Error::ManagementRevoked);
+        }
+        Ok(())
+    }
+
     pub(crate) async fn admit_mutation(&self) -> Result<MutationAdmission, Error> {
         let local = self.owner.admission_lock().lock_owned().await;
+        self.require_management_access()?;
         let installation = self.owner.mutation_gate().try_mutation()?;
         Ok(MutationAdmission {
             _local: local,
@@ -575,6 +596,7 @@ impl LocalMachine {
             && request.update.public_ip == ployz_core::PublicIpUpdate::Keep
             && request.update.advertised_endpoints.is_none()
         {
+            self.require_management_access()?;
             let installation = self.owner.mutation_gate().try_mutation()?;
             return tokio::spawn(async move {
                 let _installation = installation;

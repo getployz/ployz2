@@ -10,8 +10,8 @@ impl LocalMachine {
     /// Set or clear Cloud Pairing under mutation admission.
     ///
     /// `Set` stages a fresh client public key and returns its Management Capability.
-    /// The accepted key remains usable until the replacement authenticates, proving
-    /// the caller received the secret. Lost responses can therefore be retried.
+    /// The accepted key remains usable through read-only replacement verification.
+    /// Its first operational RPC activates the replacement after the caller saves it.
     /// `Clear` removes both accepted and pending keys; record publication revokes
     /// every live management connection. Client secrets are never persisted.
     ///
@@ -54,7 +54,7 @@ impl LocalMachine {
         })
         .await
     }
-    /// Activate a staged management key after the transport authenticates its holder.
+    /// Activate a staged management key for an authenticated operational RPC.
     ///
     /// # Errors
     /// Returns mutation admission, record owner or persistence errors.
@@ -105,6 +105,40 @@ mod tests {
 
     fn pairing(secret: &str) -> CloudPairing {
         CloudPairing::new(ployz_core::PairingCredential::parse(secret).unwrap())
+    }
+
+    #[tokio::test]
+    async fn clear_rejects_management_mutations_already_waiting_for_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = participating(dir.path()).await;
+        let capability = local
+            .set_cloud_pairing(SetCloudPairingRequest::Set {
+                pairing: pairing("first"),
+            })
+            .await
+            .unwrap()
+            .capability
+            .unwrap();
+        let key = *iroh::SecretKey::from_bytes(capability.client_secret())
+            .public()
+            .as_bytes();
+        local.activate_management_client(key).await.unwrap();
+        let remote = local.clone().with_management_client(key);
+        let lock = local.owner.admission_lock().lock_owned().await;
+        let clear = local.set_cloud_pairing(SetCloudPairingRequest::Clear {});
+        let queued = remote.set_cloud_pairing(SetCloudPairingRequest::Set {
+            pairing: pairing("after-clear"),
+        });
+        tokio::pin!(clear, queued);
+        assert!(futures_util::poll!(&mut clear).is_pending());
+        assert!(futures_util::poll!(&mut queued).is_pending());
+        drop(lock);
+        clear.await.unwrap();
+        assert!(
+            queued.await.is_err(),
+            "a revoked client must not mutate after Clear"
+        );
+        assert!(local.record().cloud_pairing().is_none());
     }
 
     #[tokio::test]

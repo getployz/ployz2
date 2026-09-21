@@ -383,7 +383,7 @@ impl LocalMachineStore {
         Ok(())
     }
 
-    /// Commit a pending key only after its holder proves possession during authentication.
+    /// Commit a pending key for its holder's first operational RPC, after identity verification.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.

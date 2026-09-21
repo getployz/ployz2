@@ -49,6 +49,84 @@ async fn client_connector_honours_the_management_transport_contract() {
         .expect("contract test timed out");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let owner = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
+    let local = LocalMachine::new(owner.clone());
+    local
+        .initialize(InitializeRequest {
+            initial_policy: Default::default(),
+            name: MachineName::parse("first").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            wireguard_mtu: None,
+            cloud_pairing: None,
+        })
+        .await
+        .unwrap();
+    let old = local
+        .set_cloud_pairing(SetCloudPairingRequest::Set {
+            pairing: CloudPairing::new(PairingCredential::parse("pairing").unwrap()),
+        })
+        .await
+        .unwrap()
+        .capability
+        .unwrap();
+    let old_key = *SecretKey::from_bytes(old.client_secret())
+        .public()
+        .as_bytes();
+    local.activate_management_client(old_key).await.unwrap();
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        MachineApi::builder(owner).build(),
+        shutdown.clone(),
+    ));
+    let connector = Arc::new(SystemConnector::default().with_management_relay(
+        ManagementRelay::custom(relay_url, CaTlsConfig::insecure_skip_verify()),
+    ));
+    let previous = connector.connect(&connection(&old)).await.unwrap();
+    let replacement = rotate(previous.clone(), "pairing").await;
+    // Cloud has not committed replacement publication: negotiation may only verify identity.
+    let verified =
+        ployz::sdk::connect_connections(vec![connection(&replacement)], connector.clone())
+            .await
+            .unwrap();
+    assert_eq!(local.record().accepted_client(), Some(old_key));
+    // Removal wins publication and retains only the previous saved capability.
+    let _ = MachineRpcClient::new(previous)
+        .set_cloud_pairing(
+            op::SetCloudPairing::into_request(SetCloudPairingRequest::Clear {})
+                .encode()
+                .unwrap(),
+        )
+        .await;
+    // Clear may revoke its own response; the authenticated cleared response is confirmation.
+    wait_until(|| local.record().cloud_pairing().is_none()).await;
+    assert!(local.record().cloud_pairing().is_none());
+    assert!(matches!(
+        connector.connect(&connection(&replacement)).await,
+        Err(ConnectError::PairingCleared)
+    ));
+    drop(verified);
+    shutdown.cancel();
+    server.await.unwrap().unwrap();
+}
+
 async fn contract() {
     let (_relay_map, relay_url, _relay) = run_relay_server().await.unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -113,6 +191,7 @@ async fn contract() {
     // Fifty concurrent RPC streams over one accepted connection all complete.
     let channel = connector.connect(&connection(&capability)).await.unwrap();
     let surviving_connection = observed.recv().await.unwrap();
+    activate(channel.clone()).await;
     gate.hold.store(true, Ordering::SeqCst);
     let calls: Vec<_> = (0..50)
         .map(|_| tokio::spawn(describe(channel.clone())))
@@ -178,6 +257,10 @@ async fn contract() {
         .bind()
         .await
         .unwrap();
+    local
+        .activate_management_client(*delayed.id().as_bytes())
+        .await
+        .unwrap();
     let waiting = delayed
         .connect(
             EndpointAddr::new(endpoint.id()).with_relay_url(relay_url),
@@ -218,6 +301,15 @@ async fn contract() {
     config.save_management_capability(&capability).unwrap();
     let activated = connector.connect(&connection(&capability)).await.unwrap();
     let activated_connection = observed.recv().await.unwrap();
+    activate(activated.clone()).await;
+    assert_eq!(
+        local.record().accepted_client(),
+        Some(
+            *SecretKey::from_bytes(capability.client_secret())
+                .public()
+                .as_bytes()
+        )
+    );
     drop(activated);
     tokio::time::timeout(Duration::from_secs(10), activated_connection.closed())
         .await
@@ -333,6 +425,22 @@ async fn rotate(channel: Channel, secret: &str) -> ManagementCapability {
         .unwrap()
         .capability
         .unwrap()
+}
+
+async fn activate(channel: Channel) {
+    MachineRpcClient::new(channel)
+        .machine_token(
+            op::MachineToken::into_request(ployz_core::MachineTokenRequest::default())
+                .encode()
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::MachineToken>()
+        .unwrap();
 }
 
 async fn describe(channel: Channel) -> Result<MachineId, tonic::Status> {

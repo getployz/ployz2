@@ -138,8 +138,8 @@ pub fn admits(accepted_client: Option<&[u8; 32]>, remote: &[u8; 32]) -> bool {
 ///
 /// Keys other than the accepted or pending key receive [`REFUSED_BY_IDENTITY`],
 /// or [`PAIRING_CLEARED`] when no pairing or client keys remain. Authenticating
-/// with the pending key activates it. When the accepted key changes (a `Clear`, or a
-/// replacement key proving possession), live connections of the old key are closed with
+/// with the pending key permits read-only identity negotiation. Its first operational
+/// RPC activates it. A Clear or replacement activation closes old connections with
 /// [`REVOKED`].
 ///
 /// # Errors
@@ -162,7 +162,6 @@ where
     let (accepted_tx, accepted_rx) = mpsc::channel::<io::Result<ManagementIo>>(16);
     let acceptor = tokio::spawn(accept_loop(
         endpoint.clone(),
-        local,
         records.clone(),
         Arc::clone(&live),
         accepted_tx,
@@ -203,12 +202,18 @@ fn revoke_others(
     records: &watch::Receiver<Arc<LocalMachineRecord>>,
 ) {
     let mut live = live.lock().expect("live connection list is not poisoned");
-    let accepted = records.borrow().accepted_client();
+    let record = records.borrow();
     live.retain(|weak| {
         let Some(connection) = weak.upgrade() else {
             return false;
         };
-        let keep = admits(accepted.as_ref(), connection.remote_id().as_bytes());
+        let keep = admits(
+            record.accepted_client().as_ref(),
+            connection.remote_id().as_bytes(),
+        ) || admits(
+            record.pending_client().as_ref(),
+            connection.remote_id().as_bytes(),
+        );
         if !keep {
             connection.close(REVOKED, b"revoked");
         }
@@ -218,7 +223,6 @@ fn revoke_others(
 
 async fn accept_loop(
     endpoint: Endpoint,
-    local: LocalMachine,
     records: watch::Receiver<Arc<LocalMachineRecord>>,
     live: Arc<Mutex<Vec<WeakConnectionHandle>>>,
     accepted: mpsc::Sender<io::Result<ManagementIo>>,
@@ -238,7 +242,6 @@ async fn accept_loop(
         let Ok(permit) = Arc::clone(&handshakes).acquire_owned().await else {
             return;
         };
-        let local = local.clone();
         let records = records.clone();
         let live = Arc::clone(&live);
         let accepted = accepted.clone();
@@ -250,16 +253,6 @@ async fn accept_loop(
                     return;
                 }
             };
-            // A successful handshake proves receipt of the pending secret. Persist
-            // activation before admitting RPCs; failure leaves the old key usable.
-            if let Err(error) = local
-                .activate_management_client(*connection.remote_id().as_bytes())
-                .await
-            {
-                tracing::warn!(%error, "management credential activation failed");
-                connection.close(REVOKED, b"activation failed");
-                return;
-            }
             {
                 // Admission and registration share the revoker's lock, before waiting
                 // for peer input: a delayed first stream cannot escape key rotation.
@@ -267,6 +260,9 @@ async fn accept_loop(
                 let record = records.borrow();
                 if !admits(
                     record.accepted_client().as_ref(),
+                    connection.remote_id().as_bytes(),
+                ) && !admits(
+                    record.pending_client().as_ref(),
                     connection.remote_id().as_bytes(),
                 ) {
                     let code = if record.cloud_pairing().is_none() {

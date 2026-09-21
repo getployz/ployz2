@@ -57,6 +57,11 @@ impl MachineService {
         }
     }
 
+    pub(super) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
+        self.local = self.local.with_management_client(remote);
+        self
+    }
+
     #[must_use]
     pub(super) fn with_cluster_option(
         mut self,
@@ -752,6 +757,7 @@ async fn read_container_observations(
 fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Status> {
     match error {
         LocalMachineError::Store(error) => respond(store_error(error)),
+        LocalMachineError::ManagementRevoked => Err(Status::unauthenticated(error.to_string())),
         LocalMachineError::NotParticipating => respond(unavailable("Machine is not participating")),
         LocalMachineError::ClusterStoreUnavailable => {
             respond(unavailable("Cluster store is not available"))
