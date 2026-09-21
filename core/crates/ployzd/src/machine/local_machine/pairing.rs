@@ -34,17 +34,17 @@ impl LocalMachine {
                     let capability = match request {
                         SetCloudPairingRequest::Set { pairing } => {
                             let client = iroh::SecretKey::generate();
-                            store.persist_cloud_pairing(
-                                Some(pairing),
-                                Some(*client.public().as_bytes()),
-                            )?;
+                            store.persist_cloud_pairing(Some((
+                                pairing,
+                                *client.public().as_bytes(),
+                            )))?;
                             Some(ManagementCapability::new(
                                 store.record().management_secret().public_key(),
                                 client.to_bytes(),
                             ))
                         }
                         SetCloudPairingRequest::Clear {} => {
-                            store.persist_cloud_pairing(None, None)?;
+                            store.persist_cloud_pairing(None)?;
                             None
                         }
                     };
@@ -59,7 +59,7 @@ impl LocalMachine {
     /// # Errors
     /// Returns mutation admission, record owner or persistence errors.
     pub async fn activate_management_client(&self, remote: [u8; 32]) -> Result<(), Error> {
-        if self.record().pending_client != Some(remote) {
+        if self.record().pending_client() != Some(remote) {
             return Ok(());
         }
         let local = self.clone();
@@ -119,14 +119,14 @@ mod tests {
             .unwrap();
         let capability = response.capability.unwrap();
         let record = local.record();
-        assert_eq!(record.cloud_pairing, Some(pairing("pairing")));
+        assert_eq!(record.cloud_pairing(), Some(&pairing("pairing")));
         assert_eq!(
             *capability.machine(),
             record.management_secret().public_key()
         );
         let client_public = iroh::SecretKey::from_bytes(capability.client_secret()).public();
-        assert_eq!(record.pending_client, Some(*client_public.as_bytes()));
-        assert_eq!(record.accepted_client, None);
+        assert_eq!(record.pending_client(), Some(*client_public.as_bytes()));
+        assert_eq!(record.accepted_client(), None);
         local
             .activate_management_client(*client_public.as_bytes())
             .await
@@ -145,7 +145,7 @@ mod tests {
         let replacement = again.capability.unwrap();
         assert_ne!(replacement, capability);
         assert_eq!(
-            local.record().accepted_client,
+            local.record().accepted_client(),
             Some(*client_public.as_bytes())
         );
         let replacement_public = iroh::SecretKey::from_bytes(replacement.client_secret()).public();
@@ -159,10 +159,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            local.record().accepted_client,
+            local.record().accepted_client(),
             Some(*replacement_public.as_bytes())
         );
-        assert_eq!(local.record().pending_client, None);
+        assert_eq!(local.record().pending_client(), None);
     }
 
     #[tokio::test]
@@ -203,13 +203,13 @@ mod tests {
             Err(Error::Store(_))
         ));
         assert_eq!(local.record(), before);
-        assert_eq!(before.accepted_client, Some(first_key));
-        assert_eq!(before.pending_client, Some(next_key));
+        assert_eq!(before.accepted_client(), Some(first_key));
+        assert_eq!(before.pending_client(), Some(next_key));
         std::fs::remove_dir(&path).unwrap();
         std::fs::rename(backup, path).unwrap();
         local.activate_management_client(next_key).await.unwrap();
-        assert_eq!(local.record().accepted_client, Some(next_key));
-        assert_eq!(local.record().pending_client, None);
+        assert_eq!(local.record().accepted_client(), Some(next_key));
+        assert_eq!(local.record().pending_client(), None);
     }
 
     #[tokio::test]
@@ -231,9 +231,9 @@ mod tests {
         assert_eq!(response, SetCloudPairingResponse { capability: None });
         assert!(records.has_changed().unwrap());
         let record = records.borrow_and_update().clone();
-        assert_eq!(record.cloud_pairing, None);
-        assert_eq!(record.accepted_client, None);
-        assert_eq!(record.pending_client, None);
+        assert_eq!(record.cloud_pairing(), None);
+        assert_eq!(record.accepted_client(), None);
+        assert_eq!(record.pending_client(), None);
         // One publication means one write: pairing and key were not cleared separately.
         assert!(!records.has_changed().unwrap());
     }

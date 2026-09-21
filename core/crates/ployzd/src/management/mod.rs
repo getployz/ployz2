@@ -203,7 +203,7 @@ fn revoke_others(
     records: &watch::Receiver<Arc<LocalMachineRecord>>,
 ) {
     let mut live = live.lock().expect("live connection list is not poisoned");
-    let accepted = records.borrow().accepted_client;
+    let accepted = records.borrow().accepted_client();
     live.retain(|weak| {
         let Some(connection) = weak.upgrade() else {
             return false;
@@ -266,13 +266,10 @@ async fn accept_loop(
                 let mut live = live.lock().expect("live connection list is not poisoned");
                 let record = records.borrow();
                 if !admits(
-                    record.accepted_client.as_ref(),
+                    record.accepted_client().as_ref(),
                     connection.remote_id().as_bytes(),
                 ) {
-                    let code = if record.cloud_pairing.is_none()
-                        && record.accepted_client.is_none()
-                        && record.pending_client.is_none()
-                    {
+                    let code = if record.cloud_pairing().is_none() {
                         PAIRING_CLEARED
                     } else {
                         REFUSED_BY_IDENTITY

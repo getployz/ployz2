@@ -140,18 +140,81 @@ pub struct LocalMachineRecord {
     wireguard_private_key: WireGuardPrivateKey,
     /// Management Identity secret; minted when the record is born.
     management_secret: ManagementSecret,
-    /// Public key of the one client the management transport admits.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted_client: Option<[u8; 32]>,
-    /// Replacement key awaiting proof that its holder received the capability.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pending_client: Option<[u8; 32]>,
+    /// Pairing and its admitted keys form one persisted state.
+    cloud_access: CloudAccess,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cloud_pairing: Option<CloudPairing>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+}
+
+/// The pairing credential may precede issuance during initialization or join.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum CloudAccess {
+    Unpaired {},
+    Enrolling {
+        pairing: CloudPairing,
+    },
+    Pending {
+        pairing: CloudPairing,
+        pending: [u8; 32],
+    },
+    Active {
+        pairing: CloudPairing,
+        accepted: [u8; 32],
+    },
+    Rotating {
+        pairing: CloudPairing,
+        accepted: [u8; 32],
+        pending: [u8; 32],
+    },
+}
+
+impl From<Option<CloudPairing>> for CloudAccess {
+    fn from(pairing: Option<CloudPairing>) -> Self {
+        pairing.map_or(Self::Unpaired {}, |pairing| Self::Enrolling { pairing })
+    }
+}
+
+impl LocalMachineRecord {
+    /// Current Cloud Pairing, including enrollment before capability issuance.
+    #[must_use]
+    pub fn cloud_pairing(&self) -> Option<&CloudPairing> {
+        match &self.cloud_access {
+            CloudAccess::Unpaired {} => None,
+            CloudAccess::Enrolling { pairing }
+            | CloudAccess::Pending { pairing, .. }
+            | CloudAccess::Active { pairing, .. }
+            | CloudAccess::Rotating { pairing, .. } => Some(pairing),
+        }
+    }
+
+    /// Public key currently admitted by the management transport.
+    #[must_use]
+    pub fn accepted_client(&self) -> Option<[u8; 32]> {
+        match self.cloud_access {
+            CloudAccess::Active { accepted, .. } | CloudAccess::Rotating { accepted, .. } => {
+                Some(accepted)
+            }
+            CloudAccess::Unpaired {}
+            | CloudAccess::Enrolling { .. }
+            | CloudAccess::Pending { .. } => None,
+        }
+    }
+
+    /// Public key awaiting an authenticated handover.
+    #[must_use]
+    pub fn pending_client(&self) -> Option<[u8; 32]> {
+        match self.cloud_access {
+            CloudAccess::Pending { pending, .. } | CloudAccess::Rotating { pending, .. } => {
+                Some(pending)
+            }
+            CloudAccess::Unpaired {}
+            | CloudAccess::Enrolling { .. }
+            | CloudAccess::Active { .. } => None,
+        }
+    }
 }
 
 static EMPTY_STORE_VERSION: BTreeMap<String, i64> = BTreeMap::new();
@@ -297,10 +360,8 @@ impl LocalMachineRecord {
             body,
             wireguard_private_key,
             management_secret: ManagementSecret::generate(),
-            accepted_client: None,
-            pending_client: None,
+            cloud_access: CloudAccess::Unpaired {},
             wireguard_mtu: None,
-            cloud_pairing: None,
             selected_endpoints: BTreeMap::new(),
         })
     }
@@ -366,10 +427,8 @@ impl LocalMachineRecord {
             },
             wireguard_private_key: self.wireguard_private_key,
             management_secret: self.management_secret,
-            accepted_client: self.accepted_client,
-            pending_client: self.pending_client,
+            cloud_access: self.cloud_access,
             wireguard_mtu: self.wireguard_mtu,
-            cloud_pairing: self.cloud_pairing,
             selected_endpoints: self.selected_endpoints,
         }
     }

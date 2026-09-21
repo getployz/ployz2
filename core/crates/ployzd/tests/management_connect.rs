@@ -199,10 +199,46 @@ async fn contract() {
         .unwrap()
         .capability
         .unwrap();
+    // Persist before Cloud activates the replacement; losing its HTTP reply must
+    // leave a freshly loaded CLI context able to reconnect.
+    let cli_dir = tempfile::tempdir().unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(cli_dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let config = ployz::context::Config::new(
+        cli_dir.path().join("config.yaml"),
+        Some("cloud".into()),
+        std::collections::BTreeMap::from([(
+            "cloud".into(),
+            ployz::context::Context {
+                connections: vec![connection(&delayed_capability)],
+            },
+        )]),
+    );
+    config.save().unwrap();
+    config.save_management_capability(&capability).unwrap();
     let activated = connector.connect(&connection(&capability)).await.unwrap();
     let activated_connection = observed.recv().await.unwrap();
     drop(activated);
     tokio::time::timeout(Duration::from_secs(10), activated_connection.closed())
+        .await
+        .unwrap();
+    let saved = ployz::context::Config::load(config.path()).unwrap();
+    let resumed = connector
+        .connect(
+            saved
+                .contexts
+                .get("cloud")
+                .unwrap()
+                .connections
+                .first()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(describe(resumed.clone()).await.unwrap(), machine_id);
+    let resumed_connection = observed.recv().await.unwrap();
+    drop(resumed);
+    tokio::time::timeout(Duration::from_secs(10), resumed_connection.closed())
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), waiting.closed())

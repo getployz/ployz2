@@ -202,7 +202,7 @@ where
         .await?
     };
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
-    let capability = set_cloud_pairing(&mut ready, &pairing).await?;
+    let capability = set_cloud_pairing(matches, &mut ready, &pairing).await?;
     let catch_up = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await;
     // Cloud connects with the replacement during publication/completion, revoking this key.
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
@@ -339,7 +339,7 @@ where
         }
     }
     // Repeated Set stages a fresh capability; connecting with it completes rotation.
-    let capability = set_cloud_pairing(&mut ready, &pairing).await
+    let capability = set_cloud_pairing(matches, &mut ready, &pairing).await
         .map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
     cloud_enroll::publish(
         &cloud_enroll::callback_url(cloud_url, token),
@@ -360,6 +360,7 @@ where
 
 /// Set the Cloud Pairing and take the Management Capability the daemon minted for it.
 async fn set_cloud_pairing(
+    matches: &ArgMatches,
     client: &mut Client,
     pairing: &CloudPairing,
 ) -> Result<ManagementCapability, Error> {
@@ -371,9 +372,14 @@ async fn set_cloud_pairing(
             None,
         )
         .await?;
-    response.capability.ok_or_else(|| {
+    let capability = response.capability.ok_or_else(|| {
         Error::usage("Machine confirmed the Cloud Pairing without a Management Capability")
-    })
+    })?;
+    if matches!(client.connection().transport(), Transport::Management(_)) {
+        crate::context::Config::load(config_path(matches)?)?
+            .save_management_capability(&capability)?;
+    }
+    Ok(capability)
 }
 
 async fn provision_storage<Install, InstallFuture>(
