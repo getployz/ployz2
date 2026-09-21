@@ -34,6 +34,7 @@ mod enrollment;
 mod machine_storage;
 mod removal_cli;
 mod sdk;
+mod sdk_prepare;
 mod sdk_data_loss;
 mod sdk_destroy_cluster;
 mod sdk_destroy_project;
