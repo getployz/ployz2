@@ -9,15 +9,13 @@ export type DeploymentSourcePins = typeof deploymentSourcePinsSchema.Type;
 
 /** Pins are execution inputs; authored branches remain in the frozen Saved config. */
 export const validateDeploymentSourcePins = Effect.fn("Deployments.validateSourcePins")(
-  function* (pins: unknown, snapshots: readonly { nodeId: string; nodeType: string; config: unknown }[]) {
-    const parsed = yield* Schema.decodeUnknownEffect(deploymentSourcePinsSchema)(pins, { onExcessProperty: "error" })
-      .pipe(Effect.mapError(() => new Conflict({ message: "Deployment source pins are invalid." })));
-    for (const serviceId of Object.keys(parsed)) {
+  function* (pins: DeploymentSourcePins, snapshots: readonly { nodeId: string; nodeType: string; config: unknown }[]) {
+    for (const serviceId of Object.keys(pins)) {
       const service = snapshots.find(row => row.nodeId === serviceId && row.nodeType === "service");
       if (!service || parseDashboardServiceConfig(service.config).source.type !== "git") {
         return yield* new Conflict({ message: "A source pin must identify a frozen Git Service." });
       }
     }
-    return parsed;
+    return pins;
   },
 );
