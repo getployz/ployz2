@@ -82,7 +82,14 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             &cancellation,
             preparation_progress,
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            if let crate::preparation::PreparationError::Connect(error) = error {
+                super::build::selection_error(error)
+            } else {
+                Error::from(error)
+            }
+        })?;
         deploy_project(
             &mut client,
             &candidate_id,
