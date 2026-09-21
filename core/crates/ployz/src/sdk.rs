@@ -880,7 +880,10 @@ fn preparation_error(
             let mut details = serde_json::json!({"preparation": outcome});
             // Failed confirms termination; a cancellation request alone cannot erase Unknown.
             if cancelled {
-                details["preparation"]["kind"] = serde_json::json!("cancelled");
+                *details
+                    .pointer_mut("/preparation/kind")
+                    .expect("remote Build failures serialize a kind") =
+                    serde_json::json!("cancelled");
             }
             RpcError {
                 code: RpcErrorCode::Internal,
