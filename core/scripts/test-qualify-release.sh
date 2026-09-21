@@ -29,6 +29,7 @@ TARGET=$TMP/target
 mkdir -p "$TMP/bin" "$SOURCE" "$TARGET"
 export LOG=$TMP/calls.log
 export SSH_LOG=$TMP/ssh.log
+export QUALIFY_OFFLINE_FILE=$TMP/offline-host
 export QUALIFY_STATE=$TMP/current-release
 printf 'target\n' >"$QUALIFY_STATE"
 
@@ -211,6 +212,8 @@ shift
 command=$*
 printf 'ssh host=%s command=%s\n' "$host" "$command" >>"$SSH_LOG"
 case "$command" in
+    'sudo systemctl stop ployz.service') printf '%s' "$host" >"$QUALIFY_OFFLINE_FILE" ;;
+    'sudo systemctl start ployz.service') rm -f "$QUALIFY_OFFLINE_FILE" ;;
     *'uname -m'*) printf 'x86_64\n' ;;
     *'./ployz cloud enroll '*) : >"$QUALIFY_PAIRED" ;;
     *'ln -sfn'*'/target'*'/current'*) printf 'target\n' >"$QUALIFY_STATE" ;;
@@ -268,7 +271,9 @@ case "$PLOYZ_QUALIFICATION_PHASE" in
             chmod 600 "$PLOYZ_QUALIFICATION_CONTEXT_OUT"
         fi
         ;;
-    fallback|revoke-offline|revoke-online) : ;;
+    fallback) [ "$(cat "$QUALIFY_OFFLINE_FILE")" = root@192.0.2.10 ] ;;
+    revoke-offline) [ "$(cat "$QUALIFY_OFFLINE_FILE")" = root@192.0.2.11 ] ;;
+    revoke-online) [ ! -e "$QUALIFY_OFFLINE_FILE" ] ;;
     *) exit 1 ;;
 esac
 chmod 600 "$PLOYZ_QUALIFICATION_STATE"

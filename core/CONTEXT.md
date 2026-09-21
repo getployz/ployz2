@@ -345,7 +345,7 @@ _Avoid_: Management Capability, Machine identity, presence proof
 **Management Capability**:
 A protected bearer granting shared administrative Machine RPC access to one Machine over the management transport. Possession does not prove the intended Machine identity or Cloud Organization authorization.
 It is shared administrative authority, not per-user access; rotation revokes every previous holder, and Cloud logout does not revoke a separately held capability.
-_Avoid_: Tailcat Capability, per-user permission, read-only grant, Pairing Credential, management endpoint
+_Avoid_: per-user permission, read-only grant, Pairing Credential, management endpoint
 
 **Management Identity**:
 The Machine's iroh public key, identifying its management plane to Cloud and the remote CLI. It is not a mesh peer, a Machine ID, or the WireGuard key.

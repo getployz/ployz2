@@ -51,4 +51,4 @@ if PATH="$TMP/bin:$PATH" DIST="$TMP/dist" bash "$ROOT/scripts/publish-github-rel
 fi
 grep -Fq 'release asset set differs' "$TMP/error"
 [ ! -e "$GH_CALLS" ]
-echo 'release helper packaging contracts passed'
+echo 'release packaging contracts passed'

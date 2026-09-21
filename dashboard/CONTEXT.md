@@ -1,6 +1,6 @@
 # Ployz Cloud
 
-Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. Shared runtime bootstrap terms follow the [Ployz runtime glossary](../core/CONTEXT.md) and are mirrored here for Cloud product language. Enrollment follows the [protected connection candidate decision](../docs/adr/0005-tailcat-connection-candidates.md).
+Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. Shared runtime bootstrap terms follow the [Ployz runtime glossary](../core/CONTEXT.md) and are mirrored here for Cloud product language. Enrollment follows the [protected connection candidate decision](../docs/adr/0005-management-connection-candidates.md).
 
 ## Language
 
@@ -53,8 +53,8 @@ An Organization's protected access descriptor for one Server in its current Clou
 _Avoid_: Server catalog, online Server, registered member
 
 **Management Capability**:
-The protected bearer a Connection Candidate holds for reaching one Server over the in-process management transport. It grants shared administrative access; rotation revokes every previous holder, and removal is confirmed by the Server's response or an identity refusal on retry, never by absence or timeout.
-_Avoid_: Tailcat Capability, per-user permission, Pairing Credential, helper credential
+The protected bearer a Connection Candidate holds for reaching one Server over the in-process management transport. It grants shared administrative access; rotation revokes every previous holder, and removal is confirmed by a successful Clear response or an authenticated response explicitly confirming that the pairing is cleared, never by absence or timeout.
+_Avoid_: per-user permission, Pairing Credential, presence proof
 
 **Management Identity**:
 The Server's iroh public key that a Management Capability dials. It is not a mesh peer, a Machine ID, or evidence of presence.

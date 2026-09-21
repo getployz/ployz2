@@ -75,9 +75,9 @@ The repository's `.github/workflows/ployz-sh.yml` Direct-Uploads the staged site
 | `https://ployz.sh/stable` | `channels` branch file `stable` |
 | `https://ployz.sh/beta` | `channels` branch file `beta` |
 
-Needs repo secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (same Pages project as before). Disable the rust repo's `ployz-sh` workflow so it cannot overwrite this deploy.
+Needs repo secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
 
-Apex and channel URLs must serve these bodies. The installer does not detect or tolerate the old v1 script.
+Apex and channel URLs must serve these bodies.
 
 ## Homebrew
 

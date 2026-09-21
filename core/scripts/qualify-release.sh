@@ -28,6 +28,7 @@ SSH_KEY=${PLOYZ_QUALIFY_SSH_KEY:-}
 SSH_KNOWN_HOSTS=${PLOYZ_QUALIFY_SSH_KNOWN_HOSTS:-}
 CONFIG_DIR=
 TRAFFIC_PID=
+OFFLINE_HOST=
 TRAFFIC_STOP=/var/lib/ployz/qualification/traffic.stop
 REMOTE_RELEASE_ROOT=/var/lib/ployz/qualification/releases
 APP_URL=http://127.0.0.1:18082/identity
@@ -227,9 +228,18 @@ stop_traffic() {
 }
 
 cleanup() {
+    [ -z "$OFFLINE_HOST" ] || ssh_host "$OFFLINE_HOST" 'sudo systemctl start ployz.service' || true
     stop_traffic
     [ -z "${work:-}" ] || rm -rf "$work"
     [ -z "$CONFIG_DIR" ] || rm -rf "$CONFIG_DIR"
+}
+
+run_cloud_offline() {
+    OFFLINE_HOST=$1
+    ssh_host "$OFFLINE_HOST" 'sudo systemctl stop ployz.service'
+    run_cloud_phase "$2"
+    ssh_host "$OFFLINE_HOST" 'sudo systemctl start ployz.service'
+    OFFLINE_HOST=
 }
 
 stage_remote_release() {
@@ -388,7 +398,7 @@ if len(connections) < 2 or any(set(connection) - {"management", "machine_id"} or
 CONTEXT_EOF
 
 echo "prove ordered runtime fallback"
-run_cloud_phase fallback
+run_cloud_offline "$first" fallback
 
 machine_arch=$(ssh_host "$first" uname -m)
 machine_archive=$(daemon_archive "$machine_arch")
@@ -499,7 +509,7 @@ if [ "${PLOYZ_QUALIFY_PAUSE_BEFORE_REVOCATION:-0}" != 0 ]; then
     echo "paused before Cloud revocation; pairing remains live for additional qualification phases"
     exit 0
 fi
-run_cloud_phase revoke-offline
+run_cloud_offline "${HOST_LIST[1]}" revoke-offline
 run_cloud_phase revoke-online
 
 stop_traffic
