@@ -124,7 +124,7 @@ export async function extractGithubSource(response: Response, directory: string,
   }
   const unpack = path.join(directory, "checkout");
   await mkdir(unpack, { mode: 0o700 });
-  await pipeline(createReadStream(archive), tar.x({ cwd: unpack, strict: true, noChmod: true, noMtime: true, filter: (_name, entry) => entry.type !== "SymbolicLink" }), { signal });
+  await pipeline(createReadStream(archive), tar.x({ cwd: unpack, strict: true, noChmod: true, noMtime: true, filter: (_name, entry) => !("type" in entry) || entry.type !== "SymbolicLink" }), { signal });
   // Install validated links last; tar intentionally refuses even safe chained links.
   for (const [name, entry] of entries) {
     signal.throwIfAborted();
