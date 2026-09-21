@@ -159,6 +159,11 @@ async fn cloud_join(target_failures: Fault, ensure_failures: Fault) -> (Output, 
         .output()
         .await
         .unwrap();
+    assert_eq!(
+        enroll.callbacks().len(),
+        1,
+        "a committed join must finish Cloud enrollment even when catch-up fails"
+    );
     (output, daemon)
 }
 

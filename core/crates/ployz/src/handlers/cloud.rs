@@ -203,14 +203,16 @@ where
     };
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
     let capability = set_cloud_pairing(&mut ready, &pairing).await?;
-    if let Err(error) = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await {
+    let catch_up = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await;
+    // Cloud connects with the replacement during publication/completion, revoking this key.
+    // A committed join remains enrolled even when Global catch-up needs a separate retry.
+    cloud_enroll::publish(callback_url, assigned.id, pairing.secret(), &capability).await?;
+    cloud_enroll::callback(callback_url, assigned.id, pairing.secret()).await?;
+    if let Err(error) = catch_up {
         return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
             error,
         )));
     }
-    // Cloud connects with the replacement during publication/completion, revoking this key.
-    cloud_enroll::publish(callback_url, assigned.id, pairing.secret(), &capability).await?;
-    cloud_enroll::callback(callback_url, assigned.id, pairing.secret()).await?;
     println!("Joined Machine {} ({})", assigned.name, assigned.id);
     Ok(())
 }
