@@ -401,6 +401,31 @@ impl MachineRpc for DiscoveryService {
                 }
             }
             recorder.uploads.fetch_add(1, Ordering::SeqCst);
+            if recorder.quiet_until_cancel {
+                sender
+                    .send(Ok(remote::encode(&Event::Progress(
+                        ployz_build::Progress::Stage(ployz_build::Stage::Building),
+                    ))
+                    .unwrap()))
+                    .await
+                    .unwrap();
+                let cancellation = request.message().await.unwrap().unwrap();
+                assert!(matches!(
+                    remote::decode(&cancellation).unwrap(),
+                    Input::Cancel
+                ));
+                recorder.cancelled.store(true, Ordering::SeqCst);
+                sender
+                    .send(Ok(remote::encode(&Event::Finished(Outcome::Failed {
+                        stage: ployz_build::Stage::Building,
+                        message: "cancelled with cleanup complete".into(),
+                        work: ployz_build::WorkEvidence::new(&definition.targets),
+                    }))
+                    .unwrap()))
+                    .await
+                    .unwrap();
+                return;
+            }
             let outcome = match definition.output {
                 Output::Validate => Outcome::Validated { machine_id },
                 Output::Registry => Outcome::Published { machine_id },
@@ -1062,7 +1087,7 @@ impl MachineRpc for DiscoveryService {
 
     async fn pull_image_from_machine(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let builds = self
             .builds
@@ -1070,6 +1095,13 @@ impl MachineRpc for DiscoveryService {
             .filter(|builds| builds.retain_images)
             .ok_or_else(|| Status::unimplemented("unused"))?;
         assert!(builds.retained.load(Ordering::SeqCst));
+        let route = ployz_core::routing_from_metadata(request.metadata()).unwrap();
+        let RpcRequestBody::PullImageFromMachine(pull) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            panic!("expected direct peer pull");
+        };
+        builds.deliveries.lock().unwrap().push((route, pull));
         builds.delivered.store(true, Ordering::SeqCst);
         Ok(Response::new(
             RpcResponse::from(ployz_core::ImagePulled {})
@@ -1356,6 +1388,14 @@ pub(super) struct BuildRecorder {
     pub(super) uploads: AtomicUsize,
     pub(super) queued: bool,
     pub(super) retain_images: bool,
+    pub(super) quiet_until_cancel: bool,
+    pub(super) cancelled: AtomicBool,
+    pub(super) deliveries: Mutex<
+        Vec<(
+            ployz_core::RoutingRequest,
+            ployz_core::PullImageFromMachineRequest,
+        )>,
+    >,
     pub(super) retained: AtomicBool,
     pub(super) delivered: AtomicBool,
     pub(super) created: AtomicBool,

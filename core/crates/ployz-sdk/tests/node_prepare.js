@@ -48,6 +48,23 @@ const sdk = require(dir);
       assert.throws(() => prepared.confirm(), "confirmation is single-use");
       const outcome = await running.finished;
       assert.equal(outcome.type, "success", JSON.stringify(outcome));
+    } else if (process.env.PLOYZ_PREPARATION_OUTCOME === "cancel") {
+      let cancelled = false;
+      for await (const event of preparation) {
+        if (event.Build?.Stage === "Building") {
+          preparation.abort();
+          cancelled = true;
+        }
+      }
+      assert.ok(cancelled, "quiet execution must remain cancellable");
+      await assert.rejects(preparation.finished, error => {
+        assert.ok(error instanceof sdk.RpcError);
+        assert.equal(error.details.preparation.kind, "failed");
+        assert.equal(error.details.preparation.stage, "Building");
+        assert.deepEqual(error.details.preparation.work, { api: "Unattempted" });
+        assert.match(error.message, /cleanup complete/);
+        return true;
+      });
     } else {
       // Terminal completion must not depend on draining the progress iterator.
       await assert.rejects(preparation.finished, error => {

@@ -78,7 +78,11 @@ async fn node_preparation_delivers_images_and_retains_them_through_confirmation(
     let mut service = support::DiscoveryService::new(description.clone());
     let mut machine = support::machine('a', "builder");
     machine.machine.runtime.architecture = "x86_64".into();
-    service.machines = vec![machine];
+    machine.machine.accepts_services = false;
+    let mut destination = support::machine('b', "runtime");
+    destination.machine.accepts_builds = false;
+    destination.machine.runtime.architecture = "x86_64".into();
+    service.machines = vec![machine, destination];
     service.inspect_container_result = Some(ployz_core::ContainerDetails {
         environment: None,
         container: super::listing_container(
@@ -103,4 +107,48 @@ async fn node_preparation_delivers_images_and_retains_them_through_confirmation(
     assert_eq!(recorder.uploads.load(Ordering::SeqCst), 1);
     assert!(recorder.delivered.load(Ordering::SeqCst));
     assert!(recorder.created.load(Ordering::SeqCst));
+    let deliveries = recorder.deliveries.lock().unwrap();
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].0,
+        ployz_core::RoutingRequest::One(ployz_core::MachineTarget::from(&support::machine_id('b')))
+    );
+    assert_eq!(deliveries[0].1.platform, "linux/amd64");
+    assert!(
+        deliveries[0]
+            .1
+            .pull
+            .image()
+            .ends_with(&format!("@sha256:{}", "1".repeat(64)))
+    );
+}
+
+#[tokio::test]
+async fn node_preparation_cancels_a_quiet_build_and_awaits_its_terminal_evidence() {
+    let session = UnixSession::start().await;
+    let mut description = support::test_description();
+    description.machine_id = support::machine_id('a');
+    description
+        .capabilities
+        .insert(BUILD_CAPABILITY.parse().unwrap());
+    let recorder = Arc::new(support::BuildRecorder {
+        quiet_until_cancel: true,
+        ..Default::default()
+    });
+    let mut service = support::DiscoveryService::new(description.clone());
+    let mut machine = support::machine('a', "builder");
+    machine.machine.runtime.architecture = "x86_64".into();
+    service.machines = vec![machine];
+    service.builds = Some(recorder.clone());
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    session
+        .assert_sdk_script(
+            "node_prepare.js",
+            description.machine_id,
+            &[("PLOYZ_PREPARATION_OUTCOME", "cancel")],
+        )
+        .await;
+    assert!(recorder.cancelled.load(Ordering::SeqCst));
+    assert_eq!(recorder.uploads.load(Ordering::SeqCst), 1);
+    assert!(!recorder.created.load(Ordering::SeqCst));
 }
