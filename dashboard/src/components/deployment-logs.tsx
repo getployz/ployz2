@@ -13,7 +13,8 @@ export function BuildLogs({ events, serviceId, hasBuild }: {
   const preparation = events.flatMap((event) => event.progress.preparation && (!serviceId || event.progress.preparation.serviceId === serviceId || event.progress.preparation.serviceId === null) ? [{ id: event.id, ...event.progress.preparation }] : []);
   const truncated = preparation.some((event) => event.outputTruncated);
   return <>
-    {preparation.map((event) => event.output ? <pre key={event.id} className="whitespace-pre-wrap break-words">{event.output}</pre> : event.message ? <p key={event.id}>{event.message}</p> : null)}
+    {preparation.map((event) => event.message ? <p key={event.id}>{event.message}</p> : null)}
+    <pre className="whitespace-pre-wrap break-words">{preparation.map((event) => event.output).join("")}</pre>
     {truncated ? <p role="status">Build output truncated. Only retained output is shown.</p> : null}
     {!preparation.length ? <p className="text-muted-foreground">{hasBuild ? "No retained build output for this deployment." : "This deployment uses prebuilt images. No build logs were produced."}</p> : null}
   </>;

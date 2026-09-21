@@ -21,3 +21,13 @@ it("distinguishes absent Git output from the image-only path", () => {
   expect(render(true)).toContain("No retained build output");
   expect(render(false)).toContain("uses prebuilt images");
 });
+
+it("preserves a line split across arbitrary output chunks", () => {
+  const events = ["error: miss", "ing file\n"].map((output, id) => ({ id, progress: {
+    completed: 0, total: 0, rows: [], compensation: [], outcome: null,
+    preparation: { phase: "build", serviceId: "web", machineId: "builder", machineName: null, message: null, output, outputTruncated: false },
+  } satisfies DeploymentProgress }));
+  const html = renderToStaticMarkup(createElement(BuildLogs, { hasBuild: true, events }));
+  expect(html).toContain("error: missing file\n");
+  expect(html.match(/<pre /g)).toHaveLength(1);
+});

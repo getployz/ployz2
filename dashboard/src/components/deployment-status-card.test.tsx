@@ -61,5 +61,10 @@ it("labels a disconnected preparation as unknown, preserving the final diagnosis
   const html = renderToStaticMarkup(createElement(DeploymentStatusCard, { deployment, progress: null, expanded: true, onExpandedChange() {}, showLogs: false, onLogsChange() {}, actions: null, logsPanel: null }));
   expect(html).toContain("Preparation outcome unavailable");
   expect(html).toContain("Connection lost; preparation outcome unknown");
+  expect(html).toContain("Preparation ended · outcome unknown");
+  expect(html).toContain("Not started");
+  expect(html).not.toContain("runtime outcome unknown");
+  expect(html).not.toContain("Runtime outcome unavailable");
+  expect(html).not.toContain("A complete runtime outcome was not received");
   expect(html).not.toContain("Using prebuilt images");
 });
