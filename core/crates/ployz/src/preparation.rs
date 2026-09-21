@@ -123,7 +123,7 @@ pub enum BuildLocation<'a> {
 #[derive(serde::Serialize)]
 pub enum Progress {
     Platforms(Vec<String>),
-    Selected(SelectedBuilder),
+    Selected(Box<SelectedBuilder>),
     Build(ployz_build::Progress),
     Transfer,
     Delivered {
@@ -140,6 +140,7 @@ pub struct Prepared {
 
 impl Prepared {
     /// Move plan and retained image owners together into a prepared/running handle.
+    #[must_use]
     pub fn into_parts(self) -> (DeployPlan, Vec<BuiltService>) {
         (self.plan, self.builds)
     }
@@ -187,7 +188,7 @@ pub async fn prepare(
                     })
                     .await?;
                     let id = selected.machine.id;
-                    progress(Progress::Selected(selected));
+                    progress(Progress::Selected(Box::new(selected)));
                     // Await terminal evidence and cleanup; cancelling this future would erase Unknown.
                     build
                         .execute_remote_images(client, id, cancellation.clone(), |event| {

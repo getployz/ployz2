@@ -324,7 +324,7 @@ pub(crate) async fn plan_project(
 ) -> Result<DeployPlan, DeployError> {
     let intent = candidate.intent();
     let (snapshot, warnings) = gather_deploy_snapshot(client, machines, intent).await?;
-    Ok(preview_gathered(client, snapshot, warnings, intent).await?)
+    preview_gathered(client, snapshot, warnings, intent).await
 }
 
 pub(super) async fn plan_scale(
