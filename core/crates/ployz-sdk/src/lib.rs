@@ -111,23 +111,31 @@ pub struct DeployPreviewHandle {
 
 /// Native cancellable preparation retaining opaque image resources.
 #[napi]
-pub struct PreparationHandle { inner: sdk::RunningPreparation }
+pub struct PreparationHandle {
+    inner: sdk::RunningPreparation,
+}
 
 #[napi]
 impl PreparationHandle {
     /// Request cancellation and await finished for termination evidence.
     #[napi]
-    pub fn abort(&self) { self.inner.abort(); }
+    pub fn abort(&self) {
+        self.inner.abort();
+    }
     /// Bounded progress; lagging readers receive a truncation frame.
     #[napi]
-    pub async fn next(&self) -> Option<serde_json::Value> { self.inner.next().await }
+    pub async fn next(&self) -> Option<serde_json::Value> {
+        self.inner.next().await
+    }
     /// Await preparation independently of progress consumption.
     ///
     /// # Errors
     /// Returns structured preparation failure or unknown outcome.
     #[napi]
     pub async fn finished(&self) -> Result<DeployPreviewHandle> {
-        Ok(DeployPreviewHandle { inner: self.inner.finished().await.map_err(rpc_to_napi)? })
+        Ok(DeployPreviewHandle {
+            inner: self.inner.finished().await.map_err(rpc_to_napi)?,
+        })
     }
 }
 
@@ -213,7 +221,9 @@ impl Client {
     #[napi]
     pub fn prepare(&self, input: serde_json::Value) -> Result<PreparationHandle> {
         let input = serde_json::from_value(input).map_err(invalid_json)?;
-        Ok(PreparationHandle { inner: self.inner.prepare(input).map_err(rpc_to_napi)? })
+        Ok(PreparationHandle {
+            inner: self.inner.prepare(input).map_err(rpc_to_napi)?,
+        })
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
@@ -438,7 +448,9 @@ impl Client {
 impl DeployPreviewHandle {
     /// Release unconfirmed retained images.
     #[napi]
-    pub fn close(&self) { self.inner.close(); }
+    pub fn close(&self) {
+        self.inner.close();
+    }
 
     /// Planned rows and warnings.
     ///

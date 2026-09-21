@@ -1,10 +1,16 @@
 //! Cloud's frozen configuration and checked-out paths enter the CLI capture seam here.
-use std::{collections::BTreeMap, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
-use ployz_core::{RpcError, RpcErrorCode, ServiceName, config::{ServiceSource, ServiceBuilder}};
+use crate::compose::{BuildOptions, CapturedBuild, CapturedCompose, ComposeProject, LoadOptions};
+use ployz_core::{
+    RpcError, RpcErrorCode, ServiceName,
+    config::{ServiceBuilder, ServiceSource},
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use crate::compose::{BuildOptions, CapturedBuild, CapturedCompose, ComposeProject, capture_build, plan_build};
 
 /// Backend-only frozen settings and repository directories, keyed by runtime Service name.
 #[derive(Deserialize)]
@@ -15,30 +21,54 @@ pub struct PreparationInput {
 }
 
 fn invalid(message: impl ToString) -> RpcError {
-    RpcError { code: RpcErrorCode::InvalidArgument, message: message.to_string(), details: Value::Null }
+    RpcError {
+        code: RpcErrorCode::InvalidArgument,
+        message: message.to_string(),
+        details: Value::Null,
+    }
 }
 
 /// Capture authorized checkouts using exactly the existing Compose build machinery.
-pub(super) fn capture(mut input: PreparationInput) -> Result<(CapturedCompose, Option<CapturedBuild>), RpcError> {
-    let snapshots = input.deployment.get_mut("snapshots").and_then(Value::as_array_mut)
+pub(super) fn capture(
+    mut input: PreparationInput,
+) -> Result<(CapturedCompose, Option<CapturedBuild>), RpcError> {
+    let snapshots = input
+        .deployment
+        .get_mut("snapshots")
+        .and_then(Value::as_array_mut)
         .ok_or_else(|| invalid("deployment snapshots must be an array"))?;
     let mut builds = BTreeMap::new();
     for snapshot in snapshots {
-        let config = ployz_core::config::parse_service_config(snapshot["config"].clone()).map_err(invalid)?;
+        let config = ployz_core::config::parse_service_config(snapshot["config"].clone())
+            .map_err(invalid)?;
         if let ServiceSource::Git { root_dir, .. } = &config.settings.source {
             let name = &config.settings.private_dns;
-            let repository = input.sources.remove(name).ok_or_else(|| invalid(format!("missing checkout for {name}")))?;
-            let repository = repository.canonicalize().map_err(|_| invalid("checkout directory is unavailable"))?;
+            let repository = input
+                .sources
+                .remove(name)
+                .ok_or_else(|| invalid(format!("missing checkout for {name}")))?;
+            let repository = repository
+                .canonicalize()
+                .map_err(|_| invalid("checkout directory is unavailable"))?;
             let context = contained(&repository, root_dir)?;
-            if !context.is_dir() { return Err(invalid("source root must be a directory")); }
+            if !context.is_dir() {
+                return Err(invalid("source root must be a directory"));
+            }
             let mut build = json!({ "context": context, "x-recipe": match config.settings.build.builder {
                 ServiceBuilder::Dockerfile => "dockerfile",
                 ServiceBuilder::Railpack => "railpack",
             }});
             if config.settings.build.builder == ServiceBuilder::Dockerfile {
-                let dockerfile = config.settings.build.dockerfile_path.as_deref().unwrap_or("Dockerfile");
+                let dockerfile = config
+                    .settings
+                    .build
+                    .dockerfile_path
+                    .as_deref()
+                    .unwrap_or("Dockerfile");
                 let dockerfile = contained(&context, dockerfile)?;
-                if !dockerfile.is_file() { return Err(invalid("Dockerfile must be a file")); }
+                if !dockerfile.is_file() {
+                    return Err(invalid("Dockerfile must be a file"));
+                }
                 build["dockerfile"] = json!(dockerfile);
             }
             builds.insert(name.to_string(), json!({"raw": build}));
@@ -47,27 +77,46 @@ pub(super) fn capture(mut input: PreparationInput) -> Result<(CapturedCompose, O
                 "image":format!("ployz-build/{name}:pending"), "credentials":{"type":"none"}});
         }
     }
-    if !input.sources.is_empty() { return Err(invalid("checkout supplied for a non-Git service")); }
-    let intent = ployz_core::config::lower_deployment(serde_json::from_value(input.deployment).map_err(invalid)?).map_err(invalid)?;
-    let services = intent.target.iter().map(|s| (s.name.to_string(), s)).collect::<BTreeMap<_, _>>();
+    if !input.sources.is_empty() {
+        return Err(invalid("checkout supplied for a non-Git service"));
+    }
+    let intent = ployz_core::config::lower_deployment(
+        serde_json::from_value(input.deployment).map_err(invalid)?,
+    )
+    .map_err(invalid)?;
+    let services = intent
+        .target
+        .iter()
+        .map(|s| (s.name.to_string(), s))
+        .collect::<BTreeMap<_, _>>();
     // Explicit empty provider environment prevents capture from reading Cloud's HOME,
     // Docker credentials or process variables. Runtime variables are already resolved.
-    let mut project: ComposeProject = serde_json::from_value(json!({
+    let project: ComposeProject = serde_json::from_value(json!({
         "name": intent.project_name, "working_dir":"/", "context":null,
         "services":services, "builds":builds, "dependencies":{}, "warnings":[],
         "service_profiles":{}, "secrets":{}, "environment":{}
-    })).map_err(invalid)?;
-    let options = BuildOptions::default();
-    let plan = plan_build(&project, &options).map_err(invalid)?;
-    let build = if plan.is_empty() { None } else { Some(capture_build(&plan, &options, &mut project).map_err(invalid)?) };
-    let candidate = project.capture(intent.project_name, intent.options, vec![], None, vec![]);
-    Ok((candidate, build))
+    }))
+    .map_err(invalid)?;
+    crate::preparation::capture(
+        project,
+        intent.project_name,
+        intent.options,
+        &LoadOptions::default(),
+        &BuildOptions::default(),
+        false,
+        None,
+    )
+    .map_err(invalid)
 }
 
 fn contained(root: &Path, setting: &str) -> Result<PathBuf, RpcError> {
-    let path = root.join(setting.trim_start_matches('/')).canonicalize()
+    let path = root
+        .join(setting.trim_start_matches('/'))
+        .canonicalize()
         .map_err(|_| invalid("source path does not exist"))?;
-    if !path.starts_with(root) { return Err(invalid("source path escapes its repository root")); }
+    if !path.starts_with(root) {
+        return Err(invalid("source path escapes its repository root"));
+    }
     Ok(path)
 }
 
@@ -79,7 +128,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir(temp.path().join("app")).unwrap();
         std::os::unix::fs::symlink("/", temp.path().join("outside")).unwrap();
-        assert_eq!(contained(temp.path(), "/app").unwrap(), temp.path().join("app"));
+        assert_eq!(
+            contained(temp.path(), "/app").unwrap(),
+            temp.path().join("app")
+        );
         assert!(contained(temp.path(), "../").is_err());
         assert!(contained(temp.path(), "outside/etc").is_err());
     }

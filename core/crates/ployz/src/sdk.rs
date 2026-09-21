@@ -276,27 +276,50 @@ impl Session {
         let (events, receiver) = tokio::sync::broadcast::channel(128);
         let join = tokio::spawn(async move {
             let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
-                .await.map_err(|_| invalid_argument("source capture task failed".into()))??;
-            if token.is_cancelled() { return Err(closed()); }
+                .await
+                .map_err(|_| invalid_argument("source capture task failed".into()))??;
+            if token.is_cancelled() {
+                return Err(closed());
+            }
             let prepared = crate::preparation::prepare(
-                &mut client, captured.0, captured.1,
-                crate::preparation::BuildLocation::Remote(None), &token,
-                |progress| {
-                    let value = serde_json::to_value(progress).expect("preparation progress serializes");
+                &mut client,
+                captured.0,
+                captured.1,
+                crate::preparation::BuildLocation::Remote(None),
+                &token,
+                |mut progress| {
+                    if let crate::preparation::Progress::Build(ployz_build::Progress::Output(bytes)) = &mut progress {
+                        if bytes.len() > 4096 {
+                            bytes.drain(..bytes.len() - 4096);
+                            let _ = events.send(serde_json::json!({"phase":"truncated", "dropped":1}));
+                        }
+                    }
+                    let value =
+                        serde_json::to_value(progress).expect("preparation progress serializes");
                     // Build output is lossy progress, never a backpressure dependency of cleanup.
                     let value = if value.to_string().len() > 16_384 {
                         serde_json::json!({"phase":"truncated", "dropped":1})
-                    } else { value };
+                    } else {
+                        value
+                    };
                     let _ = events.send(value);
                 },
-            ).await.map_err(preparation_error)?;
+            )
+            .await
+            .map_err(preparation_error)?;
             let (preview, retained) = prepared.into_parts();
             Ok(PreparedDeploy {
-                preview, session, confirmed: AtomicBool::new(false),
+                preview,
+                session,
+                confirmed: AtomicBool::new(false),
                 retained: std::sync::Mutex::new(Some(retained)),
             })
         });
-        Ok(RunningPreparation { cancel, events: Mutex::new(receiver), join: Mutex::new(Some(join)) })
+        Ok(RunningPreparation {
+            cancel,
+            events: Mutex::new(receiver),
+            join: Mutex::new(Some(join)),
+        })
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
@@ -775,12 +798,16 @@ pub struct RunningPreparation {
 }
 impl RunningPreparation {
     /// Request cancellation; finished reports whether remote termination was confirmed.
-    pub fn abort(&self) { self.cancel.cancel(); }
+    pub fn abort(&self) {
+        self.cancel.cancel();
+    }
     /// Read one progress frame; slow consumers receive explicit truncation evidence.
     pub async fn next(&self) -> Option<Value> {
         match self.events.lock().await.recv().await {
             Ok(value) => Some(value),
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => Some(serde_json::json!({"phase":"truncated", "dropped":dropped})),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
+                Some(serde_json::json!({"phase":"truncated", "dropped":dropped}))
+            }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
         }
     }
@@ -789,13 +816,89 @@ impl RunningPreparation {
     /// # Errors
     /// Returns typed preparation failure/unknown or rejects a second await.
     pub async fn finished(&self) -> Result<PreparedDeploy, RpcError> {
-        let join = self.join.lock().await.take().ok_or_else(|| invalid_argument("preparation already awaited".into()))?;
-        join.await.map_err(|_| RpcError { code: RpcErrorCode::Internal, message:"preparation task failed".into(), details:Value::Null })?
+        let join = self
+            .join
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| invalid_argument("preparation already awaited".into()))?;
+        join.await.map_err(|_| RpcError {
+            code: RpcErrorCode::Internal,
+            message: "preparation task failed".into(),
+            details: Value::Null,
+        })?
     }
 }
 impl Drop for RunningPreparation {
-    fn drop(&mut self) { self.cancel.cancel(); }
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
 }
 fn preparation_error(error: crate::preparation::PreparationError) -> RpcError {
-    RpcError { code: RpcErrorCode::Internal, message:error.to_string(), details:Value::Null }
+    use crate::compose::ComposeError;
+    use crate::preparation::PreparationError;
+    use ployz_build::remote::Outcome;
+    let message = error.to_string();
+    match error {
+        PreparationError::Connect(error) => error.into(),
+        PreparationError::Compose(ComposeError::RemoteBuild { outcome }) => {
+            let details = match *outcome {
+                Outcome::Failed { stage, work, .. } => {
+                    serde_json::json!({"preparation":{"kind":"failed","stage":stage,"work":work}})
+                }
+                Outcome::Unknown { stage, work, .. } => {
+                    serde_json::json!({"preparation":{"kind":"unknown","stage":stage,"work":work}})
+                }
+                _ => serde_json::json!({"preparation":{"kind":"failed"}}),
+            };
+            RpcError {
+                code: RpcErrorCode::Internal,
+                message,
+                details,
+            }
+        }
+        PreparationError::Cancelled => RpcError {
+            code: RpcErrorCode::Unavailable,
+            message,
+            details: serde_json::json!({"preparation":{"kind":"cancelled"}}),
+        },
+        _ => RpcError {
+            code: RpcErrorCode::Internal,
+            message,
+            details: serde_json::json!({"preparation":{"kind":"failed"}}),
+        },
+    }
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+    #[tokio::test]
+    async fn slow_preparation_consumer_is_bounded_and_cannot_block_completion() {
+        let (events, receiver) = tokio::sync::broadcast::channel(128);
+        let join = tokio::spawn(async move {
+            for n in 0..1000 { events.send(serde_json::json!({"n":n})).unwrap(); }
+            Err(invalid_argument("fixture failure".into()))
+        });
+        let running = RunningPreparation {
+            cancel: CancellationToken::new(), events: Mutex::new(receiver), join: Mutex::new(Some(join)),
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), running.finished()).await.unwrap();
+        assert_eq!(result.unwrap_err().message, "fixture failure");
+        assert_eq!(running.next().await.unwrap()["phase"], "truncated");
+        let mut count = 0;
+        while running.next().await.is_some() { count += 1; }
+        assert_eq!(count,128);
+    }
+    #[test]
+    fn remote_unknown_retains_stage_and_evidence() {
+        let error = preparation_error(crate::preparation::PreparationError::Compose(
+            crate::compose::ComposeError::RemoteBuild { outcome:Box::new(ployz_build::remote::Outcome::Unknown {
+                stage:ployz_build::Stage::Building, message:"lost stream".into(), work:ployz_build::WorkEvidence::default(),
+            }) }
+        ));
+        assert_eq!(error.details["preparation"]["kind"],"unknown");
+        assert_eq!(error.details["preparation"]["stage"],"Building");
+        assert!(error.details["preparation"]["work"].is_object());
+    }
 }
