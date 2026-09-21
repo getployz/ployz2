@@ -4,7 +4,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::compose::{BuildOptions, CapturedBuild, CapturedCompose, ComposeProject, LoadOptions};
+use crate::compose::{
+    BuildOptions, BuildSpec, CapturedBuild, CapturedCompose, ComposeProject, LoadOptions,
+};
 use ployz_core::{
     RpcError, RpcErrorCode, ServiceName,
     config::{ServiceBuilder, ServiceSource},
@@ -50,7 +52,7 @@ pub(super) fn capture(
             let repository = repository
                 .canonicalize()
                 .map_err(|_| invalid("checkout directory is unavailable"))?;
-            let context = contained(&repository, root_dir)?;
+            let context = contained(&repository, &repository, root_dir)?;
             if !context.is_dir() {
                 return Err(invalid("source root must be a directory"));
             }
@@ -65,7 +67,7 @@ pub(super) fn capture(
                     .dockerfile_path
                     .as_deref()
                     .unwrap_or("Dockerfile");
-                let dockerfile = contained(&context, dockerfile)?;
+                let dockerfile = contained(&repository, &context, dockerfile)?;
                 if !dockerfile.is_file() {
                     return Err(invalid("Dockerfile must be a file"));
                 }
@@ -74,7 +76,12 @@ pub(super) fn capture(
                     .expect("build object")
                     .insert("dockerfile".into(), json!(dockerfile));
             }
-            builds.insert(name.to_string(), json!({"raw": build}));
+            builds.insert(
+                name.to_string(),
+                BuildSpec {
+                    raw: serde_norway::to_value(build).map_err(invalid)?,
+                },
+            );
             // This tag never escapes preparation: bind_builds replaces it with verified content.
             snapshot
                 .get_mut("config")
@@ -96,17 +103,13 @@ pub(super) fn capture(
     .map_err(invalid)?;
     let services = intent
         .target
-        .iter()
+        .into_iter()
         .map(|s| (s.name.to_string(), s))
         .collect::<BTreeMap<_, _>>();
     // Explicit empty provider environment prevents capture from reading Cloud's HOME,
     // Docker credentials or process variables. Runtime variables are already resolved.
-    let project: ComposeProject = serde_json::from_value(json!({
-        "name": intent.project_name, "working_dir":"/", "context":null,
-        "services":services, "builds":builds, "dependencies":{}, "warnings":[],
-        "service_profiles":{}, "secrets":{}, "environment":{}
-    }))
-    .map_err(invalid)?;
+    let project =
+        ComposeProject::from_frozen_services(intent.project_name.to_string(), services, builds);
     crate::preparation::capture(
         project,
         intent.project_name,
@@ -119,8 +122,8 @@ pub(super) fn capture(
     .map_err(invalid)
 }
 
-fn contained(root: &Path, setting: &str) -> Result<PathBuf, RpcError> {
-    let path = root
+fn contained(root: &Path, base: &Path, setting: &str) -> Result<PathBuf, RpcError> {
+    let path = base
         .join(setting.trim_start_matches('/'))
         .canonicalize()
         .map_err(|_| invalid("source path does not exist"))?;
@@ -139,10 +142,22 @@ mod tests {
         std::fs::create_dir(temp.path().join("app")).unwrap();
         std::os::unix::fs::symlink("/", temp.path().join("outside")).unwrap();
         assert_eq!(
-            contained(temp.path(), "/app").unwrap(),
+            contained(temp.path(), temp.path(), "/app").unwrap(),
             temp.path().join("app")
         );
-        assert!(contained(temp.path(), "../").is_err());
-        assert!(contained(temp.path(), "outside/etc").is_err());
+        std::fs::create_dir_all(temp.path().join("apps/api")).unwrap();
+        std::fs::write(temp.path().join("Dockerfile"), "FROM scratch").unwrap();
+        assert_eq!(
+            contained(
+                temp.path(),
+                &temp.path().join("apps/api"),
+                "../../Dockerfile"
+            )
+            .unwrap(),
+            temp.path().join("Dockerfile")
+        );
+        assert!(contained(temp.path(), &temp.path().join("apps/api"), "../../../").is_err());
+        assert!(contained(temp.path(), temp.path(), "../").is_err());
+        assert!(contained(temp.path(), temp.path(), "outside/etc").is_err());
     }
 }

@@ -257,8 +257,27 @@ impl CapturedBuild {
 
 pub(super) fn remote_error(outcome: Outcome) -> ComposeError {
     match outcome {
-        outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }) => ComposeError::RemoteBuild {
-            outcome: Box::new(outcome),
+        Outcome::Failed {
+            stage,
+            message,
+            work,
+        } => ComposeError::RemoteBuild {
+            outcome: Box::new(crate::compose::RemoteBuildFailure::Failed {
+                stage,
+                message,
+                work,
+            }),
+        },
+        Outcome::Unknown {
+            stage,
+            message,
+            work,
+        } => ComposeError::RemoteBuild {
+            outcome: Box::new(crate::compose::RemoteBuildFailure::Unknown {
+                stage,
+                message,
+                work,
+            }),
         },
         Outcome::CapabilitiesChecked { .. }
         | Outcome::Images { .. }

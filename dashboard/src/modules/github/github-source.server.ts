@@ -165,7 +165,10 @@ export const materializeGithubSource = Effect.fn("Github.materializeSource")(fun
   const repository = yield* authorizeRepository(input);
   const directory = yield* Effect.acquireRelease(
     Effect.tryPromise({ try: () => mkdtemp(path.join(tmpdir(), "ployz-source-")), catch: () => new GithubSourceError({ message: "Could not create source workspace." }) }),
-    (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+    (directory) => Effect.tryPromise({
+      try: () => rm(directory, { recursive: true, force: true }),
+      catch: () => new GithubSourceError({ message: "Could not remove source workspace." }),
+    }).pipe(Effect.tapError((error) => Effect.logError("Source workspace cleanup failed.", error)), Effect.ignore),
   );
   const api = yield* GithubApi;
   const response = yield* api.archive({ installationId: input.installationId, repository, sha: input.sha });

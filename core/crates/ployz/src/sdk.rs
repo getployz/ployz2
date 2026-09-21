@@ -845,23 +845,33 @@ impl Drop for RunningPreparation {
 fn preparation_error(error: crate::preparation::PreparationError) -> RpcError {
     use crate::compose::ComposeError;
     use crate::preparation::PreparationError;
-    use ployz_build::remote::Outcome;
     let message = error.to_string();
     match error {
-        PreparationError::Connect(error) => error.into(),
-        PreparationError::Compose(ComposeError::RemoteBuild { outcome }) => {
-            let details = match *outcome {
-                Outcome::Failed { stage, work, .. } => {
-                    serde_json::json!({"preparation":{"kind":"failed","stage":stage,"work":work}})
-                }
-                Outcome::Unknown { stage, work, .. } => {
-                    serde_json::json!({"preparation":{"kind":"unknown","stage":stage,"work":work}})
-                }
-                Outcome::CapabilitiesChecked { .. }
-                | Outcome::Images { .. }
-                | Outcome::Validated { .. }
-                | Outcome::Published { .. } => serde_json::json!({"preparation":{"kind":"failed"}}),
+        PreparationError::Selection(error) => {
+            let rejections = if let ConnectError::Remote(error) = &error {
+                error
+                    .details
+                    .get("rejections")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
             };
+            RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "No eligible Build Machine was selected; no build was started.".into(),
+                details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Selection",
+                    "message":"No eligible Build Machine was selected; no build was started.", "rejections":rejections}}),
+            }
+        }
+        PreparationError::Connect(_) => RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "Could not read Machine observations during preparation.".into(),
+            details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Observation",
+                "message":"Could not read Machine observations during preparation."}}),
+        },
+        PreparationError::Compose(ComposeError::RemoteBuild { outcome }) => {
+            let details = serde_json::json!({"preparation": outcome});
             RpcError {
                 code: RpcErrorCode::Internal,
                 message,
@@ -877,8 +887,8 @@ fn preparation_error(error: crate::preparation::PreparationError) -> RpcError {
         | PreparationError::Plan(_)
         | PreparationError::Delivery(_) => RpcError {
             code: RpcErrorCode::Internal,
+            details: serde_json::json!({"preparation":{"kind":"failed", "message":message}}),
             message,
-            details: serde_json::json!({"preparation":{"kind":"failed"}}),
         },
     }
 }
@@ -915,10 +925,34 @@ mod preparation_tests {
         assert_eq!(count, 128);
     }
     #[test]
+    fn selection_failure_is_known_and_does_not_expose_provider_details() {
+        let error = preparation_error(crate::preparation::PreparationError::Selection(
+            ConnectError::Remote(RpcError {
+                code: RpcErrorCode::Unsupported,
+                message: "provider token=secret".into(),
+                details: serde_json::json!({"rejections":{"builds disabled":2}}),
+            }),
+        ));
+        assert_eq!(
+            error.details.pointer("/preparation/kind").unwrap(),
+            "failed"
+        );
+        assert_eq!(
+            error
+                .details
+                .pointer("/preparation/rejections/builds disabled")
+                .unwrap(),
+            2
+        );
+        assert!(!error.message.contains("secret"));
+        assert!(!error.details.to_string().contains("secret"));
+    }
+
+    #[test]
     fn remote_unknown_retains_stage_and_evidence() {
         let error = preparation_error(crate::preparation::PreparationError::Compose(
             crate::compose::ComposeError::RemoteBuild {
-                outcome: Box::new(ployz_build::remote::Outcome::Unknown {
+                outcome: Box::new(crate::compose::RemoteBuildFailure::Unknown {
                     stage: ployz_build::Stage::Building,
                     message: "lost stream".into(),
                     work: ployz_build::WorkEvidence::default(),
