@@ -181,14 +181,18 @@ it.effect("aborts an interrupted confirmation watch before closing the session",
     const started = new Promise<void>((resolve) => {
       startedResolve = resolve;
     });
+    let finish: () => void = () => undefined;
+    const finished = new Promise<never>((_resolve, reject) => { finish = () => reject(new Error("Confirmed runner termination")); });
+    void finished.catch(() => undefined);
     const prepared = asTestDouble<PreparedDeploy>()({
       ...preview,
       noop: false,
       confirm: () => ({
         abort: () => {
           aborted += 1;
+          finish();
         },
-        finished: new Promise<never>(() => undefined),
+        finished,
         async *[Symbol.asyncIterator]() {
           startedResolve();
           yield* [];

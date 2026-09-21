@@ -220,3 +220,37 @@ it.effect("forwards progress and the finished outcome, aborting if the evidence 
     }
   }),
 );
+
+it("keeps the session owned through quiet preparation interruption cleanup", async () => {
+  let finish: () => void = () => undefined;
+  let began: () => void = () => undefined;
+  let aborted: () => void = () => undefined;
+  const started = new Promise<void>((resolve) => { began = resolve; });
+  const stopped = new Promise<void>((resolve) => { aborted = resolve; });
+  const finished = new Promise<import("@ployz/sdk").PreparedDeploy>((_resolve, reject) => {
+    finish = () => reject({ details: { preparation: { kind: "cancelled" } } });
+  });
+  void finished.catch(() => undefined);
+  let closed = false;
+  const layer = makePloyzLayer({ connect: async () => asTestDouble<Client>()({
+    prepare: () => {
+      began();
+      return { abort: () => aborted(), finished,
+        async *[Symbol.asyncIterator]() { yield* []; await finished; },
+      };
+    },
+    close: async () => { closed = true; },
+  }) });
+  const interruption = new AbortController();
+  const running = Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const session = yield* (yield* Ployz).connect(options);
+    return yield* session.prepare({ deployment: { projectName: "test", snapshots: [] }, sources: {} }, async () => undefined, new AbortController().signal);
+  })).pipe(Effect.provide(layer)), { signal: interruption.signal }).then(() => undefined, () => undefined);
+  await started;
+  interruption.abort();
+  await stopped;
+  assert.isFalse(closed);
+  finish();
+  await running;
+  assert.isTrue(closed);
+});

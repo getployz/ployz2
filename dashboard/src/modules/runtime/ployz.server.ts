@@ -16,6 +16,8 @@ import type {
   MachineTarget,
   ObservedDataLoss,
   PreparedDeploy,
+  PreparationInput,
+  PreparationEvent,
   ProjectName,
   RemoveVolumesRequest,
   RuntimeWatchView,
@@ -23,7 +25,7 @@ import type {
   VolumeRemoval,
 } from "@ployz/sdk";
 import type * as PloyzSdk from "@ployz/sdk";
-import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect";
+import { Context, Data, Effect, Exit, Layer, Option, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { projectJsonValue } from "#/lib/json";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
@@ -40,8 +42,23 @@ export class PloyzProviderError extends Data.TaggedError(
   readonly cause: unknown;
 }> {}
 
+export class PloyzPreparationError extends Data.TaggedError("PloyzPreparationError")<{
+  readonly failureCode: "sdk_preparation_failed" | "sdk_preparation_unknown" | "sdk_preparation_cancelled";
+  readonly message: string;
+  readonly stage?: string | undefined;
+  readonly work?: Record<string, string> | undefined;
+}> { readonly retriable = false as const; }
+const preparationFailureSchema = Schema.Struct({ details: Schema.Struct({ preparation: Schema.Struct({
+  kind: Schema.Literals(["failed", "unknown", "cancelled"]),
+  stage: Schema.optional(Schema.String),
+  work: Schema.optional(Schema.Record(Schema.String, Schema.Union([
+    Schema.Literals(["Unattempted", "Unknown", "Validated", "Published"]), Schema.Struct({ Image: Schema.Unknown }),
+  ]))),
+}) }) });
+
 export type PloyzSdkError =
   | PloyzProviderError
+  | PloyzPreparationError
   | MissingDataLossIdentities;
 
 export type PloyzPreparedDeploy = Omit<PreparedDeploy, "confirm"> & {
@@ -79,6 +96,11 @@ export interface PloyzSession {
   readonly removeVolumes: (
     request: RemoveVolumesRequest,
   ) => Effect.Effect<VolumeRemoval[], PloyzSdkError>;
+  readonly prepare: (
+    input: PreparationInput,
+    onEvent: (event: PreparationEvent) => Promise<void>,
+    cancellation: AbortSignal,
+  ) => Effect.Effect<PloyzPreparedDeploy, PloyzSdkError, Scope.Scope>;
   readonly preview: (
     intent: DeployIntent,
   ) => Effect.Effect<PloyzPreparedDeploy, PloyzSdkError>;
@@ -128,6 +150,17 @@ function missingDataLossFromSdkError(cause: unknown) {
 }
 
 function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
+  if (operation === "prepare") {
+    const failure = Schema.decodeUnknownOption(preparationFailureSchema)(cause);
+    if (Option.isSome(failure)) {
+      const { kind, stage, work } = failure.value.details.preparation;
+      return new PloyzPreparationError({ failureCode: `sdk_preparation_${kind}`, stage,
+        work: work ? Object.fromEntries(Object.entries(work).map(([target, evidence]) => [target, Schema.is(Schema.String)(evidence) ? evidence : "Image"])) : undefined,
+        message: kind === "unknown" ? "Build connection lost; remote work outcome is unknown." : kind === "cancelled" ? "Build cancelled." : `Preparation failed${stage ? ` during ${stage}` : ""}. See build output for details.`,
+      });
+    }
+    return new PloyzPreparationError({ failureCode: "sdk_preparation_unknown", message: "Preparation ended without a confirmed result; remote work outcome is unknown." });
+  }
   const missingDataLoss = missingDataLossFromSdkError(cause);
   if (missingDataLoss !== null) return missingDataLoss;
   if (cause instanceof MissingDataLossIdentities) return cause;
@@ -145,32 +178,32 @@ function sdkPromise<A>(operation: string, run: (signal: AbortSignal) => Promise<
 function wrapPrepared(prepared: PreparedDeploy): PloyzPreparedDeploy {
   return {
     ...prepared,
-    confirm: (onEvent, cancellation) =>
-      sdkPromise("confirm", async (interruption) => {
-        const signal = cancellation ? AbortSignal.any([interruption, cancellation]) : interruption;
-        const running = prepared.confirm({ signal });
-        const abort = () => running.abort();
-        if (signal.aborted) abort();
-        else signal.addEventListener("abort", abort, { once: true });
-        try {
-          let outcome: unknown;
-          for await (const event of running) {
-            await onEvent?.(event);
-            if (event.type === "outcome") outcome = event.outcome;
-          }
-          if (outcome === undefined) {
-            const finished = await running.finished;
-            await onEvent?.({ type: "outcome", outcome: finished });
-            outcome = finished;
-          }
-          return outcome;
-        } catch (cause) {
-          running.abort();
-          throw cause;
-        } finally {
-          signal.removeEventListener("abort", abort);
+    confirm: (onEvent, cancellation) => Effect.scoped(Effect.gen(function* () {
+      const running = yield* Effect.acquireRelease(
+        Effect.try({ try: () => prepared.confirm(cancellation ? { signal: cancellation } : {}), catch: (cause) => asSdkFailure("confirm", cause) }),
+        (running, exit) => Effect.promise(async () => {
+          if (Exit.isFailure(exit)) running.abort();
+          await running.finished.catch(() => undefined);
+        }),
+      );
+      const abort = () => running.abort();
+      if (cancellation?.aborted) abort();
+      else cancellation?.addEventListener("abort", abort, { once: true });
+      yield* Effect.addFinalizer(() => Effect.sync(() => cancellation?.removeEventListener("abort", abort)));
+      return yield* sdkPromise("confirm", async () => {
+        let outcome: unknown;
+        for await (const event of running) {
+          await onEvent?.(event);
+          if (event.type === "outcome") outcome = event.outcome;
         }
-      }),
+        if (outcome === undefined) {
+          const finished = await running.finished;
+          await onEvent?.({ type: "outcome", outcome: finished });
+          outcome = finished;
+        }
+        return outcome;
+      });
+    })),
   };
 }
 
@@ -221,6 +254,26 @@ function wrapClient(client: Client): PloyzSession {
       ),
     removeVolumes: (request) =>
       sdkPromise("remove volumes", () => client.removeVolumes(request)),
+    prepare: (input, onEvent, cancellation) => Effect.gen(function* () {
+      const running = yield* Effect.acquireRelease(
+        Effect.try({ try: () => client.prepare(input, { signal: cancellation }), catch: (cause) => asSdkFailure("prepare", cause) }),
+        (running) => Effect.promise(async () => {
+          running.abort();
+          // Interruption also waits for native cleanup before releasing the attempt slot.
+          await running.finished.then((prepared) => prepared.close(), () => undefined);
+        }),
+      );
+      return yield* sdkPromise("prepare", async () => {
+        try {
+          for await (const event of running) await onEvent(event);
+          return wrapPrepared(await running.finished);
+        } catch (cause) {
+          running.abort();
+          await running.finished.then((prepared) => prepared.close(), () => undefined);
+          throw cause;
+        }
+      });
+    }),
     preview: (intent) =>
       sdkPromise("preview", () => client.preview(intent)).pipe(
         Effect.map(wrapPrepared),
