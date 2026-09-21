@@ -157,9 +157,19 @@ pub(super) async fn select_build_machine(
 ) -> Result<ployz_core::Machine, Error> {
     let selected =
         crate::preparation::select_build_machine(client, target, targets, visible, cancellation)
-            .await?;
+            .await
+            .map_err(selection_error)?;
     report_selection(&selected);
     Ok(selected.machine)
+}
+
+pub(super) fn selection_error(mut error: crate::connect::ConnectError) -> Error {
+    if let crate::connect::ConnectError::Remote(rpc) = &mut error
+        && rpc.code == ployz_core::RpcErrorCode::Unsupported
+    {
+        rpc.message.push_str("; retry after resolving these observations, pin with --remote=<Machine>, or build here with --local");
+    }
+    error.into()
 }
 
 pub(super) fn report_selection(selected: &crate::preparation::SelectedBuilder) {
