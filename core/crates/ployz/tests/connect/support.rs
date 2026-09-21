@@ -893,18 +893,18 @@ impl MachineRpc for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if let Some(builds) = &self.builds {
-            if builds.retain_images {
-                assert!(
-                    builds.retained.load(Ordering::SeqCst),
-                    "image owner lost before execution"
-                );
-                assert!(
-                    builds.delivered.load(Ordering::SeqCst),
-                    "execution preceded image delivery"
-                );
-                builds.created.store(true, Ordering::SeqCst);
-            }
+        if let Some(builds) = &self.builds
+            && builds.retain_images
+        {
+            assert!(
+                builds.retained.load(Ordering::SeqCst),
+                "image owner lost before execution"
+            );
+            assert!(
+                builds.delivered.load(Ordering::SeqCst),
+                "execution preceded image delivery"
+            );
+            builds.created.store(true, Ordering::SeqCst);
         }
         if let Some(received) = &self.create_container_blocked {
             received.notify_one();
