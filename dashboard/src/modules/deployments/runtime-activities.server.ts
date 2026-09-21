@@ -233,7 +233,10 @@ export const executeEnvironmentDeployment = Effect.fn(
     if (cancellation.signal.aborted) return yield* Effect.interrupt;
     remoteStarted = true;
     const native = Object.keys(sources).length === 0
-      ? yield* sdk.preview(lowerDeployment(input))
+      ? yield* Effect.try({
+          try: () => lowerDeployment(input),
+          catch: (cause) => new DeploymentRuntimeInvalid({ failureCode: "sdk_preview_invalid", message: "The deployment settings are invalid.", cause }),
+        }).pipe(Effect.flatMap((intent) => sdk.preview(intent)))
       : yield* sdk.prepare({ deployment: input, sources }, async (event) => {
           const progress = collector.event(event);
           if (progress) await persistPreparation(progress);
