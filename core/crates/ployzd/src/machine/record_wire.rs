@@ -14,6 +14,7 @@ pub(super) struct LocalMachineRecordWire {
     management_secret: ManagementSecret,
     #[serde(default)]
     accepted_client: Option<[u8; 32]>,
+    pending_client: Option<[u8; 32]>,
     #[serde(default)]
     wireguard_mtu: Option<u32>,
     #[serde(default)]
@@ -29,6 +30,7 @@ impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
         let mut record = Self::parse(wire.body, wire.wireguard_private_key)?;
         record.management_secret = wire.management_secret;
         record.accepted_client = wire.accepted_client;
+        record.pending_client = wire.pending_client;
         record.wireguard_mtu = wire.wireguard_mtu;
         record.cloud_pairing = wire.cloud_pairing;
         record.selected_endpoints = wire.selected_endpoints;

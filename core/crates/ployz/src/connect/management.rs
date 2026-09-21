@@ -24,6 +24,7 @@ use tonic::transport::Channel;
 
 /// Application close code the daemon uses to refuse a connection whose key is not accepted.
 const REFUSED_BY_IDENTITY: VarInt = VarInt::from_u32(0x50);
+const PAIRING_CLEARED: VarInt = VarInt::from_u32(0x52);
 
 /// The relay the management transport dials through. Production uses the compiled
 /// [`DEFAULT_RELAY_URL`] with the embedded WebPKI roots; tests point at an in-process relay.
@@ -54,12 +55,15 @@ impl ManagementRelay {
     }
 }
 
-struct ManagementEndpoint(IrohEndpoint);
+struct ManagementEndpoint {
+    endpoint: IrohEndpoint,
+    runtime: tokio::runtime::Handle,
+}
 
 impl Drop for ManagementEndpoint {
     fn drop(&mut self) {
-        let endpoint = self.0.clone();
-        tokio::spawn(async move { endpoint.close().await });
+        let endpoint = self.endpoint.clone();
+        self.runtime.spawn(async move { endpoint.close().await });
     }
 }
 
@@ -86,7 +90,10 @@ async fn management_endpoint(
         .bind()
         .await
         .map_err(|error| ConnectError::Attempt(format!("management bind: {error}").into()))?;
-    let endpoint = Arc::new(ManagementEndpoint(endpoint));
+    let endpoint = Arc::new(ManagementEndpoint {
+        endpoint,
+        runtime: tokio::runtime::Handle::current(),
+    });
     endpoints.insert(key, Arc::downgrade(&endpoint));
     Ok(endpoint)
 }
@@ -98,12 +105,12 @@ pub(super) async fn connect_management(
     capability: &ManagementCapability,
     relay: &ManagementRelay,
 ) -> Result<Channel, ConnectError> {
-    let machine = PublicKey::from_bytes(capability.machine())
+    let machine = PublicKey::from_bytes(capability.machine().as_bytes())
         .map_err(|_| ConnectionError::ManagementCapability)?;
     let endpoint = management_endpoint(capability.client_secret(), relay).await?;
     let address = EndpointAddr::new(machine).with_relay_url(relay.url.clone());
     let connection = endpoint
-        .0
+        .endpoint
         .connect(address, MANAGEMENT_ALPN)
         .await
         .map_err(|error| ConnectError::Attempt(format!("management dial: {error}").into()))?;
@@ -138,6 +145,11 @@ pub(super) async fn connect_management(
                 if close.error_code == REFUSED_BY_IDENTITY =>
             {
                 ConnectError::RefusedByIdentity
+            }
+            Some(iroh::endpoint::ConnectionError::ApplicationClosed(close))
+                if close.error_code == PAIRING_CLEARED =>
+            {
+                ConnectError::PairingCleared
             }
             _ => error,
         })
@@ -185,5 +197,26 @@ impl AsyncWrite for ManagementIo {
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_can_be_dropped_without_an_entered_runtime() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let endpoint = runtime.block_on(async {
+            ManagementEndpoint {
+                endpoint: IrohEndpoint::builder(presets::Minimal)
+                    .relay_mode(RelayMode::Disabled)
+                    .bind()
+                    .await
+                    .unwrap(),
+                runtime: tokio::runtime::Handle::current(),
+            }
+        });
+        std::thread::spawn(move || drop(endpoint)).join().unwrap();
     }
 }

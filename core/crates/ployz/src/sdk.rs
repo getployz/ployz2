@@ -160,7 +160,8 @@ impl Session {
     }
 
     /// Clear the pairing; the daemon revokes the capability's key before replying, so a
-    /// reply is confirmation. A later dial refused by identity is confirmation too.
+    /// reply is confirmation. A later dial confirms removal only with explicit
+    /// `management_pairing: "cleared"` details; a replaced key refusal does not.
     ///
     /// # Errors
     /// Returns cancellation or transport errors, including uncertain outcomes.

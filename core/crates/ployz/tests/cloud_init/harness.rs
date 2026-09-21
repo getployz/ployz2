@@ -19,7 +19,10 @@ use ployz_core::{
 
 /// The Management Capability the fake daemon mints for any Cloud Pairing.
 pub fn fixture_capability() -> ployz_core::ManagementCapability {
-    ployz_core::ManagementCapability::new([0xa1; 32], [0xb2; 32])
+    ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([0xa1; 32]),
+        [0xb2; 32],
+    )
 }
 use tonic::{Request, Response, Status, Streaming};
 
@@ -77,6 +80,7 @@ struct JoinInner {
     cloud_pairing_attempts: AtomicUsize,
     transient_cloud_pairing_failures: AtomicUsize,
     events: Mutex<EventLog>,
+    revoked_on_publication: Mutex<Option<EventLog>>,
     resets: AtomicUsize,
     containers: Mutex<Vec<ContainerObservation>>,
     create_attempts: AtomicUsize,
@@ -121,6 +125,7 @@ impl JoinDaemon {
                 cloud_pairing_attempts: AtomicUsize::new(0),
                 transient_cloud_pairing_failures: AtomicUsize::new(0),
                 events: Mutex::new(EventLog::default()),
+                revoked_on_publication: Mutex::new(None),
                 resets: AtomicUsize::new(0),
                 containers: Mutex::new(Vec::new()),
                 create_attempts: AtomicUsize::new(0),
@@ -207,6 +212,11 @@ impl JoinDaemon {
 
     pub fn with_reserved_domain(self) -> Self {
         self.inner.domain_reserved.store(true, Ordering::SeqCst);
+        self
+    }
+
+    pub fn revoked_on_publication(self, events: EventLog) -> Self {
+        *self.inner.revoked_on_publication.lock().unwrap() = Some(events);
         self
     }
 
@@ -362,6 +372,18 @@ impl MachineRpc for JoinDaemon {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if self
+            .inner
+            .revoked_on_publication
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|events| events.entries().contains(&"publish"))
+        {
+            return Err(Status::unauthenticated(
+                "original management key was revoked",
+            ));
+        }
         if consume_transient_failure(&self.inner.startup_inspect_failures) {
             return Err(Status::unavailable(
                 "first startup is still pulling Corrosion",

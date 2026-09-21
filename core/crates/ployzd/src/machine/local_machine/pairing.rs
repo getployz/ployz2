@@ -9,14 +9,11 @@ use super::{Error, LocalMachine};
 impl LocalMachine {
     /// Set or clear Cloud Pairing under mutation admission.
     ///
-    /// `Set` persists the pairing, mints a fresh client key, persists only its public
-    /// half and returns the full Management Capability. Because the client secret is
-    /// never stored, a repeated `Set` (same pairing or not) mints a new key and cuts
-    /// every holder of the previous one; the caller still receives a working capability.
-    ///
-    /// `Clear` persists pairing and accepted key cleared in one write. The record
-    /// watch publishes that change, and the management transport closes every live
-    /// connection of the old key in response.
+    /// `Set` stages a fresh client public key and returns its Management Capability.
+    /// The accepted key remains usable until the replacement authenticates, proving
+    /// the caller received the secret. Lost responses can therefore be retried.
+    /// `Clear` removes both accepted and pending keys; record publication revokes
+    /// every live management connection. Client secrets are never persisted.
     ///
     /// # Errors
     /// Returns [`Error::NotParticipating`] when this Machine is not participating,
@@ -52,6 +49,27 @@ impl LocalMachine {
                         }
                     };
                     Ok(SetCloudPairingResponse { capability })
+                })
+                .await?
+        })
+        .await
+    }
+    /// Activate a staged management key after the transport authenticates its holder.
+    ///
+    /// # Errors
+    /// Returns mutation admission, record owner or persistence errors.
+    pub async fn activate_management_client(&self, remote: [u8; 32]) -> Result<(), Error> {
+        if self.record().pending_client != Some(remote) {
+            return Ok(());
+        }
+        let local = self.clone();
+        self.finish_mutation(async move {
+            local
+                .owner
+                .mutate(move |store| {
+                    store
+                        .activate_management_client(remote)
+                        .map_err(Error::from)
                 })
                 .await?
         })
@@ -107,23 +125,91 @@ mod tests {
             record.management_secret().public_key()
         );
         let client_public = iroh::SecretKey::from_bytes(capability.client_secret()).public();
-        assert_eq!(record.accepted_client, Some(*client_public.as_bytes()));
+        assert_eq!(record.pending_client, Some(*client_public.as_bytes()));
+        assert_eq!(record.accepted_client, None);
+        local
+            .activate_management_client(*client_public.as_bytes())
+            .await
+            .unwrap();
         let persisted = std::fs::read_to_string(dir.path().join("machine.json")).unwrap();
         assert!(!persisted.contains(&capability.to_secret_string()));
         assert!(!persisted.contains(&serde_json::to_string(capability.client_secret()).unwrap()));
 
-        // A repeated Set mints a new key: the old capability no longer matches the record.
+        // A lost response leaves the accepted key usable until the replacement proves possession.
         let again = local
             .set_cloud_pairing(SetCloudPairingRequest::Set {
                 pairing: pairing("pairing"),
             })
             .await
             .unwrap();
-        assert_ne!(again.capability.unwrap(), capability);
-        assert_ne!(
+        let replacement = again.capability.unwrap();
+        assert_ne!(replacement, capability);
+        assert_eq!(
             local.record().accepted_client,
             Some(*client_public.as_bytes())
         );
+        let replacement_public = iroh::SecretKey::from_bytes(replacement.client_secret()).public();
+        // Restart between issuance and handover: both public keys survive, no secret does.
+        drop(local);
+        let local = LocalMachine::new(
+            RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap(),
+        );
+        local
+            .activate_management_client(*replacement_public.as_bytes())
+            .await
+            .unwrap();
+        assert_eq!(
+            local.record().accepted_client,
+            Some(*replacement_public.as_bytes())
+        );
+        assert_eq!(local.record().pending_client, None);
+    }
+
+    #[tokio::test]
+    async fn failed_activation_preserves_the_accepted_and_pending_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = participating(dir.path()).await;
+        let first = local
+            .set_cloud_pairing(SetCloudPairingRequest::Set {
+                pairing: pairing("first"),
+            })
+            .await
+            .unwrap()
+            .capability
+            .unwrap();
+        let first_key = *iroh::SecretKey::from_bytes(first.client_secret())
+            .public()
+            .as_bytes();
+        local.activate_management_client(first_key).await.unwrap();
+        let next = local
+            .set_cloud_pairing(SetCloudPairingRequest::Set {
+                pairing: pairing("next"),
+            })
+            .await
+            .unwrap()
+            .capability
+            .unwrap();
+        let next_key = *iroh::SecretKey::from_bytes(next.client_secret())
+            .public()
+            .as_bytes();
+        let before = local.record();
+        // An occupied destination makes the atomic rename fail, even when tests run as root.
+        let path = dir.path().join("machine.json");
+        let backup = dir.path().join("saved-machine.json");
+        std::fs::rename(&path, &backup).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            local.activate_management_client(next_key).await,
+            Err(Error::Store(_))
+        ));
+        assert_eq!(local.record(), before);
+        assert_eq!(before.accepted_client, Some(first_key));
+        assert_eq!(before.pending_client, Some(next_key));
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(backup, path).unwrap();
+        local.activate_management_client(next_key).await.unwrap();
+        assert_eq!(local.record().accepted_client, Some(next_key));
+        assert_eq!(local.record().pending_client, None);
     }
 
     #[tokio::test]
@@ -147,6 +233,7 @@ mod tests {
         let record = records.borrow_and_update().clone();
         assert_eq!(record.cloud_pairing, None);
         assert_eq!(record.accepted_client, None);
+        assert_eq!(record.pending_client, None);
         // One publication means one write: pairing and key were not cleared separately.
         assert!(!records.has_changed().unwrap());
     }

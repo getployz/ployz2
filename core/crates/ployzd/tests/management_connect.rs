@@ -95,7 +95,7 @@ async fn contract() {
     };
     let server = tokio::spawn(management::serve(
         endpoint.clone(),
-        owner.watch(),
+        local.clone(),
         api,
         shutdown.clone(),
     ));
@@ -153,13 +153,22 @@ async fn contract() {
 
     // Revocation must also reach a peer that completed TLS but delayed its first stream.
     // Use a distinct identity to avoid replacing the connector's relay registration.
-    let delayed_capability = local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {
-            pairing: CloudPairing::new(PairingCredential::parse("delayed").unwrap()),
-        })
+    // Lose the Set acknowledgement on the very connection being rotated. The
+    // original capability still works, including after reconnecting, until a
+    // replacement proves possession. A later Set retires the abandoned candidate.
+    let abandoned = rotate(channel.clone(), "lost-ack").await;
+    assert_eq!(describe(channel.clone()).await.unwrap(), machine_id);
+    let retry = connector.connect(&connection(&capability)).await.unwrap();
+    let retry_connection = observed.recv().await.unwrap();
+    let delayed_capability = rotate(retry.clone(), "delayed").await;
+    assert_eq!(describe(retry.clone()).await.unwrap(), machine_id);
+    assert!(matches!(
+        connector.connect(&connection(&abandoned)).await,
+        Err(ConnectError::RefusedByIdentity)
+    ));
+    drop(retry);
+    tokio::time::timeout(Duration::from_secs(10), retry_connection.closed())
         .await
-        .unwrap()
-        .capability
         .unwrap();
     let delayed_secret = SecretKey::from_bytes(delayed_capability.client_secret());
     let delayed = Endpoint::builder(presets::Minimal)
@@ -190,6 +199,12 @@ async fn contract() {
         .unwrap()
         .capability
         .unwrap();
+    let activated = connector.connect(&connection(&capability)).await.unwrap();
+    let activated_connection = observed.recv().await.unwrap();
+    drop(activated);
+    tokio::time::timeout(Duration::from_secs(10), activated_connection.closed())
+        .await
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(10), waiting.closed())
         .await
         .expect("rotation must revoke a peer waiting to open its first stream");
@@ -209,6 +224,17 @@ async fn contract() {
         .await
         .unwrap();
     let removal_connection = observed.recv().await.unwrap();
+    let replaced = match ployz::sdk::connect_connections(
+        vec![connection(&abandoned)],
+        connector.clone(),
+    )
+    .await
+    {
+        Ok(_) => panic!("abandoned capability must be refused"),
+        Err(error) => error,
+    };
+    assert_eq!(replaced.code, RpcErrorCode::Unauthenticated);
+    assert_eq!(replaced.details, serde_json::Value::Null);
     let _ = session.remove_cloud_pairing().await;
     tokio::time::timeout(Duration::from_secs(10), removal_connection.closed())
         .await
@@ -222,7 +248,14 @@ async fn contract() {
             Err(error) => error,
         };
     assert_eq!(error.code, RpcErrorCode::Unauthenticated);
-    assert_refused(connector.connect(&connection(&capability)).await);
+    assert_eq!(
+        error.details,
+        serde_json::json!({ "management_pairing": "cleared" })
+    );
+    assert!(matches!(
+        connector.connect(&connection(&capability)).await,
+        Err(ConnectError::PairingCleared)
+    ));
 
     // Shutdown drains every remaining connection and closes the endpoint.
     shutdown.cancel();
@@ -244,6 +277,26 @@ fn assert_refused(result: Result<Channel, ConnectError>) {
 
 fn connection(capability: &ManagementCapability) -> Connection {
     Connection::management(capability.to_secret_string()).unwrap()
+}
+
+async fn rotate(channel: Channel, secret: &str) -> ManagementCapability {
+    MachineRpcClient::new(channel)
+        .set_cloud_pairing(
+            op::SetCloudPairing::into_request(SetCloudPairingRequest::Set {
+                pairing: CloudPairing::new(PairingCredential::parse(secret).unwrap()),
+            })
+            .encode()
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::SetCloudPairing>()
+        .unwrap()
+        .capability
+        .unwrap()
 }
 
 async fn describe(channel: Channel) -> Result<MachineId, tonic::Status> {

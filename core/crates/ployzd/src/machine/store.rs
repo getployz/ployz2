@@ -124,6 +124,7 @@ impl LocalMachineStore {
                     wireguard_private_key: WireGuardPrivateKey::generate(),
                     management_secret: ManagementSecret::generate(),
                     accepted_client: None,
+                    pending_client: None,
                     wireguard_mtu: None,
                     cloud_pairing: None,
                     selected_endpoints: BTreeMap::new(),
@@ -358,18 +359,37 @@ impl LocalMachineStore {
         Ok(())
     }
 
-    /// Persist the Cloud Pairing and the accepted management client in one write.
+    /// Stage a replacement client key, or clear both keys and the pairing in one write.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
     pub fn persist_cloud_pairing(
         &mut self,
         pairing: Option<CloudPairing>,
-        accepted_client: Option<[u8; 32]>,
+        pending_client: Option<[u8; 32]>,
     ) -> Result<(), StoreError> {
         let mut updated = self.record.clone();
         updated.cloud_pairing = pairing;
-        updated.accepted_client = accepted_client;
+        updated.pending_client = pending_client;
+        if updated.cloud_pairing.is_none() {
+            updated.accepted_client = None;
+        }
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(())
+    }
+
+    /// Commit a pending key only after its holder proves possession during authentication.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn activate_management_client(&mut self, remote: [u8; 32]) -> Result<(), StoreError> {
+        if self.record.pending_client != Some(remote) {
+            return Ok(());
+        }
+        let mut updated = self.record.clone();
+        updated.accepted_client = Some(remote);
+        updated.pending_client = None;
         save(&self.data_dir, &updated)?;
         self.record = updated;
         Ok(())

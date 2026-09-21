@@ -38,8 +38,8 @@ describe("protected pairing removal", () => {
   }
 
   function fixture() {
-    // A cleared Machine refuses later dials with the old capability by identity.
-    const endpoint = { paired: true, online: true, loseAck: false };
+    // The authenticated endpoint distinguishes cleared pairing from a replaced client key.
+    const endpoint = { paired: true, online: true, loseAck: false, replaced: false };
     const dialed: ConnectOptions[] = [];
     let mutations = 0;
     const ployz = makePloyzLayer({
@@ -50,7 +50,8 @@ describe("protected pairing removal", () => {
           throw new Error("Endpoint unavailable");
         }
         if (!endpoint.online) throw new Error("Endpoint unavailable");
-        if (!endpoint.paired) throw Object.assign(new Error("refused by identity"), { code: "unauthenticated", details: null });
+        if (endpoint.replaced) throw Object.assign(new Error("key replaced"), { code: "unauthenticated", details: null });
+        if (!endpoint.paired) throw Object.assign(new Error("pairing cleared"), { code: "unauthenticated", details: { management_pairing: "cleared" } });
         return asTestDouble<Client>()({
           removeCloudPairing: async () => {
             mutations += 1;
@@ -67,9 +68,8 @@ describe("protected pairing removal", () => {
   }
 
   it.each([
-    { status: "prepared", machineId, encryptedExpected: encryption.encrypt(capability), encryptedSuccessor: encryption.encrypt("successor") },
     { status: "confirmed", machineId, encryptedExpected: encryption.encrypt("retained-secret") },
-    { status: "pending", machineId, encryptedExpected: encryption.encrypt(capability), encryptedSuccessor: encryption.encrypt("unexpected") },
+    { status: "pending", machineId, encryptedExpected: encryption.encrypt(capability), unexpectedField: true },
     { status: "unknown", machineId, encryptedExpected: encryption.encrypt(capability) },
     { status: "pending", machineId: "invalid-id", encryptedExpected: encryption.encrypt(capability) },
     { status: "pending", machineId, encryptedExpected: { version: 2, iv: "", tag: "", ciphertext: "" } },
@@ -132,7 +132,7 @@ describe("protected pairing removal", () => {
     } finally { await runtime.dispose(); }
   });
 
-  it("confirms a lost removal acknowledgement only through an identity refusal on retry", async () => {
+  it("confirms a lost removal acknowledgement only through an authenticated cleared-pairing response on retry", async () => {
     const fake = fixture();
     fake.endpoint.loseAck = true;
     const runtime = fake.makeRuntime();
@@ -143,6 +143,18 @@ describe("protected pairing removal", () => {
       expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
       expect(fake.mutations()).toBe(1);
       expect((await harness.pool.query("select * from organization_pairing")).rows).toEqual([]);
+    } finally { await runtime.dispose(); }
+  });
+
+  it("does not confirm removal when a replacement key is still active", async () => {
+    const fake = fixture();
+    fake.endpoint.replaced = true;
+    const runtime = fake.makeRuntime();
+    try {
+      expect(await runtime.runPromise(revokeOrganizationPairing(organizationId))).toMatchObject({ confirmed: false });
+      expect(fake.mutations()).toBe(0);
+      expect(fake.endpoint.paired).toBe(true);
+      expect((await harness.pool.query("select * from organization_pairing")).rowCount).toBe(1);
     } finally { await runtime.dispose(); }
   });
 

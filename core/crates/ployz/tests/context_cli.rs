@@ -665,7 +665,11 @@ fn management_context_selection_and_listing_never_print_capabilities() {
     let root = tempfile::tempdir().unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = root.path().join("config.yaml");
-    let secret = ployz_core::ManagementCapability::new([1; 32], [2; 32]).to_secret_string();
+    let secret = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+        [2; 32],
+    )
+    .to_secret_string();
     Config::new(
         &path,
         Some("private".into()),
@@ -712,8 +716,16 @@ fn management_selection_uses_machine_labels_or_ordered_indices_in_a_mixed_contex
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = root.path().join("config.yaml");
     let ssh = Connection::ssh(SshDestination::parse("root@example.com").unwrap());
-    let first_secret = ployz_core::ManagementCapability::new([3; 32], [4; 32]).to_secret_string();
-    let second_secret = ployz_core::ManagementCapability::new([5; 32], [6; 32]).to_secret_string();
+    let first_secret = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([3; 32]),
+        [4; 32],
+    )
+    .to_secret_string();
+    let second_secret = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([5; 32]),
+        [6; 32],
+    )
+    .to_secret_string();
     let first = Connection::management(&first_secret)
         .unwrap()
         .with_machine_id(MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap());
@@ -783,11 +795,19 @@ fn ambiguous_management_labels_fail_without_mutation_and_index_selects_the_secon
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = root.path().join("config.yaml");
     let first = Connection::management(
-        ployz_core::ManagementCapability::new([1; 32], [2; 32]).to_secret_string(),
+        ployz_core::ManagementCapability::new(
+            ployz_core::ManagementIdentity::from_bytes([1; 32]),
+            [2; 32],
+        )
+        .to_secret_string(),
     )
     .unwrap();
     let second = Connection::management(
-        ployz_core::ManagementCapability::new([3; 32], [4; 32]).to_secret_string(),
+        ployz_core::ManagementCapability::new(
+            ployz_core::ManagementIdentity::from_bytes([3; 32]),
+            [4; 32],
+        )
+        .to_secret_string(),
     )
     .unwrap();
     let config = Config::new(

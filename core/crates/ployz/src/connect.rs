@@ -397,7 +397,18 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             attempts: 1,
             last: Some(error),
             ..
-        } if matches!(*error, ConnectError::RefusedByIdentity) => rpc_error(*error),
+        } if matches!(
+            *error,
+            ConnectError::RefusedByIdentity | ConnectError::PairingCleared
+        ) =>
+        {
+            rpc_error(*error)
+        }
+        ConnectError::PairingCleared => RpcError {
+            code: RpcErrorCode::Unauthenticated,
+            message: "Machine confirmed its management pairing is cleared".into(),
+            details: json!({ "management_pairing": "cleared" }),
+        },
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
         error @ (ConnectError::IdentityMismatch { .. } | ConnectError::RefusedByIdentity) => {
@@ -612,8 +623,10 @@ pub enum ConnectError {
     Dial(#[from] tonic::transport::Error),
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
-    #[error("Machine refused this Management Capability; it was cleared or replaced")]
+    #[error("Machine refused this Management Capability")]
     RefusedByIdentity,
+    #[error("Machine confirmed its management pairing is cleared")]
+    PairingCleared,
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing(#[source] io::Error),
     #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}")]
@@ -684,6 +697,7 @@ impl ConnectError {
             Self::Remote(_)
             | Self::IdentityMismatch { .. }
             | Self::RefusedByIdentity
+            | Self::PairingCleared
             | Self::MissingMachineDetails
             | Self::SshClientMissing(_)
             | Self::Routing(_)

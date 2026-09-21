@@ -752,7 +752,10 @@ mod tests {
                         &url,
                         MachineId::random(),
                         &PairingCredential::parse("pairing-secret").unwrap(),
-                        &ManagementCapability::new([1; 32], [2; 32]),
+                        &ManagementCapability::new(
+                            ployz_core::ManagementIdentity::from_bytes([1; 32]),
+                            [2; 32],
+                        ),
                     )
                     .await
                     .unwrap();
@@ -776,7 +779,10 @@ mod tests {
     async fn callback_errors_redact_capability_and_pairing_credentials() {
         for publishing in [true, false] {
             let (listener, url) = listen().await;
-            let capability = ManagementCapability::new([3; 32], [4; 32]);
+            let capability = ManagementCapability::new(
+                ployz_core::ManagementIdentity::from_bytes([3; 32]),
+                [4; 32],
+            );
             let secret = capability.to_secret_string();
             let pairing = "pairing-secret";
             let echoed = format!("{secret} {pairing}");

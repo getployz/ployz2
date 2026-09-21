@@ -143,6 +143,9 @@ pub struct LocalMachineRecord {
     /// Public key of the one client the management transport admits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_client: Option<[u8; 32]>,
+    /// Replacement key awaiting proof that its holder received the capability.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_client: Option<[u8; 32]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -295,6 +298,7 @@ impl LocalMachineRecord {
             wireguard_private_key,
             management_secret: ManagementSecret::generate(),
             accepted_client: None,
+            pending_client: None,
             wireguard_mtu: None,
             cloud_pairing: None,
             selected_endpoints: BTreeMap::new(),
@@ -363,6 +367,7 @@ impl LocalMachineRecord {
             wireguard_private_key: self.wireguard_private_key,
             management_secret: self.management_secret,
             accepted_client: self.accepted_client,
+            pending_client: self.pending_client,
             wireguard_mtu: self.wireguard_mtu,
             cloud_pairing: self.cloud_pairing,
             selected_endpoints: self.selected_endpoints,

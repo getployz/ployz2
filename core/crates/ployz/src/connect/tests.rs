@@ -372,7 +372,11 @@ fn ssh_timeout_flag_is_global_and_reaches_transport_arguments() {
 
 #[tokio::test]
 async fn management_auxiliary_proxy_is_explicitly_unsupported_and_redacted() {
-    let secret = ployz_core::ManagementCapability::new([1; 32], [2; 32]).to_secret_string();
+    let secret = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+        [2; 32],
+    )
+    .to_secret_string();
     let connection = Connection::management(&secret).unwrap();
     let result = SystemConnector::default()
         .dial_proxy(&connection, "tcp", "127.0.0.1:1234")

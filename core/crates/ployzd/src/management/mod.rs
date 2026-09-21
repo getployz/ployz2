@@ -32,12 +32,15 @@ use tonic::{
     transport::{Server, server::Connected},
 };
 
-use crate::machine::LocalMachineRecord;
+use crate::machine::{LocalMachine, LocalMachineRecord};
 
 /// Application close code sent when the remote key is not the accepted client.
 pub const REFUSED_BY_IDENTITY: VarInt = VarInt::from_u32(0x50);
 /// Application close code sent to a live connection whose key was cleared.
 pub const REVOKED: VarInt = VarInt::from_u32(0x51);
+
+/// Authenticated endpoint confirmation that neither accepted nor pending client access remains.
+pub const PAIRING_CLEARED: VarInt = VarInt::from_u32(0x52);
 
 const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -83,8 +86,8 @@ impl ManagementSecret {
 
     /// Management Identity: the public key clients dial.
     #[must_use]
-    pub fn public_key(&self) -> [u8; 32] {
-        *self.secret_key().public().as_bytes()
+    pub fn public_key(&self) -> ployz_core::ManagementIdentity {
+        ployz_core::ManagementIdentity::from_bytes(*self.secret_key().public().as_bytes())
     }
 
     fn secret_key(&self) -> SecretKey {
@@ -133,16 +136,17 @@ pub fn admits(accepted_client: Option<&[u8; 32]>, remote: &[u8; 32]) -> bool {
 
 /// Serve `api` over `endpoint` until `shutdown`.
 ///
-/// Every connection whose key is not the record's `accepted_client` is closed with
-/// [`REFUSED_BY_IDENTITY`]. When the record's accepted key changes (a `Clear`, or a
-/// `Set` that minted a new key), live connections of the old key are closed with
+/// Keys other than the accepted or pending key receive [`REFUSED_BY_IDENTITY`],
+/// or [`PAIRING_CLEARED`] when no pairing or client keys remain. Authenticating
+/// with the pending key activates it. When the accepted key changes (a `Clear`, or a
+/// replacement key proving possession), live connections of the old key are closed with
 /// [`REVOKED`].
 ///
 /// # Errors
 /// Returns the tonic transport error when the RPC server fails.
 pub async fn serve<S>(
     endpoint: Endpoint,
-    mut records: watch::Receiver<Arc<LocalMachineRecord>>,
+    local: LocalMachine,
     api: S,
     shutdown: CancellationToken,
 ) -> io::Result<()>
@@ -153,10 +157,12 @@ where
         + 'static,
     S::Future: Send,
 {
+    let mut records = local.owner().watch();
     let live: Arc<Mutex<Vec<WeakConnectionHandle>>> = Arc::default();
     let (accepted_tx, accepted_rx) = mpsc::channel::<io::Result<ManagementIo>>(16);
     let acceptor = tokio::spawn(accept_loop(
         endpoint.clone(),
+        local,
         records.clone(),
         Arc::clone(&live),
         accepted_tx,
@@ -212,6 +218,7 @@ fn revoke_others(
 
 async fn accept_loop(
     endpoint: Endpoint,
+    local: LocalMachine,
     records: watch::Receiver<Arc<LocalMachineRecord>>,
     live: Arc<Mutex<Vec<WeakConnectionHandle>>>,
     accepted: mpsc::Sender<io::Result<ManagementIo>>,
@@ -231,6 +238,7 @@ async fn accept_loop(
         let Ok(permit) = Arc::clone(&handshakes).acquire_owned().await else {
             return;
         };
+        let local = local.clone();
         let records = records.clone();
         let live = Arc::clone(&live);
         let accepted = accepted.clone();
@@ -242,15 +250,34 @@ async fn accept_loop(
                     return;
                 }
             };
+            // A successful handshake proves receipt of the pending secret. Persist
+            // activation before admitting RPCs; failure leaves the old key usable.
+            if let Err(error) = local
+                .activate_management_client(*connection.remote_id().as_bytes())
+                .await
+            {
+                tracing::warn!(%error, "management credential activation failed");
+                connection.close(REVOKED, b"activation failed");
+                return;
+            }
             {
                 // Admission and registration share the revoker's lock, before waiting
                 // for peer input: a delayed first stream cannot escape key rotation.
                 let mut live = live.lock().expect("live connection list is not poisoned");
+                let record = records.borrow();
                 if !admits(
-                    records.borrow().accepted_client.as_ref(),
+                    record.accepted_client.as_ref(),
                     connection.remote_id().as_bytes(),
                 ) {
-                    connection.close(REFUSED_BY_IDENTITY, b"refused by identity");
+                    let code = if record.cloud_pairing.is_none()
+                        && record.accepted_client.is_none()
+                        && record.pending_client.is_none()
+                    {
+                        PAIRING_CLEARED
+                    } else {
+                        REFUSED_BY_IDENTITY
+                    };
+                    connection.close(code, b"management access refused");
                     return;
                 }
                 live.retain(|weak| {

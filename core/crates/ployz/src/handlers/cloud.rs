@@ -203,13 +203,14 @@ where
     };
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
     let capability = set_cloud_pairing(&mut ready, &pairing).await?;
-    cloud_enroll::publish(callback_url, assigned.id, pairing.secret(), &capability).await?;
-    cloud_enroll::callback(callback_url, assigned.id, pairing.secret()).await?;
     if let Err(error) = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await {
         return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
             error,
         )));
     }
+    // Cloud connects with the replacement during publication/completion, revoking this key.
+    cloud_enroll::publish(callback_url, assigned.id, pairing.secret(), &capability).await?;
+    cloud_enroll::callback(callback_url, assigned.id, pairing.secret()).await?;
     println!("Joined Machine {} ({})", assigned.name, assigned.id);
     Ok(())
 }
@@ -335,7 +336,7 @@ where
             })?;
         }
     }
-    // Repeated Set rotates the capability; publication verifies the replacement.
+    // Repeated Set stages a fresh capability; connecting with it completes rotation.
     let capability = set_cloud_pairing(&mut ready, &pairing).await
         .map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
     cloud_enroll::publish(

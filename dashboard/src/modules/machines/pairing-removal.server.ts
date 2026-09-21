@@ -110,9 +110,12 @@ const loadCurrentAttempt = Effect.fn("PairingRemoval.loadCurrent")(
   },
 );
 
-const RefusedByIdentity = Schema.Struct({ code: Schema.Literal("unauthenticated") });
+const PairingCleared = Schema.Struct({
+  code: Schema.Literal("unauthenticated"),
+  details: Schema.Struct({ management_pairing: Schema.Literal("cleared") }),
+});
 
-/** Clear one Machine's Cloud pairing. The Machine's response or an identity refusal is the only confirmation. */
+/** Clear one Machine's Cloud pairing. Only a successful Clear or an authenticated no-pairing response confirms removal. */
 const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
   function* (machineId: MachineId, management: string) {
     const ployz = yield* Ployz;
@@ -122,7 +125,7 @@ const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
       return true;
     })).pipe(Effect.catch((error) => Effect.succeed(
       error._tag === "PloyzProviderError" && error.operation === "connect"
-        && Option.isSome(Schema.decodeUnknownOption(RefusedByIdentity)(error.cause)),
+        && Option.isSome(Schema.decodeUnknownOption(PairingCleared)(error.cause)),
     )));
   },
 );

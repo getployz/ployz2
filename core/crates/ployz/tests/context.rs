@@ -478,7 +478,11 @@ fn management_context_preserves_order_identity_and_redacts_capability() {
     let root = tempfile::tempdir().unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = root.path().join("config.yaml");
-    let secret = ployz_core::ManagementCapability::new([7; 32], [8; 32]).to_secret_string();
+    let secret = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([7; 32]),
+        [8; 32],
+    )
+    .to_secret_string();
     let connection = Connection::management(&secret)
         .unwrap()
         .with_machine_id(MachineId::parse("0123456789abcdef0123456789abcdef").unwrap());

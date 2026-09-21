@@ -247,7 +247,7 @@ impl Daemon {
                     serve_machine_api(gateway_listener, machine_api.clone(), shutdown.clone()),
                     management::serve(
                         management_endpoint,
-                        local.watch(),
+                        crate::machine::LocalMachine::new(local.clone()),
                         machine_api.clone(),
                         shutdown.clone()
                     ),

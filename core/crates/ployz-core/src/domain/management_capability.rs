@@ -24,6 +24,25 @@ fn framing_error() -> ValueError {
     )
 }
 
+/// The public key identifying a Machine's management endpoint, distinct from a client secret.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ManagementIdentity([u8; 32]);
+
+impl ManagementIdentity {
+    /// Construct an identity from its encoded public key; the transport validates the key.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Encoded public key for the management transport.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 /// Protected bearer granting shared administrative Machine RPC access to one Machine:
 /// the Management Identity (the Machine's public key) and the client secret key that
 /// the Machine accepts. Possession proves neither Machine identity nor Organization
@@ -34,14 +53,14 @@ fn framing_error() -> ValueError {
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ManagementCapability {
-    machine: [u8; 32],
+    machine: ManagementIdentity,
     client_secret: [u8; 32],
 }
 
 impl ManagementCapability {
     /// Frame a Machine public key and the client secret authorized to manage it.
     #[must_use]
-    pub fn new(machine: [u8; 32], client_secret: [u8; 32]) -> Self {
+    pub fn new(machine: ManagementIdentity, client_secret: [u8; 32]) -> Self {
         Self {
             machine,
             client_secret,
@@ -66,7 +85,9 @@ impl ManagementCapability {
         }
         let (machine, client_secret) = body.split_at(32);
         Ok(Self {
-            machine: machine.try_into().expect("split at 32 of a 64-byte body"),
+            machine: ManagementIdentity::from_bytes(
+                machine.try_into().expect("split at 32 of a 64-byte body"),
+            ),
             client_secret: client_secret
                 .try_into()
                 .expect("split at 32 of a 64-byte body"),
@@ -75,7 +96,7 @@ impl ManagementCapability {
 
     /// Management Identity: the Machine's public key.
     #[must_use]
-    pub fn machine(&self) -> &[u8; 32] {
+    pub fn machine(&self) -> &ManagementIdentity {
         &self.machine
     }
 
@@ -89,7 +110,7 @@ impl ManagementCapability {
     #[must_use]
     pub fn to_secret_string(&self) -> String {
         let mut body = [0; BODY_LEN];
-        body[..32].copy_from_slice(&self.machine);
+        body[..32].copy_from_slice(self.machine.as_bytes());
         body[32..].copy_from_slice(&self.client_secret);
         format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(body))
     }
@@ -126,7 +147,7 @@ mod tests {
     use super::*;
 
     fn sample() -> ManagementCapability {
-        ManagementCapability::new([0xab; 32], [0xcd; 32])
+        ManagementCapability::new(ManagementIdentity::from_bytes([0xab; 32]), [0xcd; 32])
     }
 
     #[test]
@@ -137,7 +158,7 @@ mod tests {
         assert!(!text.contains('='));
         let parsed = ManagementCapability::parse(&text).unwrap();
         assert_eq!(parsed, capability);
-        assert_eq!(parsed.machine(), &[0xab; 32]);
+        assert_eq!(parsed.machine().as_bytes(), &[0xab; 32]);
         assert_eq!(parsed.client_secret(), &[0xcd; 32]);
         let encoded = serde_json::to_string(&capability).unwrap();
         assert_eq!(encoded, serde_json::to_string(&text).unwrap());

@@ -1059,7 +1059,7 @@ mod set_cloud_pairing_wire {
             json!({}),
             json!({ "cloud_pairing": null }),
             json!({ "kind": "set" }),
-            json!({ "kind": "remove", "pairing": pairing }),
+            json!({ "kind": "unknown", "pairing": pairing }),
             json!({ "kind": "clear", "pairing": pairing }),
             json!({ "kind": "set", "pairing": pairing, "cloud_pairing": null }),
         ] {
@@ -1079,7 +1079,8 @@ mod set_cloud_pairing_wire {
 
     #[test]
     fn pairing_response_carries_optional_capability_without_debug_disclosure() {
-        let capability = ManagementCapability::new([1; 32], [2; 32]);
+        let capability =
+            ManagementCapability::new(crate::ManagementIdentity::from_bytes([1; 32]), [2; 32]);
         let text = capability.to_secret_string();
         for (response, expected) in [
             (
