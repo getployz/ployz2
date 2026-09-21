@@ -279,34 +279,40 @@ impl Session {
                 .await
                 .map_err(|_| invalid_argument("source capture task failed".into()))??;
             if token.is_cancelled() {
-                return Err(closed());
+                return Err(preparation_error(
+                    crate::preparation::PreparationError::Cancelled,
+                ));
             }
-            let prepared = crate::preparation::prepare(
-                &mut client,
-                captured.0,
-                captured.1,
-                crate::preparation::BuildLocation::Remote(None),
-                &token,
-                |mut progress| {
-                    if let crate::preparation::Progress::Build(ployz_build::Progress::Output(bytes)) = &mut progress {
-                        if bytes.len() > 4096 {
+            let prepared =
+                crate::preparation::prepare(
+                    &mut client,
+                    captured.0,
+                    captured.1,
+                    crate::preparation::BuildLocation::Remote(None),
+                    &token,
+                    |mut progress| {
+                        if let crate::preparation::Progress::Build(ployz_build::Progress::Output(
+                            bytes,
+                        )) = &mut progress
+                            && bytes.len() > 4096
+                        {
                             bytes.drain(..bytes.len() - 4096);
-                            let _ = events.send(serde_json::json!({"phase":"truncated", "dropped":1}));
+                            let _ =
+                                events.send(serde_json::json!({"phase":"truncated", "dropped":1}));
                         }
-                    }
-                    let value =
-                        serde_json::to_value(progress).expect("preparation progress serializes");
-                    // Build output is lossy progress, never a backpressure dependency of cleanup.
-                    let value = if value.to_string().len() > 16_384 {
-                        serde_json::json!({"phase":"truncated", "dropped":1})
-                    } else {
-                        value
-                    };
-                    let _ = events.send(value);
-                },
-            )
-            .await
-            .map_err(preparation_error)?;
+                        let value = serde_json::to_value(progress)
+                            .expect("preparation progress serializes");
+                        // Build output is lossy progress, never a backpressure dependency of cleanup.
+                        let value = if value.to_string().len() > 16_384 {
+                            serde_json::json!({"phase":"truncated", "dropped":1})
+                        } else {
+                            value
+                        };
+                        let _ = events.send(value);
+                    },
+                )
+                .await
+                .map_err(preparation_error)?;
             let (preview, retained) = prepared.into_parts();
             Ok(PreparedDeploy {
                 preview,
@@ -587,8 +593,9 @@ impl PreparedDeploy {
 
     /// Release an unconfirmed preparation and its retained images.
     pub fn close(&self) {
+        let mut retained = self.retained.lock().expect("retained build lock");
         self.confirmed.store(true, Ordering::SeqCst);
-        self.retained.lock().expect("retained build lock").take();
+        retained.take();
     }
 
     /// Execute these operations. Illegal after a previous confirm.
@@ -603,6 +610,7 @@ impl PreparedDeploy {
         if session.inner.cancel.is_cancelled() {
             return Err(closed());
         }
+        let mut retained = self.retained.lock().expect("retained build lock");
         if self.confirmed.swap(true, Ordering::SeqCst) {
             return Err(invalid_argument(
                 "this Deploy Preview already confirmed".into(),
@@ -614,7 +622,7 @@ impl PreparedDeploy {
         let preview = self.preview.clone();
         let token = cancel.clone();
         let session_cancel = session.inner.cancel.clone();
-        let retained = self.retained.lock().expect("retained build lock").take();
+        let retained = retained.take();
         let join = tokio::spawn(async move {
             let _retained = retained;
             tokio::select! {
@@ -849,7 +857,10 @@ fn preparation_error(error: crate::preparation::PreparationError) -> RpcError {
                 Outcome::Unknown { stage, work, .. } => {
                     serde_json::json!({"preparation":{"kind":"unknown","stage":stage,"work":work}})
                 }
-                _ => serde_json::json!({"preparation":{"kind":"failed"}}),
+                Outcome::CapabilitiesChecked { .. }
+                | Outcome::Images { .. }
+                | Outcome::Validated { .. }
+                | Outcome::Published { .. } => serde_json::json!({"preparation":{"kind":"failed"}}),
             };
             RpcError {
                 code: RpcErrorCode::Internal,
@@ -862,7 +873,9 @@ fn preparation_error(error: crate::preparation::PreparationError) -> RpcError {
             message,
             details: serde_json::json!({"preparation":{"kind":"cancelled"}}),
         },
-        _ => RpcError {
+        PreparationError::Compose(_)
+        | PreparationError::Plan(_)
+        | PreparationError::Delivery(_) => RpcError {
             code: RpcErrorCode::Internal,
             message,
             details: serde_json::json!({"preparation":{"kind":"failed"}}),
@@ -877,28 +890,40 @@ mod preparation_tests {
     async fn slow_preparation_consumer_is_bounded_and_cannot_block_completion() {
         let (events, receiver) = tokio::sync::broadcast::channel(128);
         let join = tokio::spawn(async move {
-            for n in 0..1000 { events.send(serde_json::json!({"n":n})).unwrap(); }
+            for n in 0..1000 {
+                events.send(serde_json::json!({"n":n})).unwrap();
+            }
             Err(invalid_argument("fixture failure".into()))
         });
         let running = RunningPreparation {
-            cancel: CancellationToken::new(), events: Mutex::new(receiver), join: Mutex::new(Some(join)),
+            cancel: CancellationToken::new(),
+            events: Mutex::new(receiver),
+            join: Mutex::new(Some(join)),
         };
-        let result = tokio::time::timeout(std::time::Duration::from_secs(1), running.finished()).await.unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), running.finished())
+            .await
+            .unwrap();
         assert_eq!(result.unwrap_err().message, "fixture failure");
         assert_eq!(running.next().await.unwrap()["phase"], "truncated");
         let mut count = 0;
-        while running.next().await.is_some() { count += 1; }
-        assert_eq!(count,128);
+        while running.next().await.is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 128);
     }
     #[test]
     fn remote_unknown_retains_stage_and_evidence() {
         let error = preparation_error(crate::preparation::PreparationError::Compose(
-            crate::compose::ComposeError::RemoteBuild { outcome:Box::new(ployz_build::remote::Outcome::Unknown {
-                stage:ployz_build::Stage::Building, message:"lost stream".into(), work:ployz_build::WorkEvidence::default(),
-            }) }
+            crate::compose::ComposeError::RemoteBuild {
+                outcome: Box::new(ployz_build::remote::Outcome::Unknown {
+                    stage: ployz_build::Stage::Building,
+                    message: "lost stream".into(),
+                    work: ployz_build::WorkEvidence::default(),
+                }),
+            },
         ));
-        assert_eq!(error.details["preparation"]["kind"],"unknown");
-        assert_eq!(error.details["preparation"]["stage"],"Building");
+        assert_eq!(error.details["preparation"]["kind"], "unknown");
+        assert_eq!(error.details["preparation"]["stage"], "Building");
         assert!(error.details["preparation"]["work"].is_object());
     }
 }

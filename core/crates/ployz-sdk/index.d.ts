@@ -21,7 +21,7 @@ import type {
   EnrollmentSnapshot,
   RemoveVolumesRequest,
   RequestedServiceSpec,
-  RpcError,
+  RpcError as RpcErrorPayload,
   RuntimeWatchView,
 } from "./generated/payloads";
 export * from "./generated/payloads";
@@ -50,7 +50,7 @@ export type ConfirmOptions = WatchOptions;
 export type RunOptions = WatchOptions;
 
 export declare const RpcError: {
-  new (error: RpcError, options?: ErrorOptions): Error & RpcError;
+  new (error: RpcErrorPayload, options?: ErrorOptions): Error & RpcErrorPayload;
 };
 
 export type PreparedDeploy = DeployPreview & {
@@ -139,6 +139,6 @@ export declare class Client {
   dataLossIfClusterDestroyed(): Promise<ObservedDataLoss>;
   destroyCluster(confirmDataLoss: DataLossConfirmation): Promise<ClusterTeardown>;
   close(): Promise<void>;
-};
+}
 
 export declare function allocateEnrollment(request: RegisterRequest, snapshot: EnrollmentSnapshot, saved: EnrollmentAssignment[]): EnrollmentAssignment;

@@ -69,12 +69,22 @@ pub(super) fn capture(
                 if !dockerfile.is_file() {
                     return Err(invalid("Dockerfile must be a file"));
                 }
-                build["dockerfile"] = json!(dockerfile);
+                build
+                    .as_object_mut()
+                    .expect("build object")
+                    .insert("dockerfile".into(), json!(dockerfile));
             }
             builds.insert(name.to_string(), json!({"raw": build}));
             // This tag never escapes preparation: bind_builds replaces it with verified content.
-            snapshot["config"]["source"] = json!({"type":"image", "version":1,
-                "image":format!("ployz-build/{name}:pending"), "credentials":{"type":"none"}});
+            snapshot
+                .get_mut("config")
+                .and_then(Value::as_object_mut)
+                .expect("validated config object")
+                .insert(
+                    "source".into(),
+                    json!({"type":"image", "version":1,
+                "image":format!("ployz-build/{name}:pending"), "credentials":{"type":"none"}}),
+                );
         }
     }
     if !input.sources.is_empty() {
