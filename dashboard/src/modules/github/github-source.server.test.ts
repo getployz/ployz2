@@ -22,8 +22,9 @@ function archive(entries: { name: string; body?: string; link?: string }[]) {
 }
 it("extracts source and resolves repository-relative monorepo roots", async () => {
   const repo = await extractGithubSource(archive([{ name: "owner-sha/app/Dockerfile", body: "FROM scratch\n" },
-    { name: "owner-sha/app/.dockerignore", body: "private\n" }]), await workspace(), new AbortController().signal);
-  const source = await resolveSourcePaths(repo, "/app", "Dockerfile");
+    { name: "owner-sha/app/.dockerignore", body: "private\n" },
+    { name: "owner-sha/link", link: "app" }, { name: "owner-sha/alias", link: "link" }]), await workspace(), new AbortController().signal);
+  const source = await resolveSourcePaths(repo, "/alias", "Dockerfile");
   if (!source.dockerfilePath) throw new Error("Missing Dockerfile");
   expect(await readFile(source.dockerfilePath, "utf8")).toBe("FROM scratch\n");
   expect(await readFile(path.join(source.rootDirectory, ".dockerignore"), "utf8")).toBe("private\n");
@@ -32,6 +33,9 @@ it.each([
   { entries: [{ name: "root/../../escape", body: "bad" }] },
   { entries: [{ name: "root/link", link: "../../outside" }] },
   { entries: [{ name: "root/link/file", body: "bad" }, { name: "root/link", link: "safe" }] },
+  { entries: [{ name: "root/a", link: "." }, { name: "root/b", link: "a/.." },
+    { name: "root/c", link: "b/.." }, { name: "root/d", link: "c/.." }, { name: "root/e", link: "d/.." }] },
+  { entries: [{ name: "root/a", link: "b" }, { name: "root/b", link: "a" }] },
   { entries: [{ name: "root/.gitmodules", body: "submodule" }] },
   { entries: [{ name: "root/asset", body: "version https://git-lfs.github.com/spec/v1\noid sha256:123" }] },
 ])("rejects unsafe or unsupported sources: $entries", async ({ entries }) => {

@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, open, realpath, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, open, realpath, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -98,14 +98,41 @@ export async function extractGithubSource(response: Response, directory: string,
       ancestors.pop();
     }
     if (entry.type === "SymbolicLink") {
-      const target = path.posix.normalize(path.posix.join(path.posix.dirname(name), entry.link));
-      if (target !== root && !target.startsWith(`${root}/`)) throw new GithubSourceError({ message: "Repository symbolic link escapes its root." });
+      // Resolve links before processing '..', exactly as the filesystem does.
+      // Lexical normalization would miss escapes through another symlink.
+      const remaining = name.split("/");
+      const resolved: string[] = [];
+      let links = 0;
+      while (remaining.length) {
+        const component = remaining.shift();
+        if (!component || component === ".") continue;
+        if (component === "..") {
+          if (resolved.length <= 1) throw new GithubSourceError({ message: "Repository symbolic link escapes its root." });
+          resolved.pop();
+          continue;
+        }
+        resolved.push(component);
+        const target = entries.get(resolved.join("/"));
+        if (target?.type === "SymbolicLink") {
+          if (++links > 40) throw new GithubSourceError({ message: "Repository contains cyclic or excessively nested symbolic links." });
+          resolved.pop();
+          remaining.unshift(...target.link.split("/"));
+        }
+      }
     }
     if (path.posix.basename(name) === ".gitmodules") throw new GithubSourceError({ message: "Git submodules are not supported for Cloud builds." });
   }
   const unpack = path.join(directory, "checkout");
   await mkdir(unpack, { mode: 0o700 });
-  await pipeline(createReadStream(archive), tar.x({ cwd: unpack, strict: true, noChmod: true, noMtime: true }), { signal });
+  await pipeline(createReadStream(archive), tar.x({ cwd: unpack, strict: true, noChmod: true, noMtime: true, filter: (_name, entry) => entry.type !== "SymbolicLink" }), { signal });
+  // Install validated links last; tar intentionally refuses even safe chained links.
+  for (const [name, entry] of entries) {
+    signal.throwIfAborted();
+    if (entry.type !== "SymbolicLink") continue;
+    const destination = path.join(unpack, name);
+    await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+    await symlink(entry.link, destination);
+  }
   await rm(archive);
   for (const [name, entry] of entries) {
     signal.throwIfAborted();

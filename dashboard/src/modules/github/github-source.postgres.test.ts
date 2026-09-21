@@ -1,3 +1,9 @@
+import { access } from "node:fs/promises";
+import { gzipSync } from "node:zlib";
+import { Header } from "tar";
+import { Effect, Schema } from "effect";
+import { GithubApi } from "./github-observation.api";
+import { materializeGithubSource } from "./github-source.server";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { getCachedGithubRepositoryForOrganization } from "./github.repository";
@@ -16,7 +22,25 @@ it("source access requires the repository's installation to belong to a current 
     expect(await harness.runEffect(getCachedGithubRepositoryForOrganization(input))).toEqual({ fullName: "owner/repo" });
     expect(await harness.runEffect(getCachedGithubRepositoryForOrganization({ ...input, organizationId: randomUUID() }))).toBeNull();
     expect(await harness.runEffect(getCachedGithubRepositoryForOrganization({ ...input, installationId: 18 }))).toBeNull();
+    const header = new Header({ path: "root/Dockerfile", size: 0, mode: 0o644, type: "File" });
+    header.encode();
+    if (!header.block) throw new Error("Missing archive header");
+    const response = new Response(gzipSync(Buffer.concat([Buffer.from(header.block), Buffer.alloc(1024)])));
+    let checkout: string | undefined;
+    await harness.runEffect(Effect.scoped(materializeGithubSource({ ...input, sha: "a".repeat(40), rootDir: "." }).pipe(
+      Effect.flatMap((source) => {
+        checkout = source.repositoryDirectory;
+        return Effect.fail("Build failed after acquisition");
+      }),
+      Effect.provideService(GithubApi, {
+        json: (request) => Schema.decodeUnknownEffect(request.schema)({ id: 42, full_name: "owner/repo" }).pipe(Effect.orDie),
+        archive: () => Effect.succeed(response),
+      }),
+    )).pipe(Effect.result));
+    expect(checkout).toBeDefined();
+    if (!checkout) throw new Error("Source was not acquired");
+    await expect(access(checkout)).rejects.toThrow();
     await harness.pool.query('delete from member where user_id=$1', [user]);
     expect(await harness.runEffect(getCachedGithubRepositoryForOrganization(input))).toBeNull();
   } finally { await harness.stop(); }
-});
+}, 60_000);
