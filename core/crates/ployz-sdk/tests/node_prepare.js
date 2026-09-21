@@ -59,7 +59,7 @@ const sdk = require(dir);
       assert.ok(cancelled, "quiet execution must remain cancellable");
       await assert.rejects(preparation.finished, error => {
         assert.ok(error instanceof sdk.RpcError);
-        assert.equal(error.details.preparation.kind, "failed");
+        assert.equal(error.details.preparation.kind, "cancelled");
         assert.equal(error.details.preparation.stage, "Building");
         assert.deepEqual(error.details.preparation.work, { api: "Unattempted" });
         assert.match(error.message, /cleanup complete/);

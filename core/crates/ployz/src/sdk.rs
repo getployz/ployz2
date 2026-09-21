@@ -281,6 +281,7 @@ impl Session {
             if token.is_cancelled() {
                 return Err(preparation_error(
                     crate::preparation::PreparationError::Cancelled,
+                    true,
                 ));
             }
             let prepared =
@@ -312,7 +313,7 @@ impl Session {
                     },
                 )
                 .await
-                .map_err(preparation_error)?;
+                .map_err(|error| preparation_error(error, token.is_cancelled()))?;
             let (preview, retained) = prepared.into_parts();
             Ok(PreparedDeploy {
                 preview,
@@ -842,7 +843,10 @@ impl Drop for RunningPreparation {
         self.cancel.cancel();
     }
 }
-fn preparation_error(error: crate::preparation::PreparationError) -> RpcError {
+fn preparation_error(
+    error: crate::preparation::PreparationError,
+    cancellation_requested: bool,
+) -> RpcError {
     use crate::compose::ComposeError;
     use crate::preparation::PreparationError;
     let message = error.to_string();
@@ -871,7 +875,13 @@ fn preparation_error(error: crate::preparation::PreparationError) -> RpcError {
                 "message":"Could not read Machine observations during preparation."}}),
         },
         PreparationError::Compose(ComposeError::RemoteBuild { outcome }) => {
-            let details = serde_json::json!({"preparation": outcome});
+            let cancelled = cancellation_requested
+                && matches!(*outcome, crate::compose::RemoteBuildFailure::Failed { .. });
+            let mut details = serde_json::json!({"preparation": outcome});
+            // Failed confirms termination; a cancellation request alone cannot erase Unknown.
+            if cancelled {
+                details["preparation"]["kind"] = serde_json::json!("cancelled");
+            }
             RpcError {
                 code: RpcErrorCode::Internal,
                 message,
@@ -926,13 +936,14 @@ mod preparation_tests {
     }
     #[test]
     fn selection_failure_is_known_and_does_not_expose_provider_details() {
-        let error = preparation_error(crate::preparation::PreparationError::Selection(
-            ConnectError::Remote(RpcError {
+        let error = preparation_error(
+            crate::preparation::PreparationError::Selection(ConnectError::Remote(RpcError {
                 code: RpcErrorCode::Unsupported,
                 message: "provider token=secret".into(),
                 details: serde_json::json!({"rejections":{"builds disabled":2}}),
-            }),
-        ));
+            })),
+            false,
+        );
         assert_eq!(
             error.details.pointer("/preparation/kind").unwrap(),
             "failed"
@@ -949,16 +960,19 @@ mod preparation_tests {
     }
 
     #[test]
-    fn remote_unknown_retains_stage_and_evidence() {
-        let error = preparation_error(crate::preparation::PreparationError::Compose(
-            crate::compose::ComposeError::RemoteBuild {
-                outcome: Box::new(crate::compose::RemoteBuildFailure::Unknown {
-                    stage: ployz_build::Stage::Building,
-                    message: "lost stream".into(),
-                    work: ployz_build::WorkEvidence::default(),
-                }),
-            },
-        ));
+    fn requested_cancellation_preserves_unknown_stage_and_evidence() {
+        let error = preparation_error(
+            crate::preparation::PreparationError::Compose(
+                crate::compose::ComposeError::RemoteBuild {
+                    outcome: Box::new(crate::compose::RemoteBuildFailure::Unknown {
+                        stage: ployz_build::Stage::Building,
+                        message: "lost stream".into(),
+                        work: ployz_build::WorkEvidence::default(),
+                    }),
+                },
+            ),
+            true,
+        );
         assert_eq!(
             error.details.pointer("/preparation/kind").unwrap(),
             "unknown"

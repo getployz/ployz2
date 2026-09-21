@@ -159,7 +159,7 @@ describe("deployment runtime persistence", () => {
     ]);
   });
 
-  it.each(["failed", "unknown"] as const)("preparation %s cleans source and never confirms or applies", async (kind) => {
+  it.each(["failed", "unknown", "cancelled"] as const)("preparation %s cleans source and never confirms or applies", async (kind) => {
     const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
       environmentId, savedStateSnapshotId: targetSavedId,
       triggerOrigin: { origin: "manual", actorId: userId }, message: null,
@@ -205,8 +205,9 @@ describe("deployment runtime persistence", () => {
     expect(checkout).toBeDefined();
     if (checkout) await expect(access(checkout)).rejects.toThrow();
     const [attempt] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
-    expect(attempt?.status).toBe("failed");
+    expect(attempt?.status).toBe(kind === "cancelled" ? "cancelled" : "failed");
     expect(attempt?.failureCode).toBe(`sdk_preparation_${kind}`);
+    expect(attempt?.finishedAt).toBeInstanceOf(Date);
     expect(attempt?.deployPreview).toBeNull();
     expect(attempt?.runtimeProgress?.preparation?.phase).toBe("build");
   });
