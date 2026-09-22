@@ -31,7 +31,19 @@ it("keeps builder messages in their own row, which fails when nothing else expla
   expect(first.steps.map((step) => step.key)).toEqual(["build-output"]);
   expect(first.output).toEqual([{ step: "build-output", stderr: false, text: "ERROR: failed to solve: dockerfile parse error\n" }]);
   expect(progress.event({ Build: { Output: Array.from(Buffer.from("more\n")) } }).steps).toEqual([]);
-  expect(progress.finish("build failed").map((step) => [step.key, step.error])).toEqual([["stage:Building", "build failed"], ["build-output", "build failed"]]);
+  expect(progress.finish("build failed", "Building").map((step) => [step.key, step.error])).toEqual([["build-output", "build failed"]]);
+});
+
+it("blames the stage the engine names, not the cleanup that followed it", () => {
+  const progress = preparationProgressCollector(() => new Date(5_000));
+  progress.event({ Build: { Stage: "Upload" } });
+  progress.event({ Build: { Stage: "Building" } });
+  progress.event({ Build: { Stage: "Cleanup" } });
+  expect(progress.finish("dockerfile parse error", "Building").map((step) => [step.key, step.error])).toEqual([["stage:Building", "dockerfile parse error"]]);
+  const cleanup = preparationProgressCollector(() => new Date(5_000));
+  cleanup.event({ Build: { Stage: "Building" } });
+  cleanup.event({ Build: { Stage: "Cleanup" } });
+  expect(cleanup.finish("builder removal failed", "Cleanup").map((step) => [step.key, step.error])).toEqual([["stage:Cleanup", "builder removal failed"]]);
 });
 
 it("blames the failed BuildKit step rather than the builder output", () => {
@@ -39,7 +51,7 @@ it("blames the failed BuildKit step rather than the builder output", () => {
   progress.event({ Build: { Stage: "Building" } });
   progress.event({ Build: { Output: Array.from(Buffer.from("WARNING: harmless\n")) } });
   progress.event({ Build: { Step: { id: "sha256:a", name: "[1/1] RUN false", started: "2026-09-22T21:09:06Z", completed: "2026-09-22T21:09:07Z", cached: false, error: "exit code: 1" } } });
-  expect(progress.finish("build failed").map((step) => [step.key, step.error])).toEqual([["stage:Building", "build failed"], ["build-output", null]]);
+  expect(progress.finish("build failed", "Building").map((step) => [step.key, step.error])).toEqual([["build-output", null]]);
 });
 
 it("preserves UTF-8 split between builder output events", () => {

@@ -137,6 +137,8 @@ fn emit_status(
 #[derive(Default)]
 pub struct PlainRenderer {
     steps: Mutex<HashMap<String, Seen>>,
+    /// Unfinished line per step and stream; BuildKit records split lines.
+    partial: Mutex<HashMap<(String, bool), String>>,
 }
 
 /// Step number, first start, and last reported completion, so repeated
@@ -171,6 +173,12 @@ impl PlainRenderer {
                 }
                 if step.completed.is_some() && *completed != step.completed {
                     *completed = step.completed.clone();
+                    let mut partial = self.partial.lock().expect("plain renderer lock");
+                    for stderr in [false, true] {
+                        if let Some(rest) = partial.remove(&(step.id.clone(), stderr)) {
+                            lines.push_str(&format!("#{number} {rest}\n"));
+                        }
+                    }
                     if let Some(error) = &step.error {
                         lines.push_str(&format!("#{number} ERROR: {error}\n"));
                     } else if step.cached {
@@ -186,13 +194,23 @@ impl PlainRenderer {
                 }
                 (!lines.is_empty()).then_some(lines)
             }
-            Progress::StepOutput { step, text, .. } => {
+            Progress::StepOutput { step, stderr, text } => {
                 let number = steps.get(step).map_or(0, |seen| seen.number);
-                Some(
+                let mut partial = self.partial.lock().expect("plain renderer lock");
+                let key = (step.clone(), *stderr);
+                let mut text = partial.remove(&key).unwrap_or_default() + text;
+                let rest = match text.rfind('\n') {
+                    Some(end) => text.split_off(end + 1),
+                    None => std::mem::take(&mut text),
+                };
+                if !rest.is_empty() {
+                    partial.insert(key, rest);
+                }
+                (!text.is_empty()).then(|| {
                     text.lines()
                         .map(|line| format!("#{number} {line}\n"))
-                        .collect(),
-                )
+                        .collect()
+                })
             }
             Progress::Output(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
             Progress::Stage(_) | Progress::Timing { .. } | Progress::Target { .. } => None,
@@ -316,6 +334,39 @@ mod tests {
         assert_eq!(
             rendered,
             "#1 [sdk 1/2] RUN cargo build\n#1 hello\nWARNING: not json\n#1 DONE 142.5s\n"
+        );
+    }
+
+    #[test]
+    fn renderer_joins_a_line_split_across_records_and_flushes_it_on_completion() {
+        let renderer = PlainRenderer::default();
+        let output = |text: &str| Progress::StepOutput {
+            step: "sha256:a".into(),
+            stderr: false,
+            text: text.into(),
+        };
+        let started = BuildStep {
+            id: "sha256:a".into(),
+            name: "[1/1] RUN build".into(),
+            started: Some("2026-09-22T21:09:06.000000000Z".into()),
+            ..BuildStep::default()
+        };
+        let done = BuildStep {
+            completed: Some("2026-09-22T21:09:07.000000000Z".into()),
+            ..started.clone()
+        };
+        let rendered: String = [
+            Progress::Step(started),
+            output("hello "),
+            output("world\nunfinished"),
+            Progress::Step(done),
+        ]
+        .iter()
+        .filter_map(|event| renderer.render(event))
+        .collect();
+        assert_eq!(
+            rendered,
+            "#1 [1/1] RUN build\n#1 hello world\n#1 unfinished\n#1 DONE 1.0s\n"
         );
     }
 }

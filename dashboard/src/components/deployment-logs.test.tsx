@@ -30,7 +30,7 @@ it("renders started steps as rows, tails the running step, and opens only the fa
   expect(html).toContain(">   Compiling ployz</pre>");
   expect(html).not.toContain("[32m");
   expect(html).toContain("exit code: 1");
-  expect(html).toContain("bg-destructive/5");
+  expect(html).toContain("border-destructive");
   expect(html).toContain(clock(at(3)));
   expect(html).toContain(">0ms<");
   expect(html).toContain(">1s<");

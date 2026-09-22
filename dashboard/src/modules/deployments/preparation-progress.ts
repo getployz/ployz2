@@ -26,6 +26,7 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
   const decoder = new TextDecoder();
   let current: PreparationProgress = { phase: "selection", serviceId: null, machineId: null, machineName: null, message: null };
   let phase: { key: string; name: string; startedAt: Date; silent: boolean } | null = null;
+  const phaseStarts = new Map<string, { name: string; startedAt: Date }>();
   let builderOutput: Date | null = null;
   let stepFailed = false;
   const end = (error: string | null = null): BuildStepWrite[] => {
@@ -38,6 +39,7 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
   const begin = (key: string, name: string, silent = false): BuildStepWrite[] => {
     const steps = end();
     phase = { key, name, startedAt: now(), silent };
+    phaseStarts.set(key, { name, startedAt: phase.startedAt });
     return silent ? steps : [...steps, { key, name, startedAt: phase.startedAt, completedAt: null, cached: false, error: null }];
   };
   const none = (): PreparationWrites => ({ progress: null, steps: [], output: [] });
@@ -81,13 +83,25 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
       return none();
     },
     /**
-     * Close open steps once preparation ends. A failure with no failed BuildKit
-     * step is explained by the builder's own output, if any, so that row fails.
+     * Close open steps once preparation ends. The engine names the failed
+     * stage, which may have ended before cleanup ran. A failure no BuildKit
+     * step explains lands on the builder's own output row when there is one,
+     * otherwise on the failed stage's row.
      */
-    finish(error: string | null = null): BuildStepWrite[] {
-      const steps = end(error);
+    finish(error: string | null = null, stage: string | null = null): BuildStepWrite[] {
+      const culprit = stage ? `stage:${stage}` : phase?.key ?? null;
+      const explained = stepFailed || builderOutput !== null;
+      const steps = end(phase && phase.key === culprit && !(phase.silent && explained) ? error : null);
+      if (error && !stepFailed) {
+        if (builderOutput) {
+          steps.push({ key: BUILD_OUTPUT_KEY, name: "Build output", startedAt: builderOutput, completedAt: now(), cached: false, error });
+        } else if (culprit && !steps.some((step) => step.key === culprit)) {
+          const start = phaseStarts.get(culprit);
+          if (start) steps.push({ key: culprit, ...start, completedAt: now(), cached: false, error });
+        }
+      }
       if (builderOutput) {
-        steps.push({ key: BUILD_OUTPUT_KEY, name: "Build output", startedAt: builderOutput, completedAt: now(), cached: false, error: error && !stepFailed ? error : null });
+        if (!steps.some((step) => step.key === BUILD_OUTPUT_KEY)) steps.push({ key: BUILD_OUTPUT_KEY, name: "Build output", startedAt: builderOutput, completedAt: now(), cached: false, error: null });
         builderOutput = null;
       }
       return steps;

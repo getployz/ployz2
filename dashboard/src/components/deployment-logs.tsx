@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getDeploymentLogsCollection } from "#/modules/deployments/deployment-log.collection";
 import { progressRowLabel, type DeploymentProgress } from "#/modules/deployments/deployment-progress";
 import { Button } from "#/components/ui/button";
@@ -17,17 +17,23 @@ type BuildLogPage = Awaited<ReturnType<typeof listDeploymentBuildLogServerFn>>;
 export type BuildStepRow = BuildLogPage["steps"][number];
 export type BuildOutputRow = BuildLogPage["output"][number];
 
-/** Polls the step tree while the attempt runs; every poll re-reads all pages, as deployment events do. */
+type BuildLog = { steps: BuildStepRow[]; output: BuildOutputRow[]; finished: boolean };
+
+/** Polls the step tree while the attempt runs, resuming output from the last row already held. */
 function useBuildLog(organizationSlug: string, deploymentId: string, enabled: boolean) {
-  return useQuery<{ steps: BuildStepRow[]; output: BuildOutputRow[]; finished: boolean }>({
-    queryKey: ["deployment-build-log", organizationSlug, deploymentId],
+  const queryClient = useQueryClient();
+  const queryKey = ["deployment-build-log", organizationSlug, deploymentId];
+  return useQuery<BuildLog>({
+    queryKey,
     enabled,
     refetchInterval: (query) => query.state.data?.finished ? false : 2_000,
     queryFn: async ({ signal }) => {
+      const previous = queryClient.getQueryData<BuildLog>(queryKey);
       const steps: BuildStepRow[] = [];
-      const output: BuildOutputRow[] = [];
+      const output: BuildOutputRow[] = [...previous?.output ?? []];
       let finished = false;
-      let afterSequence: string | null | undefined;
+      const last = output.at(-1);
+      let afterSequence: string | null | undefined = last ? String(last.id) : undefined;
       while (afterSequence !== null) {
         const page = await listDeploymentBuildLogServerFn({ data: { organizationSlug, deploymentId, afterSequence, limit: 100 }, signal });
         steps.splice(0, steps.length, ...page.steps);
@@ -97,7 +103,7 @@ export function BuildLogs({ steps, output, hasBuild, finished, now = Date.now() 
       const summary = <>
         <span className="w-16 shrink-0 text-muted-foreground">{clock(step.startedAt ?? step.createdAt)}</span>
         <span className="flex w-4 shrink-0 justify-center">
-          {failed ? <TriangleAlertIcon className="size-3.5 text-destructive" aria-label="Failed" /> : running ? <Spinner className="size-3.5" /> : <CheckIcon className="size-3.5 text-muted-foreground" aria-label="Completed" />}
+          {failed ? <TriangleAlertIcon className="size-4 text-destructive" aria-label="Failed" /> : running ? <Spinner /> : <CheckIcon className="size-4 text-muted-foreground" aria-label="Completed" />}
         </span>
         {stage ? <span className="w-16 shrink-0 truncate text-muted-foreground">{stage}</span> : null}
         <span className={cn("min-w-0 flex-1 truncate", failed && "text-destructive")}>{title}{step.cached ? <span className="ml-2 text-muted-foreground">cached</span> : null}</span>
@@ -105,7 +111,7 @@ export function BuildLogs({ steps, output, hasBuild, finished, now = Date.now() 
       </>;
       const row = "flex items-center gap-3 rounded px-1";
       if (!lines.length && !failed) return <li key={step.id}><div className={row}>{summary}</div></li>;
-      return <li key={step.id} className={cn(failed && "rounded bg-destructive/5")}>
+      return <li key={step.id} className={cn(failed && "border-l-2 border-destructive")}>
         <details open={open} onToggle={(event) => setOpened((previous) => {
           const next = new Set(previous);
           if (event.currentTarget.open) next.add(step.id); else next.delete(step.id);
