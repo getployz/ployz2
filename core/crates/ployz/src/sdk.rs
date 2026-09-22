@@ -276,7 +276,9 @@ impl Session {
         let cancel = self.inner.cancel.child_token();
         let token = cancel.clone();
         let session = Arc::downgrade(&self.inner);
-        let (events, receiver) = tokio::sync::broadcast::channel(128);
+        // Unbounded so retained build output is lossless; the daemon already
+        // bounds what one attempt can produce.
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
         let join = tokio::spawn(async move {
             let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
                 .await
@@ -294,42 +296,9 @@ impl Session {
                 crate::preparation::BuildLocation::Remote(None),
                 &captured.reusable,
                 &token,
-                |mut progress| {
-                    // Build output is lossy: keep the tail of an oversized chunk.
-                    let oversized = match &mut progress {
-                        crate::preparation::Progress::Build(ployz_build::Progress::Output(
-                            bytes,
-                        )) if bytes.len() > 4096 => {
-                            bytes.drain(..bytes.len() - 4096);
-                            true
-                        }
-                        crate::preparation::Progress::Build(
-                            ployz_build::Progress::StepOutput { text, .. },
-                        ) if text.len() > 4096 => {
-                            let mut start = text.len() - 4096;
-                            while !text.is_char_boundary(start) {
-                                start += 1;
-                            }
-                            text.drain(..start);
-                            true
-                        }
-                        crate::preparation::Progress::Platforms(_)
-                        | crate::preparation::Progress::Selected(_)
-                        | crate::preparation::Progress::Build(_)
-                        | crate::preparation::Progress::Transfer
-                        | crate::preparation::Progress::Delivered { .. } => false,
-                    };
-                    if oversized {
-                        let _ = events.send(serde_json::json!({"phase":"truncated", "dropped":1}));
-                    }
+                |progress| {
                     let value =
                         serde_json::to_value(progress).expect("preparation progress serializes");
-                    // Build output is lossy progress, never a backpressure dependency of cleanup.
-                    let value = if value.to_string().len() > 16_384 {
-                        serde_json::json!({"phase":"truncated", "dropped":1})
-                    } else {
-                        value
-                    };
                     let _ = events.send(value);
                 },
             )
@@ -720,7 +689,7 @@ fn invalid_argument(message: String) -> RpcError {
 /// Cancellable preparation with bounded, lossy progress independent of completion.
 pub struct RunningPreparation {
     cancel: CancellationToken,
-    events: Mutex<tokio::sync::broadcast::Receiver<Value>>,
+    events: Mutex<tokio::sync::mpsc::UnboundedReceiver<Value>>,
     join: Mutex<Option<tokio::task::JoinHandle<Result<PreparedDeploy, RpcError>>>>,
 }
 impl RunningPreparation {
@@ -728,15 +697,9 @@ impl RunningPreparation {
     pub fn abort(&self) {
         self.cancel.cancel();
     }
-    /// Read one progress frame; slow consumers receive explicit truncation evidence.
+    /// Read one progress frame; every frame is retained until read.
     pub async fn next(&self) -> Option<Value> {
-        match self.events.lock().await.recv().await {
-            Ok(value) => Some(value),
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
-                Some(serde_json::json!({"phase":"truncated", "dropped":dropped}))
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
-        }
+        self.events.lock().await.recv().await
     }
     /// Await preparation without draining or blocking on progress consumption.
     ///
@@ -828,8 +791,8 @@ fn preparation_error(
 mod preparation_tests {
     use super::*;
     #[tokio::test]
-    async fn slow_preparation_consumer_is_bounded_and_cannot_block_completion() {
-        let (events, receiver) = tokio::sync::broadcast::channel(128);
+    async fn slow_preparation_consumer_loses_nothing_and_cannot_block_completion() {
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
         let join = tokio::spawn(async move {
             for n in 0..1000 {
                 events.send(serde_json::json!({"n":n})).unwrap();
@@ -845,15 +808,11 @@ mod preparation_tests {
             .await
             .unwrap();
         assert_eq!(result.unwrap_err().message, "fixture failure");
-        assert_eq!(
-            running.next().await.unwrap().get("phase").unwrap(),
-            "truncated"
-        );
         let mut count = 0;
         while running.next().await.is_some() {
             count += 1;
         }
-        assert_eq!(count, 128);
+        assert_eq!(count, 1000);
     }
     #[test]
     fn selection_failure_is_known_and_does_not_expose_provider_details() {

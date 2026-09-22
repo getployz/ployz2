@@ -97,8 +97,7 @@ export type PreparationEvent =
   | { Selected: { machine: import("./generated/payloads").Machine; rejections: string[] } }
   | { Build: { Stage: string } | { Output: number[] } | { Step: BuildStep } | { StepOutput: { step: string; stderr: boolean; text: string } } | { Timing: unknown } | { Target: unknown } }
   | "Transfer"
-  | { Delivered: { image: string; machine_id: MachineId } }
-  | { phase: "truncated"; dropped: number };
+  | { Delivered: { image: string; machine_id: MachineId } };
 
 export type RunningPreparation = AsyncIterable<PreparationEvent> & {
   abort(): void;

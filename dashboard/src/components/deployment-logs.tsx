@@ -6,7 +6,7 @@ import { getDeploymentLogsCollection } from "#/modules/deployments/deployment-lo
 import { progressRowLabel, type DeploymentProgress } from "#/modules/deployments/deployment-progress";
 import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
-import { CheckIcon, CircleIcon, XIcon } from "lucide-react";
+import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { listDeploymentBuildLogServerFn } from "#/modules/deployments/deployment.functions";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
@@ -48,8 +48,8 @@ export function splitStepName(name: string): { stage: string | null; title: stri
 
 export function formatDuration(ms: number): string {
   if (ms < 1_000) return `${Math.max(0, Math.round(ms))}ms`;
-  if (ms < 60_000) return `${(ms / 1_000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1_000)}s`;
+  if (ms < 60_000) return `${Math.floor(ms / 1_000)}s`;
+  return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1_000)}s`;
 }
 
 function useNow(active: boolean) {
@@ -62,41 +62,60 @@ function useNow(active: boolean) {
   return now;
 }
 
-const clock = (date: Date) => date.toISOString().slice(11, 19);
+export const clock = (date: Date) => date.toLocaleTimeString(undefined, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
-export function BuildLogs({ steps, output, hasBuild, now = Date.now() }: {
-  steps: readonly BuildStepRow[]; output: readonly BuildOutputRow[]; hasBuild: boolean; now?: number;
+/** Terminal colour and cursor sequences carry nothing the log needs. */
+const ESC = String.fromCharCode(27);
+const BEL = String.fromCharCode(7);
+const ansi = new RegExp(`${ESC}(?:\\[[0-?]*[ -/]*[@-~]|\\][^${BEL}]*(?:${BEL}|${ESC}\\\\)|[@-Z\\\\-_])`, "g");
+export const stripAnsi = (text: string) => text.replaceAll(ansi, "");
+
+const lastLine = (rows: readonly BuildOutputRow[]) => {
+  const lines = stripAnsi(rows.map((row) => row.text).join("")).split("\n").filter((line) => line.trim());
+  return lines.at(-1) ?? null;
+};
+
+export function BuildLogs({ steps, output, hasBuild, finished, now = Date.now() }: {
+  steps: readonly BuildStepRow[]; output: readonly BuildOutputRow[]; hasBuild: boolean; finished: boolean; now?: number;
 }) {
-  if (!steps.length) return <p className="text-muted-foreground">{hasBuild ? "No retained build output for this deployment." : "This deployment uses prebuilt images. No build logs were produced."}</p>;
+  const [opened, setOpened] = useState<ReadonlySet<number>>(new Set());
+  const started = steps.filter((step) => step.startedAt !== null);
+  if (!started.length) {
+    return <p className="text-muted-foreground">{!hasBuild ? "This deployment uses prebuilt images. No build logs were produced." : finished ? "No retained build output for this deployment." : "Waiting for the build to start"}</p>;
+  }
   const outputByStep = new Map<number, BuildOutputRow[]>();
   for (const row of output) outputByStep.set(row.stepId, [...outputByStep.get(row.stepId) ?? [], row]);
   return <ol>
-    {steps.map((step) => {
+    {started.map((step) => {
       const { stage, title } = splitStepName(step.name);
       const lines = outputByStep.get(step.id) ?? [];
-      const running = step.startedAt !== null && step.completedAt === null && !step.error;
-      const elapsed = step.startedAt ? (step.completedAt?.getTime() ?? now) - step.startedAt.getTime() : null;
+      const failed = step.error !== null;
+      const running = !failed && step.completedAt === null;
+      const open = failed || opened.has(step.id);
+      const elapsed = step.startedAt ? (step.completedAt?.getTime() ?? now) - step.startedAt.getTime() : 0;
+      const tail = running && !open ? lastLine(lines) : null;
       const summary = <>
         <span className="w-16 shrink-0 text-muted-foreground">{clock(step.startedAt ?? step.createdAt)}</span>
         <span className="flex w-4 shrink-0 justify-center">
-          {step.error ? <XIcon className="size-3.5 text-destructive" aria-label="Failed" /> : running ? <Spinner className="size-3.5" /> : step.completedAt ? <CheckIcon className="size-3.5 text-muted-foreground" aria-label="Completed" /> : <CircleIcon className="size-3 text-muted-foreground/50" aria-label="Pending" />}
+          {failed ? <TriangleAlertIcon className="size-3.5 text-destructive" aria-label="Failed" /> : running ? <Spinner className="size-3.5" /> : <CheckIcon className="size-3.5 text-muted-foreground" aria-label="Completed" />}
         </span>
         {stage ? <span className="w-16 shrink-0 truncate text-muted-foreground">{stage}</span> : null}
-        <span className="min-w-0 flex-1 truncate">{title}{step.cached ? <span className="ml-2 text-muted-foreground">cached</span> : null}</span>
-        {elapsed !== null ? <span className="shrink-0 text-muted-foreground">{formatDuration(elapsed)}</span> : null}
-      </>;
-      const detail = <>
-        {lines.length ? <pre className="whitespace-pre-wrap break-words pl-24 text-muted-foreground">{lines.map((row) => row.text).join("")}</pre> : null}
-        {step.error ? <p className="whitespace-pre-wrap break-words pl-24 text-destructive">{step.error}</p> : null}
+        <span className={cn("min-w-0 flex-1 truncate", failed && "text-destructive")}>{title}{step.cached ? <span className="ml-2 text-muted-foreground">cached</span> : null}</span>
+        <span className="shrink-0 text-muted-foreground">{formatDuration(elapsed)}</span>
       </>;
       const row = "flex items-center gap-3 rounded px-1";
-      return <li key={step.id}>
-        {lines.length || step.error
-          ? <details open={running || step.error !== null}>
-              <summary className={cn(row, "cursor-pointer list-none hover:bg-muted/40 [&::-webkit-details-marker]:hidden")}>{summary}</summary>
-              {detail}
-            </details>
-          : <div className={row}>{summary}</div>}
+      if (!lines.length && !failed) return <li key={step.id}><div className={row}>{summary}</div></li>;
+      return <li key={step.id} className={cn(failed && "rounded bg-destructive/5")}>
+        <details open={open} onToggle={(event) => setOpened((previous) => {
+          const next = new Set(previous);
+          if (event.currentTarget.open) next.add(step.id); else next.delete(step.id);
+          return next;
+        })}>
+          <summary className={cn(row, "cursor-pointer list-none hover:bg-muted/40 [&::-webkit-details-marker]:hidden")}>{summary}</summary>
+          {lines.length ? <pre className="whitespace-pre-wrap break-words pl-24">{lines.map((line) => <span key={line.id} className={line.stderr ? "text-foreground" : "text-muted-foreground"}>{stripAnsi(line.text)}</span>)}</pre> : null}
+          {step.error ? <p className="whitespace-pre-wrap break-words pl-24 text-destructive">{step.error}</p> : null}
+        </details>
+        {tail ? <pre className="truncate pl-24 text-muted-foreground">{tail}</pre> : null}
       </li>;
     })}
   </ol>;
@@ -132,7 +151,7 @@ export function DeploymentLogs({ organizationSlug, deploymentId, serviceId, hasB
     {request.isError ? <p role="alert">Could not load deployment logs. <Button variant="ghost" size="sm" disabled={request.isFetching} onClick={() => void collection.utils.refetch()}>Retry</Button></p> : null}
     {build.isError ? <p role="alert">Could not load build logs. <Button variant="ghost" size="sm" disabled={build.isFetching} onClick={() => void build.refetch()}>Retry</Button></p> : null}
     {tab === "Deploy logs" ? <ContainerLogs selection={{ organizationSlug, deploymentId, serviceId }} lifecycle={logs} /> : <BuildLogViewer key={`${deploymentId}:${serviceId ?? "all"}`}>
-      {build.isPending ? <p>Loading logs…</p> : <BuildLogs steps={build.data?.steps ?? []} output={build.data?.output ?? []} hasBuild={hasBuild} now={now} />}
+      {build.isPending ? <p>Loading logs…</p> : <BuildLogs steps={build.data?.steps ?? []} output={build.data?.output ?? []} hasBuild={hasBuild} finished={build.data?.finished ?? true} now={now} />}
     </BuildLogViewer>}
   </div>;
 }

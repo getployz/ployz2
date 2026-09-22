@@ -97,9 +97,15 @@ fn emit_line(line: &[u8], progress: &dyn Fn(Progress)) {
 /// Renders structured progress the way `--progress=plain` would, for terminals.
 #[derive(Default)]
 pub struct PlainRenderer {
-    /// Step number, first start, and last reported completion, so repeated
-    /// reports of one step print each transition once.
-    steps: Mutex<HashMap<String, (usize, Option<String>, Option<String>)>>,
+    steps: Mutex<HashMap<String, Seen>>,
+}
+
+/// Step number, first start, and last reported completion, so repeated
+/// reports of one step print each transition once.
+struct Seen {
+    number: usize,
+    started: Option<String>,
+    completed: Option<String>,
 }
 
 impl PlainRenderer {
@@ -110,9 +116,15 @@ impl PlainRenderer {
         match event {
             Progress::Step(step) => {
                 let count = steps.len() + 1;
-                let (number, started, completed) = steps
-                    .entry(step.id.clone())
-                    .or_insert_with(|| (count, None, None));
+                let Seen {
+                    number,
+                    started,
+                    completed,
+                } = steps.entry(step.id.clone()).or_insert_with(|| Seen {
+                    number: count,
+                    started: None,
+                    completed: None,
+                });
                 let mut lines = String::new();
                 if started.is_none() && step.started.is_some() {
                     *started = step.started.clone();
@@ -136,7 +148,7 @@ impl PlainRenderer {
                 (!lines.is_empty()).then_some(lines)
             }
             Progress::StepOutput { step, text, .. } => {
-                let number = steps.get(step).map_or(0, |(number, ..)| *number);
+                let number = steps.get(step).map_or(0, |seen| seen.number);
                 Some(
                     text.lines()
                         .map(|line| format!("#{number} {line}\n"))
