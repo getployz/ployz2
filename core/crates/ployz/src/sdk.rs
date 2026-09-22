@@ -287,37 +287,54 @@ impl Session {
                     true,
                 ));
             }
-            let prepared =
-                crate::preparation::prepare(
-                    &mut client,
-                    captured.candidate,
-                    captured.build,
-                    crate::preparation::BuildLocation::Remote(None),
-                    &captured.reusable,
-                    &token,
-                    |mut progress| {
-                        if let crate::preparation::Progress::Build(ployz_build::Progress::Output(
+            let prepared = crate::preparation::prepare(
+                &mut client,
+                captured.candidate,
+                captured.build,
+                crate::preparation::BuildLocation::Remote(None),
+                &captured.reusable,
+                &token,
+                |mut progress| {
+                    // Build output is lossy: keep the tail of an oversized chunk.
+                    let oversized = match &mut progress {
+                        crate::preparation::Progress::Build(ployz_build::Progress::Output(
                             bytes,
-                        )) = &mut progress
-                            && bytes.len() > 4096
-                        {
+                        )) if bytes.len() > 4096 => {
                             bytes.drain(..bytes.len() - 4096);
-                            let _ =
-                                events.send(serde_json::json!({"phase":"truncated", "dropped":1}));
+                            true
                         }
-                        let value = serde_json::to_value(progress)
-                            .expect("preparation progress serializes");
-                        // Build output is lossy progress, never a backpressure dependency of cleanup.
-                        let value = if value.to_string().len() > 16_384 {
-                            serde_json::json!({"phase":"truncated", "dropped":1})
-                        } else {
-                            value
-                        };
-                        let _ = events.send(value);
-                    },
-                )
-                .await
-                .map_err(|error| preparation_error(error, token.is_cancelled()))?;
+                        crate::preparation::Progress::Build(
+                            ployz_build::Progress::StepOutput { text, .. },
+                        ) if text.len() > 4096 => {
+                            let mut start = text.len() - 4096;
+                            while !text.is_char_boundary(start) {
+                                start += 1;
+                            }
+                            text.drain(..start);
+                            true
+                        }
+                        crate::preparation::Progress::Platforms(_)
+                        | crate::preparation::Progress::Selected(_)
+                        | crate::preparation::Progress::Build(_)
+                        | crate::preparation::Progress::Transfer
+                        | crate::preparation::Progress::Delivered { .. } => false,
+                    };
+                    if oversized {
+                        let _ = events.send(serde_json::json!({"phase":"truncated", "dropped":1}));
+                    }
+                    let value =
+                        serde_json::to_value(progress).expect("preparation progress serializes");
+                    // Build output is lossy progress, never a backpressure dependency of cleanup.
+                    let value = if value.to_string().len() > 16_384 {
+                        serde_json::json!({"phase":"truncated", "dropped":1})
+                    } else {
+                        value
+                    };
+                    let _ = events.send(value);
+                },
+            )
+            .await
+            .map_err(|error| preparation_error(error, token.is_cancelled()))?;
             let (preview, retained) = prepared.into_parts();
             let build_receipts = preparation::receipts(&captured.fingerprints, &retained);
             Ok(PreparedDeploy {

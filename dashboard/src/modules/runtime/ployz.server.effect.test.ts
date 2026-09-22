@@ -275,6 +275,7 @@ it.effect("distinguishes rejected preparation input from a disconnected preparat
 it.effect("retains sanitized terminal diagnosis when the SDK reports dropped output", () => Effect.gen(function* () {
   const { preparationProgressCollector } = yield* Effect.promise(() => import("#/modules/deployments/preparation-progress"));
   const progress = preparationProgressCollector();
+  const dropped: ReturnType<typeof progress.event>["output"] = [];
   const layer = makePloyzLayer({ connect: async () => asTestDouble<Client>()({
     prepare: () => {
       const finished = Promise.reject({ details: { preparation: {
@@ -290,9 +291,9 @@ it.effect("retains sanitized terminal diagnosis when the SDK reports dropped out
   }) });
   const failure = yield* Effect.scoped(Effect.gen(function* () {
     const session = yield* (yield* Ployz).connect(options);
-    return yield* session.prepare({ deployment: { projectName: "test", snapshots: [asTestDouble<Parameters<Client["prepare"]>[0]["deployment"]["snapshots"][number]>()({ resolvedEnv: { SECRET: "deployment-private-value" } })] }, sources: {} }, async (event) => { progress.event(event); }, new AbortController().signal);
+    return yield* session.prepare({ deployment: { projectName: "test", snapshots: [asTestDouble<Parameters<Client["prepare"]>[0]["deployment"]["snapshots"][number]>()({ resolvedEnv: { SECRET: "deployment-private-value" } })] }, sources: {} }, async (event) => { dropped.push(...progress.event(event).output.filter((row) => row.stderr)); }, new AbortController().signal);
   })).pipe(Effect.provide(layer), Effect.flip);
-  assert.isTrue(progress.current().outputTruncated);
+  assert.deepEqual(dropped, [{ step: "stage:Building", stderr: true, text: "… output dropped\n" }]);
   assert.instanceOf(failure, PloyzPreparationError);
   assert.include(failure.message, "executor exited with code 42");
   for (const secret of ["hidden", "ployz1:capability", "deployment-private-value"]) assert.notInclude(failure.message, secret);
