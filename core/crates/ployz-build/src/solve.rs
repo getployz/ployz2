@@ -46,6 +46,9 @@ struct VertexLog {
 #[derive(Default)]
 pub(crate) struct SolveParser {
     pending: Vec<u8>,
+    /// Trailing bytes of an incomplete UTF-8 sequence per step and stream;
+    /// BuildKit splits log records at arbitrary byte offsets.
+    partial: HashMap<(String, bool), Vec<u8>>,
 }
 
 impl SolveParser {
@@ -53,7 +56,7 @@ impl SolveParser {
         self.pending.extend_from_slice(bytes);
         while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
             let line = self.pending.drain(..=end).collect::<Vec<u8>>();
-            emit_line(&line, progress);
+            self.emit_line(&line, progress);
         }
         if self.pending.len() > MAX_LINE {
             progress(Progress::Output(std::mem::take(&mut self.pending)));
@@ -64,14 +67,40 @@ impl SolveParser {
         if !self.pending.is_empty() {
             progress(Progress::Output(std::mem::take(&mut self.pending)));
         }
+        for ((step, stderr), bytes) in std::mem::take(&mut self.partial) {
+            progress(Progress::StepOutput {
+                step,
+                stderr,
+                text: String::from_utf8_lossy(&bytes).into_owned(),
+            });
+        }
+    }
+
+    fn emit_line(&mut self, line: &[u8], progress: &dyn Fn(Progress)) {
+        let Ok(status) = serde_json::from_slice::<SolveStatus>(line) else {
+            progress(Progress::Output(line.to_vec()));
+            return;
+        };
+        emit_status(status, &mut self.partial, progress);
     }
 }
 
-fn emit_line(line: &[u8], progress: &dyn Fn(Progress)) {
-    let Ok(status) = serde_json::from_slice::<SolveStatus>(line) else {
-        progress(Progress::Output(line.to_vec()));
-        return;
+/// Text that is complete so far; an unfinished trailing sequence is carried.
+fn decode_carrying(mut bytes: Vec<u8>) -> (String, Vec<u8>) {
+    let split = match std::str::from_utf8(&bytes) {
+        Ok(_) => bytes.len(),
+        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+        Err(_) => bytes.len(),
     };
+    let tail = bytes.split_off(split);
+    (String::from_utf8_lossy(&bytes).into_owned(), tail)
+}
+
+fn emit_status(
+    status: SolveStatus,
+    partial: &mut HashMap<(String, bool), Vec<u8>>,
+    progress: &dyn Fn(Progress),
+) {
     for vertex in status.vertexes {
         progress(Progress::Step(BuildStep {
             id: vertex.digest,
@@ -83,14 +112,24 @@ fn emit_line(line: &[u8], progress: &dyn Fn(Progress)) {
         }));
     }
     for log in status.logs {
-        let data = base64::engine::general_purpose::STANDARD
-            .decode(&log.data)
-            .unwrap_or_default();
-        progress(Progress::StepOutput {
-            step: log.vertex,
-            stderr: log.stream == 2,
-            text: String::from_utf8_lossy(&data).into_owned(),
-        });
+        let key = (log.vertex, log.stream == 2);
+        let mut data = partial.remove(&key).unwrap_or_default();
+        data.extend(
+            base64::engine::general_purpose::STANDARD
+                .decode(&log.data)
+                .unwrap_or_default(),
+        );
+        let (text, tail) = decode_carrying(data);
+        if !tail.is_empty() {
+            partial.insert(key.clone(), tail);
+        }
+        if !text.is_empty() {
+            progress(Progress::StepOutput {
+                step: key.0,
+                stderr: key.1,
+                text,
+            });
+        }
     }
 }
 
@@ -202,6 +241,37 @@ fn parse_rfc3339(value: &str) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multibyte_characters_split_across_log_records_are_joined() {
+        let mut parser = SolveParser::default();
+        let events = Mutex::new(Vec::new());
+        let progress = |event| events.lock().unwrap().push(event);
+        let record = |data: &[u8]| {
+            format!(
+                "{{\"logs\":[{{\"vertex\":\"sha256:a\",\"stream\":1,\"data\":\"{}\"}}]}}\n",
+                base64::engine::general_purpose::STANDARD.encode(data)
+            )
+        };
+        let (head, tail) = "error: 🐴\n".as_bytes().split_at(9);
+        parser.feed(record(head).as_bytes(), &progress);
+        parser.feed(record(tail).as_bytes(), &progress);
+        parser.finish(&progress);
+        let text: String = events
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| match event {
+                Progress::StepOutput { text, .. } => Some(text),
+                Progress::Step(_)
+                | Progress::Output(_)
+                | Progress::Stage(_)
+                | Progress::Timing { .. }
+                | Progress::Target { .. } => None,
+            })
+            .collect();
+        assert_eq!(text, "error: 🐴\n");
+    }
 
     #[test]
     fn parses_vertexes_and_logs_and_keeps_other_lines_as_output() {
