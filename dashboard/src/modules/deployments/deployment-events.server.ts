@@ -45,18 +45,26 @@ export const persistBuildLog = Effect.fn("Deployments.persistBuildLog")(function
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const target = [environmentDeploymentBuildStep.deploymentId, environmentDeploymentBuildStep.key];
-    for (const { key, ...state } of writes.steps) {
-      yield* drizzle.insert(environmentDeploymentBuildStep).values({ deploymentId, key, ...state })
-        .onConflictDoUpdate({ target, set: { ...state, updatedAt: new Date() } });
+    const table = environmentDeploymentBuildStep;
+    const target = [table.deploymentId, table.build, table.key];
+    const ids = new Map<string, number>();
+    if (writes.steps.length) {
+      const excluded = (column: { name: string }) => sql.raw(`excluded."${column.name}"`);
+      const upserted = yield* drizzle.insert(table).values(writes.steps.map((step) => ({ deploymentId, ...step })))
+        .onConflictDoUpdate({ target, set: { name: excluded(table.name), startedAt: excluded(table.startedAt), completedAt: excluded(table.completedAt), cached: excluded(table.cached), error: excluded(table.error), updatedAt: new Date() } })
+        .returning({ id: table.id, build: table.build, key: table.key });
+      for (const step of upserted) ids.set(`${step.build}:${step.key}`, step.id);
     }
     if (!writes.output.length) return;
-    const keys = [...new Set(writes.output.map((row) => row.step))];
-    yield* drizzle.insert(environmentDeploymentBuildStep).values(keys.map((key) => ({ deploymentId, key, name: key }))).onConflictDoNothing({ target });
-    const ids = new Map((yield* drizzle.select({ id: environmentDeploymentBuildStep.id, key: environmentDeploymentBuildStep.key }).from(environmentDeploymentBuildStep)
-      .where(and(eq(environmentDeploymentBuildStep.deploymentId, deploymentId), inArray(environmentDeploymentBuildStep.key, keys)))).map((step) => [step.key, step.id]));
+    const unknown = new Map(writes.output.filter((row) => !ids.has(`${row.build}:${row.step}`)).map((row) => [`${row.build}:${row.step}`, row]));
+    if (unknown.size) {
+      yield* drizzle.insert(table).values([...unknown.values()].map((row) => ({ deploymentId, build: row.build, key: row.step, name: row.step }))).onConflictDoNothing({ target });
+      const found = yield* drizzle.select({ id: table.id, build: table.build, key: table.key }).from(table)
+        .where(and(eq(table.deploymentId, deploymentId), inArray(table.key, [...unknown.values()].map((row) => row.step))));
+      for (const step of found) ids.set(`${step.build}:${step.key}`, step.id);
+    }
     yield* drizzle.insert(environmentDeploymentBuildOutput).values(writes.output.flatMap((row) => {
-      const stepId = ids.get(row.step);
+      const stepId = ids.get(`${row.build}:${row.step}`);
       return stepId === undefined ? [] : [{ deploymentId, stepId, stderr: row.stderr, text: row.text }];
     }));
   }));

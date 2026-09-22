@@ -6,7 +6,7 @@ import { BuildLogs, clock, formatDuration, splitStepName, stripAnsi, type BuildO
 const deploymentId = "8f79e99b-cd08-4e9c-af96-f3fed313acc5";
 const at = (seconds: number) => new Date(Date.UTC(2026, 8, 22, 21, 9, seconds));
 const step = (id: number, name: string, extra: Partial<BuildStepRow> = {}): BuildStepRow => ({
-  id, deploymentId, key: `sha256:${id}`, name, startedAt: at(id), completedAt: null, cached: false, error: null, createdAt: at(id), updatedAt: at(id), ...extra,
+  id, deploymentId, build: 1, key: `sha256:${id}`, name, startedAt: at(id), completedAt: null, cached: false, error: null, createdAt: at(id), updatedAt: at(id), ...extra,
 });
 const line = (id: number, stepId: number, text: string, stderr = false): BuildOutputRow => ({ id, deploymentId, stepId, stderr, text, createdAt: at(id) });
 
@@ -35,6 +35,15 @@ it("renders started steps as rows, tails the running step, and opens only the fa
   expect(html).toContain(">0ms<");
   expect(html).toContain(">1s<");
   expect(html).toContain(">6s<");
+});
+
+it("heads each BuildKit run only when the attempt ran more than one", () => {
+  const heading = (id: number, build: number, name: string) => step(id, name, { build, key: "stage:Building", completedAt: at(id) });
+  const one = renderToStaticMarkup(createElement(BuildLogs, { hasBuild: true, finished: true, steps: [heading(1, 1, "web, api"), step(2, "[sdk 1/1] RUN true", { completedAt: at(2) })], output: [] }));
+  expect(one).not.toContain("Building web, api");
+  const two = renderToStaticMarkup(createElement(BuildLogs, { hasBuild: true, finished: true, steps: [heading(1, 1, "web"), step(2, "[1/1] RUN true", { completedAt: at(2) }), heading(3, 2, "worker"), step(4, "[1/1] RUN true", { build: 2, completedAt: at(4) })], output: [] }));
+  expect(two).toContain("Building web");
+  expect(two).toContain("Building worker");
 });
 
 it("names the empty states", () => {

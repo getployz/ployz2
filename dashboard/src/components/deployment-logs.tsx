@@ -8,6 +8,7 @@ import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { listDeploymentBuildLogServerFn } from "#/modules/deployments/deployment.functions";
+import { BUILDING_KEY } from "#/modules/deployments/preparation-progress";
 import { ContainerLogs } from "./container-logs";
 import type { ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { BuildLogViewer } from "./log-scroll";
@@ -95,9 +96,14 @@ export function BuildLogs({ steps, output, hasBuild, finished, now = Date.now() 
     const lines = outputByStep.get(row.stepId);
     if (lines) lines.push(row); else outputByStep.set(row.stepId, [row]);
   }
+  // One attempt may run BuildKit several times; the run's heading matters only then, or when it failed.
+  const runs = new Set(started.map((step) => step.build).filter((build) => build > 0)).size;
+  const shown = started.filter((step) => step.key !== BUILDING_KEY || runs > 1 || step.error !== null);
   return <ol>
-    {started.map((step) => <StepRow key={step.id} step={step} lines={outputByStep.get(step.id) ?? []} now={now} open={toggled.get(step.id)}
-      onToggle={(open) => setToggled((previous) => previous.get(step.id) === open ? previous : new Map(previous).set(step.id, open))} />)}
+    {shown.map((step) => step.key === BUILDING_KEY && step.error === null
+      ? <li key={step.id} className="mt-2 flex items-center gap-3 px-1 font-medium"><span className="w-16 shrink-0" /><span className="w-4 shrink-0" />Building {step.name}</li>
+      : <StepRow key={step.id} step={step} lines={outputByStep.get(step.id) ?? []} now={now} open={toggled.get(step.id)}
+          onToggle={(open) => setToggled((previous) => previous.get(step.id) === open ? previous : new Map(previous).set(step.id, open))} />)}
   </ol>;
 }
 

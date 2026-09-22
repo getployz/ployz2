@@ -12,6 +12,9 @@ use crate::{BuildStep, Progress};
 /// output. A first vertex report can list every step of a large graph.
 const MAX_LINE: usize = 16 * 1024 * 1024;
 
+/// Longest unterminated step output held back before it is passed on.
+const MAX_PARTIAL: usize = 64 * 1024;
+
 #[derive(Deserialize)]
 struct SolveStatus {
     #[serde(default)]
@@ -81,6 +84,36 @@ impl SolveParser {
             progress(Progress::Output(line.to_vec()));
             return;
         };
+        // Logs first: a status can carry a step's final record and its completion.
+        for log in status.logs {
+            let key = StreamKey {
+                step: log.vertex,
+                stderr: log.stream == 2,
+            };
+            let mut bytes = self.partial.remove(&key).unwrap_or_default();
+            bytes.extend(
+                base64::engine::general_purpose::STANDARD
+                    .decode(&log.data)
+                    .unwrap_or_default(),
+            );
+            let end = bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map(|end| end + 1);
+            // A stream with no newline (a progress bar, a minified artifact)
+            // must not be held forever; pass it on at a character boundary.
+            let end = end.or_else(|| (bytes.len() > MAX_PARTIAL).then(|| char_boundary(&bytes)));
+            let rest = match end {
+                Some(end) => bytes.split_off(end),
+                None => std::mem::take(&mut bytes),
+            };
+            if !bytes.is_empty() {
+                emit_output(key.clone(), &bytes, progress);
+            }
+            if !rest.is_empty() {
+                self.partial.insert(key, rest);
+            }
+        }
         for vertex in status.vertexes {
             let completed = vertex.completed.is_some();
             let step = BuildStep {
@@ -104,28 +137,15 @@ impl SolveParser {
             }
             progress(Progress::Step(step));
         }
-        for log in status.logs {
-            let key = StreamKey {
-                step: log.vertex,
-                stderr: log.stream == 2,
-            };
-            let mut bytes = self.partial.remove(&key).unwrap_or_default();
-            bytes.extend(
-                base64::engine::general_purpose::STANDARD
-                    .decode(&log.data)
-                    .unwrap_or_default(),
-            );
-            let rest = match bytes.iter().rposition(|byte| *byte == b'\n') {
-                Some(end) => bytes.split_off(end + 1),
-                None => std::mem::take(&mut bytes),
-            };
-            if !bytes.is_empty() {
-                emit_output(key.clone(), &bytes, progress);
-            }
-            if !rest.is_empty() {
-                self.partial.insert(key, rest);
-            }
-        }
+    }
+}
+
+/// Length of the longest prefix that ends on a UTF-8 character boundary.
+fn char_boundary(bytes: &[u8]) -> usize {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => bytes.len(),
+        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+        Err(_) => bytes.len(),
     }
 }
 
@@ -260,6 +280,31 @@ mod tests {
             texts(&events),
             ["hello world\n", "error: 🐴\n", "unfinished"]
         );
+    }
+
+    #[test]
+    fn a_stream_without_newlines_is_passed_on_in_bounded_chunks() {
+        let half = "x".repeat(MAX_PARTIAL / 2 + 10);
+        let mut parser = SolveParser::default();
+        let events = Mutex::new(Vec::new());
+        let progress = |event| events.lock().unwrap().push(event);
+        parser.feed(record(half.as_bytes()).as_bytes(), &progress);
+        assert!(events.lock().unwrap().is_empty(), "held until the bound");
+        parser.feed(record(half.as_bytes()).as_bytes(), &progress);
+        // Passed on before the build ends, in one piece.
+        assert_eq!(texts(&events.lock().unwrap()), [half.repeat(2)]);
+    }
+
+    #[test]
+    fn a_final_record_in_the_completing_status_still_forms_a_whole_line() {
+        let status = concat!(
+            r#"{"logs":[{"vertex":"sha256:a","stream":1,"data":"aGVs"}]}"#,
+            "\n",
+            r#"{"vertexes":[{"digest":"sha256:a","name":"[1/1] RUN x","started":"2026-09-22T21:09:06Z","completed":"2026-09-22T21:09:07Z"}],"logs":[{"vertex":"sha256:a","stream":1,"data":"bG8K"}]}"#,
+            "\n",
+        );
+        let events = collect(|parser, progress| parser.feed(status.as_bytes(), progress));
+        assert_eq!(texts(&events), ["hello\n"]);
     }
 
     #[test]

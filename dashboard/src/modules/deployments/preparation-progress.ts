@@ -2,8 +2,8 @@ import type { PreparationEvent } from "@ployz/sdk";
 import type { PreparationProgress } from "./deployment-progress";
 
 /** A build step as the engine reports it: a BuildKit vertex or a Ployz-owned phase. */
-export type BuildStepWrite = { key: string; name: string; startedAt: Date | null; completedAt: Date | null; cached: boolean; error: string | null };
-export type BuildOutputWrite = { step: string; stderr: boolean; text: string };
+export type BuildStepWrite = { build: number; key: string; name: string; startedAt: Date | null; completedAt: Date | null; cached: boolean; error: string | null };
+export type BuildOutputWrite = { build: number; step: string; stderr: boolean; text: string };
 export type PreparationWrites = { progress: PreparationProgress | null; steps: BuildStepWrite[]; output: BuildOutputWrite[] };
 
 /** Builder messages outside any BuildKit step, such as a Dockerfile parse error. */
@@ -14,58 +14,67 @@ const stageNames = new Map([
   ["Building", "Building"], ["Output", "Loading images"], ["Cleanup", "Cleaning up"],
 ]);
 const stageName = (stage: string) => stageNames.get(stage) ?? stage;
-// Building is the BuildKit steps themselves; Cleanup is noise unless it fails.
-const silentStages = new Set(["Building", "Cleanup"]);
+// Cleanup is noise unless it fails. Building heads one BuildKit run, named by its targets.
+const silentStages = new Set(["Cleanup"]);
+export const BUILDING_KEY = "stage:Building";
 
 /**
  * Which step a failed attempt is pinned on: the failed BuildKit step already
- * says it; builder messages explain a build failure; otherwise the stage the
- * engine names, falling back to the open phase.
+ * says it; builder messages explain a failure the engine pins on Building;
+ * otherwise the stage the engine names, falling back to the open phase.
  */
-export function blameFor(input: { error: string | null; stage: string | null; stepFailed: boolean; hasBuilderOutput: boolean; openKey: string | null }): string | null {
+function blameFor(input: { error: string | null; stage: string | null; stepFailed: boolean; hasBuilderOutput: boolean; openKey: string | null }): string | null {
   if (!input.error || input.stepFailed) return null;
-  if (input.hasBuilderOutput && (!input.stage || input.stage === "Building")) return BUILD_OUTPUT_KEY;
-  return input.stage ? `stage:${input.stage}` : input.openKey;
+  if (input.hasBuilderOutput && input.stage === "Building") return BUILD_OUTPUT_KEY;
+  return input.stage ? stageKey(input.stage) : input.openKey;
 }
 
-const stepWrite = (key: string, name: string, startedAt: Date, completedAt: Date | null = null, error: string | null = null): BuildStepWrite =>
-  ({ key, name, startedAt, completedAt, cached: false, error });
+const stageKey = (stage: string) => `stage:${stage}`;
+const stageOfKey = (key: string) => key.replace(/^stage:/, "");
+
+/** A Ployz-owned row. Silent rows exist for blame but are not written unless they fail. */
+type OwnedRow = BuildStepWrite & { silent: boolean };
+const rowId = (build: number, key: string) => `${build}:${key}`;
 
 /**
  * Folds one attempt's preparation events into progress plus build-log writes.
- * Ployz phases become steps like BuildKit's own, so the log is one tree.
+ * Ployz phases become steps like BuildKit's own, so the log is one tree. An
+ * attempt may run BuildKit more than once (per platform, per registry push);
+ * every run gets its own ordinal so identical steps never collide.
  * Provider errors and rejection dumps are never logs.
  */
 export function preparationProgressCollector(now: () => Date = () => new Date()) {
   const decoder = new TextDecoder();
   let current: PreparationProgress = { phase: "selection", serviceId: null, machineId: null, machineName: null, message: null };
-  let phase: { key: string; name: string; startedAt: Date; silent: boolean } | null = null;
-  /** Every phase begun, silent or not, so a failure can be pinned on one that already ended. */
-  const phaseStarts = new Map<string, { name: string; startedAt: Date }>();
+  /** Ployz-owned rows by build and key, mutated in place; the open phase is the one without a completion. */
+  const rows = new Map<string, OwnedRow>();
+  let open: string | null = null;
+  let build = 0;
+  let targets: string[] = [];
   let stepFailed = false;
-  const end = (error: string | null = null): BuildStepWrite[] => {
-    if (!phase) return [];
-    const step = stepWrite(phase.key, phase.name, phase.startedAt, now(), error);
-    const silent = phase.silent && !error;
-    phase = null;
-    return silent ? [] : [step];
+  let finished = false;
+  const write = ({ silent: _silent, ...row }: OwnedRow): BuildStepWrite[] => (_silent ? [] : [{ ...row }]);
+  const create = (key: string, name: string, silent = false): OwnedRow => {
+    const row = { build, key, name, startedAt: now(), completedAt: null, cached: false, error: null, silent };
+    rows.set(rowId(build, key), row);
+    return row;
+  };
+  const close = (id: string | null): BuildStepWrite[] => {
+    const row = id === null ? undefined : rows.get(id);
+    if (!row) return [];
+    row.completedAt = now();
+    return write(row);
   };
   const begin = (key: string, name: string, silent = false): BuildStepWrite[] => {
-    const steps = end();
-    phase = { key, name, startedAt: now(), silent };
-    phaseStarts.set(key, { name, startedAt: phase.startedAt });
-    return silent ? steps : [...steps, stepWrite(key, name, phase.startedAt)];
+    const closed = close(open);
+    open = rowId(build, key);
+    return [...closed, ...write(create(key, name, silent))];
   };
   const none = (): PreparationWrites => ({ progress: null, steps: [], output: [] });
   const builderLine = (text: string): PreparationWrites => {
     if (!text) return none();
-    const steps: BuildStepWrite[] = [];
-    if (!phaseStarts.has(BUILD_OUTPUT_KEY)) {
-      const start = { name: "Build output", startedAt: now() };
-      phaseStarts.set(BUILD_OUTPUT_KEY, start);
-      steps.push(stepWrite(BUILD_OUTPUT_KEY, start.name, start.startedAt));
-    }
-    return { progress: null, steps, output: [{ step: BUILD_OUTPUT_KEY, stderr: false, text }] };
+    const steps = rows.has(rowId(build, BUILD_OUTPUT_KEY)) ? [] : write(create(BUILD_OUTPUT_KEY, "Build output"));
+    return { progress: null, steps, output: [{ build, step: BUILD_OUTPUT_KEY, stderr: false, text }] };
   };
   return {
     current: () => current,
@@ -79,42 +88,60 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
         return { progress: current, steps: [], output: [] };
       }
       if ("Delivered" in event) {
-        return { progress: null, steps: [], output: phase ? [{ step: phase.key, stderr: false, text: `Delivered ${event.Delivered.image} to ${event.Delivered.machine_id}\n` }] : [] };
+        const row = open === null ? undefined : rows.get(open);
+        return { progress: null, steps: [], output: row ? [{ build: row.build, step: row.key, stderr: false, text: `Delivered ${event.Delivered.image} to ${event.Delivered.machine_id}\n` }] : [] };
       }
       if ("Platforms" in event) return none();
-      const build = event.Build;
-      if ("Stage" in build) {
-        const name = stageName(build.Stage);
+      const build_ = event.Build;
+      if ("Stage" in build_) {
+        const name = stageName(build_.Stage);
         current = { ...current, phase: "build", message: name };
-        return { progress: current, steps: begin(`stage:${build.Stage}`, name, silentStages.has(build.Stage)), output: [] };
+        if (build_.Stage === "Building") {
+          build += 1;
+          targets = [];
+        }
+        return { progress: current, steps: begin(stageKey(build_.Stage), name, silentStages.has(build_.Stage)), output: [] };
       }
-      if ("Output" in build) return builderLine(decoder.decode(Uint8Array.from(build.Output), { stream: true }));
-      if ("Step" in build) {
-        const step = build.Step;
+      if ("Target" in build_) {
+        // The engine names each target as its run starts; the run's header row lists them.
+        const heading = rows.get(rowId(build, BUILDING_KEY));
+        if (!heading || targets.includes(build_.Target.name)) return none();
+        targets.push(build_.Target.name);
+        heading.name = targets.join(", ");
+        return { progress: null, steps: write(heading), output: [] };
+      }
+      if ("Output" in build_) return builderLine(decoder.decode(Uint8Array.from(build_.Output), { stream: true }));
+      if ("Step" in build_) {
+        const step = build_.Step;
         stepFailed ||= step.error !== null;
-        return { progress: null, output: [], steps: [{ key: step.id, name: step.name, startedAt: step.started ? new Date(step.started) : null, completedAt: step.completed ? new Date(step.completed) : null, cached: step.cached, error: step.error }] };
+        return { progress: null, output: [], steps: [{ build, key: step.id, name: step.name, startedAt: step.started ? new Date(step.started) : null, completedAt: step.completed ? new Date(step.completed) : null, cached: step.cached, error: step.error }] };
       }
-      if ("StepOutput" in build) return { progress: null, steps: [], output: [{ step: build.StepOutput.step, stderr: build.StepOutput.stderr, text: build.StepOutput.text }] };
+      if ("StepOutput" in build_) return { progress: null, steps: [], output: [{ build, step: build_.StepOutput.step, stderr: build_.StepOutput.stderr, text: build_.StepOutput.text }] };
       return none();
     },
     /**
-     * Close open steps once preparation ends. The engine names the failed
-     * stage, which may have ended before cleanup ran. A failure no BuildKit
-     * step explains lands on the builder's own output row when there is one,
-     * otherwise on the failed stage's row.
+     * Close the open rows once preparation ends and pin a failure on one row.
+     * The engine names the failed stage, which may have ended before cleanup
+     * ran; a blamed row that never reported is created now.
      */
     finish(error: string | null = null, stage: string | null = null): BuildStepWrite[] {
-      const blame = blameFor({ error, stage, stepFailed, hasBuilderOutput: phaseStarts.has(BUILD_OUTPUT_KEY), openKey: phase?.key ?? null });
-      const steps = end(phase?.key === blame ? error : null);
-      // A blamed stage that never reported, or ended silently, still gets its failed row.
-      if (blame && !steps.some((step) => step.key === blame)) {
-        const start = phaseStarts.get(blame) ?? { name: stageName(blame.replace(/^stage:/, "")), startedAt: now() };
-        steps.push(stepWrite(blame, start.name, start.startedAt, now(), error));
+      if (finished) return [];
+      finished = true;
+      const openRow = open === null ? undefined : rows.get(open);
+      const blame = blameFor({ error, stage, stepFailed, hasBuilderOutput: rows.has(rowId(build, BUILD_OUTPUT_KEY)), openKey: openRow?.key ?? null });
+      const blamed = blame === null ? null : rowId(build, blame);
+      if (blame && blamed) {
+        const row = rows.get(blamed) ?? create(blame, stageName(stageOfKey(blame)));
+        row.error = error;
+        row.silent = false;
       }
-      const builder = phaseStarts.get(BUILD_OUTPUT_KEY);
-      if (builder && !steps.some((step) => step.key === BUILD_OUTPUT_KEY)) steps.push(stepWrite(BUILD_OUTPUT_KEY, builder.name, builder.startedAt, now()));
-      phaseStarts.delete(BUILD_OUTPUT_KEY);
-      return steps;
+      const touched = new Set([open, blamed, rowId(build, BUILD_OUTPUT_KEY)].filter((id) => id !== null));
+      return [...touched].flatMap((id) => {
+        const row = rows.get(id);
+        if (!row) return [];
+        row.completedAt ??= now();
+        return write(row);
+      });
     },
   };
 }

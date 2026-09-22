@@ -768,12 +768,8 @@ impl<'a> Docker<'a> {
         'a: 'p,
     {
         Docker {
-            program: self.program,
-            environment: self.environment,
-            working_dir: self.working_dir,
-            deadline: self.deadline,
-            cancellation: self.cancellation,
             progress: Some(progress),
+            ..*self
         }
     }
 
