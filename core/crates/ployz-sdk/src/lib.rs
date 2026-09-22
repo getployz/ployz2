@@ -122,7 +122,7 @@ impl PreparationHandle {
     pub fn abort(&self) {
         self.inner.abort();
     }
-    /// Bounded progress; lagging readers receive a truncation frame.
+    /// Complete buffered progress, independent of preparation completion.
     #[napi]
     pub async fn next(&self) -> Option<serde_json::Value> {
         self.inner.next().await
