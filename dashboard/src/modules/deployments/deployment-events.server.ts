@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
@@ -45,18 +45,20 @@ export const persistBuildLog = Effect.fn("Deployments.persistBuildLog")(function
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    for (const step of writes.steps) {
-      const { key, ...state } = step;
+    const target = [environmentDeploymentBuildStep.deploymentId, environmentDeploymentBuildStep.key];
+    for (const { key, ...state } of writes.steps) {
       yield* drizzle.insert(environmentDeploymentBuildStep).values({ deploymentId, key, ...state })
-        .onConflictDoUpdate({ target: [environmentDeploymentBuildStep.deploymentId, environmentDeploymentBuildStep.key], set: { ...state, updatedAt: new Date() } });
+        .onConflictDoUpdate({ target, set: { ...state, updatedAt: new Date() } });
     }
-    for (const row of writes.output) {
-      const [step] = yield* drizzle.insert(environmentDeploymentBuildStep).values({ deploymentId, key: row.step, name: row.step })
-        .onConflictDoUpdate({ target: [environmentDeploymentBuildStep.deploymentId, environmentDeploymentBuildStep.key], set: { key: row.step } })
-        .returning({ id: environmentDeploymentBuildStep.id });
-      if (!step) continue;
-      yield* drizzle.insert(environmentDeploymentBuildOutput).values({ deploymentId, stepId: step.id, stderr: row.stderr, text: row.text });
-    }
+    if (!writes.output.length) return;
+    const keys = [...new Set(writes.output.map((row) => row.step))];
+    yield* drizzle.insert(environmentDeploymentBuildStep).values(keys.map((key) => ({ deploymentId, key, name: key }))).onConflictDoNothing({ target });
+    const ids = new Map((yield* drizzle.select({ id: environmentDeploymentBuildStep.id, key: environmentDeploymentBuildStep.key }).from(environmentDeploymentBuildStep)
+      .where(and(eq(environmentDeploymentBuildStep.deploymentId, deploymentId), inArray(environmentDeploymentBuildStep.key, keys)))).map((step) => [step.key, step.id]));
+    yield* drizzle.insert(environmentDeploymentBuildOutput).values(writes.output.flatMap((row) => {
+      const stepId = ids.get(row.step);
+      return stepId === undefined ? [] : [{ deploymentId, stepId, stderr: row.stderr, text: row.text }];
+    }));
   }));
 });
 

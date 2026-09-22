@@ -46,6 +46,14 @@ it("blames the stage the engine names, not the cleanup that followed it", () => 
   expect(cleanup.finish("builder removal failed", "Cleanup").map((step) => [step.key, step.error])).toEqual([["stage:Cleanup", "builder removal failed"]]);
 });
 
+it("keeps builder output clean when the engine blames a later stage", () => {
+  const progress = preparationProgressCollector(() => new Date(5_000));
+  progress.event({ Build: { Stage: "Building" } });
+  progress.event({ Build: { Output: Array.from(Buffer.from("WARNING: harmless\n")) } });
+  progress.event({ Build: { Stage: "Cleanup" } });
+  expect(progress.finish("builder removal failed", "Cleanup").map((step) => [step.key, step.error])).toEqual([["stage:Cleanup", "builder removal failed"], ["build-output", null]]);
+});
+
 it("blames the failed BuildKit step rather than the builder output", () => {
   const progress = preparationProgressCollector(() => new Date(5_000));
   progress.event({ Build: { Stage: "Building" } });

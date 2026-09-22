@@ -23,12 +23,11 @@ pub mod remote;
 mod upload;
 
 pub use execution::{
-    Admission, Cancellation, HostPolicy, Progress, Stage, TargetEvidence, WorkEvidence,
+    Admission, BuildStep, Cancellation, HostPolicy, Progress, Stage, TargetEvidence, WorkEvidence,
 };
 mod railpack;
 pub use railpack::Railpack;
 mod solve;
-pub use execution::BuildStep;
 pub use solve::PlainRenderer;
 
 use std::{
@@ -474,8 +473,6 @@ fn bake_arguments(
         builder_name(),
         "--file".to_owned(),
         request.compose_file.to_string_lossy().into_owned(),
-        // Structured progress: every consumer sees BuildKit's own step tree.
-        "--progress=rawjson".to_owned(),
     ];
     if let Some(overrides) = overrides {
         arguments.extend([
@@ -765,8 +762,6 @@ impl<'a> Docker<'a> {
         Ok(())
     }
 
-    /// The same Docker with a fresh budget for releasing resources, so
-    /// cleanup still runs, bounded, after the attempt's deadline passes.
     /// The same host with progress routed elsewhere.
     pub(crate) fn with_progress<'p>(&self, progress: &'p (dyn Fn(Progress) + Sync)) -> Docker<'p>
     where
@@ -782,6 +777,8 @@ impl<'a> Docker<'a> {
         }
     }
 
+    /// The same Docker with a fresh budget for releasing resources, so
+    /// cleanup still runs, bounded, after the attempt's deadline passes.
     pub(crate) fn releasing(&self) -> Docker<'a> {
         Docker {
             program: self.program,

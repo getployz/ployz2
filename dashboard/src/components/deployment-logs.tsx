@@ -29,14 +29,14 @@ function useBuildLog(organizationSlug: string, deploymentId: string, enabled: bo
     refetchInterval: (query) => query.state.data?.finished ? false : 2_000,
     queryFn: async ({ signal }) => {
       const previous = queryClient.getQueryData<BuildLog>(queryKey);
-      const steps: BuildStepRow[] = [];
+      let steps: BuildStepRow[] = [];
       const output: BuildOutputRow[] = [...previous?.output ?? []];
       let finished = false;
       const last = output.at(-1);
       let afterSequence: string | null | undefined = last ? String(last.id) : undefined;
       while (afterSequence !== null) {
         const page = await listDeploymentBuildLogServerFn({ data: { organizationSlug, deploymentId, afterSequence, limit: 100 }, signal });
-        steps.splice(0, steps.length, ...page.steps);
+        steps = page.steps;
         output.push(...page.output);
         finished = page.finished;
         afterSequence = page.nextSequence;
@@ -84,7 +84,8 @@ const lastLine = (rows: readonly BuildOutputRow[]) => {
 export function BuildLogs({ steps, output, hasBuild, finished, now = Date.now() }: {
   steps: readonly BuildStepRow[]; output: readonly BuildOutputRow[]; hasBuild: boolean; finished: boolean; now?: number;
 }) {
-  const [opened, setOpened] = useState<ReadonlySet<number>>(new Set());
+  // Rows the user toggled; failed rows open by default until toggled.
+  const [toggled, setToggled] = useState<ReadonlyMap<number, boolean>>(new Map());
   const started = steps.filter((step) => step.startedAt !== null);
   if (!started.length) {
     return <p className="text-muted-foreground">{!hasBuild ? "This deployment uses prebuilt images. No build logs were produced." : finished ? "No retained build output for this deployment." : "Waiting for the build to start"}</p>;
@@ -97,7 +98,7 @@ export function BuildLogs({ steps, output, hasBuild, finished, now = Date.now() 
       const lines = outputByStep.get(step.id) ?? [];
       const failed = step.error !== null;
       const running = !failed && step.completedAt === null;
-      const open = failed || opened.has(step.id);
+      const open = toggled.get(step.id) ?? failed;
       const elapsed = step.startedAt ? (step.completedAt?.getTime() ?? now) - step.startedAt.getTime() : 0;
       const tail = running && !open ? lastLine(lines) : null;
       const summary = <>
@@ -112,11 +113,7 @@ export function BuildLogs({ steps, output, hasBuild, finished, now = Date.now() 
       const row = "flex items-center gap-3 rounded px-1";
       if (!lines.length && !failed) return <li key={step.id}><div className={row}>{summary}</div></li>;
       return <li key={step.id} className={cn(failed && "border-l-2 border-destructive")}>
-        <details open={open} onToggle={(event) => setOpened((previous) => {
-          const next = new Set(previous);
-          if (event.currentTarget.open) next.add(step.id); else next.delete(step.id);
-          return next;
-        })}>
+        <details open={open} onToggle={(event) => { const next = event.currentTarget.open; setToggled((previous) => previous.get(step.id) === next ? previous : new Map(previous).set(step.id, next)); }}>
           <summary className={cn(row, "cursor-pointer list-none hover:bg-muted/40 [&::-webkit-details-marker]:hidden")}>{summary}</summary>
           {lines.length ? <pre className="whitespace-pre-wrap break-words pl-24">{lines.map((line) => <span key={line.id} className={line.stderr ? "text-foreground" : "text-muted-foreground"}>{stripAnsi(line.text)}</span>)}</pre> : null}
           {step.error ? <p className="whitespace-pre-wrap break-words pl-24 text-destructive">{step.error}</p> : null}
