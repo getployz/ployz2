@@ -10,8 +10,11 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 WORKDIR /app
 # Dashboard edits must not invalidate this layer.
 COPY core/ core/
-# Layer caching is portable; Railway cache mounts require a hard-coded service ID.
-RUN bash core/scripts/build-cloud-sdk.sh
+# Railway requires its literal service ID; BuildKit on Ployz accepts the same cache IDs.
+RUN --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/usr/local/cargo/git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/app/core/target,target=/app/core/target \
+    bash core/scripts/build-cloud-sdk.sh
 
 FROM node AS dashboard
 RUN npm install --global pnpm@11.7.0
@@ -19,7 +22,7 @@ WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/pnpm-lock.yaml dashboard/pnpm-workspace.yaml ./
 COPY dashboard/patches/ patches/
 COPY --from=sdk /app/core/crates/ployz-sdk /app/core/crates/ployz-sdk
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/root/.local/share/pnpm/store,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile
 COPY dashboard/ ./
 # The SDK was built above; do not run package.json's combined Rust + Vite build.
 RUN pnpm exec vite build && node scripts/package-sdk.mjs && pnpm prune --prod
