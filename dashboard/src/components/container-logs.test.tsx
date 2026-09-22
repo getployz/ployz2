@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 import { StrictMode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { DbProvider } from "@tanstack/react-db";
+import { collectionOptions, DbProvider, localOnlyCollectionOptions } from "@tanstack/react-db";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { Schema } from "effect";
 import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
-import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
 import { ContainerLogs } from "./container-logs";
 
-it("reuses cached logs across Strict Mode mounts, navigation and refresh", async () => {
+it("loads history after Strict Mode remount and closes viewer-owned streams", async () => {
   const sources: FakeEventSource[] = [];
   class FakeEventSource extends EventTarget {
     closed = false;
@@ -28,13 +28,10 @@ it("reuses cached logs across Strict Mode mounts, navigation and refresh", async
   const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
   const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
   await router.load();
-  const selection = { organizationSlug: "acme", environmentSlug: "production" };
-  const stream = getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" });
-  const mount = () => render(<StrictMode><QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
+  try {
+    render(<StrictMode><QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
       <ContainerLogs selection={{ organizationSlug: "acme", environmentSlug: "production" }} />
     </RouterContextProvider></DbProvider></QueryClientProvider></StrictMode>);
-  try {
-    const firstView = mount();
     const source = sources.at(-1);
     if (!source) throw new Error("Viewer did not open its log stream");
     await act(async () => source.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
@@ -45,26 +42,17 @@ it("reuses cached logs across Strict Mode mounts, navigation and refresh", async
     fireEvent.click(button);
     await waitFor(() => expect(fetchHistory).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(button.hasAttribute("disabled")).toBe(true));
-    expect(stream.collection.size).toBe(1);
-    const opened = sources.length;
-    firstView.unmount();
-    await waitFor(() => expect(stream.collection.subscriberCount).toBe(0));
-    expect(source.closed).toBe(false);
-    expect(stream.collection.size).toBe(1);
-    mount();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Load older" }).hasAttribute("disabled")).toBe(false));
-    expect(sources).toHaveLength(opened);
-    for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
-    expect(stream.collection.size).toBe(1);
-    expect(sources.filter(source => !source.closed)).toHaveLength(1);
-    expect(getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" })).toBe(stream);
   } finally {
     cleanup();
-    await waitFor(() => expect(stream.collection.subscriberCount).toBe(0));
-    await stream.collection.cleanup();
-    expect(sources.every(source => source.closed)).toBe(true);
-    expect(stream.signal.aborted).toBe(true);
-    expect(stream.collection.size).toBe(0);
-    await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals();
+    await vi.waitFor(() => expect(sources.every(source => source.closed)).toBe(true));
+    const db = getDbClient(client);
+    db.collection(collectionOptions(localOnlyCollectionOptions({
+      id: "session-marker",
+      getKey: (row: { id: string }) => row.id,
+      schema: Schema.toStandardSchemaV1(Schema.Struct({ id: Schema.String })),
+      initialData: [],
+    })));
+    expect(db.dehydrate().collections.map((chunk) => chunk.collectionId)).toEqual(["session-marker"]);
+    await db.cleanup(); client.clear(); vi.unstubAllGlobals();
   }
 });
