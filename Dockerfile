@@ -40,4 +40,4 @@ RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk
 COPY dashboard/package.json dashboard/drizzle.config.ts ./
 COPY dashboard/drizzle/ drizzle/
 COPY dashboard/scripts/start-with-inngest-sync.mjs scripts/start-with-inngest-sync.mjs
-CMD ["node", "scripts/start-with-inngest-sync.mjs"]
+CMD ["npm", "start"]
