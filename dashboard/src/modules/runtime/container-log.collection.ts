@@ -1,6 +1,7 @@
-import type { Collection } from "@tanstack/react-db";
+import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db";
 import { Schema } from "effect";
 import type { LogRecord } from "@ployz/sdk";
+import { strictParseOptions } from "#/modules/environment-design/schema";
 
 const timestamp = Schema.String.check(Schema.isPattern(/^-?\d+$/));
 export const containerLogRowSchema = Schema.Struct({
@@ -36,7 +37,27 @@ export function projectContainerLog(record: LogRecord): ContainerLogRow {
   };
 }
 
-export type ContainerLogs = Collection<ContainerLogRow, string>;
+export function createContainerLogs(id: string, connect: () => () => void = () => () => {}) {
+  const base = localOnlyCollectionOptions({
+    id, getKey: (row: ContainerLogRow) => row.id,
+    schema: Schema.toStandardSchemaV1(containerLogRowSchema, { parseOptions: strictParseOptions }),
+    initialData: [],
+  });
+  return createCollection({
+    ...base,
+    // localOnly hardcodes 0, and 0 never collects. 1 matches the live-query default.
+    gcTime: 1,
+    startSync: false,
+    sync: {
+      sync: (params) => {
+        base.sync.sync(params);
+        return connect();
+      },
+      getSyncMetadata: () => ({}),
+    },
+  });
+}
+export type ContainerLogs = ReturnType<typeof createContainerLogs>;
 
 export function appendContainerLogs(collection: ContainerLogs, rows: readonly ContainerLogRow[]) {
   for (const row of rows) {
