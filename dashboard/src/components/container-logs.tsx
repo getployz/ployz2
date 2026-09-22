@@ -1,58 +1,37 @@
-import { useEffect, useLayoutEffect, useRef, useState, useId } from "react";
+import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMutation } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Schema } from "effect";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { createContainerLogs, appendContainerLogs, mergeContainerHistory, remainingHistory, containerLogEventSchema, containerLogPageSchema, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
+import { mergeContainerHistory, remainingHistory, containerLogPageSchema, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "#/components/ui/select";
 
-export type ContainerLogSelection = { organizationSlug: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
+import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
+export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 
 export function ContainerLogs({ selection, lifecycle = [] }: { selection: ContainerLogSelection; lifecycle?: readonly ContainerLogRow[] }) {
   const scope = useCollectionScope();
-  const [generation, setGeneration] = useState(0);
-  const key = JSON.stringify([scope.sessionId, scope.userId, selection, generation]);
-  return <LogViewer key={key} selection={selection} lifecycle={lifecycle} refresh={() => setGeneration(value => value + 1)} />;
+  const key = JSON.stringify([scope.sessionId, scope.userId, selection]);
+  return <LogViewer key={key} selection={selection} lifecycle={lifecycle} />;
 }
 
-function LogViewer({ selection, lifecycle, refresh }: { selection: ContainerLogSelection; lifecycle: readonly ContainerLogRow[]; refresh: () => void }) {
+function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection; lifecycle: readonly ContainerLogRow[] }) {
   const scope = useCollectionScope();
-  const id = useId();
-  const [collection] = useState(() => createContainerLogs(`container-logs:${scope.sessionId}:${id}`, scope));
-  const { data: loaded = [] } = useLiveQuery({ queryKey: ["container-logs", collection.id], query: q => q.from({ log: collection }), gcTime: 0 });
-  const [status, setStatus] = useState("Connecting…");
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const stream = getContainerLogStream(selection, scope);
+  const { collection, query, refresh } = stream;
+  const { data: loaded = [] } = useLiveQuery({ queryKey: ["container-logs", collection.id], query: q => q.from({ log: collection }), gcTime: 100 });
+  const { status, errors } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
   const [search, setSearch] = useState("");
   const [machine, setMachine] = useState("");
   const [service, setService] = useState("");
   const [exhausted, setExhausted] = useState<Record<string, string>>({});
-  const abort = useRef<AbortController | null>(null);
   const element = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const anchor = useRef<{ id: string; offset: number } | null>(null);
-  const query = new URLSearchParams(Object.entries(selection).filter((entry): entry is [string, string] => entry[1] !== undefined)).toString();
-  useEffect(() => {
-    const controller = new AbortController();
-    abort.current = controller;
-    const events = new EventSource(`/api/runtime/logs?${query}`);
-    events.onopen = () => setStatus("Live");
-    const fail = () => { events.close(); setStatus("Log connection ended. Refresh to reconnect."); };
-    events.onerror = fail;
-    events.addEventListener("unavailable", fail);
-    events.addEventListener("log", (event: MessageEvent<string>) => {
-      try {
-        const decoded = Schema.decodeUnknownSync(Schema.fromJsonString(containerLogEventSchema))(event.data);
-        if (decoded.type === "record") appendContainerLogs(collection, [decoded.record]);
-        else setErrors(previous => ({ ...previous, [`${decoded.machineId}/${decoded.containerId}`]: decoded.message }));
-      } catch { fail(); }
-    });
-    return () => { events.close(); controller.abort(); };
-  }, [abort, collection, query]);
-  useEffect(() => { appendContainerLogs(collection, lifecycle); }, [collection, lifecycle]);
-  const rows = loaded.filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && row.message.toLowerCase().includes(search.toLowerCase())).sort((a, b) => {
+  const rows = [...loaded, ...lifecycle].filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && row.message.toLowerCase().includes(search.toLowerCase())).sort((a, b) => {
     const difference = BigInt(a.timestamp) - BigInt(b.timestamp);
     return difference < 0n ? -1 : difference > 0n ? 1 : a.id.localeCompare(b.id);
   });
@@ -60,7 +39,7 @@ function LogViewer({ selection, lifecycle, refresh }: { selection: ContainerLogS
   const history = useMutation({
     mutationFn: async () => {
       const before = remainingHistory(loaded, exhausted);
-      const response = await fetch(`/api/runtime/logs?${query}&before=${encodeURIComponent(JSON.stringify(before))}`, { signal: abort.current?.signal });
+      const response = await fetch(`/api/runtime/logs?${query}&before=${encodeURIComponent(JSON.stringify(before))}`, { signal: stream.signal });
       if (!response.ok) throw new Error("Could not load older logs.");
       const page = Schema.decodeUnknownSync(containerLogPageSchema)(await response.json());
       return { page, before };
@@ -71,7 +50,7 @@ function LogViewer({ selection, lifecycle, refresh }: { selection: ContainerLogS
       anchor.current = first && firstRow ? { id: firstRow.id, offset: (element.current?.scrollTop ?? 0) - first.start } : null;
       following.current = false;
       mergeContainerHistory(collection, page.records);
-      setErrors(Object.fromEntries(page.errors.map(error => [`${error.machineId}/${error.containerId}`, error.message])));
+      stream.setErrors(Object.fromEntries(page.errors.map(error => [`${error.machineId}/${error.containerId}`, error.message])));
       setExhausted(previous => {
         const next = { ...previous };
         for (const [source, boundary] of Object.entries(before)) {

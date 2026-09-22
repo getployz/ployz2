@@ -68,7 +68,7 @@ async function* logs(transport, options = {}) {
             source = { reader: null, last: null, failed: false, reopened: false, container };
             sources.set(key, source);
           } else {
-            if (source.container.runtime.state !== container.runtime.state) source.reopened = false;
+            source.reopened = false;
             source.container = container;
           }
           if (pending.has(key) || source.reader || source.failed || source.reopened) continue;
@@ -85,7 +85,7 @@ async function* logs(transport, options = {}) {
           source.reader?.cancel(); source.reader = null;
           source.failed ||= !!event.error;
           // One immediate handoff covers a running observation that raced ahead
-          // of EOF. Wait for state/output evidence before another handoff.
+          // of EOF. Wait for a fresh observation/output before another handoff.
           if (!source.failed && options.follow !== false && source.container.runtime.state === "running" && !source.reopened) {
             source.reopened = true;
             openSource(event.key, source);

@@ -89,3 +89,19 @@ test("clean EOF reattaches when the running observation already arrived", async 
   assert.equal((await resumed).value.record.timestamp_nanos, "2");
   const end = output.next(); abort.abort(); await end;
 });
+
+test("fresh running observations resume after two clean EOFs without spinning", async () => {
+  const t = transport(); const abort = new AbortController();
+  const output = logs(t, { signal: abort.signal });
+  t.frames.push({ containers: [container("a")] });
+  const next = output.next(); await tick();
+  t.readers.get("a").push(null); await tick();
+  t.readers.get("a").push(null); await tick();
+  assert.equal(t.requests.length, 2);
+  await tick(); assert.equal(t.requests.length, 2);
+  t.frames.push({ containers: [container("a")] }); await tick();
+  assert.equal(t.requests.length, 3);
+  t.readers.get("a").push(row("a", 3));
+  assert.equal((await next).value.record.timestamp_nanos, "3");
+  const end = output.next(); abort.abort(); await end;
+});
