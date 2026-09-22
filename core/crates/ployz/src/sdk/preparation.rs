@@ -172,7 +172,11 @@ mod tests {
         assert!(build.is_none());
         let dependencies = captured.intent().dependencies();
         assert_eq!(
-            dependencies[&ServiceName::parse("web").unwrap()][0]
+            dependencies
+                .get(&ServiceName::parse("web").unwrap())
+                .unwrap()
+                .first()
+                .unwrap()
                 .service
                 .as_str(),
             "db"
