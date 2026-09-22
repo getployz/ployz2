@@ -46,6 +46,11 @@ it("blames the stage the engine names, not the cleanup that followed it", () => 
   expect(cleanup.finish("builder removal failed", "Cleanup").map((step) => [step.key, step.error])).toEqual([["stage:Cleanup", "builder removal failed"]]);
 });
 
+it("creates the blamed stage's row even when that stage never reported", () => {
+  const progress = preparationProgressCollector(() => new Date(5_000));
+  expect(progress.finish("selection failed", "Selection")).toEqual([{ key: "stage:Selection", name: "Selection", startedAt: new Date(5_000), completedAt: new Date(5_000), cached: false, error: "selection failed" }]);
+});
+
 it("keeps builder output clean when the engine blames a later stage", () => {
   const progress = preparationProgressCollector(() => new Date(5_000));
   progress.event({ Build: { Stage: "Building" } });

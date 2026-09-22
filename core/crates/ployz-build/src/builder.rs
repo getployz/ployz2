@@ -153,16 +153,17 @@ impl<'a> Builder<'a> {
         arguments: &[String],
         started: impl FnOnce(),
     ) -> Result<(), BuildError> {
-        // Structured progress: every consumer sees BuildKit's own step tree.
-        // The flag and its parser live together so they cannot drift apart.
         let mut borrowed = arguments.iter().map(String::as_str).collect::<Vec<_>>();
-        borrowed.insert(2, "--progress=rawjson");
         let Some(progress) = self.docker.progress else {
             return self
                 .docker
                 .run_started("the build", &borrowed, Streams::Inherited, started)
                 .map(|_| ());
         };
+        // Structured progress: every consumer sees BuildKit's own step tree.
+        // The flag and its parser live together so they cannot drift apart;
+        // Buildx accepts flags after the targets.
+        borrowed.push("--progress=rawjson");
         let parser = std::sync::Mutex::new(crate::solve::SolveParser::default());
         let structured = |event| {
             if let crate::Progress::Output(bytes) = event {

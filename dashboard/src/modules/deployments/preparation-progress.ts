@@ -18,6 +18,20 @@ const stageName = (stage: string) => stageNames.get(stage) ?? stage;
 const silentStages = new Set(["Building", "Cleanup"]);
 
 /**
+ * Which step a failed attempt is pinned on: the failed BuildKit step already
+ * says it; builder messages explain a build failure; otherwise the stage the
+ * engine names, falling back to the open phase.
+ */
+export function blameFor(input: { error: string | null; stage: string | null; stepFailed: boolean; hasBuilderOutput: boolean; openKey: string | null }): string | null {
+  if (!input.error || input.stepFailed) return null;
+  if (input.hasBuilderOutput && (!input.stage || input.stage === "Building")) return BUILD_OUTPUT_KEY;
+  return input.stage ? `stage:${input.stage}` : input.openKey;
+}
+
+const stepWrite = (key: string, name: string, startedAt: Date, completedAt: Date | null = null, error: string | null = null): BuildStepWrite =>
+  ({ key, name, startedAt, completedAt, cached: false, error });
+
+/**
  * Folds one attempt's preparation events into progress plus build-log writes.
  * Ployz phases become steps like BuildKit's own, so the log is one tree.
  * Provider errors and rejection dumps are never logs.
@@ -31,7 +45,7 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
   let stepFailed = false;
   const end = (error: string | null = null): BuildStepWrite[] => {
     if (!phase) return [];
-    const step = { key: phase.key, name: phase.name, startedAt: phase.startedAt, completedAt: now(), cached: false, error };
+    const step = stepWrite(phase.key, phase.name, phase.startedAt, now(), error);
     const silent = phase.silent && !error;
     phase = null;
     return silent ? [] : [step];
@@ -40,7 +54,7 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
     const steps = end();
     phase = { key, name, startedAt: now(), silent };
     phaseStarts.set(key, { name, startedAt: phase.startedAt });
-    return silent ? steps : [...steps, { key, name, startedAt: phase.startedAt, completedAt: null, cached: false, error: null }];
+    return silent ? steps : [...steps, stepWrite(key, name, phase.startedAt)];
   };
   const none = (): PreparationWrites => ({ progress: null, steps: [], output: [] });
   const builderLine = (text: string): PreparationWrites => {
@@ -49,7 +63,7 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
     if (!phaseStarts.has(BUILD_OUTPUT_KEY)) {
       const start = { name: "Build output", startedAt: now() };
       phaseStarts.set(BUILD_OUTPUT_KEY, start);
-      steps.push({ key: BUILD_OUTPUT_KEY, ...start, completedAt: null, cached: false, error: null });
+      steps.push(stepWrite(BUILD_OUTPUT_KEY, start.name, start.startedAt));
     }
     return { progress: null, steps, output: [{ step: BUILD_OUTPUT_KEY, stderr: false, text }] };
   };
@@ -90,14 +104,15 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
      * otherwise on the failed stage's row.
      */
     finish(error: string | null = null, stage: string | null = null): BuildStepWrite[] {
-      // Builder messages explain a build failure; a failure elsewhere lands on its own stage.
-      const builderExplains = phaseStarts.has(BUILD_OUTPUT_KEY) && (!stage || stage === "Building");
-      const blame = error && !stepFailed ? (builderExplains ? BUILD_OUTPUT_KEY : stage ? `stage:${stage}` : phase?.key ?? null) : null;
+      const blame = blameFor({ error, stage, stepFailed, hasBuilderOutput: phaseStarts.has(BUILD_OUTPUT_KEY), openKey: phase?.key ?? null });
       const steps = end(phase?.key === blame ? error : null);
-      for (const key of [blame, BUILD_OUTPUT_KEY]) {
-        const start = key && phaseStarts.get(key);
-        if (start && !steps.some((step) => step.key === key)) steps.push({ key, ...start, completedAt: now(), cached: false, error: key === blame ? error : null });
+      // A blamed stage that never reported, or ended silently, still gets its failed row.
+      if (blame && !steps.some((step) => step.key === blame)) {
+        const start = phaseStarts.get(blame) ?? { name: stageName(blame.replace(/^stage:/, "")), startedAt: now() };
+        steps.push(stepWrite(blame, start.name, start.startedAt, now(), error));
       }
+      const builder = phaseStarts.get(BUILD_OUTPUT_KEY);
+      if (builder && !steps.some((step) => step.key === BUILD_OUTPUT_KEY)) steps.push(stepWrite(BUILD_OUTPUT_KEY, builder.name, builder.startedAt, now()));
       phaseStarts.delete(BUILD_OUTPUT_KEY);
       return steps;
     },

@@ -143,7 +143,7 @@ export const listDeploymentOperationEvidence = Effect.fn(
     });
 });
 
-const logCursor = Effect.fn(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
+const logCursor = Effect.fn("Deployments.logCursor")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
   const organization = yield* requireOrganization(actor, input.organizationSlug);
   const after = Number(input.afterSequence ?? 0);
   if (!Number.isSafeInteger(after) || after < 0) return yield* new Validation({ message: "Invalid log cursor." });

@@ -723,22 +723,16 @@ impl OutputBudget {
         }
         let size = match &mut progress {
             Progress::Build(Build::StepOutput { text, .. }) => {
-                if held + text.len() > OUTPUT_BUDGET {
-                    if self.dropping {
-                        return None;
-                    }
-                    self.dropping = true;
-                    *text = DROPPED_MARKER.into();
+                match self.admit(held, text.len())? {
+                    Admitted::Marker => *text = DROPPED_MARKER.into(),
+                    Admitted::Output => {}
                 }
                 text.len()
             }
             Progress::Build(Build::Output(bytes)) => {
-                if held + bytes.len() > OUTPUT_BUDGET {
-                    if self.dropping {
-                        return None;
-                    }
-                    self.dropping = true;
-                    *bytes = DROPPED_MARKER.as_bytes().to_vec();
+                match self.admit(held, bytes.len())? {
+                    Admitted::Marker => *bytes = DROPPED_MARKER.as_bytes().to_vec(),
+                    Admitted::Output => {}
                 }
                 bytes.len()
             }
@@ -754,6 +748,25 @@ impl OutputBudget {
         let value = serde_json::to_value(progress).expect("preparation progress serializes");
         Some((size, value))
     }
+
+    /// Whether output of `len` bytes may be sent, or none while dropping.
+    /// Dropping continues until the consumer is under half the budget so the
+    /// stream cannot alternate between passing and silently dropping.
+    fn admit(&mut self, held: usize, len: usize) -> Option<Admitted> {
+        if self.dropping {
+            return None;
+        }
+        if held + len > OUTPUT_BUDGET {
+            self.dropping = true;
+            return Some(Admitted::Marker);
+        }
+        Some(Admitted::Output)
+    }
+}
+
+enum Admitted {
+    Output,
+    Marker,
 }
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
@@ -914,6 +927,9 @@ mod preparation_tests {
             )
             .unwrap();
         assert!(step.get("Build").is_some());
+        // Still dropping above half the budget, even though this frame would fit.
+        buffered.store(OUTPUT_BUDGET / 2 + 1, Ordering::Relaxed);
+        assert!(budget.frame(output("between\n"), &buffered).is_none());
         buffered.store(0, Ordering::Relaxed);
         let (size, value) = budget.frame(output("after\n"), &buffered).unwrap();
         assert_eq!(size, "after\n".len());
