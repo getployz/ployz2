@@ -135,3 +135,25 @@ fn lowering_retains_commands_limits_restart_and_network_ownership() {
     assert_eq!(error.path, "cron");
     assert!(!error.to_string().contains("authorized-secret"));
 }
+
+#[test]
+fn lowering_labels_containers_with_the_cloud_service_id() {
+    let config = json!({"version":2,"privateDns":"api",
+        "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
+        "healthcheck":{"type":"none"},"restartPolicy":"on-failure"});
+    let labeled = config_request(json!({"operation":"lower_deployment","value":{
+        "projectName":"production",
+        "snapshots":[{"serviceId":"service-api","config":config,"resolvedEnv":{}}]
+    }}))
+    .unwrap();
+    assert_eq!(
+        labeled["target"][0]["container"]["labels"]["cloud.ployz.service.id"],
+        "service-api"
+    );
+    let unlabeled = config_request(json!({"operation":"lower_deployment","value":{
+        "projectName":"production",
+        "snapshots":[{"config":config,"resolvedEnv":{}}]
+    }}))
+    .unwrap();
+    assert_eq!(unlabeled["target"][0]["container"]["labels"], json!({}));
+}

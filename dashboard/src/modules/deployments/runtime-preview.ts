@@ -29,8 +29,17 @@ export function compileSdkPreparationInput(input: {
   projectName: string;
   snapshots: readonly EnvironmentDeploySnapshot[];
   volumes?: readonly EnvironmentDeployVolume[];
-}) {
-  return { ...input, snapshots: input.snapshots.map((snapshot) => ({ ...snapshot, config: toCoreServiceConfig(snapshot.config) })) };
+}): Parameters<typeof lowerDeployment>[0] {
+  return {
+    projectName: input.projectName,
+    snapshots: input.snapshots.map((snapshot) => ({
+      serviceId: snapshot.serviceId,
+      config: toCoreServiceConfig(snapshot.config),
+      replicas: snapshot.replicas,
+      resolvedEnv: snapshot.resolvedEnv,
+    } satisfies Parameters<typeof lowerDeployment>[0]["snapshots"][number])),
+    volumes: input.volumes,
+  };
 }
 
 export function parseSdkDeployPreview<T>(value: T): SdkDeployPreview {
