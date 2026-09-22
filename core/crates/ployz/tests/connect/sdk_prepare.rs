@@ -74,6 +74,7 @@ async fn node_preparation_delivers_images_and_retains_them_through_confirmation(
             .insert(BUILD_CAPABILITY.parse().unwrap());
         let recorder = Arc::new(support::BuildRecorder {
             retain_images: true,
+            output: vec![b'x'; 32_768],
             ..Default::default()
         });
         let mut service = support::DiscoveryService::new(description.clone());

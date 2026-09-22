@@ -43,6 +43,8 @@ const sdk = require(dir);
       const prepared = await preparation.finished;
       const events = [];
       for await (const event of preparation) events.push(event);
+      assert.equal(events.flatMap(event => event.Build?.Output ?? []).length, 32_768);
+      assert.equal(Buffer.from(events.flatMap(event => event.Build?.Output ?? [])).toString(), "x".repeat(32_768));
       assert.ok(events.some(event => event.Delivered), "image delivery finishes before confirmation");
       assert.ok(prepared.operations.length > 0);
       const running = prepared.confirm();

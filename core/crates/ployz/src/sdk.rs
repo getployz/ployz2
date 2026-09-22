@@ -275,7 +275,8 @@ impl Session {
         let cancel = self.inner.cancel.child_token();
         let token = cancel.clone();
         let session = Arc::downgrade(&self.inner);
-        let (events, receiver) = tokio::sync::broadcast::channel(128);
+        // ponytail: buffer unread output in memory; spool to disk if build volume requires it.
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
         let join = tokio::spawn(async move {
             let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
                 .await
@@ -286,36 +287,20 @@ impl Session {
                     true,
                 ));
             }
-            let prepared =
-                crate::preparation::prepare(
-                    &mut client,
-                    captured.0,
-                    captured.1,
-                    crate::preparation::BuildLocation::Remote(None),
-                    &token,
-                    |mut progress| {
-                        if let crate::preparation::Progress::Build(ployz_build::Progress::Output(
-                            bytes,
-                        )) = &mut progress
-                            && bytes.len() > 4096
-                        {
-                            bytes.drain(..bytes.len() - 4096);
-                            let _ =
-                                events.send(serde_json::json!({"phase":"truncated", "dropped":1}));
-                        }
-                        let value = serde_json::to_value(progress)
-                            .expect("preparation progress serializes");
-                        // Build output is lossy progress, never a backpressure dependency of cleanup.
-                        let value = if value.to_string().len() > 16_384 {
-                            serde_json::json!({"phase":"truncated", "dropped":1})
-                        } else {
-                            value
-                        };
-                        let _ = events.send(value);
-                    },
-                )
-                .await
-                .map_err(|error| preparation_error(error, token.is_cancelled()))?;
+            let prepared = crate::preparation::prepare(
+                &mut client,
+                captured.0,
+                captured.1,
+                crate::preparation::BuildLocation::Remote(None),
+                &token,
+                |progress| {
+                    let value =
+                        serde_json::to_value(progress).expect("preparation progress serializes");
+                    let _ = events.send(value);
+                },
+            )
+            .await
+            .map_err(|error| preparation_error(error, token.is_cancelled()))?;
             let (preview, retained) = prepared.into_parts();
             Ok(PreparedDeploy {
                 preview,
@@ -694,10 +679,10 @@ fn invalid_argument(message: String) -> RpcError {
     }
 }
 
-/// Cancellable preparation with bounded, lossy progress independent of completion.
+/// Cancellable preparation with complete buffered progress independent of completion.
 pub struct RunningPreparation {
     cancel: CancellationToken,
-    events: Mutex<tokio::sync::broadcast::Receiver<Value>>,
+    events: Mutex<tokio::sync::mpsc::UnboundedReceiver<Value>>,
     join: Mutex<Option<tokio::task::JoinHandle<Result<PreparedDeploy, RpcError>>>>,
 }
 impl RunningPreparation {
@@ -705,15 +690,9 @@ impl RunningPreparation {
     pub fn abort(&self) {
         self.cancel.cancel();
     }
-    /// Read one progress frame; slow consumers receive explicit truncation evidence.
+    /// Read one progress frame, including output buffered before completion.
     pub async fn next(&self) -> Option<Value> {
-        match self.events.lock().await.recv().await {
-            Ok(value) => Some(value),
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
-                Some(serde_json::json!({"phase":"truncated", "dropped":dropped}))
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
-        }
+        self.events.lock().await.recv().await
     }
     /// Await preparation without draining or blocking on progress consumption.
     ///
@@ -805,8 +784,8 @@ fn preparation_error(
 mod preparation_tests {
     use super::*;
     #[tokio::test]
-    async fn slow_preparation_consumer_is_bounded_and_cannot_block_completion() {
-        let (events, receiver) = tokio::sync::broadcast::channel(128);
+    async fn slow_preparation_consumer_retains_all_output_without_blocking_completion() {
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
         let join = tokio::spawn(async move {
             for n in 0..1000 {
                 events.send(serde_json::json!({"n":n})).unwrap();
@@ -822,15 +801,10 @@ mod preparation_tests {
             .await
             .unwrap();
         assert_eq!(result.unwrap_err().message, "fixture failure");
-        assert_eq!(
-            running.next().await.unwrap().get("phase").unwrap(),
-            "truncated"
-        );
-        let mut count = 0;
-        while running.next().await.is_some() {
-            count += 1;
+        for n in 0..1000 {
+            assert_eq!(running.next().await, Some(serde_json::json!({"n":n})));
         }
-        assert_eq!(count, 128);
+        assert!(running.next().await.is_none());
     }
     #[test]
     fn selection_failure_is_known_and_does_not_expose_provider_details() {

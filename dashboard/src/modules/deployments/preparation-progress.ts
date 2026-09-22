@@ -11,7 +11,6 @@ export function preparationProgressCollector() {
       current = { ...current, output: "" };
       if (event === "Transfer") current = { ...current, phase: "transfer", message: "Delivering images" };
       else if ("Selected" in event) current = { ...current, machineId: event.Selected.machine.id, machineName: event.Selected.machine.name, message: "Builder selected" };
-      else if ("phase" in event) current = { ...current, outputTruncated: true };
       else if ("Build" in event && "Stage" in event.Build) current = { ...current, phase: "build", message: event.Build.Stage };
       else if ("Build" in event && "Output" in event.Build) {
         const output = decoder.decode(Uint8Array.from(event.Build.Output), { stream: true });

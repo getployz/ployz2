@@ -401,6 +401,15 @@ impl MachineRpc for DiscoveryService {
                 }
             }
             recorder.uploads.fetch_add(1, Ordering::SeqCst);
+            if !recorder.output.is_empty() {
+                sender
+                    .send(Ok(remote::encode(&Event::Progress(
+                        ployz_build::Progress::Output(recorder.output.clone()),
+                    ))
+                    .unwrap()))
+                    .await
+                    .unwrap();
+            }
             if recorder.quiet_until_cancel {
                 sender
                     .send(Ok(remote::encode(&Event::Progress(
@@ -1398,6 +1407,7 @@ pub(super) struct BuildRecorder {
     pub(super) routes: Mutex<Vec<ployz_core::RoutingRequest>>,
     pub(super) targets: Mutex<Vec<Vec<String>>>,
     pub(super) uploads: AtomicUsize,
+    pub(super) output: Vec<u8>,
     pub(super) queued: bool,
     pub(super) retain_images: bool,
     pub(super) quiet_until_cancel: bool,
