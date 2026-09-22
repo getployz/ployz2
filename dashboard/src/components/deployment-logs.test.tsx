@@ -46,6 +46,15 @@ it("heads each BuildKit run only when the attempt ran more than one", () => {
   expect(two).toContain("Building worker");
 });
 
+it("keeps the target heading when a single run has a failed vertex", () => {
+  const heading = step(1, "web, api", { key: "stage:Building", completedAt: at(2) });
+  const html = renderToStaticMarkup(createElement(BuildLogs, {
+    hasBuild: true, finished: true, output: [], steps: [heading, step(2, "RUN false", { completedAt: at(2), error: "exit code: 1" })],
+  }));
+  expect(html).toContain("Building web, api");
+  expect(html).toContain("exit code: 1");
+});
+
 it("hides normal cleanup and shows cleanup failures", () => {
   for (const completedAt of [null, at(2)]) {
     const cleanup = step(2, "Cleaning up", { key: "stage:Cleanup", completedAt });

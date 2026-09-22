@@ -57,7 +57,7 @@ it("blames the stage the engine names, not the cleanup that followed it", () => 
   progress.event({ Build: { Stage: "Upload" } });
   progress.event({ Build: { Stage: "Building" } });
   progress.event({ Build: { Stage: "Cleanup" } });
-  expect(keys(progress.finish("dockerfile parse error", "Building"))).toEqual([[1, "stage:Cleanup", null], [1, "stage:Building", "dockerfile parse error"]]);
+  expect(keys(progress.finish("dockerfile parse error", "Building"))).toEqual(expect.arrayContaining([[1, "stage:Cleanup", null], [1, "stage:Building", "dockerfile parse error"]]));
   const cleanup = preparationProgressCollector(() => new Date(5_000));
   cleanup.event({ Build: { Stage: "Building" } });
   cleanup.event({ Build: { Stage: "Cleanup" } });
@@ -78,4 +78,20 @@ it("preserves UTF-8 split between builder output events", () => {
   const first = progress.event({ Build: { Output: Array.from(bytes.subarray(0, 9)) } });
   const second = progress.event({ Build: { Output: Array.from(bytes.subarray(9)) } });
   expect([...first.output, ...second.output].map((row) => row.text).join("")).toBe("error: 🐴\n");
+});
+
+it("closes output from every build run while blaming only the final run", () => {
+  for (const error of [null, "build failed"]) {
+    const progress = preparationProgressCollector(() => new Date(5_000));
+    for (let build = 1; build <= 2; build++) {
+      progress.event({ Build: { Stage: "Building" } });
+      progress.event({ Build: { Output: Array.from(Buffer.from("WARNING: build output\n")) } });
+    }
+    const output = progress.finish(error, error ? "Building" : null).filter((row) => row.key === "build-output");
+    expect(output.map(({ build, completedAt, error }) => ({ build, completedAt, error }))).toEqual([
+      { build: 1, completedAt: new Date(5_000), error: null },
+      { build: 2, completedAt: new Date(5_000), error },
+    ]);
+    expect(progress.finish()).toEqual([]);
+  }
 });

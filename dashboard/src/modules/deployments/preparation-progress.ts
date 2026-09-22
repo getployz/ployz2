@@ -129,10 +129,8 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
         const row = rows.get(blamed) ?? create(blame, stageName(stageOfKey(blame)));
         row.error = error;
       }
-      const touched = new Set([open, blamed, rowId(build, BUILD_OUTPUT_KEY)].filter((id) => id !== null));
-      return [...touched].flatMap((id) => {
-        const row = rows.get(id);
-        if (!row) return [];
+      return [...rows].flatMap(([id, row]) => {
+        if (row.completedAt !== null && id !== blamed) return [];
         row.completedAt ??= now();
         return [{ ...row }];
       });

@@ -1,7 +1,11 @@
 //! BuildKit `rawjson` progress: one solve status per line, parsed into
 //! structured steps so every consumer sees the same tree Buildx renders.
 
-use std::{collections::HashMap, sync::Mutex, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Mutex,
+    time::Duration,
+};
 
 use base64::Engine as _;
 use serde::Deserialize;
@@ -56,6 +60,7 @@ struct StreamKey {
 pub(crate) struct SolveParser {
     pending: Vec<u8>,
     partial: HashMap<StreamKey, Vec<u8>>,
+    started: HashSet<String>,
 }
 
 impl SolveParser {
@@ -84,7 +89,33 @@ impl SolveParser {
             progress(Progress::Output(line.to_vec()));
             return;
         };
-        // Logs first: a status can carry a step's final record and its completion.
+        // Register steps before their first output, but publish completion only
+        // after the status's final logs. Repeated completions must not reopen rows.
+        let mut completed = Vec::new();
+        for vertex in status.vertexes {
+            let step = BuildStep {
+                id: vertex.digest,
+                name: vertex.name,
+                started: vertex.started,
+                completed: vertex.completed,
+                cached: vertex.cached,
+                error: vertex.error,
+            };
+            let first_start = step.started.is_some() && self.started.insert(step.id.clone());
+            if step.completed.is_none() {
+                progress(Progress::Step(step));
+            } else {
+                if first_start {
+                    progress(Progress::Step(BuildStep {
+                        completed: None,
+                        cached: false,
+                        error: None,
+                        ..step.clone()
+                    }));
+                }
+                completed.push(step);
+            }
+        }
         for log in status.logs {
             let key = StreamKey {
                 step: log.vertex,
@@ -114,25 +145,14 @@ impl SolveParser {
                 self.partial.insert(key, rest);
             }
         }
-        for vertex in status.vertexes {
-            let completed = vertex.completed.is_some();
-            let step = BuildStep {
-                id: vertex.digest,
-                name: vertex.name,
-                started: vertex.started,
-                completed: vertex.completed,
-                cached: vertex.cached,
-                error: vertex.error,
-            };
-            if completed {
-                for stderr in [false, true] {
-                    let key = StreamKey {
-                        step: step.id.clone(),
-                        stderr,
-                    };
-                    if let Some(bytes) = self.partial.remove(&key) {
-                        emit_output(key, &bytes, progress);
-                    }
+        for step in completed {
+            for stderr in [false, true] {
+                let key = StreamKey {
+                    step: step.id.clone(),
+                    stderr,
+                };
+                if let Some(bytes) = self.partial.remove(&key) {
+                    emit_output(key, &bytes, progress);
                 }
             }
             progress(Progress::Step(step));
@@ -305,6 +325,27 @@ mod tests {
         );
         let events = collect(|parser, progress| parser.feed(status.as_bytes(), progress));
         assert_eq!(texts(&events), ["hello\n"]);
+        let renderer = PlainRenderer::default();
+        let rendered: String = events
+            .iter()
+            .filter_map(|event| renderer.render(event))
+            .collect();
+        assert_eq!(rendered, "#1 [1/1] RUN x\n#1 hello\n#1 DONE 1.0s\n");
+    }
+
+    #[test]
+    fn a_new_vertex_precedes_its_first_log_in_the_same_status() {
+        let status = concat!(
+            r#"{"vertexes":[{"digest":"sha256:a","name":"RUN x","started":"2026-09-22T21:09:06Z"}],"logs":[{"vertex":"sha256:a","stream":1,"data":"aGVsbG8K"}]}"#,
+            "\n",
+        );
+        let events = collect(|parser, progress| parser.feed(status.as_bytes(), progress));
+        let renderer = PlainRenderer::default();
+        let rendered: String = events
+            .iter()
+            .filter_map(|event| renderer.render(event))
+            .collect();
+        assert_eq!(rendered, "#1 RUN x\n#1 hello\n");
     }
 
     #[test]
