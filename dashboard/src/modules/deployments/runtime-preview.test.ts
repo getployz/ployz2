@@ -249,12 +249,12 @@ it("lowers frozen references to runtime dependencies using identity, not display
   const input = referencedSnapshots({ app: ["postgres", "postgres", "app", "absent"], postgres: [] });
   const [app, postgres] = input.snapshots;
   if (!app || !postgres) throw new Error("Missing test services");
-  app.config.env.LITERAL = { kind: "literal", value: "${{unknown.PORT}}" };
+  app.config.env["LITERAL"] = { kind: "literal", value: "${{unknown.PORT}}" };
   expect(compileSdkDeployIntent(input).dependencies).toEqual({
     app: [{ service: "postgres", condition: "service_started" }],
   });
   postgres.config.healthcheck = { type: "http", path: "/health", timeoutSeconds: 10 };
-  expect(compileSdkDeployIntent(input).dependencies.app).toEqual([{ service: "postgres", condition: "service_healthy" }]);
+  expect(compileSdkDeployIntent(input).dependencies["app"]).toEqual([{ service: "postgres", condition: "service_healthy" }]);
   postgres.config.source = createEmptyServiceSource();
   expect(compileSdkDeployIntent(input).dependencies).toEqual({});
 });

@@ -511,6 +511,7 @@ fn system_project_deploy_still_replaces_its_own_ingress() {
 fn cloud_lowering_orders_dependency_before_migration_and_container() {
     let snapshots: Vec<_> = ["web", "db"].into_iter().map(|name| serde_json::json!({
         "config": {"version": 2, "privateDns": name,
+                "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
             "source": {"type":"image", "version":1, "image":"nginx:latest", "credentials":{"type":"none"}},
             "preDeployCommand": if name == "web" { Some("migrate") } else { None }
         }

@@ -159,6 +159,7 @@ mod tests {
             "projectName": "app",
             "snapshots": (["web", "db"].map(|name| json!({"config": {
                 "version": 2, "privateDns": name,
+                "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
                 "source": {"type": "image", "version": 1, "image": "nginx:latest", "credentials": {"type": "none"}}
             }}))),
             "dependencies": {"web": [{"service": "db", "condition": "service_started"}]}
