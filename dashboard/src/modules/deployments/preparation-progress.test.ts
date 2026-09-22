@@ -23,8 +23,8 @@ it("turns phases and BuildKit steps into one step tree with attributed output", 
   // A second run gets its own ordinal, so identical digests never collide.
   expect(keys(progress.event({ Build: { Stage: "Building" } }).steps)).toEqual([[1, "stage:Output", null], [2, "stage:Building", null]]);
   expect(progress.event({ Build: { Step: { id: "sha256:a", name: "[1/1] FROM alpine", started: "2026-09-22T21:10:00Z", completed: null, cached: false, error: null } } }).steps.map((step) => step.build)).toEqual([2]);
-  expect(keys(progress.event({ Build: { Stage: "Cleanup" } }).steps)).toEqual([[2, "stage:Building", null]]);
-  expect(keys(progress.event("Transfer").steps)).toEqual([[2, "transfer", null]]);
+  expect(keys(progress.event({ Build: { Stage: "Cleanup" } }).steps)).toEqual([[2, "stage:Building", null], [2, "stage:Cleanup", null]]);
+  expect(keys(progress.event("Transfer").steps)).toEqual([[2, "stage:Cleanup", null], [2, "transfer", null]]);
   expect(progress.event({ Delivered: { image: "web:1", machine_id: "m1" as MachineId } }).output).toEqual([{ build: 2, step: "transfer", stderr: false, text: "Delivered web:1 to m1\n" }]);
   expect(keys(progress.finish())).toEqual([[2, "transfer", null]]);
   expect(progress.finish()).toEqual([]);
@@ -57,7 +57,7 @@ it("blames the stage the engine names, not the cleanup that followed it", () => 
   progress.event({ Build: { Stage: "Upload" } });
   progress.event({ Build: { Stage: "Building" } });
   progress.event({ Build: { Stage: "Cleanup" } });
-  expect(keys(progress.finish("dockerfile parse error", "Building"))).toEqual([[1, "stage:Building", "dockerfile parse error"]]);
+  expect(keys(progress.finish("dockerfile parse error", "Building"))).toEqual([[1, "stage:Cleanup", null], [1, "stage:Building", "dockerfile parse error"]]);
   const cleanup = preparationProgressCollector(() => new Date(5_000));
   cleanup.event({ Build: { Stage: "Building" } });
   cleanup.event({ Build: { Stage: "Cleanup" } });

@@ -762,17 +762,6 @@ impl<'a> Docker<'a> {
         Ok(())
     }
 
-    /// The same host with progress routed elsewhere.
-    pub(crate) fn with_progress<'p>(&self, progress: &'p (dyn Fn(Progress) + Sync)) -> Docker<'p>
-    where
-        'a: 'p,
-    {
-        Docker {
-            progress: Some(progress),
-            ..*self
-        }
-    }
-
     /// The same Docker with a fresh budget for releasing resources, so
     /// cleanup still runs, bounded, after the attempt's deadline passes.
     pub(crate) fn releasing(&self) -> Docker<'a> {

@@ -46,6 +46,18 @@ it("heads each BuildKit run only when the attempt ran more than one", () => {
   expect(two).toContain("Building worker");
 });
 
+it("hides normal cleanup and shows cleanup failures", () => {
+  for (const completedAt of [null, at(2)]) {
+    const cleanup = step(2, "Cleaning up", { key: "stage:Cleanup", completedAt });
+    const render = (error: string | null) => renderToStaticMarkup(createElement(BuildLogs, {
+      hasBuild: true, finished: completedAt !== null, steps: [step(1, "RUN true"), { ...cleanup, error }], output: [],
+    }));
+    expect(render(null)).not.toContain("Cleaning up");
+    expect(render("builder removal failed")).toContain("Cleaning up");
+    expect(render("builder removal failed")).toContain("builder removal failed");
+  }
+});
+
 it("names the empty states", () => {
   const render = (hasBuild: boolean, finished: boolean) => renderToStaticMarkup(createElement(BuildLogs, { steps: [], output: [], hasBuild, finished }));
   expect(render(true, true)).toContain("No retained build output");

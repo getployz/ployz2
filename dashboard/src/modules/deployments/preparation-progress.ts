@@ -14,8 +14,6 @@ const stageNames = new Map([
   ["Building", "Building"], ["Output", "Loading images"], ["Cleanup", "Cleaning up"],
 ]);
 const stageName = (stage: string) => stageNames.get(stage) ?? stage;
-// Cleanup is noise unless it fails. Building heads one BuildKit run, named by its targets.
-const silentStages = new Set(["Cleanup"]);
 export const BUILDING_KEY = "stage:Building";
 
 /**
@@ -32,8 +30,6 @@ function blameFor(input: { error: string | null; stage: string | null; stepFaile
 const stageKey = (stage: string) => `stage:${stage}`;
 const stageOfKey = (key: string) => key.replace(/^stage:/, "");
 
-/** A Ployz-owned row. Silent rows exist for blame but are not written unless they fail. */
-type OwnedRow = BuildStepWrite & { silent: boolean };
 const rowId = (build: number, key: string) => `${build}:${key}`;
 
 /**
@@ -47,15 +43,14 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
   const decoder = new TextDecoder();
   let current: PreparationProgress = { phase: "selection", serviceId: null, machineId: null, machineName: null, message: null };
   /** Ployz-owned rows by build and key, mutated in place; the open phase is the one without a completion. */
-  const rows = new Map<string, OwnedRow>();
+  const rows = new Map<string, BuildStepWrite>();
   let open: string | null = null;
   let build = 0;
   let targets: string[] = [];
   let stepFailed = false;
   let finished = false;
-  const write = ({ silent: _silent, ...row }: OwnedRow): BuildStepWrite[] => (_silent ? [] : [{ ...row }]);
-  const create = (key: string, name: string, silent = false): OwnedRow => {
-    const row = { build, key, name, startedAt: now(), completedAt: null, cached: false, error: null, silent };
+  const create = (key: string, name: string): BuildStepWrite => {
+    const row = { build, key, name, startedAt: now(), completedAt: null, cached: false, error: null };
     rows.set(rowId(build, key), row);
     return row;
   };
@@ -63,17 +58,17 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
     const row = id === null ? undefined : rows.get(id);
     if (!row) return [];
     row.completedAt = now();
-    return write(row);
+    return [{ ...row }];
   };
-  const begin = (key: string, name: string, silent = false): BuildStepWrite[] => {
+  const begin = (key: string, name: string): BuildStepWrite[] => {
     const closed = close(open);
     open = rowId(build, key);
-    return [...closed, ...write(create(key, name, silent))];
+    return [...closed, { ...create(key, name) }];
   };
   const none = (): PreparationWrites => ({ progress: null, steps: [], output: [] });
   const builderLine = (text: string): PreparationWrites => {
     if (!text) return none();
-    const steps = rows.has(rowId(build, BUILD_OUTPUT_KEY)) ? [] : write(create(BUILD_OUTPUT_KEY, "Build output"));
+    const steps = rows.has(rowId(build, BUILD_OUTPUT_KEY)) ? [] : [{ ...create(BUILD_OUTPUT_KEY, "Build output") }];
     return { progress: null, steps, output: [{ build, step: BUILD_OUTPUT_KEY, stderr: false, text }] };
   };
   return {
@@ -100,7 +95,7 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
           build += 1;
           targets = [];
         }
-        return { progress: current, steps: begin(stageKey(build_.Stage), name, silentStages.has(build_.Stage)), output: [] };
+        return { progress: current, steps: begin(stageKey(build_.Stage), name), output: [] };
       }
       if ("Target" in build_) {
         // The engine names each target as its run starts; the run's header row lists them.
@@ -108,7 +103,7 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
         if (!heading || targets.includes(build_.Target.name)) return none();
         targets.push(build_.Target.name);
         heading.name = targets.join(", ");
-        return { progress: null, steps: write(heading), output: [] };
+        return { progress: null, steps: [{ ...heading }], output: [] };
       }
       if ("Output" in build_) return builderLine(decoder.decode(Uint8Array.from(build_.Output), { stream: true }));
       if ("Step" in build_) {
@@ -133,14 +128,13 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
       if (blame && blamed) {
         const row = rows.get(blamed) ?? create(blame, stageName(stageOfKey(blame)));
         row.error = error;
-        row.silent = false;
       }
       const touched = new Set([open, blamed, rowId(build, BUILD_OUTPUT_KEY)].filter((id) => id !== null));
       return [...touched].flatMap((id) => {
         const row = rows.get(id);
         if (!row) return [];
         row.completedAt ??= now();
-        return write(row);
+        return [{ ...row }];
       });
     },
   };

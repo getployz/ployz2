@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gt, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
@@ -58,9 +58,9 @@ export const persistBuildLog = Effect.fn("Deployments.persistBuildLog")(function
     if (!writes.output.length) return;
     const unknown = new Map(writes.output.filter((row) => !ids.has(`${row.build}:${row.step}`)).map((row) => [`${row.build}:${row.step}`, row]));
     if (unknown.size) {
-      yield* drizzle.insert(table).values([...unknown.values()].map((row) => ({ deploymentId, build: row.build, key: row.step, name: row.step }))).onConflictDoNothing({ target });
-      const found = yield* drizzle.select({ id: table.id, build: table.build, key: table.key }).from(table)
-        .where(and(eq(table.deploymentId, deploymentId), inArray(table.key, [...unknown.values()].map((row) => row.step))));
+      const found = yield* drizzle.insert(table).values([...unknown.values()].map((row) => ({ deploymentId, build: row.build, key: row.step, name: row.step })))
+        .onConflictDoUpdate({ target, set: { key: table.key } })
+        .returning({ id: table.id, build: table.build, key: table.key });
       for (const step of found) ids.set(`${step.build}:${step.key}`, step.id);
     }
     yield* drizzle.insert(environmentDeploymentBuildOutput).values(writes.output.flatMap((row) => {

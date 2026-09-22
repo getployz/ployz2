@@ -175,12 +175,11 @@ impl<'a> Builder<'a> {
                 progress(event);
             }
         };
-        let result = self.docker.with_progress(&structured).run_started(
-            "the build",
-            &borrowed,
-            Streams::Inherited,
-            started,
-        );
+        let result = Docker {
+            progress: Some(&structured),
+            ..*self.docker
+        }
+        .run_started("the build", &borrowed, Streams::Inherited, started);
         parser
             .lock()
             .expect("parsing never panics while holding the parser")

@@ -98,7 +98,7 @@ export function BuildLogs({ steps, output, hasBuild, finished, now = Date.now() 
   }
   // One attempt may run BuildKit several times; the run's heading matters only then, or when it failed.
   const runs = new Set(started.map((step) => step.build).filter((build) => build > 0)).size;
-  const shown = started.filter((step) => step.key !== BUILDING_KEY || runs > 1 || step.error !== null);
+  const shown = started.filter((step) => step.error !== null || (step.key !== "stage:Cleanup" && (step.key !== BUILDING_KEY || runs > 1)));
   return <ol>
     {shown.map((step) => step.key === BUILDING_KEY && step.error === null
       ? <li key={step.id} className="mt-2 flex items-center gap-3 px-1 font-medium"><span className="w-16 shrink-0" /><span className="w-4 shrink-0" />Building {step.name}</li>
