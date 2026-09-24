@@ -58,7 +58,7 @@ export function createApiCollection<T extends object>(input: ApiCollectionInput<
 }
 
 /** Rows and their change cursor live in one Query entry, so a cancelled or reverted read reverts both. */
-type ChangeSnapshot<T> = { rows: T[]; cursor?: string };
+export type ChangeSnapshot<T> = { rows: T[]; cursor?: string };
 
 /**
  * TanStack DB's incremental pattern for Query collections: read `since` the cached cursor,
