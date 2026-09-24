@@ -1,58 +1,83 @@
+import * as EffectRecord from "effect/Record";
 import type { ChangeName } from "./read.contract";
 
 /**
- * The one map from a change-log source table to the names it feeds. Every organization-owned table
- * is here, with the key columns its trigger logs (joined with ':'); tables no client reads feed nothing.
- * One key per table means collections sharing a table share its key, and collection reads match it.
+ * Every organization-owned table, with the key columns its change trigger logs (joined with ':').
+ * The migration attaches each trigger with these columns; the ownership test checks they match.
  */
 export const changeSources = {
-  organization: { key: ["id"], feeds: ["organization"] },
-  project: { key: ["id"], feeds: ["project"] },
-  environment: { key: ["id"], feeds: ["environment", "environment_summary"] },
-  user_project_preference: { key: ["project_id"], feeds: ["project_preference"] },
-  service: { key: ["id"], feeds: ["service"] },
-  resource_lineage: { key: ["id"], feeds: ["resource_lineage"] },
-  environment_resource: { key: ["id"], feeds: ["environment_resource"] },
-  environment_canvas_node_position: { key: ["resource_type", "resource_id"], feeds: ["environment_canvas_node_position"] },
-  environment_deployment: { key: ["id"], feeds: ["environment_deployment"] },
-  environment_deployment_event: { key: ["deployment_id"], feeds: ["environment_deployment"] },
-  environment_saved_state_snapshot: { key: ["id"], feeds: ["environment_saved_state_snapshot"] },
-  environment_node_config_snapshot: { key: ["id"], feeds: ["environment_node_config_snapshot"] },
-  environment_node_introduction: { key: ["node_type", "node_id"], feeds: ["environment_node_introduction"] },
-  volume_remove_attempt: { key: ["id"], feeds: ["volume_remove_attempt"] },
-  organization_pairing: { key: ["organization_id"], feeds: ["organization_enrollment"] },
-  core_operation_event: { key: ["id"], feeds: [] },
-  core_operation_watch: { key: ["id"], feeds: [] },
-  enrollment_allocation: { key: ["cluster_key"], feeds: [] },
-  environment_deployment_build_output: { key: ["id"], feeds: [] },
-  environment_deployment_build_step: { key: ["id"], feeds: [] },
-  environment_deployment_secret: { key: ["environment_deployment_id"], feeds: [] },
-  environment_node_config_snapshot_secret: { key: ["snapshot_id"], feeds: [] },
-  environment_node_introduction_secret: { key: ["environment_id", "node_type", "node_id"], feeds: [] },
-  github_environment_trigger: { key: ["id"], feeds: [] },
-  invitation: { key: ["id"], feeds: [] },
-  machine_enrollment_token: { key: ["id"], feeds: [] },
-  machine_remove_attempt: { key: ["id"], feeds: [] },
-  member: { key: ["id"], feeds: [] },
-  organization_billing_state: { key: ["organization_id"], feeds: [] },
-  organization_machine: { key: ["machine_id"], feeds: [] },
-  service_lineage: { key: ["id"], feeds: [] },
-  service_registry_credential: { key: ["service_id"], feeds: [] },
-  teardown_attempt: { key: ["id"], feeds: [] },
-  variable: { key: ["id"], feeds: [] },
-  variable_secret: { key: ["variable_id"], feeds: [] },
-} satisfies Record<string, { key: readonly string[]; feeds: readonly ChangeName[] }>;
+  organization: ["id"],
+  project: ["id"],
+  environment: ["id"],
+  user_project_preference: ["project_id"],
+  service: ["id"],
+  resource_lineage: ["id"],
+  environment_resource: ["id"],
+  environment_canvas_node_position: ["resource_type", "resource_id"],
+  environment_deployment: ["id"],
+  environment_deployment_event: ["deployment_id"],
+  environment_saved_state_snapshot: ["id"],
+  environment_node_config_snapshot: ["id"],
+  environment_node_introduction: ["node_type", "node_id"],
+  volume_remove_attempt: ["id"],
+  organization_pairing: ["organization_id"],
+  core_operation_event: ["id"],
+  core_operation_watch: ["id"],
+  enrollment_allocation: ["cluster_key"],
+  environment_deployment_build_output: ["id"],
+  environment_deployment_build_step: ["id"],
+  environment_deployment_secret: ["environment_deployment_id"],
+  environment_node_config_snapshot_secret: ["snapshot_id"],
+  environment_node_introduction_secret: ["environment_id", "node_type", "node_id"],
+  github_environment_trigger: ["id"],
+  invitation: ["id"],
+  machine_enrollment_token: ["id"],
+  machine_remove_attempt: ["id"],
+  member: ["id"],
+  organization_billing_state: ["organization_id"],
+  organization_machine: ["machine_id"],
+  service_lineage: ["id"],
+  service_registry_credential: ["service_id"],
+  teardown_attempt: ["id"],
+  variable: ["id"],
+  variable_secret: ["variable_id"],
+} satisfies Record<string, readonly string[]>;
 
 export type ChangeSource = keyof typeof changeSources;
 
-// SAFETY: changeSources is an object literal, so its own keys are exactly ChangeSource.
-const sources = Object.entries(changeSources) as [ChangeSource, { key: readonly string[]; feeds: readonly ChangeName[] }][];
+/**
+ * The source tables each change stream name reads; tables no client reads feed nothing. The first is
+ * its key table: the collection's rows are keyed by the key that table logs, and every other source
+ * logs that same key through a foreign key to it.
+ */
+export const collectionSources = {
+  organization: ["organization"],
+  project: ["project"],
+  environment: ["environment"],
+  environment_summary: ["environment"],
+  project_preference: ["user_project_preference"],
+  service: ["service"],
+  resource_lineage: ["resource_lineage"],
+  environment_resource: ["environment_resource"],
+  environment_canvas_node_position: ["environment_canvas_node_position"],
+  environment_deployment: ["environment_deployment", "environment_deployment_event"],
+  environment_saved_state_snapshot: ["environment_saved_state_snapshot"],
+  environment_node_config_snapshot: ["environment_node_config_snapshot"],
+  environment_node_introduction: ["environment_node_introduction"],
+  volume_remove_attempt: ["volume_remove_attempt"],
+  organization_enrollment: ["organization_pairing"],
+} satisfies Record<ChangeName, readonly [ChangeSource, ...ChangeSource[]]>;
 
-export function sourceTablesOf(name: ChangeName) {
-  return sources.filter(([, source]) => source.feeds.some((feed) => feed === name)).map(([table]) => table);
+export function sourceTablesOf(name: ChangeName): readonly ChangeSource[] {
+  return collectionSources[name];
+}
+
+/** The key columns a collection's rows are keyed by. */
+export function keyColumnsOf(name: ChangeName): readonly string[] {
+  return changeSources[collectionSources[name][0]];
 }
 
 export function collectionsOf(sourceTables: Iterable<ChangeSource>) {
   const tables = new Set(sourceTables);
-  return [...new Set(sources.filter(([table]) => tables.has(table)).flatMap(([, source]) => source.feeds))];
+  return EffectRecord.keys(collectionSources).filter((name) => sourceTablesOf(name).some((table) => tables.has(table)));
 }

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { changeSources } from "#/collections/change-sources";
+import { changeSources, collectionSources } from "#/collections/change-sources";
 import {
   type GithubPostgresTestHarness,
   startGithubPostgresTestHarness,
@@ -102,8 +102,25 @@ it("logs every change to an organization-owned table under its Organization and 
   // Arguments are the Organization column, then the one key every collection fed by the table shares.
   const expected = Object.entries(organizationOwned).flatMap(([table, organizationColumn]) =>
     ["insert", "update", "delete"].map((event) =>
-      row(table, `organization_change_${event}`, [organizationColumn, ...new Map<string, { key: readonly string[] }>(Object.entries(changeSources)).get(table)?.key ?? []])));
+      row(table, `organization_change_${event}`, [organizationColumn, ...new Map<string, readonly string[]>(Object.entries(changeSources)).get(table) ?? []])));
   expect(triggers.rows.map((trigger) =>
     row(trigger.table_name, trigger.event, trigger.tgargs.toString("utf8").split("\0").filter(Boolean))).sort())
     .toEqual(expected.sort());
+});
+
+it("keys every source feeding a collection by its key table's key", async () => {
+  const foreignKeys = await harness.pool.query<{ source: string; columns: string[]; target: string; target_columns: string[] }>(`
+    select c.conrelid::regclass::text as source, c.confrelid::regclass::text as target,
+      array(select a.attname::text from unnest(c.conkey) with ordinality k(n, i)
+        join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.n order by k.i) as columns,
+      array(select a.attname::text from unnest(c.confkey) with ordinality k(n, i)
+        join pg_attribute a on a.attrelid = c.confrelid and a.attnum = k.n order by k.i) as target_columns
+    from pg_constraint c where c.contype = 'f'
+  `);
+  const references = new Set(foreignKeys.rows.map((row) => `${row.source}(${row.columns.join(", ")}) -> ${row.target}(${row.target_columns.join(", ")})`));
+  // A change to any source names the collection rows it affects only if it logs their key.
+  const required = Object.values(collectionSources).flatMap(([keyTable, ...others]) =>
+    others.map((source) => `${source}(${changeSources[source].join(", ")}) -> ${keyTable}(${changeSources[keyTable].join(", ")})`));
+  expect(required.length).toBeGreaterThan(0);
+  expect(required.filter((reference) => !references.has(reference))).toEqual([]);
 });
