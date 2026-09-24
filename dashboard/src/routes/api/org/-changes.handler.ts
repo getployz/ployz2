@@ -36,15 +36,20 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
   const resuming = isCursor(lastEventId);
   // Taken before the response opens: the client refetches on `open`, so every change at or after
   // this cursor is either in that refetch or announced by the stream.
-  let cursor: string;
-  try {
-    cursor = resuming ? lastEventId : await deps.currentCursor();
-  } catch (cause) {
-    return publicErrorResponse(cause);
-  }
-  return eventStreamResponse(request.signal, (signal) => orgChangeEvents(organizationId, cursor, resuming, deps, signal),
+  const cursor = resuming ? lastEventId : await deps.currentCursor().catch(logReadFailure);
+  // EventSource never reconnects after a non-200 response, so a failed read still opens the stream,
+  // sends `retry:`, and ends at once: the client reconnects and tries again.
+  return eventStreamResponse(request.signal,
+    (signal) => cursor === undefined ? noEvents() : orgChangeEvents(organizationId, cursor, resuming, deps, signal),
     { heartbeatMs: 15_000, retryMs: 1000 });
 }
+
+function logReadFailure(cause: unknown) {
+  Effect.runFork(Effect.logError("Organization change log read failed.", cause));
+  return undefined;
+}
+
+async function* noEvents(): AsyncGenerator<string> {}
 
 // ponytail: one poll loop per open stream; move to one loop per instance if open tabs reach the thousands.
 async function* orgChangeEvents(organizationId: string, start: string, resume: boolean, deps: OrgChangesHandlerDeps, signal: AbortSignal) {
@@ -52,10 +57,7 @@ async function* orgChangeEvents(organizationId: string, start: string, resume: b
   // Only the resume can be expired; a live cursor is always recent, and an empty log would reset every poll.
   let resuming = resume;
   while (!signal.aborted) {
-    const changes = await deps.readChanges({ organizationId, since: cursor }).catch((cause: unknown) => {
-      Effect.runFork(Effect.logError("Organization change log read failed.", cause));
-      return undefined;
-    });
+    const changes = await deps.readChanges({ organizationId, since: cursor }).catch(logReadFailure);
     // Ending the stream on a failed read makes EventSource reconnect from its last event id.
     if (!changes) return;
     if (resuming && changes.expired) {

@@ -132,14 +132,16 @@ it("ends the stream when the change log can't be read, so EventSource reconnects
   expect(readChanges).toHaveBeenCalledOnce();
 });
 
-it("refuses the stream when the current horizon can't be read, so EventSource retries", async () => {
+it("opens and immediately ends the stream when the current horizon can't be read, so EventSource retries", async () => {
   const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>();
   const response = await handleOrgChangesRequest(request(), "acme", {
     authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
     currentCursor: vi.fn().mockRejectedValue(new Error("database down")),
     readChanges,
   });
-  expect(response.status).toBe(500);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Content-Type")).toBe("text/event-stream");
+  expect(await response.text()).toBe("retry: 1000\n\n");
   expect(readChanges).not.toHaveBeenCalled();
 });
 
