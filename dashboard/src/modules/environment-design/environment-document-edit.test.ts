@@ -10,12 +10,13 @@ import * as scopes from "#/collections/use-collection-scope";
 import type { CollectionScope } from "#/collections/scope";
 import { editEnvironmentDocument, useEnvironmentDocumentQueue } from "./environment-document-edit";
 
+import { emptyEnvironmentIntent } from "./saved-intent";
+
+
 function getEditorForTest(scope: CollectionScope) {
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
   return renderHook(() => useEnvironmentDocumentQueue("acme")).result.current;
 }
-import { emptyEnvironmentIntent } from "./saved-intent";
-
 
 const clients: QueryClient[] = [];
 afterEach(async () => {
@@ -117,4 +118,11 @@ it("runs an enqueued command after queued edits, against their revision, and set
   await settling;
   expect(discard).toHaveBeenCalledWith("r2");
   expect(test.environments.get("env")?.revision).toBe("r3");
+});
+
+it("still saves an edit that changes nothing in memory", async () => {
+  const test = await setup();
+  const save = vi.fn(async (revision: string) => test.saved(revision === "r1" ? "r2" : "stale", "data"));
+  await editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("data"), save, failureMessage: "x" }).isPersisted.promise;
+  expect(save).toHaveBeenCalledWith("r1");
 });

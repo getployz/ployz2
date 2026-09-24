@@ -23,8 +23,9 @@ export type EnvironmentDocumentSave = {
 export type EnvironmentDocumentEdit = EnvironmentDocumentSave & {
   /**
    * Applied to the in-memory document immediately; rolled back if saving fails.
-   * Must change the document (an unchanged edit never saves). Skip silently when the
-   * target is gone: a concurrent change removed it, and the saved document reconciles.
+   * Must be pure: it runs once on a probe copy to detect edits that change nothing in memory
+   * (rotating a secret, say), which still save.
+   * Skip silently when the target is gone: a concurrent change removed it, and the saved document reconciles.
    */
   apply: (intent: SavedEnvironmentIntent) => void;
 };
@@ -41,8 +42,6 @@ const getEnvironmentDocumentEditor = cachedByCollectionScope((organizationSlug, 
   const environments = getEnvironmentsCollection(organizationSlug, scope);
   const tails = new Map<string, Promise<string>>();
   const inFlight = new Map<string, Set<Promise<unknown>>>();
-
-  const notLoaded = () => new Error("Environment is not loaded.");
 
   async function runInQueue({ environmentId, save, failureMessage, afterSave }: EnvironmentDocumentSave, revision: string) {
     const base = tails.get(environmentId) ?? Promise.resolve(revision);
@@ -79,26 +78,34 @@ const getEnvironmentDocumentEditor = cachedByCollectionScope((organizationSlug, 
   });
 
   /** A document that is not loaded fails like a save: toasted, and observed. */
-  function failed(error: Error): Persistable {
+  function notLoaded(): Persistable {
+    const error = new Error("Environment is not loaded.");
     toast.error(error.message);
     return observeFailure({ isPersisted: { promise: Promise.reject(error) } });
   }
 
+  function queued(save: EnvironmentDocumentSave, revision: string): Persistable {
+    const persisted = runInQueue(save, revision);
+    track(save.environmentId, persisted);
+    return observeFailure({ isPersisted: { promise: persisted } });
+  }
+
   return {
     edit(edit: EnvironmentDocumentEdit): Persistable {
-      const revision = environments.get(edit.environmentId)?.revision;
-      if (!revision) return failed(notLoaded());
-      const transaction = observeFailure(action({ ...edit, revision }));
+      const document = environments.get(edit.environmentId);
+      if (!document) return notLoaded();
+      // TanStack DB drops an update that changes nothing without saving it, so queue those directly.
+      const probe = structuredClone(document.intent);
+      edit.apply(probe);
+      if (JSON.stringify(probe) === JSON.stringify(document.intent)) return queued(edit, document.revision);
+      const transaction = observeFailure(action({ ...edit, revision: document.revision }));
       track(edit.environmentId, transaction.isPersisted.promise);
       return transaction;
     },
     /** A queued save with nothing to apply up front, for commands like discard. */
     enqueue(save: EnvironmentDocumentSave): Persistable {
       const revision = environments.get(save.environmentId)?.revision;
-      if (!revision) return failed(notLoaded());
-      const persisted = runInQueue(save, revision);
-      track(save.environmentId, persisted);
-      return observeFailure({ isPersisted: { promise: persisted } });
+      return revision ? queued(save, revision) : notLoaded();
     },
     /**
      * Resolves once every queued edit for the environment has finished and its optimistic

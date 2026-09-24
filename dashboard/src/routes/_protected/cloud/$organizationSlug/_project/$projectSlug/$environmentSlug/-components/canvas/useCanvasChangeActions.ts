@@ -69,6 +69,7 @@ export function useCanvasChangeActions({
 }: UseCanvasChangeActionsInput) {
   const [reviewAction, setReviewAction] = useState<"save" | "deploy">("save");
   const collectionScope = useCollectionScope();
+  const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
   // Read at call time: after queued edits settle, the render-time document is stale.
   function workingReview() {
     const document = documents.get(environmentId);
@@ -79,7 +80,6 @@ export function useCanvasChangeActions({
   const navigate = useNavigate();
   // Discard runs in the document save queue; publishing reviews the saved working state, so queued edits land first.
   const queue = useEnvironmentDocumentQueue(params.organizationSlug);
-  const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
   const runtime = useRuntimeLens(params.organizationSlug);
   const deployTargetPreflight = getDeployTargetPreflight({
     status: runtime.status,
