@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { orgStoreOptions } from "#/collections/org-store";
-import { orgStoreTableNames } from "#/test/org-store-tables";
+import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
 import { environmentChangeStateOptions } from "#/modules/deployments/environment-change-state.queries";
 import { act, cleanup, fireEvent, render, screen, waitFor, within, type RenderOptions } from "@testing-library/react";
 import { Schema } from "effect";
@@ -89,7 +89,7 @@ async function show(ssr = false, orgStore: "ready" | "pending" | "failed" = "rea
   client.setQueryData(["collections", "test-session", "test-user", "acme", "environment_summary"], [environmentData]);
   client.setQueryData(["collections", "test-session", "test-user", "acme", "project_preference"], []);
   for (const table of orgStoreTableNames.filter((name) => !["project", "environment_summary", "project_preference"].includes(name))) {
-    client.setQueryData(["collections", "test-session", "test-user", "acme", table], table === "environment" ? [environmentData] : []);
+    client.setQueryData(["collections", "test-session", "test-user", "acme", table], orgStoreSeed(table, table === "environment" ? [environmentData] : []));
   }
   const storeScope = { queryClient: client, sessionId: "test-session", userId: "test-user" };
   client.setQueryData(environmentChangeStateOptions("acme", storeScope).queryKey, { version: "", states: [] });

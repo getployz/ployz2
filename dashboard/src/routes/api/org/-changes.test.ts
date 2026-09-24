@@ -31,7 +31,8 @@ it("resumes after Last-Event-ID, names changed collections, pings, and disables 
   expect(response.headers.get("Content-Type")).toBe("text/event-stream");
   expect(response.headers.get("X-Accel-Buffering")).toBe("no");
   expect(response.headers.get("Cache-Control")).toBe("no-cache, no-transform");
-  const reader = response.body!.getReader();
+  if (!response.body) throw new Error("The change stream has no body");
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let text = "";
   const readUntil = async (fragment: string) => {
@@ -64,5 +65,5 @@ it("starts at the current horizon without a valid Last-Event-ID", async () => {
     readChanges,
   });
   await vi.waitFor(() => expect(readChanges).toHaveBeenCalledWith({ organizationId: "org-1", since: undefined }));
-  await response.body!.cancel();
+  await response.body?.cancel();
 });

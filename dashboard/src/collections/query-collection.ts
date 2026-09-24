@@ -12,7 +12,7 @@ type ApiCollectionInput<T> = {
   staleTime?: number;
 };
 
-function queryOptions<T>(input: ApiCollectionInput<T>) {
+function sharedOptions<T>(input: ApiCollectionInput<T>) {
   // Default snapshot retention lets a loader hand data to its consumer after releasing its observer.
   return {
     queryClient: input.queryClient,
@@ -52,7 +52,7 @@ function withWriteCommitted<T extends object, C extends { utils: { writeUpsert: 
 export function createApiCollection<T extends object>(input: ApiCollectionInput<T> & {
   queryFn: (context: { signal: AbortSignal }) => Promise<T[]>;
 }) {
-  const options = queryCollectionOptions({ ...queryOptions(input), queryFn: input.queryFn });
+  const options = queryCollectionOptions({ ...sharedOptions(input), queryFn: input.queryFn });
   return withWriteCommitted(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
 }
 
@@ -77,7 +77,7 @@ export function createChangeCollection<T extends object>(input: ApiCollectionInp
     return { rows: [...rows.values()], cursor: result.cursor };
   };
   const options = queryCollectionOptions({
-    ...queryOptions(input),
+    ...sharedOptions(input),
     queryFn,
     select: (snapshot: ChangeSnapshot<T>) => snapshot.rows,
   });
