@@ -14,7 +14,8 @@ pub(super) struct LocalMachineRecordWire {
     body: LocalMachineBody,
     wireguard_private_key: WireGuardPrivateKey,
     management_secret: ManagementSecret,
-    #[serde(default)]
+    /// Required: a record without it predates Management Clients, and reading it
+    /// as "no slots" would silently forget every admitted key.
     management_clients: BTreeMap<ManagementClientLabel, ManagementClientSlot>,
     #[serde(default)]
     wireguard_mtu: Option<u32>,

@@ -760,6 +760,7 @@ fn local_record_decoding_rejects_incoherent_identity_and_empty_join_payloads() {
         "body": { "phase": "joining", "machine": machine, "bootstrap": [peer] },
         "wireguard_private_key": key,
         "management_secret": ManagementSecret::generate(),
+        "management_clients": {},
     });
     assert!(serde_json::from_value::<LocalMachineRecord>(valid.clone()).is_ok());
     for (path, value) in [
@@ -933,7 +934,26 @@ fn local_record_refuses_unknown_management_client_slot_fields() {
     // Key material fails closed: an unknown slot field may be a secret.
     assert!(serde_json::from_value::<LocalMachineRecord>(extended).is_err());
 
-    // A record without slots omits the field and reads back without it.
-    assert!(valid.get("management_clients").is_none());
-    serde_json::from_value::<LocalMachineRecord>(valid).unwrap();
+    // A record with no slots still writes the field.
+    assert_eq!(
+        valid.get("management_clients"),
+        Some(&serde_json::json!({}))
+    );
+    serde_json::from_value::<LocalMachineRecord>(valid.clone()).unwrap();
+}
+
+/// A record from a build before Management Clients has no `management_clients`.
+/// Reading it as "no slots" would silently forget the admitted Cloud key.
+#[test]
+fn local_record_without_management_clients_fails_to_load() {
+    let dir = TestDir::new("ployzd-record-without-management-clients");
+    let store = LocalMachineStore::open(&dir.0).unwrap();
+    let mut earlier = serde_json::to_value(store.record()).unwrap();
+    let record = earlier.as_object_mut().unwrap();
+    record.remove("management_clients");
+    record.insert(
+        "cloud_access".into(),
+        serde_json::json!({ "state": "active", "accepted": vec![1_u8; 32] }),
+    );
+    assert!(serde_json::from_value::<LocalMachineRecord>(earlier).is_err());
 }

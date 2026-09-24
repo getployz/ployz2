@@ -140,8 +140,8 @@ pub struct LocalMachineRecord {
     wireguard_private_key: WireGuardPrivateKey,
     /// Management Identity secret; minted when the record is born.
     management_secret: ManagementSecret,
-    /// Management Client slots by label. An absent label has no slot.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Management Client slots by label. An absent label has no slot. Always
+    /// written, even when empty, because readers require it.
     management_clients: BTreeMap<ManagementClientLabel, ManagementClientSlot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
