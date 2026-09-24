@@ -29,3 +29,15 @@ it("releases the runtime as soon as the viewer cancels an idle stream", async ()
   await response.body?.cancel();
   expect(closed).toBe(true);
 });
+
+it("releases the runtime once when the viewer cancels a running stream", async () => {
+  let closed = 0;
+  const events = { [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<never>>(() => {}) }; } };
+  const response = containerLogResponse(new Request("http://localhost/logs"), events, async () => { closed++; });
+  const reader = response.body?.getReader();
+  // Let the stream start pulling, so both the cancel and the stream's own end release it.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await reader?.cancel();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(closed).toBe(1);
+});
