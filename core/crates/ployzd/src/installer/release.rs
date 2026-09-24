@@ -94,6 +94,14 @@ pub(super) async fn resolve_release(
         MachineRelease::Stable => ("stable", false),
         MachineRelease::Beta => ("beta", true),
     };
+    if let Some(installed) = installed
+        && format!("v{}", installed.major()) != RELEASE_LINE
+    {
+        return Err(Error::ReleaseSelection(format!(
+            "installed daemon {installed} is not on release line {RELEASE_LINE}; \
+             install an exact version to cross release lines"
+        )));
+    }
     let pointer = parse_channel_version(&source.channel(channel).await?)?;
     if format!("v{}", pointer.major()) != RELEASE_LINE {
         return Err(Error::ReleaseSelection(format!(
@@ -472,6 +480,13 @@ mod tests {
         assert!(matches!(
             resolve(&MachineRelease::Stable, None).await,
             Err(Error::ReleaseSelection(message)) if message.contains("prerelease")
+        ));
+
+        // A daemon installed on another line is never crossed through a channel.
+        let other_line = format!("{}.0.0", RELEASE_LINE[1..].parse::<u64>().unwrap() + 1);
+        assert!(matches!(
+            resolve(&MachineRelease::Stable, Some(&other_line)).await,
+            Err(Error::ReleaseSelection(message)) if message.contains("not on release line")
         ));
 
         // A pointer misfiled under this line never moves a Machine onto another line.
