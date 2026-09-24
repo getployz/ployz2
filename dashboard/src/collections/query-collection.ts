@@ -8,11 +8,10 @@ type ApiCollectionInput<T> = {
   queryClient: QueryClient;
   queryKey: readonly string[];
   getKey: (row: T) => string | number;
-  refetchInterval?: number | false;
   staleTime?: number;
 };
 
-function sharedOptions<T>(input: ApiCollectionInput<T>) {
+function sharedOptions<T>(input: ApiCollectionInput<T> & { refetchInterval?: number }) {
   // Default snapshot retention lets a loader hand data to its consumer after releasing its observer.
   return {
     queryClient: input.queryClient,
@@ -20,7 +19,7 @@ function sharedOptions<T>(input: ApiCollectionInput<T>) {
     getKey: input.getKey,
     id: input.queryKey.join(":"),
     startSync: false,
-    refetchInterval: input.refetchInterval ?? 15_000,
+    refetchInterval: input.refetchInterval,
     staleTime: input.staleTime ?? 15_000,
     refetchOnWindowFocus: "always" as const,
     refetchOnReconnect: "always" as const,
@@ -48,8 +47,9 @@ function withWriteCommitted<T extends object, C extends { utils: { writeUpsert: 
   });
 }
 
-/** Each owner supplies its request-local QueryClient and authenticated scope. */
+/** Each owner supplies its request-local QueryClient and authenticated scope. A Remote Read that polls sets `refetchInterval`. */
 export function createApiCollection<T extends object>(input: ApiCollectionInput<T> & {
+  refetchInterval?: number;
   queryFn: (context: { signal: AbortSignal }) => Promise<T[]>;
 }) {
   const options = queryCollectionOptions({ ...sharedOptions(input), queryFn: input.queryFn });
@@ -62,6 +62,7 @@ type ChangeSnapshot<T> = { rows: T[]; cursor: string | null };
 /**
  * TanStack DB's incremental pattern for Query collections: read `since` the cached cursor,
  * merge into the cached rows, and return the complete list. A full read replaces them.
+ * No timer: the Organization change stream refetches it, as do focus and reconnect.
  */
 export function createChangeCollection<T extends object>(input: ApiCollectionInput<T> & {
   read: (context: { signal: AbortSignal; since: string | undefined }) => Promise<CollectionRead<T>>;

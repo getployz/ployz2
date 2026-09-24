@@ -18,7 +18,7 @@ it("refreshes active snapshots, retains failed reads, and stops unused scopes", 
   let rows = [{ id: "a", name: "before" }];
   const read = vi.fn(async () => rows);
   const collection = createApiCollection({
-    queryClient: client, queryKey: ["test", "session"], queryFn: read,
+    queryClient: client, queryKey: ["test", "session"], queryFn: read, refetchInterval: 15_000,
     getKey: (row: { id: string; name: string }) => row.id,
   });
   const subscription = collection.subscribeChanges(() => {});
@@ -82,7 +82,7 @@ it("releases preload-only and reconciliation observers while keeping mounted con
   const client = new QueryClient();
   client.mount();
   const read = vi.fn(async () => [{ id: "loaded" }]);
-  const collection = createApiCollection({ queryClient: client, queryKey: ["preload-only"], queryFn: read,
+  const collection = createApiCollection({ queryClient: client, queryKey: ["preload-only"], queryFn: read, refetchInterval: 15_000,
     getKey: (row: { id: string }) => row.id });
   await preloadCollection(collection);
   expect(collection.subscriberCount).toBe(0);
