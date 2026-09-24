@@ -40,11 +40,15 @@ verify_checksum() {
     fi
 }
 
+# grep matches per line, so a value holding any whitespace never matches.
+matches_version() {
+    case "$1" in *[![:graph:]]*) return 1 ;; esac
+    echo "$1" | grep -Eq "^$2\$"
+}
+
 channel_version_from_file() {
     version=$(cat "$1")
-    # grep matches per line, so refuse any whitespace before matching the whole value.
-    case "$version" in *[![:graph:]]*) return 1 ;; esac
-    echo "$version" | grep -Eq "^v?$2\$" || return 1
+    matches_version "$version" "v?$2" || return 1
     echo "$version"
 }
 
@@ -71,8 +75,7 @@ install_cli() {
     tmp_dir=$(mktemp -d)
     trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
     version=$(resolve_install "$PLOYZ_VERSION")
-    case "$version" in *[![:graph:]]*) error "Invalid version: $PLOYZ_VERSION" ;; esac
-    echo "$version" | grep -Eq "^$RELEASE_VERSION\$" || error "Invalid version: $PLOYZ_VERSION"
+    matches_version "$version" "$RELEASE_VERSION" || error "Invalid version: $PLOYZ_VERSION"
 
     archive=$(cli_archive "$(uname -s)" "$(uname -m)") || \
         error "Unsupported platform: $(uname -s) $(uname -m)"
