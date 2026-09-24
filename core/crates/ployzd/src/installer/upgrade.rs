@@ -8,15 +8,13 @@ use std::{
 
 use ployz_core::{
     MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
-    MachineUpgradeStage, RequestMachineUpgradeRequest,
+    MachineUpgradeStage, ReleaseSelector, RequestMachineUpgradeRequest,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{process::Command, time::timeout};
 
-use super::{
-    Error as InstallError, InstallMode, InstallPaths, InstallRequest, ReleaseRequest, ReleaseSource,
-};
+use super::{Error as InstallError, InstallMode, InstallPaths, InstallRequest, ReleaseSource};
 use crate::mutation;
 
 const RECEIPT_FILE: &str = "upgrade-attempt.json";
@@ -156,14 +154,13 @@ async fn request_locked(
         return Err(Error::Busy);
     }
     let source = current_source()?;
-    let release = ReleaseRequest::from(&request.release);
-    let installed =
-        super::release::installed_release(&InstallPaths::system(data_dir, run_dir).daemon())
-            .await
-            .map_err(Error::Resolve)?;
-    let target = super::release::resolve_release(&release, &source, installed.as_ref())
-        .await
-        .map_err(Error::Resolve)?;
+    let (_, target) = super::release::resolve_release(
+        &request.release.selector(),
+        &source,
+        &InstallPaths::system(data_dir, run_dir),
+    )
+    .await
+    .map_err(Error::Resolve)?;
     let mut stored = StoredAttempt {
         requested: request.release,
         source,
@@ -247,7 +244,7 @@ pub async fn run_worker(
 
     let result = super::install_locked(
         InstallRequest {
-            release: ReleaseRequest::Exact(target.clone()),
+            release: ReleaseSelector::Exact(target.clone()),
             source: stored.source.clone(),
             mode: InstallMode::SoftwareOnly,
         },

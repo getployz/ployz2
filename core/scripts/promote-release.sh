@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=scripts/homebrew-formula.sh
 source "$ROOT/scripts/homebrew-formula.sh"
 # shellcheck source=scripts/release-tag.sh
@@ -14,7 +14,10 @@ advance_pointer() {
     local file=$1 tag=$2 current=
     if [ -f "$file" ]; then
         current=$(tr -d '[:space:]' < "$file")
-        channel_name_for_tag "$current" > /dev/null || exit 1
+        release_tag "$current" || {
+            echo "channel pointer $file holds '$current', not a release tag" >&2
+            return 1
+        }
         release_tag_higher "$tag" "$current" || return 0
     fi
     mkdir -p "$(dirname "$file")"
@@ -24,9 +27,10 @@ advance_pointer() {
 # Daemons read their line's pointer (v0/stable); only install.sh reads the unscoped one.
 # beta is the highest release, so a stable tag advances it too.
 write_channel_files() {
-    local dest_dir=$1 tag=$2 line pointer pointers=beta
+    local dest_dir=$1 tag=$2 line pointer pointers=beta channel
+    channel=$(channel_name_for_tag "$tag")
     line=${tag%%.*}
-    [ "$(channel_name_for_tag "$tag")" = beta ] || pointers="stable beta"
+    [ "$channel" = beta ] || pointers="stable beta"
     for pointer in $pointers; do
         advance_pointer "$dest_dir/$line/$pointer" "$tag"
         advance_pointer "$dest_dir/$pointer" "$tag"

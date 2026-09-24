@@ -17,7 +17,7 @@ use tempfile::TempDir;
 use tokio::{process::Command, time::timeout};
 
 use super::{Error, InstallPaths, daemon_archive, run_command};
-use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion};
+use ployz_core::{MachineUpgradeStage, MachineVersion, ReleaseSelector};
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
 const CHANNEL_URL: &str = "https://ployz.sh";
@@ -28,29 +28,6 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
 const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_millis(100);
-
-/// A trusted release target selected at the CLI boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ReleaseRequest {
-    /// Resolve the stable channel once for this installation attempt.
-    Stable,
-    /// Resolve the beta channel once for this installation attempt.
-    Beta,
-    /// Install this exact published daemon version.
-    Exact(MachineVersion),
-}
-
-impl From<&MachineRelease> for ReleaseRequest {
-    fn from(release: &MachineRelease) -> Self {
-        match release.as_str() {
-            "stable" => Self::Stable,
-            "beta" => Self::Beta,
-            version => Self::Exact(
-                MachineVersion::parse(version).expect("a non-channel MachineRelease is a version"),
-            ),
-        }
-    }
-}
 
 /// A release source that is fixed by the local installer invocation.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -105,30 +82,38 @@ impl ReleaseSource {
     }
 }
 
-/// Resolve a request to one exact release. A channel never selects a release older than the
-/// `installed` daemon; only an exact version moves a Machine backwards.
+/// Read the installed daemon and resolve `request` to one exact target. A channel never selects
+/// a release older than the installed daemon; only an exact version moves a Machine backwards.
 pub(super) async fn resolve_release(
-    request: &ReleaseRequest,
+    request: &ReleaseSelector,
+    source: &ReleaseSource,
+    paths: &InstallPaths,
+) -> Result<(Option<MachineVersion>, MachineVersion), Error> {
+    let installed = installed_release(&paths.daemon()).await?;
+    let target = select_release(request, source, installed.as_ref()).await?;
+    Ok((installed, target))
+}
+
+async fn select_release(
+    request: &ReleaseSelector,
     source: &ReleaseSource,
     installed: Option<&MachineVersion>,
 ) -> Result<MachineVersion, Error> {
-    let pointer = match request {
-        ReleaseRequest::Stable => {
-            let pointer = parse_channel_version(&source.channel("stable").await?)?;
-            if pointer.is_prerelease() {
-                return Err(Error::ReleaseSelection(format!(
-                    "stable channel points at prerelease {pointer}"
-                )));
-            }
-            pointer
-        }
-        ReleaseRequest::Beta => parse_channel_version(&source.channel("beta").await?)?,
-        ReleaseRequest::Exact(version) => return Ok(version.clone()),
+    let (channel, allows_prerelease) = match request {
+        ReleaseSelector::Exact(version) => return Ok(version.clone()),
+        ReleaseSelector::Stable => ("stable", false),
+        ReleaseSelector::Beta => ("beta", true),
     };
-    Ok(match installed {
-        Some(installed) if *installed > pointer => installed.clone(),
-        _ => pointer,
-    })
+    let pointer = parse_channel_version(&source.channel(channel).await?)?;
+    if pointer.is_prerelease() && !allows_prerelease {
+        return Err(Error::ReleaseSelection(format!(
+            "stable channel points at prerelease {pointer}"
+        )));
+    }
+    Ok(installed
+        .filter(|installed| **installed > pointer)
+        .cloned()
+        .unwrap_or(pointer))
 }
 
 fn parse_channel_version(value: &str) -> Result<MachineVersion, Error> {
@@ -453,39 +438,39 @@ mod tests {
         fs::write(root.path().join("stable"), "v9.0.0\n").unwrap();
         fs::write(line.join("stable"), "v1.2.3\n").unwrap();
         fs::write(line.join("beta"), "v1.3.0-beta.2\n").unwrap();
-        let resolve = async |request: &ReleaseRequest, installed: Option<&str>| {
+        let resolve = async |request: &ReleaseSelector, installed: Option<&str>| {
             let installed = installed.map(|version| MachineVersion::parse(version).unwrap());
-            resolve_release(request, &source, installed.as_ref())
+            select_release(request, &source, installed.as_ref())
                 .await
                 .map(|version| version.to_string())
         };
 
         assert_eq!(
-            resolve(&ReleaseRequest::Stable, None).await.unwrap(),
+            resolve(&ReleaseSelector::Stable, None).await.unwrap(),
             "1.2.3"
         );
         assert_eq!(
-            resolve(&ReleaseRequest::Beta, None).await.unwrap(),
+            resolve(&ReleaseSelector::Beta, None).await.unwrap(),
             "1.3.0-beta.2"
         );
         assert_eq!(
-            resolve(&ReleaseRequest::Stable, Some("1.2.10"))
+            resolve(&ReleaseSelector::Stable, Some("1.2.10"))
                 .await
                 .unwrap(),
             "1.2.10"
         );
         assert_eq!(
-            resolve(&ReleaseRequest::Beta, Some("1.2.10"))
+            resolve(&ReleaseSelector::Beta, Some("1.2.10"))
                 .await
                 .unwrap(),
             "1.3.0-beta.2"
         );
-        let older = ReleaseRequest::Exact(MachineVersion::parse("1.0.0").unwrap());
+        let older = ReleaseSelector::Exact(MachineVersion::parse("1.0.0").unwrap());
         assert_eq!(resolve(&older, Some("1.2.10")).await.unwrap(), "1.0.0");
 
         fs::write(line.join("stable"), "v1.4.0-beta.1\n").unwrap();
         assert!(matches!(
-            resolve(&ReleaseRequest::Stable, None).await,
+            resolve(&ReleaseSelector::Stable, None).await,
             Err(Error::ReleaseSelection(message)) if message.contains("prerelease")
         ));
     }

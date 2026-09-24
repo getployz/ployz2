@@ -390,6 +390,31 @@ validated_string_newtype!(
     |value| is_machine_version(value)
 );
 
+/// What a [`MachineRelease`] selects: a Release Channel resolved at install time, or one version.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReleaseSelector {
+    /// The stable Release Channel of the installing daemon's line.
+    Stable,
+    /// The beta Release Channel of the installing daemon's line.
+    Beta,
+    /// This exact published version.
+    Exact(MachineVersion),
+}
+
+impl MachineRelease {
+    /// The typed selection this validated release names.
+    #[must_use]
+    pub fn selector(&self) -> ReleaseSelector {
+        match self.as_str() {
+            "stable" => ReleaseSelector::Stable,
+            "beta" => ReleaseSelector::Beta,
+            version => ReleaseSelector::Exact(
+                MachineVersion::parse(version).expect("a non-channel MachineRelease is a version"),
+            ),
+        }
+    }
+}
+
 impl MachineVersion {
     /// Whether this is an `X.Y.Z-beta.N` prerelease.
     #[must_use]
@@ -976,8 +1001,15 @@ mod tests {
 
     #[test]
     fn machine_release_accepts_only_channels_and_supported_exact_versions() {
-        for release in ["stable", "beta", "1.2.3", "1.2.3-beta.4"] {
-            assert!(MachineRelease::parse(release).is_ok(), "{release}");
+        for (release, selector) in [
+            ("stable", ReleaseSelector::Stable),
+            ("beta", ReleaseSelector::Beta),
+            (
+                "1.2.3-beta.4",
+                ReleaseSelector::Exact(MachineVersion::parse("1.2.3-beta.4").unwrap()),
+            ),
+        ] {
+            assert_eq!(MachineRelease::parse(release).unwrap().selector(), selector);
         }
         for release in [
             "latest",

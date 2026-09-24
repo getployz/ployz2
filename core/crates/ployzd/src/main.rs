@@ -18,9 +18,7 @@ use ployz_core::{
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
-    installer::{
-        DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness, ReleaseRequest, ReleaseSource,
-    },
+    installer::{DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness, ReleaseSource},
     machine::DEFAULT_DATA_DIR,
     management::ManagementConfig,
     network::NetworkError,
@@ -209,7 +207,7 @@ fn install_request(
     group_user: Option<String>,
     release_dir: Option<PathBuf>,
 ) -> io::Result<InstallRequest> {
-    let release = ReleaseRequest::from(version);
+    let release = version.selector();
     if install_only && storage != StorageChoice::None {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

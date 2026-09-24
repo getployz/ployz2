@@ -85,10 +85,17 @@ grep -Fq 'release asset set differs' "$TMP/error"
     PLOYZ_SH_SITE_DIR="$TMP/site" PLOYZ_SH_CHANNELS_DIR="$channels" \
         bash "$ROOT/scripts/stage-ployz-sh-site.sh" > /dev/null
     expect "$TMP/site" v0/stable v0.2.10 v1/beta v1.0.0 stable v1.0.0
+    # A separate shell keeps errexit live, as in the Publish workflow.
+    rejects() {
+        if bash -c 'source "$1"; write_channel_files "$2" "$3"' _ "$ROOT/scripts/promote-release.sh" \
+            "$channels" "$1" 2> /dev/null; then
+            echo "promotion accepted $1" >&2
+            exit 1
+        fi
+    }
+    rejects v1.0.1-rc.1
+    expect "$channels" stable v1.0.0 beta v1.0.0
     printf 'garbage\n' > "$channels/beta"
-    if (publish v1.0.1-beta.1) 2> /dev/null; then
-        echo 'overwrote a corrupt pointer' >&2
-        exit 1
-    fi
+    rejects v1.0.1-beta.1
 )
 echo 'release packaging contracts passed'
