@@ -10,6 +10,8 @@ export function createDeploymentLogsCollection(organizationSlug: string, deploym
 ) {
   const options = {
     queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, "deployment_logs", deploymentId],
+    // A finished log never changes, so reopening it reuses the cache; a running log is refetched and polled.
+    staleTime: (query: Query<{ events: EventRow[]; finished: boolean }>) => query.state.data?.finished ? Infinity : 0,
     refetchInterval: (query: Query<{ events: EventRow[]; finished: boolean }>) => query.state.data?.finished ? false : 2_000,
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
       const rows: EventRow[] = [];

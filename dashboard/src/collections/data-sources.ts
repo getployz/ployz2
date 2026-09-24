@@ -29,6 +29,6 @@ export const dataSources = {
   "modules/github/github.collection.ts": { kind: "remote", freshness: "user repository cache at the table default; preloaded when a picker opens" },
   "modules/runtime/teardown.queries.ts": { kind: "remote", freshness: "fresh on mount; polls while an attempt is busy" },
   "modules/runtime/volume-removal.queries.ts": { kind: "remote", freshness: "fresh on mount; polls while an attempt is busy" },
-  "modules/deployments/deployment-log.collection.ts": { kind: "remote", freshness: "polls until the deployment finishes" },
+  "modules/deployments/deployment-log.collection.ts": { kind: "remote", freshness: "polls until the deployment finishes; a finished log is never refetched" },
   "modules/deployments/deployment-build-log.queries.ts": { kind: "remote", freshness: "fresh on mount; polls until the build finishes" },
 } satisfies Record<string, { kind: DataSourceKind; freshness: string }>;

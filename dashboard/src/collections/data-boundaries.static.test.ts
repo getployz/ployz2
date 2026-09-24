@@ -139,6 +139,9 @@ describe("data boundaries", () => {
           const source = project.program.getSourceFile(file);
           if (!source) continue;
           const isRoute = file.startsWith(`${SRC}/routes/`);
+          // collections/ owns the table default that createApiCollection applies.
+          const isCollectionsFile = file.startsWith(`${SRC}/collections/`);
+          const tableDefaults = new Set<Node>();
           const importedFrom = new Map<string, string>();
           for (const statement of source.statements) {
             if (!isImportDeclaration(statement) || !isStringLiteral(statement.moduleSpecifier)) continue;
@@ -183,11 +186,13 @@ describe("data boundaries", () => {
               if (["queryOptions", "infiniteQueryOptions"].includes(name) && !(options && property(options, "staleTime"))) {
                 at(source, node, `${name} must declare staleTime in its options literal`);
               }
-              const queryFn = options && property(options, "queryFn");
-              const fetches = queryFn && isPropertyAssignment(queryFn) && !(isIdentifier(queryFn.initializer) && queryFn.initializer.text === "skipToken");
-              if (["useQuery", "useSuspenseQuery", "useInfiniteQuery", "useSuspenseInfiniteQuery"].includes(name) && fetches && !property(options, "staleTime")) {
-                at(source, node, `${name} with a queryFn must declare staleTime`);
-              }
+              // createApiCollection applies the shared Org Store table freshness.
+              if (name === "createApiCollection" && options) tableDefaults.add(options);
+            }
+            const queryFn = isObjectLiteralExpression(node) ? property(node, "queryFn") : undefined;
+            const fetches = queryFn && isPropertyAssignment(queryFn) && !(isIdentifier(queryFn.initializer) && queryFn.initializer.text === "skipToken");
+            if (fetches && !isCollectionsFile && !tableDefaults.has(node) && !property(node, "staleTime")) {
+              at(source, node, "options with a queryFn must declare staleTime");
             }
             node.forEachChild(visit);
           });
