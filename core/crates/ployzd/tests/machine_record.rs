@@ -198,6 +198,34 @@ async fn set_management_client_persists_only_public_client_keys() {
     assert!(!text.contains(&serde_json::to_string(capability.client_secret()).unwrap()));
 }
 
+/// A later daemon may add optional fields anywhere in the record; this reader
+/// must reopen it without losing a known value.
+#[tokio::test]
+async fn record_written_by_a_later_daemon_reopens_with_every_known_value() {
+    let dir = TestDir::new("ployzd-record-unknown-fields");
+    let local = participating(&dir).await;
+    local
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
+        .await
+        .unwrap();
+    drop(local);
+    let known = LocalMachineStore::open(&dir.0).unwrap().record().clone();
+
+    let path = dir.0.join("machine.json");
+    let mut persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for pointer in ["/body/machine", ""] {
+        persisted
+            .pointer_mut(pointer)
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .insert("added_by_a_later_daemon".into(), serde_json::json!(1));
+    }
+    fs::write(&path, persisted.to_string()).unwrap();
+
+    assert_eq!(LocalMachineStore::open(&dir.0).unwrap().record(), &known);
+}
+
 #[tokio::test]
 async fn set_management_client_clear_persists() {
     let dir = TestDir::new("ployzd-clear-management-client");
@@ -892,18 +920,18 @@ fn local_record_rejects_incomplete_management_client_slots() {
 }
 
 #[test]
-fn local_record_tolerates_unknown_management_client_fields() {
-    let dir = TestDir::new("ployzd-tolerant-management-clients");
+fn local_record_refuses_unknown_management_client_slot_fields() {
+    let dir = TestDir::new("ployzd-strict-management-clients");
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let valid = serde_json::to_value(store.record()).unwrap();
     let key = serde_json::to_value([1_u8; 32]).unwrap();
     let mut extended = valid.clone();
     extended.as_object_mut().unwrap().insert(
         "management_clients".into(),
-        serde_json::json!({"cloud": {"state": "active", "accepted": key, "future": true}}),
+        serde_json::json!({"cloud": {"state": "active", "accepted": key, "secret": "s"}}),
     );
-    let record = serde_json::from_value::<LocalMachineRecord>(extended).unwrap();
-    assert_eq!(record.accepted_client(&cloud()), Some([1; 32]));
+    // Key material fails closed: an unknown slot field may be a secret.
+    assert!(serde_json::from_value::<LocalMachineRecord>(extended).is_err());
 
     // A record without slots omits the field and reads back without it.
     assert!(valid.get("management_clients").is_none());

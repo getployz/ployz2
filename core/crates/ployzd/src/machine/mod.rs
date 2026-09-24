@@ -150,8 +150,11 @@ pub struct LocalMachineRecord {
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
+///
+/// Unlike the rest of the record this stays strict: an unrecognized field here
+/// is key or secret material this daemon cannot judge, so the record fails closed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum ManagementClientSlot {
     Pending {
         pending: [u8; 32],

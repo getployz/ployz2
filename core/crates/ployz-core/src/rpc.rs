@@ -202,28 +202,11 @@ pub struct DescribeContractRequest {}
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResetRequest {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MachineTokenRequest {
-    #[serde(default)]
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
-    #[serde(default)]
     pub public_ip: PublicIpDiscovery,
-    #[serde(default = "default_wireguard_port")]
-    pub wireguard_port: u16,
-}
-
-impl Default for MachineTokenRequest {
-    fn default() -> Self {
-        Self {
-            advertised_endpoints: Vec::new(),
-            public_ip: PublicIpDiscovery::Auto,
-            wireguard_port: default_wireguard_port(),
-        }
-    }
-}
-
-pub(super) fn default_wireguard_port() -> u16 {
-    51820
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -306,8 +289,10 @@ pub struct CreateContainerRequest {
 /// Exactly one update to a labelled Management Client slot: set it or clear it.
 ///
 /// Neither case carries a secret; `Set` returns the fresh client key in its capability.
+/// Strict by the Stable promise's security exception: an unrecognized field may
+/// be secret material the daemon must never accept.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SetManagementClientRequest {
     Set { label: ManagementClientLabel },
     Clear { label: ManagementClientLabel },
@@ -442,7 +427,6 @@ pub struct ImageIngestOpened {
 
 /// Pull one image from another Machine's image-ingest TCP destination.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct PullImageFromMachineRequest {
     /// Select reference delivery or verified exact-content publication.
     pub pull: PeerImagePull,
@@ -453,6 +437,8 @@ pub struct PullImageFromMachineRequest {
 }
 
 /// Whether peer delivery follows a reference or publishes a tag for exact content.
+/// Strict by the Stable promise's security exception: the mode selects digest
+/// verification, so a stray field must not blur reference into publication.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PeerImagePull {
@@ -1087,27 +1073,15 @@ mod set_management_client_wire {
     }
 
     #[test]
-    fn updates_tolerate_unknown_fields() {
-        let request = serde_json::from_value::<SetManagementClientRequest>(
-            json!({ "kind": "set", "label": "cloud", "future": true }),
-        )
-        .unwrap();
-        assert_eq!(
-            request,
-            SetManagementClientRequest::Set {
-                label: label("cloud")
-            }
-        );
-    }
-
-    #[test]
-    fn updates_require_a_known_case_and_a_valid_label() {
+    fn updates_require_a_known_case_a_valid_label_and_no_secret() {
         for value in [
             json!({}),
             json!({ "kind": "set" }),
             json!({ "kind": "clear" }),
             json!({ "kind": "unknown", "label": "cloud" }),
             json!({ "kind": "set", "label": "Cloud" }),
+            json!({ "kind": "set", "label": "cloud", "secret": "private" }),
+            json!({ "kind": "clear", "label": "cloud", "pairing": { "secret": "private" } }),
         ] {
             assert!(serde_json::from_value::<SetManagementClientRequest>(value).is_err());
         }
