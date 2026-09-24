@@ -63,18 +63,6 @@ fn is_hostname(value: &str) -> bool {
     (1..=253).contains(&value.len()) && value.split('.').all(is_dns_label)
 }
 
-fn is_machine_version(value: &str) -> bool {
-    let Ok(version) = semver::Version::parse(value) else {
-        return false;
-    };
-    let pre = version.pre.as_str();
-    version.build.is_empty()
-        && (pre.is_empty()
-            || pre.strip_prefix("beta.").is_some_and(|number| {
-                !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
-            }))
-}
-
 macro_rules! hex_id_newtype {
     ($(#[$attribute:meta])* $name:ident, $label:literal, $len:expr, $expected:literal) => {
         $(#[$attribute])*
@@ -163,17 +151,8 @@ macro_rules! hex_id_newtype {
 
 macro_rules! validated_string_newtype {
     ($(#[$attribute:meta])* $name:ident, $label:literal, $expected:expr, |$value:ident| $valid:expr) => {
-        validated_string_newtype!(
-            @define [Ord, PartialOrd] $(#[$attribute])* $name, $label, $expected, |$value| $valid
-        );
-    };
-    // The type implements its own order instead of comparing strings.
-    (@custom_order $(#[$attribute:meta])* $name:ident, $label:literal, $expected:expr, |$value:ident| $valid:expr) => {
-        validated_string_newtype!(@define [] $(#[$attribute])* $name, $label, $expected, |$value| $valid);
-    };
-    (@define [$($order:ident),*] $(#[$attribute:meta])* $name:ident, $label:literal, $expected:expr, |$value:ident| $valid:expr) => {
         $(#[$attribute])*
-        #[derive(Clone, Debug, Eq, Hash, PartialEq, $($order,)* Serialize, Deserialize, TS)]
+        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
 
@@ -374,71 +353,6 @@ validated_string_newtype!(
             && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
     }
 );
-validated_string_newtype!(
-    /// A trusted release selector: stable, beta, or an exact supported version.
-    MachineRelease,
-    "Machine release",
-    "stable, beta, X.Y.Z, or X.Y.Z-beta.N",
-    |value| matches!(value, "stable" | "beta") || is_machine_version(value)
-);
-validated_string_newtype!(
-    @custom_order
-    /// One exact supported Machine release version, ordered by release (semver) order.
-    MachineVersion,
-    "Machine version",
-    "X.Y.Z or X.Y.Z-beta.N",
-    |value| is_machine_version(value)
-);
-
-/// What a [`MachineRelease`] selects: a Release Channel resolved at install time, or one version.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ReleaseSelector {
-    /// The stable Release Channel of the installing daemon's line.
-    Stable,
-    /// The beta Release Channel of the installing daemon's line.
-    Beta,
-    /// This exact published version.
-    Exact(MachineVersion),
-}
-
-impl MachineRelease {
-    /// The typed selection this validated release names.
-    #[must_use]
-    pub fn selector(&self) -> ReleaseSelector {
-        match self.as_str() {
-            "stable" => ReleaseSelector::Stable,
-            "beta" => ReleaseSelector::Beta,
-            version => ReleaseSelector::Exact(
-                MachineVersion::parse(version).expect("a non-channel MachineRelease is a version"),
-            ),
-        }
-    }
-}
-
-impl MachineVersion {
-    /// Whether this is an `X.Y.Z-beta.N` prerelease.
-    #[must_use]
-    pub fn is_prerelease(&self) -> bool {
-        !self.semver().pre.is_empty()
-    }
-
-    fn semver(&self) -> semver::Version {
-        semver::Version::parse(self.as_str()).expect("a MachineVersion is valid semver")
-    }
-}
-
-// Supported versions carry no build metadata, so semver order agrees with string equality.
-impl Ord for MachineVersion {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.semver().cmp(&other.semver())
-    }
-}
-
-impl PartialOrd for MachineVersion {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
 validated_string_newtype!(
     DockerVolumeName,
     "Docker Volume name",
@@ -997,44 +911,6 @@ mod tests {
         assert_eq!(token.as_str(), "pmet_test");
         assert_eq!(format!("{token:?}"), "CloudEnrollToken(..)");
         assert!(!format!("{token:?}").contains("pmet_test"));
-    }
-
-    #[test]
-    fn machine_release_accepts_only_channels_and_supported_exact_versions() {
-        for (release, selector) in [
-            ("stable", ReleaseSelector::Stable),
-            ("beta", ReleaseSelector::Beta),
-            (
-                "1.2.3-beta.4",
-                ReleaseSelector::Exact(MachineVersion::parse("1.2.3-beta.4").unwrap()),
-            ),
-        ] {
-            assert_eq!(MachineRelease::parse(release).unwrap().selector(), selector);
-        }
-        for release in [
-            "latest",
-            "nightly",
-            "v1.2.3",
-            "1.2",
-            "1.2.3-alpha.1",
-            "1.2.3+build",
-            "1.2.3-beta.01",
-            "https://example.test/release",
-        ] {
-            assert!(MachineRelease::parse(release).is_err(), "{release}");
-            assert!(MachineVersion::parse(release).is_err(), "{release}");
-        }
-        assert!(MachineVersion::parse("stable").is_err());
-    }
-
-    #[test]
-    fn machine_versions_order_by_release_not_by_string() {
-        let version = |value: &str| MachineVersion::parse(value).unwrap();
-        assert!(version("1.2.10") > version("1.2.3"));
-        assert!(version("1.2.3") > version("1.2.3-beta.9"));
-        assert!(version("1.2.3-beta.10") > version("1.2.3-beta.2"));
-        assert!(version("1.2.3-beta.2").is_prerelease());
-        assert!(!version("1.2.3").is_prerelease());
     }
 }
 

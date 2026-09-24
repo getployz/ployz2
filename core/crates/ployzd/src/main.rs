@@ -151,7 +151,7 @@ async fn run(args: Args) -> Result<(), Error> {
     }) = args.command
     {
         let request = install_request(
-            &version,
+            version,
             storage,
             software_only,
             install_only,
@@ -200,14 +200,13 @@ async fn run(args: Args) -> Result<(), Error> {
 }
 
 fn install_request(
-    version: &MachineRelease,
+    release: MachineRelease,
     storage: StorageChoice,
     software_only: bool,
     install_only: bool,
     group_user: Option<String>,
     release_dir: Option<PathBuf>,
 ) -> io::Result<InstallRequest> {
-    let release = version.selector();
     if install_only && storage != StorageChoice::None {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -293,7 +292,7 @@ mod tests {
     #[test]
     fn install_cli_rejects_host_options_for_software_only_replacement() {
         let storage = install_request(
-            &release("stable"),
+            release("stable"),
             StorageChoice::Zfs,
             true,
             false,
@@ -308,7 +307,7 @@ mod tests {
         );
 
         let group = install_request(
-            &release("stable"),
+            release("stable"),
             StorageChoice::None,
             true,
             false,
@@ -326,7 +325,7 @@ mod tests {
     #[test]
     fn install_cli_rejects_host_options_for_installation_only() {
         let storage = install_request(
-            &release("stable"),
+            release("stable"),
             StorageChoice::Zfs,
             false,
             true,
@@ -341,7 +340,7 @@ mod tests {
         );
 
         let group = install_request(
-            &release("stable"),
+            release("stable"),
             StorageChoice::None,
             false,
             true,
@@ -359,7 +358,7 @@ mod tests {
     #[test]
     fn install_cli_builds_one_explicit_mode() {
         let replacement = install_request(
-            &release("1.2.3"),
+            release("1.2.3"),
             StorageChoice::None,
             true,
             true,
@@ -370,7 +369,7 @@ mod tests {
         assert!(matches!(replacement.mode, InstallMode::InstallationOnly));
 
         let host = install_request(
-            &release("1.2.3"),
+            release("1.2.3"),
             StorageChoice::Zfs,
             false,
             false,

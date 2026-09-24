@@ -675,7 +675,8 @@ mod tests {
                 assert_eq!(
                     matches
                         .get_one::<ployz_core::MachineRelease>("version")
-                        .map(ployz_core::MachineRelease::as_str),
+                        .map(ToString::to_string)
+                        .as_deref(),
                     Some(version.unwrap_or(env!("CARGO_PKG_VERSION")))
                 );
             }

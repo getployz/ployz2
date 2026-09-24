@@ -12,7 +12,7 @@ use std::{
     process::{Command, Output},
 };
 
-use ployz_core::{MachineUpgradeStage, ReleaseSelector, StorageChoice};
+use ployz_core::{MachineRelease, MachineUpgradeStage, StorageChoice};
 use thiserror::Error;
 
 use crate::mutation;
@@ -22,7 +22,7 @@ use self::{
         create_user_and_directories, install_docker, install_prerequisites, install_systemd,
         verify_running_daemon, verify_software_prerequisites,
     },
-    release::{install_binaries, resolve_release},
+    release::{install_binaries, installed_release, resolve_release},
     storage::prepare_storage,
 };
 
@@ -54,7 +54,7 @@ pub enum InstallMode {
 #[derive(Clone, Debug)]
 pub struct InstallRequest {
     /// A fixed version or a channel resolved once before host mutation.
-    pub release: ReleaseSelector,
+    pub release: MachineRelease,
     /// Trusted release source. Published releases never accept caller-provided URLs.
     pub source: ReleaseSource,
     /// Installation-only, software-only replacement, or full host preparation.
@@ -199,7 +199,8 @@ async fn install_locked(
 ) -> Result<InstallOutcome, Error> {
     let installation_only = matches!(request.mode, InstallMode::InstallationOnly);
     verify_system(installation_only)?;
-    let (installed, target) = resolve_release(&request.release, &request.source, &paths).await?;
+    let installed = installed_release(&paths.daemon()).await?;
+    let target = resolve_release(&request.release, &request.source, installed.as_ref()).await?;
 
     progress(MachineUpgradeStage::Preparing)?;
     match &request.mode {
@@ -409,7 +410,7 @@ mod tests {
     async fn system_install_rejects_nonstandard_machine_paths_before_mutation() {
         let fixture = fixture("nonstandard-paths");
         let request = InstallRequest {
-            release: ReleaseSelector::Exact(MachineVersion::parse("1.2.3").unwrap()),
+            release: MachineRelease::Exact(MachineVersion::parse("1.2.3").unwrap()),
             source: ReleaseSource::Local(fixture.path().join("release")),
             mode: InstallMode::InstallationOnly,
         };
@@ -541,7 +542,7 @@ mod tests {
         }
 
         let request = InstallRequest {
-            release: ReleaseSelector::Exact(MachineVersion::parse("1.2.3").unwrap()),
+            release: MachineRelease::Exact(MachineVersion::parse("1.2.3").unwrap()),
             source: ReleaseSource::Local(root.join("release")),
             mode: InstallMode::InstallationOnly,
         };

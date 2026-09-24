@@ -8,7 +8,7 @@ use std::{
 
 use ployz_core::{
     MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
-    MachineUpgradeStage, ReleaseSelector, RequestMachineUpgradeRequest,
+    MachineUpgradeStage, RequestMachineUpgradeRequest,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -154,13 +154,13 @@ async fn request_locked(
         return Err(Error::Busy);
     }
     let source = current_source()?;
-    let (_, target) = super::release::resolve_release(
-        &request.release.selector(),
-        &source,
-        &InstallPaths::system(data_dir, run_dir),
-    )
-    .await
-    .map_err(Error::Resolve)?;
+    let installed =
+        super::release::installed_release(&InstallPaths::system(data_dir, run_dir).daemon())
+            .await
+            .map_err(Error::Resolve)?;
+    let target = super::release::resolve_release(&request.release, &source, installed.as_ref())
+        .await
+        .map_err(Error::Resolve)?;
     let mut stored = StoredAttempt {
         requested: request.release,
         source,
@@ -244,7 +244,7 @@ pub async fn run_worker(
 
     let result = super::install_locked(
         InstallRequest {
-            release: ReleaseSelector::Exact(target.clone()),
+            release: MachineRelease::Exact(target.clone()),
             source: stored.source.clone(),
             mode: InstallMode::SoftwareOnly,
         },

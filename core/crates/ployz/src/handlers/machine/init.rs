@@ -53,10 +53,10 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let yes = matches.get_flag("yes");
     let no_install = matches.get_flag("no-install");
     let storage = crate::provisioning::resolve_storage(matches)?;
-    let version = matches
+    let version = &matches
         .get_one::<MachineRelease>("version")
         .expect("version has a default")
-        .as_str();
+        .to_string();
     let runtime = runtime()?;
     let (machine, connection) = runtime.block_on(async {
         if !no_install {
