@@ -816,22 +816,25 @@ mod tests {
     }
 
     #[test]
-    fn nightly_daemon_channel_is_rejected() {
-        let error = command()
-            .try_get_matches_from([
-                "ployz",
-                "machine",
-                "add",
-                "root@example.com",
-                "--version",
-                "nightly",
-            ])
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("nightly is not a supported release channel")
-        );
+    fn retired_daemon_channels_are_rejected() {
+        for channel in ["latest", "nightly"] {
+            let error = command()
+                .try_get_matches_from([
+                    "ployz",
+                    "machine",
+                    "add",
+                    "root@example.com",
+                    "--version",
+                    channel,
+                ])
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("stable, beta, X.Y.Z, or X.Y.Z-beta.N"),
+                "{channel}: {error}"
+            );
+        }
     }
 
     #[test]

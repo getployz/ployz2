@@ -22,6 +22,8 @@ use ployz_core::{MachineUpgradeStage, MachineVersion};
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
 const CHANNEL_URL: &str = "https://ployz.sh";
+/// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
+const RELEASE_LINE: &str = concat!("v", env!("CARGO_PKG_VERSION_MAJOR"));
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
 const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -45,9 +47,8 @@ impl FromStr for ReleaseRequest {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let value = value.strip_prefix('v').unwrap_or(value);
         match value {
-            "" | "latest" | "stable" => Ok(Self::Stable),
+            "stable" => Ok(Self::Stable),
             "beta" => Ok(Self::Beta),
-            "nightly" => Err(Error::Nightly),
             value => MachineVersion::parse(value.to_owned())
                 .map(Self::Exact)
                 .map_err(|_| Error::InvalidVersion {
@@ -73,12 +74,17 @@ impl ReleaseSource {
     }
 
     async fn channel(&self, name: &str) -> Result<String, Error> {
+        let pointer = format!("{RELEASE_LINE}/{name}");
         let bytes = match self {
             Self::Published => {
-                fetch(&format!("{CHANNEL_URL}/{name}"), "resolve release channel").await?
+                fetch(
+                    &format!("{CHANNEL_URL}/{pointer}"),
+                    "resolve release channel",
+                )
+                .await?
             }
             Self::Local(directory) => {
-                fs::read(directory.join(name)).map_err(|source| Error::Io {
+                fs::read(directory.join(pointer)).map_err(|source| Error::Io {
                     stage: "read local release channel",
                     source,
                 })?
@@ -105,27 +111,43 @@ impl ReleaseSource {
     }
 }
 
+/// Resolve a request to one exact release. A channel never selects a release older than the
+/// daemon already installed in `bin_dir`; only an exact version moves a Machine backwards.
 pub(super) async fn resolve_release(
     request: &ReleaseRequest,
     source: &ReleaseSource,
+    bin_dir: &Path,
 ) -> Result<MachineVersion, Error> {
-    match request {
+    let pointer = match request {
         ReleaseRequest::Stable => {
-            let value = source.channel("stable").await?;
-            parse_channel_version(value.trim())
+            let pointer = parse_channel_version(&source.channel("stable").await?)?;
+            if !semver(&pointer).pre.is_empty() {
+                return Err(Error::ReleaseSelection(format!(
+                    "stable channel points at prerelease {pointer}"
+                )));
+            }
+            pointer
         }
-        ReleaseRequest::Beta => {
-            let value = source.channel("beta").await?;
-            parse_channel_version(value.trim())
-        }
-        ReleaseRequest::Exact(version) => Ok(version.clone()),
-    }
+        ReleaseRequest::Beta => parse_channel_version(&source.channel("beta").await?)?,
+        ReleaseRequest::Exact(version) => return Ok(version.clone()),
+    };
+    Ok(match installed_release(&bin_dir.join("ployzd")).await? {
+        Some(installed) if semver(&installed) > semver(&pointer) => installed,
+        _ => pointer,
+    })
 }
 
 fn parse_channel_version(value: &str) -> Result<MachineVersion, Error> {
+    let value = value.trim();
+    let value = value.strip_prefix('v').unwrap_or(value);
     MachineVersion::parse(value.to_owned()).map_err(|_| Error::InvalidVersion {
         value: value.to_owned(),
     })
+}
+
+// `MachineVersion` orders as a string, which is not release order.
+fn semver(version: &MachineVersion) -> semver::Version {
+    semver::Version::parse(version.as_str()).expect("a MachineVersion is valid semver")
 }
 
 pub(super) async fn fetch(url: &str, stage: &str) -> Result<Vec<u8>, Error> {
@@ -440,9 +462,63 @@ mod tests {
             "v1.2.3-beta.4".parse::<ReleaseRequest>().unwrap(),
             ReleaseRequest::Exact(MachineVersion::parse("1.2.3-beta.4").unwrap())
         );
-        for invalid in ["1.2", "1.2.3-rc.1", "1.2.3-beta.x", "1.2.3+build.1"] {
+        for invalid in [
+            "",
+            "latest",
+            "nightly",
+            "1.2",
+            "1.2.3-rc.1",
+            "1.2.3-beta.x",
+            "1.2.3+build.1",
+        ] {
             assert!(invalid.parse::<ReleaseRequest>().is_err(), "{invalid}");
         }
+    }
+
+    #[tokio::test]
+    async fn channels_follow_this_line_and_never_downgrade() {
+        let root = tempfile::tempdir().unwrap();
+        let source = ReleaseSource::Local(root.path().join("release"));
+        let line = root.path().join("release").join(RELEASE_LINE);
+        let bin_dir = root.path().join("bin");
+        fs::create_dir_all(&line).unwrap();
+        fs::create_dir_all(&bin_dir).unwrap();
+        // The unscoped pointer belongs to the live installer and may name a newer line.
+        fs::write(root.path().join("release/stable"), "v9.0.0\n").unwrap();
+        fs::write(line.join("stable"), "v1.2.3\n").unwrap();
+        fs::write(line.join("beta"), "v1.3.0-beta.2\n").unwrap();
+        let resolve = async |request: &ReleaseRequest| {
+            resolve_release(request, &source, &bin_dir)
+                .await
+                .map(|version| version.to_string())
+        };
+
+        assert_eq!(resolve(&ReleaseRequest::Stable).await.unwrap(), "1.2.3");
+        assert_eq!(
+            resolve(&ReleaseRequest::Beta).await.unwrap(),
+            "1.3.0-beta.2"
+        );
+
+        // A higher installed daemon is kept; 1.2.10 also sorts below 1.2.3 as a string.
+        fs::write(
+            bin_dir.join("ployzd"),
+            "#!/bin/sh\n[ \"$1\" = version ] && echo 1.2.10\n",
+        )
+        .unwrap();
+        fs::set_permissions(bin_dir.join("ployzd"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(resolve(&ReleaseRequest::Stable).await.unwrap(), "1.2.10");
+        assert_eq!(
+            resolve(&ReleaseRequest::Beta).await.unwrap(),
+            "1.3.0-beta.2"
+        );
+        let older = ReleaseRequest::Exact(MachineVersion::parse("1.0.0").unwrap());
+        assert_eq!(resolve(&older).await.unwrap(), "1.0.0");
+
+        fs::write(line.join("stable"), "v1.4.0-beta.1\n").unwrap();
+        assert!(matches!(
+            resolve(&ReleaseRequest::Stable).await,
+            Err(Error::ReleaseSelection(message)) if message.contains("prerelease")
+        ));
     }
 
     #[test]

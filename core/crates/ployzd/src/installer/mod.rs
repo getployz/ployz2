@@ -86,8 +86,6 @@ pub enum Error {
     NotRoot,
     #[error("another Ployz installation is active")]
     Busy,
-    #[error("nightly is not a supported release channel")]
-    Nightly,
     #[error("invalid Ployz release version '{value}'; expected X.Y.Z or X.Y.Z-beta.N")]
     InvalidVersion { value: String },
     #[error("Ployz Machine must be Linux")]
@@ -196,7 +194,7 @@ async fn install_locked(
 ) -> Result<InstallOutcome, Error> {
     let installation_only = matches!(request.mode, InstallMode::InstallationOnly);
     verify_system(installation_only)?;
-    let target = resolve_release(&request.release, &request.source).await?;
+    let target = resolve_release(&request.release, &request.source, &paths.bin_dir).await?;
 
     progress(MachineUpgradeStage::Preparing)?;
     match &request.mode {

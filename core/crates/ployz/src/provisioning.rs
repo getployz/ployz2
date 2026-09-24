@@ -7,7 +7,7 @@ use std::{
 };
 
 use clap::ArgMatches;
-use ployz_core::StorageChoice;
+use ployz_core::{MachineRelease, StorageChoice};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -473,8 +473,9 @@ pub async fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(
     let architecture = remote.platform().await?;
     let bootstrap = Bootstrap::acquire(&architecture).await?;
     let version = matches
-        .get_one::<String>("version")
-        .expect("version has a default");
+        .get_one::<MachineRelease>("version")
+        .expect("version has a default")
+        .as_str();
     let remote_directory = format!("/tmp/ployz-bootstrap-{}", Uuid::new_v4());
     let remote_daemon = format!("{remote_directory}/ployzd");
     let release_dir = bootstrap

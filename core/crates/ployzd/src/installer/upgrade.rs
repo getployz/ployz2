@@ -161,9 +161,10 @@ async fn request_locked(
         .as_str()
         .parse::<ReleaseRequest>()
         .map_err(Error::Resolve)?;
-    let target = super::release::resolve_release(&release, &source)
-        .await
-        .map_err(Error::Resolve)?;
+    let target =
+        super::release::resolve_release(&release, &source, Path::new(super::DEFAULT_BIN_DIR))
+            .await
+            .map_err(Error::Resolve)?;
     let mut stored = StoredAttempt {
         requested: request.release,
         source,

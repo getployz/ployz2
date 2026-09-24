@@ -1,5 +1,7 @@
 use clap::ArgMatches;
-use ployz_core::{InitializeRequest, InspectRequest, LocalMachinePhase, MachineName, op};
+use ployz_core::{
+    InitializeRequest, InspectRequest, LocalMachinePhase, MachineName, MachineRelease, op,
+};
 
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
@@ -52,8 +54,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let no_install = matches.get_flag("no-install");
     let storage = crate::provisioning::resolve_storage(matches)?;
     let version = matches
-        .get_one::<String>("version")
-        .expect("version has a default");
+        .get_one::<MachineRelease>("version")
+        .expect("version has a default")
+        .as_str();
     let runtime = runtime()?;
     let (machine, connection) = runtime.block_on(async {
         if !no_install {

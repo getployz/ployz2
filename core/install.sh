@@ -4,8 +4,10 @@ set -eu
 
 PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz2}
 PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
-PLOYZ_VERSION=${PLOYZ_VERSION:-${1:-latest}}
+PLOYZ_VERSION=${PLOYZ_VERSION:-${1:-stable}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
+STABLE_VERSION='[0-9]+\.[0-9]+\.[0-9]+'
+RELEASE_VERSION="$STABLE_VERSION(-beta\.[0-9]+)?"
 
 error() {
     echo "ERROR: $1" >&2
@@ -38,25 +40,24 @@ verify_checksum() {
 
 channel_version_from_file() {
     version=$(tr -d ' \t\r\n' < "$1")
-    echo "$version" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$' || return 1
+    echo "$version" | grep -Eq "^v?$2\$" || return 1
     echo "$version"
 }
 
 resolve_install() {
     requested=${1#v}
-    name=
     case "$requested" in
-        latest | stable | '') name=stable ;;
-        beta) name=beta ;;
+        stable) pattern=$STABLE_VERSION ;;
+        beta) pattern=$RELEASE_VERSION ;;
         *)
             printf '%s\n' "$requested"
             return 0
             ;;
     esac
     dest=$(mktemp)
-    if ! curl -fsSL -o "$dest" "$PLOYZ_CHANNEL_URL/$name" || ! resolved=$(channel_version_from_file "$dest"); then
+    if ! curl -fsSL -o "$dest" "$PLOYZ_CHANNEL_URL/$requested" || ! resolved=$(channel_version_from_file "$dest" "$pattern"); then
         rm -f "$dest"
-        error "$name channel is unavailable"
+        error "$requested channel is unavailable"
     fi
     rm -f "$dest"
     printf '%s\n' "${resolved#v}"
@@ -65,16 +66,8 @@ resolve_install() {
 install_cli() {
     tmp_dir=$(mktemp -d)
     trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
-    requested=${PLOYZ_VERSION#v}
-    [ "$requested" != nightly ] || error "nightly is not a supported release channel"
-    version=$(resolve_install "$requested")
-    case "$version" in
-        [0-9A-Za-z]*) ;;
-        *) error "Invalid version: $PLOYZ_VERSION" ;;
-    esac
-    case "$version" in
-        *[!0-9A-Za-z.-]*) error "Invalid version: $PLOYZ_VERSION" ;;
-    esac
+    version=$(resolve_install "$PLOYZ_VERSION")
+    echo "$version" | grep -Eq "^$RELEASE_VERSION\$" || error "Invalid version: $PLOYZ_VERSION"
 
     archive=$(cli_archive "$(uname -s)" "$(uname -m)") || \
         error "Unsupported platform: $(uname -s) $(uname -m)"

@@ -8,11 +8,35 @@ source "$ROOT/scripts/homebrew-formula.sh"
 # shellcheck source=scripts/release-tag.sh
 source "$ROOT/scripts/release-tag.sh"
 
-write_channel_file() {
-    local dest_dir=$1 tag=$2 channel
+# Set when the unscoped stable pointer moved, which is what Homebrew follows.
+STABLE_ADVANCED=
+
+# Moves pointer file $2 under $1 to tag $3 only when the tag is higher, so an older-line fix
+# never moves a channel backwards.
+advance_pointer() {
+    local dest_dir=$1 pointer=$2 tag=$3 current=
+    [ -f "$dest_dir/$pointer" ] && current=$(tr -d '[:space:]' < "$dest_dir/$pointer")
+    if [ -n "$current" ] && ! release_tag_higher "$tag" "$current"; then
+        return 1
+    fi
+    mkdir -p "$(dirname "$dest_dir/$pointer")"
+    printf '%s\n' "$tag" > "$dest_dir/$pointer"
+}
+
+# Daemons read their line's pointer (v0/stable); only install.sh reads the unscoped one.
+# beta is the highest release, so a stable tag advances it too.
+write_channel_files() {
+    local dest_dir=$1 tag=$2 line channel channels
+    line=$(release_line_for_tag "$tag")
     channel=$(channel_name_for_tag "$tag")
-    mkdir -p "$dest_dir"
-    printf '%s\n' "$tag" > "$dest_dir/$channel"
+    channels=beta
+    [ "$channel" = stable ] && channels="stable beta"
+    for channel in $channels; do
+        advance_pointer "$dest_dir" "$line/$channel" "$tag" || true
+        if advance_pointer "$dest_dir" "$channel" "$tag" && [ "$channel" = stable ]; then
+            STABLE_ADVANCED=1
+        fi
+    done
 }
 
 git_identity() {
@@ -48,8 +72,8 @@ push_channel_file() {
         git -C "$work" remote add origin "$remote"
     fi
     git_identity "$work"
-    write_channel_file "$work" "$tag"
-    commit_if_changed "$work" "channel $(channel_name_for_tag "$tag") -> $tag"
+    write_channel_files "$work" "$tag"
+    commit_if_changed "$work" "channels -> $tag"
     git -C "$work" push origin "HEAD:channels"
     rm -rf "$work"
 }
@@ -80,7 +104,7 @@ promote_published_release() {
     local tag=$1 checksums_dir
     push_channel_file "$tag"
     dispatch_ployz_sh_site
-    if ! stable_release_tag "$tag"; then
+    if [ -z "$STABLE_ADVANCED" ]; then
         return 0
     fi
     checksums_dir=$(mktemp -d)
@@ -89,9 +113,11 @@ promote_published_release() {
     rm -rf "$checksums_dir"
 }
 
-tag=${1:-}
-[ -n "$tag" ] || {
-    echo "usage: $0 <tag>" >&2
-    exit 1
-}
-promote_published_release "$tag"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    tag=${1:-}
+    [ -n "$tag" ] || {
+        echo "usage: $0 <tag>" >&2
+        exit 1
+    }
+    promote_published_release "$tag"
+fi

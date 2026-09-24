@@ -945,6 +945,7 @@ mod tests {
             assert!(MachineRelease::parse(release).is_ok(), "{release}");
         }
         for release in [
+            "latest",
             "nightly",
             "v1.2.3",
             "1.2",
