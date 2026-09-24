@@ -12,7 +12,6 @@ import { editEnvironmentDocument, useEnvironmentDocumentQueue } from "./environm
 
 import { emptyEnvironmentIntent } from "./saved-intent";
 
-
 function getEditorForTest(scope: CollectionScope) {
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
   return renderHook(() => useEnvironmentDocumentQueue("acme")).result.current;

@@ -23,9 +23,9 @@ export type EnvironmentDocumentSave = {
 export type EnvironmentDocumentEdit = EnvironmentDocumentSave & {
   /**
    * Applied to the in-memory document immediately; rolled back if saving fails.
-   * Must be pure: it runs once on a probe copy to detect edits that change nothing in memory
-   * (rotating a secret, say), which still save.
-   * Skip silently when the target is gone: a concurrent change removed it, and the saved document reconciles.
+   * An edit that changes nothing in memory (rotating a secret, say) still saves.
+   * Skip silently when the target is gone: the save is still sent, and the saved document
+   * (or the server's rejection toast) reconciles.
    */
   apply: (intent: SavedEnvironmentIntent) => void;
 };
@@ -94,11 +94,9 @@ const getEnvironmentDocumentEditor = cachedByCollectionScope((organizationSlug, 
     edit(edit: EnvironmentDocumentEdit): Persistable {
       const document = environments.get(edit.environmentId);
       if (!document) return notLoaded();
-      // TanStack DB drops an update that changes nothing without saving it, so queue those directly.
-      const probe = structuredClone(document.intent);
-      edit.apply(probe);
-      if (JSON.stringify(probe) === JSON.stringify(document.intent)) return queued(edit, document.revision);
       const transaction = observeFailure(action({ ...edit, revision: document.revision }));
+      // TanStack DB completes a transaction with no changes without saving it, so queue the save directly.
+      if (transaction.mutations.length === 0) return queued(edit, document.revision);
       track(edit.environmentId, transaction.isPersisted.promise);
       return transaction;
     },
