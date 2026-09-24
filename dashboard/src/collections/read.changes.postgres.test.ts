@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { readChangeWindow } from "./changes.server";
+import { pruneChangeLog, readChangeWindow } from "./changes.server";
 import { readCollection } from "./read.server";
 import type { CollectionRead } from "./read.contract";
 import {
@@ -134,5 +134,65 @@ describe("incremental Service reads from the Organization change log", () => {
       older.release();
       newer.release();
     }
+  });
+
+  // Retention is global, so these run last and share one log.
+  describe("after retention", () => {
+    const ageAll = () => sql("update organization_change set created_at = now() - interval '25 hours'");
+    const loggedXids = async () => (await sql("select xid::text from organization_change order by xid")).rows.map((row) => row.xid as string);
+
+    it("prunes changes older than 24 hours and keeps newer ones", async () => {
+      await createServices(alpha, [`old-${randomUUID().slice(0, 8)}`]);
+      await ageAll();
+      await createServices(alpha, [`new-${randomUUID().slice(0, 8)}`]);
+      const [newest] = (await loggedXids()).slice(-1);
+
+      await harness.runEffect(pruneChangeLog());
+
+      expect(await loggedXids()).toEqual([newest]);
+    });
+
+    it("never prunes at or past a running transaction, so the oldest change stays a fence", async () => {
+      const running = await harness.pool.connect();
+      try {
+        await running.query("begin");
+        await running.query("select pg_current_xact_id()");
+        await createServices(alpha, [`later-${randomUUID().slice(0, 8)}`]);
+        await ageAll();
+        const before = await loggedXids();
+
+        await harness.runEffect(pruneChangeLog());
+
+        // The later change survives: pruning it would leave a gap above the running transaction's change.
+        expect(await loggedXids()).toEqual(before.slice(-1));
+      } finally {
+        await running.query("rollback");
+        running.release();
+      }
+    });
+
+    it("reads in full, flagged as such, from a since below the oldest change", async () => {
+      const stale = await cursorNow(alpha);
+      const [service] = await createServices(alpha, [`fresh-${randomUUID().slice(0, 8)}`]);
+      await ageAll();
+      await createServices(beta, [`fresh-${randomUUID().slice(0, 8)}`]);
+      await harness.runEffect(pruneChangeLog());
+      const fence = await cursorNow(alpha);
+
+      const expired = await read(alpha, stale);
+      expect(expired.full).toBe(true);
+      expect(expired.rows.map((row) => row.id)).toContain(service);
+      // At or above the oldest change nothing was pruned, so the read stays incremental.
+      expect(await read(alpha, fence)).toMatchObject({ full: false, rows: [], deleted: [] });
+    });
+
+    it("reads in full from any since against an empty log, and starts fresh without one", async () => {
+      const since = await cursorNow(alpha);
+      await sql("delete from organization_change");
+
+      expect((await read(alpha, since)).full).toBe(true);
+      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since }))).toMatchObject({ expired: true });
+      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since: undefined }))).toMatchObject({ expired: false });
+    });
   });
 });

@@ -120,7 +120,7 @@ export const readCollection = Effect.fn("Collections.read")(function* (
     if (sourceTables.length === 0) return { full: true, rows: yield* readRows(), cursor: null };
     // The window is read before the rows, so the rows are at least as new as its cursor.
     const window = yield* readChangeWindow({ organizationId: scopeId, since: data.since, sourceTables });
-    if (data.since === undefined || window.all) return { full: true, rows: yield* readRows(), cursor: window.cursor };
+    if (data.since === undefined || window.all || window.expired) return { full: true, rows: yield* readRows(), cursor: window.cursor };
     const rows = window.changed.length === 0 ? [] : yield* readRows(window.changed);
     return { full: false, rows, deleted: window.deleted, cursor: window.cursor };
   });

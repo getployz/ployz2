@@ -8,6 +8,8 @@ export type OrgChangesHandlerDeps = {
   /** Collections changed since `since`, and the cursor to read from next. No `since` starts at now. */
   readChanges: (input: { organizationId: string; since: string | undefined }) => Promise<{
     cursor: string;
+    /** Retention deleted changes after `since`. */
+    expired: boolean;
     collections: string[];
   }>;
 };
@@ -16,7 +18,10 @@ const POLL_MS = 250;
 const PING_MS = 15_000;
 const isCursor = Schema.is(changeCursorSchema);
 
-/** Organization change stream: each event's id is its cursor and its data names the collections to refetch. */
+/**
+ * Organization change stream: each event's id is its cursor and its data names the collections to refetch.
+ * Resuming from a Last-Event-ID that retention has passed sends `reset`: refetch every collection.
+ */
 export async function handleOrgChangesRequest(request: Request, organizationSlug: string, deps: OrgChangesHandlerDeps) {
   let organizationId: string;
   try {
@@ -26,6 +31,8 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
   }
   const lastEventId = request.headers.get("Last-Event-ID");
   let cursor = lastEventId !== null && isCursor(lastEventId) ? lastEventId : undefined;
+  // Only the resume can be expired; a live cursor is always recent, and an empty log would reset every poll.
+  let resuming = cursor !== undefined;
   const encoder = new TextEncoder();
   let stop = (_closeController: boolean) => {};
   const stream = new ReadableStream<Uint8Array>({
@@ -49,10 +56,13 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
       const poll = async () => {
         try {
           const changes = await deps.readChanges({ organizationId, since: cursor });
-          if (changes.collections.length > 0) {
+          if (resuming && changes.expired) {
+            write(`id: ${changes.cursor}\nevent: reset\ndata: {}\n\n`);
+          } else if (changes.collections.length > 0) {
             write(`id: ${changes.cursor}\nevent: changes\ndata: ${JSON.stringify({ collections: changes.collections })}\n\n`);
           }
           cursor = changes.cursor;
+          resuming = false;
         } catch (cause) {
           // EventSource reconnects from its last event id.
           console.error("[org-changes] change log read failed", cause);

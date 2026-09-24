@@ -53,5 +53,9 @@ export const organizationChange = pgTable(
     allRows: boolean("all_rows").notNull(),
     createdAt,
   },
-  (table) => [index("organization_change_organization_id_xid_idx").on(table.organizationId, table.xid)],
+  (table) => [
+    index("organization_change_organization_id_xid_idx").on(table.organizationId, table.xid),
+    // The oldest xid is the retention fence.
+    index("organization_change_xid_idx").on(table.xid),
+  ],
 );
