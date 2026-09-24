@@ -216,7 +216,32 @@ struct Matcher {
 struct Pattern {
     source: String,
     exclusion: bool,
-    regex: Regex,
+    kind: Kind,
+}
+
+/// How `patternmatcher` compares one pattern: wildcard-free forms compare as
+/// strings, so only wildcard patterns reach a regex.
+enum Kind {
+    Exact,
+    /// A trailing `**`: the literal before it is a prefix.
+    Prefix(String),
+    /// A leading `**`: the literal after it is a suffix.
+    Suffix(String),
+    Regex(Regex),
+}
+
+impl Pattern {
+    fn matches(&self, path: &str) -> bool {
+        match &self.kind {
+            Kind::Exact => path == self.source,
+            Kind::Prefix(prefix) => path.starts_with(prefix.as_str()),
+            // `**/foo` also matches `foo`.
+            Kind::Suffix(suffix) => {
+                path.ends_with(suffix.as_str()) || suffix.strip_prefix('/') == Some(path)
+            }
+            Kind::Regex(regex) => regex.is_match(path),
+        }
+    }
 }
 
 impl Matcher {
@@ -234,13 +259,13 @@ impl Matcher {
                     Some(source) => (true, source.to_owned()),
                     None => (false, pattern),
                 };
-                let regex = Regex::new(&pattern_regex(&source)).map_err(|_| {
+                let kind = compile(&source).ok_or_else(|| {
                     Error::Invalid(format!("invalid build context ignore pattern: {source}"))
                 })?;
                 Ok(Pattern {
                     source,
                     exclusion,
-                    regex,
+                    kind,
                 })
             })
             .collect::<Result<_, _>>()?;
@@ -256,12 +281,9 @@ impl Matcher {
             if pattern.exclusion != matched {
                 continue;
             }
-            let found = pattern.regex.is_match(&path)
-                || (1..parents.len()).any(|end| {
-                    pattern
-                        .regex
-                        .is_match(&parents.get(..end).unwrap_or_default().join("/"))
-                });
+            let found = pattern.matches(&path)
+                || (1..parents.len())
+                    .any(|end| pattern.matches(&parents.get(..end).unwrap_or_default().join("/")));
             if found {
                 matched = !pattern.exclusion;
             }
@@ -292,11 +314,21 @@ impl Matcher {
     }
 }
 
-/// `patternmatcher`'s translation: `*` and `?` stop at `/`, `**` spans
-/// directories, and `\` escapes the next character.
-fn pattern_regex(pattern: &str) -> String {
+/// `patternmatcher`'s `compile`: `*` and `?` stop at `/`, `**` spans
+/// directories, and `\` escapes the next character. As in moby, `^` is not
+/// escaped, so it anchors inside a wildcard pattern. `None` is invalid syntax.
+fn compile(pattern: &str) -> Option<Kind> {
+    #[derive(PartialEq)]
+    enum Detected {
+        Exact,
+        Prefix,
+        Suffix,
+        Regex,
+    }
     let mut regex = String::from("^");
+    let mut detected = Detected::Exact;
     let mut chars = pattern.chars().peekable();
+    let mut first = true;
     while let Some(ch) = chars.next() {
         match ch {
             '*' if chars.peek() == Some(&'*') => {
@@ -304,27 +336,54 @@ fn pattern_regex(pattern: &str) -> String {
                 if chars.peek() == Some(&'/') {
                     chars.next();
                 }
-                regex.push_str(if chars.peek().is_none() {
-                    ".*"
+                if chars.peek().is_some() {
+                    regex.push_str("(.*/)?");
+                    detected = Detected::Regex;
+                } else if detected == Detected::Exact {
+                    detected = Detected::Prefix;
                 } else {
-                    "(.*/)?"
-                });
+                    regex.push_str(".*");
+                    detected = Detected::Regex;
+                }
+                if first {
+                    detected = Detected::Suffix;
+                }
             }
-            '*' => regex.push_str("[^/]*"),
-            '?' => regex.push_str("[^/]"),
+            '*' => {
+                regex.push_str("[^/]*");
+                detected = Detected::Regex;
+            }
+            '?' => {
+                regex.push_str("[^/]");
+                detected = Detected::Regex;
+            }
             '.' | '+' | '(' | ')' | '|' | '{' | '}' | '$' => {
                 regex.push('\\');
                 regex.push(ch);
             }
-            '\\' => match chars.next() {
-                Some(next) => regex.push_str(&regex::escape(&next.to_string())),
-                None => regex.push_str("\\\\"),
-            },
+            '\\' => {
+                // Go rejects a trailing escape as a syntax error.
+                let next = chars.next()?;
+                regex.push_str(&regex::escape(&next.to_string()));
+                detected = Detected::Regex;
+            }
+            '[' | ']' => {
+                regex.push(ch);
+                detected = Detected::Regex;
+            }
             _ => regex.push(ch),
         }
+        first = false;
     }
-    regex.push('$');
-    regex
+    Some(match detected {
+        Detected::Exact => Kind::Exact,
+        Detected::Prefix => Kind::Prefix(pattern.strip_suffix("**")?.to_owned()),
+        Detected::Suffix => Kind::Suffix(pattern.get(2..)?.to_owned()),
+        Detected::Regex => {
+            regex.push('$');
+            Kind::Regex(Regex::new(&regex).ok()?)
+        }
+    })
 }
 
 /// Go's `path.Clean`: the shortest lexically equivalent slash path.
@@ -417,6 +476,14 @@ mod tests {
             (&["file.txt"], "fileXtxt", false),
             (&["\\*"], "*", true),
             (&["\\*"], "a", false),
+            // Wildcard-free patterns compare as strings; in a regex `^` anchors.
+            (&["secret^key"], "secret^key", true),
+            (&["**/secret^key"], "a/secret^key", true),
+            (&["*^key"], "secret^key", false),
+            (&["*^key"], "key", true),
+            (&["[^a]x"], "bx", true),
+            (&["[^a]x"], "ax", false),
+            (&["**/keep"], "keep", true),
         ] {
             assert_eq!(
                 matcher(patterns).matches_or_parent_matches(Path::new(path)),
@@ -426,6 +493,7 @@ mod tests {
         }
         assert!(Matcher::new(&["[".into()]).is_err());
         assert!(Matcher::new(&["!".into()]).is_err());
+        assert!(Matcher::new(&["foo\\".into()]).is_err());
     }
 
     #[test]
