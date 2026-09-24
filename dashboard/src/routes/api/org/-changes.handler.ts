@@ -1,3 +1,4 @@
+import timers from "node:timers/promises";
 import { Effect, Schema } from "effect";
 import { changeCursorSchema, type ChangeName } from "#/collections/read.contract";
 import { publicErrorResponse } from "#/server/public-error";
@@ -31,7 +32,7 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
   }
   const lastEventId = request.headers.get("Last-Event-ID");
   const cancelled = new AbortController();
-  const events = orgChangeEvents(organizationId, lastEventId !== null && isCursor(lastEventId) ? lastEventId : undefined, deps,
+  const events = orgChangeEvents(organizationId, isCursor(lastEventId) ? lastEventId : undefined, deps,
     AbortSignal.any([request.signal, cancelled.signal]));
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -62,34 +63,23 @@ async function* orgChangeEvents(organizationId: string, resumeFrom: string | und
   let resuming = cursor !== undefined;
   let lastWrite = Date.now();
   while (!signal.aborted) {
-    let changes: Awaited<ReturnType<OrgChangesHandlerDeps["readChanges"]>>;
-    try {
-      changes = await deps.readChanges({ organizationId, since: cursor });
-    } catch (cause) {
-      // Ending the stream makes EventSource reconnect from its last event id.
+    const changes = await deps.readChanges({ organizationId, since: cursor }).catch((cause: unknown) => {
       Effect.runFork(Effect.logError("Organization change log read failed.", cause));
-      return;
-    }
-    if (resuming && changes.expired) {
-      yield `id: ${changes.cursor}\nevent: reset\ndata: {}\n\n`;
-      lastWrite = Date.now();
-    } else if (changes.collections.length > 0) {
-      yield `id: ${changes.cursor}\nevent: changes\ndata: ${JSON.stringify({ collections: changes.collections })}\n\n`;
-      lastWrite = Date.now();
-    } else if (Date.now() - lastWrite >= PING_MS) {
-      yield ": ping\n\n";
+      return undefined;
+    });
+    // Ending the stream makes EventSource reconnect from its last event id.
+    if (!changes) return;
+    const event = resuming && changes.expired
+      ? `id: ${changes.cursor}\nevent: reset\ndata: {}\n\n`
+      : changes.collections.length > 0
+        ? `id: ${changes.cursor}\nevent: changes\ndata: ${JSON.stringify({ collections: changes.collections })}\n\n`
+        : Date.now() - lastWrite >= PING_MS ? ": ping\n\n" : undefined;
+    if (event) {
+      yield event;
       lastWrite = Date.now();
     }
     cursor = changes.cursor;
     resuming = false;
-    await new Promise<void>((resolve) => {
-      const wake = () => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", wake);
-        resolve();
-      };
-      const timer = setTimeout(wake, POLL_MS);
-      signal.addEventListener("abort", wake, { once: true });
-    });
+    await timers.setTimeout(POLL_MS, undefined, { signal }).catch(() => {});
   }
 }

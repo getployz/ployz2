@@ -21,7 +21,8 @@ it.each([
 });
 
 it("resumes after Last-Event-ID, names changed collections, pings, and disables proxy buffering", async () => {
-  vi.useFakeTimers();
+  // Polls wait on real 250 ms timers; only the clock that times pings is faked.
+  vi.useFakeTimers({ toFake: ["Date"] });
   const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>()
     .mockResolvedValueOnce({ cursor: "50", expired: false, collections: ["service"] })
     .mockResolvedValue({ cursor: "51", expired: false, collections: [] });
@@ -45,16 +46,16 @@ it("resumes after Last-Event-ID, names changed collections, pings, and disables 
   await readUntil("event: changes");
   expect(readChanges).toHaveBeenNthCalledWith(1, { organizationId: "org-1", since: "42" });
   expect(text).toContain('id: 50\nevent: changes\ndata: {"collections":["service"]}\n\n');
-  await vi.advanceTimersByTimeAsync(250);
-  expect(readChanges).toHaveBeenNthCalledWith(2, { organizationId: "org-1", since: "50" });
-  await vi.advanceTimersByTimeAsync(15_000);
+  await vi.waitFor(() => expect(readChanges).toHaveBeenNthCalledWith(2, { organizationId: "org-1", since: "50" }));
+  expect(text).not.toContain(": ping");
+  vi.setSystemTime(Date.now() + 15_000);
   await readUntil(": ping\n\n");
   // Quiet polls advance the cursor without emitting events.
   expect(text.match(/event: changes/g)).toHaveLength(1);
   expect(readChanges).toHaveBeenLastCalledWith({ organizationId: "org-1", since: "51" });
   await reader.cancel();
   const calls = readChanges.mock.calls.length;
-  await vi.advanceTimersByTimeAsync(1_000);
+  await new Promise((resolve) => setTimeout(resolve, 600));
   expect(readChanges).toHaveBeenCalledTimes(calls);
 });
 
