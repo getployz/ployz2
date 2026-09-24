@@ -132,13 +132,28 @@ it("ends the stream when the change log can't be read, so EventSource reconnects
   expect(readChanges).toHaveBeenCalledOnce();
 });
 
-it("ends the stream when the current horizon can't be read", async () => {
+it("refuses the stream when the current horizon can't be read, so EventSource retries", async () => {
   const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>();
   const response = await handleOrgChangesRequest(request(), "acme", {
     authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
     currentCursor: vi.fn().mockRejectedValue(new Error("database down")),
     readChanges,
   });
-  expect(await readEvents(response).until("event: changes")).toBe("retry: 1000\n\n");
+  expect(response.status).toBe(500);
   expect(readChanges).not.toHaveBeenCalled();
+});
+
+it("takes the starting horizon before the response opens, so the refetch on open can't miss a change", async () => {
+  let taken = false;
+  const response = await handleOrgChangesRequest(request(), "acme", {
+    authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
+    currentCursor: async () => {
+      await Promise.resolve();
+      taken = true;
+      return "6";
+    },
+    readChanges: vi.fn<OrgChangesHandlerDeps["readChanges"]>().mockResolvedValue({ cursor: "6", expired: false, collections: [] }),
+  });
+  expect(taken).toBe(true);
+  await response.body?.cancel();
 });

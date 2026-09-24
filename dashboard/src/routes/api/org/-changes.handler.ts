@@ -33,23 +33,30 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
     return publicErrorResponse(cause);
   }
   const lastEventId = request.headers.get("Last-Event-ID");
-  const resumeFrom = isCursor(lastEventId) ? lastEventId : undefined;
-  return eventStreamResponse(request.signal, (signal) => orgChangeEvents(organizationId, resumeFrom, deps, signal),
+  const resuming = isCursor(lastEventId);
+  // Taken before the response opens: the client refetches on `open`, so every change at or after
+  // this cursor is either in that refetch or announced by the stream.
+  let cursor: string;
+  try {
+    cursor = resuming ? lastEventId : await deps.currentCursor();
+  } catch (cause) {
+    return publicErrorResponse(cause);
+  }
+  return eventStreamResponse(request.signal, (signal) => orgChangeEvents(organizationId, cursor, resuming, deps, signal),
     { heartbeatMs: 15_000, retryMs: 1000 });
 }
 
 // ponytail: one poll loop per open stream; move to one loop per instance if open tabs reach the thousands.
-async function* orgChangeEvents(organizationId: string, resumeFrom: string | undefined, deps: OrgChangesHandlerDeps, signal: AbortSignal) {
-  // Ending the stream on a failed read makes EventSource reconnect from its last event id.
-  const failed = (cause: unknown) => {
-    Effect.runFork(Effect.logError("Organization change log read failed.", cause));
-    return undefined;
-  };
+async function* orgChangeEvents(organizationId: string, start: string, resume: boolean, deps: OrgChangesHandlerDeps, signal: AbortSignal) {
+  let cursor = start;
   // Only the resume can be expired; a live cursor is always recent, and an empty log would reset every poll.
-  let resuming = resumeFrom !== undefined;
-  let cursor = resumeFrom ?? await deps.currentCursor().catch(failed);
-  while (cursor !== undefined && !signal.aborted) {
-    const changes = await deps.readChanges({ organizationId, since: cursor }).catch(failed);
+  let resuming = resume;
+  while (!signal.aborted) {
+    const changes = await deps.readChanges({ organizationId, since: cursor }).catch((cause: unknown) => {
+      Effect.runFork(Effect.logError("Organization change log read failed.", cause));
+      return undefined;
+    });
+    // Ending the stream on a failed read makes EventSource reconnect from its last event id.
     if (!changes) return;
     if (resuming && changes.expired) {
       yield sseEvent({ id: changes.cursor, event: "reset", data: {} });
