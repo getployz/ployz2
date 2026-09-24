@@ -8,12 +8,13 @@ source "$ROOT/scripts/homebrew-formula.sh"
 # shellcheck source=scripts/release-tag.sh
 source "$ROOT/scripts/release-tag.sh"
 
-# Moves pointer file $1 to tag $2 only when the tag is higher, so an older-line fix never moves
-# a channel backwards. The file is named for its channel; a line pointer passes its line as $3.
-# A corrupt pointer (not a tag, a prerelease on stable, or another line's tag) stops the release
-# rather than being kept or overwritten.
+# advance_pointer <dest_dir> <tag> <channel> [line]: moves the channel's pointer (the line's
+# pointer when a line is given) to the tag only when the tag is higher, so an older-line fix never
+# moves a channel backwards. A corrupt pointer (not a tag, a prerelease on stable, or another
+# line's tag) stops the release rather than being kept or overwritten.
 advance_pointer() {
-    local file=$1 tag=$2 line=${3:-} current='' channel=${1##*/} valid=release_tag
+    local dest_dir=$1 tag=$2 channel=$3 line=${4:-} current='' valid=release_tag
+    local file=$dest_dir/${line:+$line/}$channel
     [ "$channel" = stable ] && valid=stable_release_tag
     if [ -f "$file" ]; then
         current=$(tr -d '[:space:]' < "$file")
@@ -35,8 +36,8 @@ write_channel_files() {
     line=${tag%%.*}
     [ "$channel" = beta ] || pointers="stable beta"
     for pointer in $pointers; do
-        advance_pointer "$dest_dir/$line/$pointer" "$tag" "$line"
-        advance_pointer "$dest_dir/$pointer" "$tag"
+        advance_pointer "$dest_dir" "$tag" "$pointer" "$line"
+        advance_pointer "$dest_dir" "$tag" "$pointer"
     done
 }
 
