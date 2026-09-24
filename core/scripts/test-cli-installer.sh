@@ -66,7 +66,7 @@ grep -Fq '/releases/download/v8.8.8-beta.1/ployz_linux_amd64.tar.gz' "$FAKE_CURL
 # stable never installs a prerelease, and retired channel names are not versions.
 printf 'v8.8.8-beta.1\n' > "$TMP/release/stable"
 for case in 'stable:stable channel is unavailable' 'latest:Invalid version' \
-    'nightly:Invalid version' '1.2.03:Invalid version'; do
+    'nightly:Invalid version' '1.2.03:Invalid version' '18446744073709551616.0.0:Invalid version'; do
     requested=${case%%:*}
     if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
         INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \

@@ -95,6 +95,9 @@ grep -Fq 'release asset set differs' "$TMP/error"
     }
     rejects v1.0.1-rc.1
     rejects v1.0.01
+    rejects v18446744073709551616.0.0
+    printf 'v1.0.\n0\n' > "$channels/stable"
+    rejects v1.0.0
     printf 'v1.1.0-beta.2\n' > "$channels/stable"
     rejects v1.0.0
     printf 'v1.0.0\n' > "$channels/stable"

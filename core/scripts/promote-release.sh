@@ -17,7 +17,7 @@ advance_pointer() {
     local file=$dest_dir/${line:+$line/}$channel
     [ "$channel" = stable ] && valid=stable_release_tag
     if [ -f "$file" ]; then
-        current=$(tr -d '[:space:]' < "$file")
+        current=$(< "$file")
         if ! "$valid" "$current" || { [ -n "$line" ] && [ "${current%%.*}" != "$line" ]; }; then
             echo "channel pointer $file holds '$current', not a ${line:+$line }$channel tag" >&2
             return 1
@@ -106,7 +106,7 @@ promote_published_release() {
     push_channel_files "$channels" "$tag"
     dispatch_ployz_sh_site
     # Homebrew follows the unscoped stable pointer.
-    [ -f "$channels/stable" ] && newest_stable=$(tr -d '[:space:]' < "$channels/stable")
+    [ -f "$channels/stable" ] && newest_stable=$(< "$channels/stable")
     rm -rf "$channels"
     if [ "$newest_stable" != "$tag" ]; then
         return 0

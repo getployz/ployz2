@@ -7,7 +7,7 @@ PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
 PLOYZ_VERSION=${PLOYZ_VERSION:-${1:-stable}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
 # Same grammar as scripts/release-tag.sh; this file is fetched alone, so it cannot source it.
-RELEASE_NUMBER='(0|[1-9][0-9]*)'
+RELEASE_NUMBER='(0|[1-9][0-9]{0,18})'
 STABLE_VERSION="$RELEASE_NUMBER\.$RELEASE_NUMBER\.$RELEASE_NUMBER"
 RELEASE_VERSION="$STABLE_VERSION(-beta\.$RELEASE_NUMBER)?"
 
