@@ -95,7 +95,7 @@ pub(super) async fn resolve_release(
         MachineRelease::Beta => ("beta", true),
     };
     if let Some(installed) = installed
-        && format!("v{}", installed.major()) != RELEASE_LINE
+        && !on_release_line(installed)
     {
         return Err(Error::ReleaseSelection(format!(
             "installed daemon {installed} is not on release line {RELEASE_LINE}; \
@@ -103,7 +103,7 @@ pub(super) async fn resolve_release(
         )));
     }
     let pointer = parse_channel_version(&source.channel(channel).await?)?;
-    if format!("v{}", pointer.major()) != RELEASE_LINE {
+    if !on_release_line(&pointer) {
         return Err(Error::ReleaseSelection(format!(
             "{RELEASE_LINE} {channel} channel points at {pointer} on another release line"
         )));
@@ -117,6 +117,10 @@ pub(super) async fn resolve_release(
         .filter(|installed| **installed > pointer)
         .cloned()
         .unwrap_or(pointer))
+}
+
+fn on_release_line(version: &MachineVersion) -> bool {
+    format!("v{}", version.major()) == RELEASE_LINE
 }
 
 fn parse_channel_version(value: &str) -> Result<MachineVersion, Error> {
