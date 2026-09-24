@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { Connection, MachineId } from "@ployz/sdk";
-import { Context, Deferred, Effect, Exit, Layer, Scope } from "effect";
+import { Context, Deferred, Effect, Exit, Layer, Schedule, Scope } from "effect";
 import {
   Ployz,
   PloyzProviderError,
@@ -92,23 +92,22 @@ export function makeOrganizationRuntimeLayer(
       });
       // Removal disables the pairing (an update) before deleting it, so any pairing change
       // re-checks it; only removal or a new generation closes the session.
-      const watchPairing = (organizationId: string, session: Session, since: string) => Effect.gen(function* () {
+      const watchPairing = (organizationId: string, session: Session, since: string) => {
         let cursor = since;
-        while (!session.closed) {
-          yield* Effect.sleep(PAIRING_CHANGE_POLL);
-          if (session.closed) return;
+        return Effect.gen(function* () {
           const changes = yield* readPairingChanges(organizationId, cursor);
           cursor = changes.cursor;
-          if (!changes.changed) continue;
+          if (!changes.changed) return;
           const access = yield* loadConnections(organizationId);
-          if (access.kind === "missing" || access.generation !== session.generation) return yield* close(session);
-        }
-      }).pipe(
-        // Removals are unobservable until the log is readable again, so fail closed.
-        Effect.catch((error) => Effect.logWarning("Pairing change check failed; closing the session.", error).pipe(
-          Effect.andThen(close(session)),
-        )),
-      );
+          if (access.kind === "missing" || access.generation !== session.generation) yield* close(session);
+        }).pipe(
+          Effect.repeat({ schedule: Schedule.spaced(PAIRING_CHANGE_POLL), while: () => !session.closed }),
+          // Removals are unobservable until the log is readable again, so fail closed.
+          Effect.catch((error) => Effect.logWarning("Pairing change check failed; closing the session.", error).pipe(
+            Effect.andThen(close(session)),
+          )),
+        );
+      };
       return {
         cancel,
         open: Effect.fn("OrganizationRuntime.open")(function* (organizationId: string, machineId?: MachineId) {

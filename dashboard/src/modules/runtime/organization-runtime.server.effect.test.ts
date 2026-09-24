@@ -179,12 +179,14 @@ it.effect("a logged pairing change closes only sessions whose pairing was remove
     const unreadable = new Set<string>();
     const closed: string[] = [];
     let dialing = "";
+    let reads = 0;
     const runtime = makeOrganizationRuntimeLayer((organizationId) => Effect.sync(() => {
       const state = access.get(organizationId);
       return state === "missing" || state === undefined
         ? { kind: "missing" as const }
         : { kind: "ready" as const, generation: state, connections };
     }), (organizationId, since) => {
+      reads += 1;
       if (unreadable.has(organizationId)) return Effect.fail(new OrganizationChangeLogFailure({ cause: "log unavailable" }));
       const result = { cursor: `${Number(since ?? 0) + 1}`, changed: changed.has(organizationId) };
       changed.delete(organizationId);
@@ -213,6 +215,10 @@ it.effect("a logged pairing change closes only sessions whose pairing was remove
       unreadable.add("org-3");
       yield* TestClock.adjust(PAIRING_CHANGE_POLL);
       assert.deepStrictEqual(closed.sort(), ["org-1", "org-2", "org-3"]);
+      // Closed sessions stop reading the log.
+      const readsAtClose = reads;
+      yield* TestClock.adjust(PAIRING_CHANGE_POLL);
+      assert.strictEqual(reads, readsAtClose);
     })).pipe(Effect.provide(runtime));
   }),
 );
