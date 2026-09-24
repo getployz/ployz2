@@ -47,14 +47,6 @@ impl fmt::Display for MachineVersion {
     }
 }
 
-impl FromStr for MachineVersion {
-    type Err = ValueError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
-
 impl TryFrom<String> for MachineVersion {
     type Error = ValueError;
 
