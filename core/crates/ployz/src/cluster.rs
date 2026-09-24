@@ -520,7 +520,7 @@ impl Client {
     /// are ignored.
     /// Resets the Machine. A reset warning is returned, not swallowed.
     /// Refused before reset or membership mutation when this is the last Machine
-    /// and a Management Client holds a key; clear it or tear down from Cloud.
+    /// and a Management Client holds a key.
     ///
     /// # Errors
     ///
@@ -558,7 +558,7 @@ impl Client {
     /// Remove Cluster membership for `machine` without resetting it.
     ///
     /// Refused before membership mutation when this is the last Machine and a
-    /// Management Client holds a key; clear it or tear down from Cloud.
+    /// Management Client holds a key.
     ///
     /// # Errors
     ///
@@ -882,20 +882,44 @@ async fn refuse_last_managed(
         return Ok(());
     }
     // Inspect errors must not block unmanaged last-Machine removal.
-    let managed = client
+    let holders = client
         .invoke::<op::Inspect>(
             InspectRequest::default(),
             &MachineTarget::from(&selected),
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
-        .is_ok_and(|details| !details.management_clients.is_empty());
-    if !managed {
+        .map(|details| details.management_clients)
+        .unwrap_or_default();
+    if holders.is_empty() {
         return Ok(());
     }
+    let cloud = holders.iter().any(|label| label.as_str() == "cloud");
+    let mut names: Vec<String> = holders
+        .iter()
+        .filter(|label| label.as_str() != "cloud")
+        .map(|label| format!("`{label}`"))
+        .collect();
+    if cloud {
+        names.insert(0, "Cloud".into());
+    }
+    let who = match names.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => unreachable!("holders is not empty"),
+    };
+    let next = if cloud {
+        "Delete the Cluster from Cloud instead.".to_owned()
+    } else {
+        format!("Disconnect {who} from this Machine first.")
+    };
+    let message = format!(
+        "this is the last Machine in the Cluster and it is still managed by {who}; \
+         removing it would leave {who} managing a Cluster that no longer exists. {next}"
+    );
     Err(RpcError {
         code: RpcErrorCode::InvalidArgument,
-        message: "the last Machine cannot be removed with machine rm while a Management Client holds a key; clear it first, or tear down this Cluster from Cloud".into(),
+        message,
         details: Value::Null,
     })
 }

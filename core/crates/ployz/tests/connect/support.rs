@@ -183,7 +183,7 @@ pub(super) struct DiscoveryService {
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
-    pub(super) cloud_managed: Arc<AtomicBool>,
+    pub(super) management_clients: Arc<Mutex<Vec<ployz_core::ManagementClientLabel>>>,
     register_error: Arc<Mutex<Option<RpcError>>>,
     pub(super) register_calls: Arc<AtomicUsize>,
     pub(super) lose_register_reply: bool,
@@ -227,7 +227,7 @@ impl DiscoveryService {
             reset_warning: Arc::new(Mutex::new(None)),
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
-            cloud_managed: Arc::new(AtomicBool::new(false)),
+            management_clients: Arc::default(),
             register_error: Arc::new(Mutex::new(None)),
             register_calls: Arc::new(AtomicUsize::new(0)),
             lose_register_reply: false,
@@ -524,12 +524,7 @@ impl MachineRpc for DiscoveryService {
                 advertised_endpoints: Vec::new(),
                 store_version: Default::default(),
                 rtts: Vec::new(),
-                management_clients: self
-                    .cloud_managed
-                    .load(Ordering::SeqCst)
-                    .then(|| ployz_core::ManagementClientLabel::parse("cloud").unwrap())
-                    .into_iter()
-                    .collect(),
+                management_clients: self.management_clients.lock().unwrap().clone(),
                 telemetry,
                 storage: inspect.include_storage.then_some(self.storage),
             })
