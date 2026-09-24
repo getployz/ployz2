@@ -77,6 +77,17 @@ pub struct PreparedDeploy {
     session: std::sync::Weak<SessionInner>,
     confirmed: AtomicBool,
     retained: std::sync::Mutex<Option<Vec<crate::build::BuiltService>>>,
+    prune_targets: Vec<ployz_core::PruneTarget>,
+}
+
+/// Who runs Image Cleanup for a confirmed Deploy.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ImageCleanup {
+    /// Clean up after the Outcome, before the Deploy finishes.
+    #[default]
+    Auto,
+    /// The caller runs [`Session::prune_images`] with the prune targets.
+    Manual,
 }
 
 type DeployTask = tokio::task::JoinHandle<Result<DeployOutcome<ExecutionError>, RpcError>>;
@@ -317,12 +328,14 @@ impl Session {
             .map_err(|error| preparation_error(error, token.is_cancelled()))?;
             let (preview, retained) = prepared.into_parts();
             let build_receipts = preparation::receipts(&captured.fingerprints, &retained);
+            let prune_targets = crate::image::prune_targets(&preview, &retained);
             Ok(PreparedDeploy {
                 preview,
                 build_receipts,
                 session,
                 confirmed: AtomicBool::new(false),
                 retained: std::sync::Mutex::new(Some(retained)),
+                prune_targets,
             })
         });
         Ok(RunningPreparation {
@@ -331,6 +344,20 @@ impl Session {
             buffered,
             join: Mutex::new(Some(join)),
         })
+    }
+
+    /// Remove superseded build images from each target Machine. Per-Machine failures
+    /// are results, never errors.
+    ///
+    /// # Errors
+    /// Returns when the session is closed.
+    pub async fn prune_images(
+        &self,
+        targets: &[ployz_core::PruneTarget],
+    ) -> Result<ployz_core::ImageCleanupReport, RpcError> {
+        let client = self.client()?;
+        self.until_closed(async { Ok(crate::image::prune_images(&client, targets).await) })
+            .await
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
@@ -355,6 +382,7 @@ impl Session {
             session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
             retained: std::sync::Mutex::new(None),
+            prune_targets: Vec::new(),
         })
     }
 
@@ -381,6 +409,7 @@ impl Session {
             session: Arc::downgrade(&self.inner),
             confirmed: AtomicBool::new(false),
             retained: std::sync::Mutex::new(None),
+            prune_targets: Vec::new(),
         })
     }
 

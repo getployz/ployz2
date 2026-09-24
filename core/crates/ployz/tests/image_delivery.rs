@@ -79,6 +79,7 @@ async fn local_push_selects_peer_variants_by_the_original_digest() {
         size: 1,
         containers: 0,
         platforms: vec![platform.into()],
+        last_tagged: None,
     };
     // The source still holds this Build's AMD64 content, but its tag now names
     // an ARM64 replacement. Selecting by the tag would incorrectly reject the peer.
@@ -94,6 +95,7 @@ async fn local_push_selects_peer_variants_by_the_original_digest() {
                     "linux/arm64",
                 ),
             ],
+            docker_root: None,
         },
     );
     let mut service =

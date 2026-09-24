@@ -22,12 +22,15 @@ use crate::{
 use self::proxy::{ImageProxy, ProxyMode, detect_mode};
 
 mod built;
+mod cleanup;
 mod proxy;
 use built::Source;
 pub use built::push_from_machine;
 pub(crate) use built::{
     available_variant, holds_platform, platform_compatible, push_from_machine_using_machines,
 };
+pub use cleanup::prune_images;
+pub(crate) use cleanup::prune_targets;
 
 #[must_use]
 pub fn with_default_tag(image: &str) -> String {

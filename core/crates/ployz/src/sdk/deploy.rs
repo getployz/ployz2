@@ -1,5 +1,5 @@
 //! Prepared deployment execution and its owned progress stream.
-use super::{PreparedDeploy, RunningDeploy, Session, closed, invalid_argument};
+use super::{ImageCleanup, PreparedDeploy, RunningDeploy, Session, closed, invalid_argument};
 use crate::deploy::DeployPreview;
 use ployz_core::{DeployEvent, DeployOutcome, ExecutionError, RpcError, RpcErrorCode};
 use serde_json::Value;
@@ -28,6 +28,12 @@ impl PreparedDeploy {
         self.preview.noop()
     }
 
+    /// Machines and repositories whose superseded build images Image Cleanup removes.
+    #[must_use]
+    pub fn prune_targets(&self) -> &[ployz_core::PruneTarget] {
+        &self.prune_targets
+    }
+
     /// Release an unconfirmed preparation and its retained images.
     pub fn close(&self) {
         let mut retained = self.retained.lock().expect("retained build lock");
@@ -41,15 +47,18 @@ impl PreparedDeploy {
     ///
     /// Returns when this preview already confirmed, or when the session is closed.
     pub fn confirm(&self) -> Result<RunningDeploy, RpcError> {
-        self.confirm_with_log_id(None)
+        self.confirm_with_log_id(None, ImageCleanup::Auto)
     }
 
     /// Execute with caller-owned log correlation, without changing the planned configuration.
+    /// Automatic Image Cleanup runs after the Outcome, whatever it is, and its report is
+    /// the last event; it never changes the Outcome.
     /// # Errors
     /// Returns the same admission and session errors as confirm.
     pub fn confirm_with_log_id(
         &self,
         deployment_id: Option<ployz_core::DeploymentLogId>,
+        cleanup: ImageCleanup,
     ) -> Result<RunningDeploy, RpcError> {
         let session = Session {
             inner: self.session.upgrade().ok_or_else(closed)?,
@@ -71,17 +80,32 @@ impl PreparedDeploy {
         let token = cancel.clone();
         let session_cancel = session.inner.cancel.clone();
         let retained = retained.take();
+        let prune_targets = match cleanup {
+            ImageCleanup::Auto => self.prune_targets.clone(),
+            ImageCleanup::Manual => Vec::new(),
+        };
         let join = tokio::spawn(async move {
             let _retained = retained;
-            tokio::select! {
+            let events = tx.clone();
+            let outcome = tokio::select! {
                 biased;
-                () = session_cancel.cancelled() => Err(RpcError {
+                () = session_cancel.cancelled() => return Err(RpcError {
                     code: RpcErrorCode::Unavailable,
                     message: "session closed; in-flight Deploy outcome may be uncertain".into(),
                     details: Value::Null,
                 }),
-                outcome = client.confirm(&preview, &token, Some(tx)) => Ok(outcome),
+                outcome = client.confirm(&preview, &token, Some(tx)) => outcome,
+            };
+            if !prune_targets.is_empty() && !token.is_cancelled() {
+                tokio::select! {
+                    biased;
+                    () = session_cancel.cancelled() => {}
+                    report = crate::image::prune_images(&client, &prune_targets) => {
+                        let _ = events.send(DeployEvent::ImagesPruned { report });
+                    }
+                }
             }
+            Ok(outcome)
         });
         Ok(RunningDeploy {
             cancel,

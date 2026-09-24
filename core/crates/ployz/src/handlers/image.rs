@@ -257,7 +257,9 @@ mod tests {
                         size: 19_191_186,
                         containers: 1,
                         platforms: vec!["linux/amd64".into()],
+                        last_tagged: None,
                     }],
+                    docker_root: None,
                 },
             },
         }

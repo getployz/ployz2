@@ -12,7 +12,7 @@ import { GithubApi } from "#/modules/github/github-observation.api";
 import { asTestDouble } from "#/lib/test-double";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-runtime.server";
-import { executeEnvironmentDeployment, executeLatestEnvironmentDeployment } from "./runtime-activities.server";
+import { cleanUpDeploymentImages, executeEnvironmentDeployment, executeLatestEnvironmentDeployment } from "./runtime-activities.server";
 import { markDeploymentCancelled, requestDeploymentCancellation } from "./runtime-cancellation.repository.server";
 import { loadDeploymentBuildLog, loadDeploymentEvents, persistBuildLog, persistDeploymentProgress } from "./deployment-events.server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -204,7 +204,7 @@ describe("deployment runtime persistence", () => {
         expect(input.source_commits).toEqual({ api: "a".repeat(40) });
         expect(input.build_receipts).toEqual(attempt === 0 || (attempt === 1 && (evidence !== "valid" && !evidence.startsWith("reporting"))) ? {} : receipt);
         const prepared = asTestDouble<PreparedDeploy>()({
-          ...preview(), buildReceipts: receipt, close: () => undefined,
+          ...preview(), buildReceipts: receipt, pruneTargets: [], close: () => undefined,
           confirm: () => {
             confirmed++;
             return { abort: () => undefined, finished: Promise.resolve(outcome),
@@ -363,7 +363,7 @@ describe("deployment runtime persistence", () => {
     const prepared = asTestDouble<PreparedDeploy>()({
       ...preview(), operations: [{ index: 0, operation, machine_id: operation.machine_id,
         service_name: operation.spec.name, machine_name: null, display_name: null, status: { type: "pending" } }],
-      confirm: () => ({
+      pruneTargets: [], confirm: () => ({
         abort: () => { aborted = true; },
         finished: stopped.then(() => outcome),
         async *[Symbol.asyncIterator]() {
@@ -423,7 +423,7 @@ describe("deployment runtime persistence", () => {
     await harness.db.update(schema.environmentDeployment).set({ status: "planning", cancellationRequestedAt: new Date() })
       .where(eq(schema.environmentDeployment.id, admitted.id));
     const confirm = vi.fn(() => { throw new Error("Cancelled work must not execute"); });
-    const client = asTestDouble<Client>()({ preview: async () => asTestDouble<PreparedDeploy>()({ ...preview(), confirm }), close: async () => {} });
+    const client = asTestDouble<Client>()({ preview: async () => asTestDouble<PreparedDeploy>()({ ...preview(), pruneTargets: [], confirm }), close: async () => {} });
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }] }))
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = await harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
@@ -450,7 +450,7 @@ describe("deployment runtime persistence", () => {
     const client = asTestDouble<Client>()({
       preview: async () => {
         if (resultKind === "cancelled") await harness.db.update(schema.environmentDeployment).set({ cancellationRequestedAt: new Date() }).where(eq(schema.environmentDeployment.id, admitted.id));
-        return asTestDouble<PreparedDeploy>()({ ...preview(), confirm });
+        return asTestDouble<PreparedDeploy>()({ ...preview(), pruneTargets: [], confirm });
       },
       close: async () => { closing(); await cleanup; },
     });
@@ -469,6 +469,41 @@ describe("deployment runtime persistence", () => {
     await running;
     const [terminal] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
     expect(terminal?.status).toBe(resultKind === "success" ? "applied" : "cancelled");
+  });
+
+  it.each(["cleaned", "warning"] as const)("records %s Image Cleanup after the slot is released without changing status", async (expected) => {
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId, savedStateSnapshotId: targetSavedId, triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    await harness.db.update(schema.environmentDeployment).set({ status: "planning" }).where(eq(schema.environmentDeployment.id, admitted.id));
+    const target = { machine_id: runtimeWatchMachineFixture("a".repeat(32), "machine").id, repository: "ployz-build/api" };
+    const outcome = { type: "success" as const, completed: [] };
+    const confirm = vi.fn((_options: unknown) => ({ finished: Promise.resolve(outcome), abort: () => undefined,
+      async *[Symbol.asyncIterator]() { yield { type: "outcome" as const, outcome }; },
+    }));
+    const pruneImages = vi.fn(async () => {
+      if (expected === "warning") throw new Error("Server unreachable");
+      return { machines: [{ machine_id: target.machine_id, result: { status: "cleaned" as const, removals: [] } }] };
+    });
+    const client = asTestDouble<Client>()({
+      preview: async () => asTestDouble<PreparedDeploy>()({ ...preview(), pruneTargets: [target], confirm }),
+      pruneImages, close: async () => {},
+    });
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+      .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
+    const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.scoped, Effect.provide(runtime),
+      Effect.provideService(GithubApi, { json: () => Effect.die("No Git expected"), archive: () => Effect.die("No Git expected") }),
+      Effect.provideService(InngestClient, new Inngest({ id: "image-cleanup-test" })), Effect.provideService(SecretEncryption, encryption));
+    await harness.runEffect(provide(executeLatestEnvironmentDeployment(admitted.id)));
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ imageCleanup: "manual" }));
+    expect(pruneImages).not.toHaveBeenCalled();
+    const [released] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+    expect(released).toMatchObject({ status: "applied", runtimeProgress: { imageCleanup: { state: "running", machines: 1, targets: [target] } } });
+    await harness.runEffect(provide(cleanUpDeploymentImages(admitted.id)));
+    expect(pruneImages).toHaveBeenCalledWith([target]);
+    const [cleaned] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+    expect(cleaned?.status).toBe("applied");
+    expect(cleaned?.runtimeProgress?.imageCleanup).toEqual({ state: expected, machines: 1 });
   });
 
   it("drops reporting promptly when its pool is full while the lifecycle pool remains usable", async () => {

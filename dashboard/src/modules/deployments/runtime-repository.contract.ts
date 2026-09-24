@@ -27,6 +27,7 @@ export type DeploymentContext = {
     variableProducers?: EnvironmentSnapshotVariableProducer[] | null;
     triggerOrigin?: DeploymentTriggerOrigin;
     serviceActionPolicy?: EnvironmentDeploymentServiceActionPolicy | null;
+    runtimeProgress?: import("./deployment-progress").DeploymentProgress | null;
   };
   environment: {
     id: string;
