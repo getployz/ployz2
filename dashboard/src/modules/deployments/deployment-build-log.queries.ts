@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { listDeploymentBuildLogServerFn } from "./deployment.functions";
 
 type BuildLogPage = Awaited<ReturnType<typeof listDeploymentBuildLogServerFn>>;
@@ -8,12 +8,10 @@ export type BuildOutputRow = BuildLogPage["output"][number];
 type BuildLog = { steps: BuildStepRow[]; output: BuildOutputRow[]; finished: boolean };
 
 /** Polls the step tree while the attempt runs, resuming output from the last row already held. */
-export function useBuildLog(organizationSlug: string, deploymentId: string, enabled: boolean) {
-  const queryClient = useQueryClient();
+export function deploymentBuildLogQueryOptions(queryClient: QueryClient, organizationSlug: string, deploymentId: string) {
   const queryKey = ["deployment-build-log", organizationSlug, deploymentId];
-  return useQuery<BuildLog>({
+  return queryOptions<BuildLog>({
     queryKey,
-    enabled,
     // Each mount resumes from the last held row; a running build also polls.
     staleTime: 0,
     refetchInterval: (query) => query.state.data?.finished ? false : 2_000,
@@ -34,4 +32,9 @@ export function useBuildLog(organizationSlug: string, deploymentId: string, enab
       return { steps, output, finished };
     },
   });
+}
+
+export function useBuildLog(organizationSlug: string, deploymentId: string, enabled: boolean) {
+  const queryClient = useQueryClient();
+  return useQuery({ ...deploymentBuildLogQueryOptions(queryClient, organizationSlug, deploymentId), enabled });
 }

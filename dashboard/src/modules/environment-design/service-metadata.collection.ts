@@ -26,5 +26,11 @@ const getServiceMetadataEditor = cachedByCollectionScope((organizationSlug, scop
 });
 
 export function useServiceMetadataEditor(organizationSlug: string) {
-  return getServiceMetadataEditor(organizationSlug, useCollectionScope());
+  const edit = getServiceMetadataEditor(organizationSlug, useCollectionScope());
+  return (input: Parameters<typeof edit>[0]) => {
+    const transaction = edit(input);
+    // The failure is already toasted; observing it keeps fire-and-forget callers free of unhandled rejections.
+    transaction.isPersisted.promise.catch(() => {});
+    return transaction;
+  };
 }

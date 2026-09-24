@@ -1,0 +1,73 @@
+import { QueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { afterEach, expect, it, vi } from "vitest";
+import { getEnvironmentsCollection } from "#/collections/collections";
+import { preloadCollection } from "#/collections/query-collection";
+import { getDbClient } from "#/collections/scope";
+import { editEnvironmentDocument } from "./environment-document-edit";
+import { emptyEnvironmentIntent } from "./saved-intent";
+
+
+const clients: QueryClient[] = [];
+afterEach(async () => {
+  for (const client of clients.splice(0)) { await getDbClient(client).cleanup(); client.clear(); }
+  vi.restoreAllMocks();
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+async function setup() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+  clients.push(queryClient);
+  const scope = { queryClient, sessionId: "session", userId: "user" };
+  const row = { id: "env", projectId: "project", organizationId: "org", name: "Production", namespace: "production",
+    revision: "r1", intent: { ...emptyEnvironmentIntent("production"), volumes: [{ resourceId: "vol", resourceLineageId: "lin", name: "data" }] },
+    createdAt: new Date(0), updatedAt: new Date(0) };
+  queryClient.setQueryData(["collections", "session", "user", "acme", "environment"], [row]);
+  const environments = getEnvironmentsCollection("acme", scope);
+  await preloadCollection(environments);
+  const rename = (name: string) => (intent: { volumes: Array<{ name: string }> }) => { const volume = intent.volumes[0]; if (volume) volume.name = name; };
+  const saved = (revision: string, name: string) => ({ data: { ...row, revision, intent: { ...row.intent, volumes: [{ ...row.intent.volumes[0], name }] } } });
+  // SAFETY: the fixture row carries the fields these tests read; the collection stores rows as given.
+  return { scope, environments, rename, saved: saved as (revision: string, name: string) => { data: never } };
+}
+
+it("shows the edit at once and saves queued edits against the previous save's revision", async () => {
+  const test = await setup();
+  const first = deferred<{ data: never }>();
+  const save1 = vi.fn(() => first.promise);
+  const save2 = vi.fn(async (revision: string) => test.saved(revision === "r2" ? "r3" : "stale", "logs"));
+
+  const one = editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("cache"), save: save1, failureMessage: "x" });
+  expect(test.environments.get("env")?.intent.volumes[0]?.name).toBe("cache");
+  const two = editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("logs"), save: save2, failureMessage: "x" });
+  expect(test.environments.get("env")?.intent.volumes[0]?.name).toBe("logs");
+
+  expect(save1).toHaveBeenCalledWith("r1");
+  expect(save2).not.toHaveBeenCalled();
+  first.resolve(test.saved("r2", "cache"));
+  await Promise.all([one.isPersisted.promise, two.isPersisted.promise]);
+  expect(save2).toHaveBeenCalledWith("r2");
+  // The committed row replaces the optimistic snapshot once the transaction settles.
+  await vi.waitFor(() => expect(test.environments.get("env")?.revision).toBe("r3"));
+  expect(test.environments.get("env")?.intent.volumes[0]?.name).toBe("logs");
+});
+
+it("rolls back and toasts when a save fails, and the next edit reuses the unchanged revision", async () => {
+  const toastError = vi.spyOn(toast, "error").mockReturnValue("toast");
+  const test = await setup();
+  const failed = editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("cache"),
+    save: () => Promise.reject(new Error("Name already taken")), failureMessage: "Could not rename." });
+  await expect(failed.isPersisted.promise).rejects.toThrow("Name already taken");
+  expect(toastError).toHaveBeenCalledWith("Name already taken");
+  expect(test.environments.get("env")?.intent.volumes[0]?.name).toBe("data");
+
+  const save = vi.fn(async (revision: string) => test.saved(revision === "r1" ? "r2" : "stale", "logs"));
+  await editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("logs"), save, failureMessage: "x" }).isPersisted.promise;
+  expect(save).toHaveBeenCalledWith("r1");
+});
