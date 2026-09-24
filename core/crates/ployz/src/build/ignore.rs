@@ -54,6 +54,9 @@ pub(super) fn select(context: &Path, rules: &Rules) -> Result<Selection, Error> 
             read_optional(&context.join(".dockerignore"))?.unwrap_or_default()
         }
     };
+    if reserved(&ignore) {
+        return Err(Error::Invalid(RESERVED.into()));
+    }
     let mut patterns = ignore_file_patterns(&ignore);
     if let Some(config) = railpack {
         let (excludes, kept) = railpack_rules(context, config)?;
@@ -127,6 +130,13 @@ fn railpack_rules(
     let configured: Configured = standard_json(&content)
         .and_then(|json| serde_json::from_str(&json).ok())
         .ok_or_else(|| invalid("invalid Railpack configuration"))?;
+    if configured
+        .exclude
+        .iter()
+        .any(|pattern| reserved(pattern.as_bytes()))
+    {
+        return Err(invalid(RESERVED));
+    }
     Ok((configured.exclude, kept))
 }
 
@@ -155,7 +165,13 @@ fn walk(
         .collect::<io::Result<Vec<_>>>()?;
     names.sort();
     for name in names {
-        let path = relative.join(name);
+        let path = relative.join(&name);
+        if reserved(name.as_bytes()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}: {RESERVED}", path.display()),
+            ));
+        }
         // A kept path keeps its parents traversable; the frontend applies the same patterns.
         let ignored = matcher.matches_or_parent_matches(&path)
             && !controls.iter().any(|control| control.starts_with(&path));
@@ -392,9 +408,21 @@ fn compile(pattern: &str) -> Option<Kind> {
 }
 
 /// The first of the characters at the end of plane 16 that stand for filename
-/// bytes that are not UTF-8 (only 0x80-0xFF occur). A name really containing
-/// one of them matches as that byte; such names are not supported.
+/// bytes that are not UTF-8. Only bytes 0x80-0xFF occur, so the characters
+/// U+10FF80-U+10FFFF are reserved: a name or pattern really containing one is
+/// refused rather than confused with a raw byte.
 const RAW_BYTE: u32 = 0x10_FF00;
+
+const RESERVED: &str = "a name or ignore rule uses a character in U+10FF80-U+10FFFF, which Ployz reserves for raw filename bytes; rename or remove it";
+
+/// Whether valid UTF-8 in `bytes` contains a character reserved for raw bytes.
+fn reserved(bytes: &[u8]) -> bool {
+    let range = RAW_BYTE + 0x80..=RAW_BYTE + 0xFF;
+    bytes
+        .utf8_chunks()
+        .flat_map(|chunk| chunk.valid().chars())
+        .any(|ch| range.contains(&u32::from(ch)))
+}
 
 /// Filenames are bytes. Each byte that is not UTF-8 becomes its own character,
 /// so distinct names stay distinct and wildcards count it as one character, as
@@ -538,6 +566,35 @@ mod tests {
         assert!(negated.matches_or_parent_matches(&path(b"a\xfe")));
         assert!(matcher(&["[^b]x"]).matches_or_parent_matches(&path(b"\xffx")));
         assert!(matcher(&["a?"]).matches_or_parent_matches(&path(b"a\xff")));
+    }
+
+    #[test]
+    fn reserved_characters_are_refused() {
+        // A real character that the raw-byte mapping reuses is refused, so it
+        // can never be confused with a raw-byte sibling.
+        assert!(reserved("a\u{10ff80}".as_bytes()));
+        assert!(!reserved(b"a\x80"));
+        assert!(!reserved("a\u{10ff7f}".as_bytes()));
+        let context = tempfile::tempdir().unwrap();
+        fs::write(context.path().join("a\u{10ff80}"), "").unwrap();
+        let error = select(context.path(), &Rules::Railpack(None))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("reserves"), "{error}");
+        fs::remove_file(context.path().join("a\u{10ff80}")).unwrap();
+        for (file, content) in [
+            (".dockerignore", "a\u{10ff80}\n"),
+            ("railpack.json", "{\"exclude\": [\"a\u{10ff80}\"]}"),
+        ] {
+            fs::write(context.path().join(file), content).unwrap();
+            let error = select(context.path(), &Rules::Railpack(None))
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains("reserves"), "{file}: {error}");
+            fs::remove_file(context.path().join(file)).unwrap();
+        }
     }
 
     #[test]
