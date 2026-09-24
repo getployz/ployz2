@@ -616,7 +616,7 @@ describe("deployment runtime persistence", () => {
     await expect(admit()).rejects.toMatchObject({ _tag: "Conflict" });
     await harness.db.update(schema.environmentDeployment).set({ deployPreview: preview() }).where(eq(schema.environmentDeployment.id, admitted.id));
     expect(await harness.db.select().from(schema.environmentDeploymentSecret)).toEqual([
-      { environmentDeploymentId: admitted.id, encryptedRuntimeOutcome: null, encryptedBuildReceipts: null },
+      { organizationId, environmentDeploymentId: admitted.id, encryptedRuntimeOutcome: null, encryptedBuildReceipts: null },
     ]);
     const outcome = { version: 1, outcome: { type: "success" as const, completed: [] } };
     await harness.runEffect(persistSdkDeployOutcome({
@@ -638,7 +638,7 @@ describe("deployment runtime persistence", () => {
       status: "failed", createdAt: new Date("2026-09-04T03:00:00.000Z"),
     }));
     await harness.db.insert(schema.environmentDeploymentSecret).values({
-      environmentDeploymentId: targetDeploymentId,
+      organizationId, environmentDeploymentId: targetDeploymentId,
     });
     const spec = resolvedServiceSpecFixture();
     spec.container.environment = { PASSWORD: "never-publish-outcome" };
@@ -707,7 +707,7 @@ describe("deployment runtime persistence", () => {
       .where(eq(schema.environmentDeployment.id, targetDeploymentId));
     expect(previewRow?.deployPreview).toEqual(targetPreview);
 
-    await harness.db.insert(schema.environmentDeploymentSecret).values({ environmentDeploymentId: targetDeploymentId });
+    await harness.db.insert(schema.environmentDeploymentSecret).values({ organizationId, environmentDeploymentId: targetDeploymentId });
     await harness.runEffect(persistSdkDeployOutcome({ environmentDeploymentId: targetDeploymentId,
       outcome: Redacted.make({ version: 1, outcome: { type: "success", completed: [] } }),
     }).pipe(Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" }))));
@@ -811,9 +811,9 @@ describe("deployment runtime persistence", () => {
       .where(eq(schema.environmentDeployment.id, targetDeploymentId));
     const outcome: DeployOutcome<ExecutionError> = { type: "failed", completed: [api, removal],
       failed: { type: "operation", operation: worker, error: { type: "cancelled" } }, unexecuted: [] };
-    await harness.db.insert(schema.environmentDeploymentSecret).values({ environmentDeploymentId: targetDeploymentId });
+    await harness.db.insert(schema.environmentDeploymentSecret).values({ organizationId, environmentDeploymentId: targetDeploymentId });
     for (const [id, lineageId, name] of [[apiNodeId, apiLineageId, "api"], [workerNodeId, workerLineageId, "worker"]] as const) {
-      await harness.db.insert(schema.serviceLineage).values({ id: lineageId, projectId, canonicalName: name, canonicalSlug: name });
+      await harness.db.insert(schema.serviceLineage).values({ id: lineageId, organizationId, projectId, canonicalName: name, canonicalSlug: name });
       await harness.db.insert(schema.service).values({ id, organizationId, projectId, environmentId, lineageId, name });
       await harness.db.insert(schema.environmentNodeIntroduction).values({ organizationId, environmentId, nodeType: "service", nodeId: id, nodeLineageId: lineageId, config: {} });
     }
