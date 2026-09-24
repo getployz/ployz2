@@ -63,6 +63,18 @@ PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release"
     sh "$ROOT/install.sh" beta
 grep -Fq '/releases/download/v8.8.8-beta.1/ployz_linux_amd64.tar.gz' "$FAKE_CURL_LOG"
 
+# A pointer is one raw line: whitespace inside it is corruption, not formatting.
+for pointer in 'v1.2.\n3' 'v1.2.3\ngarbage'; do
+    printf '%b\n' "$pointer" > "$TMP/release/stable"
+    if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
+        INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
+        sh "$ROOT/install.sh" stable > "$TMP/error" 2>&1; then
+        echo "installed from pointer '$pointer'" >&2
+        exit 1
+    fi
+    grep -Fq 'stable channel is unavailable' "$TMP/error"
+done
+
 # stable never installs a prerelease, and retired channel names are not versions.
 printf 'v8.8.8-beta.1\n' > "$TMP/release/stable"
 for case in 'stable:stable channel is unavailable' 'latest:Invalid version' \

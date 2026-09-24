@@ -41,7 +41,9 @@ verify_checksum() {
 }
 
 channel_version_from_file() {
-    version=$(tr -d ' \t\r\n' < "$1")
+    version=$(cat "$1")
+    # grep matches per line, so refuse any whitespace before matching the whole value.
+    case "$version" in *[![:graph:]]*) return 1 ;; esac
     echo "$version" | grep -Eq "^v?$2\$" || return 1
     echo "$version"
 }
@@ -69,6 +71,7 @@ install_cli() {
     tmp_dir=$(mktemp -d)
     trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
     version=$(resolve_install "$PLOYZ_VERSION")
+    case "$version" in *[![:graph:]]*) error "Invalid version: $PLOYZ_VERSION" ;; esac
     echo "$version" | grep -Eq "^$RELEASE_VERSION\$" || error "Invalid version: $PLOYZ_VERSION"
 
     archive=$(cli_archive "$(uname -s)" "$(uname -m)") || \
