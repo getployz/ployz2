@@ -12,12 +12,12 @@ export class OrganizationChangeLogFailure extends Data.TaggedError("Organization
 /**
  * Everything an Organization logged between `since` and `cursor`, merged across log rows.
  * `full` means read everything: there was no `since`, a logged statement touched too many rows
- * to name them, or retention deleted changes the window may need (`expired`). Both kinds name
+ * to name them, or retention deleted changes the window may need (`expired`, never set on a delta). Both kinds name
  * the source tables that logged changes, so the change stream can still name their collections.
  */
 export type ChangeWindow =
   | { kind: "full"; cursor: string; expired: boolean; sourceTables: ChangeSource[] }
-  | { kind: "delta"; cursor: string; sourceTables: ChangeSource[]; changed: string[]; deleted: string[] };
+  | { kind: "delta"; cursor: string; expired: false; sourceTables: ChangeSource[]; changed: string[]; deleted: string[] };
 
 /**
  * The cursor is the xid horizon, not the seq: seq order is insert order, so a transaction
@@ -62,7 +62,7 @@ export const readChangeWindow = Effect.fn("OrganizationChangeLog.readWindow")(fu
   if (!window) return yield* new OrganizationChangeLogFailure({ cause: "The change window query returned no row." });
   const { cursor, expired, sourceTables, changed, deleted } = window;
   if (input.since === undefined || window.fullRead || expired) return { kind: "full", cursor, expired, sourceTables } satisfies ChangeWindow;
-  return { kind: "delta", cursor, sourceTables, changed, deleted } satisfies ChangeWindow;
+  return { kind: "delta", cursor, expired: false, sourceTables, changed, deleted } satisfies ChangeWindow;
 });
 
 /**

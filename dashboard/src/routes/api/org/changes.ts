@@ -23,7 +23,7 @@ export const Route = createFileRoute("/api/org/changes")({
             runAppEffect(authorizeRuntimeOrganization({ headers: request.headers, organizationSlug }), { signal: request.signal }),
           readChanges: (input) =>
             runAppEffect(readChangeWindow(input).pipe(
-              Effect.map((window) => ({ cursor: window.cursor, expired: window.kind === "full" && window.expired, collections: collectionsOf(window.sourceTables) })),
+              Effect.map((window) => ({ cursor: window.cursor, expired: window.expired, collections: collectionsOf(window.sourceTables) })),
             ), { signal: request.signal }),
         });
       },

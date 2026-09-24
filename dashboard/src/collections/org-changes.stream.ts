@@ -45,7 +45,8 @@ export function watchOrganizationChanges(organizationSlug: string, scope: Collec
     const changes = decodeOrgChangesEvent(event.data);
     if (Option.isSome(changes)) applyOrganizationChanges(changes.value.collections, organizationSlug, scope);
   };
-  // A first connect has no Last-Event-ID, so opening refetches to cover writes between the preload and the first cursor.
+  // `open` fires on every connect and reconnect; refetching each collection since its own cursor covers any gap
+  // (before the first connect, or while disconnected) on its own.
   source.addEventListener("open", refetchAll);
   source.addEventListener("reset", refetchAll);
   source.addEventListener("changes", handleChanges);
