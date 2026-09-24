@@ -1,17 +1,58 @@
 import type { CollectionName } from "./read.contract";
 
-/**
- * The one map from a change-log source table to the Org Store collections it feeds.
- * The source table's trigger logs the collection key, so collections sharing a table share its key.
- */
-export const changeSources = new Map<string, readonly CollectionName[]>([
-  ["service", ["service"]],
-]);
+/** What a change stream event names: an Org Store collection, or `organization` for the organization state read. */
+export type ChangeName = Exclude<CollectionName, "github_repository_cache"> | "organization";
 
-export function sourceTablesOf(collection: CollectionName) {
-  return [...changeSources].filter(([, collections]) => collections.includes(collection)).map(([table]) => table);
+/**
+ * The one map from a change-log source table to the names it feeds. Every organization-owned table
+ * is here, with the key columns its trigger logs (joined with ':'); tables no client reads feed nothing.
+ * One key per table means collections sharing a table share its key.
+ */
+export const changeSources = {
+  organization: { key: ["id"], feeds: ["organization"] },
+  project: { key: ["id"], feeds: ["project"] },
+  environment: { key: ["id"], feeds: ["environment", "environment_summary"] },
+  user_project_preference: { key: ["project_id"], feeds: ["project_preference"] },
+  service: { key: ["id"], feeds: ["service"] },
+  resource_lineage: { key: ["id"], feeds: ["resource_lineage"] },
+  environment_resource: { key: ["id"], feeds: ["environment_resource"] },
+  environment_canvas_node_position: { key: ["resource_type", "resource_id"], feeds: ["environment_canvas_node_position"] },
+  environment_deployment: { key: ["id"], feeds: ["environment_deployment"] },
+  environment_deployment_event: { key: ["deployment_id"], feeds: ["environment_deployment"] },
+  environment_saved_state_snapshot: { key: ["id"], feeds: ["environment_saved_state_snapshot"] },
+  environment_node_config_snapshot: { key: ["id"], feeds: ["environment_node_config_snapshot"] },
+  environment_node_introduction: { key: ["node_type", "node_id"], feeds: ["environment_node_introduction"] },
+  volume_remove_attempt: { key: ["id"], feeds: ["volume_remove_attempt"] },
+  organization_pairing: { key: ["organization_id"], feeds: ["organization_enrollment"] },
+  core_operation_event: { key: ["id"], feeds: [] },
+  core_operation_watch: { key: ["id"], feeds: [] },
+  enrollment_allocation: { key: ["cluster_key"], feeds: [] },
+  environment_deployment_build_output: { key: ["id"], feeds: [] },
+  environment_deployment_build_step: { key: ["id"], feeds: [] },
+  environment_deployment_secret: { key: ["environment_deployment_id"], feeds: [] },
+  environment_node_config_snapshot_secret: { key: ["snapshot_id"], feeds: [] },
+  environment_node_introduction_secret: { key: ["environment_id", "node_type", "node_id"], feeds: [] },
+  github_environment_trigger: { key: ["id"], feeds: [] },
+  invitation: { key: ["id"], feeds: [] },
+  machine_enrollment_token: { key: ["id"], feeds: [] },
+  machine_remove_attempt: { key: ["id"], feeds: [] },
+  member: { key: ["id"], feeds: [] },
+  organization_billing_state: { key: ["organization_id"], feeds: [] },
+  organization_machine: { key: ["machine_id"], feeds: [] },
+  service_lineage: { key: ["id"], feeds: [] },
+  service_registry_credential: { key: ["service_id"], feeds: [] },
+  teardown_attempt: { key: ["id"], feeds: [] },
+  variable: { key: ["id"], feeds: [] },
+  variable_secret: { key: ["variable_id"], feeds: [] },
+} satisfies Record<string, { key: readonly string[]; feeds: readonly ChangeName[] }>;
+
+const sources: [string, { key: readonly string[]; feeds: readonly ChangeName[] }][] = Object.entries(changeSources);
+
+export function sourceTablesOf(name: CollectionName | ChangeName) {
+  return sources.filter(([, source]) => source.feeds.some((feed) => feed === name)).map(([table]) => table);
 }
 
 export function collectionsOf(sourceTables: Iterable<string>) {
-  return [...new Set([...sourceTables].flatMap((table) => changeSources.get(table) ?? []))];
+  const tables = new Set(sourceTables);
+  return [...new Set(sources.filter(([table]) => tables.has(table)).flatMap(([, source]) => source.feeds))];
 }

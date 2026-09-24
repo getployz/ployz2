@@ -58,33 +58,34 @@ export const readCollection = Effect.fn("Collections.read")(function* (
           organizationId: tables.environmentSavedStateSnapshot.organizationId,
           environmentId: tables.environmentSavedStateSnapshot.environmentId,
         }).from(tables.environmentSavedStateSnapshot)
-          .where(eq(tables.environmentSavedStateSnapshot.organizationId, scopeId));
+          .where(and(eq(tables.environmentSavedStateSnapshot.organizationId, scopeId), keys && inArray(tables.environmentSavedStateSnapshot.id, keys)));
       case "environment_summary":
         return yield* database.drizzle.select({
           id: tables.environment.id, projectId: tables.environment.projectId, organizationId: tables.environment.organizationId,
           name: tables.environment.name, namespace: tables.environment.namespace, createdAt: tables.environment.createdAt,
-        }).from(tables.environment).where(eq(tables.environment.organizationId, scopeId));
+        }).from(tables.environment).where(and(eq(tables.environment.organizationId, scopeId), keys && inArray(tables.environment.id, keys)));
       case "project_preference":
         return yield* database.drizzle.select({ id: tables.userProjectPreference.projectId, environmentId: tables.userProjectPreference.environmentId })
-          .from(tables.userProjectPreference).where(and(eq(tables.userProjectPreference.organizationId, scopeId), eq(tables.userProjectPreference.userId, actor.userId)));
+          .from(tables.userProjectPreference).where(and(eq(tables.userProjectPreference.organizationId, scopeId), eq(tables.userProjectPreference.userId, actor.userId), keys && inArray(tables.userProjectPreference.projectId, keys)));
       case "project":
         return yield* database.drizzle.select().from(tables.project)
-          .where(eq(tables.project.organizationId, scopeId));
+          .where(and(eq(tables.project.organizationId, scopeId), keys && inArray(tables.project.id, keys)));
       case "environment":
         return yield* database.drizzle.select().from(tables.environment)
-          .where(eq(tables.environment.organizationId, scopeId));
+          .where(and(eq(tables.environment.organizationId, scopeId), keys && inArray(tables.environment.id, keys)));
       case "service":
         return yield* database.drizzle.select().from(tables.service)
           .where(and(eq(tables.service.organizationId, scopeId), keys && inArray(tables.service.id, keys)));
       case "resource_lineage":
         return yield* database.drizzle.select().from(tables.resourceLineage)
-          .where(eq(tables.resourceLineage.organizationId, scopeId));
+          .where(and(eq(tables.resourceLineage.organizationId, scopeId), keys && inArray(tables.resourceLineage.id, keys)));
       case "environment_resource":
         return yield* database.drizzle.select().from(tables.environmentResource)
-          .where(eq(tables.environmentResource.organizationId, scopeId));
+          .where(and(eq(tables.environmentResource.organizationId, scopeId), keys && inArray(tables.environmentResource.id, keys)));
       case "environment_canvas_node_position":
         return yield* database.drizzle.select().from(tables.environmentCanvasNodePosition)
-          .where(eq(tables.environmentCanvasNodePosition.organizationId, scopeId));
+          .where(and(eq(tables.environmentCanvasNodePosition.organizationId, scopeId), keys && inArray(
+            sql`${tables.environmentCanvasNodePosition.resourceType} || ':' || ${tables.environmentCanvasNodePosition.resourceId}`, keys)));
       case "environment_deployment":
         return yield* database.drizzle.select({
           ...getTableColumns(tables.environmentDeployment),
@@ -94,16 +95,17 @@ export const readCollection = Effect.fn("Collections.read")(function* (
              where deployment_id = ${tables.environmentDeployment}.${sql.identifier("id")} order by id desc limit 1)
           )`,
         }).from(tables.environmentDeployment)
-          .where(eq(tables.environmentDeployment.organizationId, scopeId));
+          .where(and(eq(tables.environmentDeployment.organizationId, scopeId), keys && inArray(tables.environmentDeployment.id, keys)));
       case "environment_node_config_snapshot":
         return yield* database.drizzle.select().from(tables.environmentNodeConfigSnapshot)
-          .where(eq(tables.environmentNodeConfigSnapshot.organizationId, scopeId));
+          .where(and(eq(tables.environmentNodeConfigSnapshot.organizationId, scopeId), keys && inArray(tables.environmentNodeConfigSnapshot.id, keys)));
       case "environment_node_introduction":
         return yield* database.drizzle.select().from(tables.environmentNodeIntroduction)
-          .where(eq(tables.environmentNodeIntroduction.organizationId, scopeId));
+          .where(and(eq(tables.environmentNodeIntroduction.organizationId, scopeId), keys && inArray(
+            sql`${tables.environmentNodeIntroduction.nodeType} || ':' || ${tables.environmentNodeIntroduction.nodeId}`, keys)));
       case "volume_remove_attempt":
         return yield* database.drizzle.select().from(tables.volumeRemoveAttempt)
-          .where(eq(tables.volumeRemoveAttempt.organizationId, scopeId));
+          .where(and(eq(tables.volumeRemoveAttempt.organizationId, scopeId), keys && inArray(tables.volumeRemoveAttempt.id, keys)));
       case "organization_enrollment": {
         // The pairing row holds the encrypted pairing secret; expose only the derived status.
         const pairings = yield* database.drizzle.select({
@@ -121,7 +123,10 @@ export const readCollection = Effect.fn("Collections.read")(function* (
     // The window is read before the rows, so the rows are at least as new as its cursor.
     const window = yield* readChangeWindow({ organizationId: scopeId, since: data.since, sourceTables });
     if (data.since === undefined || window.all || window.expired) return { full: true, rows: yield* readRows(), cursor: window.cursor };
-    const rows = window.changed.length === 0 ? [] : yield* readRows(window.changed);
+    // Deleted keys are re-read too: a key a filtered read shares with another user's row
+    // (project preferences) can be deleted there and still exist here. The client drops, then upserts.
+    const keys = [...new Set([...window.changed, ...window.deleted])];
+    const rows = keys.length === 0 ? [] : yield* readRows(keys);
     return { full: false, rows, deleted: window.deleted, cursor: window.cursor };
   });
   return yield* read.pipe(Effect.mapError((cause) => new CollectionReadFailure({ cause })));

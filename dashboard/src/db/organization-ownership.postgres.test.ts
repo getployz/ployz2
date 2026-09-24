@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
+import { changeSources } from "#/collections/change-sources";
 import {
   type GithubPostgresTestHarness,
   startGithubPostgresTestHarness,
@@ -89,4 +90,20 @@ it("stores a non-null Organization on every organization-owned table", async () 
   `, [Object.keys(organizationOwned), Object.values(organizationOwned)]);
   expect(Object.fromEntries(columns.rows.map((row) => [row.table_name, row.column_name])))
     .toEqual(organizationOwned);
+});
+
+it("logs every change to an organization-owned table under its Organization and the key its collections share", async () => {
+  const triggers = await harness.pool.query<{ table_name: string; event: string; tgargs: Buffer }>(`
+    select c.relname as table_name, t.tgname as event, t.tgargs
+    from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_proc p on p.oid = t.tgfoid
+    where p.proname = 'organization_change_log'
+  `);
+  const row = (table: string, event: string, args: string[]) => `${table} ${event}(${args.join(", ")})`;
+  // Arguments are the Organization column, then the one key every collection fed by the table shares.
+  const expected = Object.entries(organizationOwned).flatMap(([table, organizationColumn]) =>
+    ["insert", "update", "delete"].map((event) =>
+      row(table, `organization_change_${event}`, [organizationColumn, ...new Map<string, { key: readonly string[] }>(Object.entries(changeSources)).get(table)?.key ?? []])));
+  expect(triggers.rows.map((trigger) =>
+    row(trigger.table_name, trigger.event, trigger.tgargs.toString("utf8").split("\0").filter(Boolean))).sort())
+    .toEqual(expected.sort());
 });
