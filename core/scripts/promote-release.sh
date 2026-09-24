@@ -9,14 +9,16 @@ source "$ROOT/scripts/homebrew-formula.sh"
 source "$ROOT/scripts/release-tag.sh"
 
 # Moves pointer file $1 to tag $2 only when the tag is higher, so an older-line fix never moves
-# a channel backwards. A line pointer passes its line as $3. A corrupt pointer, including one
-# holding another line's tag, stops the release rather than being kept or overwritten.
+# a channel backwards. The file is named for its channel; a line pointer passes its line as $3.
+# A corrupt pointer (not a tag, a prerelease on stable, or another line's tag) stops the release
+# rather than being kept or overwritten.
 advance_pointer() {
-    local file=$1 tag=$2 line=${3:-} current=
+    local file=$1 tag=$2 line=${3:-} current='' channel=${1##*/} valid=release_tag
+    [ "$channel" = stable ] && valid=stable_release_tag
     if [ -f "$file" ]; then
         current=$(tr -d '[:space:]' < "$file")
-        if ! release_tag "$current" || { [ -n "$line" ] && [ "${current%%.*}" != "$line" ]; }; then
-            echo "channel pointer $file holds '$current', not a ${line:-release} tag" >&2
+        if ! "$valid" "$current" || { [ -n "$line" ] && [ "${current%%.*}" != "$line" ]; }; then
+            echo "channel pointer $file holds '$current', not a ${line:+$line }$channel tag" >&2
             return 1
         fi
         release_tag_higher "$tag" "$current" || return 0
