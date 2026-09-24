@@ -252,7 +252,7 @@ async fn cloud_init_initialize_participates() {
     );
     assert_eq!(
         events.entries(),
-        ["initialize", "set_cloud_pairing", "publish", "callback"]
+        ["initialize", "set_management_client", "publish", "callback"]
     );
 }
 
@@ -412,7 +412,7 @@ async fn cloud_init_initialize_reserves_hosted_dns() {
         [
             "initialize",
             "reserve_domain",
-            "set_cloud_pairing",
+            "set_management_client",
             "publish",
             "callback"
         ]
@@ -470,7 +470,7 @@ async fn cloud_init_retries_not_yet_then_joins() {
     assert_eq!(posts.first(), posts.get(1));
     assert_eq!(
         posts.first().and_then(|post| post.get("protocolVersion")),
-        Some(&json!(2))
+        Some(&json!(1))
     );
     assert!(
         String::from_utf8_lossy(&output.stderr)

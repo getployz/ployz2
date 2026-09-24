@@ -41,7 +41,7 @@ pub struct LocalMachine {
 }
 
 mod container;
-mod pairing;
+mod management_client;
 mod upgrade;
 
 #[derive(Clone)]
@@ -196,7 +196,7 @@ impl LocalMachine {
 
     pub(crate) fn require_management_access(&self) -> Result<(), Error> {
         if let Some(remote) = self.management_client
-            && self.record().accepted_client() != Some(remote)
+            && !self.record().accepts_management_client(&remote)
         {
             return Err(Error::ManagementRevoked);
         }
@@ -283,7 +283,6 @@ impl LocalMachine {
             machine.advertised_endpoints.clone()
         } else {
             discover_network(
-                request.wireguard_port,
                 request
                     .public_ip_override
                     .map_or(PublicIpDiscovery::Auto, PublicIpDiscovery::Override),
@@ -329,7 +328,7 @@ impl LocalMachine {
             advertised_endpoints,
             store_version,
             rtts,
-            cloud_paired: record.has_management_client(),
+            management_clients: record.management_clients().cloned().collect(),
             telemetry,
             storage,
         })
@@ -342,7 +341,7 @@ impl LocalMachine {
     /// Returns [`Error::Network`] when endpoint discovery fails.
     pub async fn machine_token(&self, request: MachineTokenRequest) -> Result<MachineToken, Error> {
         let record = self.record();
-        let discovered = discover_network(request.wireguard_port, request.public_ip).await?;
+        let discovered = discover_network(request.public_ip).await?;
         let capacity = host_capacity::observe();
         Ok(MachineToken {
             id: record.id(),

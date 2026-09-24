@@ -29,8 +29,6 @@ pub(super) use inspect::{inspect, list, rtt, wireguard_show};
 pub(super) use remove::remove;
 pub(super) use upgrade::{inspect as inspect_upgrade, upgrade};
 
-const DEFAULT_WIREGUARD_PORT: u16 = 51820;
-
 pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
     if leaf.get_one::<String>("connect").is_some() || leaf.get_one::<String>("context").is_some() {
@@ -152,10 +150,7 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
         ),
     };
     let advertised_endpoints = if matches.get_many::<String>("wg-endpoint").is_some() {
-        Some(parse_endpoints(
-            &string_values(matches, "wg-endpoint"),
-            DEFAULT_WIREGUARD_PORT,
-        )?)
+        Some(parse_endpoints(&string_values(matches, "wg-endpoint"))?)
     } else {
         None
     };
@@ -245,10 +240,7 @@ pub(super) fn enrollment_policy(
     })
 }
 
-pub(super) fn parse_endpoints(
-    values: &[String],
-    default_port: u16,
-) -> Result<Vec<AdvertisedEndpoint>, Error> {
+pub(super) fn parse_endpoints(values: &[String]) -> Result<Vec<AdvertisedEndpoint>, Error> {
     values
         .iter()
         .map(|value| {
@@ -257,7 +249,7 @@ pub(super) fn parse_endpoints(
                 .or_else(|_| {
                     value
                         .parse::<IpAddr>()
-                        .map(|address| SocketAddr::new(address, default_port))
+                        .map(|address| SocketAddr::new(address, ployz_core::WIREGUARD_PORT))
                 })
                 .map(AdvertisedEndpoint)
                 .map_err(|_| Error::usage(format!("invalid WireGuard endpoint {value:?}")))
@@ -272,29 +264,13 @@ mod tests {
     #[test]
     fn endpoints_accept_socket_or_ip_and_apply_the_default_port() {
         assert_eq!(
-            parse_endpoints(&["192.0.2.1".into(), "[2001:db8::1]:6000".into()], 51820).unwrap(),
+            parse_endpoints(&["192.0.2.1".into(), "[2001:db8::1]:6000".into()]).unwrap(),
             [
                 AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap()),
                 AdvertisedEndpoint("[2001:db8::1]:6000".parse().unwrap()),
             ]
         );
-        assert!(parse_endpoints(&["not-an-address".into()], 51820).is_err());
-    }
-
-    #[test]
-    fn machine_add_rejects_a_wireguard_port_the_daemon_cannot_apply() {
-        assert!(
-            crate::cli::command()
-                .try_get_matches_from([
-                    "ployz",
-                    "machine",
-                    "add",
-                    "root@example.com",
-                    "--wg-port",
-                    "51821",
-                ])
-                .is_err()
-        );
+        assert!(parse_endpoints(&["not-an-address".into()]).is_err());
     }
 
     #[test]

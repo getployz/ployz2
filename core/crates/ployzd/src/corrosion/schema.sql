@@ -1,17 +1,14 @@
 CREATE TABLE cluster
 (
     key        TEXT      NOT NULL PRIMARY KEY,
-    value      ANY,
-    updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
+    value      ANY
 );
 
 CREATE TABLE machines
 (
     id         TEXT      NOT NULL PRIMARY KEY,
     name       TEXT AS (json_extract(info, '$.name')),
-    info       TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(info)),
-    created_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00',
-    updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
+    info       TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(info))
 );
 
 CREATE TABLE containers
@@ -21,15 +18,13 @@ CREATE TABLE containers
     machine_id         TEXT      NOT NULL DEFAULT '',
     service_id         TEXT AS (json_extract(container, '$.resolved_spec.service_id')),
     project_name       TEXT AS (json_extract(container, '$.project_name')),
-    service_name       TEXT AS (json_extract(container, '$.resolved_spec.name')),
-    updated_at         TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
+    service_name       TEXT AS (json_extract(container, '$.resolved_spec.name'))
 );
 
 CREATE TABLE certificates
 (
     hostname   TEXT      NOT NULL PRIMARY KEY,
-    body       TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(body)),
-    updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00'
+    body       TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(body))
 );
 
 CREATE TABLE volumes
@@ -37,7 +32,6 @@ CREATE TABLE volumes
     machine_id TEXT      NOT NULL,
     name       TEXT      NOT NULL CHECK (name != ''),
     volume     TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(volume)),
-    updated_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00',
     PRIMARY KEY (machine_id, name)
 );
 

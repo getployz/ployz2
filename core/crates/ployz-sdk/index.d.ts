@@ -111,7 +111,6 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
   readonly finished: Promise<DeployOutcome<ExecutionError>>;
 };
 
-export declare function packageName(): "@ployz/sdk";
 export declare function connect(options: ConnectOptions): Promise<Client>;
 export declare function applyAll(
   project_name: ProjectName,
@@ -127,7 +126,7 @@ export declare function applyOne(
 
 export declare class Client {
   prepare(input: PreparationInput, options?: WatchOptions): RunningPreparation;
-  removeCloudPairing(): Promise<void>;
+  clearManagementClient(label: string): Promise<void>;
   inspect(): Promise<MachineDetails>;
   observeEnrollment(): Promise<EnrollmentSnapshot>;
   register(assignment: EnrollmentAssignment): Promise<Registered>;
