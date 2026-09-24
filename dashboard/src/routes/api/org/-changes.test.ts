@@ -52,7 +52,7 @@ it("resumes after Last-Event-ID, names changed collections, pings, and disables 
 
   expect(response.headers.get("Content-Type")).toBe("text/event-stream");
   expect(response.headers.get("X-Accel-Buffering")).toBe("no");
-  expect(response.headers.get("Cache-Control")).toBe("no-cache, no-transform");
+  expect(response.headers.get("Cache-Control")).toBe("private, no-store, no-transform");
   const events = readEvents(response);
 
   await events.until("event: changes");

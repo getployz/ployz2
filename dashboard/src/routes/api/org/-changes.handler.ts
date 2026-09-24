@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { Effect, Schema } from "effect";
 import { changeCursorSchema, type ChangeName } from "#/collections/read.contract";
+import { eventStreamResponse } from "#/server/event-stream";
 import { publicErrorResponse } from "#/server/public-error";
 
 export type OrgChangesHandlerDeps = {
@@ -34,25 +35,7 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
   const cancelled = new AbortController();
   const events = orgChangeEvents(organizationId, isCursor(lastEventId) ? lastEventId : undefined, deps,
     AbortSignal.any([request.signal, cancelled.signal]));
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      const next = await events.next();
-      if (next.done) controller.close();
-      else controller.enqueue(encoder.encode(next.value));
-    },
-    cancel() {
-      cancelled.abort();
-    },
-  });
-  return new Response(stream, {
-    headers: {
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "Content-Type": "text/event-stream",
-      "X-Accel-Buffering": "no",
-    },
-  });
+  return eventStreamResponse(events, () => cancelled.abort());
 }
 
 type Changes = Awaited<ReturnType<OrgChangesHandlerDeps["readChanges"]>>;

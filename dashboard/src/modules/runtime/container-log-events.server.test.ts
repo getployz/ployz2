@@ -20,3 +20,12 @@ it("reports a stream failure and releases the runtime", async () => {
   expect(await response.text()).toBe('event: unavailable\ndata: {}\n\n');
   expect(closed).toBe(true);
 });
+
+it("releases the runtime as soon as the viewer cancels an idle stream", async () => {
+  let closed = false;
+  const events = { [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<never>>(() => {}) }; } };
+  const response = containerLogResponse(new Request("http://localhost/logs"), events, async () => { closed = true; });
+  expect(response.headers.get("Cache-Control")).toBe("private, no-store, no-transform");
+  await response.body?.cancel();
+  expect(closed).toBe(true);
+});
