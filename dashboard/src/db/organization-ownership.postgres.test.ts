@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { changeSources, changeNameSources } from "#/collections/change-sources";
+import { changeNameSources } from "#/collections/change-sources";
+import { changeSources } from "#/modules/organization/change-log.sources";
 import {
   type GithubPostgresTestHarness,
   startGithubPostgresTestHarness,
@@ -7,45 +8,11 @@ import {
 
 /**
  * Every row of an organization-owned table belongs to exactly one Organization,
- * directly or through its parent row, and stores it in this column.
+ * directly or through its parent row, and stores it in this column. The change log
+ * registry is the one list of organization-owned tables.
  */
-const organizationOwned = {
-  organization: "id",
-  core_operation_event: "organization_id",
-  core_operation_watch: "organization_id",
-  enrollment_allocation: "organization_id",
-  environment: "organization_id",
-  environment_canvas_node_position: "organization_id",
-  environment_deployment: "organization_id",
-  environment_deployment_build_output: "organization_id",
-  environment_deployment_build_step: "organization_id",
-  environment_deployment_event: "organization_id",
-  environment_deployment_secret: "organization_id",
-  environment_node_config_snapshot: "organization_id",
-  environment_node_config_snapshot_secret: "organization_id",
-  environment_node_introduction: "organization_id",
-  environment_node_introduction_secret: "organization_id",
-  environment_resource: "organization_id",
-  environment_saved_state_snapshot: "organization_id",
-  github_environment_trigger: "organization_id",
-  invitation: "organization_id",
-  machine_enrollment_token: "organization_id",
-  machine_remove_attempt: "organization_id",
-  member: "organization_id",
-  organization_billing_state: "organization_id",
-  organization_machine: "organization_id",
-  organization_pairing: "organization_id",
-  project: "organization_id",
-  resource_lineage: "organization_id",
-  service: "organization_id",
-  service_lineage: "organization_id",
-  service_registry_credential: "organization_id",
-  teardown_attempt: "organization_id",
-  user_project_preference: "organization_id",
-  variable: "organization_id",
-  variable_secret: "organization_id",
-  volume_remove_attempt: "organization_id",
-} satisfies Record<string, string>;
+const organizationOwned = Object.fromEntries(Object.entries(changeSources).map(([table, source]) =>
+  [table, "organizationColumn" in source ? source.organizationColumn : "organization_id"]));
 
 const notOrganizationOwned = {
   user: "Belongs to a user.",
@@ -102,7 +69,7 @@ it("logs every change to an organization-owned table under its Organization and 
   // Arguments are the Organization column, then the one key every collection fed by the table shares.
   const expected = Object.entries(organizationOwned).flatMap(([table, organizationColumn]) =>
     ["insert", "update", "delete"].map((event) =>
-      row(table, `organization_change_${event}`, [organizationColumn, ...new Map<string, readonly string[]>(Object.entries(changeSources)).get(table) ?? []])));
+      row(table, `organization_change_${event}`, [organizationColumn, ...new Map(Object.entries(changeSources)).get(table)?.key ?? []])));
   expect(triggers.rows.map((trigger) =>
     row(trigger.table_name, trigger.event, trigger.tgargs.toString("utf8").split("\0").filter(Boolean))).sort())
     .toEqual(expected.sort());
@@ -120,7 +87,7 @@ it("keys every source feeding a collection by its key table's key", async () => 
   const references = new Set(foreignKeys.rows.map((row) => `${row.source}(${row.columns.join(", ")}) -> ${row.target}(${row.target_columns.join(", ")})`));
   // A change to any source names the collection rows it affects only if it logs their key.
   const required = Object.values(changeNameSources).flatMap(([keyTable, ...others]) =>
-    others.map((source) => `${source}(${changeSources[source].join(", ")}) -> ${keyTable}(${changeSources[keyTable].join(", ")})`));
+    others.map((source) => `${source}(${changeSources[source].key.join(", ")}) -> ${keyTable}(${changeSources[keyTable].key.join(", ")})`));
   expect(required.length).toBeGreaterThan(0);
   expect(required.filter((reference) => !references.has(reference))).toEqual([]);
 });

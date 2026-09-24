@@ -3,11 +3,12 @@ import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Data, Effect } from "effect";
-import { changeNameSources, changeSources } from "./change-sources";
+import { changeNameSources } from "./change-sources";
 import type { CollectionRead, CollectionReadInput } from "./read.contract";
 import * as tables from "#/db/schema";
 import type { Actor } from "#/modules/identity/actor";
 import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
+import { changeSources } from "#/modules/organization/change-log.sources";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { Database } from "#/server/database.server";
@@ -38,7 +39,7 @@ export const readCollection = Effect.fn("Collections.read")(function* (
   const database = yield* Database;
   // `keys` narrows a read to the rows its change window names, by the key its key table logs.
   const readRows = (keys?: string[]) => Effect.gen(function* () {
-    const keyColumns = changeSources[changeNameSources[data.table][0]];
+    const keyColumns = changeSources[changeNameSources[data.table][0]].key;
     const scoped = (table: PgTable & { organizationId: AnyPgColumn }) => and(
       eq(table.organizationId, organization.id),
       keys && inArray(sql.join(keyColumns.map((column) => sql`${table}.${sql.identifier(column)}`), sql` || ':' || `), keys),

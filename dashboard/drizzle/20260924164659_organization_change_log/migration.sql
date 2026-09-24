@@ -62,7 +62,7 @@ SELECT organization_change_attach('service', 'organization_id', 'id');
 CREATE INDEX "organization_change_xid_idx" ON "organization_change" ("xid");
 --> statement-breakpoint
 -- Every organization-owned table logs its changes; `organization` is keyed by its own id.
--- Key columns match changeSources in src/collections/change-sources.ts.
+-- Organization and key columns match changeSources in src/modules/organization/change-log.sources.ts.
 SELECT organization_change_attach('organization', 'id', 'id');
 --> statement-breakpoint
 SELECT organization_change_attach('project', 'organization_id', 'id');
