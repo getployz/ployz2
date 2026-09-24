@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { ChangeSource } from "#/collections/change-sources";
-import { organizationChange } from "#/modules/organization/tables";
+import { organizationChange as change } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 
 export class OrganizationChangeLogFailure extends Data.TaggedError("OrganizationChangeLogFailure")<{
@@ -38,7 +38,6 @@ export const readChangeWindow = Effect.fn("OrganizationChangeLog.readWindow")(fu
   const database = yield* Database;
   // Without `since` the reader starts at the horizon and sees no rows.
   const since = input.since ?? null;
-  const change = organizationChange;
   // Source tables are ChangeSource: only the triggers attached to changeSources' tables write the log.
   const [window] = yield* database.drizzle.execute<ChangeWindow>(sql`
     with horizon as (select pg_snapshot_xmin(pg_current_snapshot()) as xid),
@@ -66,7 +65,6 @@ export const readChangeWindow = Effect.fn("OrganizationChangeLog.readWindow")(fu
  */
 export const pruneChangeLog = Effect.fn("OrganizationChangeLog.prune")(function* () {
   const database = yield* Database;
-  const change = organizationChange;
   const retentionFence = database.drizzle.select({ xid: sql`max(${change.xid})` }).from(change)
     .where(lt(change.createdAt, sql`now() - interval '24 hours'`));
   const newest = database.drizzle.select({ xid: sql`max(${change.xid})` }).from(change);

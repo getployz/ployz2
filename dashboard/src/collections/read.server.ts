@@ -3,7 +3,7 @@ import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Data, Effect } from "effect";
-import { keyColumnsOf, sourceTablesOf } from "./change-sources";
+import { changeNameSources, changeSources } from "./change-sources";
 import type { CollectionRead, CollectionReadInput } from "./read.contract";
 import * as tables from "#/db/schema";
 import type { Actor } from "#/modules/identity/actor";
@@ -35,13 +35,12 @@ export const readCollection = Effect.fn("Collections.read")(function* (
   if (!organization) {
     return yield* new CollectionReadDenied({ message: "Organization not found." });
   }
-  const organizationId = organization.id;
   const database = yield* Database;
   // `keys` narrows a read to the rows its change window names, by the key its key table logs.
   const readRows = (keys?: string[]) => Effect.gen(function* () {
-    const keyColumns = keyColumnsOf(data.table);
+    const keyColumns = changeSources[changeNameSources[data.table][0]];
     const scoped = (table: PgTable & { organizationId: AnyPgColumn }) => and(
-      eq(table.organizationId, organizationId),
+      eq(table.organizationId, organization.id),
       keys && inArray(sql.join(keyColumns.map((column) => sql`${table}.${sql.identifier(column)}`), sql` || ':' || `), keys),
     );
     switch (data.table) {
@@ -106,7 +105,7 @@ export const readCollection = Effect.fn("Collections.read")(function* (
   type Row = Effect.Success<ReturnType<typeof readRows>>[number];
   const read = Effect.gen(function* (): Effect.fn.Return<CollectionRead<Row>, EffectDrizzleQueryError | OrganizationChangeLogFailure, Database> {
     // The window is read before the rows, so the rows are at least as new as its cursor.
-    const window = yield* readChangeWindow({ organizationId, since: data.since, sourceTables: sourceTablesOf(data.table) });
+    const window = yield* readChangeWindow({ organizationId: organization.id, since: data.since, sourceTables: changeNameSources[data.table] });
     if (data.since === undefined || window.fullRead || window.expired) return { full: true, rows: yield* readRows(), cursor: window.cursor };
     // Deleted keys are re-read too: a key a filtered read shares with another user's row
     // (project preferences) can be deleted there and still exist here. The client drops, then upserts.

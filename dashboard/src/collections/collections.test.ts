@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sourceTablesOf } from "#/collections/change-sources";
+import { changeNameSources } from "#/collections/change-sources";
 import * as collections from "#/collections/collections";
 import { orgStoreTables, getRawServicesCollection, getRawEnvironmentResourcesCollection, getCanvasPositionsCollection, getResourceLineagesCollection } from "#/collections/collections";
 import { dataSources } from "#/collections/data-sources";
@@ -43,7 +43,7 @@ describe("API node collections", () => {
   it("feeds every Org Store table from the change log and runs no timer", async () => {
     const tables = Object.entries(collections).filter(([name]) => /^get\w+Collection$/.test(name)).map(([, get]) => get);
     expect(new Set<unknown>(Object.values(orgStoreTables))).toEqual(new Set(tables));
-    for (const name of orgStoreTableNames) expect(sourceTablesOf(name), name).not.toEqual([]);
+    for (const name of orgStoreTableNames) expect(changeNameSources[name], name).not.toEqual([]);
 
     vi.useFakeTimers();
     const scope = { queryClient: new QueryClient(), sessionId: "session", userId: "user" };

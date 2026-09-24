@@ -3,7 +3,8 @@ import type { ChangeName } from "./read.contract";
 
 /**
  * Every organization-owned table, with the key columns its change trigger logs (joined with ':').
- * The migration attaches each trigger with these columns; the ownership test checks they match.
+ * The spec logs every organization-owned table (#1042 user story 21), including tables that feed no
+ * collection yet. The migration attaches each trigger with these columns; the ownership test checks they match.
  */
 export const changeSources = {
   organization: ["id"],
@@ -46,11 +47,11 @@ export const changeSources = {
 export type ChangeSource = keyof typeof changeSources;
 
 /**
- * The source tables each change stream name reads; tables no client reads feed nothing. The first is
+ * The source tables each change stream name reads: an Org Store collection or `organization`. The first is
  * its key table: the collection's rows are keyed by the key that table logs, and every other source
  * logs that same key through a foreign key to it.
  */
-export const collectionSources = {
+export const changeNameSources = {
   organization: ["organization"],
   project: ["project"],
   environment: ["environment"],
@@ -68,16 +69,7 @@ export const collectionSources = {
   organization_enrollment: ["organization_pairing"],
 } satisfies Record<ChangeName, readonly [ChangeSource, ...ChangeSource[]]>;
 
-export function sourceTablesOf(name: ChangeName): readonly ChangeSource[] {
-  return collectionSources[name];
-}
-
-/** The key columns a collection's rows are keyed by. */
-export function keyColumnsOf(name: ChangeName): readonly string[] {
-  return changeSources[collectionSources[name][0]];
-}
-
 export function collectionsOf(sourceTables: Iterable<ChangeSource>) {
   const tables = new Set(sourceTables);
-  return EffectRecord.keys(collectionSources).filter((name) => sourceTablesOf(name).some((table) => tables.has(table)));
+  return EffectRecord.keys(changeNameSources).filter((name) => changeNameSources[name].some((table) => tables.has(table)));
 }
