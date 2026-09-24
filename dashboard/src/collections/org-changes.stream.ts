@@ -1,7 +1,8 @@
 import { linkOptions } from "@tanstack/react-router";
 import { Option, Schema } from "effect";
 import { useEffect } from "react";
-import { changeCollections } from "./collections";
+import * as EffectRecord from "effect/Record";
+import { orgStoreTables } from "./collections";
 import { changeNameSchema, type ChangeName } from "./read.contract";
 import type { CollectionScope } from "./scope";
 import { useCollectionScope } from "./use-collection-scope";
@@ -15,12 +16,16 @@ export function buildOrgChangesUrl(organizationSlug: string) {
   return `${link.to}?${new URLSearchParams(link.search).toString()}`;
 }
 
-/** Refetches each named collection since its cursor; `organization` re-reads the organization state (its name). */
+type Refetch = (organizationSlug: string, scope: CollectionScope) => void;
+
+/** What each change stream name refetches: its collection since its cursor, or the organization state (its name). */
+const refetches = {
+  ...EffectRecord.map(orgStoreTables, (get): Refetch => (organizationSlug, scope) => void get(organizationSlug, scope).utils.refetch()),
+  organization: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
+} satisfies Record<ChangeName, Refetch>;
+
 export function applyOrganizationChanges(names: readonly ChangeName[], organizationSlug: string, scope: CollectionScope) {
-  for (const name of names) {
-    if (name === "organization") void scope.queryClient.invalidateQueries({ queryKey: organizationKeys.all });
-    else void changeCollections.get(name)?.(organizationSlug, scope).utils.refetch();
-  }
+  for (const name of names) refetches[name](organizationSlug, scope);
 }
 
 /** One change stream per Organization tab. Each named collection refetches only rows changed since its cursor. */
@@ -35,7 +40,7 @@ export function useOrganizationChanges(organizationSlug: string) {
 export function watchOrganizationChanges(organizationSlug: string, scope: CollectionScope) {
   const source = new EventSource(buildOrgChangesUrl(organizationSlug));
   // `reset` means retention passed the resume point; each collection's own cursor decides whether it reads in full.
-  const refetchAll = () => applyOrganizationChanges([...changeCollections.keys(), "organization"], organizationSlug, scope);
+  const refetchAll = () => applyOrganizationChanges(EffectRecord.keys(refetches), organizationSlug, scope);
   const handleChanges = (event: MessageEvent<string>) => {
     const changes = decodeOrgChangesEvent(event.data);
     if (Option.isSome(changes)) applyOrganizationChanges(changes.value.collections, organizationSlug, scope);

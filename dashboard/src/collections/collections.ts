@@ -1,4 +1,3 @@
-import type { QueryCollectionUtils } from "@tanstack/query-db-collection";
 import type { CollectionName, CollectionRead } from "./read.contract";
 import type { OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import { createChangeCollection } from "#/collections/query-collection";
@@ -41,20 +40,9 @@ type EnvironmentNodeIntroductionRow =
   typeof schemaEnvironmentNodeIntroduction.$inferSelect;
 type VolumeRemoveAttemptRow = typeof schemaVolumeRemoveAttempt.$inferSelect;
 
-type ChangeCollectionGetter = (organizationSlug: string, scope: CollectionScope) => {
-  utils: Pick<QueryCollectionUtils, "refetch">;
-  subscribeChanges: (callback: () => void) => { unsubscribe: () => void };
-};
-
-/**
- * Every Org Store collection by the name the Organization change stream sends, filled as each is defined below.
- * Not a `get*Collection` export, so the Org Store gate doesn't count it twice.
- */
-export const changeCollections = new Map<CollectionName, ChangeCollectionGetter>();
-
 /** Every Org Store collection is fed by the Organization change log: a refetch reads only rows changed `since` its cursor. */
 function changeCollection<Row extends object>(table: CollectionName, getKey: (row: Row) => string) {
-  const get = cachedByCollectionScope((organizationSlug, scope) => createChangeCollection<Row>({
+  return cachedByCollectionScope((organizationSlug, scope) => createChangeCollection<Row>({
     queryClient: scope.queryClient,
     queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, table],
     getKey,
@@ -63,8 +51,6 @@ function changeCollection<Row extends object>(table: CollectionName, getKey: (ro
       return await readCollectionServerFn({ data: { table, organizationSlug, userId: scope.userId, since }, signal }) as CollectionRead<Row>;
     },
   }));
-  changeCollections.set(table, get);
-  return get;
 }
 
 export const getProjectsCollection = changeCollection<ProjectRow>("project", (row) => row.id);
@@ -93,3 +79,24 @@ export type ProjectPreference = { id: string; environmentId: string };
 
 export const getEnvironmentSummariesCollection = changeCollection<EnvironmentSummary>("environment_summary", (row) => row.id);
 export const getProjectPreferencesCollection = changeCollection<ProjectPreference>("project_preference", (row) => row.id);
+
+/**
+ * Every Org Store table by the name the Organization change stream sends.
+ * Not a `get*Collection` export, so the Org Store gate doesn't count it twice.
+ */
+export const orgStoreTables = {
+  project: getProjectsCollection,
+  environment: getEnvironmentsCollection,
+  environment_summary: getEnvironmentSummariesCollection,
+  project_preference: getProjectPreferencesCollection,
+  service: getRawServicesCollection,
+  resource_lineage: getResourceLineagesCollection,
+  environment_resource: getRawEnvironmentResourcesCollection,
+  environment_canvas_node_position: getCanvasPositionsCollection,
+  environment_deployment: getEnvironmentDeploymentsCollection,
+  environment_saved_state_snapshot: getEnvironmentSavedStateRevisionsCollection,
+  environment_node_config_snapshot: getEnvironmentNodeConfigSnapshotsCollection,
+  environment_node_introduction: getEnvironmentNodeIntroductionsCollection,
+  volume_remove_attempt: getVolumeRemoveAttemptsCollection,
+  organization_enrollment: getOrganizationEnrollmentCollection,
+} satisfies Record<CollectionName, (organizationSlug: string, scope: CollectionScope) => object>;

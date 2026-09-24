@@ -3,7 +3,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sourceTablesOf } from "#/collections/change-sources";
 import * as collections from "#/collections/collections";
-import { changeCollections, getRawServicesCollection, getRawEnvironmentResourcesCollection, getCanvasPositionsCollection, getResourceLineagesCollection } from "#/collections/collections";
+import { orgStoreTables, getRawServicesCollection, getRawEnvironmentResourcesCollection, getCanvasPositionsCollection, getResourceLineagesCollection } from "#/collections/collections";
 import { dataSources } from "#/collections/data-sources";
 import { orgStoreProjections, orgStoreViews } from "#/collections/org-store";
 import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
@@ -42,8 +42,7 @@ describe("API node collections", () => {
 
   it("feeds every Org Store table from the change log and runs no timer", async () => {
     const tables = Object.entries(collections).filter(([name]) => /^get\w+Collection$/.test(name)).map(([, get]) => get);
-    expect(new Set<unknown>(changeCollections.values())).toEqual(new Set(tables));
-    expect([...changeCollections.keys()].sort()).toEqual([...orgStoreTableNames].sort());
+    expect(new Set<unknown>(Object.values(orgStoreTables))).toEqual(new Set(tables));
     for (const name of orgStoreTableNames) expect(sourceTablesOf(name), name).not.toEqual([]);
 
     vi.useFakeTimers();
@@ -53,7 +52,7 @@ describe("API node collections", () => {
     scope.queryClient.getQueryCache().subscribe((event) => {
       if (event.type === "updated" && event.action.type === "fetch") reads += 1;
     });
-    const active = [...changeCollections.values()].map((get) => get("acme", scope).subscribeChanges(() => {}));
+    const active = Object.values(orgStoreTables).map((get) => get("acme", scope).subscribeChanges(() => {}));
     await vi.advanceTimersByTimeAsync(60_000);
     expect(reads).toBe(0);
     for (const subscription of active) subscription.unsubscribe();
