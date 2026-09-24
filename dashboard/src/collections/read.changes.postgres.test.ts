@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { QueryClient } from "@tanstack/react-query";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { collectionsOf, sourceTablesOf } from "./change-sources";
+import { collectionsOf, changeNameSources } from "./change-sources";
 import { pruneChangeLog, readChangeWindow } from "#/modules/organization/change-log.server";
 import { readCollection } from "./read.server";
 import type { CollectionName, CollectionRead } from "./read.contract";
 import { orgStoreTableNames } from "#/test/org-store-tables";
+import { orgStoreTables } from "./collections";
 import {
   type GithubPostgresTestHarness,
   startGithubPostgresTestHarness,
@@ -278,9 +280,15 @@ describe("every Org Store collection reads its changes from the Organization cha
   it.each(orgStoreTableNames)("%s re-reads every row a change to each of its source tables names", async (table) => {
     const full = await read(table);
     expect(full.rows.length).toBeGreaterThan(0);
-    for (const source of sourceTablesOf(table)) {
+    const collection = orgStoreTables[table](slug, { queryClient: new QueryClient(), sessionId: "session", userId });
+    // SAFETY: read(table) returns rows of the collection that orgStoreTables names `table`.
+    const clientKeys = full.rows.map((row) => String(collection.config.getKey(row as never)));
+    for (const source of changeNameSources[table]) {
       // A no-op update logs every key of the table, so the incremental read must find every row by that key.
       await sql(`update ${source} set organization_id = organization_id where organization_id = $1`, [organizationId]);
+      // The client keys its rows exactly as the log names them, so deletes and merges hit the right row.
+      const window = await harness.runEffect(readChangeWindow({ organizationId, since: full.cursor, sourceTables: [source] }));
+      expect(window.changed, source).toEqual(expect.arrayContaining(clientKeys));
       const changes = await read(table, full.cursor);
       expect(changes, source).toMatchObject({ full: false, deleted: [] });
       expect(serialized(changes.rows), source).toEqual(serialized(full.rows));
