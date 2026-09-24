@@ -42,24 +42,39 @@ const getEnvironmentDocumentEditor = cachedByCollectionScope((organizationSlug, 
   const environments = getEnvironmentsCollection(organizationSlug, scope);
   const tails = new Map<string, Promise<string>>();
   const inFlight = new Map<string, Set<Promise<unknown>>>();
+  // Edits still preparing (hashing a variable value, say) have not picked an environment's queue yet.
+  const preparing = new Set<Promise<unknown>>();
+
+  async function preparationsSettled() {
+    while (preparing.size) await Promise.allSettled(preparing);
+  }
 
   async function runInQueue({ environmentId, save, failureMessage, afterSave }: EnvironmentDocumentSave, revision: string) {
     const base = tails.get(environmentId) ?? Promise.resolve(revision);
-    const saved = (async () => {
-      const result = await save(await base);
-      await environments.writeCommitted(result.data);
-      await afterSave?.();
-      return result.data.revision;
-    })();
-    // A failed save leaves the server on the revision it started from.
-    const tail = saved.catch(() => base);
+    const result = (async () => save(await base))();
+    // The server's revision moves as soon as the save returns, even if local follow-up work fails;
+    // a failed save leaves it on the revision it started from.
+    const tail = result.then((saved) => saved.data.revision, () => base);
     tails.set(environmentId, tail);
+    const saved = (async () => {
+      const { data } = await result;
+      await environments.writeCommitted(data);
+      await afterSave?.();
+    })();
     void tail.then(() => { if (tails.get(environmentId) === tail) tails.delete(environmentId); });
     try {
       await saved;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : failureMessage);
       throw error;
+    }
+  }
+
+  /** Resolves once every edit (including ones still preparing) has finished and its optimistic overlay is gone. */
+  async function settled(environmentId: string) {
+    await preparationsSettled();
+    for (let set = inFlight.get(environmentId); set?.size; set = inFlight.get(environmentId)) {
+      await Promise.allSettled(set);
     }
   }
 
@@ -100,20 +115,25 @@ const getEnvironmentDocumentEditor = cachedByCollectionScope((organizationSlug, 
       track(edit.environmentId, transaction.isPersisted.promise);
       return transaction;
     },
-    /** A queued save with nothing to apply up front, for commands like discard. */
-    enqueue(save: EnvironmentDocumentSave): Persistable {
-      const revision = environments.get(save.environmentId)?.revision;
-      return revision ? queued(save, revision) : notLoaded();
-    },
     /**
-     * Resolves once every queued edit for the environment has finished and its optimistic
-     * overlay is gone. Edits still preparing (see `editEnvironmentDocumentAfter`) are not queued yet.
+     * A save with nothing to apply up front, for commands like discard. It waits for every
+     * pending edit (preparing or saving) to finish, so it runs last against the settled revision.
      */
-    async settled(environmentId: string) {
-      for (let set = inFlight.get(environmentId); set?.size; set = inFlight.get(environmentId)) {
-        await Promise.allSettled(set);
-      }
+    enqueue(save: EnvironmentDocumentSave): Persistable {
+      const persisted = (async () => {
+        await settled(save.environmentId);
+        const revision = environments.get(save.environmentId)?.revision;
+        await (revision ? queued(save, revision) : notLoaded()).isPersisted.promise;
+      })();
+      return observeFailure({ isPersisted: { promise: persisted } });
     },
+    /** Registers an edit's preparation so `settled` and `enqueue` wait for it to join the queue. */
+    preparing<T>(preparation: Promise<T>): Promise<T> {
+      preparing.add(preparation);
+      void preparation.catch(() => {}).finally(() => preparing.delete(preparation));
+      return preparation;
+    },
+    settled,
   };
 });
 
@@ -127,15 +147,16 @@ export function editEnvironmentDocument(organizationSlug: string, scope: Collect
  */
 export function editEnvironmentDocumentAfter(organizationSlug: string, scope: CollectionScope,
   prepare: () => Promise<EnvironmentDocumentEdit>, failureMessage: string): Persistable {
+  const editor = getEnvironmentDocumentEditor(organizationSlug, scope);
   const promise = (async () => {
     let edit: EnvironmentDocumentEdit;
     try {
-      edit = await prepare();
+      edit = await editor.preparing(prepare());
     } catch (error) {
       toast.error(error instanceof Error ? error.message : failureMessage);
       throw error;
     }
-    await editEnvironmentDocument(organizationSlug, scope, edit).isPersisted.promise;
+    await editor.edit(edit).isPersisted.promise;
   })();
   return observeFailure({ isPersisted: { promise } });
 }

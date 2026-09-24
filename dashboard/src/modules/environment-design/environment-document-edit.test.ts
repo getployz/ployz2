@@ -8,7 +8,7 @@ import { getDbClient } from "#/collections/scope";
 import { renderHook } from "@testing-library/react";
 import * as scopes from "#/collections/use-collection-scope";
 import type { CollectionScope } from "#/collections/scope";
-import { editEnvironmentDocument, useEnvironmentDocumentQueue } from "./environment-document-edit";
+import { editEnvironmentDocument, editEnvironmentDocumentAfter, useEnvironmentDocumentQueue } from "./environment-document-edit";
 
 import { emptyEnvironmentIntent } from "./saved-intent";
 
@@ -124,4 +124,41 @@ it("still saves an edit that changes nothing in memory", async () => {
   const save = vi.fn(async (revision: string) => test.saved(revision === "r1" ? "r2" : "stale", "data"));
   await editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("data"), save, failureMessage: "x" }).isPersisted.promise;
   expect(save).toHaveBeenCalledWith("r1");
+});
+
+it("waits for an edit that is still preparing before settling or running a command", async () => {
+  const test = await setup();
+  const prepared = deferred<void>();
+  const saves: string[] = [];
+  editEnvironmentDocumentAfter("acme", test.scope, async () => {
+    await prepared.promise;
+    return { environmentId: "env", apply: test.rename("a"), failureMessage: "x",
+      save: async (revision) => { saves.push(`edit@${revision}`); return test.saved("r2", "a"); } };
+  }, "x");
+  const { enqueue, settled } = getEditorForTest(test.scope);
+  let isSettled = false;
+  const settling = settled("env").then(() => { isSettled = true; });
+  const discarded = enqueue({ environmentId: "env", failureMessage: "x",
+    save: async (revision) => { saves.push(`discard@${revision}`); return test.saved("r3", "data"); } });
+  await Promise.resolve();
+  expect(isSettled).toBe(false);
+  expect(saves).toEqual([]);
+  prepared.resolve();
+  await settling;
+  await discarded.isPersisted.promise;
+  expect(saves).toEqual(["edit@r1", "discard@r2"]);
+});
+
+it("moves the queue to the saved revision even when follow-up work fails", async () => {
+  vi.spyOn(toast, "error").mockReturnValue("toast");
+  const test = await setup();
+  const saves: string[] = [];
+  const one = editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("a"), failureMessage: "x",
+    save: async (revision) => { saves.push(revision); return test.saved("r2", "a"); },
+    afterSave: async () => { throw new Error("Reconcile failed"); } });
+  const two = editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("b"), failureMessage: "x",
+    save: async (revision) => { saves.push(revision); return test.saved("r3", "b"); } });
+  await expect(one.isPersisted.promise).rejects.toThrow("Reconcile failed");
+  await two.isPersisted.promise;
+  expect(saves).toEqual(["r1", "r2"]);
 });
