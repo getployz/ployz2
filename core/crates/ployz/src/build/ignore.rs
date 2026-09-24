@@ -6,6 +6,7 @@
 use std::{
     collections::BTreeSet,
     fs, io,
+    os::unix::ffi::OsStrExt as _,
     path::{Path, PathBuf},
 };
 
@@ -85,6 +86,7 @@ fn railpack_rules(
     let default = Path::new("railpack.json");
     let config = config.unwrap_or(default);
     // Go's `filepath.IsLocal`: relative, and still inside once cleaned.
+    // The config names a UTF-8 Service variable, so this conversion is exact.
     let cleaned = clean(&config.to_string_lossy());
     if config.as_os_str().is_empty()
         || cleaned.starts_with('/')
@@ -181,7 +183,7 @@ fn walk(
 /// Docker's `.dockerignore` reader: comments before trimming, a leading BOM,
 /// cleaned paths, and anchoring at the context root.
 fn ignore_file_patterns(content: &[u8]) -> Vec<String> {
-    let content = String::from_utf8_lossy(content);
+    let content = decode(content);
     let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
     content
         .lines()
@@ -277,7 +279,7 @@ impl Matcher {
 
     /// The last matching pattern decides, checked against the path and each parent.
     fn matches_or_parent_matches(&self, path: &Path) -> bool {
-        let path = path.to_string_lossy();
+        let path = decode_path(path);
         let parents: Vec<&str> = path.split('/').collect();
         let mut matched = false;
         for pattern in &self.patterns {
@@ -297,7 +299,7 @@ impl Matcher {
     /// A wildcard cannot match outside the literal prefix preceding it. Remaining
     /// cases stay conservative so `**` and escaped patterns keep descendants.
     fn exception_can_match_descendant(&self, directory: &Path) -> bool {
-        let directory = format!("{}/", directory.to_string_lossy());
+        let directory = format!("{}/", decode_path(directory));
         self.patterns
             .iter()
             .filter(|pattern| pattern.exclusion)
@@ -387,6 +389,29 @@ fn compile(pattern: &str) -> Option<Kind> {
             Kind::Regex(Regex::new(&regex).ok()?)
         }
     })
+}
+
+/// The first of the characters at the end of plane 16 that stand for filename
+/// bytes that are not UTF-8 (only 0x80-0xFF occur). A name really containing
+/// one of them matches as that byte; such names are not supported.
+const RAW_BYTE: u32 = 0x10_FF00;
+
+/// Filenames are bytes. Each byte that is not UTF-8 becomes its own character,
+/// so distinct names stay distinct and wildcards count it as one character, as
+/// Go does.
+fn decode(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len());
+    for chunk in bytes.utf8_chunks() {
+        text.push_str(chunk.valid());
+        text.extend(chunk.invalid().iter().map(|byte| {
+            char::from_u32(RAW_BYTE + u32::from(*byte)).expect("a plane-16 character")
+        }));
+    }
+    text
+}
+
+fn decode_path(path: &Path) -> String {
+    decode(path.as_os_str().as_bytes())
 }
 
 /// Go's `path.Clean`: the shortest lexically equivalent slash path.
@@ -500,12 +525,28 @@ mod tests {
     }
 
     #[test]
+    fn wildcards_count_characters_and_raw_bytes_stay_distinct() {
+        use std::ffi::OsStr;
+        let path = |bytes: &[u8]| PathBuf::from(OsStr::from_bytes(bytes));
+        // `?` is one character: a multi-byte character is never split.
+        assert!(matcher(&["a?"]).matches_or_parent_matches(Path::new("aé")));
+        assert!(!matcher(&["a??"]).matches_or_parent_matches(Path::new("aé")));
+        // A byte that is not UTF-8 is one character, and distinct bytes stay
+        // distinct, so a negation cannot re-include a lookalike sibling.
+        let negated = Matcher::new(&["*".into(), decode(b"!a\xff")]).unwrap();
+        assert!(!negated.matches_or_parent_matches(&path(b"a\xff")));
+        assert!(negated.matches_or_parent_matches(&path(b"a\xfe")));
+        assert!(matcher(&["[^b]x"]).matches_or_parent_matches(&path(b"\xffx")));
+        assert!(matcher(&["a?"]).matches_or_parent_matches(&path(b"a\xff")));
+    }
+
+    #[test]
     fn ignore_files_are_read_like_docker() {
         assert_eq!(
             ignore_file_patterns(
-                "\u{feff}# comment\n /cache/ \n!**/keep\n\n ./a/../b\n".as_bytes()
+                "\u{feff}# comment\n /cache/ \n!**/keep\n\n ./a/../b\ncache\u{a0}\n".as_bytes()
             ),
-            ["cache", "!**/keep", "b"]
+            ["cache", "!**/keep", "b", "cache"]
         );
         assert_eq!(clean("a//b/./c/.."), "a/b");
         assert_eq!(clean("../a"), "../a");
