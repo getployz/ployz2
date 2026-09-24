@@ -41,3 +41,31 @@ it("releases the runtime once when the viewer cancels a running stream", async (
   await new Promise((resolve) => setTimeout(resolve, 10));
   expect(closed).toBe(1);
 });
+
+it("releases the runtime once and ends the stream when the request aborts during a hung read", async () => {
+  let closed = 0;
+  const events = { [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<never>>(() => {}) }; } };
+  const request = new AbortController();
+  const response = containerLogResponse(new Request("http://localhost/logs", { signal: request.signal }), events, async () => { closed++; });
+  const reader = response.body?.getReader();
+  const read = reader?.read();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  request.abort();
+  expect(await read).toMatchObject({ done: true });
+  expect(closed).toBe(1);
+});
+
+it("releases the runtime when the request aborts while the viewer isn't reading", async () => {
+  let closed = 0;
+  async function* events() {
+    yield { type: "source_error" as const, machineId: "m", containerId: "c", message: "queued" };
+    await new Promise(() => {});
+  }
+  const request = new AbortController();
+  containerLogResponse(new Request("http://localhost/logs", { signal: request.signal }), events(), async () => { closed++; });
+  // The first record fills the stream's queue, so nothing is pulling when the request aborts.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  request.abort();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(closed).toBe(1);
+});
