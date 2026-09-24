@@ -45,7 +45,7 @@ When the informing cluster suite and that run disagree, the real Machines are th
 
 - Writes one-line pointer files (`v0.2.0`) on the `channels` branch: the tag's line pointer (`v0/stable` or `v0/beta`) and the unscoped one (`stable` or `beta`). A stable tag also writes both `beta` pointers.
 - A pointer only moves to a higher semver tag. Publishing an older-line fix moves that line's pointers only; an older tag moves nothing.
-- Only when the unscoped `stable` pointer moved: regenerates `Formula/ployz.rb` from `checksums.txt` and pushes `getployz/homebrew-ployz`.
+- Only when the unscoped `stable` pointer names the published tag: regenerates `Formula/ployz.rb` from `checksums.txt` and pushes `getployz/homebrew-ployz`.
 
 Needs repo secret `HOMEBREW_TAP_TOKEN` (write access to the tap). Channel updates use `GITHUB_TOKEN`. Publish then dispatches `ployz.sh`, which deploys `install.sh` plus the `channels` branch files to Cloudflare Pages.
 
@@ -82,7 +82,7 @@ Apex and channel URLs must serve these bodies.
 
 ## Homebrew
 
-Goreleaser does not touch the tap (`--skip=homebrew`); `scripts/promote-release.sh` writes the formula. Bottles 404 if the formula is pushed while the GitHub release is still a draft. The tap updates only when a **stable** Publish moves the unscoped `stable` pointer.
+Goreleaser does not touch the tap (`--skip=homebrew`); `scripts/promote-release.sh` writes the formula. Bottles 404 if the formula is pushed while the GitHub release is still a draft. The tap updates only when a **stable** Publish leaves the unscoped `stable` pointer on that tag.
 
 ## Machine daemon
 

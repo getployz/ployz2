@@ -58,7 +58,6 @@ grep -Fq 'release asset set differs' "$TMP/error"
     source "$ROOT/scripts/promote-release.sh"
     channels="$TMP/channels"
     publish() {
-        STABLE_ADVANCED=
         write_channel_files "$channels" "$1"
     }
     expect() {
@@ -76,18 +75,20 @@ grep -Fq 'release asset set differs' "$TMP/error"
     expect "$channels" v0/beta v0.2.0-beta.1 beta v0.2.0-beta.1 v0/stable '' stable ''
     publish v0.2.0
     expect "$channels" v0/stable v0.2.0 v0/beta v0.2.0 stable v0.2.0 beta v0.2.0
-    [ -n "$STABLE_ADVANCED" ]
     publish v0.2.1-beta.2
     publish v0.2.1-beta.10
     publish v0.2.0
     expect "$channels" v0/stable v0.2.0 v0/beta v0.2.1-beta.10 beta v0.2.1-beta.10
-    [ -z "$STABLE_ADVANCED" ]
     publish v1.0.0
     publish v0.2.10
     expect "$channels" v0/stable v0.2.10 v0/beta v0.2.10 v1/stable v1.0.0 stable v1.0.0 beta v1.0.0
-    [ -z "$STABLE_ADVANCED" ]
     PLOYZ_SH_SITE_DIR="$TMP/site" PLOYZ_SH_CHANNELS_DIR="$channels" \
         bash "$ROOT/scripts/stage-ployz-sh-site.sh" > /dev/null
     expect "$TMP/site" v0/stable v0.2.10 v1/beta v1.0.0 stable v1.0.0
+    printf 'garbage\n' > "$channels/beta"
+    if (publish v1.0.1-beta.1) 2> /dev/null; then
+        echo 'overwrote a corrupt pointer' >&2
+        exit 1
+    fi
 )
 echo 'release packaging contracts passed'

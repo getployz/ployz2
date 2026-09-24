@@ -163,8 +163,17 @@ macro_rules! hex_id_newtype {
 
 macro_rules! validated_string_newtype {
     ($(#[$attribute:meta])* $name:ident, $label:literal, $expected:expr, |$value:ident| $valid:expr) => {
+        validated_string_newtype!(
+            @define [Ord, PartialOrd] $(#[$attribute])* $name, $label, $expected, |$value| $valid
+        );
+    };
+    // The type implements its own order instead of comparing strings.
+    (@custom_order $(#[$attribute:meta])* $name:ident, $label:literal, $expected:expr, |$value:ident| $valid:expr) => {
+        validated_string_newtype!(@define [] $(#[$attribute])* $name, $label, $expected, |$value| $valid);
+    };
+    (@define [$($order:ident),*] $(#[$attribute:meta])* $name:ident, $label:literal, $expected:expr, |$value:ident| $valid:expr) => {
         $(#[$attribute])*
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
+        #[derive(Clone, Debug, Eq, Hash, PartialEq, $($order,)* Serialize, Deserialize, TS)]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
 
@@ -373,12 +382,38 @@ validated_string_newtype!(
     |value| matches!(value, "stable" | "beta") || is_machine_version(value)
 );
 validated_string_newtype!(
-    /// One exact supported Machine release version.
+    @custom_order
+    /// One exact supported Machine release version, ordered by release (semver) order.
     MachineVersion,
     "Machine version",
     "X.Y.Z or X.Y.Z-beta.N",
     |value| is_machine_version(value)
 );
+
+impl MachineVersion {
+    /// Whether this is an `X.Y.Z-beta.N` prerelease.
+    #[must_use]
+    pub fn is_prerelease(&self) -> bool {
+        !self.semver().pre.is_empty()
+    }
+
+    fn semver(&self) -> semver::Version {
+        semver::Version::parse(self.as_str()).expect("a MachineVersion is valid semver")
+    }
+}
+
+// Supported versions carry no build metadata, so semver order agrees with string equality.
+impl Ord for MachineVersion {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.semver().cmp(&other.semver())
+    }
+}
+
+impl PartialOrd for MachineVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
 validated_string_newtype!(
     DockerVolumeName,
     "Docker Volume name",
@@ -958,6 +993,16 @@ mod tests {
             assert!(MachineVersion::parse(release).is_err(), "{release}");
         }
         assert!(MachineVersion::parse("stable").is_err());
+    }
+
+    #[test]
+    fn machine_versions_order_by_release_not_by_string() {
+        let version = |value: &str| MachineVersion::parse(value).unwrap();
+        assert!(version("1.2.10") > version("1.2.3"));
+        assert!(version("1.2.3") > version("1.2.3-beta.9"));
+        assert!(version("1.2.3-beta.10") > version("1.2.3-beta.2"));
+        assert!(version("1.2.3-beta.2").is_prerelease());
+        assert!(!version("1.2.3").is_prerelease());
     }
 }
 

@@ -22,7 +22,7 @@ use self::{
         create_user_and_directories, install_docker, install_prerequisites, install_systemd,
         verify_running_daemon, verify_software_prerequisites,
     },
-    release::{install_binaries, resolve_release},
+    release::{install_binaries, installed_release, resolve_release},
     storage::prepare_storage,
 };
 
@@ -132,6 +132,11 @@ impl InstallPaths {
         }
     }
 
+    /// The installed daemon executable.
+    fn daemon(&self) -> PathBuf {
+        self.bin_dir.join("ployzd")
+    }
+
     #[cfg(test)]
     fn at(root: &Path) -> Self {
         Self {
@@ -194,7 +199,8 @@ async fn install_locked(
 ) -> Result<InstallOutcome, Error> {
     let installation_only = matches!(request.mode, InstallMode::InstallationOnly);
     verify_system(installation_only)?;
-    let target = resolve_release(&request.release, &request.source, &paths.bin_dir).await?;
+    let installed = installed_release(&paths.daemon()).await?;
+    let target = resolve_release(&request.release, &request.source, installed.as_ref()).await?;
 
     progress(MachineUpgradeStage::Preparing)?;
     match &request.mode {
@@ -215,7 +221,14 @@ async fn install_locked(
     }
 
     let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
-    restart_required |= install_binaries(&request.source, &paths, &target, &mut progress).await?;
+    restart_required |= install_binaries(
+        &request.source,
+        &paths,
+        installed.as_ref(),
+        &target,
+        &mut progress,
+    )
+    .await?;
     install_systemd(&paths, installation_only)?;
     if matches!(request.mode, InstallMode::PrepareHost { .. }) {
         install_docker(&paths).await?;

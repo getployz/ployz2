@@ -156,15 +156,14 @@ async fn request_locked(
         return Err(Error::Busy);
     }
     let source = current_source()?;
-    let release = request
-        .release
-        .as_str()
-        .parse::<ReleaseRequest>()
-        .map_err(Error::Resolve)?;
-    let target =
-        super::release::resolve_release(&release, &source, Path::new(super::DEFAULT_BIN_DIR))
+    let release = ReleaseRequest::from(&request.release);
+    let installed =
+        super::release::installed_release(&InstallPaths::system(data_dir, run_dir).daemon())
             .await
             .map_err(Error::Resolve)?;
+    let target = super::release::resolve_release(&release, &source, installed.as_ref())
+        .await
+        .map_err(Error::Resolve)?;
     let mut stored = StoredAttempt {
         requested: request.release,
         source,

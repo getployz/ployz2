@@ -828,11 +828,10 @@ mod tests {
                     channel,
                 ])
                 .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("stable, beta, X.Y.Z, or X.Y.Z-beta.N"),
-                "{channel}: {error}"
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{channel}"
             );
         }
     }
