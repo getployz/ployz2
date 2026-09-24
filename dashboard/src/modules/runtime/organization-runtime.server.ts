@@ -104,6 +104,10 @@ export function makeOrganizationRuntimeLayer(
           const access = yield* loadConnections(organizationId);
           if (access.kind === "missing" || access.generation !== session.generation) yield* close(session);
         }).pipe(
+          // Closing the caller's scope interrupts this watcher. Interrupting a pooled query makes the
+          // SQL client send pg_cancel_backend later, which can cancel whatever statement that
+          // connection runs next; so a check finishes, and only the sleep between checks is interrupted.
+          Effect.uninterruptible,
           Effect.repeat({ schedule: Schedule.spaced(PAIRING_CHANGE_POLL), while: () => !session.closed }),
           // Removals are unobservable until the log is readable again, so fail closed.
           Effect.catch((error) => Effect.logWarning("Pairing change check failed; closing the session.", error).pipe(
@@ -132,7 +136,8 @@ export function makeOrganizationRuntimeLayer(
           const noConnection = { status: "no_connection" as const };
           return yield* Effect.gen(function* () {
             // Taken before loading, so a change committed while loading is still seen.
-            const cursor = yield* pairingChanges.current;
+            // Uninterruptible for the same reason as the watcher: the cancel race below can interrupt it.
+            const cursor = yield* Effect.uninterruptible(pairingChanges.current);
             const access = yield* loadConnections(organizationId);
             if (session.closed || access.kind === "missing") return noConnection;
             session.generation = access.generation;

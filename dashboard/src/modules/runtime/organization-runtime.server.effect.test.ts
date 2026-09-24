@@ -305,3 +305,40 @@ it.effect("bounds the connect phase and reports a hung handshake as unreachable"
     })).pipe(Effect.provide(runtime));
   }),
 );
+
+it.effect("lets an in-flight pairing check finish when the caller's scope closes, so no query is cancelled", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let interrupted = false;
+    let finished = false;
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
+      kind: "ready", generation: "current", connections,
+    }), {
+      current: Effect.succeed("0"),
+      changedSince: () => Effect.gen(function* () {
+        yield* Deferred.succeed(started, undefined);
+        yield* Deferred.await(release);
+        finished = true;
+        return { cursor: "1", changed: false };
+      }).pipe(Effect.onInterrupt(() => Effect.sync(() => { interrupted = true; }))),
+    }).pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({ close: async () => {} }),
+    })));
+    yield* Effect.gen(function* () {
+      const service = yield* OrganizationRuntime;
+      const session = yield* Effect.scoped(Effect.gen(function* () {
+        assert.strictEqual((yield* service.open("org-1")).status, "connected");
+        yield* Deferred.await(started);
+      })).pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      // Let the caller's scope start closing while the check is still waiting.
+      yield* Effect.repeat(Effect.yieldNow, { times: 20 });
+      assert.isFalse(interrupted);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(session);
+      assert.isTrue(finished);
+      assert.isFalse(interrupted);
+    }).pipe(Effect.provide(runtime));
+  }),
+);
