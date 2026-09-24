@@ -11,6 +11,8 @@ CREATE TABLE "organization_change" (
 --> statement-breakpoint
 CREATE INDEX "organization_change_organization_id_xid_idx" ON "organization_change" ("organization_id","xid");
 --> statement-breakpoint
+CREATE INDEX "organization_change_xid_idx" ON "organization_change" ("xid");
+--> statement-breakpoint
 -- One log row per statement per Organization. Arguments: the Organization column, then the key columns
 -- (joined with ':' into the collection key). Over 100 keys set all_rows and drop the ids.
 CREATE FUNCTION organization_change_log() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -57,10 +59,6 @@ BEGIN
     FOR EACH STATEMENT EXECUTE FUNCTION organization_change_log(%s)', target, arguments);
 END
 $$;--> statement-breakpoint
-SELECT organization_change_attach('service', 'organization_id', 'id');
---> statement-breakpoint
-CREATE INDEX "organization_change_xid_idx" ON "organization_change" ("xid");
---> statement-breakpoint
 -- Every organization-owned table logs its changes; `organization` is keyed by its own id.
 -- Organization and key columns match changeSources in src/modules/organization/change-log.sources.ts.
 SELECT organization_change_attach('organization', 'id', 'id');
@@ -70,6 +68,8 @@ SELECT organization_change_attach('project', 'organization_id', 'id');
 SELECT organization_change_attach('environment', 'organization_id', 'id');
 --> statement-breakpoint
 SELECT organization_change_attach('user_project_preference', 'organization_id', 'project_id');
+--> statement-breakpoint
+SELECT organization_change_attach('service', 'organization_id', 'id');
 --> statement-breakpoint
 SELECT organization_change_attach('resource_lineage', 'organization_id', 'id');
 --> statement-breakpoint
