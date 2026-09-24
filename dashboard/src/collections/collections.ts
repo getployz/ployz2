@@ -1,4 +1,5 @@
 import type { CollectionReadInput } from "./read.contract";
+import type { OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import { createApiCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
@@ -132,6 +133,12 @@ export const getVolumeRemoveAttemptsCollection = cachedByCollectionScope(
     getKey: (row) => row.id,
     }),
 );
+
+export const getOrganizationEnrollmentCollection = cachedByCollectionScope((organizationSlug, scope) =>
+  createApiCollection<OrganizationEnrollmentRow>({
+    ...collectionReadOptions<OrganizationEnrollmentRow>("organization_enrollment", organizationSlug, scope),
+    getKey: (row) => row.id,
+  }));
 
 export type EnvironmentSummary = Pick<EnvironmentRow, "id" | "projectId" | "organizationId" | "name" | "namespace" | "createdAt">;
 export function environmentSummary(row: EnvironmentSummary): EnvironmentSummary {

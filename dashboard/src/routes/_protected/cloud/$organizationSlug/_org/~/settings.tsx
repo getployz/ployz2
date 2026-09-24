@@ -1,21 +1,18 @@
-import { Suspense } from "react";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { prefetchRemote } from "#/collections/route-data";
+import { getOrganizationEnrollmentCollection } from "#/collections/collections";
+import { reconcileCollection } from "#/collections/query-collection";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DashboardPage } from "#/components/dashboard-page";
-import { Skeleton } from "#/components/ui/skeleton";
+import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
-import { organizationEnrollmentStatusQueryOptions } from "#/modules/machines/enrollment.queries";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
 import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/settings",
 )({
-  loader: async ({ params, context }) => {
-    await prefetchRemote(context, organizationEnrollmentStatusQueryOptions(params.organizationSlug));
-  },
   component: RouteComponent,
 });
 
@@ -26,9 +23,7 @@ function RouteComponent() {
   return (
     <DashboardPage width="content">
       <h1 className="sr-only">Server Settings</h1>
-      <Suspense fallback={<Skeleton className="h-24 w-full" />}>
-        <EnrollmentSection organizationSlug={organizationSlug} />
-      </Suspense>
+      <EnrollmentSection organizationSlug={organizationSlug} />
       <TeardownDangerSection
         organizationSlug={organizationSlug}
         scope="organization"
@@ -46,9 +41,9 @@ function RouteComponent() {
 }
 
 function EnrollmentSection({ organizationSlug }: { organizationSlug: string }) {
-  const queryClient = useQueryClient();
-  const options = organizationEnrollmentStatusQueryOptions(organizationSlug);
-  const { data: status } = useSuspenseQuery(options);
+  const enrollment = getOrganizationEnrollmentCollection(organizationSlug, useCollectionScope());
+  const { data: rows } = useLiveSuspenseQuery(enrollment);
+  const status = organizationEnrollmentStatus(rows[0]);
   const resetPendingEnrollment = useServerFn(resetPendingOrganizationEnrollmentServerFn);
   return (
     <PendingEnrollmentResetSection
@@ -59,7 +54,7 @@ function EnrollmentSection({ organizationSlug }: { organizationSlug: string }) {
         }).then(() => undefined)
       }
       onCompleted={() => {
-        void queryClient.invalidateQueries({ queryKey: options.queryKey });
+        void reconcileCollection(enrollment);
       }}
     />
   );

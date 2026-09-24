@@ -4,6 +4,7 @@ import { Data, Effect } from "effect";
 import type { CollectionReadInput } from "./read.contract";
 import * as tables from "#/db/schema";
 import type { Actor } from "#/modules/identity/actor";
+import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { Database } from "#/server/database.server";
 
@@ -100,6 +101,14 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       case "volume_remove_attempt":
         return yield* database.drizzle.select().from(tables.volumeRemoveAttempt)
           .where(eq(tables.volumeRemoveAttempt.organizationId, scopeId));
+      case "organization_enrollment": {
+        // The pairing row holds the encrypted pairing secret; expose only the derived status.
+        const pairings = yield* database.drizzle.select({
+          id: tables.organizationPairing.organizationId,
+          founderMachineId: tables.organizationPairing.founderMachineId,
+        }).from(tables.organizationPairing).where(eq(tables.organizationPairing.organizationId, scopeId));
+        return pairings.map((row): OrganizationEnrollmentRow => ({ id: row.id, status: pairingEnrollmentStatus(row.founderMachineId) }));
+      }
     }
   });
   return yield* read.pipe(Effect.mapError((cause) => new CollectionReadFailure({ cause })));
