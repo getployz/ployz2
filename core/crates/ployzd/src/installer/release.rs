@@ -82,8 +82,9 @@ impl ReleaseSource {
     }
 }
 
-/// Resolve `request` to one exact target. A channel never selects a release older than the
-/// `installed` daemon or on another release line; only an exact version does either.
+/// Resolve `request` to one exact target. A channel stays on this daemon's release line, both for
+/// its pointer and for the `installed` daemon, and never selects a release older than `installed`;
+/// only an exact version crosses a line or moves a Machine backwards.
 pub(super) async fn resolve_release(
     request: &MachineRelease,
     source: &ReleaseSource,
