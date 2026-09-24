@@ -519,15 +519,15 @@ impl Client {
     /// not cover refuse the removal. Confirmed identities that disappeared
     /// are ignored.
     /// Resets the Machine. A reset warning is returned, not swallowed.
-    /// The last Cloud-paired Machine is refused before reset or membership
-    /// mutation; tear down that Cluster from Cloud.
+    /// Refused before reset or membership mutation when this is the last Machine
+    /// and a Management Client holds a key; clear it or tear down from Cloud.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible or is
     /// the current entry while another Machine is visible, when the Machine
-    /// is the last Cloud-paired Machine, when the Machine did not respond so
-    /// Data Loss cannot be listed, when the confirmation does not cover the
+    /// is the last Machine and a Management Client holds a key, when the Machine
+    /// did not respond so Data Loss cannot be listed, when the confirmation does not cover the
     /// fresh Data Loss, or when reset or shared-row removal fails.
     pub async fn remove_machine(
         &mut self,
@@ -551,19 +551,20 @@ impl Client {
                 details: Value::Null,
             });
         }
-        refuse_last_cloud_paired(self, &machines, selected).await?;
+        refuse_last_managed(self, &machines, selected).await?;
         evict_machine(self, observation, confirm_data_loss, current).await
     }
 
     /// Remove Cluster membership for `machine` without resetting it.
     ///
-    /// The last Cloud-paired Machine is refused before membership mutation;
-    /// tear down that Cluster from Cloud.
+    /// Refused before membership mutation when this is the last Machine and a
+    /// Management Client holds a key; clear it or tear down from Cloud.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible, when
-    /// it is the last Cloud-paired Machine, or when shared-row removal fails.
+    /// it is the last Machine and a Management Client holds a key, or when
+    /// shared-row removal fails.
     pub async fn remove_machine_membership(
         &mut self,
         machine: &MachineTarget,
@@ -571,7 +572,7 @@ impl Client {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let observation = visible_machine(machine, &machines)?;
         let selected = observation.machine.id;
-        refuse_last_cloud_paired(self, &machines, selected).await?;
+        refuse_last_managed(self, &machines, selected).await?;
         self.call::<op::RemoveMachine>(
             RemoveMachineRequest {
                 machine_id: selected,
@@ -872,7 +873,7 @@ async fn remove_volumes_on(
     .await
 }
 
-async fn refuse_last_cloud_paired(
+async fn refuse_last_managed(
     client: &Client,
     machines: &[MachineObservation],
     selected: MachineId,
@@ -880,22 +881,21 @@ async fn refuse_last_cloud_paired(
     if machines.len() != 1 {
         return Ok(());
     }
-    // Inspect errors must not block unpaired last-Machine removal.
-    let paired = client
+    // Inspect errors must not block unmanaged last-Machine removal.
+    let managed = client
         .invoke::<op::Inspect>(
             InspectRequest::default(),
             &MachineTarget::from(&selected),
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
-        .map(|details| details.cloud_paired)
-        .unwrap_or(false);
-    if !paired {
+        .is_ok_and(|details| !details.management_clients.is_empty());
+    if !managed {
         return Ok(());
     }
     Err(RpcError {
         code: RpcErrorCode::InvalidArgument,
-        message: "the last Cloud-paired Machine cannot be removed with machine rm; tear down this Cluster from Cloud".into(),
+        message: "the last Machine cannot be removed with machine rm while a Management Client holds a key; clear it first, or tear down this Cluster from Cloud".into(),
         details: Value::Null,
     })
 }

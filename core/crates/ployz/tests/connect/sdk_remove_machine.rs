@@ -141,9 +141,9 @@ async fn remove_machine_reports_a_failed_reset_instead_of_swallowing_it() {
 }
 
 #[tokio::test]
-async fn remove_machine_refuses_the_last_cloud_paired_machine_before_mutation() {
+async fn remove_machine_refuses_the_last_managed_machine_before_mutation() {
     let (description, entry, service) = last_machine_cluster();
-    service.cloud_paired.store(true, Ordering::SeqCst);
+    service.cloud_managed.store(true, Ordering::SeqCst);
     let session = UnixSession::start().await;
     let spawned = session
         .spawn_machine(description.machine_id, service.clone())
@@ -173,9 +173,9 @@ async fn remove_machine_refuses_the_last_cloud_paired_machine_before_mutation() 
 }
 
 #[tokio::test]
-async fn remove_machine_refuses_the_last_machine_with_stored_cloud_pairing() {
+async fn remove_machine_refuses_the_last_machine_with_a_management_client() {
     let (_description, entry, service) = last_machine_cluster();
-    service.cloud_paired.store(true, Ordering::SeqCst);
+    service.cloud_managed.store(true, Ordering::SeqCst);
     let (mut client, server, _) = connected_client(service.clone()).await;
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
@@ -198,9 +198,9 @@ async fn remove_machine_refuses_the_last_machine_with_stored_cloud_pairing() {
 }
 
 #[tokio::test]
-async fn remove_machine_membership_refuses_the_last_machine_with_stored_cloud_pairing() {
+async fn remove_machine_membership_refuses_the_last_machine_with_a_management_client() {
     let (_description, entry, service) = last_machine_cluster();
-    service.cloud_paired.store(true, Ordering::SeqCst);
+    service.cloud_managed.store(true, Ordering::SeqCst);
     let (mut client, server, _) = connected_client(service.clone()).await;
 
     let error = client
