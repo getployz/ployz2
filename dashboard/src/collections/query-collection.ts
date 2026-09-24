@@ -11,7 +11,7 @@ type ApiCollectionInput<T> = {
   staleTime?: number;
 };
 
-function sharedOptions<T>(input: ApiCollectionInput<T> & { refetchInterval?: number }) {
+function sharedOptions<T>(input: ApiCollectionInput<T>) {
   // Default snapshot retention lets a loader hand data to its consumer after releasing its observer.
   return {
     queryClient: input.queryClient,
@@ -19,7 +19,6 @@ function sharedOptions<T>(input: ApiCollectionInput<T> & { refetchInterval?: num
     getKey: input.getKey,
     id: input.queryKey.join(":"),
     startSync: false,
-    refetchInterval: input.refetchInterval,
     staleTime: input.staleTime ?? 15_000,
     refetchOnWindowFocus: "always" as const,
     refetchOnReconnect: "always" as const,
@@ -52,12 +51,12 @@ export function createApiCollection<T extends object>(input: ApiCollectionInput<
   refetchInterval?: number;
   queryFn: (context: { signal: AbortSignal }) => Promise<T[]>;
 }) {
-  const options = queryCollectionOptions({ ...sharedOptions(input), queryFn: input.queryFn });
+  const options = queryCollectionOptions({ ...sharedOptions(input), refetchInterval: input.refetchInterval, queryFn: input.queryFn });
   return withWriteCommitted(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
 }
 
 /** Rows and their change cursor live in one Query entry, so a cancelled or reverted read reverts both. */
-type ChangeSnapshot<T> = { rows: T[]; cursor: string | null };
+type ChangeSnapshot<T> = { rows: T[]; cursor?: string };
 
 /**
  * TanStack DB's incremental pattern for Query collections: read `since` the cached cursor,
@@ -69,7 +68,7 @@ export function createChangeCollection<T extends object>(input: ApiCollectionInp
 }) {
   const queryFn = async ({ signal }: { signal: AbortSignal }): Promise<ChangeSnapshot<T>> => {
     const previous = input.queryClient.getQueryData<ChangeSnapshot<T>>(input.queryKey);
-    const result = await input.read({ signal, since: previous?.cursor ?? undefined });
+    const result = await input.read({ signal, since: previous?.cursor });
     if (result.full) return { rows: result.rows, cursor: result.cursor };
     const rows = new Map((previous?.rows ?? []).map((row) => [String(input.getKey(row)), row]));
     // Deletes first: a key deleted and re-created within the window comes back as a row.
