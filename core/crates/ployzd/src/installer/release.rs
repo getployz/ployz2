@@ -21,8 +21,6 @@ use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion};
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
 const CHANNEL_URL: &str = "https://ployz.sh";
-/// This daemon's major version, which names its release line.
-const RELEASE_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
 /// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
 const RELEASE_LINE: &str = concat!("v", env!("CARGO_PKG_VERSION_MAJOR"));
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -97,7 +95,7 @@ pub(super) async fn resolve_release(
         MachineRelease::Beta => ("beta", true),
     };
     let pointer = parse_channel_version(&source.channel(channel).await?)?;
-    if pointer.major().to_string() != RELEASE_MAJOR {
+    if format!("v{}", pointer.major()) != RELEASE_LINE {
         return Err(Error::ReleaseSelection(format!(
             "{RELEASE_LINE} {channel} channel points at {pointer} on another release line"
         )));
@@ -427,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn channels_follow_this_line_and_never_downgrade() {
-        let version = |rest: &str| format!("{RELEASE_MAJOR}.{rest}");
+        let version = |rest: &str| format!("{}.{rest}", &RELEASE_LINE[1..]);
         let root = tempfile::tempdir().unwrap();
         let source = ReleaseSource::Local(root.path().to_owned());
         let line = root.path().join(RELEASE_LINE);
