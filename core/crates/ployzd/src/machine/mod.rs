@@ -149,14 +149,9 @@ pub struct LocalMachineRecord {
 }
 
 /// Management client public keys. No Cloud secret is persisted.
-///
-/// Records written before the Pairing Credential left the daemon carry a
-/// `pairing` field and may be `enrolling`; readers ignore the field and read
-/// `enrolling` as unpaired, because no key was issued yet.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum CloudAccess {
-    #[serde(alias = "enrolling")]
     Unpaired {},
     Pending {
         pending: [u8; 32],

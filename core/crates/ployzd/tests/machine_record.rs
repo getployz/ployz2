@@ -221,43 +221,6 @@ async fn set_cloud_pairing_before_initialize_is_not_participating() {
     assert!(matches!(error, LocalMachineError::NotParticipating));
 }
 
-#[tokio::test]
-async fn record_with_a_legacy_pairing_secret_keeps_its_keys_and_drops_the_secret() {
-    let dir = TestDir::new("ployzd-legacy-cloud-pairing");
-    drop(participating(&dir).await);
-    let path = dir.0.join("machine.json");
-    let mut legacy: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    let pairing = serde_json::json!({ "secret": "legacy-pairing-secret" });
-    let key = [7_u8; 32];
-
-    // Enrolling predates any issued key: it reads as unpaired.
-    *legacy.get_mut("cloud_access").unwrap() =
-        serde_json::json!({ "state": "enrolling", "pairing": pairing });
-    fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-    assert!(
-        !LocalMachineStore::open(&dir.0)
-            .unwrap()
-            .record()
-            .has_management_client()
-    );
-
-    *legacy.get_mut("cloud_access").unwrap() =
-        serde_json::json!({ "state": "active", "pairing": pairing, "accepted": key });
-    fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-    let local =
-        LocalMachine::new(RecordOwner::spawn(LocalMachineStore::open(&dir.0).unwrap()).unwrap());
-    assert_eq!(local.record().accepted_client(), Some(key));
-
-    // The secret is dropped on read, so any later write persists only public keys.
-    local
-        .set_cloud_pairing(SetCloudPairingRequest::Set {})
-        .await
-        .unwrap();
-    assert_eq!(local.record().accepted_client(), Some(key));
-    let persisted = fs::read_to_string(&path).unwrap();
-    assert!(!persisted.contains("legacy-pairing-secret"), "{persisted}");
-}
-
 #[test]
 fn reopening_a_participating_machine_refreshes_runtime_metadata() {
     let dir = TestDir::new("ployzd-runtime-refresh");
@@ -902,17 +865,18 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
 }
 
 #[test]
-fn local_record_rejects_cloud_access_missing_its_keys() {
+fn local_record_rejects_contradictory_cloud_access() {
     let dir = TestDir::new("ployzd-invalid-cloud-access");
     let store = LocalMachineStore::open(&dir.0).unwrap();
     let valid = serde_json::to_value(store.record()).unwrap();
     let key = serde_json::to_value([1_u8; 32]).unwrap();
     for access in [
+        serde_json::json!({"state": "unpaired", "accepted": key}),
         serde_json::json!({"state": "active"}),
-        serde_json::json!({"state": "pending"}),
+        serde_json::json!({"state": "pending", "accepted": key}),
         serde_json::json!({"state": "rotating", "accepted": key}),
-        serde_json::json!({"state": "rotating", "pending": key}),
-        serde_json::json!({"state": "unknown"}),
+        serde_json::json!({"state": "enrolling"}),
+        serde_json::json!({"state": "active", "accepted": key, "pairing": {"secret": "s"}}),
     ] {
         let mut invalid = valid.clone();
         *invalid.get_mut("cloud_access").unwrap() = access;
