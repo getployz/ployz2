@@ -1,1 +1,0 @@
-CREATE INDEX "organization_change_xid_idx" ON "organization_change" ("xid");
