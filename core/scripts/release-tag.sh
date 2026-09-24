@@ -2,12 +2,15 @@
 
 set -euo pipefail
 
+# A semver numeric identifier has no leading zeros; the daemon's version parser refuses them.
+RELEASE_NUMBER='(0|[1-9][0-9]*)'
+
 beta_release_tag() {
-    [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]
+    [[ "$1" =~ ^v$RELEASE_NUMBER\.$RELEASE_NUMBER\.$RELEASE_NUMBER-beta\.$RELEASE_NUMBER$ ]]
 }
 
 stable_release_tag() {
-    [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+    [[ "$1" =~ ^v$RELEASE_NUMBER\.$RELEASE_NUMBER\.$RELEASE_NUMBER$ ]]
 }
 
 release_tag() {
