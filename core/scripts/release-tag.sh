@@ -22,12 +22,6 @@ channel_name_for_tag() {
     fi
 }
 
-# Prints the tag's release line: v1.2.3 -> v1.
-release_line_for_tag() {
-    local tag=$1
-    printf '%s\n' "${tag%%.*}"
-}
-
 # Succeeds when release tag $1 is higher than $2 by semver. In GNU `sort -V`, `~` sorts before
 # the bare version, so vX.Y.Z~beta.N < vX.Y.Z.
 release_tag_higher() {

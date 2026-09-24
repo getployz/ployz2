@@ -25,7 +25,7 @@ advance_pointer() {
 # beta is the highest release, so a stable tag advances it too.
 write_channel_files() {
     local dest_dir=$1 tag=$2 line pointer pointers=beta
-    line=$(release_line_for_tag "$tag")
+    line=${tag%%.*}
     [ "$(channel_name_for_tag "$tag")" = beta ] || pointers="stable beta"
     for pointer in $pointers; do
         advance_pointer "$dest_dir/$line/$pointer" "$tag"
