@@ -35,12 +35,12 @@ function createRawGithubReposCollection(scope: GithubCollectionScope) {
     queryClient: scope.queryClient,
     queryKey: githubReposQueryKey(scope),
     queryFn: async ({ signal }) => {
-      const rows = await readCollectionServerFn({
+      const read = await readCollectionServerFn({
         data: { table: "github_repository_cache", userId: scope.userId },
         signal,
       });
       // SAFETY: the literal table selects githubRepositoryCache in the allowlisted read.
-      return rows as GithubRepositoryRow[];
+      return read.rows as GithubRepositoryRow[];
     },
     getKey: (row) => `${row.installationId}:${row.repositoryId}`,
     // Reopening a picker within a minute reuses the cache.

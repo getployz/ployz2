@@ -550,7 +550,7 @@ describe("deployment runtime persistence", () => {
     const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
     expect(row?.runtimeProgress).toBeNull();
     await harness.pool.query('insert into member(user_id,organization_id) values($1,$2)', [userId, organizationId]);
-    const read = () => harness.runEffect(readCollection({ userId }, { table: "environment_deployment", userId, organizationSlug: "runtime" }));
+    const read = () => harness.runEffect(readCollection({ userId }, { table: "environment_deployment", userId, organizationSlug: "runtime" })).then((snapshot) => snapshot.rows);
     expect(await read()).toEqual(expect.arrayContaining([expect.objectContaining({ id: admitted.id, runtimeProgress: progress })]));
     const terminal = { ...progress, outcome: "success" as const, logsIncomplete: true };
     await harness.db.update(schema.environmentDeployment).set({ runtimeProgress: terminal }).where(eq(schema.environmentDeployment.id, admitted.id));

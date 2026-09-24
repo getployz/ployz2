@@ -27,8 +27,8 @@ function execute(request: Request, input: { table: string; userId: string; organ
     const actor = yield* auth.resolveActor(request.headers);
     const data = yield* Schema.decodeUnknownEffect(collectionReadInput)(input, { onExcessProperty: "error" })
       .pipe(Effect.mapError(() => new CollectionReadInvalid({ message: "Invalid collection read." })));
-    const rows = yield* readCollection(actor, data);
-    return Response.json(rows, { headers: privateHeaders });
+    const read = yield* readCollection(actor, data);
+    return Response.json(read.rows, { headers: privateHeaders });
   }).pipe(Effect.catch((cause) => Effect.succeed(publicErrorResponse(cause, {
     headers: privateHeaders,
   }))));

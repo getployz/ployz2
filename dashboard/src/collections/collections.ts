@@ -1,6 +1,7 @@
-import type { CollectionReadInput } from "./read.contract";
+import type { QueryCollectionUtils } from "@tanstack/query-db-collection";
+import type { CollectionRead, CollectionReadInput } from "./read.contract";
 import type { OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
-import { createApiCollection } from "#/collections/query-collection";
+import { createApiCollection, createChangeCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import {
@@ -45,8 +46,21 @@ function collectionReadOptions<Row>(table: CollectionReadInput["table"], organiz
     queryClient: scope.queryClient,
     queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, table],
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      const read = await readCollectionServerFn({ data: { table, organizationSlug, userId: scope.userId }, signal });
       // SAFETY: each owner below pairs its literal allowlisted table with that table's database row type.
-      return await readCollectionServerFn({ data: { table, organizationSlug, userId: scope.userId }, signal }) as Row[];
+      return read.rows as Row[];
+    },
+  };
+}
+
+/** A collection fed by the Organization change log: refetches read only rows changed `since` its cursor. */
+function collectionChangeOptions<Row>(table: CollectionReadInput["table"], organizationSlug: string, scope: CollectionScope) {
+  return {
+    queryClient: scope.queryClient,
+    queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, table],
+    read: async ({ signal, since }: { signal: AbortSignal; since: string | undefined }) => {
+      // SAFETY: as above, the literal table pairs with its database row type.
+      return await readCollectionServerFn({ data: { table, organizationSlug, userId: scope.userId, since }, signal }) as CollectionRead<Row>;
     },
   };
 }
@@ -66,8 +80,8 @@ export const getEnvironmentsCollection = cachedByCollectionScope(
 );
 
 export const getRawServicesCollection = cachedByCollectionScope(
-  (organizationSlug, scope) => createApiCollection<ServiceRow>({
-    ...collectionReadOptions<ServiceRow>("service", organizationSlug, scope),
+  (organizationSlug, scope) => createChangeCollection<ServiceRow>({
+    ...collectionChangeOptions<ServiceRow>("service", organizationSlug, scope),
     getKey: (row) => row.id,
   }),
 );
@@ -158,3 +172,13 @@ export const getProjectPreferencesCollection = cachedByCollectionScope((organiza
     ...collectionReadOptions<ProjectPreference>("project_preference", organizationSlug, scope),
     getKey: row => row.id,
   }));
+
+/**
+ * Collections the Organization change stream refetches by name. Grows with `changeSources`.
+ * Not a `get*Collection` export, so the Org Store gate doesn't treat it as a table.
+ */
+export const changeCollections = {
+  service: getRawServicesCollection,
+} satisfies Partial<Record<CollectionReadInput["table"], (organizationSlug: string, scope: CollectionScope) => {
+  utils: Pick<QueryCollectionUtils, "refetch">;
+}>>;

@@ -1,7 +1,9 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, getTableColumns, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
-import type { CollectionReadInput } from "./read.contract";
+import { sourceTablesOf } from "./change-sources";
+import { readChangeWindow } from "./changes.server";
+import type { CollectionRead, CollectionReadInput } from "./read.contract";
 import * as tables from "#/db/schema";
 import type { Actor } from "#/modules/identity/actor";
 import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
@@ -44,7 +46,8 @@ export const readCollection = Effect.fn("Collections.read")(function* (
     scopeId = organization.id;
   }
   const database = yield* Database;
-  const read = Effect.gen(function* () {
+  // `keys` narrows a sourced collection to the rows its change window names.
+  const readRows = (keys?: string[]) => Effect.gen(function* () {
     switch (data.table) {
       case "github_repository_cache":
         return yield* database.drizzle.select().from(tables.githubRepositoryCache)
@@ -72,7 +75,7 @@ export const readCollection = Effect.fn("Collections.read")(function* (
           .where(eq(tables.environment.organizationId, scopeId));
       case "service":
         return yield* database.drizzle.select().from(tables.service)
-          .where(eq(tables.service.organizationId, scopeId));
+          .where(and(eq(tables.service.organizationId, scopeId), keys && inArray(tables.service.id, keys)));
       case "resource_lineage":
         return yield* database.drizzle.select().from(tables.resourceLineage)
           .where(eq(tables.resourceLineage.organizationId, scopeId));
@@ -110,6 +113,16 @@ export const readCollection = Effect.fn("Collections.read")(function* (
         return pairings.map((row): OrganizationEnrollmentRow => ({ id: row.id, status: pairingEnrollmentStatus(row.founderMachineId) }));
       }
     }
+  });
+  type Row = Effect.Success<ReturnType<typeof readRows>>[number];
+  const read = Effect.gen(function* (): Effect.fn.Return<CollectionRead<Row>, unknown, Database> {
+    const sourceTables = sourceTablesOf(data.table);
+    if (sourceTables.length === 0) return { full: true, rows: yield* readRows(), cursor: null };
+    // The window is read before the rows, so the rows are at least as new as its cursor.
+    const window = yield* readChangeWindow({ organizationId: scopeId, since: data.since, sourceTables });
+    if (data.since === undefined || window.all) return { full: true, rows: yield* readRows(), cursor: window.cursor };
+    const rows = window.changed.length === 0 ? [] : yield* readRows(window.changed);
+    return { full: false, rows, deleted: window.deleted, cursor: window.cursor };
   });
   return yield* read.pipe(Effect.mapError((cause) => new CollectionReadFailure({ cause })));
 });
