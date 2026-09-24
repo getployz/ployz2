@@ -1,5 +1,5 @@
-import { queryCollectionOptions, type QueryCollectionUtils } from "@tanstack/query-db-collection";
-import { BasicIndex, collectionOptions } from "@tanstack/react-db";
+import { queryCollectionOptions, type QueryCollectionConfig, type QueryCollectionUtils } from "@tanstack/query-db-collection";
+import { BasicIndex, collectionOptions, type Collection } from "@tanstack/react-db";
 import type { QueryClient } from "@tanstack/react-query";
 import type { CollectionRead } from "./read.contract";
 import { getDbClient } from "./scope";
@@ -11,7 +11,10 @@ type ApiCollectionInput<T> = {
   staleTime?: number;
 };
 
-function sharedOptions<T>(input: ApiCollectionInput<T>) {
+type BaseOptions<T extends object> = Pick<QueryCollectionConfig<T>, "queryClient" | "queryKey" | "getKey" | "id" | "startSync"
+  | "staleTime" | "refetchOnWindowFocus" | "refetchOnReconnect" | "retry" | "autoIndex" | "defaultIndexType">;
+
+function baseOptions<T extends object>(input: ApiCollectionInput<T>): BaseOptions<T> {
   // Default snapshot retention lets a loader hand data to its consumer after releasing its observer.
   return {
     queryClient: input.queryClient,
@@ -20,18 +23,17 @@ function sharedOptions<T>(input: ApiCollectionInput<T>) {
     id: input.queryKey.join(":"),
     startSync: false,
     staleTime: input.staleTime ?? 15_000,
-    refetchOnWindowFocus: "always" as const,
-    refetchOnReconnect: "always" as const,
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
     retry: false,
-    autoIndex: "eager" as const,
+    autoIndex: "eager",
     defaultIndexType: BasicIndex,
   };
 }
 
-function withWriteCommitted<T extends object, C extends { utils: { writeUpsert: (rows: T | T[]) => void }; subscribeChanges: (callback: () => void) => { unsubscribe: () => void } }>(
-  input: ApiCollectionInput<T>,
-  collection: C,
-) {
+type ApiCollection<T extends object> = Pick<Collection<T, string | number, QueryCollectionUtils<T>>, "subscribeChanges" | "utils">;
+
+function withWriteCommitted<T extends object, C extends ApiCollection<T>>(input: ApiCollectionInput<T>, collection: C) {
   return Object.assign(collection, {
     async writeCommitted(rows: T | T[]): Promise<void> {
       const subscription = collection.subscribeChanges(() => {});
@@ -51,7 +53,7 @@ export function createApiCollection<T extends object>(input: ApiCollectionInput<
   refetchInterval?: number;
   queryFn: (context: { signal: AbortSignal }) => Promise<T[]>;
 }) {
-  const options = queryCollectionOptions({ ...sharedOptions(input), refetchInterval: input.refetchInterval, queryFn: input.queryFn });
+  const options = queryCollectionOptions({ ...baseOptions(input), refetchInterval: input.refetchInterval, queryFn: input.queryFn });
   return withWriteCommitted(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
 }
 
@@ -77,7 +79,7 @@ export function createChangeCollection<T extends object>(input: ApiCollectionInp
     return { rows: [...rows.values()], cursor: result.cursor };
   };
   const options = queryCollectionOptions({
-    ...sharedOptions(input),
+    ...baseOptions(input),
     queryFn,
     select: (snapshot: ChangeSnapshot<T>) => snapshot.rows,
   });
