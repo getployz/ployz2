@@ -43,6 +43,10 @@ function createRawGithubReposCollection(scope: GithubCollectionScope) {
       return rows as GithubRepositoryRow[];
     },
     getKey: (row) => `${row.installationId}:${row.repositoryId}`,
+    // Reopening a picker within a minute reuses the cache.
+    staleTime: 60_000,
+    // A requested sync lands rows in the background; poll only while a picker holds the collection.
+    refetchInterval: 15_000,
   });
 }
 

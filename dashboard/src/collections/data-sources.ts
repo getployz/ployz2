@@ -26,7 +26,7 @@ export const dataSources = {
   "modules/environment-design/workspace.queries.ts": { kind: "remote", freshness: "organization state: fresh on every mount" },
   "modules/billing/billing.queries.ts": { kind: "remote", freshness: "cached briefly; plan changes invalidate it" },
   "modules/github/github.queries.ts": { kind: "remote", freshness: "access fresh on mount because installs change in GitHub; install URL never changes; branches and file search cached briefly" },
-  "modules/github/github.collection.ts": { kind: "remote", freshness: "user repository cache at the table default; preloaded when a picker opens" },
+  "modules/github/github.collection.ts": { kind: "remote", freshness: "user repository cache: reused for a minute, polled while a picker is open so a requested sync appears; preloaded when a picker opens" },
   "modules/runtime/teardown.queries.ts": { kind: "remote", freshness: "fresh on mount; polls while an attempt is busy" },
   "modules/runtime/volume-removal.queries.ts": { kind: "remote", freshness: "fresh on mount; polls while an attempt is busy" },
   "modules/deployments/deployment-log.collection.ts": { kind: "remote", freshness: "polls until the deployment finishes; a finished log is never refetched" },
