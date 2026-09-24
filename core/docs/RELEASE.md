@@ -47,6 +47,8 @@ When the informing cluster suite and that run disagree, the real Machines are th
 - A pointer only moves to a higher semver tag. Publishing an older-line fix moves that line's pointers only; an older tag moves nothing.
 - Only when the unscoped `stable` pointer names the published tag: regenerates `Formula/ployz.rb` from `checksums.txt` and pushes `getployz/homebrew-ployz`.
 
+Promotion runs one at a time. GitHub keeps only one waiting run, so publishing three releases in quick succession cancels the middle one's promotion: re-run any cancelled **Promote published release** run. Re-running is safe; pointers only move forward.
+
 Needs repo secret `HOMEBREW_TAP_TOKEN` (write access to the tap). Channel updates use `GITHUB_TOKEN`. Publish then dispatches `ployz.sh`, which deploys `install.sh` plus the `channels` branch files to Cloudflare Pages.
 
 ## Install
