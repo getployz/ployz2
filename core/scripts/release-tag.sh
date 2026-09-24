@@ -3,6 +3,7 @@
 set -euo pipefail
 
 # A semver numeric identifier has no leading zeros; the daemon's version parser refuses them.
+# install.sh keeps the same grammar.
 RELEASE_NUMBER='(0|[1-9][0-9]*)'
 
 beta_release_tag() {

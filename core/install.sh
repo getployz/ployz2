@@ -6,8 +6,10 @@ PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz2}
 PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
 PLOYZ_VERSION=${PLOYZ_VERSION:-${1:-stable}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
-STABLE_VERSION='[0-9]+\.[0-9]+\.[0-9]+'
-RELEASE_VERSION="$STABLE_VERSION(-beta\.[0-9]+)?"
+# Same grammar as scripts/release-tag.sh; this file is fetched alone, so it cannot source it.
+RELEASE_NUMBER='(0|[1-9][0-9]*)'
+STABLE_VERSION="$RELEASE_NUMBER\.$RELEASE_NUMBER\.$RELEASE_NUMBER"
+RELEASE_VERSION="$STABLE_VERSION(-beta\.$RELEASE_NUMBER)?"
 
 error() {
     echo "ERROR: $1" >&2

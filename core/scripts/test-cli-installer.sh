@@ -65,13 +65,14 @@ grep -Fq '/releases/download/v8.8.8-beta.1/ployz_linux_amd64.tar.gz' "$FAKE_CURL
 
 # stable never installs a prerelease, and retired channel names are not versions.
 printf 'v8.8.8-beta.1\n' > "$TMP/release/stable"
-for requested in stable latest nightly; do
+for requested in stable latest nightly 1.2.03; do
     if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
         INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
-        sh "$ROOT/install.sh" "$requested" >/dev/null 2>&1; then
-        echo "$requested installed a prerelease" >&2
+        sh "$ROOT/install.sh" "$requested" > "$TMP/error" 2>&1; then
+        echo "$requested was installed" >&2
         exit 1
     fi
+    grep -Eq 'stable channel is unavailable|Invalid version' "$TMP/error"
 done
 
 # Missing and mismatched binaries must fail before replacing the installed one.
