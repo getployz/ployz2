@@ -26,7 +26,7 @@ export function useServiceRegistryCredentialActions({
       environmentId,
       apply: (intent) => {
         const node = intent.services.find((node) => node.id === serviceId);
-        if (!node || node.config.source.type !== "image") throw new Error("Service does not use a container image.");
+        if (!node || node.config.source.type !== "image") return;
         node.config.source.credentials = action.kind === "clear"
           ? { type: "none" } : { type: "configured", credentialId: serviceId };
       },

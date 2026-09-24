@@ -176,7 +176,7 @@ export function ServiceVariablesRawEditor({
     }
   }
 
-  async function handleSubmit() {
+  function handleSubmit() {
     dispatchEditor({
       type: "patch",
       patch: { parseError: null, submitError: null },
@@ -286,7 +286,7 @@ export function ServiceVariablesRawEditor({
         <ServiceVariablesRawEditorFooter
           envText={editor.envText}
           onCancel={() => handleOpenChange(false)}
-          onSubmit={() => void handleSubmit()}
+          onSubmit={handleSubmit}
         />
       </DialogContent>
     </Dialog>

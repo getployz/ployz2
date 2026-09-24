@@ -6,7 +6,7 @@ import {
 } from "#/components/variables/variables-panel";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row";
 import { useReferenceTargets } from "#/components/variables/use-reference-targets";
-import { insertPlainVariableGroupVariable, pendingSealedVariable, sealVariableIntent } from "#/modules/environment-design/variable-collections";
+import { insertPlainVariableGroupVariable, sealVariableIntent } from "#/modules/environment-design/variable-collections";
 import {
   createVariableGroupVariableServerFn,
   updateVariableGroupVariableMetadataServerFn,
@@ -53,7 +53,7 @@ export function VariableGroupVariablesTab({
         environmentId,
         apply: (intent) => {
           intent.variableGroups.find((group) => group.variableGroupId === variableGroupId)?.variables
-            .push(pendingSealedVariable({ id, key: input.key, description: null, exported: input.exported }));
+            .push({ id, key: input.key, description: null, exported: input.exported, valueFingerprint: "pending", value: { kind: "secret", encryptedValue: null } });
         },
         save: (revision) => createVariable({ data: {
           organizationSlug, revision, environmentId, variableGroupId, id,

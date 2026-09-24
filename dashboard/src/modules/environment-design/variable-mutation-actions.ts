@@ -1,6 +1,6 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { plainVariableIntent, variableDocumentRecord } from "./variable-document";
-import { useEnvironmentDocumentEditor } from "./environment-document-edit";
+import { editEnvironmentDocumentAfter, useEnvironmentDocumentEditor } from "./environment-document-edit";
 import { useServerFn } from "@tanstack/react-start";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import {
@@ -88,10 +88,10 @@ export function useApplyRawVariablesAction({
   environmentId,
   serviceId,
 }: UseApplyRawVariablesActionInput) {
-  const environments = getEnvironmentsCollection(organizationSlug, useCollectionScope());
+  const scope = useCollectionScope();
+  const environments = getEnvironmentsCollection(organizationSlug, scope);
   const bulkUpdate = useServerFn(bulkUpdateServiceVariablesServerFn);
 
-  const edit = useEnvironmentDocumentEditor(organizationSlug);
   const save = (diff: RawEditorDiff, revision: string) => bulkUpdate({
     data: {
       organizationSlug, revision,
@@ -112,7 +112,7 @@ export function useApplyRawVariablesAction({
       deletes: diff.deletes,
     },
   });
-  return (diff: RawEditorDiff) => ({ isPersisted: { promise: (async () => {
+  return (diff: RawEditorDiff) => editEnvironmentDocumentAfter(organizationSlug, scope, async () => {
     const document = environments.get(environmentId);
     const node = document?.intent.services.find((node) => node.id === serviceId);
     if (!document || !node) throw new Error("Service is not loaded.");
@@ -123,15 +123,14 @@ export function useApplyRawVariablesAction({
         key: update.key, value: { type: "plain", value: update.value } }, document.intent) : variable;
     }));
     for (const create of diff.creates) variables.push(await plainVariableIntent(buildPlainServiceVariableRecord({ ...create, serviceId }), document.intent));
-    await edit({
+    return {
       environmentId,
       apply: (intent) => {
-        const node = intent.services.find((node) => node.id === serviceId);
-        if (!node) throw new Error("Service is not loaded.");
-        node.variables = variables;
+        const target = intent.services.find((node) => node.id === serviceId);
+        if (target) target.variables = variables;
       },
       save: (revision) => save(diff, revision),
       failureMessage: "Could not apply these variables.",
-    }).isPersisted.promise;
-  })() } });
+    };
+  }, "Could not apply these variables.");
 }

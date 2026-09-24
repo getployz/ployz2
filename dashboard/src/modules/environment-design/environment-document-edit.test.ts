@@ -48,7 +48,7 @@ it("shows the edit at once and saves queued edits against the previous save's re
   const two = editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("logs"), save: save2, failureMessage: "x" });
   expect(test.environments.get("env")?.intent.volumes[0]?.name).toBe("logs");
 
-  expect(save1).toHaveBeenCalledWith("r1");
+  await vi.waitFor(() => expect(save1).toHaveBeenCalledWith("r1"));
   expect(save2).not.toHaveBeenCalled();
   first.resolve(test.saved("r2", "cache"));
   await Promise.all([one.isPersisted.promise, two.isPersisted.promise]);
@@ -70,4 +70,22 @@ it("rolls back and toasts when a save fails, and the next edit reuses the unchan
   const save = vi.fn(async (revision: string) => test.saved(revision === "r1" ? "r2" : "stale", "logs"));
   await editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("logs"), save, failureMessage: "x" }).isPersisted.promise;
   expect(save).toHaveBeenCalledWith("r1");
+});
+
+it("keeps the queue on the last saved revision when a queued save fails", async () => {
+  vi.spyOn(toast, "error").mockReturnValue("toast");
+  const test = await setup();
+  const first = deferred<{ data: never }>();
+  const saves: string[] = [];
+  const one = editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("a"), failureMessage: "x",
+    save: (revision) => { saves.push(revision); return first.promise; } });
+  const two = editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("b"), failureMessage: "x",
+    save: async (revision) => { saves.push(revision); throw new Error("Invalid"); } });
+  const three = editEnvironmentDocument("acme", test.scope, { environmentId: "env", apply: test.rename("c"), failureMessage: "x",
+    save: async (revision) => { saves.push(revision); return test.saved("r3", "c"); } });
+  first.resolve(test.saved("r2", "a"));
+  await one.isPersisted.promise;
+  await expect(two.isPersisted.promise).rejects.toThrow("Invalid");
+  await three.isPersisted.promise;
+  expect(saves).toEqual(["r1", "r2", "r2"]);
 });

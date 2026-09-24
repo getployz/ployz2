@@ -69,12 +69,12 @@ const NETWORK_FILES = {
   "providers/runtime-provider.tsx": "the Runtime SSE connection",
 };
 
+// Matches the conventional spellings (`environments` or an inline getter); other aliases rely on review.
 const DOCUMENT_WRITE = /\b(environments|getEnvironmentsCollection\([^)]*\))\.writeCommitted\(/;
 /** Commands that store a server-returned environment document directly; field edits go through editEnvironmentDocument. */
 const DOCUMENT_COMMAND_FILES = {
   "modules/environment-design/environment-document-edit.ts": "the editor itself",
   "modules/environment-design/apply-created-node.ts": "a created service or resource returns its new document",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useCanvasChangeActions.ts": "publish and discard return the new document",
   "components/navigation-switcher.tsx": "a created environment returns its first document",
   "components/service-create-command.tsx": "a created project returns its first document",
 };
@@ -143,7 +143,8 @@ describe("data boundaries", () => {
     const remoteFiles = Object.entries(dataSources).filter(([path, source]) => source.kind === "remote" && path.endsWith(".queries.ts")).map(([path]) => path);
     const factories = remoteFiles.flatMap((path) => [...readFileSync(join(SRC, path), "utf8").matchAll(/export function (\w+Options)\(/g)].map((match) => match[1] ?? ""));
     const loaderCode = sources.filter(({ path }) => path.startsWith("routes/") || path === "collections/route-data.ts").map(({ text }) => text).join("\n");
-    const unprefetched = factories.filter((name) => !new RegExp(`(prefetchRemote\\(context, |ensureQueryData\\()${name}\\(`).test(loaderCode));
+    // Presence check: some loader (or a route-data helper) prefetches the factory; review checks it is the page's own loader.
+    const unprefetched = factories.filter((name) => !new RegExp(`(prefetchRemote\\([^;]*?|ensureQueryData\\()\\b${name}\\(`).test(loaderCode));
     expect(unprefetched.sort(), "Prefetch it with prefetchRemote in the page's loader, or list it as on demand").toEqual(Object.keys(ON_DEMAND_READS).sort());
   });
 

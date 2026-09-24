@@ -1,6 +1,5 @@
 import type { CollectionScope } from "#/collections/scope";
-import { toast } from "sonner";
-import { editEnvironmentDocument } from "./environment-document-edit";
+import { editEnvironmentDocumentAfter } from "./environment-document-edit";
 import type { SavedEnvironmentIntent, SavedVariableIntent } from "./saved-intent";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import type { VariableRecord } from "./variables";
@@ -56,43 +55,32 @@ export function createVariableWriter(organizationSlug: string, scope: Collection
   }
 
   function edit(kind: "insert" | "update" | "delete", variable: VariableRecord) {
-    let saving = false;
-    const promise = (async () => {
-      try {
-        const document = Array.from(environments.values()).find((document) => variableOwners(document.intent)
-          .some((owner) => owner.serviceId === variable.serviceId && owner.variableGroupId === variable.variableGroupId));
-        if (!document) throw new Error("Variable owner is not loaded.");
-        let authored: SavedVariableIntent | null = null;
-        if (kind !== "delete") {
-          if (variable.value.type !== "plain") throw new Error("Use the sealed-variable action to edit a secret.");
-          authored = await plainVariableIntent(variable, document.intent);
-        }
-        saving = true;
-        await editEnvironmentDocument(organizationSlug, scope, {
-          environmentId: document.id,
-          apply: (intent) => {
-            const owner = variableOwners(intent).find((owner) => owner.serviceId === variable.serviceId && owner.variableGroupId === variable.variableGroupId);
-            if (!owner) throw new Error("Variable owner is not loaded.");
-            const index = owner.variables.findIndex((entry) => entry.id === variable.id);
-            if (kind === "delete") {
-              if (index !== -1) owner.variables.splice(index, 1);
-            } else if (authored) {
-              if (index === -1) owner.variables.push(authored);
-              else owner.variables[index] = authored;
-            }
-          },
-          save: (revision) => save(kind, variable, document.id, revision),
-          failureMessage: kind === "delete" ? "Could not delete this variable." : "Could not save this variable.",
-        }).isPersisted.promise;
-      } catch (error) {
-        // The document editor toasts save failures; preparing the value can fail first.
-        if (!saving) toast.error(error instanceof Error ? error.message : "Could not save this variable.");
-        throw error;
+    return editEnvironmentDocumentAfter(organizationSlug, scope, async () => {
+      const document = Array.from(environments.values()).find((document) => variableOwners(document.intent)
+        .some((owner) => owner.serviceId === variable.serviceId && owner.variableGroupId === variable.variableGroupId));
+      if (!document) throw new Error("Variable owner is not loaded.");
+      let authored: SavedVariableIntent | null = null;
+      if (kind !== "delete") {
+        if (variable.value.type !== "plain") throw new Error("Use the sealed-variable action to edit a secret.");
+        authored = await plainVariableIntent(variable, document.intent);
       }
-    })();
-    // The failure is already toasted; observing it keeps fire-and-forget callers free of unhandled rejections.
-    promise.catch(() => {});
-    return { isPersisted: { promise } };
+      return {
+        environmentId: document.id,
+        apply: (intent) => {
+          const owner = variableOwners(intent).find((owner) => owner.serviceId === variable.serviceId && owner.variableGroupId === variable.variableGroupId);
+          if (!owner) return;
+          const index = owner.variables.findIndex((entry) => entry.id === variable.id);
+          if (kind === "delete") {
+            if (index !== -1) owner.variables.splice(index, 1);
+          } else if (authored) {
+            if (index === -1) owner.variables.push(authored);
+            else owner.variables[index] = authored;
+          }
+        },
+        save: (revision) => save(kind, variable, document.id, revision),
+        failureMessage: kind === "delete" ? "Could not delete this variable." : "Could not save this variable.",
+      };
+    }, "Could not save this variable.");
   }
   return { insert: (variable) => edit("insert", variable),
     update(id, updater) { const variable = currentVariable(id); updater(variable); return edit("update", variable); },
@@ -102,11 +90,6 @@ export function createVariableWriter(organizationSlug: string, scope: Collection
 /** Shows a variable as sealed until the server returns its encrypted value and fingerprint. */
 export function sealVariableIntent(variable: SavedVariableIntent) {
   variable.value = { kind: "secret", encryptedValue: null };
-}
-
-/** A sealed variable created on the client; the server fills in the encrypted value and fingerprint. */
-export function pendingSealedVariable(input: Pick<SavedVariableIntent, "id" | "key" | "description" | "exported">): SavedVariableIntent {
-  return { ...input, valueFingerprint: "pending", value: { kind: "secret", encryptedValue: null } };
 }
 
 export type PlainServiceVariableInsertInput = {

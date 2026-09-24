@@ -19,14 +19,12 @@ export function ServiceVariablesRawEditorFooter({
           type="button"
           variant="outline"
           onClick={onCancel}
-         
         >
           Cancel
         </Button>
         <Button
           type="button"
           onClick={onSubmit}
-         
         >
           Update variables
         </Button>

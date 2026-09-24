@@ -106,7 +106,7 @@ function createServiceWriter(
             return;
           }
           const node = intent.services.find((node) => node.id === serviceId);
-          if (!node) throw new Error("Service is not loaded.");
+          if (!node) return;
           const { deletedAt: _deletedAt, ...config } = settings;
           Object.assign(node.config, config);
         },

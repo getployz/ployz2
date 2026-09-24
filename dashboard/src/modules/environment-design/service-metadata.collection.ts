@@ -3,6 +3,7 @@ import { createOptimisticAction } from "@tanstack/react-db";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getRawServicesCollection } from "#/collections/collections";
+import { observeFailure } from "./environment-document-edit";
 import { editServiceMetadataServerFn } from "./service-metadata.functions";
 import type { ServiceMetadataEdit } from "./service-metadata";
 
@@ -27,10 +28,5 @@ const getServiceMetadataEditor = cachedByCollectionScope((organizationSlug, scop
 
 export function useServiceMetadataEditor(organizationSlug: string) {
   const edit = getServiceMetadataEditor(organizationSlug, useCollectionScope());
-  return (input: Parameters<typeof edit>[0]) => {
-    const transaction = edit(input);
-    // The failure is already toasted; observing it keeps fire-and-forget callers free of unhandled rejections.
-    transaction.isPersisted.promise.catch(() => {});
-    return transaction;
-  };
+  return (input: Parameters<typeof edit>[0]) => observeFailure(edit(input));
 }

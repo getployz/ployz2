@@ -154,9 +154,8 @@ function ServiceHealthcheckEditor({
     }
 
     // Optimistic: a failed save rolls back and toasts; restore the path draft too.
-    const previousPath = baselinePath;
     void commit(next).isPersisted.promise.catch(() => {
-      dispatchDraft({ type: "patch", patch: { draftPath: previousPath } });
+      dispatchDraft({ type: "patch", patch: { draftPath: baselinePath } });
     });
     dispatchDraft(next.type === "none"
       ? { type: "reset", draftPath: null, draftTimeout: String(DEFAULT_TIMEOUT_SECONDS) }

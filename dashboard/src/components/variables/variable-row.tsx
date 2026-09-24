@@ -67,10 +67,6 @@ export function VariableRow({
     dispatch({ type: "sealDialogChanged", open: false });
   }
 
-  function handleUpdateMetadata(patch: VariableMetadataPatch) {
-    onUpdateMetadata?.(variable, patch);
-  }
-
   return (
     <div className="grid grid-cols-2 items-center gap-3 border-b py-2 last:border-b-0">
       <VariableRowHeading
@@ -114,7 +110,7 @@ export function VariableRow({
           dispatch({ type: "sealDialogChanged", open: true })
         }
         onSave={handleSave}
-        onUpdateMetadata={handleUpdateMetadata}
+        onUpdateMetadata={(patch) => onUpdateMetadata?.(variable, patch)}
       />
 
       </div>

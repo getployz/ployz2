@@ -54,5 +54,5 @@ export function useDeploymentLogsReadState(collection: ReturnType<typeof getDepl
 /** Warm a deployment's logs when the user reaches for them, so opening the panel shows them at once. */
 export function preloadDeploymentLogs(organizationSlug: string, deploymentId: string, scope: CollectionScope) {
   void preloadCollection(getDeploymentLogsCollection(organizationSlug, deploymentId, scope)).catch(() => {});
-  void scope.queryClient.prefetchQuery(deploymentBuildLogQueryOptions(scope.queryClient, organizationSlug, deploymentId));
+  void scope.queryClient.prefetchQuery(deploymentBuildLogQueryOptions(organizationSlug, deploymentId));
 }

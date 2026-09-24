@@ -22,7 +22,8 @@ const mocks = {
   reconcile: vi.spyOn(deploymentCollections, "reconcileDeploymentCollections").mockResolvedValue(undefined),
   toast: vi.spyOn(toast, "error").mockReturnValue("toast"), open: vi.fn(), clearMessage: vi.fn(),
 };
-vi.spyOn(scopes, "useCollectionScope").mockReturnValue(asTestDouble<ReturnType<typeof scopes.useCollectionScope>>()({}));
+// The document editor caches per QueryClient, so the scope needs a real one.
+vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient: new QueryClient(), sessionId: "session", userId: "user" });
 vi.spyOn(collections, "getEnvironmentsCollection").mockReturnValue(asTestDouble<ReturnType<typeof collections.getEnvironmentsCollection>>()({}));
 vi.spyOn(documents, "useEnvironmentDocument").mockImplementation(() => asTestDouble<NonNullable<ReturnType<typeof documents.useEnvironmentDocument>>>()({
   id: "env", revision: "reviewed-revision", compiled: compileSavedEnvironmentIntent({ environmentId: "env", intent: {

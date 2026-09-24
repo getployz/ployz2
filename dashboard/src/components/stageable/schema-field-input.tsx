@@ -81,8 +81,7 @@ export function SchemaFieldInput({
         value: submittedValue,
       });
       // Optimistic: a failed save rolls the value back and toasts; show the rolled-back value.
-      const previous = value;
-      void onCommit(submittedValue).isPersisted.promise.catch(() => form.reset({ value: previous }));
+      void onCommit(submittedValue).isPersisted.promise.catch(() => form.reset({ value }));
     },
   });
 

@@ -13,8 +13,9 @@ export const Route = createFileRoute(
   loader: async ({ params, context }) => {
     const { organizationSlug, projectSlug } = params;
     const environment = await requireEnvironment(context, params);
-    await prefetchRemote(context, latestTeardownAttemptQueryOptions({ organizationSlug, scope: "environment", environmentId: environment.id }));
-    await prefetchRemote(context, latestTeardownAttemptQueryOptions({ organizationSlug, scope: "project", projectSlug }));
+    await prefetchRemote(context,
+      latestTeardownAttemptQueryOptions({ organizationSlug, scope: "environment", environmentId: environment.id }),
+      latestTeardownAttemptQueryOptions({ organizationSlug, scope: "project", projectSlug }));
   },
   component: RouteComponent,
 });
