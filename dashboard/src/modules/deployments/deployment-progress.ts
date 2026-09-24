@@ -29,12 +29,14 @@ export const preparationProgressSchema = Schema.Struct({
 });
 export type PreparationProgress = typeof preparationProgressSchema.Type;
 // Image Cleanup runs after the Deployment is terminal and never changes its status.
-// `targets` is the pending work, kept only until cleanup runs.
-export const imageCleanupProgressSchema = Schema.Struct({
-  state: Schema.Literals(["running", "cleaned", "warning"]),
-  machines: Schema.Number,
-  targets: Schema.optional(Schema.Array(Schema.Struct({ machine_id: Schema.String, repository: Schema.String }))),
-});
+// While running, the row carries the pending targets as plain data.
+export const imageCleanupProgressSchema = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("running"), machines: Schema.Number,
+    targets: Schema.Array(Schema.Struct({ machine_id: Schema.String, repository: Schema.String })),
+  }),
+  Schema.Struct({ state: Schema.Literals(["cleaned", "warning"]), machines: Schema.Number }),
+]);
 export type ImageCleanupProgress = typeof imageCleanupProgressSchema.Type;
 export const deploymentProgressSchema = Schema.Struct({
   logsIncomplete: Schema.optional(Schema.Boolean),

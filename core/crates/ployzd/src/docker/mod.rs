@@ -1,5 +1,6 @@
 mod create;
 mod http_health;
+mod images;
 mod lifecycle;
 mod managed_service;
 mod observe;
@@ -34,9 +35,8 @@ use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName,
     HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
-    ImageRemoval, ImageRemovalOutcome, ImageSummary, ImagesRemoved, MachineId, MachineImages,
-    MachineTelemetry, ProjectName, QualifiedService, RpcError, RpcErrorCode, ServiceId,
-    ServiceName, ValueError,
+    ImageSummary, MachineId, MachineImages, MachineTelemetry, ProjectName, QualifiedService,
+    RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -161,18 +161,23 @@ impl ContainerRuntime {
             .filters(&filters)
             .manifests(true)
             .build();
-        let mut images = Vec::new();
-        for image in self.docker.client.list_images(Some(options)).await? {
-            let tagged = if last_tagged {
-                self.last_tagged(&image.id).await?
-            } else {
-                None
-            };
-            images.push(ImageSummary {
-                last_tagged: tagged,
+        let listed = self.docker.client.list_images(Some(options)).await?;
+        let tagged = if last_tagged {
+            futures_util::future::try_join_all(
+                listed.iter().map(|image| self.last_tagged(&image.id)),
+            )
+            .await?
+        } else {
+            vec![None; listed.len()]
+        };
+        let images = listed
+            .into_iter()
+            .zip(tagged)
+            .map(|(image, last_tagged)| ImageSummary {
+                last_tagged,
                 ..project_image(image)
-            });
-        }
+            })
+            .collect();
         let info = self.docker.client.info().await?;
         Ok(MachineImages {
             containerd_store: info.driver_status.as_deref().is_some_and(containerd_store),
@@ -185,66 +190,6 @@ impl ContainerRuntime {
                     free_bytes,
                 }),
         })
-    }
-
-    async fn last_tagged(&self, id: &str) -> Result<Option<i64>, Error> {
-        match self.docker.client.inspect_image(id).await {
-            Ok(image) => Ok(image
-                .metadata
-                .and_then(|metadata| metadata.last_tag_time)
-                .and_then(|time| chrono::DateTime::parse_from_rfc3339(&time).ok())
-                .map(|time| time.timestamp())
-                .filter(|seconds| *seconds > 0)),
-            // Removed between list and inspect.
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => Ok(None),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    /// Remove each reference without force. A reference whose image any Container
-    /// uses, running or not, is kept: Docker alone would untag it when the image
-    /// carries another tag.
-    ///
-    /// # Errors
-    ///
-    /// Returns when Docker cannot list Containers; per-reference failures are results.
-    pub async fn remove_images(&self, references: &[String]) -> Result<ImagesRemoved, Error> {
-        let options = ListContainersOptionsBuilder::default().all(true).build();
-        let in_use = self
-            .docker
-            .client
-            .list_containers(Some(options))
-            .await?
-            .into_iter()
-            .filter_map(|container| container.image_id)
-            .collect::<std::collections::HashSet<_>>();
-        let mut results = Vec::with_capacity(references.len());
-        for reference in references {
-            let outcome = match self.docker.client.inspect_image(reference).await {
-                Ok(image) if image.id.as_ref().is_some_and(|id| in_use.contains(id)) => {
-                    ImageRemovalOutcome::InUse
-                }
-                Ok(_) => removal_outcome(
-                    self.docker
-                        .client
-                        .remove_image(
-                            reference,
-                            None::<bollard::query_parameters::RemoveImageOptions>,
-                            None,
-                        )
-                        .await
-                        .map(|_| ()),
-                ),
-                Err(error) => removal_outcome(Err(error)),
-            };
-            results.push(ImageRemoval {
-                reference: reference.clone(),
-                outcome,
-            });
-        }
-        Ok(ImagesRemoved { results })
     }
 
     #[must_use]
@@ -446,21 +391,6 @@ fn project_image(image: bollard::models::ImageSummary) -> ImageSummary {
         containers: image.containers,
         platforms,
         last_tagged: None,
-    }
-}
-
-fn removal_outcome(result: Result<(), bollard::errors::Error>) -> ImageRemovalOutcome {
-    match result {
-        Ok(()) => ImageRemovalOutcome::Removed,
-        Err(bollard::errors::Error::DockerResponseServerError {
-            status_code: 404, ..
-        }) => ImageRemovalOutcome::NotFound,
-        Err(bollard::errors::Error::DockerResponseServerError {
-            status_code: 409, ..
-        }) => ImageRemovalOutcome::InUse,
-        Err(error) => ImageRemovalOutcome::Failed {
-            message: error.to_string(),
-        },
     }
 }
 
@@ -911,20 +841,6 @@ mod tests {
         ] {
             assert_eq!(error.rpc_code(), code);
         }
-    }
-
-    #[test]
-    fn image_removal_reports_docker_refusals_without_forcing() {
-        let refused = |status_code| {
-            removal_outcome(Err(bollard::errors::Error::DockerResponseServerError {
-                status_code,
-                message: "refused".into(),
-            }))
-        };
-        assert_eq!(removal_outcome(Ok(())), ImageRemovalOutcome::Removed);
-        assert_eq!(refused(404), ImageRemovalOutcome::NotFound);
-        assert_eq!(refused(409), ImageRemovalOutcome::InUse);
-        assert!(matches!(refused(500), ImageRemovalOutcome::Failed { .. }));
     }
 
     #[test]

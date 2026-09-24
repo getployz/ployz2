@@ -19,7 +19,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { eq, sql } from "drizzle-orm";
 import { Database } from "#/server/database.server";
 import { Effect, Layer, Redacted } from "effect";
-import type { Client, PreparedDeploy, ContainerId, DeployOutcome, ExecutionError } from "@ployz/sdk";
+import type { Client, ConfirmOptions, PreparedDeploy, ContainerId, DeployOutcome, ExecutionError } from "@ployz/sdk";
 import { resolvedServiceSpecFixture, runtimeWatchMachineFixture, runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { readCollection } from "#/collections/read.server";
 import { collectionReadInput } from "#/collections/read.contract";
@@ -478,7 +478,7 @@ describe("deployment runtime persistence", () => {
     await harness.db.update(schema.environmentDeployment).set({ status: "planning" }).where(eq(schema.environmentDeployment.id, admitted.id));
     const target = { machine_id: runtimeWatchMachineFixture("a".repeat(32), "machine").id, repository: "ployz-build/api" };
     const outcome = { type: "success" as const, completed: [] };
-    const confirm = vi.fn((_options: unknown) => ({ finished: Promise.resolve(outcome), abort: () => undefined,
+    const confirm = vi.fn((_options: ConfirmOptions) => ({ finished: Promise.resolve(outcome), abort: () => undefined,
       async *[Symbol.asyncIterator]() { yield { type: "outcome" as const, outcome }; },
     }));
     const pruneImages = vi.fn(async () => {

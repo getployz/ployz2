@@ -270,7 +270,7 @@ export type ImageCleanupReport = { machines: Array<MachineImageCleanup>, };
 
 export type ImageRemoval = { reference: string, outcome: ImageRemovalOutcome, };
 
-export type ImageRemovalOutcome = { "status": "removed" } | { "status": "in_use" } | { "status": "not_found" } | { "status": "failed", message: string, };
+export type ImageRemovalOutcome = { "status": "removed" } | { "status": "in_use" } | { "status": "not_found" } | { "status": "failed", message: string, } | { "status": "unrecognized" };
 
 export type IngressHost = string;
 

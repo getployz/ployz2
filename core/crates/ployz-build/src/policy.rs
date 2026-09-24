@@ -131,8 +131,8 @@ impl Resources {
 
     pub(crate) fn collect_cache(&self, docker: &Docker<'_>) -> Result<(), BuildError> {
         let min_free_bytes = match (self.cache_bytes, self.min_free_bytes) {
-            // ponytail: an unreadable Docker root (remote endpoint, non-root user)
-            // skips this prune; the worker's percentage policy still applies.
+            // An unreadable Docker root (remote endpoint, non-root user) skips this
+            // prune; the worker's percentage policy still applies on its own GC.
             (None, None) => match docker_root_total_bytes(docker) {
                 Some(total) => Some(total / 100 * DEFAULT_MIN_FREE_PERCENT),
                 None => return Ok(()),

@@ -4,10 +4,7 @@
 //! candidates. This client chooses them; each Machine removes only what it is told
 //! and refuses anything a Container uses.
 
-use std::{
-    collections::BTreeMap,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use ployz_core::{
     DescribeContractRequest, DiskSpace, ImageCleanupReport, ImageSummary, ListImagesRequest,
@@ -70,7 +67,7 @@ pub async fn prune_images(client: &Client, targets: &[PruneTarget]) -> ImageClea
         |(machine_id, repositories)| async move {
             let result = match tokio::time::timeout(
                 MACHINE_TIMEOUT,
-                clean(client, machine_id, repositories),
+                clean(client, machine_id, &repositories),
             )
             .await
             {
@@ -92,7 +89,7 @@ pub async fn prune_images(client: &Client, targets: &[PruneTarget]) -> ImageClea
 async fn clean(
     client: &Client,
     machine_id: MachineId,
-    repositories: Vec<&str>,
+    repositories: &[&str],
 ) -> Result<MachineCleanupResult, RpcError> {
     let target = MachineTarget::from(&machine_id);
     let contract = client
@@ -101,13 +98,9 @@ async fn clean(
     if !contract.supports(REMOVE_IMAGES_CAPABILITY) {
         return Ok(MachineCleanupResult::Unsupported);
     }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
-        });
+    let now = chrono::Utc::now().timestamp();
     let mut references = Vec::new();
-    for repository in repositories {
+    for &repository in repositories {
         let store = client
             .invoke::<op::ListImages>(
                 ListImagesRequest {
@@ -154,7 +147,7 @@ fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i6
         })
         .collect::<Vec<_>>();
     // Newest first; an unknown tag time sorts oldest.
-    unused.sort_by(|left, right| right.0.cmp(&left.0));
+    unused.sort_by_key(|(tagged, _)| std::cmp::Reverse(*tagged));
     let keep = if pressure { KEEP_UNDER_PRESSURE } else { KEEP };
     unused
         .into_iter()

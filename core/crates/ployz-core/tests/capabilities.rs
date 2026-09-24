@@ -144,6 +144,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.volume.inspect.v1",
             "ployz.volume.remove.v1",
             "ployz.image.list.v1",
+            "ployz.image.remove.v1",
             "ployz.image.ingest.ensure.v1",
             "ployz.image.pull-from-machine.v1",
             "ployz.container.log-history.v1",

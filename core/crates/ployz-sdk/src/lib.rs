@@ -503,15 +503,12 @@ impl DeployPreviewHandle {
             .map(|id| id.parse::<ployz_core::DeploymentLogId>())
             .transpose()
             .map_err(|error| Error::from_reason(error.to_string()))?;
-        let cleanup = match image_cleanup.as_deref() {
-            None | Some("auto") => sdk::ImageCleanup::Auto,
-            Some("manual") => sdk::ImageCleanup::Manual,
-            Some(other) => {
-                return Err(invalid_argument(format!(
-                    "imageCleanup must be \"auto\" or \"manual\", not {other:?}"
-                )));
-            }
-        };
+        let cleanup = image_cleanup
+            .as_deref()
+            .map(str::parse::<sdk::ImageCleanup>)
+            .transpose()
+            .map_err(rpc_to_napi)?
+            .unwrap_or_default();
         let inner = self
             .inner
             .confirm_with_log_id(deployment_id, cleanup)

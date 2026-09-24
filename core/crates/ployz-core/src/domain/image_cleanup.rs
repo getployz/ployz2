@@ -20,12 +20,14 @@ pub struct ImageCleanupReport {
     pub machines: Vec<MachineImageCleanup>,
 }
 
+/// One Machine's Image Cleanup result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineImageCleanup {
     pub machine_id: MachineId,
     pub result: MachineCleanupResult,
 }
 
+/// Whether a Machine cleaned up, could not, or did not answer.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum MachineCleanupResult {

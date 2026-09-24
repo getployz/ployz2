@@ -492,19 +492,29 @@ pub struct ImagesRemoved {
     pub results: Vec<ImageRemoval>,
 }
 
+/// What happened to one requested reference.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ImageRemoval {
     pub reference: String,
     pub outcome: ImageRemovalOutcome,
 }
 
+/// Per-reference removal result. Open: a status this build does not know decodes as
+/// `unrecognized`, so a newer Machine never breaks an older client's whole report.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ImageRemovalOutcome {
+    /// The reference no longer exists on this Machine.
     Removed,
+    /// A Container, running or not, uses the image; it was kept.
     InUse,
+    /// The Machine had no such reference.
     NotFound,
+    /// Docker refused for another reason; the reference may remain.
     Failed { message: String },
+    /// A status introduced after this build.
+    #[serde(other)]
+    Unrecognized,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -796,6 +806,7 @@ pub struct MachineImages {
     pub docker_root: Option<DiskSpace>,
 }
 
+/// One filesystem's size and free bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiskSpace {
     pub total_bytes: u64,

@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 
 import { projectRuntimeOutcome } from "@ployz/sdk/config";
-import type { DeployEvent, DeployIntent, PreparedDeploy, PruneTarget } from "@ployz/sdk";
+import type { DeployEvent, DeployIntent, ImageRemovalOutcome, PreparedDeploy, PruneTarget } from "@ployz/sdk";
 import { Cause, Data, Effect, Exit, Redacted, Schema } from "effect";
 import { eq } from "drizzle-orm";
 import { environmentDeployment } from "./tables";
@@ -333,6 +333,8 @@ export const executeEnvironmentDeployment = Effect.fn(
   }));
 });
 
+const cleanOutcomes: ReadonlySet<ImageRemovalOutcome["status"]> = new Set(["removed", "in_use", "not_found"]);
+
 /**
  * Image Cleanup after the Environment slot is released. Never fails and never
  * changes the Deployment status; a problem is a muted warning.
@@ -341,13 +343,14 @@ export const cleanUpDeploymentImages = Effect.fn("Deployments.cleanUpDeploymentI
   function* (environmentDeploymentId: string) {
     const context = yield* loadDeploymentContext(environmentDeploymentId);
     const cleanup = context?.deployment.runtimeProgress?.imageCleanup;
-    if (!context || cleanup?.state !== "running" || !cleanup.targets?.length) return;
+    if (!context || cleanup?.state !== "running") return;
     // SAFETY: these targets were written from the SDK's own PruneTarget list; MachineId is only a brand.
     const targets = cleanup.targets as readonly PruneTarget[];
     const clean = yield* connectedRuntime(context.organization.id).pipe(
       Effect.flatMap((sdk) => sdk.pruneImages(targets)),
-      Effect.map((report) => report.machines.every(({ result }) => result.status === "unsupported"
-        || (result.status === "cleaned" && result.removals.every(({ outcome }) => outcome.status !== "failed")))),
+      // Unsupported and unanswered Servers were not cleaned; say so rather than hide it.
+      Effect.map((report) => report.machines.every(({ result }) =>
+        result.status === "cleaned" && result.removals.every(({ outcome }) => cleanOutcomes.has(outcome.status)))),
       Effect.orElseSucceed(() => false),
     );
     yield* persistImageCleanup(environmentDeploymentId, { state: clean ? "cleaned" : "warning", machines: cleanup.machines });

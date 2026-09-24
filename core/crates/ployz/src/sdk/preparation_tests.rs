@@ -165,8 +165,31 @@ async fn automatic_image_cleanup_reports_last_and_manual_cleanup_stays_silent() 
             }
         }
         session.close().await;
+        assert_eq!(
+            session
+                .prune_images(prepared.prune_targets())
+                .await
+                .unwrap_err()
+                .code,
+            RpcErrorCode::Unavailable
+        );
         server.abort();
     }
+}
+
+#[test]
+fn image_cleanup_mode_rejects_unknown_spellings() {
+    assert_eq!(
+        "manual".parse::<crate::sdk::ImageCleanup>().unwrap(),
+        crate::sdk::ImageCleanup::Manual
+    );
+    assert_eq!(
+        "later"
+            .parse::<crate::sdk::ImageCleanup>()
+            .unwrap_err()
+            .code,
+        RpcErrorCode::InvalidArgument
+    );
 }
 
 #[tokio::test]

@@ -1,10 +1,50 @@
 //! Prepared deployment execution and its owned progress stream.
-use super::{ImageCleanup, PreparedDeploy, RunningDeploy, Session, closed, invalid_argument};
+use super::{PreparedDeploy, RunningDeploy, Session, closed, invalid_argument};
 use crate::deploy::DeployPreview;
 use ployz_core::{DeployEvent, DeployOutcome, ExecutionError, RpcError, RpcErrorCode};
 use serde_json::Value;
 use std::{ops::Deref, sync::atomic::Ordering};
 use tokio::sync::{Mutex, mpsc};
+
+/// Who runs Image Cleanup for a confirmed Deploy.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ImageCleanup {
+    /// Clean up after the Outcome, before the Deploy finishes.
+    #[default]
+    Auto,
+    /// The caller runs [`Session::prune_images`] with the prune targets.
+    Manual,
+}
+
+impl std::str::FromStr for ImageCleanup {
+    type Err = RpcError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "manual" => Ok(Self::Manual),
+            other => Err(invalid_argument(format!(
+                "imageCleanup must be \"auto\" or \"manual\", not {other:?}"
+            ))),
+        }
+    }
+}
+
+impl Session {
+    /// Remove superseded build images from each target Machine. Per-Machine failures
+    /// are results, never errors.
+    ///
+    /// # Errors
+    /// Returns when the session is closed.
+    pub async fn prune_images(
+        &self,
+        targets: &[ployz_core::PruneTarget],
+    ) -> Result<ployz_core::ImageCleanupReport, RpcError> {
+        let client = self.client()?;
+        self.until_closed(async { Ok(crate::image::prune_images(&client, targets).await) })
+            .await
+    }
+}
 
 impl PreparedDeploy {
     /// Private completed Build evidence for a later preparation; not runtime truth.
@@ -96,14 +136,10 @@ impl PreparedDeploy {
                 }),
                 outcome = client.confirm(&preview, &token, Some(tx)) => outcome,
             };
-            if !prune_targets.is_empty() && !token.is_cancelled() {
-                tokio::select! {
-                    biased;
-                    () = session_cancel.cancelled() => {}
-                    report = crate::image::prune_images(&client, &prune_targets) => {
-                        let _ = events.send(DeployEvent::ImagesPruned { report });
-                    }
-                }
+            if !token.is_cancelled() {
+                session_cancel
+                    .run_until_cancelled(clean_up(&client, &prune_targets, &events))
+                    .await;
             }
             Ok(outcome)
         });
@@ -113,6 +149,19 @@ impl PreparedDeploy {
             join: Mutex::new(Some(join)),
         })
     }
+}
+
+/// Automatic Image Cleanup: report it as the last event, after the Outcome.
+async fn clean_up(
+    client: &crate::connect::Client,
+    targets: &[ployz_core::PruneTarget],
+    events: &mpsc::UnboundedSender<DeployEvent>,
+) {
+    if targets.is_empty() {
+        return;
+    }
+    let report = crate::image::prune_images(client, targets).await;
+    let _ = events.send(DeployEvent::ImagesPruned { report });
 }
 
 impl Deref for PreparedDeploy {

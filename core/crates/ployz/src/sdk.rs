@@ -31,6 +31,7 @@ mod logs;
 mod payloads;
 mod preparation;
 pub(crate) mod prepare;
+pub use deploy::ImageCleanup;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
 pub use preparation::{BuildReceipt, PreparationInput};
 
@@ -78,16 +79,6 @@ pub struct PreparedDeploy {
     confirmed: AtomicBool,
     retained: std::sync::Mutex<Option<Vec<crate::build::BuiltService>>>,
     prune_targets: Vec<ployz_core::PruneTarget>,
-}
-
-/// Who runs Image Cleanup for a confirmed Deploy.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ImageCleanup {
-    /// Clean up after the Outcome, before the Deploy finishes.
-    #[default]
-    Auto,
-    /// The caller runs [`Session::prune_images`] with the prune targets.
-    Manual,
 }
 
 type DeployTask = tokio::task::JoinHandle<Result<DeployOutcome<ExecutionError>, RpcError>>;
@@ -344,20 +335,6 @@ impl Session {
             buffered,
             join: Mutex::new(Some(join)),
         })
-    }
-
-    /// Remove superseded build images from each target Machine. Per-Machine failures
-    /// are results, never errors.
-    ///
-    /// # Errors
-    /// Returns when the session is closed.
-    pub async fn prune_images(
-        &self,
-        targets: &[ployz_core::PruneTarget],
-    ) -> Result<ployz_core::ImageCleanupReport, RpcError> {
-        let client = self.client()?;
-        self.until_closed(async { Ok(crate::image::prune_images(&client, targets).await) })
-            .await
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.

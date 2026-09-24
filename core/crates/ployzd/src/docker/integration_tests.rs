@@ -21,8 +21,8 @@ use bollard::{
 };
 use futures_util::TryStreamExt;
 use ployz_core::{
-    AdvertisedEndpoint, CreateVolumeRequest, DockerVolumeId, MachineGateway, MachineName,
-    ManagementAddress, ProjectName, PullPolicy, ResolvedServiceSpec,
+    AdvertisedEndpoint, CreateVolumeRequest, DockerVolumeId, ImageRemoval, ImageRemovalOutcome,
+    MachineGateway, MachineName, ManagementAddress, ProjectName, PullPolicy, ResolvedServiceSpec,
 };
 use tokio_util::sync::CancellationToken;
 

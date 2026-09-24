@@ -21,10 +21,12 @@ function Step({ title, detail, state, children }: { title: string; detail: strin
 // Finishing-up work after the Deployment is terminal: deliberately quiet, never a status.
 function ImageCleanupLine({ cleanup }: { cleanup: NonNullable<DeploymentProgress["imageCleanup"]> }) {
   const machines = `${cleanup.machines} ${cleanup.machines === 1 ? "Server" : "Servers"}`;
-  return <p className="flex items-center gap-2 px-4 py-1.5 text-xs text-muted-foreground sm:px-6">
-    {cleanup.state === "running" ? <Spinner className="size-3" /> : cleanup.state === "warning" ? <TriangleAlertIcon className="size-3" /> : <CheckIcon className="size-3" />}
-    {cleanup.state === "running" ? "Cleaning up old images…" : cleanup.state === "warning" ? `Old image cleanup incomplete · ${machines}` : `Cleaned up old images · ${machines}`}
-  </p>;
+  const [icon, text] = {
+    running: [<Spinner className="size-3" />, "Cleaning up old images…"],
+    warning: [<TriangleAlertIcon className="size-3" />, `Old image cleanup incomplete · ${machines}`],
+    cleaned: [<CheckIcon className="size-3" />, `Cleaned up old images · ${machines}`],
+  }[cleanup.state];
+  return <p className="flex items-center gap-2 px-4 py-1.5 text-xs text-muted-foreground sm:px-6">{icon}{text}</p>;
 }
 export function summarizeRows(rows: readonly DeploymentProgressRow[]) {
   const replicas = rows.filter((r) => r.operation === "replace_container" || r.operation === "run_container");
