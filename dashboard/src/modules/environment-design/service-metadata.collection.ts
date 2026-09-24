@@ -3,7 +3,7 @@ import { createOptimisticAction } from "@tanstack/react-db";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getRawServicesCollection } from "#/collections/collections";
-import { observeFailure } from "./environment-document-edit";
+import { observeFailure } from "#/collections/query-collection";
 import { editServiceMetadataServerFn } from "./service-metadata.functions";
 import type { ServiceMetadataEdit } from "./service-metadata";
 

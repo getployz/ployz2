@@ -1,10 +1,19 @@
+// @vitest-environment jsdom
 import { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import { preloadCollection } from "#/collections/query-collection";
 import { getDbClient } from "#/collections/scope";
-import { editEnvironmentDocument } from "./environment-document-edit";
+import { renderHook } from "@testing-library/react";
+import * as scopes from "#/collections/use-collection-scope";
+import type { CollectionScope } from "#/collections/scope";
+import { editEnvironmentDocument, useEnvironmentDocumentQueue } from "./environment-document-edit";
+
+function getEditorForTest(scope: CollectionScope) {
+  vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
+  return renderHook(() => useEnvironmentDocumentQueue("acme")).result.current;
+}
 import { emptyEnvironmentIntent } from "./saved-intent";
 
 
@@ -88,4 +97,24 @@ it("keeps the queue on the last saved revision when a queued save fails", async 
   await expect(two.isPersisted.promise).rejects.toThrow("Invalid");
   await three.isPersisted.promise;
   expect(saves).toEqual(["r1", "r2", "r2"]);
+});
+
+it("runs an enqueued command after queued edits, against their revision, and settles only when all are done", async () => {
+  const test = await setup();
+  const scope = test.scope;
+  const first = deferred<{ data: never }>();
+  editEnvironmentDocument("acme", scope, { environmentId: "env", apply: test.rename("a"), failureMessage: "x", save: () => first.promise });
+  const discard = vi.fn(async (revision: string) => test.saved(revision === "r2" ? "r3" : "stale", "data"));
+  const { enqueue, settled } = getEditorForTest(scope);
+  const discarded = enqueue({ environmentId: "env", save: discard, failureMessage: "x" });
+  let isSettled = false;
+  const settling = settled("env").then(() => { isSettled = true; });
+  await Promise.resolve();
+  expect(discard).not.toHaveBeenCalled();
+  expect(isSettled).toBe(false);
+  first.resolve(test.saved("r2", "a"));
+  await discarded.isPersisted.promise;
+  await settling;
+  expect(discard).toHaveBeenCalledWith("r2");
+  expect(test.environments.get("env")?.revision).toBe("r3");
 });

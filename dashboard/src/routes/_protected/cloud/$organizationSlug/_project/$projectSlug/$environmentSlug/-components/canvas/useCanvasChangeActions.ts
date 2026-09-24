@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useEnvironmentDocumentEditor, useEnvironmentDocumentSettled } from "#/modules/environment-design/environment-document-edit";
-import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
+import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import { discardEnvironmentChangesServerFn } from "#/modules/environment-design/working-document-restore.functions";
 import type { DiscardEnvironmentChangesInput } from "#/modules/environment-design/working-document-restore";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -69,16 +69,17 @@ export function useCanvasChangeActions({
 }: UseCanvasChangeActionsInput) {
   const [reviewAction, setReviewAction] = useState<"save" | "deploy">("save");
   const collectionScope = useCollectionScope();
-  const document = useEnvironmentDocument(params.organizationSlug, environmentId);
+  // Read at call time: after queued edits settle, the render-time document is stale.
   function workingReview() {
+    const document = documents.get(environmentId);
     if (!document) throw new Error("Environment is not loaded.");
     return projectReviewedEnvironmentWorkingState(document);
   }
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const editDocument = useEnvironmentDocumentEditor(params.organizationSlug);
-  // Publishing reviews the saved working state, so pending edits must land first.
-  const documentSettled = useEnvironmentDocumentSettled(params.organizationSlug);
+  // Discard runs in the document save queue; publishing reviews the saved working state, so queued edits land first.
+  const queue = useEnvironmentDocumentQueue(params.organizationSlug);
+  const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
   const runtime = useRuntimeLens(params.organizationSlug);
   const deployTargetPreflight = getDeployTargetPreflight({
     status: runtime.status,
@@ -123,9 +124,8 @@ export function useCanvasChangeActions({
   // Discarding queues behind in-flight edits so it saves against their revision; the editor toasts failures.
   async function discardChanges(command: DiscardEnvironmentChangesInput["command"]) {
     try {
-      await editDocument({
+      await queue.enqueue({
         environmentId,
-        apply: () => {},
         save: (revision) => discard({ data: {
           organizationSlug: params.organizationSlug, environmentId, revision,
           savedStateBasis, headToken: changeState.headToken, command,
@@ -186,7 +186,7 @@ export function useCanvasChangeActions({
       return;
     }
     try {
-      await documentSettled(environmentId);
+      await queue.settled(environmentId);
       await publicationMutation.mutateAsync({
         intent: action === "deploy" ? "manual_deploy" : "save",
         review: {
@@ -210,7 +210,7 @@ export function useCanvasChangeActions({
   }
 
   async function prepareDestructiveReview() {
-    await documentSettled(environmentId);
+    await queue.settled(environmentId);
     const reviewedMutation = {
       savedStateBasis,
       workingStateFingerprint:
