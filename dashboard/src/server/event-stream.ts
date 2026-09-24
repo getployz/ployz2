@@ -24,7 +24,7 @@ export function eventStreamResponse(
   const aborted = new Promise<"aborted">((resolve) => signal.addEventListener("abort", () => resolve("aborted"), { once: true }));
   let finished: Promise<void> | undefined;
   const finish = () => finished ??= (async () => {
-    void iterator.return?.();
+    void iterator.return?.()?.catch(() => {});
     await options.onClose?.();
   })();
   signal.addEventListener("abort", () => void finish(), { once: true });

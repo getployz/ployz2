@@ -187,7 +187,7 @@ it.effect("a logged pairing change closes only sessions whose pairing was remove
         : { kind: "ready" as const, generation: state, connections };
     }), {
       current: Effect.succeed("0"),
-      since: (organizationId, since) => {
+      changedSince: (organizationId, since) => {
         reads += 1;
         if (unreadable.has(organizationId)) return Effect.fail(new OrganizationChangeLogFailure({ cause: "log unavailable" }));
         const result = { cursor: `${Number(since) + 1}`, changed: changed.has(organizationId) };

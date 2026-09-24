@@ -60,7 +60,7 @@ type LoadConnections = (
 /** The change log as a session watches its pairing: where to start, and whether `organization_pairing` changed since. */
 export type PairingChanges = {
   readonly current: Effect.Effect<string, OrganizationChangeLogFailure>;
-  readonly since: (
+  readonly changedSince: (
     organizationId: string,
     since: string,
   ) => Effect.Effect<{ readonly cursor: string; readonly changed: boolean }, OrganizationChangeLogFailure>;
@@ -98,7 +98,7 @@ export function makeOrganizationRuntimeLayer(
       const watchPairing = (organizationId: string, session: Session, since: string) => {
         let cursor = since;
         return Effect.gen(function* () {
-          const changes = yield* pairingChanges.since(organizationId, cursor);
+          const changes = yield* pairingChanges.changedSince(organizationId, cursor);
           cursor = changes.cursor;
           if (!changes.changed) return;
           const access = yield* loadConnections(organizationId);
@@ -188,7 +188,7 @@ export const OrganizationRuntimeLive = Layer.unwrap(
       ),
       {
         current: currentChangeCursor().pipe(Effect.provideService(Database, database)),
-        since: (organizationId, since) => readChangeWindow({
+        changedSince: (organizationId, since) => readChangeWindow({
           organizationId, since, sourceTables: ["organization_pairing"],
         }).pipe(
           Effect.map((window) => ({ cursor: window.cursor, changed: window.kind === "full" || window.sourceTables.length > 0 })),

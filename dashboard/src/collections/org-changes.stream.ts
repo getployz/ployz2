@@ -11,7 +11,7 @@ import { organizationKeys } from "#/modules/environment-design/workspace.queries
 const orgChangesEventSchema = Schema.Struct({ collections: Schema.Array(changeNameSchema) });
 const decodeOrgChangesEvent = Schema.decodeUnknownOption(Schema.fromJsonString(orgChangesEventSchema));
 
-export function buildOrgChangesUrl(organizationSlug: string) {
+function buildOrgChangesUrl(organizationSlug: string) {
   const link = linkOptions({ to: "/api/org/changes", search: { organizationSlug } });
   return `${link.to}?${new URLSearchParams(link.search).toString()}`;
 }
