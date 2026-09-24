@@ -1,11 +1,11 @@
-import timers from "node:timers/promises";
+import { setTimeout as sleep } from "node:timers/promises";
 import { Effect, Schema } from "effect";
 import { changeCursorSchema, type ChangeName } from "#/collections/read.contract";
 import { publicErrorResponse } from "#/server/public-error";
 
 export type OrgChangesHandlerDeps = {
   /** Refuses non-members. */
-  authorize: (input: { request: Request; organizationSlug: string }) => Promise<{ organizationId: string }>;
+  authorize: (organizationSlug: string) => Promise<{ organizationId: string }>;
   /** Collections changed since `since`, and the cursor to read from next. No `since` starts at now. */
   readChanges: (input: { organizationId: string; since: string | undefined }) => Promise<{
     cursor: string;
@@ -26,7 +26,7 @@ const isCursor = Schema.is(changeCursorSchema);
 export async function handleOrgChangesRequest(request: Request, organizationSlug: string, deps: OrgChangesHandlerDeps) {
   let organizationId: string;
   try {
-    ({ organizationId } = await deps.authorize({ request, organizationSlug }));
+    ({ organizationId } = await deps.authorize(organizationSlug));
   } catch (cause) {
     return publicErrorResponse(cause);
   }
@@ -55,6 +55,18 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
   });
 }
 
+type Changes = Awaited<ReturnType<OrgChangesHandlerDeps["readChanges"]>>;
+
+/** The event a poll sends, if any; a quiet stream still pings so proxies keep it open. */
+function eventFor(changes: Changes, resuming: boolean, sinceLastWrite: number) {
+  if (resuming && changes.expired) return `id: ${changes.cursor}\nevent: reset\ndata: {}\n\n`;
+  if (changes.collections.length > 0) {
+    return `id: ${changes.cursor}\nevent: changes\ndata: ${JSON.stringify({ collections: changes.collections })}\n\n`;
+  }
+  if (sinceLastWrite >= PING_MS) return ": ping\n\n";
+  return undefined;
+}
+
 // ponytail: one poll loop per open stream; move to one loop per instance if open tabs reach the thousands.
 async function* orgChangeEvents(organizationId: string, resumeFrom: string | undefined, deps: OrgChangesHandlerDeps, signal: AbortSignal) {
   yield "retry: 1000\n\n";
@@ -69,17 +81,13 @@ async function* orgChangeEvents(organizationId: string, resumeFrom: string | und
     });
     // Ending the stream makes EventSource reconnect from its last event id.
     if (!changes) return;
-    const event = resuming && changes.expired
-      ? `id: ${changes.cursor}\nevent: reset\ndata: {}\n\n`
-      : changes.collections.length > 0
-        ? `id: ${changes.cursor}\nevent: changes\ndata: ${JSON.stringify({ collections: changes.collections })}\n\n`
-        : Date.now() - lastWrite >= PING_MS ? ": ping\n\n" : undefined;
+    const event = eventFor(changes, resuming, Date.now() - lastWrite);
     if (event) {
       yield event;
       lastWrite = Date.now();
     }
     cursor = changes.cursor;
     resuming = false;
-    await timers.setTimeout(POLL_MS, undefined, { signal }).catch(() => {});
+    await sleep(POLL_MS, undefined, { signal }).catch(() => {});
   }
 }
