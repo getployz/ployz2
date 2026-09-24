@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { collectionsOf, sourceTablesOf } from "./change-sources";
-import { pruneChangeLog, readChangeWindow } from "./changes.server";
+import { pruneChangeLog, readChangeWindow } from "#/modules/organization/change-log.server";
 import { readCollection } from "./read.server";
 import type { CollectionName, CollectionRead } from "./read.contract";
 import { orgStoreTableNames } from "#/test/org-store-tables";
@@ -53,9 +53,7 @@ describe("incremental Service reads from the Organization change log", () => {
   }
 
   async function cursorNow(organization: Organization) {
-    const snapshot = await read(organization);
-    if (snapshot.cursor === null) throw new Error("service reads carry a change cursor");
-    return snapshot.cursor;
+    return (await read(organization)).cursor;
   }
 
   beforeAll(async () => {
@@ -80,11 +78,11 @@ describe("incremental Service reads from the Organization change log", () => {
     const betaChanges = await read(beta, since);
     expect(betaChanges).toMatchObject({ full: false, deleted: [], rows: [] });
     // Nothing changed, yet the cursor still moves forward.
-    expect(BigInt(betaChanges.cursor ?? "0")).toBeGreaterThan(BigInt(since));
+    expect(BigInt(betaChanges.cursor)).toBeGreaterThan(BigInt(since));
     // The change stream's reader sees no tables for the other Organization.
     expect(await harness.runEffect(readChangeWindow({ organizationId: beta.id, since })))
       .toMatchObject({ sourceTables: [], changed: [], deleted: [] });
-    const quiet = await read(alpha, alphaChanges.cursor ?? undefined);
+    const quiet = await read(alpha, alphaChanges.cursor);
     expect(quiet).toMatchObject({ full: false, deleted: [], rows: [] });
   });
 
@@ -129,7 +127,7 @@ describe("incremental Service reads from the Organization change log", () => {
       expect(held.rows.map((row) => row.name)).toEqual(["first"]);
 
       await newer.query("commit");
-      const released = await read(alpha, held.cursor ?? undefined);
+      const released = await read(alpha, held.cursor);
       expect(released.rows.map((row) => row.name).sort()).toEqual(["second", "third"]);
     } finally {
       await newer.query("rollback").catch(() => undefined);
@@ -151,6 +149,17 @@ describe("incremental Service reads from the Organization change log", () => {
 
       await harness.runEffect(pruneChangeLog());
 
+      expect(await loggedXids()).toEqual([newest]);
+    });
+
+    it("keeps the newest logged transaction when every change is older than 24 hours", async () => {
+      await createServices(alpha, [`quiet-${randomUUID().slice(0, 8)}`]);
+      await ageAll();
+      const [newest] = (await loggedXids()).slice(-1);
+
+      await harness.runEffect(pruneChangeLog());
+
+      // A quiet log keeps its fence, so recent cursors stay incremental instead of reading in full.
       expect(await loggedXids()).toEqual([newest]);
     });
 
@@ -270,7 +279,6 @@ describe("every Org Store collection reads its changes from the Organization cha
     const full = await read(table);
     expect(full.rows.length).toBeGreaterThan(0);
     for (const source of sourceTablesOf(table)) {
-      if (full.cursor === null) throw new Error("Org Store reads carry a change cursor");
       // A no-op update logs every key of the table, so the incremental read must find every row by that key.
       await sql(`update ${source} set organization_id = organization_id where organization_id = $1`, [organizationId]);
       const changes = await read(table, full.cursor);
@@ -280,7 +288,7 @@ describe("every Org Store collection reads its changes from the Organization cha
   });
 
   it("moves a deployment's progress when an event is logged", async () => {
-    const since = (await read("environment_deployment")).cursor ?? undefined;
+    const since = (await read("environment_deployment")).cursor;
     await sql("insert into environment_deployment_event (organization_id, deployment_id, progress) values ($1, $2, '{\"stage\": \"building\"}')",
       [organizationId, deploymentId]);
     expect(await read("environment_deployment", since)).toMatchObject({
@@ -289,7 +297,7 @@ describe("every Org Store collection reads its changes from the Organization cha
   });
 
   it("keeps this member's project preference when another member's for the same project is deleted", async () => {
-    const since = (await read("project_preference")).cursor ?? undefined;
+    const since = (await read("project_preference")).cursor;
     await sql("delete from user_project_preference where user_id = $1", [otherUserId]);
     // The client drops the deleted key, then upserts the rows, so this member's preference survives.
     expect(await read("project_preference", since)).toMatchObject({

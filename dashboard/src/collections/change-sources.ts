@@ -1,12 +1,9 @@
-import type { CollectionName } from "./read.contract";
-
-/** What a change stream event names: an Org Store collection, or `organization` for the organization state read. */
-export type ChangeName = Exclude<CollectionName, "github_repository_cache"> | "organization";
+import type { ChangeName } from "./read.contract";
 
 /**
  * The one map from a change-log source table to the names it feeds. Every organization-owned table
  * is here, with the key columns its trigger logs (joined with ':'); tables no client reads feed nothing.
- * One key per table means collections sharing a table share its key.
+ * One key per table means collections sharing a table share its key, and collection reads match it.
  */
 export const changeSources = {
   organization: { key: ["id"], feeds: ["organization"] },
@@ -46,13 +43,16 @@ export const changeSources = {
   variable_secret: { key: ["variable_id"], feeds: [] },
 } satisfies Record<string, { key: readonly string[]; feeds: readonly ChangeName[] }>;
 
-const sources: [string, { key: readonly string[]; feeds: readonly ChangeName[] }][] = Object.entries(changeSources);
+export type ChangeSource = keyof typeof changeSources;
 
-export function sourceTablesOf(name: CollectionName | ChangeName) {
+// SAFETY: changeSources is an object literal, so its own keys are exactly ChangeSource.
+const sources = Object.entries(changeSources) as [ChangeSource, { key: readonly string[]; feeds: readonly ChangeName[] }][];
+
+export function sourceTablesOf(name: ChangeName) {
   return sources.filter(([, source]) => source.feeds.some((feed) => feed === name)).map(([table]) => table);
 }
 
-export function collectionsOf(sourceTables: Iterable<string>) {
+export function collectionsOf(sourceTables: Iterable<ChangeSource>) {
   const tables = new Set(sourceTables);
   return [...new Set(sources.filter(([table]) => tables.has(table)).flatMap(([, source]) => source.feeds))];
 }
