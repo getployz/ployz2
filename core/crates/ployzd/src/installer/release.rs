@@ -21,8 +21,9 @@ use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion};
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
 const CHANNEL_URL: &str = "https://ployz.sh";
-/// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
+/// This daemon's major version, which names its release line.
 const RELEASE_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
+/// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
 const RELEASE_LINE: &str = concat!("v", env!("CARGO_PKG_VERSION_MAJOR"));
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
