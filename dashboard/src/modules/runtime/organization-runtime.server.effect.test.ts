@@ -9,6 +9,8 @@ import {
   PAIRING_CHANGE_POLL,
   OrganizationRuntime,
 } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
+import { noPairingChanges } from "#/test/organization-runtime";
 import { makePloyzLayer, PloyzProviderError } from "#/modules/runtime/ployz.server";
 
 const connections: Connection[] = [
@@ -32,6 +34,7 @@ it.effect("passes ordered candidates to one SDK connection and finalizes the ses
     });
     const runtime = makeOrganizationRuntimeLayer(() =>
       Effect.succeed({ kind: "ready", generation: "grant-1", connections }),
+      noPairingChanges,
     ).pipe(Layer.provide(ployz));
 
     yield* Effect.scoped(
@@ -57,9 +60,11 @@ it.effect("keeps missing pairing distinct from empty candidates without dialing"
     });
     const missing = makeOrganizationRuntimeLayer(() =>
       Effect.succeed({ kind: "missing" }),
+      noPairingChanges,
     ).pipe(Layer.provide(ployz));
     const unreachable = makeOrganizationRuntimeLayer(() =>
       Effect.succeed({ kind: "ready", generation: "grant-1", connections: [] }),
+      noPairingChanges,
     ).pipe(Layer.provide(ployz));
     const open = Effect.scoped(
       Effect.flatMap(OrganizationRuntime, (runtime) => runtime.open("org-1")),
@@ -77,6 +82,7 @@ it.effect("reports a saved single candidate as unreachable when SDK negotiation 
     let dialed = 0;
     const runtime = makeOrganizationRuntimeLayer(() =>
       Effect.succeed({ kind: "ready", generation: "grant-1", connections: connections.slice(0, 1) }),
+      noPairingChanges,
     ).pipe(Layer.provide(makePloyzLayer({
       connect: async () => { dialed += 1; throw failure; },
     })));
@@ -97,7 +103,7 @@ it.effect("cancels only sessions of the removed organization and pairing generat
     let closed = 0;
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
       kind: "ready", generation: "current", connections,
-    })).pipe(Layer.provide(makePloyzLayer({
+    }), noPairingChanges).pipe(Layer.provide(makePloyzLayer({
       connect: async () => asTestDouble<Client>()({ close: async () => { closed += 1; } }),
     })));
     yield* Effect.scoped(Effect.gen(function* () {
@@ -124,7 +130,7 @@ it.effect("removal during candidate load prevents dialing the removed generation
       yield* Deferred.succeed(loading, undefined);
       yield* Deferred.await(loaded);
       return { kind: "ready" as const, generation: "current", connections };
-    })).pipe(Layer.provide(makePloyzLayer({
+    }), noPairingChanges).pipe(Layer.provide(makePloyzLayer({
       connect: async () => { dialed += 1; throw new Error("must not dial"); },
     })));
     yield* Effect.scoped(Effect.gen(function* () {
@@ -145,7 +151,7 @@ it.effect("removal aborts an in-progress SDK connection", () =>
     let aborted = false;
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
       kind: "ready", generation: "current", connections,
-    })).pipe(Layer.provide(makePloyzLayer({
+    }), noPairingChanges).pipe(Layer.provide(makePloyzLayer({
       connect: (options) => new Promise<Client>((_resolve, reject) => {
         if (!("connections" in options)) throw new Error("expected shared connector");
         options.signal?.addEventListener("abort", () => {
@@ -179,7 +185,7 @@ it.effect("a logged pairing change closes only sessions whose pairing was remove
         ? { kind: "missing" as const }
         : { kind: "ready" as const, generation: state, connections };
     }), (organizationId, since) => {
-      if (unreadable.has(organizationId)) return Effect.fail(new Error("log unavailable"));
+      if (unreadable.has(organizationId)) return Effect.fail(new OrganizationChangeLogFailure({ cause: "log unavailable" }));
       const result = { cursor: `${Number(since ?? 0) + 1}`, changed: changed.has(organizationId) };
       changed.delete(organizationId);
       return Effect.succeed(result);
@@ -220,7 +226,7 @@ it.effect("a delayed removal during loading does not cancel a replacement pairin
       yield* Deferred.succeed(loading, undefined);
       yield* Deferred.await(loaded);
       return { kind: "ready" as const, generation: "replacement", connections };
-    })).pipe(Layer.provide(makePloyzLayer({
+    }), noPairingChanges).pipe(Layer.provide(makePloyzLayer({
       connect: async () => asTestDouble<Client>()({ close: async () => { closed += 1; } }),
     })));
     yield* Effect.scoped(Effect.gen(function* () {
@@ -244,7 +250,7 @@ it.effect("dials only the requested saved Machine and refuses an unknown Machine
     const dialed: unknown[] = [];
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
       kind: "ready", generation: "current", connections: [...connections, candidate],
-    })).pipe(Layer.provide(makePloyzLayer({
+    }), noPairingChanges).pipe(Layer.provide(makePloyzLayer({
       connect: async (options) => {
         if (!("connections" in options)) throw new Error("expected shared connector");
         dialed.push(options.connections);
@@ -266,7 +272,7 @@ it.effect("bounds the connect phase and reports a hung handshake as unreachable"
     let aborted = false;
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
       kind: "ready", generation: "current", connections,
-    })).pipe(Layer.provide(makePloyzLayer({
+    }), noPairingChanges).pipe(Layer.provide(makePloyzLayer({
       connect: (options) => new Promise<Client>((_resolve, reject) => {
         options.signal?.addEventListener("abort", () => {
           aborted = true;

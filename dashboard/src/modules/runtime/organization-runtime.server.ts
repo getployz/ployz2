@@ -9,7 +9,7 @@ import {
 import {
   loadOrganizationConnections,
 } from "#/modules/machines/connections.server";
-import { readChangeWindow } from "#/collections/changes.server";
+import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
@@ -58,14 +58,14 @@ type LoadConnections = (
 >;
 
 /** Whether `organization_pairing` changed for the Organization since `since`, and the next cursor. */
-type ReadPairingChanges = (
+export type ReadPairingChanges = (
   organizationId: string,
   since: string | undefined,
-) => Effect.Effect<{ readonly cursor: string; readonly changed: boolean }, Error>;
+) => Effect.Effect<{ readonly cursor: string; readonly changed: boolean }, OrganizationChangeLogFailure>;
 
 export function makeOrganizationRuntimeLayer(
   loadConnections: LoadConnections,
-  readPairingChanges: ReadPairingChanges = () => Effect.succeed({ cursor: "0", changed: false }),
+  readPairingChanges: ReadPairingChanges,
 ) {
   return Layer.effect(
     OrganizationRuntime,

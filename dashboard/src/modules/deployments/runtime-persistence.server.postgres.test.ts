@@ -12,6 +12,7 @@ import { GithubApi } from "#/modules/github/github-observation.api";
 import { asTestDouble } from "#/lib/test-double";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-runtime.server";
+import { noPairingChanges } from "#/test/organization-runtime";
 import { cleanUpDeploymentImages, executeEnvironmentDeployment, executeLatestEnvironmentDeployment } from "./runtime-activities.server";
 import { markDeploymentCancelled, requestDeploymentCancellation } from "./runtime-cancellation.repository.server";
 import { loadDeploymentBuildLog, loadDeploymentEvents, persistBuildLog, persistDeploymentProgress } from "./deployment-events.server";
@@ -222,7 +223,7 @@ describe("deployment runtime persistence", () => {
       },
       close: async () => undefined,
     });
-    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }), noPairingChanges)
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     for (const image of ["redis:7", "redis:8", "redis:9"]) {
       const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
@@ -317,7 +318,7 @@ describe("deployment runtime persistence", () => {
       preview: async () => { confirmed += 1; throw new Error("Preparation failure must never preview/confirm"); },
       close: async () => undefined,
     });
-    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }), noPairingChanges)
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const config = projectServiceDeploymentConfig({ source: createGitServiceSource({ repository: "owner/repo", repositoryId: 42, access: { type: "github-installation", installationId: 17  }}),
       privateDns: "api", managedHostnames: [{ prefix: "api", targetPort: null }], preDeployCommand: null, startCommand: null, healthcheck: createDefaultServiceHealthcheck(), restartPolicy: createDefaultServiceRestartPolicy() });
@@ -376,7 +377,7 @@ describe("deployment runtime persistence", () => {
     const client = asTestDouble<Client>()({ preview: async () => prepared, close: async () => { closed = true; } });
     const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
       kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }],
-    })).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
+    }), noPairingChanges).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
       Effect.provide(runtime), Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }), Effect.provideService(InngestClient, new Inngest({ id: "runtime-persistence-test" })), Effect.provideService(SecretEncryption, encryption),
     ));
@@ -423,7 +424,7 @@ describe("deployment runtime persistence", () => {
       .where(eq(schema.environmentDeployment.id, admitted.id));
     const confirm = vi.fn(() => { throw new Error("Cancelled work must not execute"); });
     const client = asTestDouble<Client>()({ preview: async () => asTestDouble<PreparedDeploy>()({ ...preview(), pruneTargets: [], confirm }), close: async () => {} });
-    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }] }))
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }] }), noPairingChanges)
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const result = await harness.runEffect(Effect.scoped(executeLatestEnvironmentDeployment(admitted.id)).pipe(
       Effect.provide(runtime), Effect.provideService(GithubApi, { json: () => Effect.die("Image deploy must not fetch Git"), archive: () => Effect.die("Image deploy must not fetch Git") }), Effect.provideService(SecretEncryption, encryption), Effect.provideService(InngestClient, new Inngest({ id: "cancel-test" })),
@@ -453,7 +454,7 @@ describe("deployment runtime persistence", () => {
       },
       close: async () => { closing(); await cleanup; },
     });
-    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }), noPairingChanges)
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const running = harness.runEffect(executeLatestEnvironmentDeployment(admitted.id).pipe(Effect.scoped, Effect.provide(runtime),
       Effect.provideService(GithubApi, { json: () => Effect.die("No Git expected"), archive: () => Effect.die("No Git expected") }),
@@ -488,7 +489,7 @@ describe("deployment runtime persistence", () => {
       preview: async () => asTestDouble<PreparedDeploy>()({ ...preview(), pruneTargets: [target], confirm }),
       pruneImages, close: async () => {},
     });
-    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }))
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "grant", connections: [{ management: "ployz1:test" }] }), noPairingChanges)
       .pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
     const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.scoped, Effect.provide(runtime),
       Effect.provideService(GithubApi, { json: () => Effect.die("No Git expected"), archive: () => Effect.die("No Git expected") }),
