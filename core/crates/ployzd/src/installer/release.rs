@@ -22,6 +22,7 @@ use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion};
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
 const CHANNEL_URL: &str = "https://ployz.sh";
 /// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
+const RELEASE_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
 const RELEASE_LINE: &str = concat!("v", env!("CARGO_PKG_VERSION_MAJOR"));
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
@@ -83,7 +84,7 @@ impl ReleaseSource {
 }
 
 /// Resolve `request` to one exact target. A channel never selects a release older than the
-/// `installed` daemon; only an exact version moves a Machine backwards.
+/// `installed` daemon or on another release line; only an exact version does either.
 pub(super) async fn resolve_release(
     request: &MachineRelease,
     source: &ReleaseSource,
@@ -95,6 +96,11 @@ pub(super) async fn resolve_release(
         MachineRelease::Beta => ("beta", true),
     };
     let pointer = parse_channel_version(&source.channel(channel).await?)?;
+    if pointer.major().to_string() != RELEASE_MAJOR {
+        return Err(Error::ReleaseSelection(format!(
+            "{RELEASE_LINE} {channel} channel points at {pointer} on another release line"
+        )));
+    }
     if pointer.is_prerelease() && !allows_prerelease {
         return Err(Error::ReleaseSelection(format!(
             "stable channel points at prerelease {pointer}"
@@ -420,48 +426,60 @@ mod tests {
 
     #[tokio::test]
     async fn channels_follow_this_line_and_never_downgrade() {
+        let version = |rest: &str| format!("{RELEASE_MAJOR}.{rest}");
         let root = tempfile::tempdir().unwrap();
         let source = ReleaseSource::Local(root.path().to_owned());
         let line = root.path().join(RELEASE_LINE);
         fs::create_dir_all(&line).unwrap();
         // The unscoped pointer belongs to the live installer and may name a newer line.
-        fs::write(root.path().join("stable"), "v9.0.0\n").unwrap();
-        fs::write(line.join("stable"), "v1.2.3\n").unwrap();
-        fs::write(line.join("beta"), "v1.3.0-beta.2\n").unwrap();
+        fs::write(root.path().join("stable"), "v99.0.0\n").unwrap();
+        fs::write(line.join("stable"), format!("v{}\n", version("2.3"))).unwrap();
+        fs::write(line.join("beta"), format!("v{}\n", version("3.0-beta.2"))).unwrap();
         let resolve = async |request: &MachineRelease, installed: Option<&str>| {
             let installed = installed.map(|version| MachineVersion::parse(version).unwrap());
             resolve_release(request, &source, installed.as_ref())
                 .await
                 .map(|version| version.to_string())
         };
+        let installed = version("2.10");
 
         assert_eq!(
             resolve(&MachineRelease::Stable, None).await.unwrap(),
-            "1.2.3"
+            version("2.3")
         );
         assert_eq!(
             resolve(&MachineRelease::Beta, None).await.unwrap(),
-            "1.3.0-beta.2"
+            version("3.0-beta.2")
         );
         assert_eq!(
-            resolve(&MachineRelease::Stable, Some("1.2.10"))
+            resolve(&MachineRelease::Stable, Some(&installed))
                 .await
                 .unwrap(),
-            "1.2.10"
+            installed
         );
         assert_eq!(
-            resolve(&MachineRelease::Beta, Some("1.2.10"))
+            resolve(&MachineRelease::Beta, Some(&installed))
                 .await
                 .unwrap(),
-            "1.3.0-beta.2"
+            version("3.0-beta.2")
         );
-        let older = MachineRelease::Exact(MachineVersion::parse("1.0.0").unwrap());
-        assert_eq!(resolve(&older, Some("1.2.10")).await.unwrap(), "1.0.0");
+        let older = MachineRelease::Exact(MachineVersion::parse(version("0.0")).unwrap());
+        assert_eq!(
+            resolve(&older, Some(&installed)).await.unwrap(),
+            version("0.0")
+        );
 
-        fs::write(line.join("stable"), "v1.4.0-beta.1\n").unwrap();
+        fs::write(line.join("stable"), format!("v{}\n", version("4.0-beta.1"))).unwrap();
         assert!(matches!(
             resolve(&MachineRelease::Stable, None).await,
             Err(Error::ReleaseSelection(message)) if message.contains("prerelease")
+        ));
+
+        // A pointer misfiled under this line never moves a Machine onto another line.
+        fs::write(line.join("beta"), "v99.0.0\n").unwrap();
+        assert!(matches!(
+            resolve(&MachineRelease::Beta, None).await,
+            Err(Error::ReleaseSelection(message)) if message.contains("another release line")
         ));
     }
 

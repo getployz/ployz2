@@ -34,6 +34,12 @@ impl MachineVersion {
             .ok_or_else(|| ValueError::new("Machine version", value, "X.Y.Z or X.Y.Z-beta.N"))
     }
 
+    /// The release line: a breaking release starts a new major.
+    #[must_use]
+    pub fn major(&self) -> u64 {
+        self.0.major
+    }
+
     /// Whether this is an `X.Y.Z-beta.N` prerelease.
     #[must_use]
     pub fn is_prerelease(&self) -> bool {
