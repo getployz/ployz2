@@ -83,7 +83,7 @@ describe("incremental Service reads from the Organization change log", () => {
     expect(BigInt(betaChanges.cursor)).toBeGreaterThan(BigInt(since));
     // The change stream's reader sees no tables for the other Organization.
     expect(await harness.runEffect(readChangeWindow({ organizationId: beta.id, since })))
-      .toMatchObject({ sourceTables: [], changed: [], deleted: [] });
+      .toMatchObject({ kind: "delta", sourceTables: [], changed: [], deleted: [] });
     const quiet = await read(alpha, alphaChanges.cursor);
     expect(quiet).toMatchObject({ full: false, deleted: [], rows: [] });
   });
@@ -105,6 +105,9 @@ describe("incremental Service reads from the Organization change log", () => {
 
     const changes = await read(alpha, since);
     expect(changes.full).toBe(true);
+    // The window still names its tables, so the change stream refetches their collections.
+    expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since })))
+      .toMatchObject({ kind: "full", expired: false, sourceTables: expect.arrayContaining(["service"]) });
     expect(changes.rows.map((row) => row.id)).toEqual(expect.arrayContaining(created));
     expect(changes.rows.every((row) => row.organizationId === alpha.id)).toBe(true);
   });
@@ -204,8 +207,8 @@ describe("incremental Service reads from the Organization change log", () => {
       await sql("delete from organization_change");
 
       expect((await read(alpha, since)).full).toBe(true);
-      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since }))).toMatchObject({ expired: true });
-      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since: undefined }))).toMatchObject({ expired: false });
+      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since }))).toMatchObject({ kind: "full", expired: true });
+      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since: undefined }))).toMatchObject({ kind: "full", expired: false });
     });
   });
 });
@@ -288,7 +291,7 @@ describe("every Org Store collection reads its changes from the Organization cha
       await sql(`update ${source} set organization_id = organization_id where organization_id = $1`, [organizationId]);
       // The client keys its rows exactly as the log names them, so deletes and merges hit the right row.
       const window = await harness.runEffect(readChangeWindow({ organizationId, since: full.cursor, sourceTables: [source] }));
-      expect(window.changed, source).toEqual(expect.arrayContaining(clientKeys));
+      expect(window.kind === "delta" ? window.changed : [], source).toEqual(expect.arrayContaining(clientKeys));
       const changes = await read(table, full.cursor);
       expect(changes, source).toMatchObject({ full: false, deleted: [] });
       expect(serialized(changes.rows), source).toEqual(serialized(full.rows));

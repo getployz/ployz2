@@ -186,7 +186,7 @@ export const OrganizationRuntimeLive = Layer.unwrap(
       (organizationId, since) => readChangeWindow({
         organizationId, since, sourceTables: ["organization_pairing"],
       }).pipe(
-        Effect.map((window) => ({ cursor: window.cursor, changed: window.expired || window.sourceTables.length > 0 })),
+        Effect.map((window) => ({ cursor: window.cursor, changed: window.kind === "full" || window.sourceTables.length > 0 })),
         Effect.provideService(Database, database),
       ),
     );

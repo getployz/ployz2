@@ -107,7 +107,7 @@ export const readCollection = Effect.fn("Collections.read")(function* (
   const read = Effect.gen(function* (): Effect.fn.Return<CollectionRead<Row>, EffectDrizzleQueryError | OrganizationChangeLogFailure, Database> {
     // The window is read before the rows, so the rows are at least as new as its cursor.
     const window = yield* readChangeWindow({ organizationId: organization.id, since: data.since, sourceTables: changeNameSources[data.table] });
-    if (data.since === undefined || window.fullRead || window.expired) return { full: true, rows: yield* readRows(), cursor: window.cursor };
+    if (window.kind === "full") return { full: true, rows: yield* readRows(), cursor: window.cursor };
     // Deleted keys are re-read too: a key a filtered read shares with another user's row
     // (project preferences) can be deleted there and still exist here. The client drops, then upserts.
     const keys = [...new Set([...window.changed, ...window.deleted])];

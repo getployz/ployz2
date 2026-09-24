@@ -9,17 +9,15 @@ export class OrganizationChangeLogFailure extends Data.TaggedError("Organization
   readonly cause: unknown;
 }> {}
 
-/** Everything an Organization logged between `since` and `cursor`, merged across log rows. */
-export type ChangeWindow = {
-  cursor: string;
-  /** Retention deleted changes this window may need: read everything instead. */
-  expired: boolean;
-  sourceTables: ChangeSource[];
-  /** A logged statement touched too many rows to name them: read everything instead. */
-  fullRead: boolean;
-  changed: string[];
-  deleted: string[];
-};
+/**
+ * Everything an Organization logged between `since` and `cursor`, merged across log rows.
+ * `full` means read everything: there was no `since`, a logged statement touched too many rows
+ * to name them, or retention deleted changes the window may need (`expired`). Both kinds name
+ * the source tables that logged changes, so the change stream can still name their collections.
+ */
+export type ChangeWindow =
+  | { kind: "full"; cursor: string; expired: boolean; sourceTables: ChangeSource[] }
+  | { kind: "delta"; cursor: string; sourceTables: ChangeSource[]; changed: string[]; deleted: string[] };
 
 /**
  * The cursor is the xid horizon, not the seq: seq order is insert order, so a transaction
@@ -39,7 +37,14 @@ export const readChangeWindow = Effect.fn("OrganizationChangeLog.readWindow")(fu
   // Without `since` the reader starts at the horizon and sees no rows.
   const since = input.since ?? null;
   // Source tables are ChangeSource: only the triggers attached to changeSources' tables write the log.
-  const [window] = yield* database.drizzle.execute<ChangeWindow>(sql`
+  const [window] = yield* database.drizzle.execute<{
+    cursor: string;
+    expired: boolean;
+    sourceTables: ChangeSource[];
+    fullRead: boolean;
+    changed: string[];
+    deleted: string[];
+  }>(sql`
     with horizon as (select pg_snapshot_xmin(pg_current_snapshot()) as xid),
       logged as (select * from ${change} where ${and(
         eq(change.organizationId, input.organizationId),
@@ -55,7 +60,9 @@ export const readChangeWindow = Effect.fn("OrganizationChangeLog.readWindow")(fu
       array(select distinct unnest(deleted_ids) from logged) as "deleted"
   `, "objects").pipe(Effect.mapError((cause) => new OrganizationChangeLogFailure({ cause })));
   if (!window) return yield* new OrganizationChangeLogFailure({ cause: "The change window query returned no row." });
-  return window;
+  const { cursor, expired, sourceTables, changed, deleted } = window;
+  if (input.since === undefined || window.fullRead || expired) return { kind: "full", cursor, expired, sourceTables } satisfies ChangeWindow;
+  return { kind: "delta", cursor, sourceTables, changed, deleted } satisfies ChangeWindow;
 });
 
 /**
