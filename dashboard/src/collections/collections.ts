@@ -40,14 +40,12 @@ type EnvironmentNodeIntroductionRow =
 type VolumeRemoveAttemptRow = typeof schemaVolumeRemoveAttempt.$inferSelect;
 
 function collectionReadOptions<Row>(table: CollectionReadInput["table"], organizationSlug: string, scope: CollectionScope) {
-  const environmentSlug = ["project", "environment_summary", "project_preference", "github_repository_cache"].includes(table)
-    ? undefined : scope.environmentSlug;
   return {
     queryClient: scope.queryClient,
-    queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, table, ...(environmentSlug ? [environmentSlug] : [])],
+    queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, table],
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
       // SAFETY: each owner below pairs its literal allowlisted table with that table's database row type.
-      return await readCollectionServerFn({ data: { table, organizationSlug, environmentSlug, userId: scope.userId }, signal }) as Row[];
+      return await readCollectionServerFn({ data: { table, organizationSlug, userId: scope.userId }, signal }) as Row[];
     },
   };
 }
@@ -55,7 +53,6 @@ function collectionReadOptions<Row>(table: CollectionReadInput["table"], organiz
 export const getProjectsCollection = cachedByCollectionScope(
   (organizationSlug, scope) => createApiCollection<ProjectRow>({
     ...collectionReadOptions<ProjectRow>("project", organizationSlug, scope),
-    refetchInterval: false,
     getKey: (row) => row.id,
   }),
 );
@@ -146,13 +143,11 @@ export type ProjectPreference = { id: string; environmentId: string };
 export const getEnvironmentSummariesCollection = cachedByCollectionScope((organizationSlug, scope) =>
   createApiCollection<EnvironmentSummary>({
     ...collectionReadOptions<EnvironmentSummary>("environment_summary", organizationSlug, scope),
-    refetchInterval: false,
     getKey: row => row.id,
   }));
 
 export const getProjectPreferencesCollection = cachedByCollectionScope((organizationSlug, scope) =>
   createApiCollection<ProjectPreference>({
     ...collectionReadOptions<ProjectPreference>("project_preference", organizationSlug, scope),
-    refetchInterval: false,
     getKey: row => row.id,
   }));

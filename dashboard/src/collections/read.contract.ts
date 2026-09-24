@@ -9,7 +9,6 @@ export const collectionReadInput = Schema.Struct({
     "volume_remove_attempt", "github_repository_cache",
   ]),
   userId: Schema.String,
-  environmentSlug: Schema.optional(Schema.String),
   organizationSlug: Schema.optional(Schema.String),
 });
 

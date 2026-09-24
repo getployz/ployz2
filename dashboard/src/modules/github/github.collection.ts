@@ -3,8 +3,8 @@ import {
   type Collection,
   collectionOptions, liveQueryCollectionOptions, type DbClient,
 } from "@tanstack/react-db";
-import type { QueryClient } from "@tanstack/react-query";
-import { createApiCollection } from "#/collections/query-collection";
+import { skipToken, useQuery, type QueryClient } from "@tanstack/react-query";
+import { createApiCollection, preloadCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
 import type { GithubRepositorySelection } from "#/modules/github/github";
 import { githubRepositoryCache as schemaGithubRepositoryCache } from "#/modules/github/tables";
@@ -92,4 +92,14 @@ export function getGithubReposCollection(scope: GithubCollectionScope) {
   const entry = getScope(scope);
   entry.view ??= createGithubReposCollection(entry.raw, `${entry.raw.id}:view`, getDbClient(scope.queryClient));
   return entry.view;
+}
+
+/** Query state of the repository read; failed refreshes keep rows, so errors repaint from here. */
+export function useGithubReposReadState(scope: GithubCollectionScope) {
+  return useQuery({ queryKey: githubReposQueryKey(scope), queryFn: skipToken });
+}
+
+/** Start the repository read when a picker opens; failures surface through `useGithubReposReadState`. */
+export function preloadGithubRepos(scope: GithubCollectionScope) {
+  void preloadCollection(getRawGithubReposCollection(scope)).catch(() => {});
 }
