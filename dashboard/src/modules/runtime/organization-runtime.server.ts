@@ -1,19 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { Connection, MachineId } from "@ployz/sdk";
-import {
-  Cause,
-  Context,
-  Deferred,
-  Duration,
-  Effect,
-  Exit,
-  Layer,
-  Option,
-  Schedule,
-  Scope,
-  Schema,
-  Stream,
-} from "effect";
+import { Context, Deferred, Effect, Exit, Layer, Scope } from "effect";
 import {
   Ployz,
   PloyzProviderError,
@@ -22,24 +9,15 @@ import {
 import {
   loadOrganizationConnections,
 } from "#/modules/machines/connections.server";
+import { readChangeWindow } from "#/collections/changes.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
-export const PAIRING_REMOVAL_CHANNEL = "ployz_pairing_removed";
-
 /**
- * Backoff for re-establishing the pairing removal listener after its
- * connection drops: exponential from 250ms, jittered, then capped at 30s so
- * the cap is the true maximum.
+ * How often a connected session reads its Organization's change log for pairing changes.
+ * ponytail: one poll per session; move to one loop per instance when sessions reach the thousands.
  */
-export const PAIRING_REMOVAL_LISTENER_RETRY = Schedule.exponential("250 millis").pipe(
-  Schedule.jittered,
-  Schedule.modifyDelay(({ duration }) =>
-    Effect.succeed(Duration.min(duration, Duration.seconds(30))),
-  ),
-);
-
-const LISTENER_UNAVAILABLE = "Pairing removal listener is unavailable";
+export const PAIRING_CHANGE_POLL = "1 second";
 
 /**
  * Ceiling on establishing a shared organization session. The SDK's own
@@ -79,10 +57,15 @@ type LoadConnections = (
   Error
 >;
 
+/** Whether `organization_pairing` changed for the Organization since `since`, and the next cursor. */
+type ReadPairingChanges = (
+  organizationId: string,
+  since: string | undefined,
+) => Effect.Effect<{ readonly cursor: string; readonly changed: boolean }, Error>;
+
 export function makeOrganizationRuntimeLayer(
   loadConnections: LoadConnections,
-  subscribe: Effect.Effect<Stream.Stream<string, Error>, Error, Scope.Scope> =
-    Effect.succeed(Stream.never),
+  readPairingChanges: ReadPairingChanges = () => Effect.succeed({ cursor: "0", changed: false }),
 ) {
   return Layer.effect(
     OrganizationRuntime,
@@ -95,7 +78,6 @@ export function makeOrganizationRuntimeLayer(
         closed: boolean;
       };
       const sessions = new Map<string, Set<Session>>();
-      let listenerFailure: Error | undefined;
       const close = (session: Session) => Effect.suspend(() => {
         session.closed = true;
         return Scope.close(session.scope, Exit.void);
@@ -108,50 +90,30 @@ export function makeOrganizationRuntimeLayer(
           return session.generation === generation ? close(session) : Effect.void;
         }, { concurrency: "unbounded", discard: true });
       });
-      const removalSchema = Schema.fromJsonString(Schema.Struct({
-        organizationId: Schema.String,
-        generation: Schema.String,
-      }));
-      const closeAllSessions = Effect.suspend(() =>
-        Effect.forEach([...sessions.values()].flatMap((active) => [...active]), close, {
-          concurrency: "unbounded",
-          discard: true,
-        }),
+      // Removal disables the pairing (an update) before deleting it, so any pairing change
+      // re-checks it; only removal or a new generation closes the session.
+      const watchPairing = (organizationId: string, session: Session, since: string) => Effect.gen(function* () {
+        let cursor = since;
+        while (!session.closed) {
+          yield* Effect.sleep(PAIRING_CHANGE_POLL);
+          if (session.closed) return;
+          const changes = yield* readPairingChanges(organizationId, cursor);
+          cursor = changes.cursor;
+          if (!changes.changed) continue;
+          const access = yield* loadConnections(organizationId);
+          if (access.kind === "missing" || access.generation !== session.generation) return yield* close(session);
+        }
+      }).pipe(
+        // Removals are unobservable until the log is readable again, so fail closed.
+        Effect.catch((error) => Effect.logWarning("Pairing change check failed; closing the session.", error).pipe(
+          Effect.andThen(close(session)),
+        )),
       );
-      // The first LISTEN must succeed before the service is usable, so a
-      // broken database fails the layer instead of a runtime that can never
-      // observe removals. Later drops re-subscribe with backoff; while the
-      // listener is down, `open` fails closed and live sessions are closed,
-      // since removals during the gap were not observed.
-      const ready = yield* Deferred.make<void, Error>();
-      const listenOnce = Effect.scoped(Effect.gen(function* () {
-        const removals = yield* subscribe;
-        listenerFailure = undefined;
-        yield* Deferred.succeed(ready, undefined);
-        yield* Stream.runForEach(removals, (payload) => Schema.decodeUnknownEffect(removalSchema)(payload).pipe(
-          Effect.flatMap(({ organizationId, generation }) => cancel(organizationId, generation)),
-          Effect.catch((error) => Effect.logWarning("Ignoring a malformed pairing removal notification.", error)),
-        ));
-        return yield* Effect.fail(new Error("Pairing removal listener ended"));
-      })).pipe(
-        Effect.onExit((exit) => Effect.gen(function* () {
-          const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none();
-          listenerFailure = Option.isSome(failure) ? failure.value : new Error(LISTENER_UNAVAILABLE);
-          yield* Deferred.fail(ready, listenerFailure);
-          yield* closeAllSessions;
-        })),
-      );
-      yield* listenOnce.pipe(
-        Effect.tapError((error) => Effect.logWarning("Pairing removal listener dropped; reconnecting.", error)),
-        Effect.retry(PAIRING_REMOVAL_LISTENER_RETRY),
-        Effect.forkScoped,
-      );
-      yield* Deferred.await(ready);
       return {
         cancel,
         open: Effect.fn("OrganizationRuntime.open")(function* (organizationId: string, machineId?: MachineId) {
-          if (listenerFailure) return yield* Effect.fail(listenerFailure);
-          const scope = yield* Scope.fork(yield* Effect.scope);
+          const parent = yield* Effect.scope;
+          const scope = yield* Scope.fork(parent);
           const cancelled = yield* Deferred.make<void>();
           const session: Session = { scope, removed: new Set(), closed: false };
           const scopes = sessions.get(organizationId) ?? new Set<Session>();
@@ -167,7 +129,8 @@ export function makeOrganizationRuntimeLayer(
           }));
           const noConnection = { status: "no_connection" as const };
           return yield* Effect.gen(function* () {
-            if (listenerFailure) return yield* Effect.fail(listenerFailure);
+            // Taken before loading, so a change committed while loading is still seen.
+            const { cursor } = yield* readPairingChanges(organizationId, undefined);
             const access = yield* loadConnections(organizationId);
             if (session.closed || access.kind === "missing") return noConnection;
             session.generation = access.generation;
@@ -190,6 +153,8 @@ export function makeOrganizationRuntimeLayer(
                   cause: new Error("Connecting to the organization's machines timed out"),
                 })),
               }),
+              // Forked outside the session scope so the check can close that scope.
+              Effect.tap(() => Effect.forkIn(watchPairing(organizationId, session, cursor), parent)),
               Effect.map((connected) => session.closed ? noConnection : ({
                 status: "connected" as const,
                 connected,
@@ -219,7 +184,12 @@ export const OrganizationRuntimeLive = Layer.unwrap(
         Effect.provideService(Database, database),
         Effect.provideService(SecretEncryption, encryption),
       ),
-      database.subscribe(PAIRING_REMOVAL_CHANNEL),
+      (organizationId, since) => readChangeWindow({
+        organizationId, since, sourceTables: ["organization_pairing"],
+      }).pipe(
+        Effect.map((window) => ({ cursor: window.cursor, changed: window.expired || window.sourceTables.length > 0 })),
+        Effect.provideService(Database, database),
+      ),
     );
   }),
 );
