@@ -6,7 +6,7 @@
 use std::{
     collections::BTreeSet,
     fs, io,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use regex::Regex;
@@ -84,17 +84,20 @@ fn railpack_rules(
     let invalid = |message: &str| Error::Invalid(message.into());
     let default = Path::new("railpack.json");
     let config = config.unwrap_or(default);
+    // Go's `filepath.IsLocal`: relative, and still inside once cleaned.
+    let cleaned = clean(&config.to_string_lossy());
     if config.as_os_str().is_empty()
-        || !config
-            .components()
-            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+        || cleaned.starts_with('/')
+        || cleaned == ".."
+        || cleaned.starts_with("../")
     {
         return Err(invalid(
             "Railpack configuration must stay inside build.context",
         ));
     }
-    let path = context.join(config);
-    let mut kept = vec![PathBuf::from(clean(&config.to_string_lossy()))];
+    // Go's `filepath.Join` cleans lexically, as Railpack does.
+    let path = context.join(&cleaned);
+    let mut kept = vec![PathBuf::from(cleaned)];
     match path.canonicalize() {
         Ok(resolved) => kept.push(
             resolved
@@ -516,6 +519,26 @@ mod tests {
         assert!(!keep.exception_can_match_descendant(Path::new("other")));
         let wildcard = matcher(&["cache", "!**/keep"]);
         assert!(wildcard.exception_can_match_descendant(Path::new("other")));
+    }
+
+    #[test]
+    fn railpack_config_must_stay_local_once_cleaned() {
+        let context = tempfile::tempdir().unwrap();
+        let context = context.path().canonicalize().unwrap();
+        fs::write(context.join("railpack.json"), "{}").unwrap();
+        for (config, local) in [
+            ("config/../railpack.json", true),
+            ("./railpack.json", true),
+            ("../railpack.json", false),
+            ("config/../../railpack.json", false),
+            ("/railpack.json", false),
+        ] {
+            assert_eq!(
+                railpack_rules(&context, Some(Path::new(config))).is_ok(),
+                local,
+                "{config}"
+            );
+        }
     }
 
     #[test]

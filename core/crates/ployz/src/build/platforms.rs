@@ -168,17 +168,12 @@ mod tests {
         let platforms = |captured: &CapturedBuild, name: &str| {
             captured
                 .targets()
-                .into_iter()
                 .find(|target| target.name == name)
                 .unwrap()
                 .platforms
+                .clone()
         };
-        assert!(
-            captured
-                .targets()
-                .iter()
-                .all(|target| target.platforms.is_empty())
-        );
+        assert!(captured.targets().all(|target| target.platforms.is_empty()));
         captured.cover_machines(&intent, &machines).unwrap();
         assert_eq!(platforms(&captured, "pinned"), ["linux/amd64"]);
         assert_eq!(

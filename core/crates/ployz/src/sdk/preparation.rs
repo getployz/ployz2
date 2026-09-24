@@ -243,7 +243,7 @@ mod tests {
             build_receipts: BTreeMap::new(),
         })
         .unwrap();
-        assert!(captured.build.targets().is_empty());
+        assert!(captured.build.targets().next().is_none());
         let dependencies = captured.intent.dependencies();
         assert_eq!(
             dependencies

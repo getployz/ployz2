@@ -155,7 +155,7 @@ pub async fn prepare(
     progress: impl Fn(Progress),
 ) -> Result<Prepared, PreparationError> {
     let mut builds = Vec::new();
-    if !build.targets().is_empty() {
+    if build.targets().next().is_some() {
         let mut machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
         let applied = intent.applied_names();
         if intent.target.iter().any(|spec| {
@@ -171,7 +171,7 @@ pub async fn prepare(
         builds = build
             .reuse_images(client, &intent, &machines, reusable, cancellation)
             .await;
-        let targets = build.targets();
+        let targets = build.to_targets();
         let platforms = targets
             .iter()
             .flat_map(|target| target.platforms.iter().cloned())

@@ -249,12 +249,14 @@ struct CapturedRecipe {
 
 impl CapturedBuild {
     /// Images still to produce, with the platforms each must carry.
+    pub fn targets(&self) -> impl Iterator<Item = &ployz_build::Target> {
+        self.targets.iter().map(|captured| &captured.target)
+    }
+
+    /// Owned copies of [`Self::targets`], for requests that carry them.
     #[must_use]
-    pub fn targets(&self) -> Vec<ployz_build::Target> {
-        self.targets
-            .iter()
-            .map(|captured| captured.target.clone())
-            .collect()
+    pub fn to_targets(&self) -> Vec<ployz_build::Target> {
+        self.targets().cloned().collect()
     }
 
     /// Run each Build in order on one resolved Machine over the authenticated
@@ -269,7 +271,7 @@ impl CapturedBuild {
         cancellation: tokio_util::sync::CancellationToken,
         progress: impl Fn(Progress),
     ) -> Result<Vec<BuiltService>, Error> {
-        let targets = self.targets();
+        let targets = self.to_targets();
         let mut work = WorkEvidence::new(&targets);
         let mut completed = Vec::new();
         for captured in self.targets {

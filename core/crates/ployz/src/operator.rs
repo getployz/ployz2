@@ -308,7 +308,9 @@ pub fn parse_log_time(value: &str, now_unix_seconds: i64) -> Result<Option<i64>,
                 .map(|time| time.timestamp())
         })
         .or_else(|| {
-            go_duration(value).map(|duration| now_unix_seconds - duration.as_secs() as i64)
+            go_duration(value)
+                .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+                .map(|seconds| now_unix_seconds - seconds)
         });
     timestamp
         .map(Some)
