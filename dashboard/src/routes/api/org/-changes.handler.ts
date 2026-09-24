@@ -1,6 +1,6 @@
-import { Schema } from "effect";
-import { changeCursorSchema } from "#/collections/read.contract";
-import { publicErrorResponse, Validation } from "#/server/public-error";
+import { Effect, Schema } from "effect";
+import { changeCursorSchema, type ChangeName } from "#/collections/read.contract";
+import { publicErrorResponse } from "#/server/public-error";
 
 export type OrgChangesHandlerDeps = {
   /** Refuses non-members. */
@@ -10,7 +10,7 @@ export type OrgChangesHandlerDeps = {
     cursor: string;
     /** Retention deleted changes after `since`. */
     expired: boolean;
-    collections: string[];
+    collections: ChangeName[];
   }>;
 };
 
@@ -30,52 +30,18 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
     return publicErrorResponse(cause);
   }
   const lastEventId = request.headers.get("Last-Event-ID");
-  let cursor = lastEventId !== null && isCursor(lastEventId) ? lastEventId : undefined;
-  // Only the resume can be expired; a live cursor is always recent, and an empty log would reset every poll.
-  let resuming = cursor !== undefined;
+  const cancelled = new AbortController();
+  const events = orgChangeEvents(organizationId, lastEventId !== null && isCursor(lastEventId) ? lastEventId : undefined, deps,
+    AbortSignal.any([request.signal, cancelled.signal]));
   const encoder = new TextEncoder();
-  let stop = (_closeController: boolean) => {};
   const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      let closed = false;
-      let pollTimer: ReturnType<typeof setTimeout> | undefined;
-      const write = (chunk: string) => {
-        if (!closed) controller.enqueue(encoder.encode(chunk));
-      };
-      const pingTimer = setInterval(() => write(": ping\n\n"), PING_MS);
-      const abort = () => stop(true);
-      stop = (closeController) => {
-        if (closed) return;
-        closed = true;
-        clearTimeout(pollTimer);
-        clearInterval(pingTimer);
-        request.signal.removeEventListener("abort", abort);
-        if (closeController) controller.close();
-      };
-      // ponytail: one poll loop per open stream; move to one loop per instance if open tabs reach the thousands.
-      const poll = async () => {
-        try {
-          const changes = await deps.readChanges({ organizationId, since: cursor });
-          if (resuming && changes.expired) {
-            write(`id: ${changes.cursor}\nevent: reset\ndata: {}\n\n`);
-          } else if (changes.collections.length > 0) {
-            write(`id: ${changes.cursor}\nevent: changes\ndata: ${JSON.stringify({ collections: changes.collections })}\n\n`);
-          }
-          cursor = changes.cursor;
-          resuming = false;
-        } catch (cause) {
-          // EventSource reconnects from its last event id.
-          console.error("[org-changes] change log read failed", cause);
-          stop(true);
-        }
-        if (!closed) pollTimer = setTimeout(() => void poll(), POLL_MS);
-      };
-      request.signal.addEventListener("abort", abort, { once: true });
-      write("retry: 1000\n\n");
-      void poll();
+    async pull(controller) {
+      const next = await events.next();
+      if (next.done) controller.close();
+      else controller.enqueue(encoder.encode(next.value));
     },
     cancel() {
-      stop(false);
+      cancelled.abort();
     },
   });
   return new Response(stream, {
@@ -88,6 +54,42 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
   });
 }
 
-export function orgChangesValidationError() {
-  return new Validation({ message: "A valid organization slug is required" });
+// ponytail: one poll loop per open stream; move to one loop per instance if open tabs reach the thousands.
+async function* orgChangeEvents(organizationId: string, resumeFrom: string | undefined, deps: OrgChangesHandlerDeps, signal: AbortSignal) {
+  yield "retry: 1000\n\n";
+  let cursor = resumeFrom;
+  // Only the resume can be expired; a live cursor is always recent, and an empty log would reset every poll.
+  let resuming = cursor !== undefined;
+  let lastWrite = Date.now();
+  while (!signal.aborted) {
+    let changes: Awaited<ReturnType<OrgChangesHandlerDeps["readChanges"]>>;
+    try {
+      changes = await deps.readChanges({ organizationId, since: cursor });
+    } catch (cause) {
+      // Ending the stream makes EventSource reconnect from its last event id.
+      Effect.runFork(Effect.logError("Organization change log read failed.", cause));
+      return;
+    }
+    if (resuming && changes.expired) {
+      yield `id: ${changes.cursor}\nevent: reset\ndata: {}\n\n`;
+      lastWrite = Date.now();
+    } else if (changes.collections.length > 0) {
+      yield `id: ${changes.cursor}\nevent: changes\ndata: ${JSON.stringify({ collections: changes.collections })}\n\n`;
+      lastWrite = Date.now();
+    } else if (Date.now() - lastWrite >= PING_MS) {
+      yield ": ping\n\n";
+      lastWrite = Date.now();
+    }
+    cursor = changes.cursor;
+    resuming = false;
+    await new Promise<void>((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, POLL_MS);
+      signal.addEventListener("abort", wake, { once: true });
+    });
+  }
 }

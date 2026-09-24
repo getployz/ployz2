@@ -64,8 +64,12 @@ it("starts at the current horizon without a valid Last-Event-ID", async () => {
     authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
     readChanges,
   });
+  if (!response.body) throw new Error("The change stream has no body");
+  const reader = response.body.getReader();
+  // The stream is pulled: reading the retry line lets it poll.
+  expect(new TextDecoder().decode((await reader.read()).value)).toBe("retry: 1000\n\n");
   await vi.waitFor(() => expect(readChanges).toHaveBeenCalledWith({ organizationId: "org-1", since: undefined }));
-  await response.body?.cancel();
+  await reader.cancel();
 });
 
 it("sends reset when resuming below the retention fence, then streams changes normally", async () => {
@@ -105,3 +109,13 @@ async function readStream(response: Response, until: string) {
   await reader.cancel();
   return text;
 }
+
+it("ends the stream when the change log can't be read, so EventSource reconnects", async () => {
+  const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>().mockRejectedValue(new Error("database down"));
+  const response = await handleOrgChangesRequest(request(), "acme", {
+    authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
+    readChanges,
+  });
+  expect(await response.text()).toBe("retry: 1000\n\n");
+  expect(readChanges).toHaveBeenCalledOnce();
+});

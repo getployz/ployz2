@@ -21,7 +21,7 @@ it("refetches every change-log collection on reset", async () => {
   vi.stubGlobal("EventSource", FakeEventSource);
   const queryClient = new QueryClient();
   const scope = { queryClient, sessionId: "session", userId: "user" };
-  const refetches = Object.values(changeCollections).map((get) => vi.spyOn(get("acme", scope).utils, "refetch").mockResolvedValue([]));
+  const refetches = [...changeCollections.values()].map((get) => vi.spyOn(get("acme", scope).utils, "refetch").mockResolvedValue([]));
   const stop = watchOrganizationChanges("acme", scope);
   try {
     FakeEventSource.latest?.dispatchEvent(new MessageEvent("reset", { data: "{}" }));
@@ -38,7 +38,7 @@ it("refetches only the named collections and re-reads a renamed organization's s
   const scope = { queryClient, sessionId: "session", userId: "user" };
   for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([]));
   queryClient.setQueryData(organizationKeys.state("acme"), { name: "Acme" });
-  const active = Object.values(changeCollections).map((get) => get("acme", scope).subscribeChanges(() => {}));
+  const active = [...changeCollections.values()].map((get) => get("acme", scope).subscribeChanges(() => {}));
   const fetched: unknown[] = [];
   queryClient.getQueryCache().subscribe((event) => {
     if (event.type === "updated" && event.action.type === "fetch") fetched.push(event.query.queryKey.at(-1));
