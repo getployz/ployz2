@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
 import { collectionsOf } from "#/collections/change-sources";
-import { readChangeWindow } from "#/modules/organization/change-log.server";
+import { currentChangeCursor, readChangeWindow } from "#/modules/organization/change-log.server";
 import { organizationSlugSchema } from "#/modules/organization/tables";
 import { authorizeRuntimeOrganization } from "#/modules/runtime/authorize-runtime-organization.server";
 import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
@@ -21,6 +21,7 @@ export const Route = createFileRoute("/api/org/changes")({
         return handleOrgChangesRequest(request, search.value.organizationSlug, {
           authorize: (organizationSlug) =>
             runAppEffect(authorizeRuntimeOrganization({ headers: request.headers, organizationSlug }), { signal: request.signal }),
+          currentCursor: () => runAppEffect(currentChangeCursor(), { signal: request.signal }),
           readChanges: (input) =>
             runAppEffect(readChangeWindow(input).pipe(
               Effect.map((window) => ({ cursor: window.cursor, expired: window.expired, collections: collectionsOf(window.sourceTables) })),

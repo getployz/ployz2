@@ -5,6 +5,9 @@ import type { ChangeSource } from "#/modules/organization/change-log.sources";
 import { organizationChange as change } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 
+/** The xid horizon: every transaction below it has finished. */
+const horizon = sql`pg_snapshot_xmin(pg_current_snapshot())`;
+
 export class OrganizationChangeLogFailure extends Data.TaggedError("OrganizationChangeLogFailure")<{
   readonly cause: unknown;
 }> {}
@@ -45,7 +48,7 @@ export const readChangeWindow = Effect.fn("OrganizationChangeLog.readWindow")(fu
     changed: string[];
     deleted: string[];
   }>(sql`
-    with horizon as (select pg_snapshot_xmin(pg_current_snapshot()) as xid),
+    with horizon as (select ${horizon} as xid),
       logged as (select * from ${change} where ${and(
         eq(change.organizationId, input.organizationId),
         gte(change.xid, sql`${since}::xid8`),
@@ -65,6 +68,15 @@ export const readChangeWindow = Effect.fn("OrganizationChangeLog.readWindow")(fu
   return { kind: "delta", cursor, expired: false, sourceTables, changed, deleted } satisfies ChangeWindow;
 });
 
+/** A cursor at the current horizon, so reading from it sees only changes that commit afterwards. */
+export const currentChangeCursor = Effect.fn("OrganizationChangeLog.currentCursor")(function* () {
+  const database = yield* Database;
+  const [row] = yield* database.drizzle.execute<{ cursor: string }>(sql`select ${horizon}::text as "cursor"`, "objects")
+    .pipe(Effect.mapError((cause) => new OrganizationChangeLogFailure({ cause })));
+  if (!row) return yield* new OrganizationChangeLogFailure({ cause: "The horizon query returned no row." });
+  return row.cursor;
+});
+
 /**
  * Deletes changes older than 24 hours by xid, never at or past the horizon, so every row
  * left is newer than every row deleted and readers need no watermark. The newest logged
@@ -78,6 +90,6 @@ export const pruneChangeLog = Effect.fn("OrganizationChangeLog.prune")(function*
   yield* database.drizzle.delete(change).where(and(
     lte(change.xid, sql`(${retentionFence})`),
     lt(change.xid, sql`(${newest})`),
-    lt(change.xid, sql`pg_snapshot_xmin(pg_current_snapshot())`),
+    lt(change.xid, horizon),
   )).pipe(Effect.mapError((cause) => new OrganizationChangeLogFailure({ cause })));
 });

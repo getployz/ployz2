@@ -36,7 +36,7 @@ it.each([
   ["anonymous", new Unauthorized(), 401],
   ["non-member", new NotFound({ message: "The organization was not found." }), 404],
 ])("refuses %s requests before reading the change log", async (_name, error, status) => {
-  const deps = { authorize: vi.fn().mockRejectedValue(error), readChanges: vi.fn() };
+  const deps = { authorize: vi.fn().mockRejectedValue(error), currentCursor: vi.fn(), readChanges: vi.fn() };
   const response = await handleOrgChangesRequest(request(), "acme", deps);
   expect(response.status).toBe(status);
   expect(deps.readChanges).not.toHaveBeenCalled();
@@ -49,7 +49,7 @@ it("resumes after Last-Event-ID, names changed collections, pings, and disables 
     .mockResolvedValueOnce({ cursor: "50", expired: false, collections: ["service"] })
     .mockResolvedValue({ cursor: "51", expired: false, collections: [] });
   const authorize = vi.fn().mockResolvedValue({ organizationId: "org-1" });
-  const response = await handleOrgChangesRequest(request({ "Last-Event-ID": "42" }), "acme", { authorize, readChanges });
+  const response = await handleOrgChangesRequest(request({ "Last-Event-ID": "42" }), "acme", { authorize, currentCursor: vi.fn(), readChanges });
 
   expect(response.headers.get("Content-Type")).toBe("text/event-stream");
   expect(response.headers.get("X-Accel-Buffering")).toBe("no");
@@ -76,12 +76,13 @@ it("starts at the current horizon without a valid Last-Event-ID", async () => {
   const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>().mockResolvedValue({ cursor: "7", expired: false, collections: [] });
   const response = await handleOrgChangesRequest(request({ "Last-Event-ID": "not-a-cursor" }), "acme", {
     authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
+    currentCursor: vi.fn().mockResolvedValue("6"),
     readChanges,
   });
   const events = readEvents(response);
   // Reading the retry line lets the pulled stream poll.
   expect(await events.until("retry: 1000\n\n")).toBe("retry: 1000\n\n");
-  await vi.waitFor(() => expect(readChanges).toHaveBeenCalledWith({ organizationId: "org-1", since: undefined }));
+  await vi.waitFor(() => expect(readChanges).toHaveBeenCalledWith({ organizationId: "org-1", since: "6" }));
   await events.cancel();
 });
 
@@ -93,6 +94,7 @@ it("sends reset when resuming below the retention fence, then streams changes no
     .mockResolvedValue({ cursor: "92", expired: true, collections: [] });
   const response = await handleOrgChangesRequest(request({ "Last-Event-ID": "3" }), "acme", {
     authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
+    currentCursor: vi.fn().mockResolvedValue("6"),
     readChanges,
   });
   const events = readEvents(response);
@@ -108,6 +110,7 @@ it("replays normally when resuming at or above the retention fence", async () =>
     .mockResolvedValue({ cursor: "61", expired: false, collections: [] });
   const response = await handleOrgChangesRequest(request({ "Last-Event-ID": "55" }), "acme", {
     authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
+    currentCursor: vi.fn().mockResolvedValue("6"),
     readChanges,
   });
   const events = readEvents(response);
@@ -121,9 +124,21 @@ it("ends the stream when the change log can't be read, so EventSource reconnects
   const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>().mockRejectedValue(new Error("database down"));
   const response = await handleOrgChangesRequest(request(), "acme", {
     authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
+    currentCursor: vi.fn().mockResolvedValue("6"),
     readChanges,
   });
   // The stream ends instead of reaching a changes event.
   expect(await readEvents(response).until("event: changes")).toBe("retry: 1000\n\n");
   expect(readChanges).toHaveBeenCalledOnce();
+});
+
+it("ends the stream when the current horizon can't be read", async () => {
+  const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>();
+  const response = await handleOrgChangesRequest(request(), "acme", {
+    authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
+    currentCursor: vi.fn().mockRejectedValue(new Error("database down")),
+    readChanges,
+  });
+  expect(await readEvents(response).until("event: changes")).toBe("retry: 1000\n\n");
+  expect(readChanges).not.toHaveBeenCalled();
 });

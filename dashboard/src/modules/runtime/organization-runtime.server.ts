@@ -9,7 +9,7 @@ import {
 import {
   loadOrganizationConnections,
 } from "#/modules/machines/connections.server";
-import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
+import { currentChangeCursor, readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
@@ -57,15 +57,18 @@ type LoadConnections = (
   Error
 >;
 
-/** Whether `organization_pairing` changed for the Organization since `since`, and the next cursor. */
-export type ReadPairingChanges = (
-  organizationId: string,
-  since: string | undefined,
-) => Effect.Effect<{ readonly cursor: string; readonly changed: boolean }, OrganizationChangeLogFailure>;
+/** The change log as a session watches its pairing: where to start, and whether `organization_pairing` changed since. */
+export type PairingChanges = {
+  readonly current: Effect.Effect<string, OrganizationChangeLogFailure>;
+  readonly since: (
+    organizationId: string,
+    since: string,
+  ) => Effect.Effect<{ readonly cursor: string; readonly changed: boolean }, OrganizationChangeLogFailure>;
+};
 
 export function makeOrganizationRuntimeLayer(
   loadConnections: LoadConnections,
-  readPairingChanges: ReadPairingChanges,
+  pairingChanges: PairingChanges,
 ) {
   return Layer.effect(
     OrganizationRuntime,
@@ -95,7 +98,7 @@ export function makeOrganizationRuntimeLayer(
       const watchPairing = (organizationId: string, session: Session, since: string) => {
         let cursor = since;
         return Effect.gen(function* () {
-          const changes = yield* readPairingChanges(organizationId, cursor);
+          const changes = yield* pairingChanges.since(organizationId, cursor);
           cursor = changes.cursor;
           if (!changes.changed) return;
           const access = yield* loadConnections(organizationId);
@@ -129,7 +132,7 @@ export function makeOrganizationRuntimeLayer(
           const noConnection = { status: "no_connection" as const };
           return yield* Effect.gen(function* () {
             // Taken before loading, so a change committed while loading is still seen.
-            const { cursor } = yield* readPairingChanges(organizationId, undefined);
+            const cursor = yield* pairingChanges.current;
             const access = yield* loadConnections(organizationId);
             if (session.closed || access.kind === "missing") return noConnection;
             session.generation = access.generation;
@@ -183,12 +186,15 @@ export const OrganizationRuntimeLive = Layer.unwrap(
         Effect.provideService(Database, database),
         Effect.provideService(SecretEncryption, encryption),
       ),
-      (organizationId, since) => readChangeWindow({
-        organizationId, since, sourceTables: ["organization_pairing"],
-      }).pipe(
-        Effect.map((window) => ({ cursor: window.cursor, changed: window.kind === "full" || window.sourceTables.length > 0 })),
-        Effect.provideService(Database, database),
-      ),
+      {
+        current: currentChangeCursor().pipe(Effect.provideService(Database, database)),
+        since: (organizationId, since) => readChangeWindow({
+          organizationId, since, sourceTables: ["organization_pairing"],
+        }).pipe(
+          Effect.map((window) => ({ cursor: window.cursor, changed: window.kind === "full" || window.sourceTables.length > 0 })),
+          Effect.provideService(Database, database),
+        ),
+      },
     );
   }),
 );

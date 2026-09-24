@@ -185,12 +185,15 @@ it.effect("a logged pairing change closes only sessions whose pairing was remove
       return state === "missing" || state === undefined
         ? { kind: "missing" as const }
         : { kind: "ready" as const, generation: state, connections };
-    }), (organizationId, since) => {
-      reads += 1;
-      if (unreadable.has(organizationId)) return Effect.fail(new OrganizationChangeLogFailure({ cause: "log unavailable" }));
-      const result = { cursor: `${Number(since ?? 0) + 1}`, changed: changed.has(organizationId) };
-      changed.delete(organizationId);
-      return Effect.succeed(result);
+    }), {
+      current: Effect.succeed("0"),
+      since: (organizationId, since) => {
+        reads += 1;
+        if (unreadable.has(organizationId)) return Effect.fail(new OrganizationChangeLogFailure({ cause: "log unavailable" }));
+        const result = { cursor: `${Number(since) + 1}`, changed: changed.has(organizationId) };
+        changed.delete(organizationId);
+        return Effect.succeed(result);
+      },
     }).pipe(Layer.provide(makePloyzLayer({
       connect: async () => {
         const organizationId = dialing;

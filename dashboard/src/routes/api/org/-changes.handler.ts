@@ -7,8 +7,10 @@ import { publicErrorResponse } from "#/server/public-error";
 export type OrgChangesHandlerDeps = {
   /** Refuses non-members. */
   authorize: (organizationSlug: string) => Promise<{ organizationId: string }>;
-  /** Collections changed since `since`, and the cursor to read from next. No `since` starts at now. */
-  readChanges: (input: { organizationId: string; since: string | undefined }) => Promise<{
+  /** Where a stream without a resume point starts: the current horizon. */
+  currentCursor: () => Promise<string>;
+  /** Collections changed since `since`, and the cursor to read from next. */
+  readChanges: (input: { organizationId: string; since: string }) => Promise<{
     cursor: string;
     /** Retention deleted changes after `since`. */
     expired: boolean;
@@ -36,29 +38,24 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
     { heartbeatMs: 15_000, retryMs: 1000 });
 }
 
-type Changes = Awaited<ReturnType<OrgChangesHandlerDeps["readChanges"]>>;
-
-/** The event a poll sends, if any. */
-function eventFor(changes: Changes, resuming: boolean) {
-  if (resuming && changes.expired) return sseEvent({ id: changes.cursor, event: "reset", data: {} });
-  if (changes.collections.length > 0) return sseEvent({ id: changes.cursor, event: "changes", data: { collections: changes.collections } });
-  return undefined;
-}
-
 // ponytail: one poll loop per open stream; move to one loop per instance if open tabs reach the thousands.
 async function* orgChangeEvents(organizationId: string, resumeFrom: string | undefined, deps: OrgChangesHandlerDeps, signal: AbortSignal) {
-  let cursor = resumeFrom;
+  // Ending the stream on a failed read makes EventSource reconnect from its last event id.
+  const failed = (cause: unknown) => {
+    Effect.runFork(Effect.logError("Organization change log read failed.", cause));
+    return undefined;
+  };
   // Only the resume can be expired; a live cursor is always recent, and an empty log would reset every poll.
-  let resuming = cursor !== undefined;
-  while (!signal.aborted) {
-    const changes = await deps.readChanges({ organizationId, since: cursor }).catch((cause: unknown) => {
-      Effect.runFork(Effect.logError("Organization change log read failed.", cause));
-      return undefined;
-    });
-    // Ending the stream makes EventSource reconnect from its last event id.
+  let resuming = resumeFrom !== undefined;
+  let cursor = resumeFrom ?? await deps.currentCursor().catch(failed);
+  while (cursor !== undefined && !signal.aborted) {
+    const changes = await deps.readChanges({ organizationId, since: cursor }).catch(failed);
     if (!changes) return;
-    const event = eventFor(changes, resuming);
-    if (event) yield event;
+    if (resuming && changes.expired) {
+      yield sseEvent({ id: changes.cursor, event: "reset", data: {} });
+    } else if (changes.collections.length > 0) {
+      yield sseEvent({ id: changes.cursor, event: "changes", data: { collections: changes.collections } });
+    }
     cursor = changes.cursor;
     resuming = false;
     await sleep(POLL_MS, undefined, { signal }).catch(() => {});
