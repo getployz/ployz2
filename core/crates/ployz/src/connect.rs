@@ -749,6 +749,8 @@ impl ConnectError {
             Self::AllFailed {
                 setup_retryable, ..
             } => *setup_retryable,
+            // A socket-activated daemon accepts before it serves; setup waits it out.
+            Self::EntryNotReady { .. } => true,
             Self::SshProbe { detail, .. } => [
                 "Connection timed out",
                 "Operation timed out",

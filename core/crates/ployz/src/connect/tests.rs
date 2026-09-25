@@ -451,4 +451,6 @@ async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
         error.to_string().contains("may still be starting"),
         "{error}"
     );
+    assert!(!error.is_retryable(), "{error}");
+    assert!(error.is_setup_retryable(), "{error}");
 }
