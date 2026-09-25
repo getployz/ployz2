@@ -49,6 +49,8 @@ const DRAIN_EXEMPT: &[&str] = &[op::SetManagementClient::PATH];
 
 const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a revoked connection may take to drain and acknowledge before it closes.
+const REVOCATION_DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Where the management endpoint binds and which relay it uses.
 ///
@@ -287,20 +289,33 @@ where
     };
     // GOAWAY; once the remaining streams end, hyper finishes the QUIC stream.
     serving.as_mut().graceful_shutdown();
-    if let Err(error) = serving.await {
-        tracing::debug!(%error, "management connection failed while draining");
-    }
-    if let Ended::Revoked = ended {
-        // Closing discards unacknowledged data, so wait until the peer holds every
-        // byte, including the caller's own Clear response. A silent peer is bounded by
-        // the idle timeout, and its key can no longer run any RPC.
+    let drained = async {
+        if let Err(error) = serving.await {
+            tracing::debug!(%error, "management connection failed while draining");
+        }
+    };
+    let Ended::Revoked = ended else {
+        drained.await;
+        return ended;
+    };
+    // Closing discards unacknowledged data, so wait until the peer holds every byte,
+    // including the caller's own Clear response. The key can no longer run any RPC,
+    // and the bound keeps revocation prompt when a peer never acknowledges.
+    let delivered = async {
+        drained.await;
         match acknowledged.await {
             Ok(None) => {}
             Ok(Some(code)) => {
-                tracing::debug!(%code, "revoked management client stopped its stream")
+                tracing::debug!(%code, "revoked management client stopped its stream");
             }
             Err(error) => tracing::debug!(%error, "revoked management stream was not acknowledged"),
         }
+    };
+    if tokio::time::timeout(REVOCATION_DELIVERY_TIMEOUT, delivered)
+        .await
+        .is_err()
+    {
+        tracing::debug!("revoked management client did not acknowledge in time");
     }
     ended
 }
