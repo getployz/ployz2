@@ -1,0 +1,16 @@
+{
+  "base": "ab22911a6b008c2fa0c1626ca11f3f6e3ecaddd2",
+  "files": [
+    "crates/ployz/src/connect.rs",
+    "crates/ployz/src/cluster.rs",
+    "crates/ployz/src/sdk.rs",
+    "crates/ployz/src/sdk/deploy.rs",
+    "crates/ployz/src/deploy/pipeline.rs",
+    "crates/ployz/src/project.rs",
+    "crates/ployz/src/context.rs",
+    "crates/ployz/src/handlers/context.rs",
+    "crates/ployz/src/handlers/machine/inspect.rs"
+  ],
+  "re": "connect_selected_with|connect_one|from_stream_status|call_retried|unary_attempt|list_volumes|remove_volumes|remove_machine|refuse_last_managed|evict_machine|data_loss_if_machine_removed|data_loss_on_machine|observe_machine_storage|machine_did_not_respond|Session::(watch|preview|preview_project_removal|run|client|data_loss_if_project_destroyed|destroy_project|until_closed)\\b|Watch::next|RunningDeploy::finished|Client::(preview_project_removal|data_loss_if_project_destroyed|destroy_project|prepare_project_destroy)\\b|observed_destroy_loss|gather_deploy_snapshot|require_project_present|refuse_reserved|Context::select_connection|Context::drop_machine|select_connections|Config::load\\b|Config::current_context|none_if_empty|daemon_skew_warning|\\b(connection|remove)\\b",
+  "shards": 4
+}
