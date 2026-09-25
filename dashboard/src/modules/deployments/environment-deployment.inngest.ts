@@ -153,8 +153,8 @@ const walkServers: Builder = (build, candidate, { key, last, step, runEffect }) 
   step.run(`build-image-${key}`, () => runEffect(buildOnServers(build, candidate, last ? undefined : START_WITHIN_MINUTES * 60_000)));
 
 /**
- * GitHub: dispatch, then wait for the run while the runner checks in and pushes. The Workflow run
- * webhook ends a wait at once; each timeout checks the run on GitHub too, which catches a completion
+ * GitHub: dispatch, then wait for the run while the runner checks in and pushes. The runner's final
+ * report, which settles the build, or the Workflow run webhook ends a wait at once; each timeout checks the run on GitHub too, which catches a completion
  * that landed between two waits. Not last: the first check is the "start within" limit, and a run
  * that hasn't checked in by then is withdrawn. Last: it waits for the run to start without a limit.
  */

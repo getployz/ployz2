@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { Header } from "tar";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "#/db/schema";
 import { asTestDouble } from "#/lib/test-double";
 import { createDefaultServiceHealthcheck, createDefaultServiceRestartPolicy, createGitServiceSource, projectServiceDeploymentConfig } from "#/modules/environment-design/services";
@@ -165,6 +165,8 @@ function fakeClient(fake: Fake) {
 describe("Image Builds on GitHub Actions", () => {
   let harness: PostgresTestHarness;
   let fake: Fake;
+  const inngest = new Inngest({ id: "github-builds" });
+  vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
   beforeAll(async () => {
     harness = await startPostgresTestHarness();
@@ -174,6 +176,7 @@ describe("Image Builds on GitHub Actions", () => {
   });
 
   beforeEach(async () => {
+    vi.mocked(inngest.send).mockClear();
     fake = { github: [], minted: [], mintFails: false, ended: [], prepared: [], platforms: ["linux/amd64"], githubErrors: new Map(), serverBuilds: [], serversQueued: false, runEndsBeforeLimit: false, runStatus: "in_progress", machines: [machine], preferredMachines: [] };
     await harness.pool.query(`
       truncate table environment_saved_state_snapshot, environment, project, "user", organization cascade;
@@ -220,7 +223,7 @@ describe("Image Builds on GitHub Actions", () => {
     Effect.provide(AppConfig.layer),
     Effect.provideService(GithubApi, githubApi(fake)),
     Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
-    Effect.provideService(InngestClient, new Inngest({ id: "github-builds" })),
+    Effect.provideService(InngestClient, inngest),
     Effect.provideService(SecretEncryption, encryption),
   ));
   // SAFETY: `run` supplies every service the deployment workflow's activities use.
@@ -321,6 +324,9 @@ describe("Image Builds on GitHub Actions", () => {
     await dispatch();
     await checkIn(oidcToken());
     await report(["linux/amd64"]);
+    // The final report settles the build while the run still uploads cache, and wakes the walk.
+    expect(await row()).toMatchObject({ status: "built" });
+    expect(inngest.send).toHaveBeenCalledWith(expect.objectContaining({ name: "github/build-run.completed", data: { runId: githubRunId } }));
     const output = await engine(runCompleted()).execute();
     expect(output.error).toBeUndefined();
     const built = await row();
@@ -360,13 +366,37 @@ describe("Image Builds on GitHub Actions", () => {
     expect(log.steps.find((step) => step.image === "api" && step.name === "Building")?.completedAt).not.toBeNull();
   });
 
-  it("fails the build when the run ends without pushing", async () => {
+  it("fails the build when the runner reports it failed", async () => {
     await dispatch();
     await checkIn(oidcToken());
     await report([]);
+    expect(await row()).toMatchObject({ status: "failed", failureMessage: "GitHub: the run pushed no image." });
+    const output = await engine(runCompleted()).execute();
+    expect(output.error).toEqual(expect.objectContaining({ message: "Image Build failed: api." }));
+  });
+
+  it("ignores the run failing after the final report settled the build", async () => {
+    await dispatch();
+    await checkIn(oidcToken());
+    await report(["linux/amd64"]);
+    const built = await row();
+    // The cache upload failed the run, or it was cancelled: the Workflow run webhook changes nothing.
+    fake.runStatus = "completed";
+    expect(await run(checkGithubImageBuild(await target(), { ended: true, startLimit: false })))
+      .toMatchObject({ kind: "settled", result: { status: "built" } });
+    expect(await row()).toEqual(built);
+    expect(fake.ended).toEqual([grantId(1)]);
+  });
+
+  it("settles a run that never reported its end when the Workflow run webhook arrives", async () => {
+    await dispatch();
+    await checkIn(oidcToken());
+    await post({ from: 0, events: runnerEvents });
+    expect(await row()).toMatchObject({ status: "building" });
     const output = await engine(runCompleted()).execute();
     expect(output.error).toEqual(expect.objectContaining({ message: "Image Build failed: api." }));
     expect(await row()).toMatchObject({ status: "failed", failureMessage: "GitHub: the run pushed no image." });
+    expect(fake.ended).toEqual([grantId(1)]);
   });
 
   it("cancels the GitHub run and ends the grant when the attempt is cancelled", async () => {
@@ -439,11 +469,11 @@ describe("Image Builds on GitHub Actions", () => {
   it("settles a run whose completion no webhook delivered once GitHub says it completed", async () => {
     await dispatch();
     await checkIn(oidcToken());
-    await report(["linux/amd64"]);
+    await post({ from: 0, events: runnerEvents });
     expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false }))).toEqual({ kind: "waiting" });
     fake.runStatus = "completed";
     expect(await run(checkGithubImageBuild(await target(), { ended: false, startLimit: false })))
-      .toMatchObject({ kind: "settled", result: { status: "built" } });
+      .toMatchObject({ kind: "settled", result: { status: "failed" } });
   });
 
   it("gives the last Builder's run no start limit, and a started run a budget", async () => {
