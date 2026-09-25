@@ -358,6 +358,8 @@ body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--
 ::view-transition-new(root) {
   animation: none;
 }
+/* Live ↔ Deployment Mode: each node's element takes its name only during the switch, so the same card moves in place. */
+:root:active-view-transition-type(deployment-mode) [style*="--canvas-node"] { view-transition-name: var(--canvas-node); }
 
 
 
