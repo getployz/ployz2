@@ -389,10 +389,11 @@ impl CertificateRow {
             }
             last_error.push_str("stored HTTP-01 challenge is invalid");
         }
-        if body.published
-            && let Some(material) = material
-        {
-            return Ok(Self::Published(material));
+        if body.published {
+            // Published material is supplied whole; a published row without it is corrupt.
+            return material.map(Self::Published).ok_or_else(|| {
+                Error::Protocol("published certificate row has no valid material".into())
+            });
         }
         Ok(Self::Acme {
             material,
@@ -686,6 +687,11 @@ mod tests {
     fn invalid_certificate_body_is_an_error() {
         assert!(decode_material("{").is_err());
         assert!(decode_material("null").is_err());
+        assert!(decode_material(r#"{"published":true}"#).is_err());
+        assert!(
+            decode_material(r#"{"published":true,"certificate":"CERT","private_key":"KEY"}"#)
+                .is_err()
+        );
     }
 
     #[test]

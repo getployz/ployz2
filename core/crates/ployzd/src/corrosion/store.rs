@@ -490,17 +490,14 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         material: &CertificateMaterial,
     ) -> Result<(), Error> {
-        let Some(latest) = self.acme_row(hostname).await? else {
+        let Some((key, latest)) = self.acme_row(hostname).await? else {
             return Ok(());
         };
         if latest.material() == Some(material) && latest.challenge().is_none() {
             return Ok(());
         }
-        self.upsert_certificate(
-            &CertificateHost::from(hostname.clone()),
-            &CertificateRow::issued(material.clone()),
-        )
-        .await
+        self.upsert_certificate(&key, &CertificateRow::issued(material.clone()))
+            .await
     }
 
     /// Hold published material for `hostname`; ACME leaves the row alone from now on.
@@ -554,10 +551,14 @@ impl ReplicatedStore {
         self.row(&CertificateHost::from(hostname.clone())).await
     }
 
-    /// The row ACME may write for `hostname`, or `None` when it holds published material.
-    async fn acme_row(&self, hostname: &IngressHost) -> Result<Option<CertificateRow>, Error> {
-        let row = self.certificate_row(hostname).await?;
-        Ok(row.published().is_none().then_some(row))
+    /// The row ACME may write for `hostname` and its key, or `None` when it holds published material.
+    async fn acme_row(
+        &self,
+        hostname: &IngressHost,
+    ) -> Result<Option<(CertificateHost, CertificateRow)>, Error> {
+        let key = CertificateHost::from(hostname.clone());
+        let row = self.row(&key).await?;
+        Ok(row.published().is_none().then_some((key, row)))
     }
 
     async fn row(&self, hostname: &CertificateHost) -> Result<CertificateRow, Error> {
@@ -593,17 +594,14 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         challenge: &CertificateChallenge,
     ) -> Result<(), Error> {
-        let Some(latest) = self.acme_row(hostname).await? else {
+        let Some((key, latest)) = self.acme_row(hostname).await? else {
             return Ok(());
         };
         if latest.challenge() == Some(challenge) {
             return Ok(());
         }
-        self.upsert_certificate(
-            &CertificateHost::from(hostname.clone()),
-            &latest.with_challenge(challenge.clone()),
-        )
-        .await
+        self.upsert_certificate(&key, &latest.with_challenge(challenge.clone()))
+            .await
     }
 
     /// Record why a hostname has no certificate and when the Cluster may try again.
@@ -617,17 +615,14 @@ impl ReplicatedStore {
         last_error: impl Into<String>,
         clock: IssuanceClock,
     ) -> Result<(), Error> {
-        let Some(latest) = self.acme_row(hostname).await? else {
+        let Some((key, latest)) = self.acme_row(hostname).await? else {
             return Ok(());
         };
         if latest.material().is_some() {
             return Ok(());
         }
-        self.upsert_certificate(
-            &CertificateHost::from(hostname.clone()),
-            &latest.with_backoff(last_error, clock),
-        )
-        .await
+        self.upsert_certificate(&key, &latest.with_backoff(last_error, clock))
+            .await
     }
 
     pub async fn record_certificate_error(
@@ -635,17 +630,14 @@ impl ReplicatedStore {
         hostname: &IngressHost,
         reason: &str,
     ) -> Result<(), Error> {
-        let Some(latest) = self.acme_row(hostname).await? else {
+        let Some((key, latest)) = self.acme_row(hostname).await? else {
             return Ok(());
         };
         if latest.last_error() == Some(reason) {
             return Ok(());
         }
-        self.upsert_certificate(
-            &CertificateHost::from(hostname.clone()),
-            &latest.with_error(reason),
-        )
-        .await
+        self.upsert_certificate(&key, &latest.with_error(reason))
+            .await
     }
 
     pub async fn certificate_policy(&self) -> Result<Option<String>, Error> {
