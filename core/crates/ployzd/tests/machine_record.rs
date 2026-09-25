@@ -284,12 +284,21 @@ async fn clear_persists_a_tombstone_of_public_keys_only() {
     assert_eq!(
         persisted.get("management_clients"),
         Some(&serde_json::json!({
-            "pending": { "state": "cleared_pending", "pending": pending_key },
-            "active": { "state": "cleared_active", "accepted": active_key },
+            "pending": {
+                "state": "cleared",
+                "was": { "state": "pending", "pending": pending_key },
+            },
+            "active": {
+                "state": "cleared",
+                "was": { "state": "active", "accepted": active_key },
+            },
             "rotating": {
-                "state": "cleared_rotating",
-                "accepted": rotated_key,
-                "pending": rotating_key,
+                "state": "cleared",
+                "was": {
+                    "state": "rotating",
+                    "accepted": rotated_key,
+                    "pending": rotating_key,
+                },
             },
         }))
     );
@@ -972,6 +981,11 @@ fn local_record_rejects_incomplete_management_client_slots() {
         serde_json::json!({"cloud": {"state": "pending"}}),
         serde_json::json!({"cloud": {"state": "rotating", "accepted": key}}),
         serde_json::json!({"cloud": {"state": "enrolling", "accepted": key}}),
+        serde_json::json!({"cloud": {"state": "cleared"}}),
+        serde_json::json!({"cloud": {"state": "cleared", "was": {"state": "cleared"}}}),
+        serde_json::json!({"cloud": {"state": "cleared", "was": {"state": "active"}}}),
+        serde_json::json!({"cloud": {"state": "cleared", "was": {"state": "active", "accepted": key}, "secret": "s"}}),
+        serde_json::json!({"cloud": {"state": "cleared", "was": {"state": "active", "accepted": key, "secret": "s"}}}),
         serde_json::json!({"Cloud": {"state": "active", "accepted": key}}),
     ] {
         let mut invalid = valid.clone();

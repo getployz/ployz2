@@ -156,6 +156,17 @@ pub struct LocalMachineRecord {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum ManagementClientSlot {
+    /// Tombstone left by Clear, keeping the cleared slot's public keys. They are
+    /// never admitted again, so a redial with one learns its removal was confirmed.
+    Cleared { was: LiveSlot },
+    #[serde(untagged)]
+    Live(LiveSlot),
+}
+
+/// A slot whose keys the management transport admits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum LiveSlot {
     Pending {
         pending: [u8; 32],
     },
@@ -166,72 +177,47 @@ enum ManagementClientSlot {
         accepted: [u8; 32],
         pending: [u8; 32],
     },
-    // Tombstones left by Clear, one per live state, keeping that state's public
-    // keys. They are never admitted again, so a redial with one learns its removal
-    // was confirmed.
-    ClearedPending {
-        pending: [u8; 32],
-    },
-    ClearedActive {
-        accepted: [u8; 32],
-    },
-    ClearedRotating {
-        accepted: [u8; 32],
-        pending: [u8; 32],
-    },
 }
 
-impl ManagementClientSlot {
+impl LiveSlot {
     fn accepted(self) -> Option<[u8; 32]> {
         match self {
             Self::Active { accepted } | Self::Rotating { accepted, .. } => Some(accepted),
-            Self::Pending { .. }
-            | Self::ClearedPending { .. }
-            | Self::ClearedActive { .. }
-            | Self::ClearedRotating { .. } => None,
+            Self::Pending { .. } => None,
         }
     }
 
     fn pending(self) -> Option<[u8; 32]> {
         match self {
             Self::Pending { pending } | Self::Rotating { pending, .. } => Some(pending),
-            Self::Active { .. }
-            | Self::ClearedPending { .. }
-            | Self::ClearedActive { .. }
-            | Self::ClearedRotating { .. } => None,
+            Self::Active { .. } => None,
         }
     }
 
-    fn is_cleared(self) -> bool {
-        matches!(
-            self,
-            Self::ClearedPending { .. } | Self::ClearedActive { .. } | Self::ClearedRotating { .. }
-        )
+    fn holds(self, remote: &[u8; 32]) -> bool {
+        self.accepted().as_ref() == Some(remote) || self.pending().as_ref() == Some(remote)
+    }
+}
+
+impl ManagementClientSlot {
+    fn live(self) -> Option<LiveSlot> {
+        match self {
+            Self::Live(slot) => Some(slot),
+            Self::Cleared { .. } => None,
+        }
+    }
+
+    fn accepted(self) -> Option<[u8; 32]> {
+        self.live().and_then(LiveSlot::accepted)
+    }
+
+    fn pending(self) -> Option<[u8; 32]> {
+        self.live().and_then(LiveSlot::pending)
     }
 
     /// Whether this tombstone holds `remote`.
     fn clears(self, remote: &[u8; 32]) -> bool {
-        match self {
-            Self::ClearedPending { pending: key } | Self::ClearedActive { accepted: key } => {
-                key == *remote
-            }
-            Self::ClearedRotating { accepted, pending } => {
-                accepted == *remote || pending == *remote
-            }
-            Self::Pending { .. } | Self::Active { .. } | Self::Rotating { .. } => false,
-        }
-    }
-
-    /// The tombstone this slot leaves when cleared.
-    fn cleared(self) -> Self {
-        match self {
-            Self::Pending { pending } => Self::ClearedPending { pending },
-            Self::Active { accepted } => Self::ClearedActive { accepted },
-            Self::Rotating { accepted, pending } => Self::ClearedRotating { accepted, pending },
-            Self::ClearedPending { .. }
-            | Self::ClearedActive { .. }
-            | Self::ClearedRotating { .. } => self,
-        }
+        matches!(self, Self::Cleared { was } if was.holds(remote))
     }
 }
 
@@ -247,7 +233,7 @@ impl LocalMachineRecord {
     pub fn management_clients(&self) -> impl Iterator<Item = &ManagementClientLabel> {
         self.management_clients
             .iter()
-            .filter(|(_, slot)| !slot.is_cleared())
+            .filter(|(_, slot)| slot.live().is_some())
             .map(|(label, _)| label)
     }
 
