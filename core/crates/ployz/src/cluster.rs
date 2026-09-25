@@ -124,7 +124,14 @@ impl Client {
         };
         tokio::time::timeout(Duration::from_secs(5), confirm)
             .await
-            .map_err(|_| ConnectError::Attempt("entry Machine did not become ready".into()))?
+            .map_err(|_| {
+                // A socket-activated daemon accepts connects before it serves;
+                // this bound is what keeps a starting daemon from hanging the CLI.
+                ConnectError::Attempt(
+                    "entry Machine daemon did not answer within 5s; it may still be starting, retry shortly"
+                        .into(),
+                )
+            })?
     }
 
     /// Issue one unary RPC. The response type is derived from the RPC, so a request

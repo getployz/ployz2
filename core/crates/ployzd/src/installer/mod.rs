@@ -220,7 +220,10 @@ async fn install_locked(
         }
     }
 
-    let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
+    // A daemon started before ployz.socket existed serves a path the new socket
+    // unit rebinds; only a restart hands it the activated listener.
+    let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file()
+        || !paths.systemd_dir.join("ployz.socket").is_file();
     restart_required |= install_binaries(
         &request.source,
         &paths,
@@ -561,6 +564,7 @@ mod tests {
                 assert_eq!(outcome.readiness, Readiness::InstallationOnly);
                 assert!(paths.bin_dir.join("ployzd").is_file());
                 assert!(paths.systemd_dir.join("ployz.service").is_file());
+                assert!(paths.systemd_dir.join("ployz.socket").is_file());
                 if case == "install-only" {
                     assert!(!root.join("forbidden-invocation").exists());
                     assert!(!paths.data_dir.exists());
