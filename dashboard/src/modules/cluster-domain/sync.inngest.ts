@@ -1,8 +1,10 @@
 import { Effect, Option, Schema } from "effect";
 import { reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import {
+  ensureClusterDomainCertificate,
   listPairedOrganizationIds,
   probeIngressServers,
+  publishClusterDomainCertificate,
   publishClusterDomainRecords,
   renewClusterDomainLease,
 } from "#/modules/cluster-domain/sync.server";
@@ -20,7 +22,8 @@ const SyncRequestedData = Schema.Struct({ organizationId: Schema.String.check(Sc
 
 /**
  * Keeps the Organization's Cluster Domain correct: reserve if missing → probe ingress Servers →
- * full-set records PUT when a frame was read and something answered → renew the lease.
+ * full-set records PUT when a frame was read and something answered → renew the lease →
+ * replace the wildcard certificate when missing or near expiry → republish it to the Cluster.
  */
 export async function executeSyncClusterDomain(
   { event, step }: { event: { data: unknown }; step: StepTools },
@@ -39,8 +42,10 @@ export async function executeSyncClusterDomain(
     ? false
     : await step.run("publish-records", () => runEffect(publishClusterDomainRecords(organizationId, probe)));
   await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
-  // #1023: the ensure-certificate step goes here.
-  return { organizationId, name, observed: probe !== null, published };
+  // Issuance can take minutes; the connect worker has no serve-style HTTP timeout, so the step waits it out.
+  const certificateIssued = await step.run("ensure-certificate", () => runEffect(ensureClusterDomainCertificate(organizationId)));
+  const certificatePublished = await step.run("publish-certificate", () => runEffect(publishClusterDomainCertificate(organizationId)));
+  return { organizationId, name, observed: probe !== null, published, certificateIssued, certificatePublished };
 }
 
 export async function executeScheduleClusterDomainSync({ step }: { step: StepTools }, runEffect: EffectRunner) {

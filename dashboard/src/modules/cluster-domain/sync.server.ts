@@ -1,14 +1,21 @@
 import "@tanstack/react-start/server-only";
+import { X509Certificate } from "node:crypto";
 import { isIPv6 } from "node:net";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { Data, Effect } from "effect";
-import { reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
-import { type HostedDnsError, putHostedDomainRecords, renewHostedDomainLease } from "#/modules/cluster-domain/hosted-dns.server";
+import { loadClusterDomain, reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import {
+  HostedDnsError,
+  putHostedDomainRecords,
+  renewHostedDomainLease,
+  requestHostedDomainCertificate,
+} from "#/modules/cluster-domain/hosted-dns.server";
 import {
   type ClusterDomainPublishedAddress,
   organizationClusterDomain,
   type OrganizationClusterDomain,
 } from "#/modules/cluster-domain/tables";
+import { createWildcardCsr } from "#/modules/cluster-domain/wildcard-csr.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
@@ -18,6 +25,8 @@ const RUNTIME_FRAME_TIMEOUT_MS = 10_000;
 const PROBE_TIMEOUT_MS = 5_000;
 /** Caddy answers it on port 80 of every ingress Server with the Machine id (core `INGRESS_VERIFY_PATH`). */
 const INGRESS_VERIFY_PATH = "/.ployz-verify";
+/** The wildcard is replaced once it has less than this left. */
+const CERTIFICATE_RENEW_BEFORE_MS = 30 * 86_400_000;
 
 /** Hosted DNS refuses the stored name for good: 410 retired, or 401 for a token it no longer accepts. Retrying cannot help. */
 export class ClusterDomainUnusable extends Data.TaggedError("ClusterDomainUnusable")<{
@@ -37,9 +46,9 @@ export type IngressProbe = {
  * Runs one bearer call against the Organization's name, reserving one first when the row is missing.
  * A reaped name (404: never had records and is over 24 hours old) is forgotten and reserved again, once.
  */
-const withClusterDomain = <R>(
+export const withClusterDomain = <A, R>(
   organizationId: string,
-  call: (target: { endpoint: string; name: string; token: string }) => Effect.Effect<void, HostedDnsError, R>,
+  call: (target: { endpoint: string; name: string; token: string }) => Effect.Effect<A, HostedDnsError, R>,
 ) => Effect.gen(function* () {
   const encryption = yield* SecretEncryption;
   const { drizzle } = yield* Database;
@@ -54,7 +63,7 @@ const withClusterDomain = <R>(
         : error),
     );
   const row = yield* reserveClusterDomain(organizationId);
-  yield* attempt(row).pipe(Effect.catchIf(
+  return yield* attempt(row).pipe(Effect.catchIf(
     (error) => error._tag === "HostedDnsError" && error.status === 404,
     () => drizzle.delete(organizationClusterDomain)
       .where(and(eq(organizationClusterDomain.organizationId, organizationId), eq(organizationClusterDomain.name, row.name)))
@@ -137,6 +146,57 @@ export const renewClusterDomainLease = Effect.fn("ClusterDomain.renewLease")(fun
   yield* drizzle.update(organizationClusterDomain).set({ leaseRenewedAt: now, updatedAt: now })
     .where(eq(organizationClusterDomain.organizationId, organizationId));
 });
+
+/**
+ * Replaces the wildcard for `name` and `*.name` when there is none or it has under 30 days left:
+ * a fresh key and CSR, the chain from Hosted DNS, the key stored encrypted. A Hosted DNS failure
+ * (a 429 included) keeps the current certificate; the next sync tries again.
+ */
+export const ensureClusterDomainCertificate = Effect.fn("ClusterDomain.ensureCertificate")(function* (organizationId: string) {
+  const current = yield* loadClusterDomain(organizationId);
+  if (current?.certificateNotAfter && current.certificateNotAfter.getTime() - Date.now() > CERTIFICATE_RENEW_BEFORE_MS) return false;
+  const issued = yield* withClusterDomain(organizationId, ({ endpoint, name, token }) => {
+    const { privateKeyPem, csrPem } = createWildcardCsr(name);
+    return requestHostedDomainCertificate({ endpoint, name, token, csr: csrPem }).pipe(
+      Effect.flatMap((chain) => Effect.try({
+        // X509Certificate reads the first certificate of the chain: the leaf.
+        try: () => ({ name, chain, privateKeyPem, notAfter: new Date(new X509Certificate(chain).validTo) }),
+        catch: (cause) => new HostedDnsError({ operation: "request certificate", cause }),
+      })),
+    );
+  }).pipe(Effect.catchTag("HostedDnsError", (error) =>
+    Effect.logWarning("Wildcard certificate issuance failed; the current certificate stays.", error).pipe(Effect.as(null))));
+  if (issued === null) return false;
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(organizationClusterDomain).set({
+    encryptedCertificatePrivateKey: (yield* SecretEncryption).encrypt(issued.privateKeyPem),
+    certificateChain: issued.chain,
+    certificateNotAfter: issued.notAfter,
+    updatedAt: new Date(),
+  }).where(and(eq(organizationClusterDomain.organizationId, organizationId), eq(organizationClusterDomain.name, issued.name)));
+  return true;
+});
+
+/**
+ * Publishes the stored wildcard to the Cluster as `*.name`. Publishing is idempotent, so every sync
+ * republishes: a re-paired Cluster that lacks the material gets it back. False when there is no
+ * certificate yet or no Cluster connection.
+ */
+export const publishClusterDomainCertificate = Effect.fn("ClusterDomain.publishCertificate")(function* (organizationId: string) {
+  const row = yield* loadClusterDomain(organizationId);
+  if (!row?.certificateChain || !row.encryptedCertificatePrivateKey) return false;
+  const session = yield* (yield* OrganizationRuntime).open(organizationId);
+  if (session.status !== "connected") return false;
+  yield* session.connected.publishCertificateMaterial({
+    hostname: `*.${row.name}`,
+    change: {
+      action: "set",
+      certificate_chain_pem: row.certificateChain,
+      private_key_pem: (yield* SecretEncryption).decrypt(row.encryptedCertificatePrivateKey),
+    },
+  });
+  return true;
+}, Effect.scoped);
 
 /** Organizations with a founded Cloud Pairing that is not being removed: the hourly sync's fan-out. */
 export const listPairedOrganizationIds = Effect.fn("ClusterDomain.listPairedOrganizationIds")(function* () {

@@ -11,7 +11,7 @@ import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import { formatRelativeTime } from "#/utils/relative-time";
 
 export function ClusterDomainSection({ domain, onPublish }: {
-  domain: Pick<ClusterDomainRow, "name" | "recordsSyncedAt" | "published" | "unreachable"> | null;
+  domain: Pick<ClusterDomainRow, "name" | "recordsSyncedAt" | "published" | "unreachable" | "certificateNotAfter"> | null;
   onPublish: () => Promise<void>;
 }) {
   const [publishing, startPublish] = useTransition();
@@ -44,6 +44,13 @@ export function ClusterDomainSection({ domain, onPublish }: {
           {domain === null ? null : (
             <ItemDescription>
               {domain.recordsSyncedAt === null ? "Records not published yet" : `Records published ${formatRelativeTime(domain.recordsSyncedAt)}`}
+            </ItemDescription>
+          )}
+          {domain === null ? null : (
+            <ItemDescription>
+              {domain.certificateNotAfter === null
+                ? "No wildcard certificate yet"
+                : `Wildcard certificate expires ${formatRelativeTime(domain.certificateNotAfter)}`}
             </ItemDescription>
           )}
           {servers.length === 0 ? null : (

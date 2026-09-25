@@ -1,4 +1,5 @@
-import type { MachineId, RuntimeWatchView } from "@ployz/sdk";
+import { createPrivateKey, X509Certificate } from "node:crypto";
+import type { MachineId, PublishCertificateMaterialRequest, RuntimeWatchView } from "@ployz/sdk";
 import { InngestTestEngine } from "@inngest/test";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -36,6 +37,8 @@ describe("sync-cluster-domain", () => {
   let frame: RuntimeWatchView | null;
   /** Probe answers by address; an absent address refuses the connection. */
   const verify = new Map<string, string>();
+  /** Certificate Material the stubbed session was asked to publish. */
+  const publishedMaterial: PublishCertificateMaterialRequest[] = [];
 
   const runEffect = makeInngestEffectRunner(<A, E>(
     operation: Effect.Effect<A, E, Database | ReportingDatabase | AppConfig | SecretEncryption | OrganizationRuntime>,
@@ -58,7 +61,10 @@ describe("sync-cluster-domain", () => {
         open: () => Effect.succeed(frame === null
           ? { status: "no_connection" as const }
           // The sync only reads the first runtime frame.
-          : { status: "connected" as const, connected: asTestDouble<PloyzSession>()({ watchFirstFrame: () => Effect.succeed(frame) }) }),
+          : { status: "connected" as const, connected: asTestDouble<PloyzSession>()({
+            watchFirstFrame: () => Effect.succeed(frame),
+            publishCertificateMaterial: (request: PublishCertificateMaterialRequest) => Effect.sync(() => { publishedMaterial.push(request); }),
+          }) }),
       }),
       Effect.provide(config),
     ));
@@ -69,8 +75,26 @@ describe("sync-cluster-domain", () => {
     events: [{ name: "cluster-domain/sync.requested", data: { organizationId: id } }],
   }).execute();
   const row = async () => (await harness.pool.query(
-    "select name, records_synced_at, lease_renewed_at, published, unreachable from organization_cluster_domain",
-  )).rows[0] as { name: string; records_synced_at: Date | null; lease_renewed_at: Date; published: unknown; unreachable: unknown } | undefined;
+    `select name, records_synced_at, lease_renewed_at, published, unreachable,
+            encrypted_certificate_private_key, certificate_chain, certificate_not_after from organization_cluster_domain`,
+  )).rows[0] as {
+    name: string;
+    records_synced_at: Date | null;
+    lease_renewed_at: Date;
+    published: unknown;
+    unreachable: unknown;
+    encrypted_certificate_private_key: Parameters<typeof encryption.decrypt>[0] | null;
+    certificate_chain: string | null;
+    certificate_not_after: Date | null;
+  } | undefined;
+  const storedCertificate = async () => {
+    const stored = await row();
+    const key = stored?.encrypted_certificate_private_key;
+    const chain = stored?.certificate_chain;
+    const notAfter = stored?.certificate_not_after;
+    if (!key || !chain || !notAfter) throw new Error("No certificate is stored.");
+    return { encryptedKey: key, privateKeyPem: encryption.decrypt(key), chain, notAfter };
+  };
   const calls = () => hostedDns.requests.map(({ method, path }) => `${method} ${path}`);
 
   beforeAll(async () => {
@@ -93,7 +117,10 @@ describe("sync-cluster-domain", () => {
     hostedDns.requests.length = 0;
     hostedDns.state.failWith = null;
     hostedDns.state.gone.clear();
+    hostedDns.state.certificateFailWith = null;
+    hostedDns.state.certificateDays = 90;
     verify.clear();
+    publishedMaterial.length = 0;
     frame = null;
     await harness.pool.query(`
       truncate table organization cascade;
@@ -119,8 +146,20 @@ describe("sync-cluster-domain", () => {
     const output = await sync();
 
     expect(output.error).toBeUndefined();
-    expect(output.result).toEqual({ organizationId, name: "acme.ployz.test", observed: true, published: true });
-    expect(calls()).toEqual(["POST /domains", "PUT /domains/acme.ployz.test/records", "POST /domains/acme.ployz.test/lease"]);
+    expect(output.result).toEqual({
+      organizationId,
+      name: "acme.ployz.test",
+      observed: true,
+      published: true,
+      certificateIssued: true,
+      certificatePublished: true,
+    });
+    expect(calls()).toEqual([
+      "POST /domains",
+      "PUT /domains/acme.ployz.test/records",
+      "POST /domains/acme.ployz.test/lease",
+      "POST /domains/acme.ployz.test/certificate",
+    ]);
     expect(hostedDns.requests[1]).toMatchObject({ authorization: "Bearer token-1", body: { a: ["203.0.113.1"], aaaa: ["2001:db8::1"] } });
     expect(await row()).toMatchObject({
       records_synced_at: expect.any(Date),
@@ -137,7 +176,12 @@ describe("sync-cluster-domain", () => {
     const second = await sync();
     expect(second.result).toMatchObject({ observed: true, published: false });
 
-    expect(calls()).toEqual(["POST /domains", "POST /domains/acme.ployz.test/lease", "POST /domains/acme.ployz.test/lease"]);
+    expect(calls()).toEqual([
+      "POST /domains",
+      "POST /domains/acme.ployz.test/lease",
+      "POST /domains/acme.ployz.test/certificate",
+      "POST /domains/acme.ployz.test/lease",
+    ]);
     expect(await row()).toMatchObject({
       records_synced_at: null,
       published: [],
@@ -160,6 +204,8 @@ describe("sync-cluster-domain", () => {
       "POST /domains",
       "PUT /domains/acme.ployz.test/records",
       "POST /domains/acme.ployz.test/lease",
+      // The re-reserved row starts without a certificate.
+      "POST /domains/acme.ployz.test/certificate",
     ]);
     expect(hostedDns.requests[2]?.authorization).toBe("Bearer token-2");
     expect(await row()).toMatchObject({ name: "acme.ployz.test", records_synced_at: expect.any(Date) });
@@ -174,6 +220,51 @@ describe("sync-cluster-domain", () => {
 
     expect(output.error).toEqual(expect.objectContaining({ stack: expect.stringContaining("NonRetriableError") }));
     expect(calls()).toEqual(["POST /domains/acme.ployz.test/lease"]);
+  });
+
+  it("issues the wildcard once, stores its key encrypted, and republishes it to the Cluster on every sync", async () => {
+    frame = runtimeWatchFrameFixture({ machines: [] });
+
+    const first = await sync();
+    const stored = await storedCertificate();
+    const second = await sync();
+
+    expect(first.result).toMatchObject({ certificateIssued: true, certificatePublished: true });
+    expect(second.result).toMatchObject({ certificateIssued: false, certificatePublished: true });
+    expect(calls().filter((call) => call.endsWith("/certificate"))).toHaveLength(1);
+    const request = hostedDns.requests.find(({ path }) => path.endsWith("/certificate"));
+    expect(request).toMatchObject({ authorization: "Bearer token-1", body: { csr: expect.stringContaining("BEGIN CERTIFICATE REQUEST") } });
+
+    const leaf = new X509Certificate(stored.chain);
+    expect(leaf.checkPrivateKey(createPrivateKey(stored.privateKeyPem))).toBe(true);
+    expect(stored.notAfter).toEqual(new Date(leaf.validTo));
+    expect(JSON.stringify(stored.encryptedKey)).not.toContain("PRIVATE KEY");
+    const material = {
+      hostname: "*.acme.ployz.test",
+      change: { action: "set", certificate_chain_pem: stored.chain, private_key_pem: stored.privateKeyPem },
+    };
+    expect(publishedMaterial).toEqual([material, material]);
+  });
+
+  it("replaces a wildcard with under 30 days left, and keeps it when Hosted DNS fails", async () => {
+    frame = runtimeWatchFrameFixture({ machines: [] });
+    hostedDns.state.certificateDays = 20;
+    await sync();
+    const expiring = await storedCertificate();
+
+    hostedDns.state.certificateFailWith = 429;
+    const failed = await sync();
+    expect(failed.error).toBeUndefined();
+    expect(failed.result).toMatchObject({ certificateIssued: false, certificatePublished: true });
+    expect((await storedCertificate()).chain).toBe(expiring.chain);
+    expect(publishedMaterial.at(-1)?.change).toMatchObject({ certificate_chain_pem: expiring.chain });
+
+    hostedDns.state.certificateFailWith = null;
+    hostedDns.state.certificateDays = 90;
+    const renewed = await sync();
+    expect(renewed.result).toMatchObject({ certificateIssued: true, certificatePublished: true });
+    expect((await storedCertificate()).notAfter.getTime()).toBeGreaterThan(expiring.notAfter.getTime());
+    expect(calls().filter((call) => call.endsWith("/certificate"))).toHaveLength(3);
   });
 
   it("the hourly cron requests a sync for each founded, unremoved pairing", async () => {

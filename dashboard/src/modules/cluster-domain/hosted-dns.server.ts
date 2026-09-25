@@ -15,15 +15,22 @@ export class HostedDnsError extends Data.TaggedError("HostedDnsError")<{
 }> {}
 
 const REQUEST_TIMEOUT_MS = 10_000;
+/** Issuance waits on Route 53 sync and CA validation: up to about ten minutes on the Hosted DNS side. */
+const CERTIFICATE_TIMEOUT_MS = 15 * 60_000;
 
-const request = (operation: string, method: "POST" | "PUT" | "DELETE", url: string, init: { token: string | undefined; body?: unknown }) =>
+const request = (
+  operation: string,
+  method: "POST" | "PUT" | "DELETE",
+  url: string,
+  init: { token: string | undefined; body?: unknown; timeoutMs?: number },
+) =>
   Effect.tryPromise({
     try: async (signal) => {
       const headers = new Headers(init.body === undefined ? {} : { "content-type": "application/json" });
       if (init.token !== undefined) headers.set("authorization", `Bearer ${init.token}`);
       const response = await fetch(url, {
         method,
-        signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(init.timeoutMs ?? REQUEST_TIMEOUT_MS)]),
         headers,
         body: init.body === undefined ? null : JSON.stringify(init.body),
       });
@@ -82,4 +89,24 @@ export const renewHostedDomainLease = Effect.fn("HostedDns.renewLease")(function
   readonly token: string;
 }) {
   yield* request("renew lease", "POST", domainsUrl(input.endpoint, input.name, "lease"), { token: input.token });
+});
+
+const IssuedCertificate = Schema.Struct({ certificate_chain_pem: Schema.NonEmptyString });
+
+/** Obtains the PEM chain for a CSR naming exactly `name` and `*.name`. Synchronous on the Hosted DNS side; can take minutes. */
+export const requestHostedDomainCertificate = Effect.fn("HostedDns.requestCertificate")(function* (input: {
+  readonly endpoint: string;
+  readonly name: string;
+  readonly token: string;
+  readonly csr: string;
+}) {
+  const body = yield* request("request certificate", "POST", domainsUrl(input.endpoint, input.name, "certificate"), {
+    token: input.token,
+    body: { csr: input.csr },
+    timeoutMs: CERTIFICATE_TIMEOUT_MS,
+  });
+  const issued = yield* Schema.decodeUnknownEffect(IssuedCertificate)(body).pipe(
+    Effect.mapError((cause) => new HostedDnsError({ operation: "request certificate", cause })),
+  );
+  return issued.certificate_chain_pem;
 });
