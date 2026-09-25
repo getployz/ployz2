@@ -16,7 +16,7 @@ const context = { serviceIdFor: (name: string | null) => name };
 const step = (id: number, build: number, key: string, name: string, start: number, end: number | null, error: string | null = null) =>
   ({ id, build, key, name, startedAt: new Date(start * 1000), completedAt: end === null ? null : new Date(end * 1000), error });
 const deployment = (status: DeploymentViewInput["deployment"]["status"], extra: Partial<DeploymentViewInput["deployment"]> = {}): DeploymentViewInput["deployment"] =>
-  ({ status, failureCode: null, failureMessage: null, deployPreview: null, ...extra });
+  ({ status, failureMessage: null, deployPreview: null, ...extra });
 
 describe("deployment view projection", () => {
   it("retains concurrent phases, identities and health deadlines without resolved secrets", () => {
@@ -57,7 +57,7 @@ describe("deployment view projection", () => {
     expect(progress.compensation).toEqual(["Replacement container stopped", "Previous container restart failed: StartContainer: unavailable"]);
     expect(JSON.stringify(progress)).not.toContain("never-publish");
 
-    const view = deploymentView({ deployment: deployment("failed", { failureCode: "sdk_deploy_failed", deployPreview: {} }), progress, nodes: [
+    const view = deploymentView({ deployment: deployment("failed", { deployPreview: {} }), progress, nodes: [
       { nodeId: "svc-0", changed: true }, { nodeId: "svc-1", changed: true }, { nodeId: "svc-2", changed: true }, { nodeId: "db", changed: false },
     ] });
     expect(view.nodes.map((n) => n.outcome)).toEqual(["deployed", "failed", "not_attempted", "unchanged"]);
@@ -69,10 +69,10 @@ describe("deployment view projection", () => {
 
   it("blames the Image Build that failed, timing each image and tailing its error", () => {
     const view = deploymentView({
-      deployment: deployment("failed", { failureCode: "sdk_preparation_failed", failureMessage: "Image preparation failed" }),
+      deployment: deployment("failed", { failureMessage: "Image preparation failed" }),
       progress: { completed: 0, total: 0, outcome: null, rows: [], compensation: [], preparation: { phase: "build", serviceId: "web", machineId: "m", machineName: "builder", message: null } },
-      nodes: [{ nodeId: "api", changed: true, built: true, image: "api" }, { nodeId: "web", changed: true, built: true, image: "web" },
-        { nodeId: "docs", changed: true, built: true, image: "docs" }, { nodeId: "worker", changed: true }],
+      nodes: [{ nodeId: "api", changed: true, image: "api" }, { nodeId: "web", changed: true, image: "web" },
+        { nodeId: "docs", changed: true, image: "docs" }, { nodeId: "worker", changed: true }],
       buildLog: {
         steps: [
           step(1, 0, "stage:Upload", "Uploading source", 0, 1),
@@ -95,7 +95,7 @@ describe("deployment view projection", () => {
     const view = deploymentView({
       deployment: deployment("planning"),
       progress: { completed: 0, total: 0, outcome: null, rows: [], compensation: [], preparation: { phase: "build", serviceId: "web", machineId: "m", machineName: "builder", message: null } },
-      nodes: [{ nodeId: "api", changed: true, built: true, image: "api" }, { nodeId: "web", changed: true, built: true, image: "web" }],
+      nodes: [{ nodeId: "api", changed: true, image: "api" }, { nodeId: "web", changed: true, image: "web" }],
       buildLog: { steps: [step(1, 1, "stage:Building", "api", 0, null), step(2, 1, "sha256:a", "[1/2] RUN make", 1, null)],
         output: [{ stepId: 2, text: "one\ntwo\n" }, { stepId: 2, text: "three\n" }] },
     });
@@ -111,8 +111,7 @@ describe("deployment view projection", () => {
   });
 
   it("does not claim an unknown runtime outcome was never attempted", () => {
-    const view = deploymentView({ deployment: deployment("failed", { failureCode: "sdk_deploy_outcome_unknown", failureMessage: "Connection lost", deployPreview: {} }), progress: null, nodes: [{ nodeId: "web", changed: true }] });
-    expect(view.nodes[0]).toMatchObject({ outcome: "failed", deploy: { state: "unknown" }, failure: { message: "Connection lost" } });
-    expect(view.deploy.state).toBe("unknown");
+    const view = deploymentView({ deployment: deployment("failed", { failureMessage: "Connection lost", deployPreview: {} }), progress: null, nodes: [{ nodeId: "web", changed: true }] });
+    expect(view.nodes[0]).toMatchObject({ outcome: "failed", deploy: { state: "failed" }, failure: { message: "Connection lost" } });
   });
 });

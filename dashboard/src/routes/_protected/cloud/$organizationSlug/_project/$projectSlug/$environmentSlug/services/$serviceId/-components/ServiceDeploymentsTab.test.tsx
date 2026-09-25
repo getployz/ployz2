@@ -37,7 +37,7 @@ const snapshot = (deploymentId: string, nodeId: string, image: string, privateDn
 // `first` deployed api; `second` only added worker (api Unchanged); `third` failed api's health check, so `first` still serves it.
 const failed: DeploymentProgress = { completed: 0, total: 1, outcome: "failed", compensation: [], rows: [{ index: 0, machineId: "m", machineName: "server",
   serviceId: api, runtimeServiceId: null, serviceName: "api", displayName: null, operation: "replace_container", target: "c1", updateOrder: null,
-  status: "failed", phase: null, elapsedMs: null, deadlineMs: null, health: null, error: "health check failed", containerId: "c1" }] };
+  status: "failed", phase: null, elapsedMs: null, deadlineMs: null, health: null, error: "health check failed", containerId: "c1", startedAt: null, finishedAt: null }] };
 const rows = new Map<string, unknown[]>(Object.entries({
   project: [{ id: projectId, organizationId, name: "Shop", slug: "shop", createdAt, updatedAt: createdAt }],
   environment: [{ id: environmentId, projectId, organizationId, name: "Production", namespace: "production", createdAt, updatedAt: createdAt,

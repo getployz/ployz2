@@ -20,10 +20,10 @@ export const deploymentProgressRowSchema = Schema.Struct({
   health: text,
   error: text,
   /** The failing container, when the failure names one. */
-  containerId: Schema.optional(Schema.NullOr(Schema.String)),
+  containerId: text,
   /** Epoch ms the row was first seen started and finished; they give the Deploy stage its duration. */
-  startedAt: Schema.optional(Schema.NullOr(Schema.Number)),
-  finishedAt: Schema.optional(Schema.NullOr(Schema.Number)),
+  startedAt: Schema.NullOr(Schema.Number),
+  finishedAt: Schema.NullOr(Schema.Number),
 });
 export const preparationProgressSchema = Schema.Struct({
   phase: Schema.Literals(["source", "selection", "build", "transfer", "ready"]),

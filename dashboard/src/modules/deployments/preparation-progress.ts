@@ -15,6 +15,9 @@ const stageNames = new Map([
 ]);
 const stageName = (stage: string) => stageNames.get(stage) ?? stage;
 export const BUILDING_KEY = "stage:Building";
+/** Attempt-wide rows the engine files under the last build run: image cleanup and delivery. */
+export const CLEANUP_KEY = "stage:Cleanup";
+export const TRANSFER_KEY = "transfer";
 
 /**
  * Which step a failed attempt is pinned on: the failed BuildKit step already
@@ -77,7 +80,7 @@ export function preparationProgressCollector(now: () => Date = () => new Date())
     event(event: PreparationEvent): PreparationWrites {
       if (event === "Transfer") {
         current = { ...current, phase: "transfer", message: "Delivering images" };
-        return { progress: current, steps: begin("transfer", "Delivering images"), output: [] };
+        return { progress: current, steps: begin(TRANSFER_KEY, "Delivering images"), output: [] };
       }
       if ("Selected" in event) {
         current = { ...current, machineId: event.Selected.machine.id, machineName: event.Selected.machine.name, message: "Builder selected" };

@@ -17,6 +17,7 @@ import {
   normalizeEnvironmentServicesViewRecord,
 } from "#/modules/services/services.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
+import { shortDeploymentId } from "#/modules/deployments/deployment-view";
 import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import {
@@ -232,7 +233,7 @@ function CanvasScene() {
       } : null}
       header={<DashboardPageHeader scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }}>
         {attempt ? <>
-          <span className="ml-auto font-mono text-muted-foreground">{attempt.deployment.id.slice(0, 8)}</span>
+          <span className="ml-auto font-mono text-muted-foreground">{shortDeploymentId(attempt.deployment.id)}</span>
           <BackToLive />
         </> : null}
       </DashboardPageHeader>}

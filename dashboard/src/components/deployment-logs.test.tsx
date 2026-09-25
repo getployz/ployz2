@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
-import { BuildLogs, clock, formatDuration, imageBuildSteps, splitStepName, stripAnsi } from "./deployment-logs";
+import { BuildLogs, clock, formatDuration, splitStepName } from "./deployment-logs";
+import { imageBuildSteps, stripAnsi } from "#/modules/deployments/deployment-view";
 import type { BuildOutputRow, BuildStepRow } from "#/modules/deployments/deployment-build-log.queries";
 
 const deploymentId = "8f79e99b-cd08-4e9c-af96-f3fed313acc5";
