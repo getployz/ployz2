@@ -92,7 +92,7 @@ export function ApplyZone({
             <span className="px-1.5 text-xs font-medium text-changed-deep tabular-nums">{count} {totalChanges === 1 ? "change" : "changes"}</span>
             <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openDetails}>Details</Button>
           </>}
-          <Button size="sm" variant="ink" disabled={!deployable} aria-keyshortcuts="Shift+Enter" onClick={deploy}>
+          <Button size="sm" disabled={!deployable} aria-keyshortcuts="Shift+Enter" onClick={deploy}>
             Deploy{isMobile ? null : <Kbd>⇧+Enter</Kbd>}
           </Button>
           <DropdownMenu>
