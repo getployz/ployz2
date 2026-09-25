@@ -285,16 +285,9 @@ impl Session {
     /// Rejects a closed session. Preparation failures arrive through `finished`.
     pub fn prepare(&self, input: PreparationInput) -> Result<RunningPreparation, RpcError> {
         let mut client = self.client()?;
-        let cancel = self.inner.cancel.child_token();
-        let token = cancel.clone();
+        let token = self.inner.cancel.child_token();
         let session = Arc::downgrade(&self.inner);
-        // Lossless while the consumer keeps up: structured state is never
-        // dropped, and output is only replaced by a marker beyond the budget.
-        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
-        let buffered = Arc::new(AtomicUsize::new(0));
-        let producer_buffered = Arc::clone(&buffered);
-        let budget = std::sync::Mutex::new(OutputBudget::default());
-        let join = tokio::spawn(async move {
+        Ok(Running::spawn(token.clone(), move |reporter| async move {
             let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
                 .await
                 .map_err(|_| invalid_argument("source capture task failed".into()))??;
@@ -310,15 +303,7 @@ impl Session {
                 captured.build,
                 &captured.reusable,
                 &token,
-                |progress| {
-                    let frame = budget
-                        .lock()
-                        .expect("budgeting never panics while holding the marker flag")
-                        .frame(progress, &producer_buffered);
-                    if let Some(frame) = frame {
-                        let _ = events.send(frame);
-                    }
-                },
+                |progress| reporter.report(progress),
             )
             .await
             .map_err(|error| preparation_error(error, token.is_cancelled()))?;
@@ -333,13 +318,85 @@ impl Session {
                 retained: std::sync::Mutex::new(Some(retained)),
                 prune_targets,
             })
-        });
-        Ok(RunningPreparation {
-            cancel,
-            events: Mutex::new(receiver),
-            buffered,
-            join: Mutex::new(Some(join)),
-        })
+        }))
+    }
+
+    /// Start one Image Build. `input` holds exactly one Git Service with its
+    /// checkout and commit; its receipt, if any, is a reuse hint. When
+    /// `start_within` passes before a Build Machine admits the build, the build
+    /// is withdrawn and `finished` reports [`BuildOutcome::Queued`]. An admitted
+    /// build always runs to its end. The Machine's temporary image retention
+    /// ends with the call; a later `prepare` reuses the image by digest.
+    ///
+    /// # Errors
+    /// Rejects a closed session. Build failures arrive through `finished`.
+    pub fn build(
+        &self,
+        input: PreparationInput,
+        start_within: Option<std::time::Duration>,
+    ) -> Result<RunningBuild, RpcError> {
+        let mut client = self.client()?;
+        let token = self.inner.cancel.child_token();
+        Ok(Running::spawn(token.clone(), move |reporter| async move {
+            let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
+                .await
+                .map_err(|_| invalid_argument("source capture task failed".into()))??;
+            if captured.build.targets().count() != 1 || captured.fingerprints.len() != 1 {
+                return Err(invalid_argument(
+                    "build input must hold exactly one Git Service with its source commit".into(),
+                ));
+            }
+            let started = AtomicBool::new(false);
+            let withdraw = token.child_token();
+            let progress = |progress| {
+                // Upload begins only once the Build Machine admitted the build.
+                if matches!(
+                    progress,
+                    crate::sdk::prepare::Progress::Build(ployz_build::Progress::Stage(
+                        ployz_build::Stage::Upload
+                    ))
+                ) {
+                    started.store(true, Ordering::Relaxed);
+                }
+                reporter.report(progress);
+            };
+            let work = crate::sdk::prepare::build_images(
+                &mut client,
+                &captured.intent,
+                captured.build,
+                &captured.reusable,
+                &withdraw,
+                &progress,
+            );
+            tokio::pin!(work);
+            let mut withdrawn = false;
+            let result = match start_within {
+                None => work.await,
+                Some(limit) => tokio::select! {
+                    biased;
+                    result = &mut work => result,
+                    () = tokio::time::sleep(limit) => {
+                        if !started.load(Ordering::Relaxed) {
+                            withdrawn = true;
+                            withdraw.cancel();
+                        }
+                        work.await
+                    }
+                },
+            };
+            match result {
+                Ok(builds) => preparation::receipts(&captured.fingerprints, &builds)
+                    .into_values()
+                    .next()
+                    .map(|receipt| BuildOutcome::Built { receipt })
+                    .ok_or_else(|| invalid_argument("Build produced no receipt".into())),
+                // Withdrawn before admission: the build never started.
+                Err(error) if withdrawn && !token.is_cancelled() && !unknown(&error) => {
+                    Ok(BuildOutcome::Queued)
+                }
+                Err(error) => Err(preparation_error(error, token.is_cancelled())),
+            }
+        }))
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
@@ -783,14 +840,72 @@ enum Admitted {
     Marker,
 }
 
+/// Budgeted progress producer for a [`Running`] call.
+struct Reporter {
+    events: tokio::sync::mpsc::UnboundedSender<(usize, Value)>,
+    buffered: Arc<AtomicUsize>,
+    budget: std::sync::Mutex<OutputBudget>,
+}
+
+impl Reporter {
+    fn report(&self, progress: crate::sdk::prepare::Progress) {
+        let frame = self
+            .budget
+            .lock()
+            .expect("budgeting never panics while holding the marker flag")
+            .frame(progress, &self.buffered);
+        if let Some(frame) = frame {
+            let _ = self.events.send(frame);
+        }
+    }
+}
+
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
-pub struct RunningPreparation {
+pub type RunningPreparation = Running<PreparedDeploy>;
+
+/// Cancellable Image Build whose progress is retained until read, within a byte budget.
+pub type RunningBuild = Running<BuildOutcome>;
+
+/// How one Image Build call ended, short of failure.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BuildOutcome {
+    /// No Build Machine admitted the build within its start limit; it was withdrawn.
+    Queued,
+    /// The build finished; its receipt identifies the image.
+    Built { receipt: BuildReceipt },
+}
+
+/// A cancellable SDK call whose progress is retained until read, within a byte budget.
+pub struct Running<T> {
     cancel: CancellationToken,
     events: Mutex<tokio::sync::mpsc::UnboundedReceiver<(usize, Value)>>,
     buffered: Arc<AtomicUsize>,
-    join: Mutex<Option<tokio::task::JoinHandle<Result<PreparedDeploy, RpcError>>>>,
+    join: Mutex<Option<tokio::task::JoinHandle<Result<T, RpcError>>>>,
 }
-impl RunningPreparation {
+impl<T: Send + 'static> Running<T> {
+    fn spawn<F>(cancel: CancellationToken, work: impl FnOnce(Reporter) -> F) -> Self
+    where
+        F: std::future::Future<Output = Result<T, RpcError>> + Send + 'static,
+    {
+        // Lossless while the consumer keeps up: structured state is never
+        // dropped, and output is only replaced by a marker beyond the budget.
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let buffered = Arc::new(AtomicUsize::new(0));
+        let join = tokio::spawn(work(Reporter {
+            events,
+            buffered: Arc::clone(&buffered),
+            budget: std::sync::Mutex::new(OutputBudget::default()),
+        }));
+        Self {
+            cancel,
+            events: Mutex::new(receiver),
+            buffered,
+            join: Mutex::new(Some(join)),
+        }
+    }
+}
+impl<T> Running<T> {
     /// Request cancellation; finished reports whether remote termination was confirmed.
     pub fn abort(&self) {
         self.cancel.cancel();
@@ -801,11 +916,11 @@ impl RunningPreparation {
         self.buffered.fetch_sub(size, Ordering::Relaxed);
         Some(value)
     }
-    /// Await preparation without draining or blocking on progress consumption.
+    /// Await the result without draining or blocking on progress consumption.
     ///
     /// # Errors
     /// Returns typed preparation failure/unknown or rejects a second await.
-    pub async fn finished(&self) -> Result<PreparedDeploy, RpcError> {
+    pub async fn finished(&self) -> Result<T, RpcError> {
         let join = self
             .join
             .lock()
@@ -819,10 +934,17 @@ impl RunningPreparation {
         })?
     }
 }
-impl Drop for RunningPreparation {
+impl<T> Drop for Running<T> {
     fn drop(&mut self) {
         self.cancel.cancel();
     }
+}
+fn unknown(error: &crate::sdk::prepare::PreparationError) -> bool {
+    matches!(
+        error,
+        crate::sdk::prepare::PreparationError::Build(crate::build::Error::RemoteBuild { outcome })
+            if matches!(**outcome, crate::build::RemoteBuildFailure::Unknown { .. })
+    )
 }
 fn preparation_error(
     error: crate::sdk::prepare::PreparationError,

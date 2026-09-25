@@ -92,7 +92,7 @@ pub async fn select_build_machine(
 }
 
 use crate::{
-    build::{BuiltService, CapturedBuild},
+    build::{BuiltService, CapturedBuild, CapturedTarget},
     connect::Client,
     deploy::{DeployError, DeployPlan},
 };
@@ -149,53 +149,12 @@ impl Prepared {
 pub async fn prepare(
     client: &mut Client,
     mut intent: DeployIntent,
-    mut build: CapturedBuild,
+    build: CapturedBuild,
     reusable: &[BuiltService],
     cancellation: &CancellationToken,
     progress: impl Fn(Progress),
 ) -> Result<Prepared, PreparationError> {
-    let mut builds = Vec::new();
-    if build.targets().next().is_some() {
-        let mut machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
-        let applied = intent.applied_names();
-        if intent.target.iter().any(|spec| {
-            applied.contains(&spec.name) && spec.volume_graph().has_mounted_provisioned_volume()
-        }) {
-            read(cancellation, async {
-                client.observe_machine_storage(&mut machines).await;
-                Ok(())
-            })
-            .await?;
-        }
-        build.cover_machines(&intent, &machines)?;
-        builds = build
-            .reuse_images(client, &intent, &machines, reusable, cancellation)
-            .await;
-        let targets = build.to_targets();
-        let platforms = targets
-            .iter()
-            .flat_map(|target| target.platforms.iter().cloned())
-            .collect::<std::collections::BTreeSet<_>>();
-        progress(Progress::Platforms(platforms.into_iter().collect()));
-        if !targets.is_empty() {
-            let selected = read(cancellation, async {
-                select_build_machine(client, &targets, &machines, cancellation)
-                    .await
-                    .map_err(PreparationError::Selection)
-            })
-            .await?;
-            let id = selected.machine.id;
-            progress(Progress::Selected(Box::new(selected)));
-            // Await terminal evidence and cleanup; cancelling this future would erase Unknown.
-            builds.extend(
-                build
-                    .execute_remote_images(client, id, cancellation.clone(), |event| {
-                        progress(Progress::Build(event))
-                    })
-                    .await?,
-            );
-        }
-    }
+    let builds = build_images(client, &intent, build, reusable, cancellation, &progress).await?;
     crate::build::bind(&mut intent, &builds)?;
     let machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
     let plan = read(cancellation, async {
@@ -229,6 +188,95 @@ pub async fn prepare(
         )));
     }
     Ok(Prepared { plan, builds })
+}
+
+/// Reuse still-available images, then build each remaining target through [`build_target`].
+/// # Errors
+/// Returns typed Build evidence across every target, eligibility, or cancellation.
+pub(super) async fn build_images(
+    client: &mut Client,
+    intent: &DeployIntent,
+    mut build: CapturedBuild,
+    reusable: &[BuiltService],
+    cancellation: &CancellationToken,
+    progress: &impl Fn(Progress),
+) -> Result<Vec<BuiltService>, PreparationError> {
+    if build.targets().next().is_none() {
+        return Ok(Vec::new());
+    }
+    let mut machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
+    let applied = intent.applied_names();
+    if intent.target.iter().any(|spec| {
+        applied.contains(&spec.name) && spec.volume_graph().has_mounted_provisioned_volume()
+    }) {
+        read(cancellation, async {
+            client.observe_machine_storage(&mut machines).await;
+            Ok(())
+        })
+        .await?;
+    }
+    build.cover_machines(intent, &machines)?;
+    let mut builds = build
+        .reuse_images(client, intent, &machines, reusable, cancellation)
+        .await;
+    let targets = build.to_targets();
+    let platforms = targets
+        .iter()
+        .flat_map(|target| target.platforms.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    progress(Progress::Platforms(platforms.into_iter().collect()));
+    let mut work = ployz_build::WorkEvidence::new(&targets);
+    for captured in build.into_targets() {
+        builds.push(
+            build_target(
+                client,
+                captured,
+                &machines,
+                &mut work,
+                cancellation,
+                progress,
+            )
+            .await?,
+        );
+    }
+    Ok(builds)
+}
+
+/// One Image Build: select its Build Machine and run it there. `work` holds the
+/// evidence of every target in the same attempt.
+/// # Errors
+/// Returns typed Build evidence, eligibility, or cancellation.
+async fn build_target(
+    client: &mut Client,
+    captured: CapturedTarget,
+    machines: &[ployz_core::MachineObservation],
+    work: &mut ployz_build::WorkEvidence,
+    cancellation: &CancellationToken,
+    progress: &impl Fn(Progress),
+) -> Result<BuiltService, PreparationError> {
+    let selected = read(cancellation, async {
+        select_build_machine(
+            client,
+            std::slice::from_ref(captured.target()),
+            machines,
+            cancellation,
+        )
+        .await
+        .map_err(PreparationError::Selection)
+    })
+    .await?;
+    let id = selected.machine.id;
+    progress(Progress::Selected(Box::new(selected)));
+    // Await terminal evidence and cleanup; cancelling this future would erase Unknown.
+    Ok(captured
+        .execute_remote(
+            client,
+            id,
+            cancellation,
+            |event| progress(Progress::Build(event)),
+            work,
+        )
+        .await?)
 }
 
 async fn read<T>(
