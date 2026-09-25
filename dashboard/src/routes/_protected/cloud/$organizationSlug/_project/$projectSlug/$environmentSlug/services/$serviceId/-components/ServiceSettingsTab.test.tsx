@@ -40,7 +40,7 @@ afterEach(() => {
 
 async function show(
   source: ServiceSource,
-  builder: "dockerfile" | "railpack" = "dockerfile",
+  buildMethod: "dockerfile" | "railpack" = "dockerfile",
   { clusterDomain = null, managedHostnames = [] }: {
     clusterDomain?: string | null;
     managedHostnames?: ServiceDrawerState["service"]["managedHostnames"];
@@ -53,7 +53,7 @@ async function show(
     orgStoreSeed(clusterDomain === null ? [] : [{ id: "organization", name: clusterDomain }]),
   );
   const update = vi.fn((_id: string, _apply: (draft: ServiceDrawerState["service"]) => void) => ({ isPersisted: { promise: Promise.resolve() } }));
-  const build = { builder, dockerfilePath: "docker/Dockerfile", command: null, } as const;
+  const build = { buildMethod, dockerfilePath: "docker/Dockerfile", command: null, } as const;
   const state = asTestDouble<ServiceDrawerState>()({
     organizationSlug: "acme",
     environmentSlug: "production",
