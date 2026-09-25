@@ -1000,3 +1000,111 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn one_image_build_returns_the_receipt_prepare_reuses() {
+    let (root, service, builds) = fixture();
+    let (session, server) = session(service).await;
+    let built = session
+        .build(input(&root, vec![git("one", "dockerfile")]), None)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let crate::sdk::BuildOutcome::Built { receipt } = built else {
+        panic!("an admitted build must finish with a receipt: {built:?}");
+    };
+    assert_eq!(
+        receipt.image.reference,
+        format!("sha256:{}", "1".repeat(64))
+    );
+    assert_eq!(receipt.machine_id, machine('a', "builder").machine.id);
+    let name = ServiceName::parse("one").unwrap();
+    let mut prepared = input(&root, vec![git("one", "dockerfile")]);
+    prepared
+        .build_receipts
+        .insert(name.clone(), receipt.clone());
+    let prepared = session.prepare(prepared).unwrap().finished().await.unwrap();
+    assert_eq!(
+        builds.definitions.lock().unwrap().len(),
+        1,
+        "prepare must reuse the receipt instead of building again"
+    );
+    assert_eq!(
+        prepared.build_receipts().get(&name).unwrap().fingerprint,
+        receipt.fingerprint
+    );
+    prepared.close();
+
+    // Anything but one Git Service with its commit is refused before building.
+    let two = input(
+        &root,
+        vec![git("one", "dockerfile"), git("two", "dockerfile")],
+    );
+    let error = session
+        .build(two, None)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(builds.definitions.lock().unwrap().len(), 1);
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn a_build_still_queued_at_its_start_limit_reports_queued_and_starts_nothing() {
+    let (root, service, builds) = fixture();
+    builds.hold_in_queue.store(true, Ordering::SeqCst);
+    let (session, server) = session(service).await;
+    let running = session
+        .build(
+            input(&root, vec![git("one", "dockerfile")]),
+            Some(std::time::Duration::from_millis(300)),
+        )
+        .unwrap();
+    let outcome = running.finished().await.unwrap();
+    assert!(
+        matches!(outcome, crate::sdk::BuildOutcome::Queued),
+        "{outcome:?}"
+    );
+    let mut stages = Vec::new();
+    while let Some(event) = running.next().await {
+        if let Some(stage) = event.pointer("/Build/Stage") {
+            stages.push(stage.clone());
+        }
+    }
+    assert!(stages.contains(&json!("Queued")), "{stages:?}");
+    assert!(!stages.contains(&json!("Upload")), "{stages:?}");
+    assert!(builds.definitions.lock().unwrap().is_empty());
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_a_build_stops_it_without_a_receipt() {
+    let (root, service, builds) = fixture();
+    builds.hold_in_queue.store(true, Ordering::SeqCst);
+    let (session, server) = session(service).await;
+    let running = session
+        .build(input(&root, vec![git("one", "dockerfile")]), None)
+        .unwrap();
+    while let Some(event) = running.next().await {
+        if event.pointer("/Build/Stage") == Some(&json!("Queued")) {
+            running.abort();
+        }
+    }
+    let error = running.finished().await.unwrap_err();
+    assert_eq!(
+        error.details.pointer("/preparation/kind").unwrap(),
+        "cancelled",
+        "{error:?}"
+    );
+    assert!(builds.definitions.lock().unwrap().is_empty());
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
