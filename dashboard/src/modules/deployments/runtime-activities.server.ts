@@ -31,6 +31,8 @@ import { deploymentReporting } from "./deployment-reporting.server";
 import { preparationProgressCollector } from "./preparation-progress";
 import { lowerDeployment } from "@ployz/sdk/config";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 
 export type DeploymentRuntimeOutcome = Effect.Success<ReturnType<typeof confirmRuntimeIntent>>["outcome"];
 
@@ -72,15 +74,40 @@ export class DeploymentRuntimeInvalid extends Data.TaggedError(
   readonly retriable = false as const;
 }
 
-function compileRuntimeIntent(context: DeploymentContext, hostedDnsHostname: string | null) {
+/** The Organization's Cluster Domain name. With no row, one inline reserve; a Hosted DNS failure refuses the deploy. */
+const requireClusterDomain = (organizationId: string) =>
+  reserveClusterDomain(organizationId).pipe(
+    Effect.map((row) => row.name),
+    Effect.catchTag("HostedDnsError", (cause) => Effect.fail(new DeploymentExecutionError({
+      failureCode: "cluster_domain_unreserved",
+      message: "The Organization has no generated domain yet. Open Server Settings and choose Publish now, then deploy again.",
+      cause,
+    }))),
+  );
+
+/** Managed hostnames reach the daemon as explicit `prefix.name` routes, never as bare prefixes. */
+function expandManagedHostnames(config: ServiceDeploymentConfig, clusterDomain: string | null): ServiceDeploymentConfig {
+  if (config.managedHostnames.length === 0) return config;
+  if (clusterDomain === null) throw new Error("Managed hostnames need the Organization's Cluster Domain.");
+  return {
+    ...config,
+    routes: [...config.routes, ...config.managedHostnames.map(({ prefix, targetPort }) => ({
+      id: crypto.randomUUID(), hostname: `${prefix}.${clusterDomain}`, targetPort,
+    }))],
+    managedHostnames: [],
+  };
+}
+
+function compileRuntimeIntent(context: DeploymentContext, clusterDomain: string | null) {
   return Effect.gen(function* () {
-    const resolvedEnv = yield* loadResolvedDeployEnv(context, hostedDnsHostname);
+    const resolvedEnv = yield* loadResolvedDeployEnv(context, clusterDomain);
     return yield* Effect.try({
       try: () =>
         compileSdkPreparationInput({
           projectName: context.environment.namespace,
           snapshots: context.snapshots.map((snapshot) => ({
             ...snapshot,
+            config: expandManagedHostnames(snapshot.config, clusterDomain),
             resolvedEnv: resolvedEnv.get(snapshot.serviceId),
           })),
           volumes: context.volumes,
@@ -239,9 +266,9 @@ export const executeEnvironmentDeployment = Effect.fn(
       preparation: { ...collector.current(), phase: "source", serviceId, message: "Acquiring source" },
     }))).pipe(Effect.raceFirst(cancelled));
     const sdk = yield* connectedRuntime(context.organization.id);
-    const needsHostedDomain = context.snapshots.some(({ config }) => config.routes.length === 0 && config.managedHostnames.length > 0);
-    const hostedDnsHostname = needsHostedDomain ? (yield* sdk.watchFirstFrame(10_000)).hosted_dns_hostname : null;
-    const input = yield* compileRuntimeIntent(context, hostedDnsHostname);
+    const needsClusterDomain = context.snapshots.some(({ config }) => config.managedHostnames.length > 0);
+    const clusterDomain = needsClusterDomain ? yield* requireClusterDomain(context.organization.id) : null;
+    const input = yield* compileRuntimeIntent(context, clusterDomain);
     if (cancellation.signal.aborted) return yield* Effect.interrupt;
     remoteStarted = true;
     const build_receipts = Object.keys(sources).length === 0 ? {} : yield* loadBuildReceipts(context);
