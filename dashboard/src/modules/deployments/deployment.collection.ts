@@ -78,6 +78,7 @@ export const getOrganizationDeploymentsCollection = cachedByCollectionScope((org
           {
             id: deployment.id,
             environmentId: deployment.environmentId,
+            triggerOrigin: deployment.triggerOrigin,
             status: deployment.status,
             message: deployment.message,
             failureMessage: deployment.failureMessage,

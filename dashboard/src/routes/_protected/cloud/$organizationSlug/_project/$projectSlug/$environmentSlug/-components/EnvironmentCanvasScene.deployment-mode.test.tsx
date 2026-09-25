@@ -9,6 +9,7 @@ import {
 import { Schema } from "effect";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as preference from "#/auth/open-started-deployments";
 import { getEnvironmentDeploymentsCollection, getEnvironmentSavedStateRevisionsCollection } from "#/collections/collections";
 import { orgStoreOptions } from "#/collections/org-store";
 import { preloadCollection } from "#/collections/query-collection";
@@ -125,7 +126,9 @@ async function openNode(nodeId: string) {
   await act(async () => { fireEvent.click(link); });
 }
 
+const setOpenStarted = vi.spyOn(preference, "setOpenStartedDeployments");
 beforeEach(() => {
+  setOpenStarted.mockReset().mockResolvedValue();
   vi.stubGlobal("EventSource", class { addEventListener() {} removeEventListener() {} close() {} });
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("scrollTo", () => {});
@@ -268,6 +271,37 @@ describe("the deploy bar", () => {
     await click(within(await screen.findByRole("navigation", { name: "Deployments" })).getByRole("link", { name: /c0000000/ }));
     expect(await bar().findByRole("button", { name: "Retry" })).toBeTruthy();
     expect(bar().queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
+  it("remembers leaving your own running attempt and reopening it", async () => {
+    const router = await openCanvas({ extra: {
+      environment_deployment: [deployment(runningId, 4, null, "deploying")],
+      environment_node_config_snapshot: [snapshot(runningId, api, "api")],
+    } });
+    expect(setOpenStarted).not.toHaveBeenCalled();
+    await click(bar().getByRole("link", { name: /Deploying/ }));
+    expect(setOpenStarted).toHaveBeenLastCalledWith(true);
+    await click(bar().getByRole("link", { name: "Live" }));
+    expect(setOpenStarted).toHaveBeenLastCalledWith(false);
+    await click(bar().getByRole("link", { name: /Deploying/ }));
+    expect(setOpenStarted).toHaveBeenLastCalledWith(true);
+    // Leaving a finished attempt keeps the preference.
+    await enterDeploymentMode(router);
+    await click(bar().getByRole("link", { name: "Live" }));
+    expect(setOpenStarted).toHaveBeenCalledTimes(3);
+  });
+
+  it("never opens a Git-triggered attempt or counts it as yours", async () => {
+    await openCanvas({ extra: {
+      environment_deployment: [{ ...deployment(runningId, 4, null, "deploying"), triggerOrigin: {
+        origin: "github", deliveryId: "delivery", branchEvaluationRevision: 1, installationId: 1, repositoryId: 1,
+      } }],
+      environment_node_config_snapshot: [snapshot(runningId, api, "api")],
+    } });
+    expect(screen.queryByText("Back to live")).toBeNull();
+    await click(bar().getByRole("link", { name: /Deploying/ }));
+    await click(bar().getByRole("link", { name: "Live" }));
+    expect(setOpenStarted).not.toHaveBeenCalled();
   });
 
   it("stays usable while a service panel is open", async () => {
