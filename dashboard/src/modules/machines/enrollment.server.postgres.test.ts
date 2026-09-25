@@ -14,9 +14,9 @@ import {
   it,
 } from "vitest";
 import {
-  type GithubPostgresTestHarness,
-  startGithubPostgresTestHarness,
-} from "#/modules/github/github-ingestion.postgres-test-harness";
+  type PostgresTestHarness,
+  startPostgresTestHarness,
+} from "#/test/postgres";
 import {
   completeMachineEnrollment,
   publishMachineEnrollment,
@@ -68,7 +68,7 @@ function identity(index: number) {
   };
 }
 
-function fakeSession(database: GithubPostgresTestHarness["database"]) {
+function fakeSession(database: PostgresTestHarness["database"]) {
   let registerCalls = 0;
   let observations = 0;
   const fail = { publish: false, conflict: false };
@@ -106,7 +106,7 @@ function fakeSession(database: GithubPostgresTestHarness["database"]) {
 }
 
 function enrollmentTestClient(
-  database: GithubPostgresTestHarness["database"],
+  database: PostgresTestHarness["database"],
   connect: (options: ConnectOptions) => Promise<Client>,
 ) {
   const provider = ConfigProvider.fromEnv({
@@ -172,10 +172,10 @@ function enrollmentTestClient(
 }
 
 describe("organization enrollment coordinator", () => {
-  let harness: GithubPostgresTestHarness;
+  let harness: PostgresTestHarness;
 
   beforeAll(async () => {
-    harness = await startGithubPostgresTestHarness();
+    harness = await startPostgresTestHarness();
   }, 60_000);
 
   afterEach(async () => {
