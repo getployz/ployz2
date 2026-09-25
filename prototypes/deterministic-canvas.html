@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Ployz canvas v5 — node types + templates</title>
+<style>
+  :root { --ink:#111; --muted:#666; --rule:#dedede; --subtle:#fafafa; --mutedbg:#f2f2f2; --pink:#d0268c; --pink-deep:#a80068; --pink-soft:#fff0f7; --pink-border:#efb3ce; --ok:#42946e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:13px/1.4 "Geist Variable", ui-sans-serif, system-ui, sans-serif; color:var(--ink); }
+  header { display:flex; align-items:center; gap:12px; padding:12px 20px; border-bottom:1px solid var(--rule); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; } header .env { color:var(--muted); }
+  .scenarios { margin-left:auto; display:flex; gap:6px; flex-wrap:wrap; }
+  button { font:inherit; height:30px; padding:0 10px; border-radius:10px; border:1px solid var(--rule); background:#fff; cursor:pointer; }
+  button.on { background:var(--ink); color:#fff; border-color:var(--ink); }
+  label.toggle { display:flex; gap:6px; align-items:center; color:var(--muted); font-size:12px; }
+  main { display:grid; grid-template-columns:1fr 320px; height:calc(100vh - 100px); }
+  #stage-wrap { overflow:auto; background:radial-gradient(circle,#d9d9d9 1px,transparent 1px) 0 0/16px 16px, var(--subtle); }
+  #stage { position:relative; }
+  svg#edges { position:absolute; inset:0; pointer-events:none; overflow:visible; }
+  .band { position:absolute; left:0; right:0; border-top:1px dashed #e6e6e6; }
+  .band span { position:absolute; left:16px; top:8px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .cyc { position:absolute; border:1px dashed var(--pink-border); border-radius:16px; background:rgba(255,240,247,.35); }
+  .cyc span { position:absolute; right:10px; top:-9px; background:#fff; padding:0 6px; font-size:10px; color:var(--pink-deep); }
+  .node { position:absolute; width:190px; height:58px; background:#fff; border:1px solid var(--rule); border-radius:12px; padding:9px 12px; cursor:pointer; display:flex; gap:10px; align-items:center; transition:opacity .15s, background .2s; }
+  .node.sel { box-shadow:0 0 0 3px var(--ink); border-color:var(--ink); }
+  .node.dim { opacity:.35; }
+  .node.moved, .node.new { background:var(--pink-soft); border-color:var(--pink-border); }
+  .node.k-volume { border-style:dashed; }
+  .node.k-job, .node.k-cron { border-radius:29px; }
+  .node .ic { width:30px; height:30px; border-radius:8px; background:var(--mutedbg); display:grid; place-items:center; font-size:15px; flex:none; }
+  .node .nm { font-weight:600; }
+  .node .sub { color:var(--muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:125px; }
+  .node .dot { position:absolute; top:10px; right:10px; width:7px; height:7px; border-radius:50%; background:var(--ok); }
+  .node.k-job .dot { background:#bbb; }
+  .sats { position:absolute; left:10px; top:62px; display:flex; gap:4px; width:max-content; }
+  .sat { height:22px; padding:0 8px; border:1px dashed #cfcfcf; border-radius:11px; background:#fff; font-size:11px; color:var(--muted); line-height:20px; white-space:nowrap; }
+  .sat.new { border-color:var(--pink); color:var(--pink-deep); background:var(--pink-soft); }
+  .tbox { position:absolute; border:1px solid #d6d6d6; border-radius:16px; background:rgba(255,255,255,.7); }
+  .tbox.sel { box-shadow:0 0 0 3px var(--ink); border-color:var(--ink); }
+  .thead { height:30px; padding:6px 12px; font-weight:600; font-size:12px; cursor:pointer; border-bottom:1px solid #eee; }
+  .thead span { font-weight:400; color:var(--muted); margin-left:6px; }
+  .node.k-template { box-shadow:4px 4px 0 -1px #fff, 4px 4px 0 0 var(--rule), 8px 8px 0 -1px #fff, 8px 8px 0 0 var(--rule); }
+  .node.k-template.sel { box-shadow:0 0 0 3px var(--ink); }
+  .edge { fill:none; stroke:#cfcfcf; stroke-width:1.25; }
+  .edge.mount { stroke-dasharray:3 4; }
+  .edge.hl { stroke:var(--ink); stroke-width:1.75; }
+  .edge.new { stroke:var(--pink); stroke-width:2; }
+  aside { border-left:1px solid var(--rule); padding:16px; overflow:auto; }
+  aside h2 { font-size:14px; margin:0 0 4px; } aside p { color:var(--muted); margin:0 0 12px; }
+  h3 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:16px 0 6px; }
+  .rel-list { margin:0; padding:0; list-style:none; } .rel-list li { padding:4px 0; border-bottom:1px solid #f0f0f0; font-size:12px; }
+  code { font-family:ui-monospace,monospace; font-size:11px; background:var(--mutedbg); padding:1px 4px; border-radius:4px; }
+  textarea, input[type=text] { width:100%; font:12px/1.5 ui-monospace,monospace; border:1px solid var(--rule); border-radius:10px; padding:8px 10px; }
+  textarea { min-height:100px; }
+  .rules { margin-top:20px; padding-top:14px; border-top:1px solid var(--rule); color:var(--muted); font-size:12px; }
+  .rules ol { padding-left:18px; margin:6px 0; } .rules li { margin:4px 0; }
+</style></head><body>
+<header>
+  <h1>acme-shop</h1><span class="env">● production</span>
+  <label class="toggle"><input type="checkbox" id="all-lines"> show all lines</label>
+  <div class="scenarios" id="scenarios"></div>
+</header>
+<main><div id="stage-wrap"><div id="stage"><svg id="edges"></svg></div></div><aside id="panel"></aside></main>
+<script>
+// ---------- sample environment: every node type ----------
+const svc = (icon, image, o = {}) => ({ kind: "service", icon, image, domains: [], vars: {}, mounts: [], hooks: [], ...o });
+const res = (kind, icon, o = {}) => ({ kind, icon, domains: [], vars: {}, mounts: [], hooks: [], ...o });
+const vol = () => res("volume", "⛁");
+const DB = "${{ postgres.DATABASE_URL }}", REDIS = "${{ redis.REDIS_URL }}", S3 = "${{ assets.S3_ENDPOINT }}", API = "http://${{ api.PLOYZ_SERVICE_NAME }}:8080";
+
+const BASE = () => ({
+  web:      svc("▲", "ghcr.io/acme/web", { domains: ["acme.shop"], vars: { API_URL: API } }),
+  admin:    svc("⚙", "ghcr.io/acme/admin", { domains: ["admin.acme.shop"], vars: { API_URL: API } }),
+  api:      svc("λ", "ghcr.io/acme/api", { domains: ["api.acme.shop"], hooks: ["db:migrate"],
+                                           vars: { DATABASE_URL: DB, REDIS_URL: REDIS, S3_ENDPOINT: S3 } }),
+  worker:   svc("⟳", "ghcr.io/acme/api", { mounts: ["uploads"], vars: { DATABASE_URL: DB, REDIS_URL: REDIS } }),
+  postgres: svc("🐘", "postgres:17", { mounts: ["pg-data"], vars: { DATABASE_URL: "postgres://app@postgres:5432/app" } }),
+  redis:    svc("◆", "redis:7", { mounts: ["redis-data"], vars: { REDIS_URL: "redis://redis:6379" } }),
+  assets:   res("bucket", "🪣", { vars: { S3_ENDPOINT: "https://s3.eu-central-1.amazonaws.com", S3_BUCKET: "acme-assets" } }),
+  "nightly-report": res("cron", "⏱", { schedule: "0 3 * * *", vars: { DATABASE_URL: DB, S3_ENDPOINT: S3 } }),
+  "seed-demo":      res("job", "▶", { status: "ran 2h ago", vars: { API_URL: API, DATABASE_URL: DB } }),
+  "pg-data": vol(), "redis-data": vol(), uploads: vol(),
+  "old-backups": vol(),
+  // a template instance: members share `group`
+  "supa-kong":    svc("🦍", "kong:3", { group: "supabase", domains: ["supa.acme.shop"], vars: { AUTH: "${{ supa-auth.PLOYZ_SERVICE_NAME }}", REST: "${{ supa-rest.PLOYZ_SERVICE_NAME }}", STORAGE: "${{ supa-storage.PLOYZ_SERVICE_NAME }}", SUPABASE_URL: "https://supa.acme.shop" } }),
+  "supa-auth":    svc("🔑", "supabase/gotrue", { group: "supabase", vars: { DB: "${{ supa-db.DATABASE_URL }}" } }),
+  "supa-rest":    svc("⇄", "postgrest/postgrest", { group: "supabase", vars: { DB: "${{ supa-db.DATABASE_URL }}" } }),
+  "supa-storage": svc("▣", "supabase/storage-api", { group: "supabase", vars: { DB: "${{ supa-db.DATABASE_URL }}", S3: S3 } }),
+  "supa-db":      svc("🐘", "supabase/postgres", { group: "supabase", mounts: ["supa-db-data"], vars: { DATABASE_URL: "postgres://supa-db:5432/postgres" } }),
+  "supa-db-data": vol(),
+});
+const TEMPLATES = { supabase: { name: "Supabase", icon: "⚡" }, plausible: { name: "Plausible", icon: "📈" } };
+
+const SCENARIOS = [
+  ["Baseline", s => s],
+  ["api also mounts uploads", s => { s.api.mounts.push("uploads"); return s; }],
+  ["cron → api (not DB)", s => { s["nightly-report"].vars = { API_URL: API }; return s; }],
+  ["job → redis too", s => { s["seed-demo"].vars.REDIS_URL = REDIS; return s; }],
+  ["cdn in front of bucket", s => { s.cdn = svc("☁", "caddy:2", { domains: ["cdn.acme.shop"], vars: { ORIGIN: S3 } }); return s; }],
+  ["cycle: worker ↔ api", s => { s.api.vars.WORKER_URL = "http://${{ worker.PLOYZ_SERVICE_NAME }}"; s.worker.vars.API_URL = API; return s; }],
+  ["mount old-backups", s => { s.postgres.mounts.push("old-backups"); return s; }],
+  ["admin → Supabase", s => { s.admin.vars.SUPABASE_URL = "${{ supa-kong.SUPABASE_URL }}"; return s; }],
+  ["+ Plausible template", s => {
+    s["plausible"] = svc("📈", "plausible/analytics", { group: "plausible", domains: ["stats.acme.shop"], vars: { DB: "${{ plausible-db.DATABASE_URL }}", CH: "${{ plausible-events.CLICKHOUSE_URL }}" } });
+    s["plausible-db"] = svc("🐘", "postgres:16", { group: "plausible", mounts: ["plausible-db-data"], vars: { DATABASE_URL: "postgres://plausible-db/plausible" } });
+    s["plausible-events"] = svc("▤", "clickhouse", { group: "plausible", mounts: ["plausible-events-data"], vars: { CLICKHOUSE_URL: "http://plausible-events:8123" } });
+    s["plausible-db-data"] = vol(); s["plausible-events-data"] = vol();
+    s.web.vars.ANALYTICS = "https://${{ plausible.PLOYZ_PUBLIC_DOMAIN }}"; return s; }],
+];
+
+// ---------- the layout: type-blind apart from `owner` ----------
+const TOKEN = /(?<!\$)\$\{\{\s*(?:([a-z0-9-]+)\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
+const PER_ROW = 4;
+
+// Each node type only answers: who owns me (attached), and what do I link to.
+function model(env) {
+  const mountedBy = new Map();
+  for (const [s, n] of Object.entries(env)) n.mounts.forEach(v => mountedBy.set(v, [...(mountedBy.get(v) || []), s]));
+  const owner = new Map();
+  for (const [s, n] of Object.entries(env)) {
+    if (n.kind === "volume" && mountedBy.get(s)?.length === 1) owner.set(s, mountedBy.get(s)[0]); // one user → attached
+  }
+  const edges = [];
+  for (const [from, n] of Object.entries(env)) {
+    for (const [key, value] of Object.entries(n.vars))
+      for (const m of value.matchAll(TOKEN))
+        if (m[1] && m[1] !== from && env[m[1]] && !owner.has(m[1])) edges.push({ from, to: m[1], key });
+    for (const v of n.mounts) if (!owner.has(v) && env[v]) edges.push({ from, to: v, key: "mount", mount: true }); // shared volume → a real link
+  }
+  const layered = Object.keys(env).filter(s => !owner.has(s)).sort();
+  const sats = new Map(layered.map(s => [s, [
+    ...env[s].mounts.filter(v => owner.get(v) === s).map(v => ({ id: v, label: "⛁ " + v })),
+    ...env[s].hooks.map(h => ({ id: s + ":hook:" + h, label: "↻ " + h })),
+  ]]));
+  return { edges, layered, owner, sats, mountedBy };
+}
+
+function sccs(slugs, edges) {
+  const adj = new Map(slugs.map(s => [s, [...new Set(edges.filter(e => e.from === s).map(e => e.to))].sort()]));
+  let i = 0; const idx = new Map(), low = new Map(), stack = [], on = new Set(), comp = new Map();
+  const visit = v => {
+    idx.set(v, i); low.set(v, i); i++; stack.push(v); on.add(v);
+    for (const w of adj.get(v)) {
+      if (!idx.has(w)) { visit(w); low.set(v, Math.min(low.get(v), low.get(w))); }
+      else if (on.has(w)) low.set(v, Math.min(low.get(v), idx.get(w)));
+    }
+    if (low.get(v) === idx.get(v)) { let w; do { w = stack.pop(); on.delete(w); comp.set(w, v); } while (w !== v); }
+  };
+  slugs.forEach(s => idx.has(s) || visit(s));
+  return comp;
+}
+
+const NODE = { w: 190, h: 58 }, GAP_X = 24, SAT_H = 30, MAX_W = 4 * 214;
+
+// One layering pass over any set of boxes. Used for the canvas and, recursively, inside each expanded template.
+function layerize(nodes, edges, sizeOf, hasSats, labels) {
+  const comp = sccs(nodes, edges);
+  const cEdges = [...new Set(edges.filter(e => comp.get(e.from) !== comp.get(e.to)).map(e => comp.get(e.from) + ">" + comp.get(e.to)))].map(k => k.split(">"));
+  const linked = new Set(edges.flatMap(e => [e.from, e.to]));
+  const height = new Map();
+  const h = c => height.has(c) ? height.get(c) : (height.set(c, Math.max(-1, ...cEdges.filter(([a]) => a === c).map(([, b]) => h(b))) + 1), height.get(c));
+  const comps = [...new Set(nodes.filter(s => linked.has(s)).map(s => comp.get(s)))];
+  comps.forEach(h);
+  const maxH = Math.max(0, ...comps.map(c => height.get(c)));
+  const rows = Array.from({ length: maxH + 1 }, (_, l) => [nodes.filter(s => linked.has(s) && maxH - height.get(comp.get(s)) === l), labels ? (l === 0 ? "Entry" : l === maxH ? "Producers" : "Layer " + l) : ""]);
+  const unlinked = nodes.filter(s => !linked.has(s));
+  if (unlinked.length) rows.push([unlinked, labels ? "Not linked" : ""]);
+
+  const t = new Map(), bands = [], cycles = [];
+  const nb = s => edges.flatMap(e => e.from === s ? [e.to] : e.to === s ? [e.from] : []);
+  let y = labels ? 14 : 0, width = 0;
+  for (const [row, label] of rows) {
+    if (!row.length) continue;
+    const key = s => { const xs = row.filter(o => comp.get(o) === comp.get(s)).flatMap(nb).map(o => t.get(o)).filter(Boolean).map(p => p.x + p.w / 2);
+                       return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : Infinity; };
+    row.sort((a, b) => key(a) - key(b) || comp.get(a).localeCompare(comp.get(b)) || a.localeCompare(b));
+    bands.push([label, y - 14]);
+    // pack left to right, wrap at MAX_W; a line is as tall as its tallest box (+ satellites)
+    let x = 0, line = [];
+    const flush = () => {
+      const lh = Math.max(...line.map(s => t.get(s).h + (hasSats(s) ? SAT_H : 0)));
+      line.forEach(s => t.get(s).y = y);
+      for (const c of new Set(line.map(s => comp.get(s)))) {
+        const ps = line.filter(s => comp.get(s) === c).map(s => t.get(s));
+        if (ps.length > 1) cycles.push({ x: ps[0].x - 8, y: y - 8, w: ps.at(-1).x + ps.at(-1).w - ps[0].x + 16, h: Math.max(...ps.map(p => p.h)) + 16 });
+      }
+      y += lh + 26; x = 0; line = [];
+    };
+    for (const s of row) {
+      const [w, hh] = sizeOf(s);
+      if (line.length && x + w > MAX_W) flush();
+      t.set(s, { x, y: 0, w, h: hh, layer: label });
+      line.push(s); x += w + GAP_X; width = Math.max(width, x - GAP_X);
+    }
+    flush();
+    y += labels ? 18 : 0;
+  }
+  return { t, bands, cycles, w: width, h: y - 26 - (labels ? 18 : 0) };
+}
+
+let expanded = new Set();
+function layout(env) {
+  const M = model(env);
+  const groupOf = s => env[s].group ? "grp:" + env[s].group : null;
+  const rep = s => groupOf(s) || s;
+  // inner layout for each expanded template, from its members and the links between them
+  const inner = new Map();
+  for (const g of new Set(M.layered.map(groupOf).filter(Boolean))) {
+    if (!expanded.has(g)) continue;
+    const members = M.layered.filter(s => groupOf(s) === g);
+    const ie = M.edges.filter(e => members.includes(e.from) && members.includes(e.to));
+    inner.set(g, layerize(members, ie, () => [NODE.w, NODE.h], s => M.sats.get(s).length, false));
+  }
+  const PAD = 16, HEAD = 34;
+  const outerNodes = [...new Set(M.layered.map(rep))].sort();
+  const outerEdges = [...new Map(M.edges.map(e => [rep(e.from), rep(e.to)]).filter(([a, b]) => a !== b).map(([a, b]) => [a + ">" + b, { from: a, to: b }])).values()];
+  const sizeOf = s => inner.has(s) ? [Math.max(inner.get(s).w, 190) + 2 * PAD, inner.get(s).h + HEAD + PAD] : [NODE.w, NODE.h];
+  const O = layerize(outerNodes, outerEdges, sizeOf, s => !s.startsWith("grp:") && M.sats.get(s).length, true);
+
+  // compose absolute positions: outer boxes, then members inside expanded boxes
+  const X0 = 100, Y0 = 40, t = new Map();
+  for (const [s, p] of O.t) t.set(s, { ...p, x: p.x + X0, y: p.y + Y0 });
+  const cycles = O.cycles.map(c => ({ ...c, x: c.x + X0, y: c.y + Y0 }));
+  for (const [g, I] of inner) {
+    const box = t.get(g);
+    const ox = box.x + PAD + (box.w - 2 * PAD - I.w) / 2, oy = box.y + HEAD;
+    for (const [s, p] of I.t) t.set(s, { ...p, x: p.x + ox, y: p.y + oy, layer: g + ":" + p.layer });
+    I.cycles.forEach(c => cycles.push({ ...c, x: c.x + ox, y: c.y + oy }));
+  }
+  // what's on screen: a collapsed template stands in for all of its members
+  const shown = s => { const g = groupOf(s); return g && !expanded.has(g) ? g : s; };
+  const displayEdges = [...new Map(M.edges.map(e => ({ ...e, raw: e.from + ">" + e.to, from: shown(e.from), to: shown(e.to) })).filter(e => e.from !== e.to).map(e => [e.raw + ">" + e.key, e])).values()];
+  return { ...M, t, groupOf, inner, bands: O.bands.map(([l, y]) => [l, y + Y0]), cycles, displayEdges,
+           height: Y0 + O.h + 60, width: X0 + Math.max(O.w, MAX_W) + 20 };
+}
+
+// ---------- rendering ----------
+let anim = 0, env = BASE(), selected = "api", pos = new Map(), prev = null, prevEnvKey = null, keepPrev = null;
+const subOf = (s, n, L) => ({
+  service: n.domains[0] ? "🌐 " + n.domains[0] : n.image,
+  bucket: "Bucket · " + (n.vars.S3_BUCKET || ""),
+  cron: "Cron · " + n.schedule,
+  job: "One-shot job · " + n.status,
+  volume: L.mountedBy.get(s)?.length > 1 ? "Shared by " + L.mountedBy.get(s).length : "Not mounted",
+}[n.kind]);
+
+function render() {
+  const L = layout(env), stage = document.getElementById("stage"), all = document.getElementById("all-lines").checked;
+  stage.style.width = L.width + "px"; stage.style.height = L.height + "px";
+  stage.querySelectorAll(".band,.cyc").forEach(n => n.remove());
+  for (const [label, y] of L.bands) { const b = el("div", "band", `<span>${label}</span>`); b.style.top = y + "px"; stage.append(b); }
+  for (const c of L.cycles) { const b = el("div", "cyc", "<span>cycle</span>"); Object.assign(b.style, { left: c.x + "px", top: c.y + "px", width: c.w + "px", height: c.h + "px" }); stage.append(b); }
+
+  const sel = L.owner.get(selected) || (env[selected]?.group && !expanded.has("grp:" + env[selected].group) ? "grp:" + env[selected].group : selected);
+  const selSet = new Set(L.inner.has(sel) ? [...L.inner.get(sel).t.keys()] : [sel]);
+  stage.querySelectorAll(".tbox").forEach(n => n.remove());
+  for (const g of L.inner.keys()) {
+    const tb = el("div", "tbox" + (g === sel ? " sel" : ""), `<div class="thead">${TEMPLATES[g.slice(4)].icon} ${TEMPLATES[g.slice(4)].name} <span>template · click to collapse</span></div>`);
+    tb.dataset.box = g; tb.querySelector(".thead").onclick = () => { expanded.delete(g); selected = g; render(); };
+    stage.prepend(tb);
+  }
+  const rel = new Set(L.displayEdges.flatMap(e => selSet.has(e.from) && !selSet.has(e.to) ? [e.to] : selSet.has(e.to) && !selSet.has(e.from) ? [e.from] : []));
+  const seen = new Set();
+  for (const [slug, p] of L.t) {
+    if (L.inner.has(slug)) continue; // expanded template: drawn as a box, members drawn below
+    seen.add(slug);
+    let n = stage.querySelector(`[data-slug="${slug}"]`);
+    if (!n) { n = el("div", "", ""); n.dataset.slug = slug; stage.append(n); }
+    if (slug.startsWith("grp:")) {
+      const tpl = TEMPLATES[slug.slice(4)], count = Object.values(env).filter(x => "grp:" + x.group === slug && x.kind !== "volume").length;
+      n.onclick = () => { if (selected === slug) expanded.add(slug); selected = slug; render(); };
+      n.className = "node k-template" + (slug === sel ? " sel" : "") + (sel && !all && slug !== sel && !rel.has(slug) ? " dim" : "") + (prev && ![...prev.slugs].some(s => "grp:" + env[s]?.group === slug) ? " new" : "");
+      n.innerHTML = `<div class="ic">${tpl.icon}</div><div><div class="nm">${tpl.name}</div><div class="sub">Template · ${count} services ▸</div></div>`;
+      continue;
+    }
+    n.onclick = () => { selected = selected === slug ? null : slug; render(); };
+    const x = env[slug];
+    n.className = `node k-${x.kind}` + (slug === sel ? " sel" : "") + (sel && !all && !selSet.has(slug) && !rel.has(slug) ? " dim" : "")
+      + (prev && prev.layer.has(slug) && prev.layer.get(slug) !== p.layer ? " moved" : "") + (prev && !prev.slugs.has(slug) ? " new" : "");
+    n.innerHTML = `<div class="ic">${x.icon}</div><div><div class="nm">${slug}</div><div class="sub">${subOf(slug, x, L)}</div></div><span class="dot"></span>`
+      + (L.sats.get(slug).length ? `<div class="sats">${L.sats.get(slug).map(s => `<span class="sat ${prev && !prev.sats.has(s.id) ? "new" : ""}">${s.label}</span>`).join("")}</div>` : "");
+  }
+  stage.querySelectorAll(".node").forEach(n => seen.has(n.dataset.slug) || n.remove());
+
+  const pairs = [...new Map(L.displayEdges.map(e => [[e.from, e.to].sort().join("~"), e])).entries()];
+  const svg = document.getElementById("edges");
+  svg.setAttribute("width", L.width); svg.setAttribute("height", L.height);
+  const prevPairs = prev?.pairs;
+  const draw = () => {
+    const c = s => { const p = pos.get(s); return [p.x + 95, p.y + 29]; };
+    svg.innerHTML = pairs.map(([k, e]) => {
+      const [a, b] = k.split("~"), mine = selSet.has(a) || selSet.has(b), isNew = prevPairs && L.displayEdges.some(d => [d.from, d.to].sort().join("~") === k && !prevPairs.has(d.raw));
+      if (!all && !mine && !isNew) return "";
+      const [x1, y1] = c(a), [x2, y2] = c(b);
+      const d = Math.abs(y1 - y2) < 5 ? `M${x1},${y1 - 29} C${x1},${y1 - 60} ${x2},${y2 - 60} ${x2},${y2 - 29}`
+                                      : `M${x1},${y1} C${x1},${(y1 + y2) / 2} ${x2},${(y1 + y2) / 2} ${x2},${y2}`;
+      return `<path class="edge ${e.mount ? "mount" : ""} ${isNew ? "new" : mine ? "hl" : ""}" d="${d}"/>`;
+    }).join("");
+  };
+  const from = new Map([...L.t.keys()].map(s => [s, pos.get(s) || L.t.get(s)]));
+  const t0 = performance.now();
+  const tick = now => {
+    const k = Math.min(1, (now - t0) / 400), e = 1 - Math.pow(1 - k, 3);
+    for (const [s, b] of L.t) {
+      const a = from.get(s), p = { x: a.x + (b.x - a.x) * e, y: a.y + (b.y - a.y) * e };
+      pos.set(s, p);
+      const n = stage.querySelector(`[data-slug="${s}"]`) || stage.querySelector(`[data-box="${s}"]`);
+      if (!n) continue;
+      n.style.left = p.x + "px"; n.style.top = p.y + "px";
+      if (n.dataset.box) { n.style.width = b.w + "px"; n.style.height = b.h + "px"; }
+    }
+    draw();
+    if (k < 1) anim = requestAnimationFrame(tick);
+  };
+  cancelAnimationFrame(anim); // a newer render supersedes any animation still running
+  anim = requestAnimationFrame(tick);
+  prev = { layer: new Map([...L.t].map(([s, p]) => [s, p.layer])), pairs: new Set(L.edges.map(e => e.from + ">" + e.to)), slugs: new Set(Object.keys(env)),
+           sats: new Set([...L.sats.values()].flat().map(s => s.id)) };
+  if (prevEnvKey === JSON.stringify(env)) { prev.pairs = keepPrev.pairs; prev.slugs = keepPrev.slugs; prev.sats = keepPrev.sats; }
+  prevEnvKey = JSON.stringify(env); keepPrev = prev;
+  renderPanel(L, sel, selSet);
+}
+
+function renderPanel(L, sel, selSet) {
+  const p = document.getElementById("panel"), n = env[sel];
+  const rules = `<div class="rules"><b>Rules</b><ol>
+    <li>Every node type answers two things: <b>who owns me</b> and <b>what do I link to</b>. The layout knows nothing else.</li>
+    <li><b>Attached</b> (owned by one service): volumes mounted once, pre-deploy hooks. Hang under the owner, never placed.</li>
+    <li><b>Layered</b>: services, buckets, crons, one-shot jobs, volumes mounted by 2+. Links: <code>\${{ x.KEY }}</code> and shared mounts.</li>
+    <li>Layers recompute on every edit. Cycles collapse into one layer.</li>
+    <li>Lines only for the selected node unless "show all lines" is on. Pink = changed by the last edit.</li>
+    <li><b>Templates</b> are one node on the outer canvas; links to any member attach to it. Click twice (or Expand) to open: members lay out inside the box with the same rules. Expanding never moves the outer layers, only makes the box bigger.</li></ol></div>`;
+  if (!n && !sel?.startsWith("grp:")) { p.innerHTML = "<p>Click a node.</p>" + rules; return; }
+  if (sel?.startsWith("grp:")) {
+    const tpl = TEMPLATES[sel.slice(4)], members = Object.keys(env).filter(s => "grp:" + env[s].group === sel && env[s].kind !== "volume");
+    const uses = L.displayEdges.filter(e => selSet.has(e.from) && !selSet.has(e.to)), usedBy = L.displayEdges.filter(e => selSet.has(e.to) && !selSet.has(e.from));
+    const li = (arr, pick) => arr.length ? arr.map(e => `<li><b>${pick(e)}</b> via <code>${e.key}</code></li>`).join("") : `<li style="color:#999">nothing</li>`;
+    p.innerHTML = `<h2>${tpl.name}</h2><p>Template · ${members.length} services</p>
+      <button id="exp">${expanded.has(sel) ? "Collapse" : "Expand"}</button>
+      <h3>Members</h3><ul class="rel-list">${members.map(m => `<li>${m}</li>`).join("")}</ul>
+      <h3>Uses (outside the template)</h3><ul class="rel-list">${li(uses, e => e.to + (L.inner.has(sel) ? " ← " + e.raw.split(">")[0] : ""))}</ul>
+      <h3>Used by</h3><ul class="rel-list">${li(usedBy, e => e.from + (L.inner.has(sel) ? " → " + e.raw.split(">")[1] : ""))}</ul>` + rules;
+    p.querySelector("#exp").onclick = () => { expanded.has(sel) ? expanded.delete(sel) : expanded.add(sel); render(); };
+    return;
+  }
+  const uses = L.edges.filter(e => e.from === sel), usedBy = L.edges.filter(e => e.to === sel);
+  const li = (arr, pick) => arr.length ? arr.map(e => `<li><b>${pick(e)}</b> via <code>${e.key}</code></li>`).join("") : `<li style="color:#999">nothing</li>`;
+  p.innerHTML = `<h2>${sel}</h2><p>${n.kind}${n.image ? " · " + n.image : ""}</p>
+    <h3>Uses</h3><ul class="rel-list">${li(uses, e => e.to)}</ul>
+    <h3>Used by</h3><ul class="rel-list">${li(usedBy, e => e.from)}</ul>
+    ${n.kind === "volume" ? "" : `<h3>Variables</h3><textarea id="vars" spellcheck="false">${Object.entries(n.vars).map(([k, v]) => `${k}=${v}`).join("\n")}</textarea>`}
+    ${n.kind === "service" ? `<h3>Mounts</h3><input type="text" id="mounts" value="${n.mounts.join(", ")}">` : ""}` + rules;
+  let t;
+  p.querySelector("#vars")?.addEventListener("input", e => { clearTimeout(t); t = setTimeout(() => {
+    n.vars = Object.fromEntries(e.target.value.split("\n").map(l => l.split(/=(.*)/s)).filter(([k]) => k.trim()).map(([k, v]) => [k.trim(), (v || "").trim()]));
+    render(); const ta = document.getElementById("vars"); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 400); });
+  p.querySelector("#mounts")?.addEventListener("change", e => {
+    n.mounts = e.target.value.split(",").map(s => s.trim()).filter(Boolean);
+    n.mounts.forEach(v => env[v] ||= vol()); render(); });
+}
+function el(tag, cls, html) { const n = document.createElement(tag); n.className = cls; n.innerHTML = html; return n; }
+
+const sc = document.getElementById("scenarios");
+SCENARIOS.forEach(([name, fn], i) => {
+  const b = el("button", i === 0 ? "on" : "", name);
+  b.onclick = () => { sc.querySelectorAll("button").forEach(x => x.className = ""); b.className = "on"; env = fn(BASE()); render(); };
+  sc.append(b);
+});
+document.getElementById("all-lines").onchange = render;
+render();
+</script></body></html>
