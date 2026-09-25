@@ -454,7 +454,7 @@ impl Client {
         to_json(&removed)
     }
 
-    /// Apply one Server Policy edit to `machine`.
+    /// Apply one Machine policy edit (Machine Roles and build concurrency) to `machine`.
     ///
     /// `update` is a partial MachineUpdate; omitted fields keep their values.
     ///

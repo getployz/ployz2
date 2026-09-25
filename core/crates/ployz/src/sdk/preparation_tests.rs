@@ -844,7 +844,7 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
     fs::remove_dir_all(root).unwrap();
 }
 
-/// Build one Service through the SDK and return the Selected event's Server and reason.
+/// Build one Service through the SDK and return the Selected event's Machine and reason.
 async fn selected_by_build(
     session: &crate::sdk::Session,
     input: crate::sdk::PreparationInput,
@@ -864,7 +864,7 @@ async fn selected_by_build(
         }
     }
     running.finished().await.unwrap();
-    selected.expect("every build selects a Server")
+    selected.expect("every build selects a Machine")
 }
 
 fn two_builders() -> (PathBuf, DeployService) {
@@ -887,7 +887,7 @@ fn two_builders() -> (PathBuf, DeployService) {
 async fn the_server_named_in_the_latest_receipt_builds_the_service_while_it_can() {
     let (root, service) = two_builders();
     let (sdk, server) = session(service.clone()).await;
-    // A stale receipt still names the Server whose build cache is warm.
+    // A stale receipt still names the Machine whose build cache is warm.
     let receipt: crate::sdk::preparation::BuildReceipt = serde_json::from_value(json!({
         "fingerprint": "0".repeat(64), "machine_id": "c".repeat(32),
         "image": {"reference": format!("sha256:{}", "f".repeat(64)), "tags": [],
@@ -919,7 +919,7 @@ async fn the_server_named_in_the_latest_receipt_builds_the_service_while_it_can(
         selected_by_build(&sdk, hinted(1)).await,
         (
             "builder".into(),
-            json!({"kind": "cache_holder_unavailable", "holder": "spare"})
+            json!({"kind": "cache_holder_unavailable", "holder": "c".repeat(32), "name": "spare"})
         )
     );
     sdk.close().await;
@@ -930,15 +930,48 @@ async fn the_server_named_in_the_latest_receipt_builds_the_service_while_it_can(
 #[tokio::test]
 async fn a_preferred_server_is_the_clusters_first_choice() {
     let (root, service) = two_builders();
-    let (session, server) = session(service).await;
-    let mut input = input(&root, vec![git("one", "dockerfile")]);
+    let preferring = || {
+        let mut input = input(&root, vec![git("one", "dockerfile")]);
+        input.preferred_machine = Some(machine('c', "spare").machine.id);
+        input
+    };
+    let (sdk, server) = session(service.clone()).await;
     // Index 0 alone would spread to "builder".
-    input.preferred_machine = Some(machine('c', "spare").machine.id);
     assert_eq!(
-        selected_by_build(&session, input).await,
+        selected_by_build(&sdk, preferring()).await,
         ("spare".into(), json!({"kind": "preferred"}))
     );
-    session.close().await;
+    sdk.close().await;
+    server.abort();
+
+    // Once it stops accepting Builds, the Cluster chooses without it and says why.
+    let mut stopped = machine('c', "spare");
+    stopped.machine.accepts_builds = false;
+    let (sdk, server) = session(
+        service
+            .clone()
+            .with_machines(vec![machine('a', "builder"), stopped]),
+    )
+    .await;
+    assert_eq!(
+        selected_by_build(&sdk, preferring()).await,
+        (
+            "builder".into(),
+            json!({"kind": "preferred_unavailable", "preferred": "c".repeat(32), "name": "spare"})
+        )
+    );
+    sdk.close().await;
+    server.abort();
+    // Gone from the Cluster: no name to show.
+    let (sdk, server) = session(service.with_machines(vec![machine('a', "builder")])).await;
+    assert_eq!(
+        selected_by_build(&sdk, preferring()).await,
+        (
+            "builder".into(),
+            json!({"kind": "preferred_unavailable", "preferred": "c".repeat(32), "name": null})
+        )
+    );
+    sdk.close().await;
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }
@@ -955,7 +988,7 @@ async fn an_attempts_builds_spread_across_servers_that_accept_builds() {
         assert_eq!(reason, json!({"kind": "spread"}));
         chosen.push(name);
     }
-    // The Server without the Builds role is never chosen.
+    // The Machine without the Builds role is never chosen.
     assert_eq!(chosen, ["builder", "spare", "builder", "spare"]);
     session.close().await;
     server.abort();

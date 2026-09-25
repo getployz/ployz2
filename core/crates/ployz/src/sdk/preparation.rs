@@ -27,10 +27,10 @@ pub struct PreparationInput {
     #[serde(default)]
     pub build_receipts: BTreeMap<ServiceName, BuildReceipt>,
     /// This build's position among its attempt's builds. Builds whose cache
-    /// holder cannot build spread across Servers by it.
+    /// holder cannot build spread across Machines by it.
     #[serde(default)]
     pub build_index: usize,
-    /// The Service's Preferred Server, tried before any other Server.
+    /// The Service's Preferred Machine, tried before any other Machine.
     #[serde(default)]
     pub preferred_machine: Option<ployz_core::MachineId>,
 }
@@ -129,9 +129,9 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
     }
     let intent = frozen.intent;
     let build = crate::build::capture(&intent, builds).map_err(invalid)?;
-    // The latest receipt names the warm Server even when its image is stale.
+    // The latest receipt names the warm Machine even when its image is stale.
     // ponytail: one preference per call; a multi-Service prepare builds on one
-    // Server, so it follows its first target's cache holder.
+    // Machine, so it follows its first target's cache holder.
     let preference = BuildPreference {
         cache_holder: build.targets().find_map(|target| {
             input
@@ -140,7 +140,7 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
                 .find(|(name, _)| name.as_str() == target.name)
                 .map(|(_, receipt)| receipt.machine_id)
         }),
-        spread: input.build_index,
+        build_index: input.build_index,
         preferred: input.preferred_machine,
     };
     let fingerprints = fingerprints(&intent, frozen.identities);

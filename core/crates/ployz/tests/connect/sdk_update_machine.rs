@@ -1,4 +1,4 @@
-//! Façade tests for Cloud Server Policy edits.
+//! Façade tests for Machine policy edits (Machine Roles and build concurrency).
 
 use std::time::Duration;
 

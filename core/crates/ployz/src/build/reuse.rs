@@ -69,7 +69,7 @@ fn reusable(
         return None;
     }
     // Keep the receipt's Machine while it still holds the image, so the next
-    // receipt keeps naming the Server with the warm build cache.
+    // receipt keeps naming the Machine with the warm build cache.
     let source = stores
         .successes
         .iter()

@@ -107,7 +107,7 @@ describe("deployment view projection", () => {
           { image: "site", serverChoice: null, githubRunUrl: "https://github.com/o/r/actions/runs/1" },
           { image: "api", serverChoice: { machineName: "nuc", reason: { kind: "had_cache" } } },
           { image: "web", serverChoice: { machineName: "hel-1", reason: { kind: "spread" } } },
-          { image: "docs", serverChoice: { machineName: "hel-1", reason: { kind: "cache_holder_unavailable", holder: "nuc" } } },
+          { image: "docs", serverChoice: { machineName: "hel-1", reason: { kind: "cache_holder_unavailable", holder: "c".repeat(32) as MachineId, name: "nuc" } } },
           { image: "worker", serverChoice: null },
           { image: "blog", serverChoice: null, githubRunUrl: "https://github.com/o/r/actions/runs/2", skips: ["Your servers: none started it in 3 min"] },
           { image: "wiki", serverChoice: null, skips: ["GitHub: no workflow in o/r"] },

@@ -539,7 +539,7 @@ impl Session {
             .await
     }
 
-    /// Apply one Server Policy edit to `machine` and return its updated record.
+    /// Apply one Machine policy edit (Machine Roles and build concurrency) to `machine` and return its updated record.
     ///
     /// One-shot: a lost response is read back from observation, never replayed.
     ///

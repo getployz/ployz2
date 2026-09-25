@@ -52,7 +52,10 @@ function builderReason(reason: ServerChoice["reason"]): string {
     case "preferred": return "preferred builder";
     case "had_cache": return "had this Service's build cache";
     case "spread": return "spread across Servers";
-    case "cache_holder_unavailable": return `${reason.holder} has the cache but is offline or no longer builds`;
+    case "cache_holder_unavailable": return `${reason.name ?? "the Server with the cache"} has the cache but is offline or no longer builds`;
+    case "preferred_unavailable": return reason.name === null
+      ? "the preferred Server is no longer in the Cluster"
+      : `preferred ${reason.name} is offline or no longer builds`;
   }
 }
 

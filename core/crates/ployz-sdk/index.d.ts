@@ -103,18 +103,19 @@ export type PreparationInput = {
   sources: Record<string, string>;
   source_commits?: Record<string, string>;
   build_receipts?: BuildReceipts;
-  /** This build's position among its attempt's builds; builds without a warm Server spread across Servers by it. */
+  /** This build's position among its attempt's builds; builds without a warm Machine spread across Machines by it. */
   build_index?: number;
-  /** The Service's Preferred Server, the Cluster's first choice to build. */
+  /** The Service's Preferred Machine, the Cluster's first choice to build. */
   preferred_machine?: MachineId;
 };
 
-/** Why a Server was chosen to build. */
+/** Why a Machine was chosen to build. `name` is null once the Machine left the Cluster. */
 export type BuilderReason =
   | { kind: "preferred" }
   | { kind: "had_cache" }
   | { kind: "spread" }
-  | { kind: "cache_holder_unavailable"; holder: string };
+  | { kind: "cache_holder_unavailable"; holder: MachineId; name: string | null }
+  | { kind: "preferred_unavailable"; preferred: MachineId; name: string | null };
 
 /** One BuildKit step; `id` is stable across repeated reports, timestamps are RFC 3339. */
 export type BuildStep = { id: string; name: string; started: string | null; completed: string | null; cached: boolean; error: string | null };
@@ -212,7 +213,7 @@ export declare class Client {
     machine: MachineTarget,
     confirmDataLoss: DataLossConfirmation,
   ): Promise<LocalMachineRemoved>;
-  /** One Server Policy edit; omitted fields keep their values. */
+  /** One Machine policy edit (Machine Roles and build concurrency); omitted fields keep their values. */
   updateMachine(
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
