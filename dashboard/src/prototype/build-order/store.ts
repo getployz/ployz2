@@ -9,20 +9,12 @@ export type BuildOrder =
   | "github-only";
 
 export const BUILD_ORDER_LABELS: Record<BuildOrder, string> = {
-  "github-then-servers": "GitHub Actions, then your servers",
-  "servers-then-github": "Your servers, then GitHub Actions",
-  "servers-only": "Your servers only",
-  "github-only": "GitHub Actions only",
+  "github-then-servers": "GitHub, then servers",
+  "servers-then-github": "Servers, then GitHub",
+  "servers-only": "Servers only",
+  "github-only": "GitHub only",
 };
 
-export const BUILD_ORDER_DESCRIPTIONS: Record<BuildOrder, string> = {
-  "github-then-servers":
-    "Builds run on GitHub first. If no runner starts within 3 minutes, your servers build it.",
-  "servers-then-github":
-    "Your servers build first. If they are all busy for 3 minutes, GitHub Actions takes it.",
-  "servers-only": "Source and build secrets never leave your servers.",
-  "github-only": "Nothing builds on your servers. Fails if no runner starts in time.",
-};
 
 export type FakeServer = {
   id: string;
@@ -47,7 +39,7 @@ type State = {
   buildOrder: BuildOrder;
   servers: FakeServer[];
   repos: FakeRepo[];
-  serviceOverrides: Record<string, BuildOrder | undefined>;
+  preferredBuilder: Record<string, string | undefined>; // "github" or a server id; absent = Auto
 };
 
 let state: State = {
@@ -61,7 +53,7 @@ let state: State = {
     { fullName: "acme/shop", services: ["web", "worker"], readiness: "ready" },
     { fullName: "acme/api", services: ["api"], readiness: "setup-needed" },
   ],
-  serviceOverrides: {},
+  preferredBuilder: {},
 };
 
 const listeners = new Set<() => void>();

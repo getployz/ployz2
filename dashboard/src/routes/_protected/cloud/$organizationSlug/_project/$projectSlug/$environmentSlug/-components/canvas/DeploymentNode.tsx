@@ -17,7 +17,7 @@ import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environ
 import { useDeploymentMode } from "../deployment-mode";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { preloadDeploymentLogs } from "#/modules/deployments/deployment-log.collection";
-import { evidenceOf } from "#/prototype/build-order/fake-attempt";
+import { BuilderMark } from "#/prototype/build-order/fake-attempt";
 
 const stageIcons = {
   done: <CheckIcon className="size-3" aria-label="done" />,
@@ -67,14 +67,8 @@ export function DeploymentNodeCard({ data, className }: { data: CanvasDeployment
             <StageLabel name="Build" stage={view.build} />
             <span aria-hidden className="opacity-50">→</span>
             <StageLabel name="Deploy" stage={view.deploy} />
+            <BuilderMark view={view} />
           </div>
-          {evidenceOf(view) ? (
-            <div data-builder className="truncate text-xs text-muted-foreground">
-              {evidenceOf(view)?.waiting ? "waiting for " : "on "}
-              <span className="text-foreground">{evidenceOf(view)?.builder}</span>
-              {evidenceOf(view)?.waiting ? null : ` · ${evidenceOf(view)?.reason}`}
-            </div>
-          ) : null}
           {view.tail.length ? (
             <div data-tail className="font-mono text-xs text-muted-foreground">
               {view.tail.map((line, index) => (

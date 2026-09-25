@@ -154,13 +154,8 @@ function DeploymentServiceDetails({ view, config, commitSha }: { view: Deploymen
           ["Root directory", source.rootDir || null],
         ]
         : [["Source", "None"]]} />
-      {evidenceOf(view) ? <Fields title="Builder" fields={[
-        ["Built on", evidenceOf(view)?.builder ?? null],
-        ["Why", evidenceOf(view)?.reason ?? null],
-        ["Skipped", evidenceOf(view)?.skipped.join(" · ") || null],
-        ["GitHub run", evidenceOf(view)?.runUrl ?? null],
-      ]} /> : null}
       {source.type === "git" ? <Fields title="Build" fields={[
+        ["Built on", evidenceOf(view)?.waiting ? null : evidenceOf(view)?.builder ?? null],
         ["Build method", build.buildMethod === "dockerfile" ? "Dockerfile" : "Railpack"],
         ["Dockerfile", build.dockerfilePath],
       ]} /> : null}

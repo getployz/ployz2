@@ -3,7 +3,9 @@
 // replaying how Image Builds walk the Build Order. No backend.
 import { useEffect, useState } from "react";
 import { parseServiceConfig } from "@ployz/sdk/config";
-import { RotateCcwIcon } from "lucide-react";
+import { RotateCcwIcon, ServerIcon } from "lucide-react";
+import { GitHubMarkIcon } from "#/components/icons/github-mark";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
 import { Button } from "#/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import type { DeploymentAttempt } from "#/modules/deployments/deployment.collection";
@@ -152,7 +154,7 @@ export function FakeAttemptReplayBar() {
   const [current, setCurrent] = useState<Scenario>(scenario);
   return (
     <div className="pointer-events-auto fixed bottom-4 left-68 z-50 flex items-center gap-2 rounded-lg border bg-background p-1 shadow-md">
-      <span className="px-2 text-muted-foreground text-xs">Prototype replay</span>
+      <span className="px-2 text-muted-foreground text-xs">Replay</span>
       <ToggleGroup
         variant="outline"
         value={[current]}
@@ -184,14 +186,9 @@ export function FakeBuildLog({ nodeId, view }: { nodeId: string; view: Deploymen
     : plan.buildLines;
   return (
     <div className="flex flex-col gap-3 font-mono text-xs">
-      <div className="rounded-md border bg-muted/40 px-3 py-2">
-        <div>
-          {evidence.waiting ? "waiting for " : "built on "}
-          <span className="font-medium">{evidence.builder}</span>
-          {evidence.waiting ? null : ` · ${evidence.reason}`}
-          {evidence.runUrl && !evidence.waiting ? <> · <a className="underline" href={evidence.runUrl} target="_blank" rel="noreferrer">GitHub run ↗</a></> : null}
-        </div>
-        {evidence.skipped.map((line) => <div key={line} className="text-muted-foreground">skipped: {line}</div>)}
+      <div className="flex items-center justify-between gap-3 text-muted-foreground">
+        <span>{evidence.waiting ? `Waiting for ${evidence.builder}` : evidence.builder}{evidence.skipped.length && !evidence.waiting ? ` · ${evidence.skipped.join(" · ")}` : null}</span>
+        {evidence.runUrl && !evidence.waiting ? <a className="text-foreground underline-offset-4 hover:underline" href={evidence.runUrl} target="_blank" rel="noreferrer">View run ↗</a> : null}
       </div>
       <ol className="flex flex-col gap-1">
         {lines.map((line, index) => (
@@ -199,5 +196,21 @@ export function FakeBuildLog({ nodeId, view }: { nodeId: string; view: Deploymen
         ))}
       </ol>
     </div>
+  );
+}
+
+/** A quiet icon after Build → Deploy; the Builder and reason live in its tooltip. */
+export function BuilderMark({ view }: { view: DeploymentNodeView }) {
+  const evidence = evidenceOf(view);
+  if (!evidence) return null;
+  const github = evidence.builder === "GitHub Actions";
+  const text = evidence.waiting ? `Waiting for ${evidence.builder}` : `Built on ${evidence.builder} · ${evidence.reason}`;
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<span className="ml-auto inline-flex text-muted-foreground [&_svg]:size-3.5" aria-label={text} />}>
+        {github ? <GitHubMarkIcon /> : <ServerIcon />}
+      </TooltipTrigger>
+      <TooltipContent>{text}</TooltipContent>
+    </Tooltip>
   );
 }
